@@ -109,9 +109,6 @@ jobs:
       - uses: actions/checkout@master
         with:
           lfs: true
-      - uses: actions/download-artifact@master
-        with:
-          name: version
       - uses: actions/cache@v1
         with:
           path: ~/.cargo/registry
