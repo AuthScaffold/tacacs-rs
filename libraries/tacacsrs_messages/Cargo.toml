@@ -1,0 +1,8 @@
+[package]
+name = "tacacsrs-messages"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitflags = "2.6.0"
+num_enum = "0.7.3"
