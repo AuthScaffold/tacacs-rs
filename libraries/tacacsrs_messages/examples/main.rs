@@ -1,8 +1,29 @@
+use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
 use tacacsrs_messages::header::Header;
 use tacacsrs_messages::packet::Packet;
 
 fn main() {
-    let binary_data: [u8; 12] = [0xc0, 0x01, 0x01, 0x00, 0xde, 0xad, 0xbe, 0xef, 0x00, 0x00, 0x00, 0x10];
+    let major_version = TacacsMajorVersion::TacacsPlusMajor1;
+    let minor_version = TacacsMinorVersion::TacacsPlusMinorVerDefault;
+    let version = (major_version as u8) << 4 | (minor_version as u8);
+
+    let tacacs_flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
+
+    let session_id = 0xdeadbeef as u32;
+    let session_id_bytes = session_id.to_be_bytes();
+
+    let length = 1 as u32;
+    let length_bytes = length.to_be_bytes();
+
+    let binary_data: [u8; 12] = [
+        version,
+        TacacsType::TacPlusAccounting as u8,
+        0x01,
+        tacacs_flags.bits(),
+        session_id_bytes[0], session_id_bytes[1], session_id_bytes[2], session_id_bytes[3],
+        length_bytes[0], length_bytes[1], length_bytes[2], length_bytes[3]
+    ];
+
     let header = match Header::new(&binary_data) {
         Ok(data) => data,
         Err(e) => {

@@ -32,7 +32,8 @@ impl fmt::Display for TacacsMinorVersion {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
 pub enum TacacsType {
     TacPlusAuthentication = 0x1,
     TacPlusAuthorisation = 0x2,
