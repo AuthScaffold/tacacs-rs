@@ -29,6 +29,10 @@ impl Packet {
     pub fn body(&self) -> &Vec<u8> {
         &self.body
     }
+
+    pub fn body_copy(&self) -> Vec<u8> {
+        self.body.clone()
+    }
 }
 
 
