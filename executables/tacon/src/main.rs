@@ -1,8 +1,13 @@
+mod commands;
+
 use anyhow::Context;
 use clap::{arg, Parser, Subcommand};
 
-mod packet;
+use tacacsrs_messages::accounting::AccountingRequest;
 
+use commands::accounting::THIS_IS_A_PLACE_HOLDER;
+
+// Define the CLI struct
 #[derive(Parser)]
 #[command(name = "TACAS Client Cli", version, author)]
 #[command(about = "A CLI app with subcommands", long_about = None)]
@@ -21,9 +26,12 @@ pub struct Cli {
 enum Commands {
     /// Accounting command
     Accounting {
-        /// An arg of the item
-        #[arg(long, short)]
-        arg1: String,
+        /// The command to run
+        cmd: String,
+
+        /// The arguments to pass to the command
+        #[arg(value_name= "CMD-ARGS")]
+        cmd_args: Option<Vec<String>>,
     },
     /// Authentication command
     Authentication,
@@ -49,8 +57,16 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
     if let Some(command) = &cli.command {
         println!("Running command: {:?}", command);
         match command {
-            Commands::Accounting { arg1 } => {
-                println!("Accounting with arg1: {}", arg1);
+            Commands::Accounting { cmd, cmd_args } => {
+                if cmd.is_empty() {
+                    // Print help message and return an error
+                    return Err(anyhow::Error::msg("Accounting command requires a positional cmd argument"));
+                } else {
+                    println!("Accounting with cmd: {}", cmd);
+                    if let Some(args) = cmd_args {
+                        println!("Accounting with args: {:?}", args);
+                    }
+                }
             }
             Commands::Authentication => {
                 println!("Authentication");
@@ -76,13 +92,30 @@ mod tests {
 
     #[test]
     fn test_accounting_subcommand() {
-        let cli = Cli::parse_from(vec!["tacon", "-vv", "accounting", "--arg1", "test_value"]);
+        let cli = Cli::parse_from(vec!["tacon", "-vv", "accounting", "cmd", "cmd-arg1", "cmd-arg2"]);
         
         let output = std::panic::catch_unwind(|| {
             run(cli)
         });
 
         assert!(output.is_ok());
+    }
+
+    #[test]
+    fn test_accounting_subcommand_no_command() {
+        let output = std::panic::catch_unwind(|| {
+            let cli = Cli::try_parse_from(vec!["tacon", "-vv", "accounting"])?;
+            run(cli)
+        });
+
+        assert!(output.is_ok());
+        let output = output.unwrap();
+        assert!(output.is_err());
+
+
+        let error = output.unwrap_err();
+        assert_eq!(error.to_string(), "error: the following required arguments were not provided:\n  <CMD>\n\nUsage: tacon accounting <CMD> [CMD-ARGS]...\n\nFor more information, try '--help'.\n");
+
     }
 
     #[test]
@@ -120,10 +153,9 @@ mod tests {
 
     #[test]
     fn test_batch_mode_with_subcommand() {
-        let cli = Cli::parse_from(vec!["tacon", "--batch", "batch_file.txt", "accounting", "--arg1", "test_value"]);
+        let cli = Cli::parse_from(vec!["tacon", "--batch", "batch_file.txt", "accounting", "test_value"]);
         
         let output = std::panic::catch_unwind(|| {
-            // Box::new(err.into())
             run(cli)
         });
 
