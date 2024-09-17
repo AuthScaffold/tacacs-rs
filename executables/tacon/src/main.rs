@@ -2,10 +2,7 @@ mod commands;
 
 use anyhow::Context;
 use clap::{arg, Parser, Subcommand};
-
-use tacacsrs_messages::accounting::AccountingRequest;
-
-use commands::accounting::THIS_IS_A_PLACE_HOLDER;
+use commands::accounting::send_accounting_request;
 
 // Define the CLI struct
 #[derive(Parser)]
@@ -17,6 +14,13 @@ pub struct Cli {
 
     #[arg(short, long, value_name= "BATCH_FILE", help = "Run in batch mode (single connect mode)")]
     batch: Option<String>,
+
+    #[clap(short, long, required_unless_present = "batch")]
+    user: Option<String>,
+    #[clap(short, long, required_unless_present = "batch")]
+    port: Option<String>,
+    #[clap(short, long, required_unless_present = "batch")]
+    rem_addr: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -62,10 +66,10 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     // Print help message and return an error
                     return Err(anyhow::Error::msg("Accounting command requires a positional cmd argument"));
                 } else {
-                    println!("Accounting with cmd: {}", cmd);
-                    if let Some(args) = cmd_args {
-                        println!("Accounting with args: {:?}", args);
-                    }
+                    let user = cli.user.as_ref().ok_or_else(|| anyhow::Error::msg("User is required"))?;
+                    let port = cli.port.as_ref().ok_or_else(|| anyhow::Error::msg("Port is required"))?;
+                    let rem_addr = cli.rem_addr.as_ref().ok_or_else(|| anyhow::Error::msg("Remote address is required"))?;
+                    send_accounting_request(user, port, rem_addr, cmd, cmd_args)?;
                 }
             }
             Commands::Authentication => {
@@ -92,7 +96,9 @@ mod tests {
 
     #[test]
     fn test_accounting_subcommand() {
-        let cli = Cli::parse_from(vec!["tacon", "-vv", "accounting", "cmd", "cmd-arg1", "cmd-arg2"]);
+        let cli = Cli::parse_from(vec![
+            "tacon", "-vv", "--user", "test_user", "--port", "test_port", "--rem-addr", "test_rem_address", "accounting", "cmd", "cmd-arg1", "cmd-arg2", 
+        ]);
         
         let output = std::panic::catch_unwind(|| {
             run(cli)
@@ -104,7 +110,7 @@ mod tests {
     #[test]
     fn test_accounting_subcommand_no_command() {
         let output = std::panic::catch_unwind(|| {
-            let cli = Cli::try_parse_from(vec!["tacon", "-vv", "accounting"])?;
+            let cli = Cli::try_parse_from(vec!["tacon", "-vv", "--user", "test_user", "--port", "test_port", "--rem-addr", "test_rem_address", "accounting"])?;
             run(cli)
         });
 
@@ -120,7 +126,7 @@ mod tests {
 
     #[test]
     fn test_authentication_subcommand() {
-        let cli = Cli::parse_from(vec!["tacon", "--verbose", "authentication"]);
+        let cli = Cli::parse_from(vec!["tacon", "--verbose", "--user", "test_user", "--port", "test_port", "--rem-addr", "test_rem_address", "authentication"]);
         
         let output = std::panic::catch_unwind(|| {
             run(cli)
@@ -131,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_authorization_subcommand() {
-        let cli = Cli::parse_from(vec!["tacon", "--verbose", "authorization"]);
+        let cli = Cli::parse_from(vec!["tacon", "--verbose", "--user", "test_user", "--port", "test_port", "--rem-addr", "test_rem_address", "authorization"]);
         
         let output = std::panic::catch_unwind(|| {
             run(cli)
@@ -141,8 +147,37 @@ mod tests {
     }
 
     #[test]
+    fn test_subcommand_no_user_port_remaddr() {
+        let output = std::panic::catch_unwind(|| {
+            let cli = Cli::try_parse_from(vec!["tacon", "-vv", "accounting", "test-cmd"])?;
+            run(cli)
+        });
+
+        assert!(output.is_ok());
+        let output = output.unwrap();
+        assert!(output.is_err());
+
+
+        let error = output.unwrap_err();
+        assert_eq!(error.to_string(), "error: the following required arguments were not provided:\n  --user <USER>\n  --port <PORT>\n  --rem-addr <REM_ADDR>\n\nUsage: tacon --verbose... --user <USER> --port <PORT> --rem-addr <REM_ADDR>\n\nFor more information, try '--help'.\n");
+
+    }
+
+    #[test]
     fn test_batch_mode() {
         let cli = Cli::parse_from(vec!["tacon", "--batch", "batch_file.txt", "--verbose"]);
+        
+        let output = std::panic::catch_unwind(|| {
+            run(cli)
+        });
+
+        assert!(output.is_ok());
+    }
+
+    #[test]
+    fn test_batch_mode_with_user_port_remaddr() {
+        // This test will succeed because the user, port, and rem-addr flags ARE allowed when using the --batch flag, to override the values in the batch file.
+        let cli = Cli::parse_from(vec!["tacon", "--batch", "batch_file.txt", "--verbose", "--user", "test_user", "--port", "test_port", "--rem-addr", "test_rem_address"]);
         
         let output = std::panic::catch_unwind(|| {
             run(cli)
