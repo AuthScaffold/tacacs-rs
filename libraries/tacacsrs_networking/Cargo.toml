@@ -8,3 +8,4 @@ anyhow = { version = "1.0.89", features = ["backtrace"] }
 tokio = { version = "1.40.0", features = ["full"] }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
 async-trait = "0.1.82"
+rand = "0.8.5"
