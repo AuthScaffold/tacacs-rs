@@ -75,7 +75,8 @@ impl fmt::Display for TacacsAuthenticationAction {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
 pub enum TacacsAuthenticationType {
     TacPlusAuthenTypeNotSet = 0x00,
     TacPlusAuthenTypeAscii = 0x1,
@@ -98,7 +99,8 @@ impl fmt::Display for TacacsAuthenticationType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
 pub enum TacacsAuthenticationService {
     TacPlusAuthenSvcNone = 0x0,
     TacPlusAuthenSvcLogin = 0x1,
@@ -174,7 +176,8 @@ impl fmt::Display for TacacsAuthenticationContinueStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
 pub enum TacacsAuthenticationMethod {
     TacPlusAuthenMethodNotSet = 0x00,
     TacPlusAuthenMethodNone = 0x01,

@@ -1,2 +1,4 @@
 
 pub const TACACS_HEADER_LENGTH: usize = 12;
+pub const TACACS_ACCOUNTING_REQUEST_MIN_LENGTH: usize = 9;
+pub const TACACS_ACCOUNTING_ARG_SIZE_OFFSET: usize = 9;
