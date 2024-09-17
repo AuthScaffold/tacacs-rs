@@ -239,3 +239,23 @@ bitflags! {
         const WATCHDOG = 0x08;
     }
 }
+
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
+pub enum TacacsAccountingStatus {
+    TacPlusAcctStatusSuccess = 0x01,
+    TacPlusAcctStatusError = 0x02,
+    TacPlusAcctStatusFollow = 0x21,
+}
+
+impl fmt::Display for TacacsAccountingStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TacacsAccountingStatus::TacPlusAcctStatusSuccess => write!(f, "TAC_PLUS_ACCT_STATUS_SUCCESS"),
+            TacacsAccountingStatus::TacPlusAcctStatusError => write!(f, "TAC_PLUS_ACCT_STATUS_ERROR"),
+            TacacsAccountingStatus::TacPlusAcctStatusFollow => write!(f, "TAC_PLUS_ACCT_STATUS_FOLLOW"),
+        }
+    }
+}
