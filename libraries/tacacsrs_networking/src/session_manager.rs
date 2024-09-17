@@ -10,6 +10,15 @@ pub struct SessionManager
 
 impl SessionManager
 {
+    pub fn new() -> Self
+    {
+        Self
+        {
+            session_lock: std::sync::Mutex::new(0),
+            sessions: HashMap::new()
+        }
+    }
+
     pub fn get_session(&self, session_id: u32) -> Option<Arc<Session>>
     {
         match self.sessions.get(&session_id)
@@ -90,4 +99,104 @@ fn drop_session(session : &Arc<Session>) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+pub mod tests
+{
+    use super::*;
+    use tacacsrs_messages::{accounting::reply::AccountingReply, enumerations::{TacacsAccountingStatus, TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType}, header::Header, packet::Packet, traits::TacacsBodyTrait};
+    use tokio::sync::oneshot;
+
+    #[test]
+    fn test_create_session()
+    {
+        let mut session_manager = SessionManager {
+            session_lock: std::sync::Mutex::new(0),
+            sessions: HashMap::new()
+        };
+
+        let _ = session_manager.create_session(TacacsType::TacPlusAccounting).unwrap();
+        assert!(true);
+    }
+
+    #[test]
+    fn test_end_session()
+    {
+        let mut session_manager = SessionManager {
+            session_lock: std::sync::Mutex::new(0),
+            sessions: HashMap::new()
+        };
+
+        let session = session_manager.create_session(TacacsType::TacPlusAccounting).unwrap();
+        assert_eq!(session_manager.sessions.len(), 1);
+
+        session_manager.end_session(session).unwrap();
+        assert_eq!(session_manager.sessions.len(), 0);
+    }
+
+    #[test]
+    fn test_shutdown_all_sessions()
+    {
+        let mut session_manager = SessionManager {
+            session_lock: std::sync::Mutex::new(0),
+            sessions: HashMap::new()
+        };
+
+        let _session1 = session_manager.create_session(TacacsType::TacPlusAccounting).unwrap();
+        let _session2 = session_manager.create_session(TacacsType::TacPlusAccounting).unwrap();
+        assert_eq!(session_manager.sessions.len(), 2);
+
+        session_manager.shutdown_all_sessions().unwrap();
+        assert_eq!(session_manager.sessions.len(), 0);
+    }
+
+    #[test]
+    fn test_drop_session_closes_queue_entry()
+    {
+        let mut session_manager = SessionManager {
+            session_lock: std::sync::Mutex::new(0),
+            sessions: HashMap::new()
+        };
+
+        let session = session_manager.create_session(TacacsType::TacPlusAccounting).unwrap();
+        assert_eq!(session_manager.sessions.len(), 1);
+
+        let (tx, mut rx) = oneshot::channel::<anyhow::Result<Packet>>();
+
+        let body = AccountingReply {
+            server_msg: "server_msg".to_string(),
+            data: "data".to_string(),
+            status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+        };
+
+        let data = body.to_bytes();
+        
+        let header = Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+            tacacs_type: TacacsType::TacPlusAccounting,
+            seq_no: 1,
+            flags: TacacsFlags::empty(),
+            session_id: 0,
+            length: data.len() as u32,
+        };
+        
+        let packet = tacacsrs_messages::packet::Packet::new(header, data).unwrap();
+        
+        session.queue_entry.lock().unwrap().replace(crate::sessions::QueueEntry {
+            callback: tx,
+            packet,
+        });
+
+        session_manager.end_session(session).unwrap();
+        assert_eq!(session_manager.sessions.len(), 0);
+
+        match rx.try_recv() {
+            Ok(result) => return assert!(result.is_err()),
+            Err(_) => assert!(false)
+        }
+
+        assert!(false)
+    }
 }
