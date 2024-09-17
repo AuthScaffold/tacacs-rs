@@ -451,4 +451,33 @@ mod tests
 
         assert_eq!(accounting_request.to_bytes(), packet.body_copy());
     }
+
+    #[test]
+    fn test_correct_packet_size_with_invalid_size_based_on_parameters()
+    {
+        let mut data = generate_accounting_request_data();
+        data[5] = 255; // Set user_len to 255
+
+        let header = Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+            tacacs_type: TacacsType::TacPlusAccounting,
+            seq_no: 0,
+            flags: TacacsFlags::empty(),
+            session_id: 0,
+            length: data.len() as u32,
+        };
+
+        let packet = Packet::new(header, data).unwrap();
+
+        let _accounting_request = match AccountingRequest::from_packet(&packet) {
+            Ok(_) => assert!(false),
+            Err(err) => {
+                assert!(err.to_string().contains("Invalid body length"), "Error actual: {}", err);
+                return;
+            },
+        };
+
+        assert!(false, "Invalid body length. Packet parsing should have failed.");
+    }
 }
