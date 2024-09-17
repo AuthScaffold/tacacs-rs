@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "libraries/tacacsrs_messages"
+    "libraries/tacacsrs_messages",
+    "libraries/tacacsrs_networking"
 ]

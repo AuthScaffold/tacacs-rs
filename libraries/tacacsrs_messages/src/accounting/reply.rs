@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use byteorder::{BigEndian, ReadBytesExt};
 use num_enum::TryFromPrimitive;
-use crate::{constants::TACACS_ACCOUNTING_REPLY_MIN_LENGTH, helpers::read_string, packet::Packet};
+use crate::{constants::TACACS_ACCOUNTING_REPLY_MIN_LENGTH, helpers::read_string, packet::Packet, traits::TacacsBodyTrait};
 use anyhow::Context;
 use crate::enumerations::TacacsAccountingStatus;
 
@@ -16,13 +16,13 @@ use crate::enumerations::TacacsAccountingStatus;
 
 
 #[derive(Debug)]
-pub struct Reply {
+pub struct AccountingReply {
     pub status: TacacsAccountingStatus,
     pub server_msg: String,
     pub data: String,
 }
 
-impl Reply {
+impl AccountingReply {
     pub fn from_packet(packet: &Packet) -> Result<Self, anyhow::Error> {
         let expected_length = Self::size_from_bytes(packet.body()).with_context(|| "Unable to determine expected length of packet")?;
         if packet.body().len() < expected_length {
@@ -79,10 +79,16 @@ impl Reply {
             Err(err) => return Err(err),
         };
 
-        Ok(Reply{status, server_msg, data})
+        Ok(AccountingReply{status, server_msg, data})
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+    
+}
+
+
+impl TacacsBodyTrait for AccountingReply
+{
+    fn to_bytes(&self) -> Vec<u8> {
         let bytes = vec![
             (self.server_msg.len() >> 8) as u8,
             self.server_msg.len() as u8,
@@ -97,6 +103,7 @@ impl Reply {
         bytes
     }
 }
+
 
 #[cfg(test)]
 pub mod tests
@@ -126,7 +133,7 @@ pub mod tests
     #[test]
     fn test_reply_from_bytes() {
         let bytes = generate_accounting_reply_data();
-        let reply = Reply::from_bytes(&bytes).unwrap();
+        let reply = AccountingReply::from_bytes(&bytes).unwrap();
 
         assert_eq!(reply.server_msg, "server_msg");
         assert_eq!(reply.data, "data");
@@ -138,7 +145,7 @@ pub mod tests
         let mut data = generate_accounting_reply_data();
         data[4] = 0xff; // status is set to 0xff
 
-        let reply = Reply::from_bytes(&data);
+        let reply = AccountingReply::from_bytes(&data);
 
         assert!(reply.is_err());
         
@@ -151,7 +158,7 @@ pub mod tests
     #[test]
     fn test_read_bytes_truncated() {
         let data = generate_accounting_reply_data();
-        let reply = Reply::from_bytes(&data[..data.len()-1]);
+        let reply = AccountingReply::from_bytes(&data[..data.len()-1]);
 
         assert!(reply.is_err());
 
@@ -164,7 +171,7 @@ pub mod tests
     #[test]
     fn test_reply_to_bytes() {
         let bytes = generate_accounting_reply_data();
-        let reply = Reply::from_bytes(&bytes).unwrap();
+        let reply = AccountingReply::from_bytes(&bytes).unwrap();
 
         assert_eq!(reply.to_bytes(), bytes);
     }
@@ -172,7 +179,7 @@ pub mod tests
     #[test]
     fn test_reply_size_from_bytes() {
         let bytes = generate_accounting_reply_data();
-        let size = Reply::size_from_bytes(&bytes).unwrap();
+        let size = AccountingReply::size_from_bytes(&bytes).unwrap();
 
         assert_eq!(size, bytes.len());
     }
@@ -191,7 +198,7 @@ pub mod tests
         };
 
         let packet = Packet::new(header, data).unwrap();
-        let reply = Reply::from_packet(&packet).unwrap();
+        let reply = AccountingReply::from_packet(&packet).unwrap();
 
         assert_eq!(reply.server_msg, "server_msg");
         assert_eq!(reply.data, "data");
@@ -214,7 +221,7 @@ pub mod tests
         };
 
         let packet = Packet::new(header, data).unwrap();
-        let reply = Reply::from_packet(&packet);
+        let reply = AccountingReply::from_packet(&packet);
 
         assert!(reply.is_err());
         assert!(reply.unwrap_err().to_string().contains("Packet body length does not match expected length"));
