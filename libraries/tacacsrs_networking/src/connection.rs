@@ -127,10 +127,14 @@ impl Connection
 
             let header = Header::from_bytes(&header_buffer)?;
 
+            println!("Received header with session id: {}", header.session_id);
+
             // Always read the body, regardless of the presence of the session. This is to prevent the 
             // stream from getting out of sync.
             let mut body_buffer = Vec::with_capacity(header.length as usize);
             _reader.read_exact(&mut body_buffer).await?;
+
+            println!("Received body for session id: {}", header.session_id);
 
             // Create a new packet and potentially deobfuscate it.
             let mut packet = Packet::new(header, body_buffer)?;
@@ -146,6 +150,9 @@ impl Connection
             // Get a read lock on the duplex_channels dictionary and 
             // find the appropriate channel to forward the packet to.
             let duplex_channels = self.duplex_channels.read().await;
+
+            // write console log to show the session id
+            println!("Received packet with session id: {}", packet.header().session_id);
 
             match duplex_channels.get(&packet.header().session_id) {
                 Some(channel) => channel.send(packet).await?,
@@ -184,6 +191,8 @@ impl Connection
     pub async fn create_session(self: Arc<Self>) -> anyhow::Result<Session>
     {
         let (duplex_channel, session_id) = self.create_channel().await?;
+
+        println!("Created session with id: {}", session_id);
         Ok(Session::new(session_id, duplex_channel))
     }
 }

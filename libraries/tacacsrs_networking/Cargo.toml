@@ -12,6 +12,3 @@ rand = "0.8.5"
 
 [dev-dependencies]
 console-subscriber = "0.4.0"
-
-[build]
-rustflags = ["--cfg", "tokio_unstable"]
