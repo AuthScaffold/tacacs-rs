@@ -9,3 +9,6 @@ bitflags = "2.6.0"
 byteorder = "1.5.0"
 md-5 = "0.10.6"
 num_enum = "0.7.3"
+
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

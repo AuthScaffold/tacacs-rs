@@ -3,7 +3,7 @@ use crate::enumerations::{TacacsMajorVersion, TacacsMinorVersion, TacacsType, Ta
 use anyhow::Context;
 use num_enum::TryFromPrimitive;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Header {
     pub major_version : TacacsMajorVersion,
     pub minor_version : TacacsMinorVersion,
@@ -70,7 +70,7 @@ impl Header {
 
     pub fn to_bytes(&self) -> [u8; TACACS_HEADER_LENGTH] {
         let mut binary_data: [u8; TACACS_HEADER_LENGTH] = [0; TACACS_HEADER_LENGTH];
-        binary_data[0] = (self.major_version as u8) << 4 | (self.minor_version as u8);
+        binary_data[0] = self.version();
         binary_data[1] = self.tacacs_type as u8;
         binary_data[2] = self.seq_no;
         binary_data[3] = self.flags.bits();

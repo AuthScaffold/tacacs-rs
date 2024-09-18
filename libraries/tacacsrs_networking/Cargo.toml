@@ -9,3 +9,9 @@ tokio = { version = "1.40.0", features = ["full"] }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
 async-trait = "0.1.82"
 rand = "0.8.5"
+
+[dev-dependencies]
+console-subscriber = "0.4.0"
+
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

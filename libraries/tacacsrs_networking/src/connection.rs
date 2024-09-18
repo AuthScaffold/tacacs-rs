@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tacacsrs_messages::enumerations::TacacsFlags;
+use tacacsrs_messages::packet::PacketTrait;
 use tacacsrs_messages::{header::Header, packet::Packet};
 
 use tacacsrs_messages::constants::TACACS_HEADER_LENGTH;
@@ -15,7 +17,8 @@ use crate::{duplex_channel::DuplexChannel, session::Session};
 #[derive(Clone)]
 pub struct ConnectionInfo
 {
-    pub ip_socket : SocketAddr
+    pub ip_socket : SocketAddr,
+    pub obfuscation_key : Option<Vec<u8>>
 }
 
 
@@ -74,7 +77,7 @@ impl Connection
             let receiver = self_clone.receiver.lock().await.take().unwrap();
 
             task::spawn(async move {
-                Connection::write_handler(receiver, writer).await
+                Connection::write_handler(receiver, writer, self_clone.connection_info.obfuscation_key.clone()).await
             })
         };
 
@@ -92,11 +95,20 @@ impl Connection
         Ok(())
     }
 
-    async fn write_handler(mut receiver : tokio::sync::mpsc::Receiver<Packet>, mut writer: tokio::net::tcp::OwnedWriteHalf) -> anyhow::Result<()> {
+    async fn write_handler(mut receiver : tokio::sync::mpsc::Receiver<Packet>, mut writer: tokio::net::tcp::OwnedWriteHalf, obfuscation_key : Option<Vec<u8>>) -> anyhow::Result<()> {
         loop {
-            let packet = match receiver.recv().await {
+            let mut packet = match receiver.recv().await {
                 Some(packet) => packet,
                 None => return Err(anyhow::Error::msg("No packet received"))
+            };
+
+            let is_packet_obfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG) == false;
+            packet = match &obfuscation_key {
+                Some(key) => match is_packet_obfuscated {
+                    true => packet,
+                    false => packet.as_obfuscated(&key).ok_or(anyhow::Error::msg("Failed to obfuscate packet"))?
+                },
+                None => packet
             };
 
             let bytes = packet.to_bytes();
@@ -120,19 +132,29 @@ impl Connection
             let mut body_buffer = Vec::with_capacity(header.length as usize);
             _reader.read_exact(&mut body_buffer).await?;
 
-            // If the session exists, send the packet to the session. Otherwise, ignore the packet.
+            // Create a new packet and potentially deobfuscate it.
+            let mut packet = Packet::new(header, body_buffer)?;
+            let is_packet_obfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG) == false;
+            packet = match &self.connection_info.obfuscation_key {
+                Some(key) => match is_packet_obfuscated {
+                    true => packet.as_deobfuscated(&key).ok_or(anyhow::Error::msg("Failed to obfuscate packet"))?,
+                    false => packet
+                },
+                None => packet
+            };
+
+            // Get a read lock on the duplex_channels dictionary and 
+            // find the appropriate channel to forward the packet to.
             let duplex_channels = self.duplex_channels.read().await;
 
-            let channel = duplex_channels.get(&header.session_id)
-                .ok_or(anyhow::Error::msg("No channel found for session id"))?;
-
-            // Create a new packet and send it to the session.
-            let packet = Packet::new(header, body_buffer)?;
-            channel.send(packet).await?;
+            match duplex_channels.get(&packet.header().session_id) {
+                Some(channel) => channel.send(packet).await?,
+                None => continue
+            };
         }
     }
 
-    pub async fn create_channel(self: Arc<Self>) -> anyhow::Result<(DuplexChannel, u32)>
+    async fn create_channel(self: Arc<Self>) -> anyhow::Result<(DuplexChannel, u32)>
     {
         // create some channel where the send side connects to the internal MPSC receiver
         // aka clone the sender and pass it to the DuplexChannel. Then create a new mpsc

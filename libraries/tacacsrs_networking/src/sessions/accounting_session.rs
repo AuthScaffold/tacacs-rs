@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use tacacsrs_messages::header::Header;
-use tacacsrs_messages::packet::Packet;
+use tacacsrs_messages::packet::{Packet, PacketTrait};
 use tacacsrs_messages::traits::TacacsBodyTrait;
 
 use crate::session::Session;
@@ -27,21 +27,20 @@ impl AccountingSessionTrait for Session {
 
         let data = request.to_bytes();
 
-        let header = Header {
+        let packet = Packet::new(Header {
             major_version : TacacsMajorVersion::TacacsPlusMajor1,
             minor_version : TacacsMinorVersion::TacacsPlusMinorVerOne,
             tacacs_type : TacacsType::TacPlusAccounting,
             seq_no : sequence_number,
-            flags : TacacsFlags::empty(),
+            flags : TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
             session_id : self.session_id(),
             length : data.len() as u32
-        };
-
-        let mut packet = Packet::new(header, data)?;
-        packet.obfuscate_body(b"tac_plus_key");
-
+        }, data)?;
+        
         self.duplex_channel.sender.send(packet).await?;
 
+        // Setup a reader lock to receive the response, it needs to be mutable so that we can call recv on it
+        // therefore we need to use write() instead of read()
         let mut reader_lock = self.duplex_channel.receiver.write().await;
 
         let response = match reader_lock.recv().await {

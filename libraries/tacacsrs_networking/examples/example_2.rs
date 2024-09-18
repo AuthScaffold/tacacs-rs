@@ -13,8 +13,11 @@ use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 
 #[tokio::main]
 async fn main() {
+    console_subscriber::init();
+    
     let connection_info = connection::ConnectionInfo {
-        ip_socket: SocketAddr::new(IpAddr::V4("192.168.1.32".parse::<Ipv4Addr>().unwrap()), 49)
+        ip_socket: SocketAddr::new(IpAddr::V4("192.168.1.32".parse::<Ipv4Addr>().unwrap()), 49),
+        obfuscation_key: Some(b"tac_plus_key".to_vec()),
     };
 
     let connection = Arc::new(connection::Connection::new(&connection_info));

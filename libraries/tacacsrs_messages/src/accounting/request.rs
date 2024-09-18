@@ -1,5 +1,5 @@
 use crate::enumerations::{TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType};
-use crate::packet::Packet;
+use crate::packet::{Packet, PacketTrait};
 use crate::traits::TacacsBodyTrait;
 use std::io::{Cursor, Read};
 use byteorder::ReadBytesExt;
@@ -237,6 +237,7 @@ mod tests
 {
     use crate::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
     use crate::header::Header;
+    use crate::packet::PacketTrait;
 
     use super::*;
 
@@ -454,7 +455,7 @@ mod tests
 
         let accounting_request = AccountingRequest::from_packet(&packet).unwrap();
 
-        assert_eq!(accounting_request.to_bytes(), packet.body_copy());
+        assert_eq!(accounting_request.to_bytes(), packet.body().clone());
     }
 
     #[test]

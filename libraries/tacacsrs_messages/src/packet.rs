@@ -1,13 +1,13 @@
-use md5::{Md5, Digest};
 
-use crate::header::Header;
+
+use crate::{constants::TACACS_HEADER_LENGTH, header::Header, obfuscation::convert};
 
 pub trait PacketTrait {
     fn header(&self) -> &Header;
     fn body(&self) -> &Vec<u8>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Packet {
     header: Header,
     body: Vec<u8>,
@@ -25,18 +25,6 @@ impl Packet {
         Ok(Packet { header, body })
     }
 
-    pub fn header(&self) -> &Header {
-        &self.header
-    }
-
-    pub fn body(&self) -> &Vec<u8> {
-        &self.body
-    }
-
-    pub fn body_copy(&self) -> Vec<u8> {
-        self.body.clone()
-    }
-
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.header.length as usize);
         bytes.extend_from_slice(&self.header.to_bytes());
@@ -44,52 +32,39 @@ impl Packet {
         bytes
     }
 
-    pub fn obfuscate_body(&mut self, obfuscation_key: &[u8]) {
-        let pad = self.generate_pad(obfuscation_key);
-
-        // self.body.iter_mut()
-        //     .zip(pad.iter())
-        //     .for_each(|(body_byte, pad_byte)| *body_byte ^= pad_byte);
-
-        for (i, b) in self.body.iter_mut().enumerate() {
-            *b ^= pad[i];
-        }
+    pub fn from_bytes(data : &[u8]) -> anyhow::Result<Self> {
+        let header = Header::from_bytes(data)?;
+        let body = data[TACACS_HEADER_LENGTH..].to_vec();
+        Ok(Packet { header, body })
     }
 
-    fn generate_pad(&mut self, obfuscation_key: &[u8]) -> Vec::<u8>
-    {
-        let mut pad : Vec<u8> = Vec::new();
+    
+    pub fn as_obfuscated(&self, obfuscation_key : &[u8]) -> Option<Self> {
+        let is_unencrypted = self.header.flags.contains(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
 
-        let iv = self.get_first_block(obfuscation_key);
-        let mut hashed = self.hash_block(&iv);
-
-        while pad.len() < self.body.len() {
-            let mut rolling_hash : Vec::<u8> = Vec::new();
-            rolling_hash.extend(&iv);
-            rolling_hash.extend(&hashed);
-
-            hashed = self.hash_block(&iv);
-            pad.extend(hashed);
+        if is_unencrypted == false {
+            return None;
         }
 
-        pad.truncate(self.body.len());
-        pad
+        let mut cloned_header = self.header.clone();
+        cloned_header.flags.remove(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+
+        let obfuscated_body = convert(&self.header, &self.body, obfuscation_key);
+        return Some(Packet::new(cloned_header, obfuscated_body).unwrap());
     }
 
-    fn hash_block(&self, block: &[u8]) -> [u8; 16] {
-        let mut hasher = Md5::new();
-        hasher.update(block);
-        hasher.finalize().into()
-    }
+    pub fn as_deobfuscated(&self, obfuscation_key : &[u8]) -> Option<Self> {
+        let is_encrypted = self.header.flags.contains(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG) == false;
 
-    fn get_first_block(&self, obfuscation_key: &[u8]) -> Vec::<u8> {
-        let mut pad : Vec<u8> = Vec::new();
-        pad.extend(self.header.session_id.to_be_bytes());
-        pad.extend_from_slice(obfuscation_key);
-        pad.push(self.header.version());
-        pad.push(self.header.seq_no);
+        if is_encrypted == false {
+            return None;
+        }
 
-        pad
+        let mut cloned_header = self.header.clone();
+        cloned_header.flags.insert(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+
+        let deobfuscated_body = convert(&self.header, &self.body, obfuscation_key);
+        return Some(Packet::new(cloned_header, deobfuscated_body).unwrap());
     }
 }
 
@@ -97,10 +72,10 @@ impl Packet {
 
 impl PacketTrait for Packet {
     fn header(&self) -> &Header {
-        self.header()
+        &self.header
     }
 
     fn body(&self) -> &Vec<u8> {
-        self.body()
+        &self.body
     }
 }

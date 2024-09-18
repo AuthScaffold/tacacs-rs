@@ -4,3 +4,7 @@ members = [
     "libraries/tacacsrs_messages",
     "libraries/tacacsrs_networking"
 ]
+
+
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

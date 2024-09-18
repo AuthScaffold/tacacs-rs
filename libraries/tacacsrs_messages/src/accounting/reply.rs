@@ -1,7 +1,8 @@
 use std::io::Cursor;
 use byteorder::{BigEndian, ReadBytesExt};
 use num_enum::TryFromPrimitive;
-use crate::{constants::TACACS_ACCOUNTING_REPLY_MIN_LENGTH, helpers::read_string, packet::Packet, traits::TacacsBodyTrait};
+use crate::{constants::TACACS_ACCOUNTING_REPLY_MIN_LENGTH, helpers::read_string, traits::TacacsBodyTrait};
+use crate::packet::{Packet, PacketTrait};
 use anyhow::Context;
 use crate::enumerations::TacacsAccountingStatus;
 
