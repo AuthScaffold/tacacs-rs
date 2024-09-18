@@ -65,7 +65,7 @@ async fn send_test_request(connection : Arc<connection::Connection>) {
         args: vec!["cmd=test".to_string()],
     };
 
-    let response = match session.send_accounting_request(accounting_request).await {
+    let _response = match session.send_accounting_request(accounting_request).await {
         Ok(response) => response,
         Err(e) => {
             println!("Failed to send accounting request: {}", e);
