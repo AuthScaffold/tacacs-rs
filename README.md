@@ -1,11 +1,11 @@
-# tacacs-rs
+# TACACS-rs
 
-
+`tacacs-rs` is a reference implementation of the TACACS+ protocol, designed to provide a robust and efficient solution for authentication, authorization, and accounting (AAA) services.
 
 
 ## Local Testing
 
-Uses Docker
+Local testing uses Docker, and we need to set up Docker with the following steps:
 
 1. Prepare Workspace
 
