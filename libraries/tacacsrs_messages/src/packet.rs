@@ -72,7 +72,7 @@ impl Packet {
         match is_encrypted {
             true => self,
             false => {
-                self.header.flags.set(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, true);
+                self.header.flags.set(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, false);
                 convert_inplace(&self.header, &mut self.body, obfuscation_key);
                 self
             }
