@@ -153,15 +153,15 @@ impl Connection
                 session_id
             );
 
-            let is_packet_obfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG) == false;
+            let is_packet_deobfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
             let mut did_obfuscate = false;
             packet = match &obfuscation_key {
-                Some(key) => match is_packet_obfuscated {
-                    true => packet,
-                    false => {
+                Some(key) => match is_packet_deobfuscated {
+                    true => {
                         did_obfuscate = true;
-                        packet.to_obfuscated(&key)
-                    }
+                        packet.to_obfuscated(key)
+                    },
+                    false => packet
                 },
                 None => packet
             };
@@ -259,15 +259,15 @@ impl Connection
                 }
             };
 
-            let is_packet_obfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG) == false;
+            let is_packet_deobfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
             let mut did_deobfuscate = false;
             packet = match &self.connection_info.obfuscation_key {
-                Some(key) => match is_packet_obfuscated {
-                    true => {
+                Some(key) => match is_packet_deobfuscated {
+                    true => packet,
+                    false => {
                         did_deobfuscate = true;
-                        packet.to_deobfuscated(&key)
+                        packet.to_deobfuscated(key)
                     },
-                    false => packet
                 },
                 None => packet
             };
@@ -339,16 +339,16 @@ impl Connection
         Ok((duplex_channel, session_id))
     }
 
-    pub async fn can_create_sessions(self: Arc<Self>) -> bool
+    pub async fn can_create_sessions(self: &Arc<Self>) -> bool
     {
-        let can_accept_lock = self.can_accept_new_sessions.read().await;
+        let self_clone = Arc::clone(self);
+        let can_accept_lock = self_clone.can_accept_new_sessions.read().await;
         *can_accept_lock
     }
 
     pub async fn create_session(self: Arc<Self>) -> anyhow::Result<Session>
     {
-        let self_clone = Arc::clone(&self);
-        if self_clone.can_create_sessions().await == false
+        if !self.can_create_sessions().await
         {
             return Err(anyhow::Error::msg("Connection is not accepting new sessions"));
         }
