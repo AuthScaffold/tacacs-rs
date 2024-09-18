@@ -1,6 +1,7 @@
 
 
-use crate::{constants::TACACS_HEADER_LENGTH, header::Header, obfuscation::convert};
+use crate::{constants::TACACS_HEADER_LENGTH, header::Header};
+use crate::obfuscation::{convert, convert_inplace};
 
 pub trait PacketTrait {
     fn header(&self) -> &Header;
@@ -55,7 +56,6 @@ impl Packet {
 
     pub fn as_deobfuscated(&self, obfuscation_key : &[u8]) -> Option<Self> {
         let is_encrypted = self.header.flags.contains(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG) == false;
-
         if is_encrypted == false {
             return None;
         }
@@ -66,6 +66,32 @@ impl Packet {
         let deobfuscated_body = convert(&self.header, &self.body, obfuscation_key);
         return Some(Packet::new(cloned_header, deobfuscated_body).unwrap());
     }
+
+    pub fn to_obfuscated(mut self, obfuscation_key : &[u8]) -> Self {
+        let is_encrypted = self.header.flags.contains(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG) == false;
+        match is_encrypted {
+            true => self,
+            false => {
+                self.header.flags.set(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, true);
+                convert_inplace(&self.header, &mut self.body, obfuscation_key);
+                self
+            }
+        }
+    }
+
+    pub fn to_deobfuscated(mut self, obfuscation_key : &[u8]) -> Self {
+        let is_encrypted = self.header.flags.contains(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG) == false;
+
+        match is_encrypted {
+            true => {
+                self.header.flags.set(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, true);
+                convert_inplace(&self.header, &mut self.body, obfuscation_key);
+                self
+            },
+            false => self
+        }
+    }
+
 }
 
 

@@ -13,6 +13,7 @@ use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 
 #[tokio::main]
 async fn main() {
+    let _ = init_logging();
     console_subscriber::init();
     
     let connection_info = connection::ConnectionInfo {
@@ -55,4 +56,31 @@ async fn main() {
     };
 
     println!("Received accounting response: {:?}", response);
+}
+
+
+
+use log::{Record, Level, Metadata};
+use log::{SetLoggerError, LevelFilter};
+static LOGGER: SimpleLogger = SimpleLogger;
+
+struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= Level::Debug
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            println!("{} ({}): {}", record.target(), record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+pub fn init_logging() -> Result<(), SetLoggerError> {
+    log::set_logger(&LOGGER)
+        .map(|()| log::set_max_level(LevelFilter::Info))
 }

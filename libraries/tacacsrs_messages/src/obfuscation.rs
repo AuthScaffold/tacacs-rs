@@ -1,9 +1,5 @@
 use md5::{Md5, Digest};
-
 use crate::header::Header;
-
-
-
 
 
 pub fn convert(header : &Header, data : &[u8], obfuscation_key: &[u8]) -> Vec<u8> {
@@ -11,10 +7,14 @@ pub fn convert(header : &Header, data : &[u8], obfuscation_key: &[u8]) -> Vec<u8
     let output : Vec<u8> = data.iter().zip(pad.iter()).map(|(a, b)| a ^ b).collect();
 
     output
+}
 
-    // for (i, b) in data.iter_mut().enumerate() {
-    //     *b ^= pad[i];
-    // }
+pub fn convert_inplace(header : &Header, data : &mut [u8], obfuscation_key: &[u8]) {
+    let pad = generate_pad(header, obfuscation_key);
+
+    for (i, b) in data.iter_mut().enumerate() {
+        *b ^= pad[i];
+    }
 }
 
 fn generate_pad(header : &Header, obfuscation_key: &[u8]) -> Vec::<u8>
