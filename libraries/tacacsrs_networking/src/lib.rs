@@ -1,4 +1,5 @@
 pub mod sender;
 pub mod sender_factory;
 pub mod sessions;
-pub mod session_manager;
+pub mod duplex_channel;
+pub mod connection;

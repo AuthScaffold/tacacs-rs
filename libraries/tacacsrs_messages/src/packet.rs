@@ -12,13 +12,14 @@ pub struct Packet {
 }
 
 impl Packet {
-    pub fn new(header: Header, body: Vec<u8>) -> Result<Self, String> {
+    pub fn new(header: Header, body: Vec<u8>) -> anyhow::Result<Self> {
         if body.len() < (header.length as usize) {
             let expected_length = header.length as usize;
             let actual_length = body.len();
             let error_message = format!("Invalid body length. Expected: {}, Actual: {}", expected_length, actual_length);
-            return Err(error_message);
+            return Err(anyhow::Error::msg(error_message));
         }
+        
         Ok(Packet { header, body })
     }
 
@@ -32,6 +33,13 @@ impl Packet {
 
     pub fn body_copy(&self) -> Vec<u8> {
         self.body.clone()
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.header.length as usize);
+        bytes.extend_from_slice(&self.header.to_bytes());
+        bytes.extend_from_slice(&self.body);
+        bytes
     }
 }
 
