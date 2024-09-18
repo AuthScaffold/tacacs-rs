@@ -79,6 +79,10 @@ impl Header {
 
         binary_data
     }
+
+    pub fn version(&self) -> u8 {
+        (self.major_version as u8) << 4 | (self.minor_version as u8)
+    }
 }
 
 

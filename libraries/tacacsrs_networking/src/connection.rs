@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::net::TcpStream;
 use tokio::task::{self, JoinHandle};
 
-use crate::{duplex_channel::DuplexChannel, sessions::Session};
+use crate::{duplex_channel::DuplexChannel, session::Session};
 
 
 #[derive(Clone)]
@@ -162,6 +162,6 @@ impl Connection
     pub async fn create_session(self: Arc<Self>) -> anyhow::Result<Session>
     {
         let (duplex_channel, session_id) = self.create_channel().await?;
-        Ok(Session{ session_id, duplex_channel })
+        Ok(Session::new(session_id, duplex_channel))
     }
 }

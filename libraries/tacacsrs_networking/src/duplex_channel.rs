@@ -1,9 +1,10 @@
 use tacacsrs_messages::packet::Packet;
+use tokio::sync::RwLock;
 
 pub struct DuplexChannel
 {
     pub sender: tokio::sync::mpsc::Sender<Packet>,
-    pub receiver: tokio::sync::mpsc::Receiver<Packet>,
+    pub receiver: RwLock<tokio::sync::mpsc::Receiver<Packet>>,
 }
 
 
@@ -14,7 +15,7 @@ impl DuplexChannel
         Self
         {
             sender: tcp_sender,
-            receiver: session_receiver,
+            receiver: session_receiver.into(),
         }
     }
 }
