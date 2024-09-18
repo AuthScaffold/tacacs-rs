@@ -3,6 +3,7 @@ mod commands;
 use anyhow::Context;
 use clap::{arg, Parser, Subcommand};
 use commands::accounting::send_accounting_request;
+use tacacsrs_messages::enumerations::TacacsType;
 
 // Define the CLI struct
 #[derive(Parser)]
@@ -69,7 +70,11 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     let user = cli.user.as_ref().ok_or_else(|| anyhow::Error::msg("User is required"))?;
                     let port = cli.port.as_ref().ok_or_else(|| anyhow::Error::msg("Port is required"))?;
                     let rem_addr = cli.rem_addr.as_ref().ok_or_else(|| anyhow::Error::msg("Remote address is required"))?;
-                    send_accounting_request(user, port, rem_addr, cmd, cmd_args)?;
+
+                    // let session = session_manager.create_session(TacacsType::TacPlusAccounting)?;
+                    // println!("Session created: {:?}", session.session_id);
+
+                    // send_accounting_request(&session, user, port, rem_addr, cmd, cmd_args)?;
                 }
             }
             Commands::Authentication => {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
@@ -10,8 +12,10 @@ use tacacsrs_messages::{
     enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType},
     header::Header,
 };
+use tacacsrs_networking::sessions::Session;
 
 pub fn send_accounting_request(
+    session: &Arc<Session>,
     user: &str,
     port: &str,
     rem_address: &str,
