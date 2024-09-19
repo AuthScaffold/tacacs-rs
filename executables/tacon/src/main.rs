@@ -97,7 +97,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         for addr in sock_addrs {
             let connection_info = connection::ConnectionInfo {
                 ip_socket: addr,
-                obfuscation_key: Some(b"tac_plus_key".to_vec()),
+                obfuscation_key: cli.obfuscation_key.to_owned().map(|key| key.into_bytes()),
             };
 
             let connection = Arc::new(connection::Connection::new(&connection_info));
