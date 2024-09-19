@@ -48,7 +48,7 @@ async fn main() {
 
     let accounting_request = AccountingRequest
     {
-        flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
+        flags: TacacsAccountingFlags::START,
         authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
         priv_lvl: 0,
         authen_type: TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
@@ -56,10 +56,42 @@ async fn main() {
         user: "admin".to_string(),
         port: "test".to_string(),
         rem_address: "1.1.1.1".to_string(),
-        args: vec!["cmd=test".to_string()],
+        args: vec![
+            "service=shell".to_string(),
+            "task_id=123".to_string(),
+            "cmd=test".to_string()
+        ],
     };
 
     let response = match session.send_accounting_request(accounting_request).await {
+        Ok(response) => response,
+        Err(e) => {
+            println!("Failed to send accounting request: {}", e);
+            return;
+        }
+    };
+
+    println!("Received accounting response: {:?}", response);
+
+    let session = Arc::new(connection.create_session().await.unwrap());
+
+    let response = match session.send_accounting_request(AccountingRequest
+        {
+            flags: TacacsAccountingFlags::STOP,
+            authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
+            priv_lvl: 0,
+            authen_type: TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
+            authen_service: TacacsAuthenticationService::TacPlusAuthenSvcNone,
+            user: "admin".to_string(),
+            port: "test".to_string(),
+            rem_address: "1.1.1.1".to_string(),
+            args: vec![
+                "service=shell".to_string(),
+                "task_id=123".to_string(),
+                "cmd=test".to_string()
+            ],
+        }
+    ).await {
         Ok(response) => response,
         Err(e) => {
             println!("Failed to send accounting request: {}", e);

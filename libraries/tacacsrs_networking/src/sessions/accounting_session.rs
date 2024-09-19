@@ -10,26 +10,24 @@ use tacacsrs_messages::enumerations::{TacacsMajorVersion, TacacsMinorVersion, Ta
 
 #[async_trait]
 pub trait AccountingSessionTrait {
-    async fn send_accounting_request(self : Arc<Self>, request: AccountingRequest) -> anyhow::Result<AccountingReply>;
+    async fn send_accounting_request(self : &Arc<Self>, request: AccountingRequest) -> anyhow::Result<AccountingReply>;
 }
 
 #[async_trait]
 impl AccountingSessionTrait for Session {
-    async fn send_accounting_request(self : Arc<Self>, request: AccountingRequest) -> anyhow::Result<AccountingReply>
+    async fn send_accounting_request(self : &Arc<Self>, request: AccountingRequest) -> anyhow::Result<AccountingReply>
     {
-        let sequence_number = {
-            let mut sequence_number_lock = self.outgoing_sequence_number.write().await;
-            let sequence_number = *sequence_number_lock;
-            *sequence_number_lock = sequence_number.wrapping_add(1);
+        if self.is_complete().await {
+            return Err(anyhow::Error::msg("Session is already complete"));
+        }
 
-            sequence_number
-        };
+        let sequence_number = self.next_sequence_number().await;
 
         let data = request.to_bytes();
 
         let packet = Packet::new(Header {
             major_version : TacacsMajorVersion::TacacsPlusMajor1,
-            minor_version : TacacsMinorVersion::TacacsPlusMinorVerOne,
+            minor_version : TacacsMinorVersion::TacacsPlusMinorVerDefault,
             tacacs_type : TacacsType::TacPlusAccounting,
             seq_no : sequence_number,
             flags : TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
@@ -49,6 +47,13 @@ impl AccountingSessionTrait for Session {
         };
 
         let reply = AccountingReply::from_bytes(response.body())?;
+
+        self.complete().await;
+
+        log::info!(
+            target: "tacacsrs_networking::sessions::accounting_session",
+            "Received Accounting Reply. Session now complete"
+        );
 
         Ok(reply)
     }
