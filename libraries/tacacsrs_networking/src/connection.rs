@@ -312,7 +312,7 @@ impl Connection
         }
     }
 
-    async fn create_channel(self: Arc<Self>) -> anyhow::Result<(DuplexChannel, u32)>
+    async fn create_channel(self: &Arc<Self>) -> anyhow::Result<(DuplexChannel, u32)>
     {
         // create some channel where the send side connects to the internal MPSC receiver
         // aka clone the sender and pass it to the DuplexChannel. Then create a new mpsc
@@ -346,7 +346,7 @@ impl Connection
         *can_accept_lock
     }
 
-    pub async fn create_session(self: Arc<Self>) -> anyhow::Result<Session>
+    pub async fn create_session(self: &Arc<Self>) -> anyhow::Result<Session>
     {
         if !self.can_create_sessions().await
         {
