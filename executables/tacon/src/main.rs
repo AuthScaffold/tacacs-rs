@@ -119,8 +119,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Err(anyhow::Error::msg("Failed to connect to any server"))
-    };
-    let session = session?; // Unwrap the session if it was created successfully
+    }?; // Unwrap the session if it was created successfully
 
     if let Some(command) = &cli.command {
         println!("Running command: {:?}", command);

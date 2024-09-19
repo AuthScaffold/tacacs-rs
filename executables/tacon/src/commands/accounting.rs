@@ -17,7 +17,7 @@ pub async fn send_accounting_request(
     cmd: &String,
     cmd_args: &Option<Vec<String>>,
 ) -> anyhow::Result<AccountingReply> {
-    let args = std::iter::once(format!("cmd={}", cmd))
+    let args = vec!["service=shell".to_string(), format!("cmd={}", cmd)].into_iter()
         .chain(
             cmd_args
                 .as_ref()
@@ -36,7 +36,7 @@ pub async fn send_accounting_request(
         user: user.to_owned(),
         port: port.to_owned(),
         rem_address: rem_address.to_owned(),
-        args: args,
+        args,
     };
 
     let session_clone = session.clone();
