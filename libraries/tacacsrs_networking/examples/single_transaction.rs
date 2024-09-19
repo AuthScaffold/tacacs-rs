@@ -1,6 +1,6 @@
 
 use std::sync::Arc;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::vec;
 
 use tacacsrs_messages::accounting::request::AccountingRequest;
@@ -14,10 +14,22 @@ use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 #[tokio::main]
 async fn main() {
     let _ = init_logging();
-    console_subscriber::init();
+
+    #[cfg(tokio_unstable)]
+    {
+        console_subscriber::init();
+    }
+
+    let mut server_address_list = lookup_host("tacacsserver.local:49").await.unwrap();
+    let server_addr = match server_address_list.next() {
+        Some(SocketAddr::V4(addr)) => addr.ip().clone(),
+        _ => panic!("No valid IPv4 address found for tacacsserver.local"),
+    };
+
+    println!("Resolved tacacsserver.local to {}", server_addr);
     
     let connection_info = connection::ConnectionInfo {
-        ip_socket: SocketAddr::new(IpAddr::V4("192.168.1.32".parse::<Ipv4Addr>().unwrap()), 49),
+        ip_socket: SocketAddr::new(IpAddr::V4(server_addr), 49),
         obfuscation_key: Some(b"tac_plus_key".to_vec()),
     };
 
@@ -32,24 +44,6 @@ async fn main() {
         }
     }
 
-    let mut handles = vec![];
-
-    for _ in 0..100000 {
-        let connection_clone = Arc::clone(&connection);
-        let handle = tokio::spawn(async move {
-            send_test_request(connection_clone).await;
-        });
-
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        handle.await.unwrap();
-    }
-
-}
-
-async fn send_test_request(connection : Arc<connection::Connection>) {
     let session = Arc::new(connection.create_session().await.unwrap());
 
     let accounting_request = AccountingRequest
@@ -65,7 +59,7 @@ async fn send_test_request(connection : Arc<connection::Connection>) {
         args: vec!["cmd=test".to_string()],
     };
 
-    let _response = match session.send_accounting_request(accounting_request).await {
+    let response = match session.send_accounting_request(accounting_request).await {
         Ok(response) => response,
         Err(e) => {
             println!("Failed to send accounting request: {}", e);
@@ -73,19 +67,21 @@ async fn send_test_request(connection : Arc<connection::Connection>) {
         }
     };
 
-    //println!("Received accounting response: {:?}", response);
+    println!("Received accounting response: {:?}", response);
 }
+
 
 
 use log::{Record, Level, Metadata};
 use log::{SetLoggerError, LevelFilter};
+use tokio::net::lookup_host;
 static LOGGER: SimpleLogger = SimpleLogger;
 
 struct SimpleLogger;
 
 impl log::Log for SimpleLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Error
+        metadata.level() <= Level::Debug
     }
 
     fn log(&self, record: &Record) {

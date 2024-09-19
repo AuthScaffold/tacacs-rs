@@ -13,3 +13,6 @@ log = "0.4.22"
 
 [dev-dependencies]
 console-subscriber = "0.4.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
