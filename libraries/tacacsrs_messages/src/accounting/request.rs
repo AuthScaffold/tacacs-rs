@@ -1,5 +1,6 @@
 use crate::enumerations::{TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType};
-use crate::packet::Packet;
+use crate::packet::{Packet, PacketTrait};
+use crate::traits::TacacsBodyTrait;
 use std::io::{Cursor, Read};
 use byteorder::ReadBytesExt;
 use anyhow::{Context, Result};
@@ -198,8 +199,12 @@ impl AccountingRequest {
             args
         })
     }
+}
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+
+impl TacacsBodyTrait for AccountingRequest
+{
+    fn to_bytes(&self) -> Vec<u8> {
         let mut data = vec![
             self.flags.bits(),
             self.authen_method as u8,
@@ -232,6 +237,7 @@ mod tests
 {
     use crate::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
     use crate::header::Header;
+    use crate::packet::PacketTrait;
 
     use super::*;
 
@@ -449,7 +455,7 @@ mod tests
 
         let accounting_request = AccountingRequest::from_packet(&packet).unwrap();
 
-        assert_eq!(accounting_request.to_bytes(), packet.body_copy());
+        assert_eq!(accounting_request.to_bytes(), packet.body().clone());
     }
 
     #[test]

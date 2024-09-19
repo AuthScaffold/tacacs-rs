@@ -1,0 +1,6 @@
+
+## The following build flag is used to enable tokio-console
+## for watching the process instrumented with
+## console_subscriber::init();
+#[build]
+#rustflags = ["--cfg", "tokio_unstable"]
