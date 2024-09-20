@@ -49,6 +49,11 @@ pub async fn connect_tls(stream : tokio::net::TcpStream, domain : &str) -> anyho
     // Disable resumption
     config.resumption = config.resumption.tls12_resumption(rustls::client::Tls12Resumption::Disabled);
 
+    // Disable ssl verification
+    config.dangerous().set_certificate_verifier(Arc::new(danger::NoCertificateVerification::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    )));
+
     let connector = TlsConnector::from(Arc::new(config));
 
     let domain = rustls::pki_types::ServerName::try_from(domain)
@@ -60,62 +65,62 @@ pub async fn connect_tls(stream : tokio::net::TcpStream, domain : &str) -> anyho
 }
 
 
-// mod danger {
-//     use tokio_rustls::rustls;
-//     use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-//     use rustls::client::danger::HandshakeSignatureValid;
-//     use rustls::crypto::{verify_tls13_signature, CryptoProvider};
-//     use rustls::DigitallySignedStruct;
+mod danger {
+    use tokio_rustls::rustls;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    use rustls::client::danger::HandshakeSignatureValid;
+    use rustls::crypto::{verify_tls13_signature, CryptoProvider};
+    use rustls::DigitallySignedStruct;
 
-//     #[derive(Debug)]
-//     pub struct NoCertificateVerification(CryptoProvider);
+    #[derive(Debug)]
+    pub struct NoCertificateVerification(CryptoProvider);
 
-//     impl NoCertificateVerification {
-//         pub fn new(provider: CryptoProvider) -> Self {
-//             Self(provider)
-//         }
-//     }
+    impl NoCertificateVerification {
+        pub fn new(provider: CryptoProvider) -> Self {
+            Self(provider)
+        }
+    }
 
-//     impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
-//         fn verify_server_cert(
-//             &self,
-//             _end_entity: &CertificateDer<'_>,
-//             _intermediates: &[CertificateDer<'_>],
-//             _server_name: &ServerName<'_>,
-//             _ocsp: &[u8],
-//             _now: UnixTime,
-//         ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-//             println!("verify_server_cert");
-//             Ok(rustls::client::danger::ServerCertVerified::assertion())
-//         }
+    impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp: &[u8],
+            _now: UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            println!("verify_server_cert");
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
 
-//         fn verify_tls12_signature(
-//             &self,
-//             _message: &[u8],
-//             _cert: &CertificateDer<'_>,
-//             _dss: &DigitallySignedStruct,
-//         ) -> Result<HandshakeSignatureValid, rustls::Error> {
-//             Err(rustls::Error::General("TLS 1.2 not supported".to_string()))
-//         }
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Err(rustls::Error::General("TLS 1.2 not supported".to_string()))
+        }
 
-//         fn verify_tls13_signature(
-//             &self,
-//             message: &[u8],
-//             cert: &CertificateDer<'_>,
-//             dss: &DigitallySignedStruct,
-//         ) -> Result<HandshakeSignatureValid, rustls::Error> {
-//             verify_tls13_signature(
-//                 message,
-//                 cert,
-//                 dss,
-//                 &self.0.signature_verification_algorithms,
-//             )
-//         }
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            verify_tls13_signature(
+                message,
+                cert,
+                dss,
+                &self.0.signature_verification_algorithms,
+            )
+        }
 
-//         fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-//             self.0
-//                 .signature_verification_algorithms
-//                 .supported_schemes()
-//         }
-//     }
-// }
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            self.0
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+}
