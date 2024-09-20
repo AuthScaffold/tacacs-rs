@@ -95,12 +95,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let session = 'connection_loop: {
         for addr in sock_addrs {
-            let connection_info = connection::ConnectionInfo {
-                ip_socket: addr,
-                obfuscation_key: cli.obfuscation_key.to_owned().map(|key| key.into_bytes()),
-            };
 
-            let connection = Arc::new(connection::Connection::new(&connection_info));
+            let connection = Arc::new(
+                tacacsrs_networking::tcp_connection::TcpConnection::new(
+                    cli.obfuscation_key.to_owned().map(|key| key.into_bytes())
+                )
+            );
 
             match connection.clone().connect().await {
                 Ok(_) => {

@@ -1,71 +1,40 @@
-use std::collections::HashMap;
 use std::sync::Arc;
+use async_trait::async_trait;
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_messages::packet::PacketTrait;
 use tacacsrs_messages::{header::Header, packet::Packet};
 
 use tacacsrs_messages::constants::TACACS_HEADER_LENGTH;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::net::TcpStream;
 use tokio::task::{self, JoinHandle};
 use tokio_rustls::client::TlsStream;
 
-use crate::{duplex_channel::DuplexChannel, session::Session};
+use crate::session::Session;
+use crate::traits::SessionCreationTrait;
 
-
-pub struct TlsConnection {
-    pub duplex_channels: RwLock<HashMap<u32, mpsc::Sender<Packet>>>,
-
-    sender: tokio::sync::mpsc::Sender<Packet>,
-    receiver: Mutex<Option<tokio::sync::mpsc::Receiver<Packet>>>,
-
-    run_task : RwLock<Option<JoinHandle<anyhow::Result<()>>>>,
-
-    can_accept_new_sessions: RwLock<bool>
+#[async_trait]
+pub trait TLSConnectionTrait : SessionCreationTrait
+{
+    async fn run(self: &Arc<Self>, stream : TlsStream<TcpStream>) -> anyhow::Result<()>;
 }
 
+pub struct TlsConnection {
+    connection : crate::connection::Connection
+}
 
-impl TlsConnection
-{
-    // Setup the information required for the TCP connection,
-    // but do not connect.
-    pub fn new() -> Self
-    {
-        let (sender, receiver) = mpsc::channel::<Packet>(32);
-
-        Self
-        {
-            duplex_channels: HashMap::new().into(),
-            sender,
-            receiver: Some(receiver).into(),
-            run_task : None.into(),
-            can_accept_new_sessions: true.into()
+impl TlsConnection {
+    pub fn new() -> Self {
+        Self {
+            connection: crate::connection::Connection::new()
         }
-    }
-
-    pub async fn is_running(&self) -> bool
-    {
-        let run_task_lock = self.run_task.read().await;
-        run_task_lock.as_ref().map(|f| f.is_finished()).unwrap_or(false)
-    }
-
-    pub async fn connect(self: Arc<Self>, stream : TlsStream<TcpStream>) -> anyhow::Result<()>
-    {
-        let self_clone = Arc::clone(&self);
-        task::spawn(async move {
-            self_clone.handle_connection(stream).await
-        });
-
-        Ok(())
     }
 
     async fn handle_connection(self: Arc<Self>, stream: TlsStream<TcpStream>) -> anyhow::Result<()> {
         let (mut reader, mut writer) = split(stream);
 
         let write_task : JoinHandle<anyhow::Result<()>> = {
-            let self_clone = Arc::clone(&self);
-            let mut receiver = self_clone.receiver.lock().await.take().unwrap();
+            let mut receiver = self.connection.receiver.lock().await.take().unwrap();
 
             let write_future = async move {
                 let obfuscation_key = Some(b"demo".to_vec());
@@ -229,7 +198,7 @@ impl TlsConnection
         
                     // Get a read lock on the duplex_channels dictionary and 
                     // find the appropriate channel to forward the packet to.
-                    let duplex_channels = self_clone.duplex_channels.read().await;
+                    let duplex_channels = self_clone.connection.duplex_channels.read().await;
         
                     match duplex_channels.get(&packet.header().session_id) {
                         Some(channel) => {
@@ -265,10 +234,7 @@ impl TlsConnection
         let (write_result, read_result) = tokio::try_join!(write_task, read_task)?;
         
         // Set the can_accept_new_sessions flag to false, as the connection is now closed.
-        {
-            let mut can_accept_lock = self.can_accept_new_sessions.write().await;
-            *can_accept_lock = false;
-        }
+        self.connection.disable_new_sessions().await;
 
         // Bubble up any errors that occurred during the tasks.
         write_result?;
@@ -277,55 +243,38 @@ impl TlsConnection
         // Return Ok if both tasks completed successfully.
         Ok(())
     }
+}
 
-    async fn create_channel(&self) -> anyhow::Result<(DuplexChannel, u32)>
+
+#[async_trait]
+impl TLSConnectionTrait for TlsConnection
+{
+    async fn run(self: &Arc<Self>, stream : TlsStream<TcpStream>) -> anyhow::Result<()>
     {
-        // create some channel where the send side connects to the internal MPSC receiver
-        // aka clone the sender and pass it to the DuplexChannel. Then create a new mpsc
-        // and associate that with the session id here inside the connection.
-        let (session_sender, session_receiver) = mpsc::channel::<Packet>(32);
+        let self_clone = Arc::clone(self);
+        task::spawn(async move {
+            self_clone.handle_connection(stream).await
+        });
 
-        let duplex_channel = DuplexChannel::new(session_receiver, self.sender.clone() );
+        Ok(())
+    }
+}
 
-        // Generate new session id, regenerate session id if it already exists
-        let mut session_id = rand::random::<u32>();
-
-        // get lock on duplex_channels and then insert the new session id
-        {
-            let mut duplex_channels = self.duplex_channels.write().await;
-
-            while duplex_channels.contains_key(&session_id)
-            {
-                session_id = rand::random::<u32>();
-            }
-
-            duplex_channels.insert(session_id, session_sender);
-        }
-
-        Ok((duplex_channel, session_id))
+#[async_trait]
+impl SessionCreationTrait for TlsConnection
+{
+    async fn can_create_sessions(self : Arc<Self>) -> bool
+    {
+        self.connection.can_create_sessions().await
     }
 
-    pub async fn can_create_sessions(&self) -> bool
+    async fn create_session(self : Arc<Self>) -> anyhow::Result<Session>
     {
-        let can_accept_lock = self.can_accept_new_sessions.read().await;
-        *can_accept_lock
+        self.connection.create_session().await
     }
 
-    pub async fn create_session(&self) -> anyhow::Result<Session>
+    async fn is_running(self : Arc<Self>) -> bool
     {
-        if !self.can_create_sessions().await
-        {
-            return Err(anyhow::Error::msg("Connection is not accepting new sessions"));
-        }
-
-        let (duplex_channel, session_id) = self.create_channel().await?;
-
-        log::info!(
-            target: "tacacsrs_networking::connection::create_session",
-            "Created session with id: {}",
-            session_id
-        );
-
-        Ok(Session::new(session_id, duplex_channel))
+        self.connection.is_running().await
     }
 }

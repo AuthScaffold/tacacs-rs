@@ -2,74 +2,34 @@ use std::io;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
 
-use argh::FromArgs;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::*;
+use tacacsrs_networking::helpers::connect_tcp;
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types;
 use tokio_rustls::{rustls, TlsConnector};
 
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
+use tacacsrs_networking::traits::SessionCreationTrait;
+use tacacsrs_networking::tls_connection::{TlsConnection, TLSConnectionTrait};
 
 
 use rustls::crypto::aws_lc_rs as provider;
 
-/// Tokio Rustls client example
-#[derive(FromArgs)]
-struct Options {
-    /// host
-    #[argh(positional)]
-    host: String,
+use tacacsrs_networking::helpers::*;
 
-    /// port
-    #[argh(option, short = 'p', default = "443")]
-    port: u16,
 
-    /// domain
-    #[argh(option, short = 'd')]
-    domain: Option<String>
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let options: Options = argh::from_env();
+    let hostname = "tacacsserver.local";
+    let obfuscation_key = Some(b"tac_plus_key".to_vec());
 
-    let addr = (options.host.as_str(), options.port)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
-    let domain = options.domain.unwrap_or(options.host);
-
-    let root_cert_store = rustls::RootCertStore::empty();
-    let supported_tls_versions = vec![&rustls::version::TLS13];
-    let mut config = rustls::ClientConfig::builder_with_protocol_versions(supported_tls_versions.as_slice())
-        .with_root_certificates(root_cert_store)
-        .with_no_client_auth();
-
-    println!("resumption: {:?}", config.resumption);
-    config.resumption = config.resumption.tls12_resumption(rustls::client::Tls12Resumption::Disabled);
-    config.enable_sni = false;
-
-    config.dangerous().set_certificate_verifier(Arc::new(danger::NoCertificateVerification::new(
-        provider::default_provider(),
-    )));
-
-    println!("Config: {:#?}", config);
-
-
-    let connector = TlsConnector::from(Arc::new(config));
-
-    let stream = TcpStream::connect(&addr).await.unwrap();
-
-    let domain = pki_types::ServerName::try_from(domain.as_str())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid dnsname"))
-        .unwrap()
-        .to_owned();
-
-    let stream = connector.connect(domain, stream).await?;
+    let tcp_stream = connect_tcp(hostname).await?;
+    let tls_stream = connect_tls(tcp_stream, hostname).await?;
 
     let connection = Arc::new(tacacsrs_networking::tls_connection::TlsConnection::new());
-    connection.clone().connect(stream).await?;
+    connection.run(tls_stream).await?;
 
     let session = connection.create_session().await?;
 
@@ -97,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    println!("Received accounting response: {:?}", response);
+    println!("Received accounting response: {:#?}", response);
 
     Ok(())
 }
