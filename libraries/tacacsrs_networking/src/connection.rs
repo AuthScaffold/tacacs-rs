@@ -7,7 +7,6 @@ use tokio::task::JoinHandle;
 use crate::duplex_channel::DuplexChannel;
 use crate::session::Session;
 
-
 pub struct Connection {
     pub(crate) duplex_channels: RwLock<HashMap<u32, mpsc::Sender<Packet>>>,
     pub(crate) sender: tokio::sync::mpsc::Sender<Packet>,

@@ -52,8 +52,6 @@ impl TlsConnection {
                         }
                     };
 
-                    packet = packet.to_obfuscated(b"demo");
-        
                     let session_id = packet.header().session_id;
         
                     log::info!(
@@ -101,7 +99,6 @@ impl TlsConnection {
         let read_task : JoinHandle<anyhow::Result<()>> = {
             let self_clone = Arc::clone(&self);
             let read_task_future = async move {
-                let obfuscation_key = Some(b"demo".to_vec());
 
                 loop {
                     let mut header_buffer = [0_u8; TACACS_HEADER_LENGTH];
@@ -177,7 +174,7 @@ impl TlsConnection {
 
                     let is_packet_deobfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
                     let mut did_deobfuscate = false;
-                    packet = match &obfuscation_key {
+                    packet = match &self_clone.obfuscation_key {
                         Some(key) => match is_packet_deobfuscated {
                             true => packet,
                             false => {

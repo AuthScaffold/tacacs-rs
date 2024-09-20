@@ -16,11 +16,13 @@ use tacacsrs_networking::helpers::*;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let hostname = "tacacsserver.local";
+    let _ = init_logging();
+
+    let hostname = "tacacsserver.local:449";
     let obfuscation_key = Some(b"tac_plus_key".to_vec());
 
     let tcp_stream = connect_tcp(hostname).await?;
-    let tls_stream = connect_tls(tcp_stream, hostname).await?;
+    let tls_stream = connect_tls(tcp_stream, "tacacsserver.local").await?;
 
     let connection = Arc::new(
         tacacsrs_networking::tls_connection::TlsConnection::new(obfuscation_key.as_deref())
@@ -56,4 +58,31 @@ async fn main() -> anyhow::Result<()> {
     println!("Received accounting response: {:#?}", response);
 
     Ok(())
+}
+
+
+
+use log::{Record, Level, Metadata};
+use log::{SetLoggerError, LevelFilter};
+static LOGGER: SimpleLogger = SimpleLogger;
+
+struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= Level::Debug
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            println!("{} ({}): {}", record.target(), record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+pub fn init_logging() -> Result<(), SetLoggerError> {
+    log::set_logger(&LOGGER)
+        .map(|()| log::set_max_level(LevelFilter::Info))
 }
