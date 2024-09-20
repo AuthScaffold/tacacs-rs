@@ -20,8 +20,10 @@ async fn main() -> anyhow::Result<()> {
         console_subscriber::init();
     }
 
-    let tcp_connection = tacacsrs_networking::helpers::connect_tcp(hostname.to_string()).await?;
-    let tacacs_connection = Arc::new(tacacsrs_networking::tcp_connection::TcpConnection::new(obfuscation_key));
+    let tcp_connection = tacacsrs_networking::helpers::connect_tcp(hostname).await?;
+    let tacacs_connection = Arc::new(
+        tacacsrs_networking::tcp_connection::TcpConnection::new(obfuscation_key.as_deref())
+    );
     tacacs_connection.run(tcp_connection).await?;
 
     let session = tacacs_connection.clone().create_session().await?;

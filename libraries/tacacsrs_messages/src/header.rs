@@ -111,9 +111,9 @@ mod tests {
         let tacacs_type = tacacs_type_o.unwrap_or(TacacsType::TacPlusAccounting);
         let tacacs_flags = tacacs_flags_o.unwrap_or(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
 
-        let sequence_number = sequence_number_o.unwrap_or(1 as u8);
-        let session_id = session_id_o.unwrap_or(0xdeadbeef as u32);
-        let length = length_o.unwrap_or(1 as u32);
+        let sequence_number = sequence_number_o.unwrap_or(1_u8);
+        let session_id = session_id_o.unwrap_or(0xdeadbeef_u32);
+        let length = length_o.unwrap_or(1_u32);
 
         let session_id_bytes = session_id.to_be_bytes();
         let length_bytes = length.to_be_bytes();
@@ -126,11 +126,11 @@ mod tests {
             session_id_bytes[0], session_id_bytes[1], session_id_bytes[2], session_id_bytes[3],
             length_bytes[0], length_bytes[1], length_bytes[2], length_bytes[3]
         ];
-        return binary_data;
+        binary_data
     }
 
     fn generate_default_packet() -> [u8; 12] {
-        return generate_packet(Option::None, Option::None, Option::None, Option::None, Option::None, Option::None, Option::None);
+        generate_packet(Option::None, Option::None, Option::None, Option::None, Option::None, Option::None, Option::None)
     }
 
     #[test]
@@ -145,12 +145,12 @@ mod tests {
             },
         };
 
-        assert_eq!(header.major_version as u8, 0xc as u8, "Major version mismatch");
-        assert_eq!(header.minor_version as u8, 1 as u8, "Minor version mismatch");
-        assert_eq!(header.tacacs_type as u8, 3 as u8, "TACACS+ type mismatch");
+        assert_eq!(header.major_version as u8, 0xc_u8, "Major version mismatch");
+        assert_eq!(header.minor_version as u8, 1_u8, "Minor version mismatch");
+        assert_eq!(header.tacacs_type as u8, 3_u8, "TACACS+ type mismatch");
         assert_eq!(header.seq_no, 1, "Sequence number mismatch");
         assert_eq!(header.flags.bits(), (0xff & 0x01) as u8, "Flags mismatch");
-        assert_eq!(header.session_id as u32, 0xdeadbeef as u32, "Session ID mismatch");
+        assert_eq!(header.session_id as u32, 0xdeadbeef_u32, "Session ID mismatch");
         assert_eq!(header.length, 1, "Length mismatch");
     }
 
@@ -159,7 +159,7 @@ mod tests {
         let binary_data_expected_length = generate_default_packet();
         let binary_data_short = &binary_data_expected_length[0..TACACS_HEADER_LENGTH-1];
     
-        let _header = match Header::from_bytes(&binary_data_short) {
+        let _header = match Header::from_bytes(binary_data_short) {
             Ok(data) => data,
             Err(e) => {
                 assert!(e.to_string().contains("Data too short"), "Error: {}", e);

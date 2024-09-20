@@ -79,10 +79,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let tcp_connection = tacacsrs_networking::helpers::connect_tcp(&cli.server_addr).await?;
 
-    let obfuscation_key = match cli.obfuscation_key {
-        Some(key) => Some(key.to_owned().into_bytes()),
-        None => Option::None,
-    };
+    let obfuscation_key = cli.obfuscation_key.map(|key| key.to_owned().into_bytes());
 
     let connection = Arc::new(
         tacacsrs_networking::tcp_connection::TcpConnection::new(

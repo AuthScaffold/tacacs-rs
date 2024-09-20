@@ -1,10 +1,8 @@
 use std::sync::Arc;
-use std::net::{IpAddr, SocketAddr};
 use std::vec;
 
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType};
-use tacacsrs_networking::{connection, session};
 
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
@@ -23,8 +21,11 @@ async fn main() -> anyhow::Result<()> {
         console_subscriber::init();
     }
 
-    let tcp_connection = tacacsrs_networking::helpers::connect_tcp(hostname.to_string()).await?;
-    let tacacs_connection = Arc::new(tacacsrs_networking::tcp_connection::TcpConnection::new(obfuscation_key));
+    let tcp_connection = tacacsrs_networking::helpers::connect_tcp(hostname).await?;
+    let tacacs_connection = Arc::new(
+        tacacsrs_networking::tcp_connection::TcpConnection::new(obfuscation_key.as_deref())
+    );
+    
     tacacs_connection.run(tcp_connection).await?;
 
     let session_count = 100000;
@@ -91,7 +92,6 @@ async fn send_test_request(session : Session) -> anyhow::Result<()> {
 use log::{Record, Level, Metadata};
 use log::{SetLoggerError, LevelFilter};
 use tacacsrs_networking::tcp_connection::TcpConnectionTrait;
-use tokio::net::lookup_host;
 use tokio::task::JoinHandle;
 static LOGGER: SimpleLogger = SimpleLogger;
 

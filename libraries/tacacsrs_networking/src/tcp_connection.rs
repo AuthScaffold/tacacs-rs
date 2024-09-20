@@ -272,17 +272,14 @@ impl TcpConnectionTrait for TcpConnection
     {
         Self
         {
-            obfuscation_key: match obfuscation_key {
-                Some(key) => Some(key.to_vec()),
-                None => Option::None
-            },
-            connection: crate::connection::Connection::new()
+            connection: crate::connection::Connection::new(),
+            obfuscation_key: obfuscation_key.map(|key| key.to_vec())
         }
     }
 
     async fn run(self: &Arc<Self>, stream : TcpStream) -> anyhow::Result<()>
     {
-        let self_clone = Arc::clone(&self);
+        let self_clone = Arc::clone(self);
         task::spawn(async move {
             self_clone.handle_connection(stream).await
         });

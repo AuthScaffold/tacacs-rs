@@ -20,13 +20,15 @@ pub trait TLSConnectionTrait : SessionCreationTrait
 }
 
 pub struct TlsConnection {
-    connection : crate::connection::Connection
+    connection : crate::connection::Connection,
+    obfuscation_key : Option<Vec<u8>>
 }
 
 impl TlsConnection {
-    pub fn new() -> Self {
+    pub fn new(obfuscation_key : Option<&[u8]>) -> Self {
         Self {
-            connection: crate::connection::Connection::new()
+            connection: crate::connection::Connection::new(),
+            obfuscation_key: obfuscation_key.map(|key| key.to_vec())
         }
     }
 
@@ -35,10 +37,8 @@ impl TlsConnection {
 
         let write_task : JoinHandle<anyhow::Result<()>> = {
             let mut receiver = self.connection.receiver.lock().await.take().unwrap();
-
+            let self_clone = Arc::clone(&self);
             let write_future = async move {
-                let obfuscation_key = Some(b"demo".to_vec());
-
                 loop {
                     let mut packet = match receiver.recv().await {
                         Some(packet) => packet,
@@ -64,11 +64,11 @@ impl TlsConnection {
 
                     let is_packet_deobfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
                     let mut did_obfuscate = false;
-                    packet = match &obfuscation_key {
+                    packet = match &self_clone.obfuscation_key {
                         Some(key) => match is_packet_deobfuscated {
                             true => {
                                 did_obfuscate = true;
-                                packet.to_obfuscated(key)
+                                packet.to_obfuscated(key.as_slice())
                             },
                             false => packet
                         },

@@ -122,15 +122,15 @@ mod tests
         ];
 
         let packet = Packet::from_bytes(&encrypted_bytes).unwrap();
-        assert_eq!(packet.header().flags.contains(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG), false);
+        assert!(!packet.header().flags.contains(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
         assert_eq!(packet.header().length, 34);
 
         let obfuscation_key = b"XX";
-        let body_data = convert(packet.header(), &packet.body(), obfuscation_key);
+        let body_data = convert(packet.header(), packet.body(), obfuscation_key);
         assert_eq!(body_data, decrypted_bytes);
 
         let decrypted_packet = packet.as_deobfuscated(obfuscation_key).unwrap();
         assert_eq!(decrypted_packet.body(), &decrypted_bytes);
-        assert_eq!(decrypted_packet.header().flags.contains(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG), true);
+        assert!(decrypted_packet.header().flags.contains(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
     }
 }
