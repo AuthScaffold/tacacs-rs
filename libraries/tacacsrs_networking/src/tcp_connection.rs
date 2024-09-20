@@ -15,7 +15,7 @@ use crate::traits::SessionCreationTrait;
 #[async_trait]
 pub trait TcpConnectionTrait : SessionCreationTrait
 {
-    fn new(obfuscation_key : Option<Vec<u8>>) -> Self;
+    fn new(obfuscation_key : Option<&[u8]>) -> Self;
     async fn run(self: &Arc<Self>, stream : TcpStream) -> anyhow::Result<()>;
 }
 
@@ -268,11 +268,14 @@ impl TcpConnection
 #[async_trait]
 impl TcpConnectionTrait for TcpConnection
 {
-    fn new(obfuscation_key : Option<Vec<u8>>) -> Self
+    fn new(obfuscation_key : Option<&[u8]>) -> Self
     {
         Self
         {
-            obfuscation_key,
+            obfuscation_key: match obfuscation_key {
+                Some(key) => Some(key.to_vec()),
+                None => Option::None
+            },
             connection: crate::connection::Connection::new()
         }
     }

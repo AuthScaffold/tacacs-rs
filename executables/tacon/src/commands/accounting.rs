@@ -1,16 +1,11 @@
-use std::sync::Arc;
-
 use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::enumerations::{
-    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
-    TacacsAuthenticationType,
-};
+use tacacsrs_messages::enumerations::*;
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 
 pub async fn send_accounting_request(
-    session: &Arc<Session>,
+    session: &Session,
     user: &str,
     port: &str,
     rem_address: &str,
@@ -39,8 +34,7 @@ pub async fn send_accounting_request(
         args,
     };
 
-    let session_clone = session.clone();
-    let response = match session_clone.send_accounting_request(accounting_request).await {
+    let response = match session.send_accounting_request(accounting_request).await {
         Ok(response) => response,
         Err(e) => {
             return Err(anyhow::Error::msg(format!(

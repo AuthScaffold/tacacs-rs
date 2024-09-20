@@ -1,11 +1,11 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use tacacsrs_messages::packet::Packet;
 
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::{duplex_channel::DuplexChannel, session::Session};
+use crate::duplex_channel::DuplexChannel;
+use crate::session::Session;
 
 
 pub struct Connection {
