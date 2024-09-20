@@ -21,9 +21,16 @@ pub async fn connect_tcp(hostname : &str) -> anyhow::Result<tokio::net::TcpStrea
     {
         match tokio::net::TcpStream::connect(server_address).await
         {
-            Ok(stream) => return Ok(stream),
+            Ok(stream) => {
+                log::info!(
+                    target: "tacacsrs_networking::helpers::connect_tcp",
+                    "Connected to server: {}", server_address);
+                return Ok(stream)
+            },
             Err(e) => {
-                log::error!("Failed to connect to server: {}", e);
+                log::error!(
+                    target: "tacacsrs_networking::helpers::connect_tcp",
+                    "Failed to connect to server {}: {}", server_address, e);
                 continue;
             }
         };
