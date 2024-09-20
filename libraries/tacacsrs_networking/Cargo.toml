@@ -10,9 +10,13 @@ tacacsrs-messages = { path = "../tacacsrs_messages" }
 async-trait = "0.1.82"
 rand = "0.8.5"
 log = "0.4.22"
+tokio-rustls = { version = "0.26.0", default-features = false, features = ["aws_lc_rs", "logging"] }
 
 [dev-dependencies]
+argh = "0.1.12"
 console-subscriber = "0.4.0"
+rustls-pemfile = "2.1.3"
+webpki-roots = "0.26.6"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }

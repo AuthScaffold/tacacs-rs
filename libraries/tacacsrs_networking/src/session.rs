@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use tokio::sync::RwLock;
 
 use crate::duplex_channel::DuplexChannel;
@@ -42,17 +40,15 @@ impl Session
         sequence_number
     }
 
-    pub async fn complete(self: &Arc<Self>)
+    pub async fn complete(&self)
     {
-        let self_clone = self.clone();
-        let mut session_complete_lock = self_clone.session_complete.write().await;
+        let mut session_complete_lock = self.session_complete.write().await;
         *session_complete_lock = true;
     }
 
-    pub async fn is_complete(self: &Arc<Self>) -> bool
+    pub async fn is_complete(&self) -> bool
     {
-        let self_clone = self.clone();
-        let session_complete_lock = self_clone.session_complete.read().await;
+        let session_complete_lock = self.session_complete.read().await;
         *session_complete_lock
     }
 }
