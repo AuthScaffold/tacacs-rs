@@ -4,9 +4,13 @@ use std::vec;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType};
 
+use tacacsrs_networking::helpers::*;
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionCreationTrait;
+use tacacsrs_networking::tcp_connection::TcpConnectionTrait;
+use tokio::task::JoinHandle;
+
 
 
 
@@ -21,12 +25,20 @@ async fn main() -> anyhow::Result<()> {
         console_subscriber::init();
     }
 
-    let tcp_connection = tacacsrs_networking::helpers::connect_tcp(hostname).await?;
+    let tcp_connection = connect_tcp(hostname).await?;
     let tacacs_connection = Arc::new(
         tacacsrs_networking::tcp_connection::TcpConnection::new(obfuscation_key.as_deref())
     );
     
     tacacs_connection.run(tcp_connection).await?;
+
+    // use ssl:
+    // let tcp_stream = connect_tcp(hostname).await?;
+    // let tls_stream = connect_tls(tcp_stream, "tacacsserver.local").await?;
+    // let tacacs_connection = Arc::new(
+    //     tacacsrs_networking::tls_connection::TlsConnection::new(obfuscation_key.as_deref())
+    // );
+    // tacacs_connection.run(tls_stream).await?;
 
     let session_count = 100000;
 
@@ -91,8 +103,7 @@ async fn send_test_request(session : Session) -> anyhow::Result<()> {
 
 use log::{Record, Level, Metadata};
 use log::{SetLoggerError, LevelFilter};
-use tacacsrs_networking::tcp_connection::TcpConnectionTrait;
-use tokio::task::JoinHandle;
+
 static LOGGER: SimpleLogger = SimpleLogger;
 
 struct SimpleLogger;
