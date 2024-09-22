@@ -4,18 +4,17 @@ use tacacsrs_messages::packet::{Packet, PacketTrait};
 use tacacsrs_messages::traits::TacacsBodyTrait;
 
 use crate::session::Session;
-use std::sync::Arc;
 use tacacsrs_messages::accounting::{request::AccountingRequest, reply::AccountingReply};
 use tacacsrs_messages::enumerations::{TacacsMajorVersion, TacacsMinorVersion, TacacsType, TacacsFlags};
 
 #[async_trait]
 pub trait AccountingSessionTrait {
-    async fn send_accounting_request(self : &Arc<Self>, request: AccountingRequest) -> anyhow::Result<AccountingReply>;
+    async fn send_accounting_request(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply>;
 }
 
 #[async_trait]
 impl AccountingSessionTrait for Session {
-    async fn send_accounting_request(self : &Arc<Self>, request: AccountingRequest) -> anyhow::Result<AccountingReply>
+    async fn send_accounting_request(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply>
     {
         if self.is_complete().await {
             return Err(anyhow::Error::msg("Session is already complete"));

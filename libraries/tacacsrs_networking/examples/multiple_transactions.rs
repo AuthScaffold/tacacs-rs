@@ -1,68 +1,81 @@
 use std::sync::Arc;
-use std::net::{IpAddr, SocketAddr};
 use std::vec;
 
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType};
-use tacacsrs_networking::connection;
 
+use tacacsrs_networking::helpers::*;
+use tacacsrs_networking::session::Session;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
+use tacacsrs_networking::traits::SessionCreationTrait;
+use tacacsrs_networking::tcp_connection::TcpConnectionTrait;
+use tokio::task::JoinHandle;
+
 
 
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let _ = init_logging();
+    let hostname = "tacacsserver.local";
+    let obfuscation_key = Some(b"tac_plus_key".to_vec());
 
     #[cfg(tokio_unstable)]
     {
         console_subscriber::init();
     }
 
-    let mut server_address_list = lookup_host("tacacsserver.local:49").await.unwrap();
-    let server_addr = match server_address_list.next() {
-        Some(SocketAddr::V4(addr)) => addr.ip().clone(),
-        _ => panic!("No valid IPv4 address found for tacacsserver.local"),
-    };
-
-    println!("Resolved tacacsserver.local to {}", server_addr);
+    let tcp_connection = connect_tcp(hostname).await?;
+    let tacacs_connection = Arc::new(
+        tacacsrs_networking::tcp_connection::TcpConnection::new(obfuscation_key.as_deref())
+    );
     
-    let connection_info = connection::ConnectionInfo {
-        ip_socket: SocketAddr::new(IpAddr::V4(server_addr), 49),
-        obfuscation_key: Some(b"tac_plus_key".to_vec()),
-    };
+    tacacs_connection.run(tcp_connection).await?;
 
-    let connection = Arc::new(connection::Connection::new(&connection_info));
+    // use ssl:
+    // let tcp_stream = connect_tcp(hostname).await?;
+    // let tls_stream = connect_tls(tcp_stream, "tacacsserver.local").await?;
+    // let tacacs_connection = Arc::new(
+    //     tacacsrs_networking::tls_connection::TlsConnection::new(obfuscation_key.as_deref())
+    // );
+    // tacacs_connection.run(tls_stream).await?;
 
-    match connection.clone().connect().await {
-        Ok(_) => {
-            println!("Successfully connected to server at {}", connection_info.ip_socket);
-        }
-        Err(e) => {
-            println!("Failed to connect: {}", e);
-        }
+    let session_count = 100000;
+
+    let session_creation = (0..session_count).map(|_| {
+        let connection = tacacs_connection.clone();
+        tokio::spawn(async move {
+            connection.create_session().await
+        })
+    });
+
+    let mut sessions = Vec::<Session>::with_capacity(session_count);
+    for session in session_creation {
+        let session = match session.await? {
+            Ok(session) => session,
+            Err(e) => {
+                println!("Failed to create session: {}", e);
+                return Err(e);
+            }
+        };
+
+        sessions.push(session);
     }
 
-    let mut handles = vec![];
-
-    for _ in 0..100000 {
-        let connection_clone = Arc::clone(&connection);
-        let handle = tokio::spawn(async move {
-            send_test_request(connection_clone).await;
-        });
-
-        handles.push(handle);
-    }
+    let handles : Vec::<JoinHandle<anyhow::Result<()>>> = sessions.into_iter().map(|session| {
+        tokio::spawn(async move {
+            send_test_request(session).await
+        })
+    }).collect();
 
     for handle in handles {
-        handle.await.unwrap();
+        let _ = handle.await?;
     }
 
+    Ok(())
 }
 
-async fn send_test_request(connection : Arc<connection::Connection>) {
-    let session = Arc::new(connection.create_session().await.unwrap());
-
+async fn send_test_request(session : Session) -> anyhow::Result<()> {
     let accounting_request = AccountingRequest
     {
         flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
@@ -80,17 +93,17 @@ async fn send_test_request(connection : Arc<connection::Connection>) {
         Ok(response) => response,
         Err(e) => {
             println!("Failed to send accounting request: {}", e);
-            return;
+            return Err(e);
         }
     };
 
-    //println!("Received accounting response: {:?}", response);
+    Ok(())
 }
 
 
 use log::{Record, Level, Metadata};
 use log::{SetLoggerError, LevelFilter};
-use tokio::net::lookup_host;
+
 static LOGGER: SimpleLogger = SimpleLogger;
 
 struct SimpleLogger;

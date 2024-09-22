@@ -1,16 +1,12 @@
 mod commands;
 
-use std::{
-    net::{SocketAddr, ToSocketAddrs},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{arg, Parser, Subcommand};
 use commands::accounting::send_accounting_request;
-use tacacsrs_networking::connection;
+use tacacsrs_networking::{tcp_connection::TcpConnectionTrait, traits::SessionCreationTrait};
 
-const DEFAULT_TACAS_PORT: u16 = 49;
 
 // Define the CLI struct
 #[derive(Parser)]
@@ -66,16 +62,6 @@ enum Commands {
     Authorization,
 }
 
-fn resolve_hostname(hostname: &str) -> anyhow::Result<Vec<SocketAddr>> {
-    let address = if hostname.contains(':') {
-        hostname.to_string()
-    } else {
-        format!("{}:{}", hostname, DEFAULT_TACAS_PORT) // Use the default TACACS+ port if none is specified
-    };
-
-    let addrs_iter = address.to_socket_addrs()?;
-    Ok(addrs_iter.collect())
-}
 
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     println!("Running with verbose level: {}", cli.verbose);
@@ -91,35 +77,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         println!("Running in batch mode, with file: {}", batch_file);
     }
 
-    let sock_addrs = resolve_hostname(&cli.server_addr)?;
+    let tcp_connection = tacacsrs_networking::helpers::connect_tcp(&cli.server_addr).await?;
 
-    let session = 'connection_loop: {
-        for addr in sock_addrs {
-            let connection_info = connection::ConnectionInfo {
-                ip_socket: addr,
-                obfuscation_key: cli.obfuscation_key.to_owned().map(|key| key.into_bytes()),
-            };
+    let obfuscation_key = cli.obfuscation_key.map(|key| key.to_owned().into_bytes());
 
-            let connection = Arc::new(connection::Connection::new(&connection_info));
+    let connection = Arc::new(
+        tacacsrs_networking::tcp_connection::TcpConnection::new(
+            obfuscation_key.as_deref()
+        )
+    );
 
-            match connection.clone().connect().await {
-                Ok(_) => {
-                    println!(
-                        "Successfully connected to server at {}",
-                        connection_info.ip_socket
-                    );
-
-                    let session = Arc::new(connection.create_session().await.unwrap());
-                    break 'connection_loop Ok(session);
-                }
-                Err(e) => {
-                    println!("Failed to connect: {}", e); //TODO: Log this error
-                    // return Err(anyhow::Error::msg(format!("Failed to connect: {}", e)));
-                }
-            }
-        }
-        Err(anyhow::Error::msg("Failed to connect to any server"))
-    }?; // Unwrap the session if it was created successfully
+    connection.run(tcp_connection).await?;
+    let session = connection.create_session().await?;
 
     if let Some(command) = &cli.command {
         println!("Running command: {:?}", command);
