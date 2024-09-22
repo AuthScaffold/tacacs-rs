@@ -18,4 +18,15 @@ impl DuplexChannel
             receiver: session_receiver.into(),
         }
     }
+
+    pub async fn sender_closed(&self) -> bool
+    {
+        self.sender.is_closed()
+    }
+
+    pub async fn receiver_closed(&self) -> bool
+    {
+        let reader_lock = self.receiver.read().await;
+        reader_lock.is_closed()
+    }
 }
