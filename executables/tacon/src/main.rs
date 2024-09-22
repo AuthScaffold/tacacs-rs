@@ -85,7 +85,23 @@ enum Connection {
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     println!("Running with verbose level: {}", cli.verbose);
     if cli.verbose > 0 {
-        println!("Verbose level: {}", cli.verbose);
+        let mut level = "error";
+        match cli.verbose {
+            1 => {
+                level = "warn";
+            }
+            2 => {
+                level = "info";
+            }
+            3 => {
+                level = "debug";
+            }
+            _ => {}
+        }
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level)).try_init();
+
+
+        println!("Verbose level: {} ({})", level, cli.verbose);
     }
 
     if let Some(batch_file) = &cli.batch {
