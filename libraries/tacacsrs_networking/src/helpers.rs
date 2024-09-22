@@ -181,7 +181,10 @@ mod danger {
             _ocsp: &[u8],
             _now: UnixTime,
         ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-            println!("verify_server_cert");
+            log::warn!(
+                target: "tacacsrs_networking::helpers::danger::NoCertificateVerification",
+                "Certificate verification disabled"
+            );
             Ok(rustls::client::danger::ServerCertVerified::assertion())
         }
 
