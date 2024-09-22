@@ -31,6 +31,12 @@ pub trait MockConnectionTrait
     async fn add_accounting_reply(self: &Arc<Self>, session: &Session, reply_sequence_number: u8, reply: &AccountingReply) -> anyhow::Result<()>;
 }
 
+impl Default for MockConnection {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockConnection {
     pub fn new() -> Self {
         MockConnection {
