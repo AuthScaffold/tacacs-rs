@@ -82,11 +82,11 @@ mod tests
         let session = Session::new(1, duplex_channel);
 
         assert_eq!(session.session_id(), 1);
-        assert_eq!(session.is_complete().await, false);
+        assert!(!(session.is_complete().await));
 
         session.complete().await;
 
-        assert_eq!(session.is_complete().await, true);
+        assert!(session.is_complete().await);
     }
 
     #[tokio::test]
@@ -102,7 +102,7 @@ mod tests
         assert_eq!(session.next_sequence_number().await, 3);
         assert_eq!(session.next_sequence_number().await, 5);
 
-        assert_eq!(session.is_complete().await, false);
+        assert!(!(session.is_complete().await));
     }
 
     #[tokio::test]
@@ -113,19 +113,19 @@ mod tests
         let duplex_channel = DuplexChannel::new(client_receiver, network_sender);
 
         let session = Session::new(1, duplex_channel);
-        assert_eq!(session.is_complete().await, false);
+        assert!(!(session.is_complete().await));
 
         // Close the client sender, this should propagate to the session
         drop(_client_sender);
 
         // session is complete because the client sender is closed
-        assert_eq!(session.is_complete().await, true);
+        assert!(session.is_complete().await);
 
         // the client sender is still open because it'll be used by many sessions
-        assert_eq!(_network_receiver.is_closed(), false);
-        assert_eq!(session.duplex_channel.sender_closed().await, false);
+        assert!(!_network_receiver.is_closed());
+        assert!(!(session.duplex_channel.sender_closed().await));
 
         // the client receiver is closed
-        assert_eq!(session.duplex_channel.receiver_closed().await, true);
+        assert!(session.duplex_channel.receiver_closed().await);
     }
 }

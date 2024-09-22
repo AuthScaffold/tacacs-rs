@@ -4,10 +4,10 @@ use std::vec;
 
 use async_trait::async_trait;
 use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::accounting::request::{self, AccountingRequest};
+use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::*;
 
-use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_messages::packet::Packet;
 use tacacsrs_messages::header::Header;
 use tacacsrs_messages::traits::TacacsBodyTrait;
 use tacacsrs_networking::mock_connection::MockConnection;
