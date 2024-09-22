@@ -96,6 +96,7 @@ jobs:
       - test
       - check
     runs-on: '${{ matrix.os }}'
+    if: always()
     strategy:
       matrix:
         include:
