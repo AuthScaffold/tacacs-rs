@@ -1,0 +1,30 @@
+services:
+  tacplus:
+    build:
+      context: https://github.com/lfkeitel/docker-tacacs-plus.git
+      args:
+        SRC_VERSION: '202104181633'
+        SRC_HASH: 'F2695A7CC908E03BAB8FFB0A84603A0AD103B4532CC84900624899CC1C32E4AB'
+    image: 'tac_plus:ubuntu'
+    restart: unless-stopped
+    environment:
+      - TZ=Australia/Brisbane
+      - TAC_PLUS_ADDITIONAL_ARGS="-d 1"
+    ports:
+      - '49:49'
+    volumes:
+      - ./tac_plus.cfg:/etc/tac_plus/tac_plus.cfg
+
+  tlsrelay:
+    build:
+      dockerfile: ./relay.dockerfile
+    image: 'tcprelay:ubuntu'
+    restart: unless-stopped
+    depends_on:
+      - tacplus
+    environment:
+      - TZ=Australia/Brisbane
+    ports:
+      - '449:449'
+    volumes:
+      - ./tac_relay.cfg:/usr/local/etc/tcprelay.cfg
