@@ -4,7 +4,7 @@ use std::vec;
 
 use async_trait::async_trait;
 use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::accounting::request::{AccountingRequest};
+use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::*;
 
 use tacacsrs_messages::packet::Packet;

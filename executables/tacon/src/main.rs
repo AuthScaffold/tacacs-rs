@@ -5,7 +5,11 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::{arg, Parser, Subcommand};
 use commands::accounting::send_accounting_request;
-use tacacsrs_networking::{tcp_connection::TcpConnectionTrait, traits::SessionManagementTrait};
+use tacacsrs_networking::{
+    helpers::TlsConfigurationBuilder, 
+    tcp_connection::{TcpConnection, TcpConnectionTrait}, 
+    tls_connection::{TLSConnectionTrait, TlsConnection},
+    traits::SessionManagementTrait};
 
 
 // Define the CLI struct
@@ -22,6 +26,16 @@ pub struct Cli {
         help = "The obfuscation key to use for encrypting the TACACS+ messages"
     )]
     obfuscation_key: Option<String>,
+
+    #[arg(long, help = "Use TLS to connect to the TACACS+ server")]
+    use_tls: bool,
+
+    #[arg(long,value_name = "CLIENT_CERTIFICATE", help = "The client certificate to use for TLS"
+    )]
+    client_certificate: Option<String>,
+
+    #[arg(long, value_name = "CLIENT_KEY", help = "The client key to use for TLS")]
+    client_key: Option<String>,
 
     #[arg(short, long, action = clap::ArgAction::Count, help = "Increase verbosity")]
     verbose: u8,
@@ -62,6 +76,11 @@ enum Commands {
     Authorization,
 }
 
+enum Connection {
+    TcpConnection(Arc<TcpConnection>),
+    TlsConnection(Arc<TlsConnection>),
+    
+}
 
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     println!("Running with verbose level: {}", cli.verbose);
@@ -77,18 +96,46 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         println!("Running in batch mode, with file: {}", batch_file);
     }
 
-    let tcp_connection = tacacsrs_networking::helpers::connect_tcp(&cli.server_addr).await?;
-
+    
     let obfuscation_key = cli.obfuscation_key.map(|key| key.to_owned().into_bytes());
+    
+    let tcp_connection = tacacsrs_networking::helpers::connect_tcp(&cli.server_addr).await?;
+    let tacacs_connection : Connection = if cli.use_tls {
+        let client_certificate = cli.client_certificate.unwrap();
+        let client_key = cli.client_key.unwrap();
+        
+        let tls_config = Arc::new(TlsConfigurationBuilder::new()
+            .with_client_auth_cert_files(client_certificate, client_key).await?
+            .with_certificate_verification_disabled(true)
+            .build()?);
 
-    let connection = Arc::new(
-        tacacsrs_networking::tcp_connection::TcpConnection::new(
-            obfuscation_key.as_deref()
-        )
-    );
+        let tls_connection = tacacsrs_networking::helpers::connect_tls(
+            &tls_config, tcp_connection, "tacacsserver.local").await?;
 
-    connection.run(tcp_connection).await?;
-    let session = connection.create_session().await?;
+        let tacacs_connection = Arc::new(
+            tacacsrs_networking::tls_connection::TlsConnection::new(obfuscation_key.as_deref())
+        );
+
+        tacacs_connection.run(tls_connection).await?;
+
+        Connection::TlsConnection(tacacs_connection)
+    }
+    else 
+    {
+        let tacacs_connection = Arc::new(
+            tacacsrs_networking::tcp_connection::TcpConnection::new(obfuscation_key.as_deref())
+        );
+
+        tacacs_connection.run(tcp_connection).await?;
+
+        Connection::TcpConnection(tacacs_connection)
+    };
+
+
+    let session = match tacacs_connection {
+        Connection::TcpConnection(tcp_connection) => tcp_connection.create_session().await?,
+        Connection::TlsConnection(tls_connection) => tls_connection.create_session().await?,
+    };
 
     if let Some(command) = &cli.command {
         println!("Running command: {:?}", command);
