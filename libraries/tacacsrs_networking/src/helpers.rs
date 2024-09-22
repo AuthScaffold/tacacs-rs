@@ -1,6 +1,9 @@
-use std::{net::{SocketAddr, ToSocketAddrs}, sync::Arc};
+use std::{net::{SocketAddr, ToSocketAddrs}, path::PathBuf, sync::Arc};
 
-use tokio_rustls::{rustls, TlsConnector};
+use rustls_cert_file_reader::{FileReader, Format, ReadCerts, ReadKey};
+use tokio_rustls::{rustls::{self}, TlsConnector};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+
 
 
 pub fn get_server_addresses(hostname : &str) -> anyhow::Result<Vec::<SocketAddr>>
@@ -39,29 +42,110 @@ pub async fn connect_tcp(hostname : &str) -> anyhow::Result<tokio::net::TcpStrea
     Err(anyhow::Error::msg("Failed to connect to any server"))
 }
 
+pub struct TlsConfigurationBuilder
+{
+    root_cert_store : rustls::RootCertStore,
+    resumption_enabled : bool,
+    certificate_chain : Option<Vec<CertificateDer<'static>>>,
+    private_key : Option<PrivateKeyDer<'static>>,
+    disable_certificate_verification : bool
+}
+
+impl Default for TlsConfigurationBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TlsConfigurationBuilder {
+    pub fn new() -> Self {
+        Self {
+            root_cert_store : rustls::RootCertStore::empty(),
+            resumption_enabled : false,
+            certificate_chain : Option::None,
+            private_key : Option::None,
+            disable_certificate_verification : false
+        }
+    }
+
+    pub fn with_root_certificates(mut self, root_cert_store : rustls::RootCertStore) -> Self {
+        self.root_cert_store = root_cert_store;
+        self
+    }
+
+    pub fn with_resumption(mut self, enabled : bool) -> Self {
+        self.resumption_enabled = enabled;
+        self
+    }
+
+    // pub fn with_client_auth_cert(mut self, certificate_chain : Vec<CertificateDer<'_>>, private_key : PrivateKeyDer<'_>) -> Self {
+    //     self.certificate_chain = Some(certificate_chain);
+    //     self.private_key = Some(private_key);
+    //     self
+    // }
+
+    pub async fn with_client_auth_cert_files(mut self, certificate_chain_file : impl Into<PathBuf>, private_key_file : impl Into<PathBuf>) -> anyhow::Result<Self> {
+        let cert_file_reader  : FileReader<Vec<CertificateDer<'_>>> = FileReader::new(
+            certificate_chain_file, Format::PEM);
+        let cert_chain = cert_file_reader.read_certs().await?;
+
+        let key_file_reader : FileReader<PrivateKeyDer<'_>> = FileReader::new(
+            private_key_file, Format::PEM);
+        let key_der = key_file_reader.read_key().await?;
+
+        self.certificate_chain = cert_chain.into();
+        self.private_key = key_der.into();
+        Ok(self)
+    }
+
+    pub fn with_certificate_verification_disabled(mut self, disabled : bool) -> Self {
+        self.disable_certificate_verification = disabled;
+        self
+    }
 
 
-pub async fn connect_tls(stream : tokio::net::TcpStream, domain : &str) -> anyhow::Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>> {
-    // Only support TLS 1.3
-    let supported_tls_versions = vec![&rustls::version::TLS13];
+    pub fn build(self) -> anyhow::Result<rustls::ClientConfig> {
+        let supported_tls_versions = vec![&rustls::version::TLS13];
 
-    // Empty certificate store
-    let root_cert_store = rustls::RootCertStore::empty();
+        let config = rustls::ClientConfig::builder_with_protocol_versions(supported_tls_versions.as_slice())
+            .with_root_certificates(self.root_cert_store);
 
-    // Default client config
-    let mut config = rustls::ClientConfig::builder_with_protocol_versions(supported_tls_versions.as_slice())
-        .with_root_certificates(root_cert_store)
-        .with_no_client_auth();
+        let mut config = match self.certificate_chain {
+            Some(cert_chain) => {
+                match self.private_key {
+                    Some(key_der) => {
+                        config.with_client_auth_cert(cert_chain, key_der)?
+                    },
+                    None => {
+                        return Err(anyhow::Error::msg("Private key not provided"));
+                    }
+                }
+            },
+            None => {
+                config.with_no_client_auth()
+            }
+        };
 
-    // Disable resumption
-    config.resumption = config.resumption.tls12_resumption(rustls::client::Tls12Resumption::Disabled);
+        if !self.resumption_enabled
+        {
+            config.resumption = config.resumption.tls12_resumption(rustls::client::Tls12Resumption::Disabled);
+        }
 
-    // Disable ssl verification
-    config.dangerous().set_certificate_verifier(Arc::new(danger::NoCertificateVerification::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
-    )));
+        if self.disable_certificate_verification
+        {
+            config.dangerous().set_certificate_verifier(Arc::new(danger::NoCertificateVerification::new(
+                    rustls::crypto::aws_lc_rs::default_provider(),
+            )));
+        }
 
-    let connector = TlsConnector::from(Arc::new(config));
+        Ok(config)
+    }
+    
+}
+
+
+pub async fn connect_tls(config : &Arc<rustls::ClientConfig>, stream : tokio::net::TcpStream, domain : &str) -> anyhow::Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>> {
+    let connector = TlsConnector::from(config.clone());
 
     let domain = rustls::pki_types::ServerName::try_from(domain)
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid dnsname"))?
