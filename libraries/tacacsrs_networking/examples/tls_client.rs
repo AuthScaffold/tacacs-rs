@@ -5,7 +5,7 @@ use tacacsrs_messages::enumerations::*;
 use tacacsrs_networking::helpers::connect_tcp;
 
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
-use tacacsrs_networking::traits::SessionCreationTrait;
+use tacacsrs_networking::traits::SessionManagementTrait;
 use tacacsrs_networking::tls_connection::TLSConnectionTrait;
 
 

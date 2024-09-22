@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
 use log::{Record, Level, Metadata};
 use log::{SetLoggerError, LevelFilter};
 use tacacsrs_networking::tcp_connection::TcpConnectionTrait;
-use tacacsrs_networking::traits::SessionCreationTrait;
+use tacacsrs_networking::traits::SessionManagementTrait;
 static LOGGER: SimpleLogger = SimpleLogger;
 
 struct SimpleLogger;

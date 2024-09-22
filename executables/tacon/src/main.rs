@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::{arg, Parser, Subcommand};
 use commands::accounting::send_accounting_request;
-use tacacsrs_networking::{tcp_connection::TcpConnectionTrait, traits::SessionCreationTrait};
+use tacacsrs_networking::{tcp_connection::TcpConnectionTrait, traits::SessionManagementTrait};
 
 
 // Define the CLI struct

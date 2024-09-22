@@ -7,7 +7,7 @@ use tacacsrs_messages::enumerations::{TacacsAccountingFlags, TacacsAuthenticatio
 use tacacsrs_networking::helpers::*;
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
-use tacacsrs_networking::traits::SessionCreationTrait;
+use tacacsrs_networking::traits::SessionManagementTrait;
 use tacacsrs_networking::tcp_connection::TcpConnectionTrait;
 use tokio::task::JoinHandle;
 

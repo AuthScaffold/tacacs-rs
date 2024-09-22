@@ -1,3 +1,4 @@
+
 use std::sync::Arc;
 use async_trait::async_trait;
 use tacacsrs_messages::enumerations::TacacsFlags;
@@ -10,10 +11,10 @@ use tokio::net::TcpStream;
 use tokio::task;
 
 use crate::session::Session;
-use crate::traits::SessionCreationTrait;
+use crate::traits::SessionManagementTrait;
 
 #[async_trait]
-pub trait TcpConnectionTrait : SessionCreationTrait
+pub trait TcpConnectionTrait : SessionManagementTrait
 {
     fn new(obfuscation_key : Option<&[u8]>) -> Self;
     async fn run(self: &Arc<Self>, stream : TcpStream) -> anyhow::Result<()>;
@@ -21,7 +22,7 @@ pub trait TcpConnectionTrait : SessionCreationTrait
 
 pub struct TcpConnection
 {
-    connection : crate::connection::Connection,
+    connection : crate::session_manager::SessionManager,
     obfuscation_key : Option<Vec<u8>>,
 }
 
@@ -232,35 +233,7 @@ impl TcpConnection
                 );
             }
 
-            // Get a read lock on the duplex_channels dictionary and 
-            // find the appropriate channel to forward the packet to.
-            let duplex_channels = self.connection.duplex_channels.read().await;
-
-            match duplex_channels.get(&packet.header().session_id) {
-                Some(channel) => {
-                    log::info!(
-                        target: "tacacsrs_networking::connection::read_handler",
-                        "Found client channel for session id {}, forwarding packet",
-                        session_id
-                    );
-
-
-                    match channel.send(packet).await
-                    {
-                        Ok(_) => (),
-                        Err(e) => {
-                            log::warn!(
-                                target: "tacacsrs_networking::connection::read_handler",
-                                "Failed to send packet to client channel for session id: {} due to error: {}",
-                                session_id, e.to_string()
-                            );
-
-                            continue;
-                        }
-                    }
-                },
-                None => continue
-            };
+            let _ = self.connection.send_message_to_session(packet).await;
         }
     }
 }
@@ -272,10 +245,11 @@ impl TcpConnectionTrait for TcpConnection
     {
         Self
         {
-            connection: crate::connection::Connection::new(),
+            connection: crate::session_manager::SessionManager::new(),
             obfuscation_key: obfuscation_key.map(|key| key.to_vec())
         }
     }
+
 
     async fn run(self: &Arc<Self>, stream : TcpStream) -> anyhow::Result<()>
     {
@@ -289,20 +263,15 @@ impl TcpConnectionTrait for TcpConnection
 }
 
 #[async_trait]
-impl SessionCreationTrait for TcpConnection
+impl SessionManagementTrait for TcpConnection
 {
-    async fn can_create_sessions(self : Arc<Self>) -> bool
+    async fn can_create_sessions(self : &Arc<Self>) -> bool
     {
         self.connection.can_create_sessions().await
     }
 
-    async fn create_session(self : Arc<Self>) -> anyhow::Result<Session>
+    async fn create_session(self : &Arc<Self>) -> anyhow::Result<Session>
     {
         self.connection.create_session().await
-    }
-
-    async fn is_running(self : Arc<Self>) -> bool
-    {
-        self.connection.is_running().await
     }
 }
