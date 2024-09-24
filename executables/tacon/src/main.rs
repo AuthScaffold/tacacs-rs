@@ -96,6 +96,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             3 => {
                 level = "debug";
             }
+            4 => {
+                level = "trace";
+            }
             _ => {}
         }
         let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level)).try_init();
