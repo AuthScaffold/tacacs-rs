@@ -11,3 +11,4 @@ services:
       - '449:449'
     volumes:
       - ./config:/usr/local/etc/
+      - ./scripts:/usr/local/scripts/

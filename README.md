@@ -2,8 +2,13 @@
 
 `tacacs-rs` is a reference implementation of the TACACS+ protocol, designed to provide a robust and efficient solution for authentication, authorization, and accounting (AAA) services.
 
-
 ## Demo
+
+Generate certificates with a relatively short expiry
+
+```powershell
+docker compose run -it --rm tacplus /bin/sh /usr/local/scripts/run-generatecertificates.sh
+```
 
 **Demo 1: Existing (Legacy) TACACS+ with Obfuscation**
 
@@ -23,8 +28,9 @@ cargo run -p tacon -- `
 
 ```powershell
 clear
-$client_certificate = Join-Path -Path $(pwd) -ChildPath libraries tacacsrs_networking examples samples client.crt
-$client_key = Join-Path -Path $(pwd) -ChildPath libraries tacacsrs_networking examples samples client.key
+$git_directory = git rev-parse --show-toplevel
+$client_certificate = Join-Path -Path $git_directory -ChildPath libraries tacacsrs_networking examples samples client.crt
+$client_key = Join-Path -Path $git_directory -ChildPath libraries tacacsrs_networking examples samples client.key
 cargo run -p tacon -- `
     --use-tls `
     --client-certificate $client_certificate `
