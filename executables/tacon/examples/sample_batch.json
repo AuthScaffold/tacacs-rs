@@ -1,0 +1,38 @@
+{
+  "metadata": {
+    "description": "Sample batch file demonstrating all request types",
+    "parallel": false
+  },
+  "requests": [
+    {
+      "type": "accounting",
+      "user": "admin",
+      "port": "tty0",
+      "rem_addr": "192.168.1.100",
+      "cmd": "show running-config"
+    },
+    {
+      "type": "accounting",
+      "user": "admin",
+      "port": "tty0",
+      "rem_addr": "192.168.1.100",
+      "cmd": "configure terminal",
+      "cmd_args": ["interface eth0", "shutdown"]
+    },
+    {
+      "type": "authentication",
+      "user": "operator",
+      "port": "console",
+      "rem_addr": "10.0.0.50",
+      "password": "secret123"
+    },
+    {
+      "type": "authorization",
+      "user": "operator",
+      "port": "console",
+      "rem_addr": "10.0.0.50",
+      "cmd": "show interfaces",
+      "service": "shell"
+    }
+  ]
+}

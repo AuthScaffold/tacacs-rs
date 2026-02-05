@@ -1,5 +1,7 @@
+mod batch;
 mod commands;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
@@ -87,14 +89,18 @@ enum Command {
 }
 
 /// Represents an active TACACS+ connection (either plain TCP or TLS)
-enum Connection {
+pub enum Connection {
     Tcp(Arc<TcpConnection>),
     Tls(Arc<TlsConnection>),
 }
 
 impl Connection {
     /// Creates a new session on this connection
-    async fn create_session(&self) -> anyhow::Result<Session> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if session creation fails on the underlying connection.
+    pub async fn create_session(&self) -> anyhow::Result<Session> {
         match self {
             Self::Tcp(conn) => conn.create_session().await,
             Self::Tls(conn) => conn.create_session().await,
@@ -204,6 +210,34 @@ async fn execute_command(cli: &Cli, session: &Session) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Runs the CLI in batch mode, executing requests from a JSON file
+///
+/// # Errors
+///
+/// Returns an error if the batch file cannot be loaded or if connection fails.
+async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
+    let batch_file = batch::load_batch_file(batch_path)?;
+
+    println!(
+        "Loaded batch file with {} requests (parallel: {})",
+        batch_file.requests.len(),
+        batch_file.metadata.parallel
+    );
+
+    let connection = establish_connection(cli).await?;
+    let results = batch::execute_batch(&connection, &batch_file).await?;
+
+    batch::print_results_summary(&results);
+
+    // Return error if any requests failed
+    let failed_count = results.iter().filter(|r| r.result.is_err()).count();
+    if failed_count > 0 {
+        bail!("{failed_count} request(s) failed");
+    }
+
+    Ok(())
+}
+
 /// Main application entry point
 ///
 /// # Errors
@@ -223,9 +257,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
     if let Some(batch_file) = &cli.batch {
         log::info!("Running in batch mode with file: {batch_file}");
-        // TODO: Implement batch mode processing
-        println!("Batch mode not yet implemented");
-        return Ok(());
+        return run_batch_mode(&cli, Path::new(batch_file)).await;
     }
 
     let connection = establish_connection(&cli).await?;
