@@ -10,9 +10,11 @@ use std::path::Path;
 
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::session::Session;
+use tacacsrs_networking::SingleConnectionState;
 
+use crate::cli::Cli;
 use crate::commands::accounting::send_accounting_request;
-use crate::connection::Connection;
+use crate::connection::{establish_connection, Connection};
 
 /// Custom flags that can be set on TACACS+ packet headers
 #[derive(Debug, Deserialize, Default, Clone, Copy)]
@@ -197,9 +199,15 @@ pub struct RequestResult {
 
 /// Executes all requests in a batch file
 ///
+/// This function handles servers that may or may not support single connection mode.
+/// The first request is always sent to determine the server's capabilities. If the
+/// server doesn't support single connection mode (TAC_PLUS_SINGLE_CONNECT_FLAG not set),
+/// subsequent requests will each use a new connection.
+///
 /// # Arguments
 ///
-/// * `connection` - The active TACACS+ connection
+/// * `cli` - The CLI configuration (used to establish new connections if needed)
+/// * `connection` - The initial TACACS+ connection
 /// * `batch` - The parsed batch file
 ///
 /// # Returns
@@ -211,7 +219,8 @@ pub struct RequestResult {
 /// Returns an error if session creation fails. Individual request failures
 /// are captured in the results vector.
 pub async fn execute_batch(
-    connection: &Connection,
+    cli: &Cli,
+    connection: Connection,
     batch: &BatchFile,
 ) -> anyhow::Result<Vec<RequestResult>> {
     if let Some(desc) = &batch.metadata.description {
@@ -226,21 +235,44 @@ pub async fn execute_batch(
     );
 
     if batch.metadata.parallel {
-        execute_parallel(connection, &batch.requests).await
+        execute_parallel(cli, connection, &batch.requests).await
     } else {
-        execute_sequential(connection, &batch.requests).await
+        execute_sequential(cli, connection, &batch.requests).await
     }
 }
 
 /// Executes requests sequentially, one at a time
+/// 
+/// If the server doesn't support single connection mode, a new connection
+/// is established for each subsequent request.
 async fn execute_sequential(
-    connection: &Connection,
+    cli: &Cli,
+    mut connection: Connection,
     requests: &[BatchRequest],
 ) -> anyhow::Result<Vec<RequestResult>> {
     let mut results = Vec::with_capacity(requests.len());
 
     for (index, request) in requests.iter().enumerate() {
         log::info!("Executing request {}/{}", index + 1, requests.len());
+
+        // Check if we need a new connection (after first request, if single connection not supported)
+        if index > 0 {
+            match connection.single_connection_state().await {
+                SingleConnectionState::NotSupported => {
+                    log::info!("Server does not support single connection mode. Establishing new connection for request {}", index + 1);
+                    connection = establish_connection(cli).await
+                        .context("Failed to establish new connection for batch request")?;
+                }
+                SingleConnectionState::Supported => {
+                    log::debug!("Reusing connection for request {} (single connection mode supported)", index + 1);
+                }
+                SingleConnectionState::Initial | SingleConnectionState::Negotiating => {
+                    // This shouldn't happen in sequential mode after the first request
+                    log::warn!("Unexpected connection state after first request: {:?}", 
+                        connection.single_connection_state().await);
+                }
+            }
+        }
 
         let custom_session_id = request.session_id();
         let session = connection
@@ -264,41 +296,136 @@ async fn execute_sequential(
 }
 
 /// Executes all requests in parallel
+/// 
+/// First sends a single request to determine if the server supports single connection mode.
+/// If supported, remaining requests are executed in parallel on the same connection.
+/// If not supported, remaining requests are each executed on separate connections.
 async fn execute_parallel(
-    connection: &Connection,
+    cli: &Cli,
+    connection: Connection,
     requests: &[BatchRequest],
 ) -> anyhow::Result<Vec<RequestResult>> {
-    // Create all sessions upfront
-    let mut session_futures = Vec::with_capacity(requests.len());
-    for request in requests {
-        let custom_session_id = request.session_id();
-        session_futures.push(connection.create_session_optional_id(custom_session_id));
+    if requests.is_empty() {
+        return Ok(vec![]);
     }
 
-    let sessions: Vec<Session> = join_all(session_futures)
+    // Execute the first request to determine single connection mode support
+    let first_request = &requests[0];
+    log::info!("Executing first request to determine single connection mode support");
+    
+    let first_session = connection
+        .create_session_optional_id(first_request.session_id())
         .await
-        .into_iter()
-        .enumerate()
-        .map(|(i, r)| r.with_context(|| format!("Failed to create session for request {i}")))
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .context("Failed to create session for first batch request")?;
 
-    // Execute all requests in parallel
-    let futures: Vec<_> = requests
-        .iter()
-        .zip(sessions.iter())
-        .enumerate()
-        .map(|(index, (request, session))| async move {
-            log::info!("Starting parallel request {}", index + 1);
-            let result = execute_single_request(session, request).await;
-            RequestResult {
-                index,
-                request_type: request.type_name(),
-                result,
-            }
-        })
-        .collect();
+    let first_result = execute_single_request(&first_session, first_request).await;
+    let mut results = vec![RequestResult {
+        index: 0,
+        request_type: first_request.type_name(),
+        result: first_result,
+    }];
 
-    Ok(join_all(futures).await)
+    // If only one request, we're done
+    if requests.len() == 1 {
+        return Ok(results);
+    }
+
+    let remaining_requests = &requests[1..];
+
+    // Check if single connection mode is supported
+    let single_connection_supported = matches!(
+        connection.single_connection_state().await,
+        SingleConnectionState::Supported
+    );
+
+    if single_connection_supported {
+        log::info!("Server supports single connection mode. Executing {} remaining requests in parallel on same connection", remaining_requests.len());
+        
+        // Create all sessions upfront on the same connection
+        let mut session_futures = Vec::with_capacity(remaining_requests.len());
+        for request in remaining_requests {
+            session_futures.push(connection.create_session_optional_id(request.session_id()));
+        }
+
+        let sessions: Vec<Session> = join_all(session_futures)
+            .await
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| r.with_context(|| format!("Failed to create session for request {}", i + 2)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        // Execute all requests in parallel
+        let futures: Vec<_> = remaining_requests
+            .iter()
+            .zip(sessions.iter())
+            .enumerate()
+            .map(|(i, (request, session))| {
+                let index = i + 1; // Offset by 1 since we already did index 0
+                async move {
+                    log::info!("Starting parallel request {}", index + 1);
+                    let result = execute_single_request(session, request).await;
+                    RequestResult {
+                        index,
+                        request_type: request.type_name(),
+                        result,
+                    }
+                }
+            })
+            .collect();
+
+        results.extend(join_all(futures).await);
+    } else {
+        log::info!("Server does not support single connection mode. Executing {} remaining requests with separate connections", remaining_requests.len());
+        
+        // Execute remaining requests in parallel, each with its own connection
+        let futures: Vec<_> = remaining_requests
+            .iter()
+            .enumerate()
+            .map(|(i, request)| {
+                let index = i + 1; // Offset by 1 since we already did index 0
+                let cli = cli.clone();
+                async move {
+                    log::info!("Establishing new connection for request {}", index + 1);
+                    
+                    let conn = match establish_connection(&cli).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            return RequestResult {
+                                index,
+                                request_type: request.type_name(),
+                                result: Err(format!("Failed to establish connection: {e}")),
+                            };
+                        }
+                    };
+
+                    let session = match conn.create_session_optional_id(request.session_id()).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return RequestResult {
+                                index,
+                                request_type: request.type_name(),
+                                result: Err(format!("Failed to create session: {e}")),
+                            };
+                        }
+                    };
+
+                    let result = execute_single_request(&session, request).await;
+                    RequestResult {
+                        index,
+                        request_type: request.type_name(),
+                        result,
+                    }
+                }
+            })
+            .collect();
+
+        results.extend(join_all(futures).await);
+    }
+
+    // Sort results by index to maintain order
+    results.sort_by_key(|r| r.index);
+    
+    Ok(results)
 }
 
 /// Executes a single batch request

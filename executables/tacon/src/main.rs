@@ -99,7 +99,7 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
     );
 
     let connection = establish_connection(cli).await?;
-    let results = batch::execute_batch(&connection, &batch_file).await?;
+    let results = batch::execute_batch(cli, connection, &batch_file).await?;
 
     batch::print_results_summary(&results);
 

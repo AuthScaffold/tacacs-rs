@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 ///
 /// A command-line tool for interacting with TACACS+ servers,
 /// supporting authentication, authorization, and accounting operations.
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(name = "tacon", version, author)]
 #[command(about = "TACACS+ client CLI", long_about = None)]
 pub struct Cli {
@@ -53,7 +53,7 @@ pub struct RequestArgs {
 }
 
 /// Available TACACS+ operations
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum Command {
     /// Run in batch mode using commands from a file
     Batch {

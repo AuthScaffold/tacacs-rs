@@ -7,6 +7,7 @@ use tacacsrs_networking::{
     tcp_connection::{TcpConnection, TcpConnectionTrait},
     tls_connection::{TlsConnection, TLSConnectionTrait},
     traits::SessionManagementTrait,
+    SingleConnectionState,
 };
 
 use crate::cli::Cli;
@@ -54,6 +55,23 @@ impl Connection {
         match session_id {
             Some(id) => self.create_session_with_id(id).await,
             None => self.create_session().await,
+        }
+    }
+
+    /// Returns the current single connection state
+    pub async fn single_connection_state(&self) -> SingleConnectionState {
+        match self {
+            Self::Tcp(conn) => conn.single_connection_state().await,
+            Self::Tls(conn) => conn.single_connection_state().await,
+        }
+    }
+
+    /// Returns true if new sessions can be created on this connection
+    #[allow(dead_code)] // Useful for callers to check before attempting to create sessions
+    pub async fn can_create_sessions(&self) -> bool {
+        match self {
+            Self::Tcp(conn) => conn.can_create_sessions().await,
+            Self::Tls(conn) => conn.can_create_sessions().await,
         }
     }
 }
