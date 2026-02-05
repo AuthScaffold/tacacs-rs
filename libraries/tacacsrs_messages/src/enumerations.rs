@@ -55,6 +55,8 @@ bitflags! {
     pub struct TacacsFlags: u8 {
         const TAC_PLUS_UNENCRYPTED_FLAG = 0x01;
         const TAC_PLUS_SINGLE_CONNECT_FLAG = 0x04;
+        const TAC_PLUS_CUSTOM_FLAG_1 = 0x40;
+        const TAC_PLUS_CUSTOM_FLAG_2 = 0x80;
     }
 }
 

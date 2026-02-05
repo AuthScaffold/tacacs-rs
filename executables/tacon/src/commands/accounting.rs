@@ -4,7 +4,7 @@ use anyhow::Context;
 use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
-    TacacsAuthenticationType,
+    TacacsAuthenticationType, TacacsFlags,
 };
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
@@ -19,6 +19,7 @@ use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 /// * `rem_address` - Remote address of the client
 /// * `cmd` - The command being executed
 /// * `cmd_args` - Optional arguments to the command
+/// * `custom_flags` - Custom flags to set on the packet header (e.g., TAC_PLUS_CUSTOM_FLAG_1, TAC_PLUS_CUSTOM_FLAG_2)
 ///
 /// # Returns
 ///
@@ -30,6 +31,7 @@ pub async fn send_accounting_request(
     rem_address: &str,
     cmd: &str,
     cmd_args: Option<&Vec<String>>,
+    custom_flags: TacacsFlags,
 ) -> anyhow::Result<AccountingReply> {
     let args = build_accounting_args(cmd, cmd_args);
 
@@ -46,7 +48,7 @@ pub async fn send_accounting_request(
     };
 
     let response = session
-        .send_accounting_request(request)
+        .send_accounting_request_with_flags(request, custom_flags)
         .await
         .context("Failed to send accounting request")?;
 

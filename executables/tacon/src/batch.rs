@@ -8,10 +8,37 @@ use futures::future::join_all;
 use serde::Deserialize;
 use std::path::Path;
 
+use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::session::Session;
 
 use crate::commands::accounting::send_accounting_request;
 use crate::Connection;
+
+/// Custom flags that can be set on TACACS+ packet headers
+#[derive(Debug, Deserialize, Default, Clone, Copy)]
+pub struct CustomFlags {
+    /// Set TAC_PLUS_CUSTOM_FLAG_1 (0x40) on the packet header
+    #[serde(default)]
+    pub custom_flag_1: bool,
+
+    /// Set TAC_PLUS_CUSTOM_FLAG_2 (0x80) on the packet header
+    #[serde(default)]
+    pub custom_flag_2: bool,
+}
+
+impl CustomFlags {
+    /// Converts the custom flags to TacacsFlags
+    pub fn to_tacacs_flags(self) -> TacacsFlags {
+        let mut flags = TacacsFlags::empty();
+        if self.custom_flag_1 {
+            flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1;
+        }
+        if self.custom_flag_2 {
+            flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
+        }
+        flags
+    }
+}
 
 /// Batch file structure containing metadata and requests
 #[derive(Debug, Deserialize)]
@@ -68,6 +95,10 @@ pub struct AccountingRequest {
     /// Optional command arguments
     #[serde(default)]
     pub cmd_args: Vec<String>,
+
+    /// Optional custom flags to set on the packet header
+    #[serde(default)]
+    pub custom_flags: CustomFlags,
 }
 
 /// Arguments for an authentication request
@@ -86,6 +117,10 @@ pub struct AuthenticationRequest {
     /// Password (for PAP) or other credentials
     #[serde(default)]
     pub password: Option<String>,
+
+    /// Optional custom flags to set on the packet header
+    #[serde(default)]
+    pub custom_flags: CustomFlags,
 }
 
 /// Arguments for an authorization request
@@ -112,6 +147,10 @@ pub struct AuthorizationRequest {
     /// Service type (e.g., "shell")
     #[serde(default = "default_service")]
     pub service: String,
+
+    /// Optional custom flags to set on the packet header
+    #[serde(default)]
+    pub custom_flags: CustomFlags,
 }
 
 fn default_service() -> String {
@@ -254,6 +293,8 @@ async fn execute_single_request(session: &Session, request: &BatchRequest) -> Re
                 Some(&req.cmd_args)
             };
 
+            let custom_flags = req.custom_flags.to_tacacs_flags();
+
             match send_accounting_request(
                 session,
                 &req.user,
@@ -261,6 +302,7 @@ async fn execute_single_request(session: &Session, request: &BatchRequest) -> Re
                 &req.rem_addr,
                 &req.cmd,
                 cmd_args,
+                custom_flags,
             )
             .await
             {

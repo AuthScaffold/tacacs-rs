@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
+use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::{
     helpers::TlsConfigurationBuilder,
     session::Session,
@@ -79,6 +80,14 @@ enum Command {
         /// Additional arguments for the command
         #[arg(value_name = "ARG")]
         cmd_args: Option<Vec<String>>,
+
+        /// Set TAC_PLUS_CUSTOM_FLAG_1 (0x40) on the packet header
+        #[arg(long)]
+        custom_flag_1: bool,
+
+        /// Set TAC_PLUS_CUSTOM_FLAG_2 (0x80) on the packet header
+        #[arg(long)]
+        custom_flag_2: bool,
     },
 
     /// Perform authentication
@@ -188,12 +197,20 @@ async fn execute_command(cli: &Cli, session: &Session) -> anyhow::Result<()> {
     log::info!("Executing command: {command:?}");
 
     match command {
-        Command::Accounting { cmd, cmd_args } => {
+        Command::Accounting { cmd, cmd_args, custom_flag_1, custom_flag_2 } => {
             let user = cli.user.as_ref().context("User is required")?;
             let port = cli.port.as_ref().context("Port is required")?;
             let rem_addr = cli.rem_addr.as_ref().context("Remote address is required")?;
 
-            send_accounting_request(session, user, port, rem_addr, cmd, cmd_args.as_ref()).await?;
+            let mut custom_flags = TacacsFlags::empty();
+            if *custom_flag_1 {
+                custom_flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1;
+            }
+            if *custom_flag_2 {
+                custom_flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
+            }
+
+            send_accounting_request(session, user, port, rem_addr, cmd, cmd_args.as_ref(), custom_flags).await?;
         }
 
         Command::Authentication => {

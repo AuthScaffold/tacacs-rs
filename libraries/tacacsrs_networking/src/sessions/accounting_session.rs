@@ -10,12 +10,26 @@ use crate::session::Session;
 
 #[async_trait]
 pub trait AccountingSessionTrait {
+    /// Sends an accounting request with default flags (TAC_PLUS_UNENCRYPTED_FLAG)
     async fn send_accounting_request(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply>;
+    
+    /// Sends an accounting request with custom flags added to the header
+    /// 
+    /// # Arguments
+    /// 
+    /// * `request` - The accounting request to send
+    /// * `custom_flags` - Additional flags to set on the packet header (e.g., TAC_PLUS_CUSTOM_FLAG_1, TAC_PLUS_CUSTOM_FLAG_2)
+    async fn send_accounting_request_with_flags(&self, request: AccountingRequest, custom_flags: TacacsFlags) -> anyhow::Result<AccountingReply>;
 }
 
 #[async_trait]
 impl AccountingSessionTrait for Session {
     async fn send_accounting_request(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply>
+    {
+        self.send_accounting_request_with_flags(request, TacacsFlags::empty()).await
+    }
+
+    async fn send_accounting_request_with_flags(&self, request: AccountingRequest, custom_flags: TacacsFlags) -> anyhow::Result<AccountingReply>
     {
         if self.is_complete().await {
             return Err(anyhow::Error::msg("Session is already complete"));
@@ -25,20 +39,23 @@ impl AccountingSessionTrait for Session {
 
         let data = request.to_bytes();
 
+        // Combine the base flag with any custom flags
+        let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | custom_flags;
+
         let packet = Packet::new(Header {
             major_version : TacacsMajorVersion::TacacsPlusMajor1,
             minor_version : TacacsMinorVersion::TacacsPlusMinorVerDefault,
             tacacs_type : TacacsType::TacPlusAccounting,
             seq_no : sequence_number,
-            flags : TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            flags,
             session_id : self.session_id(),
             length : data.len() as u32
         }, data)?;
 
         info!(
             target: "tacacsrs_networking::sessions::accounting_session",
-            "Sending Accounting Request with sequence number {} for session {}",
-            sequence_number, self.session_id()
+            "Sending Accounting Request with sequence number {} for session {} (flags: {:?})",
+            sequence_number, self.session_id(), flags
         );
         
         self.duplex_channel.sender.send(packet).await?;

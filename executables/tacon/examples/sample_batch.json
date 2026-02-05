@@ -17,7 +17,11 @@
       "port": "tty0",
       "rem_addr": "192.168.1.100",
       "cmd": "configure terminal",
-      "cmd_args": ["interface eth0", "shutdown"]
+      "cmd_args": ["interface eth0", "shutdown"],
+      "custom_flags": {
+        "custom_flag_1": true,
+        "custom_flag_2": false
+      }
     },
     {
       "type": "authentication",
@@ -32,7 +36,11 @@
       "port": "console",
       "rem_addr": "10.0.0.50",
       "cmd": "show interfaces",
-      "service": "shell"
+      "service": "shell",
+      "custom_flags": {
+        "custom_flag_1": true,
+        "custom_flag_2": true
+      }
     }
   ]
 }

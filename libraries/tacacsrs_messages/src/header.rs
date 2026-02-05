@@ -222,7 +222,8 @@ mod tests {
     fn deserialisation_invalid_flags() {
         let mut binary_data = generate_default_packet();
         let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
-        binary_data[3] = flags.bits() | 0x80;
+        // Use 0x02 which is not a valid flag bit (valid bits are 0x01, 0x04, 0x40, 0x80)
+        binary_data[3] = flags.bits() | 0x02;
     
         let _header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
