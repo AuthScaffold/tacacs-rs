@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -48,25 +49,26 @@ impl SessionManager
 
     async fn create_channel_with_optional_id(&self, custom_session_id: Option<u32>) -> anyhow::Result<(DuplexChannel, u32)>
     {
-        // create some channel where the send side connects to the internal MPSC receiver
-        // aka clone the sender and pass it to the DuplexChannel. Then create a new mpsc
-        // and associate that with the session id here inside the connection.
-        let (session_sender, session_receiver) = mpsc::channel::<Packet>(32);
-
-        let duplex_channel = DuplexChannel::new(session_receiver, self.sender.clone() );
-
-        // get lock on duplex_channels and then insert the new session id
+        // First, determine the session ID and validate it before creating any channels
         let session_id = {
-            let mut duplex_channels = self.duplex_channels.write().await;
+            let duplex_channels = self.duplex_channels.read().await;
 
-            let session_id = match custom_session_id {
+            match custom_session_id {
                 Some(id) => {
-                    // If a custom session ID is provided, check if it already exists
-                    if duplex_channels.contains_key(&id) {
-                        return Err(anyhow::Error::msg(format!(
-                            "Session ID {} is already in use",
+                    // If a custom session ID is provided, check if it already exists and is still active
+                    if let Some(existing_sender) = duplex_channels.get(&id) {
+                        if !existing_sender.is_closed() {
+                            return Err(anyhow::Error::msg(format!(
+                                "Session ID {} is already in use",
+                                id
+                            )));
+                        }
+                        // Existing session is complete (channel closed), allow reuse
+                        log::debug!(
+                            target: "tacacsrs_networking::session_manager::create_channel",
+                            "Reusing completed session ID {}",
                             id
-                        )));
+                        );
                     }
                     id
                 }
@@ -78,11 +80,18 @@ impl SessionManager
                     }
                     id
                 }
-            };
-
-            duplex_channels.insert(session_id, session_sender);
-            session_id
+            }
         };
+
+        // Now create the channels after validation
+        let (session_sender, session_receiver) = mpsc::channel::<Packet>(32);
+        let duplex_channel = DuplexChannel::new(session_receiver, self.sender.clone());
+
+        // Insert the new session
+        {
+            let mut duplex_channels = self.duplex_channels.write().await;
+            duplex_channels.insert(session_id, session_sender);
+        }
 
         Ok((duplex_channel, session_id))
     }
@@ -94,17 +103,17 @@ impl SessionManager
         *can_accept_lock
     }
 
-    pub async fn create_session(&self) -> anyhow::Result<Session>
+    pub async fn create_session(self: &Arc<Self>) -> anyhow::Result<Session>
     {
         self.create_session_with_optional_id(None).await
     }
 
-    pub async fn create_session_with_id(&self, session_id: u32) -> anyhow::Result<Session>
+    pub async fn create_session_with_id(self: &Arc<Self>, session_id: u32) -> anyhow::Result<Session>
     {
         self.create_session_with_optional_id(Some(session_id)).await
     }
 
-    async fn create_session_with_optional_id(&self, custom_session_id: Option<u32>) -> anyhow::Result<Session>
+    async fn create_session_with_optional_id(self: &Arc<Self>, custom_session_id: Option<u32>) -> anyhow::Result<Session>
     {
         if !self.can_create_sessions().await
         {
@@ -123,7 +132,35 @@ impl SessionManager
             if custom_session_id.is_some() { " (custom)" } else { "" }
         );
 
-        Ok(Session::new(session_id, duplex_channel))
+        Ok(Session::new_with_manager(session_id, duplex_channel, Some(Arc::clone(self))))
+    }
+
+    pub async fn remove_session(&self, session_id: u32)
+    {
+        let mut duplex_channels = self.duplex_channels.write().await;
+        if duplex_channels.remove(&session_id).is_some() {
+            log::info!(
+                target: "tacacsrs_networking::session_manager::remove_session",
+                "Removed session {} from duplex_channels registry",
+                session_id
+            );
+        }
+    }
+
+    /// Closes all sessions by clearing the duplex_channels registry.
+    /// This will cause any sessions waiting on channel receivers to receive None,
+    /// allowing them to terminate gracefully.
+    pub async fn close_all_sessions(&self)
+    {
+        let mut duplex_channels = self.duplex_channels.write().await;
+        let session_count = duplex_channels.len();
+        duplex_channels.clear();
+        
+        log::info!(
+            target: "tacacsrs_networking::session_manager::close_all_sessions",
+            "Closed all {} sessions from duplex_channels registry",
+            session_count
+        );
     }
 
     pub async fn send_message_to_session(&self, packet: Packet) -> anyhow::Result<()>
@@ -193,7 +230,7 @@ mod tests
     #[tokio::test]
     async fn test_create_session()
     {
-        let session_manager = SessionManager::new();
+        let session_manager = Arc::new(SessionManager::new());
 
         let session = session_manager.create_session().await.unwrap();
 
@@ -204,7 +241,7 @@ mod tests
     #[tokio::test]
     async fn test_create_session_when_connection_is_not_accepting_new_sessions()
     {
-        let session_manager = SessionManager::new();
+        let session_manager = Arc::new(SessionManager::new());
 
         session_manager.disable_new_sessions().await;
 
@@ -216,7 +253,7 @@ mod tests
     #[tokio::test]
     async fn test_create_session_when_connection_is_not_accepting_new_sessions_and_has_existing_sessions()
     {
-        let session_manager = SessionManager::new();
+        let session_manager = Arc::new(SessionManager::new());
 
         // creating a session when connection is ok should succeed
         _ = session_manager.create_session().await.unwrap();
@@ -232,7 +269,7 @@ mod tests
     #[tokio::test]
     async fn test_create_session_with_custom_id()
     {
-        let session_manager = SessionManager::new();
+        let session_manager = Arc::new(SessionManager::new());
 
         let custom_id = 12345678_u32;
         let session = session_manager.create_session_with_id(custom_id).await.unwrap();
@@ -243,7 +280,7 @@ mod tests
     #[tokio::test]
     async fn test_create_session_with_duplicate_custom_id_fails()
     {
-        let session_manager = SessionManager::new();
+        let session_manager = Arc::new(SessionManager::new());
 
         let custom_id = 12345678_u32;
         
@@ -267,5 +304,51 @@ mod tests
         let (_, session_id) = session_manager.create_channel_with_id(custom_id).await.unwrap();
 
         assert_eq!(session_id, custom_id);
+    }
+
+    #[tokio::test]
+    async fn test_create_session_with_same_id_after_completion()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+
+        let custom_id = 99999999_u32;
+        
+        // Create first session with custom ID
+        let session1 = session_manager.create_session_with_id(custom_id).await.unwrap();
+        assert_eq!(session1.session_id(), custom_id);
+
+        // Drop the session (simulating completion - this closes the receiver)
+        drop(session1);
+
+        // Now creating a session with the same ID should succeed since the old one is complete
+        let session2 = session_manager.create_session_with_id(custom_id).await.unwrap();
+        assert_eq!(session2.session_id(), custom_id);
+    }
+
+    #[tokio::test]
+    async fn test_session_complete_removes_from_registry()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+
+        let custom_id = 55555555_u32;
+        
+        // Create session with custom ID
+        let session = session_manager.create_session_with_id(custom_id).await.unwrap();
+        assert_eq!(session.session_id(), custom_id);
+
+        // Verify session is in the registry
+        {
+            let channels = session_manager.duplex_channels.read().await;
+            assert!(channels.contains_key(&custom_id));
+        }
+
+        // Complete the session - this should remove it from the registry
+        session.complete().await;
+
+        // Verify session was removed from the registry
+        {
+            let channels = session_manager.duplex_channels.read().await;
+            assert!(!channels.contains_key(&custom_id));
+        }
     }
 }

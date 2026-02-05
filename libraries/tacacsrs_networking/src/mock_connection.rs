@@ -14,7 +14,7 @@ use crate::{session::Session, session_manager::SessionManager, traits::SessionMa
 
 #[derive(Debug)]
 pub struct MockConnection {
-    connection : crate::session_manager::SessionManager,
+    connection : Arc<crate::session_manager::SessionManager>,
     replies : RwLock<std::collections::HashMap<u32, std::collections::HashMap<u8, tacacsrs_messages::packet::Packet>>>,
     requests : RwLock<std::collections::HashMap<u32, std::collections::HashMap<u8, tacacsrs_messages::packet::Packet>>>,
     run_task : RwLock<Option<tokio::task::JoinHandle<anyhow::Result<()>>>>
@@ -40,7 +40,7 @@ impl Default for MockConnection {
 impl MockConnection {
     pub fn new() -> Self {
         MockConnection {
-            connection : SessionManager::new(),
+            connection : Arc::new(SessionManager::new()),
             replies : std::collections::HashMap::new().into(),
             requests : std::collections::HashMap::new().into(),
             run_task : Option::None.into()

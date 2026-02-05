@@ -20,14 +20,14 @@ pub trait TLSConnectionTrait : SessionManagementTrait
 }
 
 pub struct TlsConnection {
-    connection : crate::session_manager::SessionManager,
+    connection : Arc<crate::session_manager::SessionManager>,
     obfuscation_key : Option<Vec<u8>>
 }
 
 impl TlsConnection {
     pub fn new(obfuscation_key : Option<&[u8]>) -> Self {
         Self {
-            connection: crate::session_manager::SessionManager::new(),
+            connection: Arc::new(crate::session_manager::SessionManager::new()),
             obfuscation_key: obfuscation_key.map(|key| key.to_vec())
         }
     }
@@ -100,103 +100,113 @@ impl TlsConnection {
             let self_clone = Arc::clone(&self);
             let read_task_future = async move {
 
-                loop {
-                    let mut header_buffer = [0_u8; TACACS_HEADER_LENGTH];
-        
-                    match reader.read_exact(&mut header_buffer).await {
-                        Ok(_) => (),
-                        Err(e) => {
-                            log::error!(
-                                target: "tacacsrs_networking::connection::read_handler",
-                                "Failed to read header from network due to error: {}",
-                                e.to_string()
-                            );
-                            break Err(anyhow::Error::msg(e.to_string()))
-                        }
-                    };
-        
-                    let header = match Header::from_bytes(&header_buffer) {
-                        Ok(header) => header,
-                        Err(e) => {
-                            log::error!(
-                                target: "tacacsrs_networking::connection::read_handler",
-                                "Failed to parse header due to error: {}",
-                                e.to_string()
-                            );
-        
-                            continue
-                        }
-                    };
-        
-                    let session_id = header.session_id;
-        
-                    log::info!(
-                        target: "tacacsrs_networking::connection::read_handler",
-                        "Received header with session id: {}. Loading body of length {}",
-                        session_id, header.length
-                    );
-        
-                    // Always read the body, regardless of the presence of the session. This is to prevent the 
-                    // stream from getting out of sync.
-                    let mut body_buffer = vec![0_u8; header.length as usize];
-                    match reader.read_exact(&mut body_buffer).await {
-                        Ok(_) => (),
-                        Err(e) => {
-                            log::error!(
-                                target: "tacacsrs_networking::connection::read_handler",
-                                "Failed to {} bytes from network for body session id {} due to error: {}",
-                                header.length, session_id, e.to_string()
-                            );
-        
-                            break Err(anyhow::Error::msg(e.to_string()))
-                        }
-                    };
-        
-                    log::info!(
-                        target: "tacacsrs_networking::connection::read_handler",
-                        "Received body for session id: {}",
-                        session_id
-                    );
-        
-                    // Create a new packet and potentially deobfuscate it.
-                    let mut packet =  match Packet::new(header, body_buffer) {
-                        Ok(packet) => packet,
-                        Err(e) => {
-                            log::error!(
-                                target: "tacacsrs_networking::connection::read_handler",
-                                "Could not load packet for session id {}. Failed with error: {}",
-                                session_id, e.to_string()
-                            );
-        
-                            continue
-                        }
-                    };
-
-                    let is_packet_deobfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
-                    let mut did_deobfuscate = false;
-                    packet = match &self_clone.obfuscation_key {
-                        Some(key) => match is_packet_deobfuscated {
-                            true => packet,
-                            false => {
-                                did_deobfuscate = true;
-                                packet.to_deobfuscated(key)
-                            },
-                        },
-                        None => packet
-                    };
-
-                    if did_deobfuscate {
+                let result: anyhow::Result<()> = async {
+                    loop {
+                        let mut header_buffer = [0_u8; TACACS_HEADER_LENGTH];
+            
+                        match reader.read_exact(&mut header_buffer).await {
+                            Ok(_) => (),
+                            Err(e) => {
+                                log::error!(
+                                    target: "tacacsrs_networking::connection::read_handler",
+                                    "Failed to read header from network due to error: {}",
+                                    e.to_string()
+                                );
+                                return Err(anyhow::Error::msg(e.to_string()))
+                            }
+                        };
+            
+                        let header = match Header::from_bytes(&header_buffer) {
+                            Ok(header) => header,
+                            Err(e) => {
+                                log::error!(
+                                    target: "tacacsrs_networking::connection::read_handler",
+                                    "Failed to parse header due to error: {}",
+                                    e.to_string()
+                                );
+            
+                                continue
+                            }
+                        };
+            
+                        let session_id = header.session_id;
+            
                         log::info!(
                             target: "tacacsrs_networking::connection::read_handler",
-                            "Deobfuscated packet for session id: {}",
+                            "Received header with session id: {}. Loading body of length {}",
+                            session_id, header.length
+                        );
+            
+                        // Always read the body, regardless of the presence of the session. This is to prevent the 
+                        // stream from getting out of sync.
+                        let mut body_buffer = vec![0_u8; header.length as usize];
+                        match reader.read_exact(&mut body_buffer).await {
+                            Ok(_) => (),
+                            Err(e) => {
+                                log::error!(
+                                    target: "tacacsrs_networking::connection::read_handler",
+                                    "Failed to {} bytes from network for body session id {} due to error: {}",
+                                    header.length, session_id, e.to_string()
+                                );
+            
+                                return Err(anyhow::Error::msg(e.to_string()))
+                            }
+                        };
+            
+                        log::info!(
+                            target: "tacacsrs_networking::connection::read_handler",
+                            "Received body for session id: {}",
                             session_id
                         );
+            
+                        // Create a new packet and potentially deobfuscate it.
+                        let mut packet =  match Packet::new(header, body_buffer) {
+                            Ok(packet) => packet,
+                            Err(e) => {
+                                log::error!(
+                                    target: "tacacsrs_networking::connection::read_handler",
+                                    "Could not load packet for session id {}. Failed with error: {}",
+                                    session_id, e.to_string()
+                                );
+            
+                                continue
+                            }
+                        };
+
+                        let is_packet_deobfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+                        let mut did_deobfuscate = false;
+                        packet = match &self_clone.obfuscation_key {
+                            Some(key) => match is_packet_deobfuscated {
+                                true => packet,
+                                false => {
+                                    did_deobfuscate = true;
+                                    packet.to_deobfuscated(key)
+                                },
+                            },
+                            None => packet
+                        };
+
+                        if did_deobfuscate {
+                            log::info!(
+                                target: "tacacsrs_networking::connection::read_handler",
+                                "Deobfuscated packet for session id: {}",
+                                session_id
+                            );
+                        }
+            
+                        // Get a read lock on the duplex_channels dictionary and 
+                        // find the appropriate channel to forward the packet to.
+                        let _ = self_clone.connection.send_message_to_session(packet).await;
                     }
-        
-                    // Get a read lock on the duplex_channels dictionary and 
-                    // find the appropriate channel to forward the packet to.
-                    let _ = self_clone.connection.send_message_to_session(packet).await;
+                }.await;
+
+                if result.is_err() {
+                    // Close all sessions so that any outstanding sessions
+                    // will stop awaiting for network responses
+                    self_clone.connection.close_all_sessions().await;
                 }
+
+                result
             };
 
             task::spawn(read_task_future)

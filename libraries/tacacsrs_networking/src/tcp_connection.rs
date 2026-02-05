@@ -22,7 +22,7 @@ pub trait TcpConnectionTrait : SessionManagementTrait
 
 pub struct TcpConnection
 {
-    connection : crate::session_manager::SessionManager,
+    connection : Arc<crate::session_manager::SessionManager>,
     obfuscation_key : Option<Vec<u8>>,
 }
 
@@ -54,6 +54,7 @@ impl TcpConnection
 
         let read_task = {
             let self_clone = Arc::clone(&self);
+            let connection = Arc::clone(&self.connection);
             task::spawn(async move {
                 match self_clone.read_handler(reader).await {
                     Ok(_) => Ok(()),
@@ -63,6 +64,10 @@ impl TcpConnection
                             "Read task failed with error: {}",
                             e.to_string()
                         );
+
+                        // Close all sessions so that any outstanding sessions
+                        // will stop awaiting for network responses
+                        connection.close_all_sessions().await;
 
                         Err(e)
                     }
@@ -245,7 +250,7 @@ impl TcpConnectionTrait for TcpConnection
     {
         Self
         {
-            connection: crate::session_manager::SessionManager::new(),
+            connection: Arc::new(crate::session_manager::SessionManager::new()),
             obfuscation_key: obfuscation_key.map(|key| key.to_vec())
         }
     }

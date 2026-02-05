@@ -1,6 +1,8 @@
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::duplex_channel::DuplexChannel;
+use crate::session_manager::SessionManager;
 
 
 pub struct Session
@@ -9,7 +11,8 @@ pub struct Session
     pub duplex_channel: DuplexChannel,
 
     pub current_sequence_number: RwLock<u8>,
-    pub session_complete: RwLock<bool>
+    pub session_complete: RwLock<bool>,
+    session_manager: Option<Arc<SessionManager>>
 }
 
 
@@ -17,12 +20,18 @@ impl Session
 {
     pub fn new(session_id: u32, duplex_channel: DuplexChannel) -> Self
     {
+        Self::new_with_manager(session_id, duplex_channel, None)
+    }
+
+    pub fn new_with_manager(session_id: u32, duplex_channel: DuplexChannel, session_manager: Option<Arc<SessionManager>>) -> Self
+    {
         Self
         {
             session_id,
             duplex_channel,
             current_sequence_number: 1_u8.into(),
-            session_complete: false.into()
+            session_complete: false.into(),
+            session_manager
         }
     }
 
@@ -44,6 +53,12 @@ impl Session
     {
         let mut session_complete_lock = self.session_complete.write().await;
         *session_complete_lock = true;
+        drop(session_complete_lock);
+
+        // Notify the session manager to remove this session from the registry
+        if let Some(manager) = &self.session_manager {
+            manager.remove_session(self.session_id).await;
+        }
     }
 
     pub async fn is_complete(&self) -> bool
