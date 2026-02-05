@@ -38,6 +38,16 @@ impl SessionManager
 
     pub(crate) async fn create_channel(&self) -> anyhow::Result<(DuplexChannel, u32)>
     {
+        self.create_channel_with_optional_id(None).await
+    }
+
+    pub(crate) async fn create_channel_with_id(&self, session_id: u32) -> anyhow::Result<(DuplexChannel, u32)>
+    {
+        self.create_channel_with_optional_id(Some(session_id)).await
+    }
+
+    async fn create_channel_with_optional_id(&self, custom_session_id: Option<u32>) -> anyhow::Result<(DuplexChannel, u32)>
+    {
         // create some channel where the send side connects to the internal MPSC receiver
         // aka clone the sender and pass it to the DuplexChannel. Then create a new mpsc
         // and associate that with the session id here inside the connection.
@@ -45,20 +55,34 @@ impl SessionManager
 
         let duplex_channel = DuplexChannel::new(session_receiver, self.sender.clone() );
 
-        // Generate new session id, regenerate session id if it already exists
-        let mut session_id = rand::random::<u32>();
-
         // get lock on duplex_channels and then insert the new session id
-        {
+        let session_id = {
             let mut duplex_channels = self.duplex_channels.write().await;
 
-            while duplex_channels.contains_key(&session_id)
-            {
-                session_id = rand::random::<u32>();
-            }
+            let session_id = match custom_session_id {
+                Some(id) => {
+                    // If a custom session ID is provided, check if it already exists
+                    if duplex_channels.contains_key(&id) {
+                        return Err(anyhow::Error::msg(format!(
+                            "Session ID {} is already in use",
+                            id
+                        )));
+                    }
+                    id
+                }
+                None => {
+                    // Generate new session id, regenerate if it already exists
+                    let mut id = rand::random::<u32>();
+                    while duplex_channels.contains_key(&id) {
+                        id = rand::random::<u32>();
+                    }
+                    id
+                }
+            };
 
             duplex_channels.insert(session_id, session_sender);
-        }
+            session_id
+        };
 
         Ok((duplex_channel, session_id))
     }
@@ -72,17 +96,31 @@ impl SessionManager
 
     pub async fn create_session(&self) -> anyhow::Result<Session>
     {
+        self.create_session_with_optional_id(None).await
+    }
+
+    pub async fn create_session_with_id(&self, session_id: u32) -> anyhow::Result<Session>
+    {
+        self.create_session_with_optional_id(Some(session_id)).await
+    }
+
+    async fn create_session_with_optional_id(&self, custom_session_id: Option<u32>) -> anyhow::Result<Session>
+    {
         if !self.can_create_sessions().await
         {
             return Err(anyhow::Error::msg("Connection is not accepting new sessions"));
         }
 
-        let (duplex_channel, session_id) = self.create_channel().await?;
+        let (duplex_channel, session_id) = match custom_session_id {
+            Some(id) => self.create_channel_with_id(id).await?,
+            None => self.create_channel().await?,
+        };
 
         log::info!(
             target: "tacacsrs_networking::connection::create_session",
-            "Created session with id: {}",
-            session_id
+            "Created session with id: {}{}",
+            session_id,
+            if custom_session_id.is_some() { " (custom)" } else { "" }
         );
 
         Ok(Session::new(session_id, duplex_channel))
@@ -189,5 +227,45 @@ mod tests
         let result = session_manager.create_session().await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_session_with_custom_id()
+    {
+        let session_manager = SessionManager::new();
+
+        let custom_id = 12345678_u32;
+        let session = session_manager.create_session_with_id(custom_id).await.unwrap();
+
+        assert_eq!(session.session_id(), custom_id);
+    }
+
+    #[tokio::test]
+    async fn test_create_session_with_duplicate_custom_id_fails()
+    {
+        let session_manager = SessionManager::new();
+
+        let custom_id = 12345678_u32;
+        
+        // First session with custom ID should succeed
+        let _session1 = session_manager.create_session_with_id(custom_id).await.unwrap();
+
+        // Second session with same custom ID should fail
+        let result = session_manager.create_session_with_id(custom_id).await;
+        
+        assert!(result.is_err());
+        let err_msg = result.err().unwrap().to_string();
+        assert!(err_msg.contains("already in use"), "Expected 'already in use' error, got: {}", err_msg);
+    }
+
+    #[tokio::test]
+    async fn test_create_channel_with_custom_id()
+    {
+        let session_manager = SessionManager::new();
+
+        let custom_id = 87654321_u32;
+        let (_, session_id) = session_manager.create_channel_with_id(custom_id).await.unwrap();
+
+        assert_eq!(session_id, custom_id);
     }
 }

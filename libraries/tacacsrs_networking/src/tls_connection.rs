@@ -244,4 +244,9 @@ impl SessionManagementTrait for TlsConnection
     {
         self.connection.create_session().await
     }
+
+    async fn create_session_with_id(self : &Arc<Self>, session_id: u32) -> anyhow::Result<Session>
+    {
+        self.connection.create_session_with_id(session_id).await
+    }
 }

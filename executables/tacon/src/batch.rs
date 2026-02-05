@@ -99,6 +99,10 @@ pub struct AccountingRequest {
     /// Optional custom flags to set on the packet header
     #[serde(default)]
     pub custom_flags: CustomFlags,
+
+    /// Optional custom session ID (if not provided, a random one is generated)
+    #[serde(default)]
+    pub session_id: Option<u32>,
 }
 
 /// Arguments for an authentication request
@@ -121,6 +125,10 @@ pub struct AuthenticationRequest {
     /// Optional custom flags to set on the packet header
     #[serde(default)]
     pub custom_flags: CustomFlags,
+
+    /// Optional custom session ID (if not provided, a random one is generated)
+    #[serde(default)]
+    pub session_id: Option<u32>,
 }
 
 /// Arguments for an authorization request
@@ -151,6 +159,10 @@ pub struct AuthorizationRequest {
     /// Optional custom flags to set on the packet header
     #[serde(default)]
     pub custom_flags: CustomFlags,
+
+    /// Optional custom session ID (if not provided, a random one is generated)
+    #[serde(default)]
+    pub session_id: Option<u32>,
 }
 
 fn default_service() -> String {
@@ -230,10 +242,15 @@ async fn execute_sequential(
     for (index, request) in requests.iter().enumerate() {
         log::info!("Executing request {}/{}", index + 1, requests.len());
 
+        let custom_session_id = request.session_id();
         let session = connection
-            .create_session()
+            .create_session_optional_id(custom_session_id)
             .await
             .context("Failed to create session for batch request")?;
+
+        if let Some(sid) = custom_session_id {
+            log::info!("Using custom session ID: {sid}");
+        }
 
         let result = execute_single_request(&session, request).await;
         results.push(RequestResult {
@@ -253,8 +270,9 @@ async fn execute_parallel(
 ) -> anyhow::Result<Vec<RequestResult>> {
     // Create all sessions upfront
     let mut session_futures = Vec::with_capacity(requests.len());
-    for _ in requests {
-        session_futures.push(connection.create_session());
+    for request in requests {
+        let custom_session_id = request.session_id();
+        session_futures.push(connection.create_session_optional_id(custom_session_id));
     }
 
     let sessions: Vec<Session> = join_all(session_futures)
@@ -341,6 +359,15 @@ impl BatchRequest {
             Self::Accounting(_) => "accounting",
             Self::Authentication(_) => "authentication",
             Self::Authorization(_) => "authorization",
+        }
+    }
+
+    /// Returns the optional custom session ID for this request
+    pub fn session_id(&self) -> Option<u32> {
+        match self {
+            Self::Accounting(req) => req.session_id,
+            Self::Authentication(req) => req.session_id,
+            Self::Authorization(req) => req.session_id,
         }
     }
 }

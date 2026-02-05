@@ -88,6 +88,10 @@ enum Command {
         /// Set TAC_PLUS_CUSTOM_FLAG_2 (0x80) on the packet header
         #[arg(long)]
         custom_flag_2: bool,
+
+        /// Use a specific session ID instead of a randomly generated one
+        #[arg(long)]
+        session_id: Option<u32>,
     },
 
     /// Perform authentication
@@ -113,6 +117,30 @@ impl Connection {
         match self {
             Self::Tcp(conn) => conn.create_session().await,
             Self::Tls(conn) => conn.create_session().await,
+        }
+    }
+
+    /// Creates a session with a specific session ID on this connection
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session ID is already in use or if session creation fails.
+    pub async fn create_session_with_id(&self, session_id: u32) -> anyhow::Result<Session> {
+        match self {
+            Self::Tcp(conn) => conn.create_session_with_id(session_id).await,
+            Self::Tls(conn) => conn.create_session_with_id(session_id).await,
+        }
+    }
+
+    /// Creates a session, optionally with a specific session ID
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session ID is already in use or if session creation fails.
+    pub async fn create_session_optional_id(&self, session_id: Option<u32>) -> anyhow::Result<Session> {
+        match session_id {
+            Some(id) => self.create_session_with_id(id).await,
+            None => self.create_session().await,
         }
     }
 }
@@ -197,7 +225,7 @@ async fn execute_command(cli: &Cli, session: &Session) -> anyhow::Result<()> {
     log::info!("Executing command: {command:?}");
 
     match command {
-        Command::Accounting { cmd, cmd_args, custom_flag_1, custom_flag_2 } => {
+        Command::Accounting { cmd, cmd_args, custom_flag_1, custom_flag_2, session_id: _ } => {
             let user = cli.user.as_ref().context("User is required")?;
             let port = cli.port.as_ref().context("Port is required")?;
             let rem_addr = cli.rem_addr.as_ref().context("Remote address is required")?;
@@ -255,6 +283,14 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Returns the custom session ID from the command, if specified
+fn get_command_session_id(command: &Option<Command>) -> Option<u32> {
+    match command {
+        Some(Command::Accounting { session_id, .. }) => *session_id,
+        Some(Command::Authentication) | Some(Command::Authorization) | None => None,
+    }
+}
+
 /// Main application entry point
 ///
 /// # Errors
@@ -278,10 +314,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let connection = establish_connection(&cli).await?;
+    
+    let custom_session_id = get_command_session_id(&cli.command);
     let session = connection
-        .create_session()
+        .create_session_optional_id(custom_session_id)
         .await
         .context("Failed to create TACACS+ session")?;
+
+    if let Some(sid) = custom_session_id {
+        log::info!("Using custom session ID: {sid}");
+    }
 
     execute_command(&cli, &session).await
 }
