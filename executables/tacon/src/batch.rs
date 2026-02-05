@@ -12,7 +12,7 @@ use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::session::Session;
 
 use crate::commands::accounting::send_accounting_request;
-use crate::Connection;
+use crate::connection::Connection;
 
 /// Custom flags that can be set on TACACS+ packet headers
 #[derive(Debug, Deserialize, Default, Clone, Copy)]
