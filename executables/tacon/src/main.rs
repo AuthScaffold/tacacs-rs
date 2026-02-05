@@ -2,361 +2,312 @@ mod commands;
 
 use std::sync::Arc;
 
-use anyhow::Context;
-use clap::{arg, Parser, Subcommand};
-use commands::accounting::send_accounting_request;
+use anyhow::{bail, Context};
+use clap::{Parser, Subcommand};
 use tacacsrs_networking::{
-    helpers::TlsConfigurationBuilder, 
-    tcp_connection::{TcpConnection, TcpConnectionTrait}, 
-    tls_connection::{TLSConnectionTrait, TlsConnection},
-    traits::SessionManagementTrait};
+    helpers::TlsConfigurationBuilder,
+    session::Session,
+    tcp_connection::{TcpConnection, TcpConnectionTrait},
+    tls_connection::{TlsConnection, TLSConnectionTrait},
+    traits::SessionManagementTrait,
+};
 
+use commands::accounting::send_accounting_request;
 
-// Define the CLI struct
+/// TACACS+ Client CLI
+///
+/// A command-line tool for interacting with TACACS+ servers,
+/// supporting authentication, authorization, and accounting operations.
 #[derive(Parser)]
-#[command(name = "TACAS Client Cli", version, author)]
-#[command(about = "A CLI app with subcommands", long_about = None)]
+#[command(name = "tacon", version, author)]
+#[command(about = "TACACS+ client CLI", long_about = None)]
 pub struct Cli {
-    #[arg(short, long, help = "IP Address and port of the TACACS+ server")]
+    /// IP address and port of the TACACS+ server (e.g., "192.168.1.1:49")
+    #[arg(short, long)]
     server_addr: String,
 
-    #[arg(
-        short,
-        long,
-        help = "The obfuscation key to use for encrypting the TACACS+ messages"
-    )]
+    /// Obfuscation key for encrypting TACACS+ messages
+    #[arg(short = 'k', long)]
     obfuscation_key: Option<String>,
 
-    #[arg(long, help = "Use TLS to connect to the TACACS+ server")]
+    /// Use TLS for the connection
+    #[arg(long)]
     use_tls: bool,
 
-    #[arg(long,value_name = "CLIENT_CERTIFICATE", help = "The client certificate to use for TLS"
-    )]
+    /// Path to client certificate file for TLS authentication
+    #[arg(long, value_name = "FILE", requires = "client_key")]
     client_certificate: Option<String>,
 
-    #[arg(long, value_name = "CLIENT_KEY", help = "The client key to use for TLS")]
+    /// Path to client private key file for TLS authentication
+    #[arg(long, value_name = "FILE", requires = "client_certificate")]
     client_key: Option<String>,
 
-    #[arg(short, long, action = clap::ArgAction::Count, help = "Increase verbosity")]
+    /// Increase verbosity level (-v, -vv, -vvv, -vvvv)
+    #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 
-    #[arg(
-        short,
-        long,
-        value_name = "BATCH_FILE",
-        help = "Run in batch mode (single connect mode)"
-    )]
+    /// Run in batch mode using commands from a file
+    #[arg(short, long, value_name = "FILE")]
     batch: Option<String>,
 
-    #[clap(short, long, required_unless_present = "batch")]
+    /// Username for the TACACS+ request
+    #[arg(short, long, required_unless_present = "batch")]
     user: Option<String>,
-    #[clap(short, long, required_unless_present = "batch")]
+
+    /// Port identifier for the TACACS+ request (e.g., "tty0")
+    #[arg(short, long, required_unless_present = "batch")]
     port: Option<String>,
-    #[clap(short, long, required_unless_present = "batch")]
+
+    /// Remote address of the client (e.g., "192.168.1.100")
+    #[arg(short, long, required_unless_present = "batch")]
     rem_addr: Option<String>,
 
     #[command(subcommand)]
-    command: Option<Commands>,
+    command: Option<Command>,
 }
 
+/// Available TACACS+ operations
 #[derive(Subcommand, Debug)]
-enum Commands {
-    /// Accounting command
+enum Command {
+    /// Send an accounting record
     Accounting {
-        /// The command to run
+        /// Command being executed (e.g., "show running-config")
         cmd: String,
 
-        /// The arguments to pass to the command
-        #[arg(value_name = "CMD-ARGS")]
+        /// Additional arguments for the command
+        #[arg(value_name = "ARG")]
         cmd_args: Option<Vec<String>>,
     },
-    /// Authentication command
+
+    /// Perform authentication
     Authentication,
-    /// Authorization command
+
+    /// Perform authorization check
     Authorization,
 }
 
+/// Represents an active TACACS+ connection (either plain TCP or TLS)
 enum Connection {
-    TcpConnection(Arc<TcpConnection>),
-    TlsConnection(Arc<TlsConnection>),
-    
+    Tcp(Arc<TcpConnection>),
+    Tls(Arc<TlsConnection>),
 }
 
-pub async fn run(cli: Cli) -> anyhow::Result<()> {
-    println!("Running with verbose level: {}", cli.verbose);
-    if cli.verbose > 0 {
-        let mut level = "error";
-        match cli.verbose {
-            1 => {
-                level = "warn";
-            }
-            2 => {
-                level = "info";
-            }
-            3 => {
-                level = "debug";
-            }
-            4 => {
-                level = "trace";
-            }
-            _ => {}
+impl Connection {
+    /// Creates a new session on this connection
+    async fn create_session(&self) -> anyhow::Result<Session> {
+        match self {
+            Self::Tcp(conn) => conn.create_session().await,
+            Self::Tls(conn) => conn.create_session().await,
         }
-        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level)).try_init();
-
-
-        println!("Verbose level: {} ({})", level, cli.verbose);
     }
+}
 
-    if let Some(batch_file) = &cli.batch {
-        if cli.command.is_some() {
-            let message = "Error: --batch flag cannot be used with subcommands.";
-            return Err(anyhow::Error::msg(message));
-        }
-        println!("Running in batch mode, with file: {}", batch_file);
-    }
+/// Initializes the logger based on verbosity level
+fn init_logger(verbose: u8) {
+    let level = match verbose {
+        0 => return, // No logging requested
+        1 => "warn",
+        2 => "info",
+        3 => "debug",
+        _ => "trace",
+    };
 
-    
-    let obfuscation_key = cli.obfuscation_key.map(|key| key.to_owned().into_bytes());
-    
-    let tcp_connection = tacacsrs_networking::helpers::connect_tcp(&cli.server_addr).await?;
-    let tacacs_connection : Connection = if cli.use_tls {
-        let client_certificate = cli.client_certificate.unwrap();
-        let client_key = cli.client_key.unwrap();
-        
-        let tls_config = Arc::new(TlsConfigurationBuilder::new()
-            .with_client_auth_cert_files(client_certificate, client_key).await?
-            .with_certificate_verification_disabled(true)
-            .build()?);
-
-        let tls_connection = tacacsrs_networking::helpers::connect_tls(
-            &tls_config, tcp_connection, "tacacsserver.local").await?;
-
-        let tacacs_connection = Arc::new(
-            tacacsrs_networking::tls_connection::TlsConnection::new(obfuscation_key.as_deref())
-        );
-
-        tacacs_connection.run(tls_connection).await?;
-
-        Connection::TlsConnection(tacacs_connection)
-    }
-    else 
+    if env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level))
+        .try_init()
+        .is_ok()
     {
-        let tacacs_connection = Arc::new(
-            tacacsrs_networking::tcp_connection::TcpConnection::new(obfuscation_key.as_deref())
+        log::debug!("Logging initialized at level: {level}");
+    }
+}
+
+/// Establishes a connection to the TACACS+ server
+async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
+    let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
+    let tcp_stream = tacacsrs_networking::helpers::connect_tcp(&cli.server_addr)
+        .await
+        .context("Failed to establish TCP connection")?;
+
+    if cli.use_tls {
+        let client_cert = cli
+            .client_certificate
+            .as_ref()
+            .context("TLS requires a client certificate")?;
+        let client_key = cli
+            .client_key
+            .as_ref()
+            .context("TLS requires a client key")?;
+
+        let tls_config = Arc::new(
+            TlsConfigurationBuilder::new()
+                .with_client_auth_cert_files(client_cert, client_key)
+                .await
+                .context("Failed to load TLS certificates")?
+                .with_certificate_verification_disabled(true)
+                .build()
+                .context("Failed to build TLS configuration")?,
         );
 
-        tacacs_connection.run(tcp_connection).await?;
+        let tls_stream = tacacsrs_networking::helpers::connect_tls(
+            &tls_config,
+            tcp_stream,
+            "tacacsserver.local",
+        )
+        .await
+        .context("Failed to establish TLS connection")?;
 
-        Connection::TcpConnection(tacacs_connection)
+        let connection = Arc::new(TlsConnection::new(obfuscation_key));
+        connection
+            .run(tls_stream)
+            .await
+            .context("Failed to start TLS session manager")?;
+
+        Ok(Connection::Tls(connection))
+    } else {
+        let connection = Arc::new(TcpConnection::new(obfuscation_key));
+        connection
+            .run(tcp_stream)
+            .await
+            .context("Failed to start TCP session manager")?;
+
+        Ok(Connection::Tcp(connection))
+    }
+}
+
+/// Executes the requested TACACS+ command
+async fn execute_command(cli: &Cli, session: &Session) -> anyhow::Result<()> {
+    let Some(command) = &cli.command else {
+        return Ok(());
     };
 
+    log::info!("Executing command: {command:?}");
 
-    let session = match tacacs_connection {
-        Connection::TcpConnection(tcp_connection) => tcp_connection.create_session().await?,
-        Connection::TlsConnection(tls_connection) => tls_connection.create_session().await?,
-    };
+    match command {
+        Command::Accounting { cmd, cmd_args } => {
+            let user = cli.user.as_ref().context("User is required")?;
+            let port = cli.port.as_ref().context("Port is required")?;
+            let rem_addr = cli.rem_addr.as_ref().context("Remote address is required")?;
 
-    if let Some(command) = &cli.command {
-        println!("Running command: {:?}", command);
-        match command {
-            Commands::Accounting { cmd, cmd_args } => {
-                if cmd.is_empty() {
-                    // Print help message and return an error
-                    return Err(anyhow::Error::msg(
-                        "Accounting command requires a positional cmd argument",
-                    ));
-                } else {
-                    let user = cli
-                        .user
-                        .as_ref()
-                        .ok_or_else(|| anyhow::Error::msg("User is required"))?;
-                    let port = cli
-                        .port
-                        .as_ref()
-                        .ok_or_else(|| anyhow::Error::msg("Port is required"))?;
-                    let rem_addr = cli
-                        .rem_addr
-                        .as_ref()
-                        .ok_or_else(|| anyhow::Error::msg("Remote address is required"))?;
+            send_accounting_request(session, user, port, rem_addr, cmd, cmd_args.as_ref()).await?;
+        }
 
-                    send_accounting_request(&session, user, port, rem_addr, cmd, cmd_args).await?;
-                }
-            }
-            Commands::Authentication => {
-                println!("Authentication");
-            }
-            Commands::Authorization => {
-                println!("Authorization");
-            }
+        Command::Authentication => {
+            log::info!("Authentication command not yet implemented");
+            println!("Authentication command not yet implemented");
+        }
+
+        Command::Authorization => {
+            log::info!("Authorization command not yet implemented");
+            println!("Authorization command not yet implemented");
         }
     }
 
     Ok(())
+}
+
+/// Main application entry point
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Connection to the TACACS+ server fails
+/// - TLS configuration is invalid
+/// - Command execution fails
+/// - Batch mode is used with subcommands
+pub async fn run(cli: Cli) -> anyhow::Result<()> {
+    init_logger(cli.verbose);
+
+    // Validate batch mode usage
+    if cli.batch.is_some() && cli.command.is_some() {
+        bail!("--batch flag cannot be used with subcommands");
+    }
+
+    if let Some(batch_file) = &cli.batch {
+        log::info!("Running in batch mode with file: {batch_file}");
+        // TODO: Implement batch mode processing
+        println!("Batch mode not yet implemented");
+        return Ok(());
+    }
+
+    let connection = establish_connection(&cli).await?;
+    let session = connection
+        .create_session()
+        .await
+        .context("Failed to create TACACS+ session")?;
+
+    execute_command(&cli, &session).await
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    run(cli).await.context("run failed")?;
-    Ok(())
+    run(cli).await
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-//     #[test]
-//     fn test_accounting_subcommand() {
-//         let cli = Cli::parse_from(vec![
-//             "tacon",
-//             "-vv",
-//             "--server-addr",
-//             "tacacs.local",
-//             "--user",
-//             "test_user",
-//             "--port",
-//             "test_port",
-//             "--rem-addr",
-//             "test_rem_address",
-//             "accounting",
-//             "cmd",
-//             "cmd-arg1",
-//             "cmd-arg2",
-//         ]);
+    #[test]
+    fn verify_cli() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
 
-//         let output = std::panic::catch_unwind(|| run(cli));
+    #[test]
+    fn test_batch_mode_conflicts_with_subcommand() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--batch",
+            "batch_file.txt",
+            "accounting",
+            "test_value",
+        ]);
 
-//         assert!(output.is_ok());
-//     }
+        // Parsing should succeed; conflict is checked at runtime
+        assert!(result.is_ok());
+    }
 
-//     #[test]
-//     fn test_accounting_subcommand_no_command() {
-//         let output = std::panic::catch_unwind(|| {
-//             let cli = Cli::try_parse_from(vec![
-//                 "tacon",
-//                 "-vv",
-//                 "--user",
-//                 "test_user",
-//                 "--port",
-//                 "test_port",
-//                 "--rem-addr",
-//                 "test_rem_address",
-//                 "accounting",
-//             ])?;
-//             run(cli)
-//         });
+    #[test]
+    fn test_user_port_remaddr_required_without_batch() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "accounting",
+            "test_cmd",
+        ]);
 
-//         assert!(output.is_ok());
-//         let output = output.unwrap();
-//         assert!(output.is_err());
+        assert!(result.is_err());
+    }
 
-//         let error = output.unwrap_err();
-//         assert_eq!(error.to_string(), "error: the following required arguments were not provided:\n  <CMD>\n\nUsage: tacon accounting <CMD> [CMD-ARGS]...\n\nFor more information, try '--help'.\n");
-//     }
+    #[test]
+    fn test_batch_mode_allows_missing_user_port_remaddr() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--batch",
+            "batch_file.txt",
+        ]);
 
-//     #[test]
-//     fn test_authentication_subcommand() {
-//         let cli = Cli::parse_from(vec![
-//             "tacon",
-//             "--verbose",
-//             "--user",
-//             "test_user",
-//             "--port",
-//             "test_port",
-//             "--rem-addr",
-//             "test_rem_address",
-//             "authentication",
-//         ]);
+        assert!(result.is_ok());
+    }
 
-//         let output = std::panic::catch_unwind(|| run(cli));
+    #[test]
+    fn test_tls_requires_both_cert_and_key() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--use-tls",
+            "--client-certificate",
+            "cert.pem",
+            "--batch",
+            "batch.txt",
+        ]);
 
-//         assert!(output.is_ok());
-//     }
-
-//     #[test]
-//     fn test_authorization_subcommand() {
-//         let cli = Cli::parse_from(vec![
-//             "tacon",
-//             "--verbose",
-//             "--user",
-//             "test_user",
-//             "--port",
-//             "test_port",
-//             "--rem-addr",
-//             "test_rem_address",
-//             "authorization",
-//         ]);
-
-//         let output = std::panic::catch_unwind(|| run(cli));
-
-//         assert!(output.is_ok());
-//     }
-
-//     #[test]
-//     fn test_subcommand_no_user_port_remaddr() {
-//         let output = std::panic::catch_unwind(|| {
-//             let cli = Cli::try_parse_from(vec!["tacon", "-vv", "accounting", "test-cmd"])?;
-//             run(cli)
-//         });
-
-//         assert!(output.is_ok());
-//         let output = output.unwrap();
-//         assert!(output.is_err());
-
-//         let error = output.unwrap_err();
-//         assert_eq!(error.to_string(), "error: the following required arguments were not provided:\n  --user <USER>\n  --port <PORT>\n  --rem-addr <REM_ADDR>\n\nUsage: tacon --verbose... --user <USER> --port <PORT> --rem-addr <REM_ADDR>\n\nFor more information, try '--help'.\n");
-//     }
-
-//     #[test]
-//     fn test_batch_mode() {
-//         let cli = Cli::parse_from(vec!["tacon", "--batch", "batch_file.txt", "--verbose"]);
-
-//         let output = std::panic::catch_unwind(|| run(cli));
-
-//         assert!(output.is_ok());
-//     }
-
-//     #[test]
-//     fn test_batch_mode_with_user_port_remaddr() {
-//         // This test will succeed because the user, port, and rem-addr flags ARE allowed when using the --batch flag, to override the values in the batch file.
-//         let cli = Cli::parse_from(vec![
-//             "tacon",
-//             "--batch",
-//             "batch_file.txt",
-//             "--verbose",
-//             "--user",
-//             "test_user",
-//             "--port",
-//             "test_port",
-//             "--rem-addr",
-//             "test_rem_address",
-//         ]);
-
-//         let output = std::panic::catch_unwind(|| run(cli));
-
-//         assert!(output.is_ok());
-//     }
-
-//     #[test]
-//     fn test_batch_mode_with_subcommand() {
-//         let cli = Cli::parse_from(vec![
-//             "tacon",
-//             "--batch",
-//             "batch_file.txt",
-//             "accounting",
-//             "test_value",
-//         ]);
-
-//         let output = std::panic::catch_unwind(|| run(cli));
-
-//         assert!(output.is_ok());
-//         let output = output.unwrap();
-//         assert!(output.is_err());
-
-//         let error = output.unwrap_err();
-//         assert_eq!(
-//             error.to_string(),
-//             "Error: --batch flag cannot be used with subcommands."
-//         );
-//     }
-// }
+        assert!(result.is_err());
+    }
+}
