@@ -2,10 +2,37 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 
 use crate::duplex_channel::DuplexChannel;
 use crate::session::Session;
+
+/// Represents the state of single connection mode negotiation with the server.
+/// 
+/// TACACS+ servers may or may not support single connection mode. This is indicated
+/// by the TAC_PLUS_SINGLE_CONNECT_FLAG in the response packet. Until we receive the
+/// first response, we don't know if the server supports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SingleConnectionState {
+    /// No session has been created yet. The first session can be created.
+    Initial,
+    /// A session has been created but we haven't received a response yet.
+    /// No new sessions can be created until we receive the first response
+    /// and determine if single connection mode is supported.
+    Negotiating,
+    /// Server supports single connection mode (TAC_PLUS_SINGLE_CONNECT_FLAG was set).
+    /// Multiple sessions can be multiplexed over this connection.
+    Supported,
+    /// Server does not support single connection mode (TAC_PLUS_SINGLE_CONNECT_FLAG was not set).
+    /// Connection should be closed after the current session completes.
+    NotSupported,
+}
+
+impl Default for SingleConnectionState {
+    fn default() -> Self {
+        Self::Initial
+    }
+}
 
 #[derive(Debug)]
 pub struct SessionManager {
@@ -13,7 +40,15 @@ pub struct SessionManager {
     pub(crate) sender: tokio::sync::mpsc::Sender<Packet>,
     pub(crate) receiver: Mutex<Option<tokio::sync::mpsc::Receiver<Packet>>>,
     
-    can_accept_new_sessions: RwLock<bool>
+    can_accept_new_sessions: RwLock<bool>,
+    
+    /// Tracks whether the server supports single connection mode.
+    /// Until we receive the first response packet, this is `Unknown`.
+    single_connection_state: RwLock<SingleConnectionState>,
+    
+    /// Notifies waiters when the connection should be closed.
+    /// This is triggered when the last session completes and single connection mode is not supported.
+    close_notify: Notify,
 }
 
 impl SessionManager
@@ -27,7 +62,9 @@ impl SessionManager
             duplex_channels: HashMap::new().into(),
             sender,
             receiver: Some(receiver).into(),
-            can_accept_new_sessions: true.into()
+            can_accept_new_sessions: true.into(),
+            single_connection_state: SingleConnectionState::Initial.into(),
+            close_notify: Notify::new(),
         }
     }
 
@@ -100,7 +137,78 @@ impl SessionManager
     pub async fn can_create_sessions(&self) -> bool
     {
         let can_accept_lock = self.can_accept_new_sessions.read().await;
-        *can_accept_lock
+        if !*can_accept_lock {
+            return false;
+        }
+        drop(can_accept_lock);
+        
+        // Check single connection state
+        let state = self.single_connection_state.read().await;
+        match *state {
+            SingleConnectionState::NotSupported => false,
+            SingleConnectionState::Supported => true,
+            SingleConnectionState::Initial => true,  // First session can always be created
+            SingleConnectionState::Negotiating => false,  // Must wait for negotiation to complete
+        }
+    }
+
+    /// Returns the current single connection state.
+    pub async fn single_connection_state(&self) -> SingleConnectionState {
+        let state = self.single_connection_state.read().await;
+        *state
+    }
+
+    /// Sets the single connection state based on the server's response.
+    /// 
+    /// This should be called when the first packet is received from the server.
+    /// If `server_supports_single_connection` is false, the connection should be
+    /// closed after the current session completes.
+    pub async fn set_single_connection_state(&self, server_supports_single_connection: bool) {
+        let mut state = self.single_connection_state.write().await;
+        
+        // Only update if currently Negotiating - don't change once determined
+        if *state != SingleConnectionState::Negotiating {
+            log::debug!(
+                target: "tacacsrs_networking::session_manager::set_single_connection_state",
+                "Single connection state is {:?}, ignoring update to {}",
+                *state, server_supports_single_connection
+            );
+            return;
+        }
+        
+        let new_state = if server_supports_single_connection {
+            SingleConnectionState::Supported
+        } else {
+            SingleConnectionState::NotSupported
+        };
+        
+        log::info!(
+            target: "tacacsrs_networking::session_manager::set_single_connection_state",
+            "Setting single connection state to {:?}",
+            new_state
+        );
+        
+        *state = new_state;
+    }
+
+    /// Marks that negotiation has started (first session created, awaiting response).
+    /// Transitions from Initial -> Negotiating.
+    async fn begin_negotiation(&self) {
+        let mut state = self.single_connection_state.write().await;
+        if *state == SingleConnectionState::Initial {
+            log::debug!(
+                target: "tacacsrs_networking::session_manager::begin_negotiation",
+                "Transitioning from Initial to Negotiating"
+            );
+            *state = SingleConnectionState::Negotiating;
+        }
+    }
+
+    /// Returns true if the server does not support single connection mode.
+    /// This means the connection should be closed after the current session completes.
+    pub async fn should_close_after_session(&self) -> bool {
+        let state = self.single_connection_state.read().await;
+        *state == SingleConnectionState::NotSupported
     }
 
     pub async fn create_session(self: &Arc<Self>) -> anyhow::Result<Session>
@@ -119,6 +227,9 @@ impl SessionManager
         {
             return Err(anyhow::Error::msg("Connection is not accepting new sessions"));
         }
+
+        // If this is the first session (state is Initial), transition to Negotiating
+        self.begin_negotiation().await;
 
         let (duplex_channel, session_id) = match custom_session_id {
             Some(id) => self.create_channel_with_id(id).await?,
@@ -144,7 +255,28 @@ impl SessionManager
                 "Removed session {} from duplex_channels registry",
                 session_id
             );
+            
+            // Check if we should signal connection close
+            // (no more sessions and single connection not supported)
+            if duplex_channels.is_empty() {
+                drop(duplex_channels); // Release write lock before reading state
+                
+                if self.should_close_after_session().await {
+                    log::info!(
+                        target: "tacacsrs_networking::session_manager::remove_session",
+                        "Last session completed and single connection mode not supported. Signaling connection close."
+                    );
+                    self.close_notify.notify_waiters();
+                }
+            }
         }
+    }
+
+    /// Waits until the connection should be closed.
+    /// 
+    /// This returns when the last session completes and single connection mode is not supported.
+    pub async fn wait_for_close(&self) {
+        self.close_notify.notified().await;
     }
 
     /// Closes all sessions by clearing the duplex_channels registry.
@@ -281,13 +413,15 @@ mod tests
     async fn test_create_session_with_duplicate_custom_id_fails()
     {
         let session_manager = Arc::new(SessionManager::new());
-
-        let custom_id = 12345678_u32;
         
-        // First session with custom ID should succeed
+        // Create first session to move to Negotiating, then simulate server response
+        let custom_id = 12345678_u32;
         let _session1 = session_manager.create_session_with_id(custom_id).await.unwrap();
+        
+        // Enable single connection mode so we can create multiple sessions
+        session_manager.set_single_connection_state(true).await;
 
-        // Second session with same custom ID should fail
+        // Second session with same custom ID should fail because it's still in use
         let result = session_manager.create_session_with_id(custom_id).await;
         
         assert!(result.is_err());
@@ -313,9 +447,12 @@ mod tests
 
         let custom_id = 99999999_u32;
         
-        // Create first session with custom ID
+        // Create first session with custom ID (moves to Negotiating)
         let session1 = session_manager.create_session_with_id(custom_id).await.unwrap();
         assert_eq!(session1.session_id(), custom_id);
+        
+        // Simulate server response enabling single connection mode
+        session_manager.set_single_connection_state(true).await;
 
         // Drop the session (simulating completion - this closes the receiver)
         drop(session1);
@@ -350,5 +487,140 @@ mod tests
             let channels = session_manager.duplex_channels.read().await;
             assert!(!channels.contains_key(&custom_id));
         }
+    }
+
+    #[tokio::test]
+    async fn test_single_connection_state_starts_initial()
+    {
+        let session_manager = SessionManager::new();
+        assert_eq!(session_manager.single_connection_state().await, SingleConnectionState::Initial);
+    }
+
+    #[tokio::test]
+    async fn test_single_connection_state_transitions_to_negotiating()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+        
+        // State should be Initial before creating any sessions
+        assert_eq!(session_manager.single_connection_state().await, SingleConnectionState::Initial);
+        
+        // Create first session - should transition to Negotiating
+        let _session1 = session_manager.create_session().await.unwrap();
+        assert_eq!(session_manager.single_connection_state().await, SingleConnectionState::Negotiating);
+    }
+
+    #[tokio::test]
+    async fn test_single_connection_state_supported()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+        
+        // Create session to move to Negotiating state
+        let _session1 = session_manager.create_session().await.unwrap();
+        
+        // Now set to supported (simulating server response)
+        session_manager.set_single_connection_state(true).await;
+        assert_eq!(session_manager.single_connection_state().await, SingleConnectionState::Supported);
+    }
+
+    #[tokio::test]
+    async fn test_single_connection_state_not_supported()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+        
+        // Create session to move to Negotiating state
+        let _session1 = session_manager.create_session().await.unwrap();
+        
+        // Now set to not supported (simulating server response)
+        session_manager.set_single_connection_state(false).await;
+        assert_eq!(session_manager.single_connection_state().await, SingleConnectionState::NotSupported);
+    }
+
+    #[tokio::test]
+    async fn test_single_connection_state_cannot_be_changed_once_set()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+        
+        // Create session and set to supported
+        let _session1 = session_manager.create_session().await.unwrap();
+        session_manager.set_single_connection_state(true).await;
+        assert_eq!(session_manager.single_connection_state().await, SingleConnectionState::Supported);
+        
+        // Try to change to not supported - should be ignored
+        session_manager.set_single_connection_state(false).await;
+        assert_eq!(session_manager.single_connection_state().await, SingleConnectionState::Supported);
+    }
+
+    #[tokio::test]
+    async fn test_cannot_create_second_session_when_negotiating()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+        
+        // First session should succeed (transitions Initial -> Negotiating)
+        let _session1 = session_manager.create_session().await.unwrap();
+        assert_eq!(session_manager.single_connection_state().await, SingleConnectionState::Negotiating);
+        
+        // Second session should fail because we're still negotiating
+        let result = session_manager.create_session().await;
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("not accepting new sessions"));
+    }
+
+    #[tokio::test]
+    async fn test_can_create_multiple_sessions_when_state_supported()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+        
+        // Create first session and simulate server response with single connect flag
+        let _session1 = session_manager.create_session().await.unwrap();
+        session_manager.set_single_connection_state(true).await;
+        
+        // Multiple sessions should succeed when single connection is supported
+        let _session2 = session_manager.create_session().await.unwrap();
+        let _session3 = session_manager.create_session().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cannot_create_session_when_state_not_supported()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+        
+        // Create first session before state is known
+        let _session1 = session_manager.create_session().await.unwrap();
+        
+        // Set state to not supported
+        session_manager.set_single_connection_state(false).await;
+        
+        // Cannot create new sessions when single connection is not supported
+        let result = session_manager.create_session().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_should_close_after_session()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+        
+        // Should not close when state is Initial
+        assert!(!session_manager.should_close_after_session().await);
+        
+        // Create session and set to supported
+        let _session1 = session_manager.create_session().await.unwrap();
+        session_manager.set_single_connection_state(true).await;
+        
+        // Should not close when state is Supported
+        assert!(!session_manager.should_close_after_session().await);
+    }
+
+    #[tokio::test]
+    async fn test_should_close_after_session_when_not_supported()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+        
+        // Create session and set to not supported
+        let _session1 = session_manager.create_session().await.unwrap();
+        session_manager.set_single_connection_state(false).await;
+        
+        // Should close when state is NotSupported
+        assert!(session_manager.should_close_after_session().await);
     }
 }

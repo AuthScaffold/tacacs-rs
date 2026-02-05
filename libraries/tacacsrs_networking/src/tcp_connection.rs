@@ -146,17 +146,36 @@ impl TcpConnection
 
     async fn read_handler(self: Arc<Self>, mut _reader: tokio::net::tcp::OwnedReadHalf) -> anyhow::Result<()> {
         loop {
-            let mut header_buffer = [0_u8; TACACS_HEADER_LENGTH];
-
-            match _reader.read_exact(&mut header_buffer).await {
-                Ok(_) => (),
-                Err(e) => {
-                    log::error!(
+            // Use select to either read the next packet or receive a close signal
+            let header_buffer = tokio::select! {
+                // Wait for close signal (triggered when last session completes and single connection not supported)
+                _ = self.connection.wait_for_close() => {
+                    log::info!(
                         target: "tacacsrs_networking::connection::read_handler",
-                        "Failed to read header from network due to error: {}",
-                        e.to_string()
+                        "Received close signal. Server does not support single connection mode and all sessions complete."
                     );
-                    return Err(anyhow::Error::msg(e.to_string()))
+                    return Ok(());
+                }
+                
+                // Read the next packet header
+                result = async {
+                    let mut header_buffer = [0_u8; TACACS_HEADER_LENGTH];
+                    match _reader.read_exact(&mut header_buffer).await {
+                        Ok(_) => Ok(header_buffer),
+                        Err(e) => Err(e)
+                    }
+                } => {
+                    match result {
+                        Ok(buf) => buf,
+                        Err(e) => {
+                            log::error!(
+                                target: "tacacsrs_networking::connection::read_handler",
+                                "Failed to read header from network due to error: {}",
+                                e.to_string()
+                            );
+                            return Err(anyhow::Error::msg(e.to_string()))
+                        }
+                    }
                 }
             };
 
@@ -238,7 +257,16 @@ impl TcpConnection
                 );
             }
 
+            // Check the single connect flag from the server's response and update our state.
+            // This is critical for determining if we can multiplex sessions on this connection.
+            let server_supports_single_connect = packet.header().flags.contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
+            self.connection.set_single_connection_state(server_supports_single_connect).await;
+
             let _ = self.connection.send_message_to_session(packet).await;
+            
+            // Note: Connection close is handled via wait_for_close() in the select! above.
+            // When the session completes and calls complete(), it triggers remove_session(),
+            // which will notify us if single connection mode is not supported.
         }
     }
 }
@@ -283,5 +311,15 @@ impl SessionManagementTrait for TcpConnection
     async fn create_session_with_id(self : &Arc<Self>, session_id: u32) -> anyhow::Result<Session>
     {
         self.connection.create_session_with_id(session_id).await
+    }
+
+    async fn single_connection_state(self: &Arc<Self>) -> crate::session_manager::SingleConnectionState
+    {
+        self.connection.single_connection_state().await
+    }
+
+    async fn should_close_after_session(self: &Arc<Self>) -> bool
+    {
+        self.connection.should_close_after_session().await
     }
 }

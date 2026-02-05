@@ -8,3 +8,5 @@ pub mod tcp_connection;
 pub mod mock_connection;
 pub mod helpers;
 pub mod traits;
+
+pub use session_manager::SingleConnectionState;

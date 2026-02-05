@@ -224,5 +224,15 @@ impl SessionManagementTrait for MockConnection
     {
         self.connection.create_session_with_id(session_id).await
     }
+
+    async fn single_connection_state(self: &Arc<Self>) -> crate::session_manager::SingleConnectionState
+    {
+        self.connection.single_connection_state().await
+    }
+
+    async fn should_close_after_session(self: &Arc<Self>) -> bool
+    {
+        self.connection.should_close_after_session().await
+    }
 }
 
