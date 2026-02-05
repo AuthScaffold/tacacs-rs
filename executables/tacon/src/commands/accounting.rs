@@ -53,7 +53,6 @@ pub async fn send_accounting_request(
         .context("Failed to send accounting request")?;
 
     log::info!("Received accounting response: {response:?}");
-    println!("Accounting response: {response:?}");
 
     Ok(response)
 }

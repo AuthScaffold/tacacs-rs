@@ -1,12 +1,16 @@
 //! Batch mode processing for TACACS+ requests
 //!
 //! This module handles reading and executing multiple TACACS+ requests
-//! from a JSON batch file, with support for parallel execution.
+//! from a JSON batch file, with support for parallel execution and load testing.
 
 use anyhow::Context;
 use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::session::Session;
@@ -63,6 +67,25 @@ pub struct BatchMetadata {
     /// Optional description of this batch
     #[serde(default)]
     pub description: Option<String>,
+
+    /// Optional load testing configuration
+    #[serde(default)]
+    pub load_test: Option<LoadTestConfig>,
+}
+
+/// Configuration for load testing mode
+#[derive(Debug, Deserialize, Clone)]
+pub struct LoadTestConfig {
+    /// Number of times to repeat all requests
+    pub repetitions: usize,
+
+    /// Maximum number of parallel requests at any time
+    #[serde(default = "default_max_parallel")]
+    pub max_parallel: usize,
+}
+
+fn default_max_parallel() -> usize {
+    10
 }
 
 /// A single request in the batch file
@@ -197,12 +220,43 @@ pub struct RequestResult {
     pub result: Result<String, String>,
 }
 
+/// Result of executing a load test
+#[derive(Debug)]
+pub struct LoadTestResult {
+    /// Total number of requests executed
+    pub total_requests: usize,
+
+    /// Number of successful requests
+    pub successful_requests: usize,
+
+    /// Number of failed requests (will be 0 or 1 since we stop on first failure)
+    pub failed_requests: usize,
+
+    /// Total duration of the load test
+    pub duration: Duration,
+
+    /// First failure encountered, if any
+    pub first_failure: Option<String>,
+
+    /// Requests per second throughput
+    pub requests_per_second: f64,
+}
+
+impl LoadTestResult {
+    /// Returns true if the load test completed without failures
+    pub fn is_success(&self) -> bool {
+        self.first_failure.is_none()
+    }
+}
+
 /// Executes all requests in a batch file
 ///
 /// This function handles servers that may or may not support single connection mode.
 /// The first request is always sent to determine the server's capabilities. If the
 /// server doesn't support single connection mode (TAC_PLUS_SINGLE_CONNECT_FLAG not set),
 /// subsequent requests will each use a new connection.
+///
+/// If load testing mode is enabled, this function delegates to `execute_load_test`.
 ///
 /// # Arguments
 ///
@@ -228,6 +282,32 @@ pub async fn execute_batch(
         println!("Batch: {desc}");
     }
 
+    // Check if load testing mode is enabled
+    if let Some(load_config) = &batch.metadata.load_test {
+        log::info!(
+            "Load testing mode enabled: {} repetitions, max {} parallel",
+            load_config.repetitions,
+            load_config.max_parallel
+        );
+        println!(
+            "\n=== Load Testing Mode ===\nRepetitions: {}\nMax parallel: {}\nTotal requests: {}",
+            load_config.repetitions,
+            load_config.max_parallel,
+            load_config.repetitions * batch.requests.len()
+        );
+
+        let result = execute_load_test(cli, connection, &batch.requests, load_config).await?;
+        print_load_test_summary(&result);
+
+        // Return empty results since load test has its own summary
+        // The caller can check the printed output for details
+        if result.is_success() {
+            return Ok(vec![]);
+        } else {
+            anyhow::bail!("Load test failed: {}", result.first_failure.unwrap_or_default());
+        }
+    }
+
     let request_count = batch.requests.len();
     log::info!(
         "Processing {request_count} requests (parallel: {})",
@@ -238,6 +318,238 @@ pub async fn execute_batch(
         execute_parallel(cli, connection, &batch.requests).await
     } else {
         execute_sequential(cli, connection, &batch.requests).await
+    }
+}
+
+/// Executes a load test by repeating all requests with controlled concurrency
+///
+/// This function runs all requests multiple times (based on `config.repetitions`)
+/// with a maximum of `config.max_parallel` concurrent requests. The test stops
+/// immediately on the first failure.
+///
+/// # Arguments
+///
+/// * `cli` - The CLI configuration (used to establish new connections)
+/// * `connection` - The initial TACACS+ connection (used to probe single-connection support)
+/// * `requests` - The requests to repeat
+/// * `config` - Load test configuration
+///
+/// # Returns
+///
+/// A `LoadTestResult` containing throughput statistics and failure information.
+async fn execute_load_test(
+    cli: &Cli,
+    connection: Connection,
+    requests: &[BatchRequest],
+    config: &LoadTestConfig,
+) -> anyhow::Result<LoadTestResult> {
+    let total_requests = requests.len() * config.repetitions;
+    let start_time = Instant::now();
+
+    // Atomic flags/counters for tracking progress and stopping on failure
+    let failed = Arc::new(AtomicBool::new(false));
+    let completed = Arc::new(AtomicUsize::new(0));
+    let first_failure: Arc<tokio::sync::Mutex<Option<String>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
+
+    // First, probe the server to check single-connection support
+    log::info!("Probing server for single-connection support...");
+    let probe_session = connection
+        .create_session_optional_id(None)
+        .await
+        .context("Failed to create probe session")?;
+
+    // Send a probe request (use first request if available)
+    if let Some(first_request) = requests.first() {
+        let _ = execute_single_request(&probe_session, first_request).await;
+    }
+
+    let single_connection_supported = matches!(
+        connection.single_connection_state().await,
+        SingleConnectionState::Supported
+    );
+
+    if single_connection_supported {
+        log::info!("Server supports single connection mode - reusing connections where possible");
+    } else {
+        log::info!("Server does not support single connection mode - using separate connections");
+    }
+
+    // Build a lazy iterator over all request iterations: (repetition_index, request_index, request)
+    // We avoid collecting into a Vec to prevent memory issues with large repetition counts
+    let all_iterations = (0..config.repetitions).flat_map(|rep| {
+        requests
+            .iter()
+            .enumerate()
+            .map(move |(idx, req)| (rep, idx, req))
+    });
+
+    println!("Starting load test with {} total requests...\n", total_requests);
+
+    // Use buffered stream to control concurrency
+    let cli = cli.clone();
+    let failed_clone = Arc::clone(&failed);
+    let completed_clone = Arc::clone(&completed);
+    let first_failure_clone = Arc::clone(&first_failure);
+
+    // Spawn a background task to print live progress
+    let progress_completed = Arc::clone(&completed);
+    let progress_failed = Arc::clone(&failed);
+    let progress_start = start_time;
+    let progress_handle = tokio::spawn(async move {
+        let bar_width = 40;
+        loop {
+            let count = progress_completed.load(Ordering::Relaxed);
+            let elapsed = progress_start.elapsed();
+            let elapsed_secs = elapsed.as_secs_f64();
+            let throughput = if elapsed_secs > 0.0 {
+                count as f64 / elapsed_secs
+            } else {
+                0.0
+            };
+
+            let progress = if total_requests > 0 {
+                count as f64 / total_requests as f64
+            } else {
+                0.0
+            };
+            let filled = (progress * bar_width as f64) as usize;
+            let empty = bar_width - filled;
+
+            // Build the progress bar
+            let bar: String = std::iter::repeat('█')
+                .take(filled)
+                .chain(std::iter::repeat('░').take(empty))
+                .collect();
+
+            // Print progress line (using \r to overwrite)
+            print!(
+                "\r  [{bar}] {count:>7}/{total_requests:<7} | {throughput:>8.1} req/s | {elapsed:>6.1}s ",
+                elapsed = elapsed_secs
+            );
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+
+            // Check if we should stop
+            if count >= total_requests || progress_failed.load(Ordering::Relaxed) {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        println!(); // Final newline
+    });
+
+    let results: Vec<bool> = stream::iter(all_iterations)
+        .map(|(rep, idx, request)| {
+            let cli = cli.clone();
+            let failed = Arc::clone(&failed_clone);
+            let completed = Arc::clone(&completed_clone);
+            let first_failure = Arc::clone(&first_failure_clone);
+
+            async move {
+                // Check if we should stop due to a previous failure
+                if failed.load(Ordering::Relaxed) {
+                    return false;
+                }
+
+                // Establish a new connection for this request
+                let conn = match establish_connection(&cli).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        if !failed.swap(true, Ordering::Relaxed) {
+                            let mut failure = first_failure.lock().await;
+                            *failure = Some(format!(
+                                "Connection failed at rep {}, request {}: {}",
+                                rep + 1,
+                                idx + 1,
+                                e
+                            ));
+                        }
+                        return false;
+                    }
+                };
+
+                let session = match conn.create_session_optional_id(request.session_id()).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        if !failed.swap(true, Ordering::Relaxed) {
+                            let mut failure = first_failure.lock().await;
+                            *failure = Some(format!(
+                                "Session creation failed at rep {}, request {}: {}",
+                                rep + 1,
+                                idx + 1,
+                                e
+                            ));
+                        }
+                        return false;
+                    }
+                };
+
+                let result = execute_single_request(&session, request).await;
+
+                match result {
+                    Ok(_) => {
+                        completed.fetch_add(1, Ordering::Relaxed);
+                        true
+                    }
+                    Err(e) => {
+                        if !failed.swap(true, Ordering::Relaxed) {
+                            let mut failure = first_failure.lock().await;
+                            *failure = Some(format!(
+                                "Request failed at rep {}, request {} ({}): {}",
+                                rep + 1,
+                                idx + 1,
+                                request.type_name(),
+                                e
+                            ));
+                        }
+                        false
+                    }
+                }
+            }
+        })
+        .buffer_unordered(config.max_parallel)
+        .collect()
+        .await;
+
+    // Wait for progress display to finish
+    let _ = progress_handle.await;
+
+    let duration = start_time.elapsed();
+    let successful_requests = results.iter().filter(|&&r| r).count();
+    let failed_requests = if failed.load(Ordering::Relaxed) { 1 } else { 0 };
+    let requests_per_second = if duration.as_secs_f64() > 0.0 {
+        successful_requests as f64 / duration.as_secs_f64()
+    } else {
+        0.0
+    };
+
+    let failure_msg = first_failure.lock().await.clone();
+
+    Ok(LoadTestResult {
+        total_requests,
+        successful_requests,
+        failed_requests,
+        duration,
+        first_failure: failure_msg,
+        requests_per_second,
+    })
+}
+
+/// Prints a summary of load test results
+fn print_load_test_summary(result: &LoadTestResult) {
+    println!("\n=== Load Test Results ===");
+    println!("Total requests planned: {}", result.total_requests);
+    println!("Successful requests:    {}", result.successful_requests);
+    println!("Failed requests:        {}", result.failed_requests);
+    println!("Duration:               {:.2?}", result.duration);
+    println!("Throughput:             {:.2} requests/second", result.requests_per_second);
+
+    if let Some(failure) = &result.first_failure {
+        println!("\nFirst failure: {failure}");
+    } else {
+        println!("\nStatus: SUCCESS - All requests completed successfully");
     }
 }
 
@@ -624,5 +936,60 @@ mod tests {
             }
             _ => panic!("Expected authorization request"),
         }
+    }
+
+    #[test]
+    fn test_parse_batch_file_load_test_config() {
+        let json = r#"{
+            "metadata": {
+                "description": "Load test batch",
+                "load_test": {
+                    "repetitions": 100,
+                    "max_parallel": 20
+                }
+            },
+            "requests": [
+                {
+                    "type": "accounting",
+                    "user": "user1",
+                    "port": "tty0",
+                    "rem_addr": "10.0.0.1",
+                    "cmd": "show version"
+                }
+            ]
+        }"#;
+
+        let batch: BatchFile = serde_json::from_str(json).unwrap();
+
+        assert!(batch.metadata.load_test.is_some());
+        let load_config = batch.metadata.load_test.as_ref().unwrap();
+        assert_eq!(load_config.repetitions, 100);
+        assert_eq!(load_config.max_parallel, 20);
+    }
+
+    #[test]
+    fn test_parse_batch_file_load_test_default_max_parallel() {
+        let json = r#"{
+            "metadata": {
+                "load_test": {
+                    "repetitions": 50
+                }
+            },
+            "requests": [
+                {
+                    "type": "accounting",
+                    "user": "user1",
+                    "port": "tty0",
+                    "rem_addr": "10.0.0.1",
+                    "cmd": "show version"
+                }
+            ]
+        }"#;
+
+        let batch: BatchFile = serde_json::from_str(json).unwrap();
+
+        let load_config = batch.metadata.load_test.as_ref().unwrap();
+        assert_eq!(load_config.repetitions, 50);
+        assert_eq!(load_config.max_parallel, 10); // default value
     }
 }
