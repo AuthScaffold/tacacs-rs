@@ -6,6 +6,12 @@ members = [
     "executables/tacon"
 ]
 
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/AuthScaffold/tacacs-rs"
+
 # Release profile with debug symbols for crash analysis
 [profile.release]
 debug = "full"              # Full symbols (variable names, types, etc.) for detailed debugging
