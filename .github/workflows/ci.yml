@@ -21,7 +21,7 @@ jobs:
     with:
       rust-matrix: '["stable", "beta"]'
       include-msrv: true
-      msrv: "1.75"
+      msrv: "1.82"
 
   # ============================================
   # Code coverage
