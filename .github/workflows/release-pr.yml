@@ -44,7 +44,7 @@ jobs:
 
       - name: Create Release PR (all crates)
         if: ${{ inputs.crate == '' }}
-        uses: cargo-bins/release-pr@v3
+        uses: cargo-bins/release-pr@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version: ${{ inputs.version }}
@@ -56,7 +56,7 @@ jobs:
 
       - name: Create Release PR (single crate)
         if: ${{ inputs.crate != '' }}
-        uses: cargo-bins/release-pr@v3
+        uses: cargo-bins/release-pr@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version: ${{ inputs.version }}
