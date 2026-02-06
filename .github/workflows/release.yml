@@ -75,6 +75,10 @@ jobs:
           mkdir -p artifacts
           cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
           chmod +x artifacts/${{ matrix.asset_name }}
+          # Package debug symbols if they exist
+          if ls target/${{ matrix.target }}/release/*.dwp 1> /dev/null 2>&1; then
+            cp target/${{ matrix.target }}/release/*.dwp artifacts/${{ matrix.asset_name }}.dwp
+          fi
       
       - name: Prepare artifact (Windows)
         if: runner.os == 'Windows'
@@ -82,12 +86,17 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path artifacts
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "artifacts/${{ matrix.asset_name }}"
+          # Package PDB symbols if they exist
+          $pdbFile = "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}.pdb"
+          if (Test-Path $pdbFile) {
+            Copy-Item $pdbFile "artifacts/${{ matrix.asset_name }}.pdb"
+          }
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: artifacts/${{ matrix.asset_name }}
+          path: artifacts/*
           retention-days: 7
 
   # ============================================

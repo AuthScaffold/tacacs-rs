@@ -23,8 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Install Rust nightly
         run: rustup toolchain install nightly --profile minimal --component rustfmt
+
       - name: Check formatting
         run: cargo +nightly fmt --all -- --check
 
@@ -36,9 +38,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal --component clippy
+
       - uses: Swatinem/rust-cache@v2
+
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -54,11 +59,14 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+        
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
+
       - name: Run tests
         run: cargo test --workspace --all-features
 
@@ -104,9 +112,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
+
       - uses: Swatinem/rust-cache@v2
+
       - name: Build documentation
         env:
           RUSTDOCFLAGS: -D warnings
@@ -150,6 +161,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dorny/paths-filter@v3
         id: changes
         with:
