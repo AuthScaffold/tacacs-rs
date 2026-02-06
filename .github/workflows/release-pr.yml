@@ -26,7 +26,7 @@ jobs:
     name: Create Release PR
     runs-on: ubuntu-latest
     permissions:
-      id-token: write      # Enable OIDC for gitsign
+      id-token: write       # Enable OIDC for gitsign
       pull-requests: write
       contents: write
       actions: read
