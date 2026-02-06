@@ -1,7 +1,6 @@
 # cargo-release configuration
 # https://github.com/crate-ci/cargo-release
 
-[workspace]
 # Release all workspace members together
 allow-branch = ["main"]
 # Create a single shared tag for the whole workspace
@@ -28,7 +27,6 @@ publish = false
 # Consolidate commits
 consolidate-commits = true
 
-[workspace.pre-release-replacements]
 # You can add version replacements for other files here, e.g., README badges
 # [[pre-release-replacements]]
 # file = "README.md"
