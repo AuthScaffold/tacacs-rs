@@ -1,0 +1,69 @@
+name: Open Release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g., 1.0.0 or bump level: major, minor, patch)"
+        required: true
+        type: string
+      crate:
+        description: "Crate to release (leave empty for all crates)"
+        required: false
+        type: choice
+        default: ""
+        options:
+          - ""
+          - tacacsrs_messages
+          - tacacsrs_networking
+          - tacon
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release-pr:
+    name: Create Release PR
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write      # Enable OIDC for gitsign
+      pull-requests: write
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for changelog generation
+
+      - name: Setup gitsign for commit signing
+        uses: chainguard-dev/actions/setup-gitsign@main
+
+      - name: Install cargo-release
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-release
+
+      - name: Create Release PR (all crates)
+        if: ${{ inputs.crate == '' }}
+        uses: cargo-bins/release-pr@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ inputs.version }}
+          crate-release-all: true
+          pr-label: release
+          pr-release-notes: true
+          pr-merge-strategy: squash
+          pr-title: "release: v<%= version.actual %>"
+
+      - name: Create Release PR (single crate)
+        if: ${{ inputs.crate != '' }}
+        uses: cargo-bins/release-pr@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ inputs.version }}
+          crate-name: ${{ inputs.crate }}
+          pr-label: release
+          pr-release-notes: true
+          pr-merge-strategy: squash
+          pr-title: "release: <%= crate.name %> v<%= version.actual %>"

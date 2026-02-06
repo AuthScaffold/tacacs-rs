@@ -158,95 +158,85 @@ version = "0.1.0"
 
 All member crates inherit this version via `version.workspace = true`.
 
-### Release Process
+### Release Process (GitHub Actions)
 
-We use [cargo-release](https://github.com/crate-ci/cargo-release) to automate releases.
+We use [cargo-bins/release-pr](https://github.com/cargo-bins/release-pr) to create release PRs, which are then reviewed and merged to trigger the full release workflow.
 
-#### 1. Install cargo-release (one-time)
+#### Prerequisites
+
+Ensure your repository settings allow GitHub Actions to create PRs:
+1. Go to **Settings** > **Actions** > **General**
+2. Under "Workflow permissions", enable **"Allow GitHub Actions to create and approve pull requests"**
+
+#### 1. Open a Release PR
+
+1. Go to **Actions** > **"Open Release PR"** workflow
+2. Click **"Run workflow"**
+3. Enter the version:
+   - Exact version: `1.2.3`
+   - Bump level: `patch`, `minor`, or `major`
+4. Optionally select a specific crate (leave empty for all crates)
+5. Click **"Run workflow"**
+
+This creates a PR that:
+- Updates version numbers in `Cargo.toml` files
+- Runs `cargo publish --dry-run` to validate the release
+- Includes a section for writing release notes
+- Is labeled with `release` for automation
+
+#### 2. Review the Release PR
+
+- Review the version changes
+- Edit the PR description to add release notes
+- Request reviews from team members
+- Ensure all CI checks pass
+
+#### 3. Merge to Release
+
+When the PR is merged:
+1. The release workflow automatically triggers
+2. Builds release binaries for all platforms
+3. Creates and pushes the git tag (`vX.Y.Z`)
+4. Generates SHA256 checksums
+5. Creates a GitHub Release with all artifacts
+
+### Alternative: Manual Tag Release
+
+You can still trigger releases by pushing a tag directly:
 
 ```bash
+# Create and push a tag
+git tag -a v1.2.3 -m "Release v1.2.3"
+git push origin v1.2.3
+```
+
+Or use `cargo-release` locally:
+
+```bash
+# Install (one-time)
 cargo install cargo-release
-```
 
-#### 2. Prepare for Release
-
-Ensure you're on `main` with a clean working directory:
-
-```bash
-git checkout main
-git pull origin main
-git status  # Should be clean
-```
-
-#### 3. Dry Run
-
-Always do a dry run first to see what will happen:
-
-```bash
-# Patch release (0.1.0 → 0.1.1)
+# Dry run first
 cargo release patch --dry-run
 
-# Minor release (0.1.0 → 0.2.0)
-cargo release minor --dry-run
-
-# Major release (0.1.0 → 1.0.0)
-cargo release major --dry-run
-
-# Specific version
-cargo release 1.2.3 --dry-run
-```
-
-#### 4. Execute Release
-
-Once you're happy with the dry run:
-
-```bash
+# Execute release
 cargo release patch --execute
 ```
 
-This will:
-1. Update the version in `Cargo.toml`
-2. Create a commit: `chore: release X.Y.Z`
-3. Create a git tag: `vX.Y.Z`
-4. Push the commit and tag to origin
-
-#### 5. Automated Release Build
-
-Once the tag is pushed, GitHub Actions automatically:
-1. Builds release binaries for all platforms
-2. Generates SHA256 checksums
-3. Creates a GitHub Release with:
-   - Auto-generated release notes
-   - All binary artifacts
-   - Checksum file
-
 ### Pre-release Versions
 
-For alpha/beta/rc releases:
+For alpha/beta/rc releases, use the full version string:
 
-```bash
-cargo release 0.2.0-alpha.1 --execute
-cargo release 0.2.0-beta.1 --execute
-cargo release 0.2.0-rc.1 --execute
-```
+- Via GitHub Actions: Enter `0.2.0-alpha.1` as the version
+- Via tag: `git tag -a v0.2.0-alpha.1 -m "Pre-release v0.2.0-alpha.1"`
 
 Tags containing `-` are automatically marked as pre-releases on GitHub.
 
 ### Troubleshooting Releases
 
-**Release failed mid-way?**
+**Release PR not triggering the release workflow?**
 
-If the release partially completed (e.g., committed but didn't push):
-
-```bash
-# Check current state
-git log --oneline -3
-git tag -l
-
-# If you need to undo
-git reset --hard HEAD~1
-git tag -d vX.Y.Z
-```
+Ensure the PR has the `release` label and the PR title contains the version (e.g., `release: v1.2.3`).
 
 **Tag already exists?**
 
@@ -257,6 +247,10 @@ git tag -d vX.Y.Z
 # Delete remote tag (if pushed)
 git push origin :refs/tags/vX.Y.Z
 ```
+
+**Need to cancel a release PR?**
+
+Simply close the PR without merging. No changes will be made to the repository.
 
 ## Project Structure
 
