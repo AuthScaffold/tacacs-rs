@@ -35,7 +35,7 @@ jobs:
         rust: ${{ fromJson(inputs.rust-matrix) }}
         include: ${{ inputs.include-msrv && fromJson(format('[{{"os":"ubuntu-latest","rust":"{0}"}}]', inputs.msrv)) || fromJson('[]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: ./.github/steps/setup-rust

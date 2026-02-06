@@ -37,7 +37,7 @@ jobs:
     name: Minimal Versions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Rust nightly
         uses: ./.github/steps/setup-rust
@@ -61,7 +61,7 @@ jobs:
     name: Unused Dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
@@ -91,7 +91,7 @@ jobs:
     name: Outdated Dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
@@ -110,7 +110,7 @@ jobs:
     name: Nightly Rust Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
@@ -134,7 +134,7 @@ jobs:
     name: Documentation Links
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
