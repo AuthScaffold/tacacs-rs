@@ -28,7 +28,7 @@ jobs:
       matrix:
         config: ${{ fromJson(inputs.targets) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
