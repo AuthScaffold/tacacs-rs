@@ -55,6 +55,10 @@ bitflags! {
     pub struct TacacsFlags: u8 {
         const TAC_PLUS_UNENCRYPTED_FLAG = 0x01;
         const TAC_PLUS_SINGLE_CONNECT_FLAG = 0x04;
+        // NOTE: The following custom flags use currently unassigned/reserved bits in the TACACS+
+        // header (0x40 and 0x80). They are non-standard, implementation-specific extensions and
+        // may cause interoperability issues with other TACACS+ implementations that interpret
+        // these bits differently in the future. See RFC 8907 and the TACACS+ specification.
         const TAC_PLUS_CUSTOM_FLAG_1 = 0x40;
         const TAC_PLUS_CUSTOM_FLAG_2 = 0x80;
     }
