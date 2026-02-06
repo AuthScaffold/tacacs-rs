@@ -2,7 +2,6 @@
 
 `tacacs-rs` is a reference implementation of the TACACS+ protocol, designed to provide a robust and efficient solution for authentication, authorization, and accounting (AAA) services.
 
-
 ## Demo
 
 **Demo 1: Existing (Legacy) TACACS+ with Obfuscation**
