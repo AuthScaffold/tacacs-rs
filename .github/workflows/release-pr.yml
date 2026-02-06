@@ -29,6 +29,7 @@ jobs:
       id-token: write      # Enable OIDC for gitsign
       pull-requests: write
       contents: write
+      actions: read
     
     steps:
       - name: Checkout repository
