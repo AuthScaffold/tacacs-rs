@@ -1,0 +1,47 @@
+name: Reusable Test
+
+on:
+  workflow_call:
+    inputs:
+      os-matrix:
+        description: 'JSON array of OS runners (e.g., ["ubuntu-latest", "windows-latest"])'
+        required: false
+        default: '["ubuntu-latest", "windows-latest"]'
+        type: string
+      rust-matrix:
+        description: 'JSON array of Rust toolchains (e.g., ["stable", "beta"])'
+        required: false
+        default: '["stable"]'
+        type: string
+      include-msrv:
+        description: 'Include MSRV test on Linux'
+        required: false
+        default: false
+        type: boolean
+      msrv:
+        description: 'Minimum Supported Rust Version'
+        required: false
+        default: '1.75'
+        type: string
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }} / ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJson(inputs.os-matrix) }}
+        rust: ${{ fromJson(inputs.rust-matrix) }}
+        include: ${{ inputs.include-msrv && fromJson(format('[{{"os":"ubuntu-latest","rust":"{0}"}}]', inputs.msrv)) || fromJson('[]') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: ${{ matrix.rust }}
+          cache-key: ${{ matrix.os }}-${{ matrix.rust }}
+
+      - name: Run tests
+        run: cargo test --workspace --all-features

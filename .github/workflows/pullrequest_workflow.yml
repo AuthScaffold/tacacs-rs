@@ -16,141 +16,48 @@ concurrency:
 jobs:
   # ============================================
   # Format Check - Fast fail on formatting issues
-  # Uses nightly rustfmt for unstable options (see rustfmt.toml)
   # ============================================
   fmt:
     name: Rustfmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust nightly
-        run: rustup toolchain install nightly --profile minimal --component rustfmt
-
-      - name: Check formatting
-        run: cargo +nightly fmt --all -- --check
+    uses: ./.github/workflows/reusable-fmt.yml
 
   # ============================================
   # Clippy Lints - Catch common mistakes
   # ============================================
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --component clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+    uses: ./.github/workflows/reusable-clippy.yml
 
   # ============================================
   # Tests - Run on multiple platforms
   # ============================================
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-        
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.os }}
-
-      - name: Run tests
-        run: cargo test --workspace --all-features
+    name: Test
+    uses: ./.github/workflows/reusable-test.yml
 
   # ============================================
   # Build Check - Verify compilation for all targets
   # ============================================
   build:
-    name: Build (${{ matrix.target }})
+    name: Build
     needs: [fmt, clippy]
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
-      
-      - name: Install musl-tools (Linux musl only)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-      
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-      
-      - name: Build
-        run: cargo build --workspace --release --target ${{ matrix.target }}
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      build-release: true
 
   # ============================================
   # Documentation - Ensure docs build without warnings
   # ============================================
   docs:
     name: Documentation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build documentation
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps --all-features
+    uses: ./.github/workflows/reusable-docs.yml
 
   # ============================================
   # Code Coverage - Enforce minimum coverage threshold
   # ============================================
   coverage:
     name: Code Coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --component llvm-tools-preview
-      
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      
-      - uses: Swatinem/rust-cache@v2
-      
-      - name: Generate LCOV report
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
-      
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
-      
-      # - name: Enforce coverage threshold
-      #   run: cargo llvm-cov report --fail-under-lines 60
+    uses: ./.github/workflows/reusable-coverage.yml
 
   # ============================================
   # Security Audit - Check for vulnerabilities
@@ -158,34 +65,10 @@ jobs:
   # ============================================
   audit:
     name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dorny/paths-filter@v3
-        id: changes
-        with:
-          filters: |
-            deps:
-              - '**/Cargo.toml'
-              - '**/Cargo.lock'
-
-      - name: Install Rust toolchain
-        if: steps.changes.outputs.deps == 'true'
-        run: rustup toolchain install stable --profile minimal
-
-      - name: Generate Cargo.lock
-        if: steps.changes.outputs.deps == 'true'
-        run: cargo generate-lockfile
-
-      - uses: rustsec/audit-check@v2
-        if: steps.changes.outputs.deps == 'true'
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Skip notice
-        if: steps.changes.outputs.deps != 'true'
-        run: echo "Skipping audit - no dependency changes detected"
+    uses: ./.github/workflows/reusable-security-audit.yml
+    with:
+      skip-if-no-dep-changes: true
+    secrets: inherit
 
   # ============================================
   # Final Status - Gate for branch protection

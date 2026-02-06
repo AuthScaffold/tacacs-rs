@@ -1,0 +1,52 @@
+name: Reusable Security Audit
+
+on:
+  workflow_call:
+    inputs:
+      skip-if-no-dep-changes:
+        description: 'Skip audit if no dependency files changed (for PRs)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: changes
+        if: inputs.skip-if-no-dep-changes
+        with:
+          filters: |
+            deps:
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+
+      - name: Should run audit
+        id: should-run
+        run: |
+          if [[ "${{ inputs.skip-if-no-dep-changes }}" == "true" ]]; then
+            echo "run=${{ steps.changes.outputs.deps }}" >> $GITHUB_OUTPUT
+          else
+            echo "run=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.should-run.outputs.run == 'true'
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Generate Cargo.lock
+        if: steps.should-run.outputs.run == 'true'
+        run: cargo generate-lockfile
+
+      - uses: rustsec/audit-check@v2
+        if: steps.should-run.outputs.run == 'true'
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip notice
+        if: steps.should-run.outputs.run != 'true'
+        run: echo "Skipping audit - no dependency changes detected"

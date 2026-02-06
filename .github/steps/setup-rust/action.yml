@@ -1,0 +1,67 @@
+name: Setup Rust
+description: Install Rust toolchain with optional components, targets, and caching
+
+inputs:
+  toolchain:
+    description: 'Rust toolchain to install (stable, beta, nightly, or specific version)'
+    required: false
+    default: 'stable'
+  components:
+    description: 'Space-separated list of components to install (e.g., "clippy rustfmt llvm-tools-preview")'
+    required: false
+    default: ''
+  targets:
+    description: 'Space-separated list of targets to install (e.g., "x86_64-unknown-linux-musl")'
+    required: false
+    default: ''
+  cache-key:
+    description: 'Additional cache key suffix for Swatinem/rust-cache'
+    required: false
+    default: ''
+  install-musl-tools:
+    description: 'Install musl-tools on Linux (for musl targets)'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Build rustup command
+      id: rustup-cmd
+      shell: bash
+      run: |
+        CMD="rustup toolchain install $(printf '%q' "${{ inputs.toolchain }}") --profile minimal"
+        
+        # Add components if specified
+        if [ -n "${{ inputs.components }}" ]; then
+          IFS=' ' read -ra COMPONENTS <<< "${{ inputs.components }}"
+          for component in "${COMPONENTS[@]}"; do
+            CMD="$CMD --component $(printf '%q' "$component")"
+          done
+        fi
+        
+        # Add targets if specified
+        if [ -n "${{ inputs.targets }}" ]; then
+          IFS=' ' read -ra TARGETS <<< "${{ inputs.targets }}"
+          for target in "${TARGETS[@]}"; do
+            CMD="$CMD --target $(printf '%q' "$target")"
+          done
+        fi
+        
+        echo "cmd=$CMD" >> $GITHUB_OUTPUT
+
+    - name: Install Rust toolchain
+      shell: bash
+      run: |
+        ${{ steps.rustup-cmd.outputs.cmd }}
+        rustup default ${{ inputs.toolchain }}
+
+    - name: Install musl-tools
+      if: inputs.install-musl-tools == 'true' && runner.os == 'Linux'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ inputs.cache-key }}

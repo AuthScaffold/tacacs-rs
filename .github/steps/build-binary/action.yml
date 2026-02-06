@@ -1,0 +1,74 @@
+name: Build Binary
+description: Build a release binary for a specific target with artifact upload
+
+inputs:
+  target:
+    description: 'Rust target triple (e.g., x86_64-unknown-linux-gnu)'
+    required: true
+  binary-name:
+    description: 'Name of the binary to build'
+    required: true
+  asset-name:
+    description: 'Name for the uploaded asset'
+    required: true
+  strip-binary:
+    description: 'Strip the binary on Linux'
+    required: false
+    default: 'true'
+  artifact-retention-days:
+    description: 'Number of days to retain the artifact'
+    required: false
+    default: '7'
+
+runs:
+  using: composite
+  steps:
+    - name: Determine artifact name
+      id: artifact
+      shell: bash
+      run: |
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          echo "name=${{ inputs.binary-name }}.exe" >> $GITHUB_OUTPUT
+        else
+          echo "name=${{ inputs.binary-name }}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Build release binary
+      shell: bash
+      run: cargo build --release --target ${{ inputs.target }} --bin ${{ inputs.binary-name }}
+
+    - name: Strip binary (Linux only)
+      if: runner.os == 'Linux' && inputs.strip-binary == 'true'
+      shell: bash
+      run: strip target/${{ inputs.target }}/release/${{ steps.artifact.outputs.name }}
+
+    - name: Prepare artifact (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        mkdir -p artifacts
+        cp target/${{ inputs.target }}/release/${{ steps.artifact.outputs.name }} artifacts/${{ inputs.asset-name }}
+        chmod +x artifacts/${{ inputs.asset-name }}
+        # Package debug symbols if they exist
+        if ls target/${{ inputs.target }}/release/*.dwp 1> /dev/null 2>&1; then
+          cp target/${{ inputs.target }}/release/*.dwp artifacts/${{ inputs.asset-name }}.dwp
+        fi
+
+    - name: Prepare artifact (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path artifacts
+        Copy-Item "target/${{ inputs.target }}/release/${{ steps.artifact.outputs.name }}" "artifacts/${{ inputs.asset-name }}"
+        # Package PDB symbols if they exist
+        $pdbFile = "target/${{ inputs.target }}/release/${{ inputs.binary-name }}.pdb"
+        if (Test-Path $pdbFile) {
+          Copy-Item $pdbFile "artifacts/${{ inputs.asset-name }}.pdb"
+        }
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.asset-name }}
+        path: artifacts/*
+        retention-days: ${{ inputs.artifact-retention-days }}

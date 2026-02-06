@@ -16,72 +16,19 @@ jobs:
   # Complete test suite
   # ============================================
   test:
-    name: Test (${{ matrix.os }} / ${{ matrix.rust }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        rust: [stable, beta]
-        include:
-          # Also test MSRV on Linux
-          - os: ubuntu-latest
-            rust: "1.75"  # Update to your MSRV
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust ${{ matrix.rust }}
-        run: |
-          rustup toolchain install ${{ matrix.rust }} --profile minimal
-          rustup default ${{ matrix.rust }}
-      
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.os }}-${{ matrix.rust }}
-      
-      - name: Run tests
-        run: cargo test --workspace --all-features
+    name: Test
+    uses: ./.github/workflows/reusable-test.yml
+    with:
+      rust-matrix: '["stable", "beta"]'
+      include-msrv: true
+      msrv: "1.75"
 
   # ============================================
   # Code coverage
   # ============================================
   coverage:
     name: Code Coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --component llvm-tools-preview
-      
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      
-      - uses: Swatinem/rust-cache@v2
-      
-      - name: Generate coverage report
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
-      
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
-
-  # ============================================
-  # Dependency check - ensure Cargo.lock is up to date
-  # ============================================
-  lockfile:
-    name: Lockfile Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      
-      - name: Check Cargo.lock
-        run: cargo update --locked
+    uses: ./.github/workflows/reusable-coverage.yml
 
   # ============================================
   # Minimal versions check - ensure dependencies work with minimum versions
@@ -91,20 +38,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Install Rust nightly
-        run: rustup toolchain install nightly --profile minimal
-      
+
+      - name: Setup Rust nightly
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: nightly
+          cache-key: minimal-versions
+
       - name: Install Rust stable
         run: rustup toolchain install stable --profile minimal
-      
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: minimal-versions
-      
+
       - name: Generate minimal versions lockfile
         run: cargo +nightly update -Z minimal-versions
-      
+
       - name: Build with minimal versions
         run: cargo +stable build --workspace --all-features
 
@@ -116,15 +62,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Install Rust nightly
-        run: rustup toolchain install nightly --profile minimal
-      
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: nightly
+
       - name: Install cargo-udeps
         run: cargo install cargo-udeps --locked
-      
-      - uses: Swatinem/rust-cache@v2
-      
+
       - name: Check for unused dependencies
         run: cargo +nightly udeps --workspace --all-targets
         continue-on-error: true  # Don't fail CI, just report
@@ -135,12 +81,8 @@ jobs:
   # ============================================
   audit:
     name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+    uses: ./.github/workflows/reusable-security-audit.yml
+    secrets: inherit
 
   # ============================================
   # Outdated Dependencies - Flag stale dependencies
@@ -150,13 +92,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+
       - name: Install cargo-outdated
         run: cargo install cargo-outdated --locked
-      
+
       - name: Check for outdated dependencies
         run: cargo outdated --workspace --exit-code 1
         continue-on-error: true  # Don't fail CI, just report
@@ -169,18 +111,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Install Rust nightly
-        run: rustup toolchain install nightly --profile minimal --component clippy
-      
-      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
         with:
-          key: nightly
-      
+          toolchain: nightly
+          components: clippy
+          cache-key: nightly
+
       - name: Build on nightly
         run: cargo +nightly build --workspace --all-features
         continue-on-error: true
-      
+
       - name: Clippy on nightly
         run: cargo +nightly clippy --workspace --all-features -- -D warnings
         continue-on-error: true
@@ -193,16 +135,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      
-      - uses: Swatinem/rust-cache@v2
-      
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: nightly
+
       - name: Check documentation links
         env:
           RUSTDOCFLAGS: -D warnings --check -Z unstable-options
-        run: |
-          rustup toolchain install nightly --profile minimal
-          cargo +nightly doc --workspace --no-deps --all-features
+        run: cargo +nightly doc --workspace --no-deps --all-features
         continue-on-error: true

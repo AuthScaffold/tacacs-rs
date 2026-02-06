@@ -1,0 +1,30 @@
+name: Generate Coverage
+description: Generate code coverage report and optionally upload to Codecov
+
+inputs:
+  output-path:
+    description: 'Output path for the LCOV file'
+    required: false
+    default: 'lcov.info'
+  upload-to-codecov:
+    description: 'Upload coverage to Codecov'
+    required: false
+    default: 'true'
+  fail-ci-on-codecov-error:
+    description: 'Fail CI if Codecov upload fails'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Generate LCOV report
+      shell: bash
+      run: cargo llvm-cov --workspace --all-features --lcov --output-path ${{ inputs.output-path }}
+
+    - name: Upload coverage to Codecov
+      if: inputs.upload-to-codecov == 'true'
+      uses: codecov/codecov-action@v4
+      with:
+        files: ${{ inputs.output-path }}
+        fail_ci_if_error: ${{ inputs.fail-ci-on-codecov-error == 'true' }}

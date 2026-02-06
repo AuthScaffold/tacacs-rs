@@ -1,0 +1,25 @@
+name: Reusable Documentation
+
+on:
+  workflow_call:
+    inputs:
+      deny-warnings:
+        description: 'Treat documentation warnings as errors'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: ${{ inputs.deny-warnings && '-D warnings' || '' }}
+        run: cargo doc --workspace --no-deps --all-features
