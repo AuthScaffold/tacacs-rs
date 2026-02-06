@@ -128,3 +128,81 @@ jobs:
       - name: Check for unused dependencies
         run: cargo +nightly udeps --workspace --all-targets
         continue-on-error: true  # Don't fail CI, just report
+
+  # ============================================
+  # Security Audit - Check for new CVEs on schedule
+  # Runs weekly to catch newly published vulnerabilities
+  # ============================================
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================
+  # Outdated Dependencies - Flag stale dependencies
+  # ============================================
+  outdated:
+    name: Outdated Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      
+      - name: Install cargo-outdated
+        run: cargo install cargo-outdated --locked
+      
+      - name: Check for outdated dependencies
+        run: cargo outdated --workspace --exit-code 1
+        continue-on-error: true  # Don't fail CI, just report
+
+  # ============================================
+  # Nightly Compatibility - Catch upcoming Rust changes
+  # ============================================
+  nightly:
+    name: Nightly Rust Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust nightly
+        run: rustup toolchain install nightly --profile minimal --component clippy
+      
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly
+      
+      - name: Build on nightly
+        run: cargo +nightly build --workspace --all-features
+        continue-on-error: true
+      
+      - name: Clippy on nightly
+        run: cargo +nightly clippy --workspace --all-features -- -D warnings
+        continue-on-error: true
+
+  # ============================================
+  # Documentation Links - Ensure docs links aren't broken
+  # ============================================
+  doc-links:
+    name: Documentation Links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Check documentation links
+        env:
+          RUSTDOCFLAGS: -D warnings --check -Z unstable-options
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly doc --workspace --no-deps --all-features
+        continue-on-error: true
