@@ -30,19 +30,21 @@ runs:
       id: rustup-cmd
       shell: bash
       run: |
-        CMD="rustup toolchain install ${{ inputs.toolchain }} --profile minimal"
+        CMD="rustup toolchain install $(printf '%q' "${{ inputs.toolchain }}") --profile minimal"
         
         # Add components if specified
         if [ -n "${{ inputs.components }}" ]; then
-          for component in ${{ inputs.components }}; do
-            CMD="$CMD --component $component"
+          IFS=' ' read -ra COMPONENTS <<< "${{ inputs.components }}"
+          for component in "${COMPONENTS[@]}"; do
+            CMD="$CMD --component $(printf '%q' "$component")"
           done
         fi
         
         # Add targets if specified
         if [ -n "${{ inputs.targets }}" ]; then
-          for target in ${{ inputs.targets }}; do
-            CMD="$CMD --target $target"
+          IFS=' ' read -ra TARGETS <<< "${{ inputs.targets }}"
+          for target in "${TARGETS[@]}"; do
+            CMD="$CMD --target $(printf '%q' "$target")"
           done
         fi
         
