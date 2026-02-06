@@ -1,7 +1,7 @@
 {
   "metadata": {
     "description": "Sample batch file demonstrating all request types",
-    "parallel": true
+    "parallel": false
   },
   "requests": [
     {
@@ -9,24 +9,14 @@
       "user": "user1",
       "port": "tty1",
       "rem_addr": "192.168.1.101",
-      "cmd": "show version",
-      "custom_flags": {
-        "custom_flag_1": true,
-        "custom_flag_2": true
-      },
-      "session_id": 181548405
+      "cmd": "show version"
     },
     {
       "type": "accounting",
       "user": "user1",
       "port": "tty1",
       "rem_addr": "192.168.1.101",
-      "cmd": "show version",
-      "custom_flags": {
-        "custom_flag_1": true,
-        "custom_flag_2": true
-      },
-      "session_id": 181548405
+      "cmd": "show version"
     }
   ]
 }
