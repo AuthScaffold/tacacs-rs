@@ -83,7 +83,7 @@ jobs:
           cat checksums-sha256.txt
       
       - name: Upload checksums
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: checksums-sha256.txt
           path: artifacts/checksums-sha256.txt
