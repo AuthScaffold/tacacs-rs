@@ -1,0 +1,41 @@
+name: Reusable Build
+
+on:
+  workflow_call:
+    inputs:
+      targets:
+        description: 'JSON array of target configurations with os, target, and optional asset_name'
+        required: false
+        default: |
+          [
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu"},
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-musl"},
+            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc"}
+          ]
+        type: string
+      build-release:
+        description: 'Build in release mode'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    name: Build (${{ matrix.config.target }})
+    runs-on: ${{ matrix.config.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJson(inputs.targets) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          targets: ${{ matrix.config.target }}
+          cache-key: ${{ matrix.config.target }}
+          install-musl-tools: ${{ contains(matrix.config.target, 'musl') && 'true' || 'false' }}
+
+      - name: Build
+        run: cargo build --workspace ${{ inputs.build-release && '--release' || '' }} --target ${{ matrix.config.target }}

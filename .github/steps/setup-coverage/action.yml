@@ -1,0 +1,23 @@
+name: Setup Coverage
+description: Install Rust with llvm-tools and cargo-llvm-cov for code coverage
+
+inputs:
+  cache-key:
+    description: 'Additional cache key suffix'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain with llvm-tools
+      shell: bash
+      run: rustup toolchain install stable --profile minimal --component llvm-tools-preview
+
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ inputs.cache-key }}

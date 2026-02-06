@@ -1,0 +1,26 @@
+name: Reusable Rustfmt
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        description: 'Rust toolchain for rustfmt (use nightly for unstable options)'
+        required: false
+        default: 'nightly'
+        type: string
+
+jobs:
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: ${{ inputs.toolchain }}
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo +${{ inputs.toolchain }} fmt --all -- --check

@@ -1,0 +1,31 @@
+name: Reusable Clippy
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        description: 'Rust toolchain for clippy'
+        required: false
+        default: 'stable'
+        type: string
+      deny-warnings:
+        description: 'Treat warnings as errors'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: ${{ inputs.toolchain }}
+          components: clippy
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features ${{ inputs.deny-warnings && '-- -D warnings' || '' }}

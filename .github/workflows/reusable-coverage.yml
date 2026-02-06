@@ -1,0 +1,31 @@
+name: Reusable Code Coverage
+
+on:
+  workflow_call:
+    inputs:
+      upload-to-codecov:
+        description: 'Upload coverage to Codecov'
+        required: false
+        default: true
+        type: boolean
+      fail-ci-on-codecov-error:
+        description: 'Fail CI if Codecov upload fails'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Coverage
+        uses: ./.github/steps/setup-coverage
+
+      - name: Generate Coverage
+        uses: ./.github/steps/generate-coverage
+        with:
+          upload-to-codecov: ${{ inputs.upload-to-codecov && 'true' || 'false' }}
+          fail-ci-on-codecov-error: ${{ inputs.fail-ci-on-codecov-error && 'true' || 'false' }}
