@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 use std::vec;
 
@@ -16,7 +15,6 @@ use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 
 
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = env_logger::builder().try_init();
@@ -26,15 +24,12 @@ async fn main() -> anyhow::Result<()> {
         console_subscriber::init();
     }
 
-    let tacacs_connection = Arc::new(
-        tacacsrs_networking::mock_connection::MockConnection::new()
-    );
+    let tacacs_connection = Arc::new(tacacsrs_networking::mock_connection::MockConnection::new());
     tacacs_connection.run().await?;
 
     let session = tacacs_connection.create_session().await?;
 
-    let accounting_request = AccountingRequest
-    {
+    let accounting_request = AccountingRequest {
         flags: TacacsAccountingFlags::START,
         authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
         priv_lvl: 0,
@@ -46,19 +41,20 @@ async fn main() -> anyhow::Result<()> {
         args: vec![
             "service=shell".to_string(),
             "task_id=123".to_string(),
-            "cmd=test".to_string()
+            "cmd=test".to_string(),
         ],
     };
 
-    let accounting_reply = AccountingReply
-    {
+    let accounting_reply = AccountingReply {
         status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
         server_msg: "Test".to_string(),
         data: "".to_string(),
     };
 
-    tacacs_connection.add_accounting_reply(&session, 2, &accounting_reply).await?;
-    
+    tacacs_connection
+        .add_accounting_reply(&session, 2, &accounting_reply)
+        .await?;
+
     session.send_accounting_request(accounting_request).await?;
 
 
@@ -66,29 +62,39 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[async_trait]
-pub trait MockConnectionAccountingSessionTrait
-{
-    async fn add_accounting_reply(self: &Arc<Self>, session: &Session, reply_sequence_number: u8, reply: &AccountingReply) -> anyhow::Result<()>;
+pub trait MockConnectionAccountingSessionTrait {
+    async fn add_accounting_reply(
+        self: &Arc<Self>,
+        session: &Session,
+        reply_sequence_number: u8,
+        reply: &AccountingReply,
+    ) -> anyhow::Result<()>;
 }
 
 #[async_trait]
-impl MockConnectionAccountingSessionTrait for MockConnection
-{
-    async fn add_accounting_reply(self: &Arc<Self>, session: &Session, reply_sequence_number: u8, reply: &AccountingReply) -> anyhow::Result<()>
-    {
+impl MockConnectionAccountingSessionTrait for MockConnection {
+    async fn add_accounting_reply(
+        self: &Arc<Self>,
+        session: &Session,
+        reply_sequence_number: u8,
+        reply: &AccountingReply,
+    ) -> anyhow::Result<()> {
         let data = reply.to_bytes();
 
-        let accounting_reply_packet = Packet::new(Header {
-            major_version: TacacsMajorVersion::TacacsPlusMajor1,
-            minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
-            tacacs_type: TacacsType::TacPlusAccounting,
-            seq_no: reply_sequence_number,
-            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-            session_id: session.session_id(),
-            length: data.len() as u32,
-        }, data).unwrap();
-    
+        let accounting_reply_packet = Packet::new(
+            Header {
+                major_version: TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                tacacs_type: TacacsType::TacPlusAccounting,
+                seq_no: reply_sequence_number,
+                flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                session_id: session.session_id(),
+                length: data.len() as u32,
+            },
+            data,
+        )
+        .unwrap();
+
         self.add_reply(accounting_reply_packet).await
     }
 }
-

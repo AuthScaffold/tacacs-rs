@@ -11,26 +11,39 @@ use crate::session::Session;
 #[async_trait]
 pub trait AccountingSessionTrait {
     /// Sends an accounting request with default flags (TAC_PLUS_UNENCRYPTED_FLAG)
-    async fn send_accounting_request(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply>;
-    
+    async fn send_accounting_request(
+        &self,
+        request: AccountingRequest,
+    ) -> anyhow::Result<AccountingReply>;
+
     /// Sends an accounting request with custom flags added to the header
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `request` - The accounting request to send
     /// * `custom_flags` - Additional flags to set on the packet header (e.g., TAC_PLUS_CUSTOM_FLAG_1, TAC_PLUS_CUSTOM_FLAG_2)
-    async fn send_accounting_request_with_flags(&self, request: AccountingRequest, custom_flags: TacacsFlags) -> anyhow::Result<AccountingReply>;
+    async fn send_accounting_request_with_flags(
+        &self,
+        request: AccountingRequest,
+        custom_flags: TacacsFlags,
+    ) -> anyhow::Result<AccountingReply>;
 }
 
 #[async_trait]
 impl AccountingSessionTrait for Session {
-    async fn send_accounting_request(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply>
-    {
-        self.send_accounting_request_with_flags(request, TacacsFlags::empty()).await
+    async fn send_accounting_request(
+        &self,
+        request: AccountingRequest,
+    ) -> anyhow::Result<AccountingReply> {
+        self.send_accounting_request_with_flags(request, TacacsFlags::empty())
+            .await
     }
 
-    async fn send_accounting_request_with_flags(&self, request: AccountingRequest, custom_flags: TacacsFlags) -> anyhow::Result<AccountingReply>
-    {
+    async fn send_accounting_request_with_flags(
+        &self,
+        request: AccountingRequest,
+        custom_flags: TacacsFlags,
+    ) -> anyhow::Result<AccountingReply> {
         if self.is_complete().await {
             return Err(anyhow::Error::msg("Session is already complete"));
         }
@@ -42,22 +55,25 @@ impl AccountingSessionTrait for Session {
         // Combine the base flag with any custom flags
         let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | custom_flags;
 
-        let packet = Packet::new(Header {
-            major_version : TacacsMajorVersion::TacacsPlusMajor1,
-            minor_version : TacacsMinorVersion::TacacsPlusMinorVerDefault,
-            tacacs_type : TacacsType::TacPlusAccounting,
-            seq_no : sequence_number,
-            flags,
-            session_id : self.session_id(),
-            length : data.len() as u32
-        }, data)?;
+        let packet = Packet::new(
+            Header {
+                major_version: TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                tacacs_type: TacacsType::TacPlusAccounting,
+                seq_no: sequence_number,
+                flags,
+                session_id: self.session_id(),
+                length: data.len() as u32,
+            },
+            data,
+        )?;
 
         info!(
             target: "tacacsrs_networking::sessions::accounting_session",
             "Sending Accounting Request with sequence number {} for session {} (flags: {:?})",
             sequence_number, self.session_id(), flags
         );
-        
+
         self.duplex_channel.sender.send(packet).await?;
 
         // Setup a reader lock to receive the response, it needs to be mutable so that we can call recv on it
@@ -66,7 +82,7 @@ impl AccountingSessionTrait for Session {
 
         let response = match reader_lock.recv().await {
             Some(response) => response,
-            None => return Err(anyhow::Error::msg("Failed to receive response"))
+            None => return Err(anyhow::Error::msg("Failed to receive response")),
         };
 
         let reply = AccountingReply::from_bytes(response.body())?;
@@ -83,10 +99,6 @@ impl AccountingSessionTrait for Session {
 }
 
 
-
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,20 +109,17 @@ mod tests {
     use crate::traits::SessionManagementTrait;
     use test_log::test;
 
-    
+
     #[test(tokio::test)]
     async fn test_send_accounting_request() -> anyhow::Result<()> {
         let _ = env_logger::builder().is_test(true).try_init();
 
-        let tacacs_connection = Arc::new(
-            crate::mock_connection::MockConnection::new()
-        );
+        let tacacs_connection = Arc::new(crate::mock_connection::MockConnection::new());
         tacacs_connection.run().await?;
-    
+
         let session = tacacs_connection.create_session().await?;
-    
-        let accounting_request = AccountingRequest
-        {
+
+        let accounting_request = AccountingRequest {
             flags: TacacsAccountingFlags::START,
             authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
             priv_lvl: 0,
@@ -122,31 +131,40 @@ mod tests {
             args: vec![
                 "service=shell".to_string(),
                 "task_id=123".to_string(),
-                "cmd=test".to_string()
+                "cmd=test".to_string(),
             ],
         };
-    
-        let accounting_reply = AccountingReply
-        {
+
+        let accounting_reply = AccountingReply {
             status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             server_msg: "Test".to_string(),
             data: "".to_string(),
         };
-    
-        tacacs_connection.add_accounting_reply(&session, 2, &accounting_reply).await?;
-        
+
+        tacacs_connection
+            .add_accounting_reply(&session, 2, &accounting_reply)
+            .await?;
+
         let reply = session.send_accounting_request(accounting_request).await?;
 
         assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
 
 
-        let requests = tacacs_connection.get_requests_for_session(session.session_id).await?;
+        let requests = tacacs_connection
+            .get_requests_for_session(session.session_id)
+            .await?;
         assert_eq!(requests.len(), 1, "The number of requests for the session was not as expected");
 
-        let replies = tacacs_connection.get_replies_for_session(session.session_id).await?;
-        assert_eq!(replies.len(), 0, "There was replies registered to session when they should have all been removed");
-    
-    
+        let replies = tacacs_connection
+            .get_replies_for_session(session.session_id)
+            .await?;
+        assert_eq!(
+            replies.len(),
+            0,
+            "There was replies registered to session when they should have all been removed"
+        );
+
+
         Ok(())
     }
 }

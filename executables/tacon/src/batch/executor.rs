@@ -51,23 +51,14 @@ pub async fn execute_single_request(
 
         BatchRequest::Authentication(req) => {
             // TODO: Implement authentication
-            log::warn!(
-                "Authentication not yet implemented for user: {}",
-                req.user
-            );
-            Err(format!(
-                "Authentication not yet implemented (user: {})",
-                req.user
-            ))
+            log::warn!("Authentication not yet implemented for user: {}", req.user);
+            Err(format!("Authentication not yet implemented (user: {})", req.user))
         }
 
         BatchRequest::Authorization(req) => {
             // TODO: Implement authorization
             log::warn!("Authorization not yet implemented for user: {}", req.user);
-            Err(format!(
-                "Authorization not yet implemented (user: {})",
-                req.user
-            ))
+            Err(format!("Authorization not yet implemented (user: {})", req.user))
         }
     }
 }
@@ -184,10 +175,8 @@ pub async fn execute_parallel(
     let remaining_requests = &requests[1..];
 
     // Check if single connection mode is supported
-    let single_connection_supported = matches!(
-        connection.single_connection_state().await,
-        SingleConnectionState::Supported
-    );
+    let single_connection_supported =
+        matches!(connection.single_connection_state().await, SingleConnectionState::Supported);
 
     if single_connection_supported {
         results.extend(execute_parallel_single_connection(connection, remaining_requests).await?);
@@ -325,9 +314,7 @@ pub async fn execute_load_test(
     // Probe server for single-connection support
     probe_server_capability(&connection, requests).await?;
 
-    println!(
-        "Starting load test with {total_requests} total requests...\n"
-    );
+    println!("Starting load test with {total_requests} total requests...\n");
 
     // Set up progress tracking
     let tracker = ProgressTracker::new(ProgressConfig {
@@ -344,7 +331,8 @@ pub async fn execute_load_test(
     });
 
     // Execute with controlled concurrency
-    let results = execute_load_test_iterations(cli, all_iterations, &tracker, config.max_parallel).await;
+    let results =
+        execute_load_test_iterations(cli, all_iterations, &tracker, config.max_parallel).await;
 
     // Wait for progress display to finish
     let failure_msg = tracker.finish().await;
@@ -368,10 +356,8 @@ async fn probe_server_capability(
         let _ = execute_single_request(&probe_session, first_request).await;
     }
 
-    let single_connection_supported = matches!(
-        connection.single_connection_state().await,
-        SingleConnectionState::Supported
-    );
+    let single_connection_supported =
+        matches!(connection.single_connection_state().await, SingleConnectionState::Supported);
 
     if single_connection_supported {
         log::info!("Server supports single connection mode - reusing connections where possible");
@@ -435,25 +421,15 @@ async fn execute_load_test_single(
     rep: usize,
     idx: usize,
 ) -> Result<(), String> {
-    let conn = establish_connection(cli).await.map_err(|e| {
-        format!(
-            "Connection failed at rep {}, request {}: {}",
-            rep + 1,
-            idx + 1,
-            e
-        )
-    })?;
+    let conn = establish_connection(cli)
+        .await
+        .map_err(|e| format!("Connection failed at rep {}, request {}: {}", rep + 1, idx + 1, e))?;
 
     let session = conn
         .create_session_optional_id(request.session_id())
         .await
         .map_err(|e| {
-            format!(
-                "Session creation failed at rep {}, request {}: {}",
-                rep + 1,
-                idx + 1,
-                e
-            )
+            format!("Session creation failed at rep {}, request {}: {}", rep + 1, idx + 1, e)
         })?;
 
     execute_single_request(&session, request)
@@ -518,10 +494,7 @@ pub async fn execute_batch(
     }
 
     let request_count = batch.requests.len();
-    log::info!(
-        "Processing {request_count} requests (parallel: {})",
-        batch.metadata.parallel
-    );
+    log::info!("Processing {request_count} requests (parallel: {})", batch.metadata.parallel);
 
     if batch.metadata.parallel {
         execute_parallel(cli, connection, &batch.requests).await
@@ -556,9 +529,6 @@ async fn execute_batch_load_test(
     if result.is_success() {
         Ok(vec![])
     } else {
-        anyhow::bail!(
-            "Load test failed: {}",
-            result.first_failure.unwrap_or_default()
-        )
+        anyhow::bail!("Load test failed: {}", result.first_failure.unwrap_or_default())
     }
 }

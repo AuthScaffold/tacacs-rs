@@ -2,7 +2,10 @@ use std::sync::Arc;
 use std::vec;
 
 use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::enumerations::{TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType};
+use tacacsrs_messages::enumerations::{
+    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
+    TacacsAuthenticationType,
+};
 
 use tacacsrs_networking::helpers::*;
 use tacacsrs_networking::session::Session;
@@ -10,8 +13,6 @@ use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 use tacacsrs_networking::tcp_connection::TcpConnectionTrait;
 use tokio::task::JoinHandle;
-
-
 
 
 #[tokio::main]
@@ -26,10 +27,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let tcp_connection = connect_tcp(hostname).await?;
-    let tacacs_connection = Arc::new(
-        tacacsrs_networking::tcp_connection::TcpConnection::new(obfuscation_key.as_deref())
-    );
-    
+    let tacacs_connection = Arc::new(tacacsrs_networking::tcp_connection::TcpConnection::new(
+        obfuscation_key.as_deref(),
+    ));
+
     tacacs_connection.run(tcp_connection).await?;
 
     // use ssl:
@@ -44,9 +45,7 @@ async fn main() -> anyhow::Result<()> {
 
     let session_creation = (0..session_count).map(|_| {
         let connection = tacacs_connection.clone();
-        tokio::spawn(async move {
-            connection.create_session().await
-        })
+        tokio::spawn(async move { connection.create_session().await })
     });
 
     let mut sessions = Vec::<Session>::with_capacity(session_count);
@@ -62,11 +61,10 @@ async fn main() -> anyhow::Result<()> {
         sessions.push(session);
     }
 
-    let handles : Vec::<JoinHandle<anyhow::Result<()>>> = sessions.into_iter().map(|session| {
-        tokio::spawn(async move {
-            send_test_request(session).await
-        })
-    }).collect();
+    let handles: Vec<JoinHandle<anyhow::Result<()>>> = sessions
+        .into_iter()
+        .map(|session| tokio::spawn(async move { send_test_request(session).await }))
+        .collect();
 
     for handle in handles {
         let _ = handle.await?;
@@ -75,9 +73,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn send_test_request(session : Session) -> anyhow::Result<()> {
-    let accounting_request = AccountingRequest
-    {
+async fn send_test_request(session: Session) -> anyhow::Result<()> {
+    let accounting_request = AccountingRequest {
         flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
         authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
         priv_lvl: 0,
@@ -123,6 +120,5 @@ impl log::Log for SimpleLogger {
 }
 
 pub fn init_logging() -> Result<(), SetLoggerError> {
-    log::set_logger(&LOGGER)
-        .map(|()| log::set_max_level(LevelFilter::Info))
+    log::set_logger(&LOGGER).map(|()| log::set_max_level(LevelFilter::Info))
 }

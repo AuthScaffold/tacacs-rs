@@ -5,43 +5,40 @@ use crate::duplex_channel::DuplexChannel;
 use crate::session_manager::SessionManager;
 
 
-pub struct Session
-{
+pub struct Session {
     pub session_id: u32,
     pub duplex_channel: DuplexChannel,
 
     pub current_sequence_number: RwLock<u8>,
     pub session_complete: RwLock<bool>,
-    session_manager: Option<Arc<SessionManager>>
+    session_manager: Option<Arc<SessionManager>>,
 }
 
 
-impl Session
-{
-    pub fn new(session_id: u32, duplex_channel: DuplexChannel) -> Self
-    {
+impl Session {
+    pub fn new(session_id: u32, duplex_channel: DuplexChannel) -> Self {
         Self::new_with_manager(session_id, duplex_channel, None)
     }
 
-    pub fn new_with_manager(session_id: u32, duplex_channel: DuplexChannel, session_manager: Option<Arc<SessionManager>>) -> Self
-    {
-        Self
-        {
+    pub fn new_with_manager(
+        session_id: u32,
+        duplex_channel: DuplexChannel,
+        session_manager: Option<Arc<SessionManager>>,
+    ) -> Self {
+        Self {
             session_id,
             duplex_channel,
             current_sequence_number: 1_u8.into(),
             session_complete: false.into(),
-            session_manager
+            session_manager,
         }
     }
 
-    pub fn session_id(&self) -> u32
-    {
+    pub fn session_id(&self) -> u32 {
         self.session_id
     }
 
-    pub async fn next_sequence_number(&self) -> u8
-    {
+    pub async fn next_sequence_number(&self) -> u8 {
         let mut sequence_number_lock = self.current_sequence_number.write().await;
         let sequence_number = *sequence_number_lock;
         *sequence_number_lock = sequence_number.wrapping_add(2);
@@ -49,8 +46,7 @@ impl Session
         sequence_number
     }
 
-    pub async fn complete(&self)
-    {
+    pub async fn complete(&self) {
         let mut session_complete_lock = self.session_complete.write().await;
         *session_complete_lock = true;
         drop(session_complete_lock);
@@ -61,15 +57,12 @@ impl Session
         }
     }
 
-    pub async fn is_complete(&self) -> bool
-    {
-        if self.duplex_channel.sender_closed().await
-        {
+    pub async fn is_complete(&self) -> bool {
+        if self.duplex_channel.sender_closed().await {
             return true;
         }
 
-        if self.duplex_channel.receiver_closed().await
-        {
+        if self.duplex_channel.receiver_closed().await {
             return true;
         }
 
@@ -80,16 +73,14 @@ impl Session
 
 
 #[cfg(test)]
-mod tests
-{
+mod tests {
     use super::*;
     use crate::duplex_channel::DuplexChannel;
     use tacacsrs_messages::packet::Packet;
     use tokio::sync::mpsc;
 
     #[tokio::test]
-    async fn test_session()
-    {
+    async fn test_session() {
         let (network_sender, _network_receiver) = mpsc::channel::<Packet>(32);
         let (_client_sender, client_receiver) = mpsc::channel::<Packet>(32);
         let duplex_channel = DuplexChannel::new(client_receiver, network_sender);
@@ -105,8 +96,7 @@ mod tests
     }
 
     #[tokio::test]
-    async fn test_sequence_number()
-    {
+    async fn test_sequence_number() {
         let (network_sender, _network_receiver) = mpsc::channel::<Packet>(32);
         let (_client_sender, client_receiver) = mpsc::channel::<Packet>(32);
         let duplex_channel = DuplexChannel::new(client_receiver, network_sender);
@@ -121,8 +111,7 @@ mod tests
     }
 
     #[tokio::test]
-    async fn test_is_complete_network_closed()
-    {
+    async fn test_is_complete_network_closed() {
         let (network_sender, _network_receiver) = mpsc::channel::<Packet>(32);
         let (_client_sender, client_receiver) = mpsc::channel::<Packet>(32);
         let duplex_channel = DuplexChannel::new(client_receiver, network_sender);

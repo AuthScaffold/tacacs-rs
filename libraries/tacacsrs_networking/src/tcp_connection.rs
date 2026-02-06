@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 use async_trait::async_trait;
 use tacacsrs_messages::enumerations::TacacsFlags;
@@ -14,20 +13,17 @@ use crate::session::Session;
 use crate::traits::SessionManagementTrait;
 
 #[async_trait]
-pub trait TcpConnectionTrait : SessionManagementTrait
-{
-    fn new(obfuscation_key : Option<&[u8]>) -> Self;
-    async fn run(self: &Arc<Self>, stream : TcpStream) -> anyhow::Result<()>;
+pub trait TcpConnectionTrait: SessionManagementTrait {
+    fn new(obfuscation_key: Option<&[u8]>) -> Self;
+    async fn run(self: &Arc<Self>, stream: TcpStream) -> anyhow::Result<()>;
 }
 
-pub struct TcpConnection
-{
-    connection : Arc<crate::session_manager::SessionManager>,
-    obfuscation_key : Option<Vec<u8>>,
+pub struct TcpConnection {
+    connection: Arc<crate::session_manager::SessionManager>,
+    obfuscation_key: Option<Vec<u8>>,
 }
 
-impl TcpConnection
-{
+impl TcpConnection {
     async fn handle_connection(self: Arc<Self>, stream: TcpStream) -> anyhow::Result<()> {
         let (reader, writer) = stream.into_split();
 
@@ -37,7 +33,13 @@ impl TcpConnection
             let connection = Arc::clone(&self_clone.connection);
 
             task::spawn(async move {
-                match TcpConnection::write_handler(receiver, writer, self_clone.obfuscation_key.clone(), connection).await
+                match TcpConnection::write_handler(
+                    receiver,
+                    writer,
+                    self_clone.obfuscation_key.clone(),
+                    connection,
+                )
+                .await
                 {
                     Ok(_) => Ok(()),
                     Err(e) => {
@@ -90,7 +92,12 @@ impl TcpConnection
         Ok(())
     }
 
-    async fn write_handler(mut receiver : tokio::sync::mpsc::Receiver<Packet>, mut writer: tokio::net::tcp::OwnedWriteHalf, obfuscation_key : Option<Vec<u8>>, connection: Arc<crate::session_manager::SessionManager>) -> anyhow::Result<()> {
+    async fn write_handler(
+        mut receiver: tokio::sync::mpsc::Receiver<Packet>,
+        mut writer: tokio::net::tcp::OwnedWriteHalf,
+        obfuscation_key: Option<Vec<u8>>,
+        connection: Arc<crate::session_manager::SessionManager>,
+    ) -> anyhow::Result<()> {
         loop {
             let mut packet = tokio::select! {
                 // Wait for close signal
@@ -103,7 +110,7 @@ impl TcpConnection
                     let _ = writer.shutdown().await;
                     return Ok(())
                 }
-                
+
                 // Wait for packet to send
                 packet = receiver.recv() => {
                     match packet {
@@ -128,17 +135,20 @@ impl TcpConnection
                 session_id
             );
 
-            let is_packet_deobfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+            let is_packet_deobfuscated = packet
+                .header()
+                .flags
+                .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
             let mut did_obfuscate = false;
             packet = match &obfuscation_key {
                 Some(key) => match is_packet_deobfuscated {
                     true => {
                         did_obfuscate = true;
                         packet.to_obfuscated(key)
-                    },
-                    false => packet
+                    }
+                    false => packet,
                 },
-                None => packet
+                None => packet,
             };
 
             if did_obfuscate {
@@ -150,7 +160,7 @@ impl TcpConnection
             }
 
             let bytes = packet.to_bytes();
-            
+
             writer.write_all(&bytes).await?;
 
             log::info!(
@@ -161,7 +171,10 @@ impl TcpConnection
         }
     }
 
-    async fn read_handler(self: Arc<Self>, mut _reader: tokio::net::tcp::OwnedReadHalf) -> anyhow::Result<()> {
+    async fn read_handler(
+        self: Arc<Self>,
+        mut _reader: tokio::net::tcp::OwnedReadHalf,
+    ) -> anyhow::Result<()> {
         loop {
             // Use select to either read the next packet or receive a close signal
             let header_buffer = tokio::select! {
@@ -173,7 +186,7 @@ impl TcpConnection
                     );
                     return Ok(());
                 }
-                
+
                 // Read the next packet header
                 result = async {
                     let mut header_buffer = [0_u8; TACACS_HEADER_LENGTH];
@@ -205,7 +218,7 @@ impl TcpConnection
                         e
                     );
 
-                    continue
+                    continue;
                 }
             };
 
@@ -217,7 +230,7 @@ impl TcpConnection
                 session_id, header.length
             );
 
-            // Always read the body, regardless of the presence of the session. This is to prevent the 
+            // Always read the body, regardless of the presence of the session. This is to prevent the
             // stream from getting out of sync.
             let mut body_buffer = vec![0_u8; header.length as usize];
             match _reader.read_exact(&mut body_buffer).await {
@@ -229,7 +242,7 @@ impl TcpConnection
                         header.length, session_id, e
                     );
 
-                    return Err(anyhow::Error::msg(e.to_string()))
+                    return Err(anyhow::Error::msg(e.to_string()));
                 }
             };
 
@@ -240,7 +253,7 @@ impl TcpConnection
             );
 
             // Create a new packet and potentially deobfuscate it.
-            let mut packet =  match Packet::new(header, body_buffer) {
+            let mut packet = match Packet::new(header, body_buffer) {
                 Ok(packet) => packet,
                 Err(e) => {
                     log::error!(
@@ -249,11 +262,14 @@ impl TcpConnection
                         session_id, e
                     );
 
-                    continue
+                    continue;
                 }
             };
 
-            let is_packet_deobfuscated = packet.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+            let is_packet_deobfuscated = packet
+                .header()
+                .flags
+                .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
             let mut did_deobfuscate = false;
             packet = match &self.obfuscation_key {
                 Some(key) => match is_packet_deobfuscated {
@@ -261,9 +277,9 @@ impl TcpConnection
                     false => {
                         did_deobfuscate = true;
                         packet.to_deobfuscated(key)
-                    },
+                    }
                 },
-                None => packet
+                None => packet,
             };
 
             if did_deobfuscate {
@@ -276,11 +292,16 @@ impl TcpConnection
 
             // Check the single connect flag from the server's response and update our state.
             // This is critical for determining if we can multiplex sessions on this connection.
-            let server_supports_single_connect = packet.header().flags.contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
-            self.connection.set_single_connection_state(server_supports_single_connect).await;
+            let server_supports_single_connect = packet
+                .header()
+                .flags
+                .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
+            self.connection
+                .set_single_connection_state(server_supports_single_connect)
+                .await;
 
             let _ = self.connection.send_message_to_session(packet).await;
-            
+
             // Note: Connection close is handled via wait_for_close() in the select! above.
             // When the session completes and calls complete(), it triggers remove_session(),
             // which will notify us if single connection mode is not supported.
@@ -289,54 +310,44 @@ impl TcpConnection
 }
 
 #[async_trait]
-impl TcpConnectionTrait for TcpConnection
-{
-    fn new(obfuscation_key : Option<&[u8]>) -> Self
-    {
-        Self
-        {
+impl TcpConnectionTrait for TcpConnection {
+    fn new(obfuscation_key: Option<&[u8]>) -> Self {
+        Self {
             connection: Arc::new(crate::session_manager::SessionManager::new()),
-            obfuscation_key: obfuscation_key.map(|key| key.to_vec())
+            obfuscation_key: obfuscation_key.map(|key| key.to_vec()),
         }
     }
 
 
-    async fn run(self: &Arc<Self>, stream : TcpStream) -> anyhow::Result<()>
-    {
+    async fn run(self: &Arc<Self>, stream: TcpStream) -> anyhow::Result<()> {
         let self_clone = Arc::clone(self);
-        task::spawn(async move {
-            self_clone.handle_connection(stream).await
-        });
+        task::spawn(async move { self_clone.handle_connection(stream).await });
 
         Ok(())
     }
 }
 
 #[async_trait]
-impl SessionManagementTrait for TcpConnection
-{
-    async fn can_create_sessions(self : &Arc<Self>) -> bool
-    {
+impl SessionManagementTrait for TcpConnection {
+    async fn can_create_sessions(self: &Arc<Self>) -> bool {
         self.connection.can_create_sessions().await
     }
 
-    async fn create_session(self : &Arc<Self>) -> anyhow::Result<Session>
-    {
+    async fn create_session(self: &Arc<Self>) -> anyhow::Result<Session> {
         self.connection.create_session().await
     }
 
-    async fn create_session_with_id(self : &Arc<Self>, session_id: u32) -> anyhow::Result<Session>
-    {
+    async fn create_session_with_id(self: &Arc<Self>, session_id: u32) -> anyhow::Result<Session> {
         self.connection.create_session_with_id(session_id).await
     }
 
-    async fn single_connection_state(self: &Arc<Self>) -> crate::session_manager::SingleConnectionState
-    {
+    async fn single_connection_state(
+        self: &Arc<Self>,
+    ) -> crate::session_manager::SingleConnectionState {
         self.connection.single_connection_state().await
     }
 
-    async fn should_close_after_session(self: &Arc<Self>) -> bool
-    {
+    async fn should_close_after_session(self: &Arc<Self>) -> bool {
         self.connection.should_close_after_session().await
     }
 }

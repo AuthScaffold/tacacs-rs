@@ -5,13 +5,13 @@ use num_enum::TryFromPrimitive;
 
 #[derive(Debug, Clone)]
 pub struct Header {
-    pub major_version : TacacsMajorVersion,
-    pub minor_version : TacacsMinorVersion,
-    pub tacacs_type : TacacsType,
-    pub seq_no : u8,
-    pub flags : TacacsFlags,
-    pub session_id : u32,
-    pub length : u32
+    pub major_version: TacacsMajorVersion,
+    pub minor_version: TacacsMinorVersion,
+    pub tacacs_type: TacacsType,
+    pub seq_no: u8,
+    pub flags: TacacsFlags,
+    pub session_id: u32,
+    pub length: u32,
 }
 
 // 1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8
@@ -33,12 +33,15 @@ impl Header {
             return Err(anyhow::Error::msg("Data too short"));
         }
 
-        let major_version = TacacsMajorVersion::try_from_primitive((data[0] >> 4) & 0x0f).with_context(|| "Invalid major version. Conversion failed with error")?;
+        let major_version = TacacsMajorVersion::try_from_primitive((data[0] >> 4) & 0x0f)
+            .with_context(|| "Invalid major version. Conversion failed with error")?;
 
-        let minor_version = TacacsMinorVersion::try_from_primitive(data[0] & 0x0f).with_context(|| "Invalid minor version. Conversion failed with error")?;
+        let minor_version = TacacsMinorVersion::try_from_primitive(data[0] & 0x0f)
+            .with_context(|| "Invalid minor version. Conversion failed with error")?;
 
-        let tacacs_type = TacacsType::try_from_primitive(data[1]).with_context(|| "Invalid TACACS+ type. Conversion failed with error")?;
-     
+        let tacacs_type = TacacsType::try_from_primitive(data[1])
+            .with_context(|| "Invalid TACACS+ type. Conversion failed with error")?;
+
         let seq_no = data[2];
 
         let flags = TacacsFlags::from_bits(data[3]).ok_or(anyhow::Error::msg("Invalid flags"))?;
@@ -46,7 +49,7 @@ impl Header {
         let session_id = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
 
         let length = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-        
+
 
         Ok(Header {
             major_version,
@@ -55,7 +58,7 @@ impl Header {
             seq_no,
             flags,
             session_id,
-            length
+            length,
         })
     }
 
@@ -77,10 +80,6 @@ impl Header {
 }
 
 
-
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,15 +87,14 @@ mod tests {
 
 
     fn generate_packet(
-        major_version_o : Option<TacacsMajorVersion>,
-        minor_version_o : Option<TacacsMinorVersion>,
-        tacacs_type_o : Option<TacacsType>,
-        sequence_number_o : Option<u8>,
-        tacacs_flags_o : Option<TacacsFlags>,
-        session_id_o : Option<u32>,
-        length_o : Option<u32>,
-    ) -> [u8; 12]
-    {
+        major_version_o: Option<TacacsMajorVersion>,
+        minor_version_o: Option<TacacsMinorVersion>,
+        tacacs_type_o: Option<TacacsType>,
+        sequence_number_o: Option<u8>,
+        tacacs_flags_o: Option<TacacsFlags>,
+        session_id_o: Option<u32>,
+        length_o: Option<u32>,
+    ) -> [u8; 12] {
         let major_version = major_version_o.unwrap_or(TacacsMajorVersion::TacacsPlusMajor1);
         let minor_version = minor_version_o.unwrap_or(TacacsMinorVersion::TacacsPlusMinorVerOne);
         let tacacs_type = tacacs_type_o.unwrap_or(TacacsType::TacPlusAccounting);
@@ -108,32 +106,46 @@ mod tests {
 
         let session_id_bytes = session_id.to_be_bytes();
         let length_bytes = length.to_be_bytes();
-    
+
         let binary_data: [u8; 12] = [
             (major_version as u8) << 4 | (minor_version as u8),
             tacacs_type as u8,
             sequence_number,
             tacacs_flags.bits(),
-            session_id_bytes[0], session_id_bytes[1], session_id_bytes[2], session_id_bytes[3],
-            length_bytes[0], length_bytes[1], length_bytes[2], length_bytes[3]
+            session_id_bytes[0],
+            session_id_bytes[1],
+            session_id_bytes[2],
+            session_id_bytes[3],
+            length_bytes[0],
+            length_bytes[1],
+            length_bytes[2],
+            length_bytes[3],
         ];
         binary_data
     }
 
     fn generate_default_packet() -> [u8; 12] {
-        generate_packet(Option::None, Option::None, Option::None, Option::None, Option::None, Option::None, Option::None)
+        generate_packet(
+            Option::None,
+            Option::None,
+            Option::None,
+            Option::None,
+            Option::None,
+            Option::None,
+            Option::None,
+        )
     }
 
     #[test]
     fn deserialisation_good_data() {
         let binary_data = generate_default_packet();
-    
+
         let header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
                 println!("Failed to create TacacsPacket: {}", e);
                 return;
-            },
+            }
         };
 
         assert_eq!(header.major_version as u8, 0xc_u8, "Major version mismatch");
@@ -148,14 +160,14 @@ mod tests {
     #[test]
     fn deserialisation_bad_short_data() {
         let binary_data_expected_length = generate_default_packet();
-        let binary_data_short = &binary_data_expected_length[0..TACACS_HEADER_LENGTH-1];
-    
+        let binary_data_short = &binary_data_expected_length[0..TACACS_HEADER_LENGTH - 1];
+
         let _header = match Header::from_bytes(binary_data_short) {
             Ok(data) => data,
             Err(e) => {
                 assert!(e.to_string().contains("Data too short"), "Error: {}", e);
                 return;
-            },
+            }
         };
 
         unreachable!();
@@ -165,13 +177,13 @@ mod tests {
     fn deserialisation_invalid_major_version() {
         let mut binary_data = generate_default_packet();
         binary_data[0] = 0x0f;
-    
+
         let _header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
                 assert!(e.to_string().contains("Invalid major version"), "Error: {}", e);
                 return;
-            },
+            }
         };
 
         unreachable!("Invalid major version. Conversion should have failed with error.");
@@ -181,13 +193,13 @@ mod tests {
     fn deserialisation_invalid_minor_version() {
         let mut binary_data = generate_default_packet();
         binary_data[0] = 0xc7;
-    
+
         let _header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
                 assert!(e.to_string().contains("Invalid minor version"), "Error: {}", e);
                 return;
-            },
+            }
         };
 
         unreachable!("Invalid minor version. Conversion should have failed with error.");
@@ -197,13 +209,13 @@ mod tests {
     fn deserialisation_invalid_tacacs_type() {
         let mut binary_data = generate_default_packet();
         binary_data[1] = 0xff;
-    
+
         let _header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
                 assert!(e.to_string().contains("Invalid TACACS+ type"), "Error: {}", e);
                 return;
-            },
+            }
         };
 
         unreachable!("Invalid TACACS+ type. Conversion should have failed with error.");
@@ -215,13 +227,13 @@ mod tests {
         let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
         // Use 0x02 which is not a valid flag bit (valid bits are 0x01, 0x04, 0x40, 0x80)
         binary_data[3] = flags.bits() | 0x02;
-    
+
         let _header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
                 assert!(e.to_string().contains("Invalid flags"), "Error: {}", e);
                 return;
-            },
+            }
         };
 
         unreachable!("Invalid flags. Conversion should have failed with error.");
@@ -230,16 +242,19 @@ mod tests {
     #[test]
     fn serialisation() {
         let binary_data = generate_default_packet();
-    
+
         let header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
                 println!("Failed to create TacacsPacket: {}", e);
                 return;
-            },
+            }
         };
 
         let binary_data_serialised = header.to_bytes();
-        assert_eq!(binary_data, binary_data_serialised, "Serialised data does not match original data");
+        assert_eq!(
+            binary_data, binary_data_serialised,
+            "Serialised data does not match original data"
+        );
     }
 }

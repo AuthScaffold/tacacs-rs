@@ -77,7 +77,11 @@ impl ProgressTracker {
                 } else {
                     0.0
                 };
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    clippy::cast_precision_loss
+                )]
                 let filled = (progress * bar_width as f64) as usize;
                 let empty = bar_width - filled;
 
@@ -160,10 +164,7 @@ pub fn print_load_test_summary(result: &LoadTestResult) {
     println!("Successful requests:    {}", result.successful_requests);
     println!("Failed requests:        {}", result.failed_requests);
     println!("Duration:               {:.2?}", result.duration);
-    println!(
-        "Throughput:             {:.2} requests/second",
-        result.requests_per_second
-    );
+    println!("Throughput:             {:.2} requests/second", result.requests_per_second);
 
     if let Some(failure) = &result.first_failure {
         println!("\nFirst failure: {failure}");
@@ -180,15 +181,15 @@ pub fn print_results_summary(results: &[RequestResult]) {
     let failed = results.len() - successful;
 
     for result in results {
-        let status = if result.result.is_ok() { "✓" } else { "✗" };
+        let status = if result.result.is_ok() {
+            "✓"
+        } else {
+            "✗"
+        };
         let message = match &result.result {
             Ok(msg) | Err(msg) => msg.clone(),
         };
-        println!(
-            "  [{status}] Request {} ({}): {message}",
-            result.index + 1,
-            result.request_type
-        );
+        println!("  [{status}] Request {} ({}): {message}", result.index + 1, result.request_type);
     }
 
     println!("\nTotal: {successful} succeeded, {failed} failed");
