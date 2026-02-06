@@ -1,0 +1,56 @@
+# Rustfmt configuration (requires nightly)
+# Run with: rustup run nightly cargo fmt
+#
+# Your style preferences:
+# - No trailing commas after match arm braces
+# - Function signatures on multiple lines (not collapsed)
+# - Macro calls on multiple lines (not collapsed)
+
+edition = "2021"
+unstable_features = true
+
+# Line width - set lower to prevent collapsing
+max_width = 100
+fn_call_width = 100
+attr_fn_like_width = 100
+single_line_if_else_max_width = 0
+single_line_let_else_max_width = 0
+
+tab_spaces = 4
+hard_tabs = false
+
+# Function signatures - short ones on one line, long ones wrapped
+fn_params_layout = "Tall"
+fn_single_line = false
+
+# Struct literals/patterns - allow short ones on single line
+struct_lit_single_line = true
+where_single_line = false
+
+# Trailing commas - NOT after match arms
+trailing_comma = "Vertical"
+match_block_trailing_comma = false
+
+# Preserve import organization
+reorder_imports = false
+reorder_modules = false
+imports_granularity = "Preserve"
+
+# Allow extra blank lines
+blank_lines_upper_bound = 2
+
+# Don't modify strings or comments
+format_strings = false
+wrap_comments = false
+normalize_comments = false
+normalize_doc_attributes = false
+
+# Macros - don't collapse
+format_macro_matchers = false
+format_macro_bodies = true
+
+# Other
+newline_style = "Auto"
+use_field_init_shorthand = true
+format_generated_files = false
+

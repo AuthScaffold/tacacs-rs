@@ -1,8 +1,10 @@
+//! TACACS+ command implementations
+//!
+//! This module provides implementations for the three core TACACS+ operations:
+//! - [`accounting`] - Record command execution and session events
+//! - [`authentication`] - Verify user identity
+//! - [`authorization`] - Check user permissions
+
 pub mod accounting;
 pub mod authentication;
 pub mod authorization;
-
-// const TAC_PLUS_MAJOR_VER: u8 = 0xc;
-// const TAC_PLUS_MINOR_VER: u8 = 0x1;
-// const TAC_PLUS_MINOR_VER_DEFAULT: u8 = 0x0;
-// const TAC_PLUS_MINOR_VER_ONE: u8 = 0x1;

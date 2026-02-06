@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "description": "Parallel execution batch - all requests run simultaneously",
+    "parallel": true
+  },
+  "requests": [
+    {
+      "type": "accounting",
+      "user": "user1",
+      "port": "tty1",
+      "rem_addr": "192.168.1.101",
+      "cmd": "show version"
+    },
+    {
+      "type": "accounting",
+      "user": "user2",
+      "port": "tty2",
+      "rem_addr": "192.168.1.102",
+      "cmd": "show interfaces"
+    },
+    {
+      "type": "accounting",
+      "user": "user3",
+      "port": "tty3",
+      "rem_addr": "192.168.1.103",
+      "cmd": "show ip route"
+    },
+    {
+      "type": "accounting",
+      "user": "user4",
+      "port": "tty4",
+      "rem_addr": "192.168.1.104",
+      "cmd": "show arp"
+    }
+  ]
+}

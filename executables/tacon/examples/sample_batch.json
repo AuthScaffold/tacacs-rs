@@ -1,0 +1,22 @@
+{
+  "metadata": {
+    "description": "Sample batch file demonstrating all request types",
+    "parallel": false
+  },
+  "requests": [
+    {
+      "type": "accounting",
+      "user": "user1",
+      "port": "tty1",
+      "rem_addr": "192.168.1.101",
+      "cmd": "show version"
+    },
+    {
+      "type": "accounting",
+      "user": "user1",
+      "port": "tty1",
+      "rem_addr": "192.168.1.101",
+      "cmd": "show version"
+    }
+  ]
+}

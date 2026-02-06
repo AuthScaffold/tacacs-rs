@@ -1,4 +1,7 @@
-use crate::enumerations::{TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType};
+use crate::enumerations::{
+    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
+    TacacsAuthenticationType,
+};
 use crate::packet::{Packet, PacketTrait};
 use crate::traits::TacacsBodyTrait;
 use std::io::{Cursor, Read};
@@ -40,29 +43,36 @@ pub struct AccountingRequest {
     pub user: String,
     pub port: String,
     pub rem_address: String,
-    pub args: Vec<String>
+    pub args: Vec<String>,
 }
 
 impl AccountingRequest {
-    pub fn from_packet(packet : &Packet) -> Result<Self, anyhow::Error> {
+    pub fn from_packet(packet: &Packet) -> Result<Self, anyhow::Error> {
         // Check if the packet the correct length
         let expected_length = Self::size_from_bytes(packet.body());
         if packet.body().len() < expected_length {
-            return Err(anyhow::Error::msg(format!("Invalid body length. Expected: {}, Actual: {}", expected_length, packet.body().len())));
+            return Err(anyhow::Error::msg(format!(
+                "Invalid body length. Expected: {}, Actual: {}",
+                expected_length,
+                packet.body().len()
+            )));
         }
 
         let accounting_request = match Self::from_bytes(packet.body()) {
             Ok(accounting_request) => accounting_request,
             Err(err) => {
-                let context = format!("Invalid TACACS+ AccountingRequest. Conversion failed with error: {}", err);
-                return Err(err).with_context(|| context)
-            },
+                let context = format!(
+                    "Invalid TACACS+ AccountingRequest. Conversion failed with error: {}",
+                    err
+                );
+                return Err(err).with_context(|| context);
+            }
         };
 
         Ok(accounting_request)
     }
 
-    fn size_from_bytes(data : &[u8]) -> usize {
+    fn size_from_bytes(data: &[u8]) -> usize {
         let mut length = TACACS_ACCOUNTING_REQUEST_MIN_LENGTH;
 
         let user_len = data[5];
@@ -85,103 +95,110 @@ impl AccountingRequest {
         length
     }
 
-    fn read_string(cursor : &mut Cursor<&[u8]>, len: usize) -> Result<String, anyhow::Error> {
+    fn read_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<String, anyhow::Error> {
         let remaining_buffer = cursor.get_ref().len() - cursor.position() as usize;
         if remaining_buffer < len {
-            return Err(anyhow::Error::msg("Not enough data to read string. Remaining buffer too short"));
+            return Err(anyhow::Error::msg(
+                "Not enough data to read string. Remaining buffer too short",
+            ));
         }
 
         let mut buffer = vec![0; len];
-        cursor.read_exact(&mut buffer).with_context(|| format!("Unable to read {} bytes from cursor", len))?;
+        cursor
+            .read_exact(&mut buffer)
+            .with_context(|| format!("Unable to read {} bytes from cursor", len))?;
 
-        let string = String::from_utf8(buffer).with_context(|| "Unable to read data into UTF8 formatted string")?;
+        let string = String::from_utf8(buffer)
+            .with_context(|| "Unable to read data into UTF8 formatted string")?;
 
         Ok(string)
     }
 
-    pub fn from_bytes(data : &[u8]) -> Result<Self, anyhow::Error> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self, anyhow::Error> {
         if data.len() < TACACS_ACCOUNTING_REQUEST_MIN_LENGTH {
             return Err(anyhow::Error::msg("Data too short"));
         }
 
         let mut cursor = Cursor::new(data);
 
-        let flags = match cursor.read_u8().with_context(|| "Invalid flags. Unable to read data") {
-            Ok(a) => TacacsAccountingFlags::from_bits(a).with_context(|| "Invalid flags. Conversion failed with error")?,
+        let flags = match cursor
+            .read_u8()
+            .with_context(|| "Invalid flags. Unable to read data")
+        {
+            Ok(a) => TacacsAccountingFlags::from_bits(a)
+                .with_context(|| "Invalid flags. Conversion failed with error")?,
             Err(err) => return Err(err),
         };
 
-        let authen_method = match cursor.read_u8().with_context(|| "Invalid authen_method. Unable to read data") {
-            Ok(data) => TacacsAuthenticationMethod::try_from_primitive(data).with_context(|| "Invalid authen_method. Conversion failed with error")?,
+        let authen_method = match cursor
+            .read_u8()
+            .with_context(|| "Invalid authen_method. Unable to read data")
+        {
+            Ok(data) => TacacsAuthenticationMethod::try_from_primitive(data)
+                .with_context(|| "Invalid authen_method. Conversion failed with error")?,
             Err(err) => return Err(err),
         };
 
-        let priv_lvl = match cursor.read_u8().with_context(|| "Invalid priv_lvl. Unable to read data") {
-            Ok(data) => data,
+        let priv_lvl = cursor
+            .read_u8()
+            .with_context(|| "Invalid priv_lvl. Unable to read data")?;
+
+        let authen_type = match cursor
+            .read_u8()
+            .with_context(|| "Invalid authen_type. Unable to read data: {}")
+        {
+            Ok(data) => TacacsAuthenticationType::try_from_primitive(data)
+                .with_context(|| "Invalid authen_type. Conversion failed with error")?,
             Err(err) => return Err(err),
         };
 
-        let authen_type = match cursor.read_u8().with_context(|| "Invalid authen_type. Unable to read data: {}") {
-            Ok(data) => TacacsAuthenticationType::try_from_primitive(data).with_context(|| "Invalid authen_type. Conversion failed with error")?,
+        let authen_service = match cursor
+            .read_u8()
+            .with_context(|| "Invalid authen_service. Unable to read data")
+        {
+            Ok(a) => TacacsAuthenticationService::try_from_primitive(a)
+                .with_context(|| "Invalid authen_service. Conversion failed with error")?,
             Err(err) => return Err(err),
         };
 
-        let authen_service = match cursor.read_u8().with_context(|| "Invalid authen_service. Unable to read data") {
-            Ok(a) => TacacsAuthenticationService::try_from_primitive(a).with_context(|| "Invalid authen_service. Conversion failed with error")?,
-            Err(err) => return Err(err),
-        };
+        let user_len = cursor
+            .read_u8()
+            .with_context(|| "Invalid user_len. Unable to read data")?;
 
-        let user_len = match cursor.read_u8().with_context(|| "Invalid user_len. Unable to read data") {
-            Ok(a) => a,
-            Err(err) => return Err(err),
-        };
+        let port_len = cursor
+            .read_u8()
+            .with_context(|| "Invalid port_len. Unable to read data")?;
 
-        let port_len = match cursor.read_u8().with_context(|| "Invalid port_len. Unable to read data") {
-            Ok(a) => a,
-            Err(err) => return Err(err),
-        };
+        let rem_addr_len = cursor
+            .read_u8()
+            .with_context(|| "Invalid rem_addr_len. Unable to read data")?;
 
-        let rem_addr_len = match cursor.read_u8().with_context(|| "Invalid rem_addr_len. Unable to read data") {
-            Ok(a) => a,
-            Err(err) => return Err(err),
-        };
+        let arg_cnt = cursor
+            .read_u8()
+            .with_context(|| "Invalid arg_cnt. Unable to read data")?;
 
-        let arg_cnt = match cursor.read_u8().with_context(|| "Invalid arg_cnt. Unable to read data") {
-            Ok(a) => a,
-            Err(err) => return Err(err),
-        };
-
-        let mut arg_sizes : Vec<u8> = Vec::new();
+        let mut arg_sizes: Vec<u8> = Vec::new();
         for _ in 0..arg_cnt {
-            let arg_size = match cursor.read_u8().with_context(|| "Invalid arg_size. Unable to read data") {
-                Ok(a) => a,
-                Err(err) => return Err(err),
-            };
+            let arg_size = cursor
+                .read_u8()
+                .with_context(|| "Invalid arg_size. Unable to read data")?;
 
             arg_sizes.push(arg_size);
         }
 
-        let user = match Self::read_string(&mut cursor, user_len as usize).with_context(|| "Invalid user. Unable to read data") {
-            Ok(a) => a,
-            Err(err) => return Err(err),
-        };
+        let user = Self::read_string(&mut cursor, user_len as usize)
+            .with_context(|| "Invalid user. Unable to read data")?;
 
-        let port = match Self::read_string(&mut cursor, port_len as usize).with_context(|| "Invalid port. Unable to read data") {
-            Ok(a) => a,
-            Err(err) => return Err(err),
-        };
+        let port = Self::read_string(&mut cursor, port_len as usize)
+            .with_context(|| "Invalid port. Unable to read data")?;
 
-        let rem_address = match Self::read_string(&mut cursor, rem_addr_len as usize).with_context(|| "Invalid rem_address. Unable to read data") {
-            Ok(a) => a,
-            Err(err) => return Err(err),
-        };
+        let rem_address = Self::read_string(&mut cursor, rem_addr_len as usize)
+            .with_context(|| "Invalid rem_address. Unable to read data")?;
 
-        let mut args : Vec<String> = Vec::new();
+        let mut args: Vec<String> = Vec::new();
         for arg_size in arg_sizes {
-            let arg = match Self::read_string(&mut cursor, arg_size as usize).with_context(|| "Invalid arg. Unable to read data") {
-                Ok(a) => a,
-                Err(err) => return Err(err),
-            };
+            let arg = Self::read_string(&mut cursor, arg_size as usize)
+                .with_context(|| "Invalid arg. Unable to read data")?;
 
             args.push(arg);
         }
@@ -196,14 +213,13 @@ impl AccountingRequest {
             user,
             port,
             rem_address,
-            args
+            args,
         })
     }
 }
 
 
-impl TacacsBodyTrait for AccountingRequest
-{
+impl TacacsBodyTrait for AccountingRequest {
     fn to_bytes(&self) -> Vec<u8> {
         let mut data = vec![
             self.flags.bits(),
@@ -233,64 +249,59 @@ impl TacacsBodyTrait for AccountingRequest
 }
 
 #[cfg(test)]
-mod tests
-{
+mod tests {
     use crate::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
     use crate::header::Header;
     use crate::packet::PacketTrait;
 
     use super::*;
 
-    fn generate_accounting_request_data() -> Vec<u8>
-    {
-        let mut data : Vec<u8> = Vec::new();
-        data.push(TacacsAccountingFlags::empty().bits()); // 0: flags
-        data.push(TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus as u8); // 1: authen_method
-        data.push(0); // 2: priv_lvl
-        data.push(TacacsAuthenticationType::TacPlusAuthenTypePap as u8); // 3: authen_type
-        data.push(TacacsAuthenticationService::TacPlusAuthenSvcNone as u8); // 4: authen_service
-
-        data.push(1); // 5: user_len
-        data.push(1); // 6: port_len
-        data.push(1); // 7: rem_addr_len
-        data.push(3); // 8: arg_cnt
-        data.push(1); // 9+0: arg_1_len
-        data.push(1); // 9+1: arg_2_len
-        data.push(1); // 9+2: arg_3_len
-
-        data.push(b'A'); // 12: user
-        data.push(b'B'); // 13: port
-        data.push(b'C'); // 14: rem_addr
-        data.push(b'D'); // 15: arg_1
-        data.push(b'E'); // 16: arg_2
-        data.push(b'F'); // 17: arg_3
-
-        data
+    fn generate_accounting_request_data() -> Vec<u8> {
+        vec![
+            TacacsAccountingFlags::empty().bits(), // 0: flags
+            TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus as u8, // 1: authen_method
+            0,                                     // 2: priv_lvl
+            TacacsAuthenticationType::TacPlusAuthenTypePap as u8, // 3: authen_type
+            TacacsAuthenticationService::TacPlusAuthenSvcNone as u8, // 4: authen_service
+            1,                                     // 5: user_len
+            1,                                     // 6: port_len
+            1,                                     // 7: rem_addr_len
+            3,                                     // 8: arg_cnt
+            1,                                     // 9+0: arg_1_len
+            1,                                     // 9+1: arg_2_len
+            1,                                     // 9+2: arg_3_len
+            b'A',                                  // 12: user
+            b'B',                                  // 13: port
+            b'C',                                  // 14: rem_addr
+            b'D',                                  // 15: arg_1
+            b'E',                                  // 16: arg_2
+            b'F',                                  // 17: arg_3
+        ]
     }
 
     #[test]
     fn test_size_from_bytes() {
-        let data : Vec<u8> = vec![0; TACACS_ACCOUNTING_REQUEST_MIN_LENGTH];
+        let data: Vec<u8> = vec![0; TACACS_ACCOUNTING_REQUEST_MIN_LENGTH];
         let size = AccountingRequest::size_from_bytes(&data);
         assert_eq!(size, TACACS_ACCOUNTING_REQUEST_MIN_LENGTH);
     }
 
     #[test]
     fn test_size_from_bytes_with_args() {
-        let mut data : Vec<u8> = Vec::new();
-        data.push(0); // 0: flags
-        data.push(0); // 1: authen_method
-        data.push(0); // 2: priv_lvl
-        data.push(0); // 3: authen_type
-        data.push(0); // 4: authen_service
-
-        data.push(1); // 5: user_len
-        data.push(2); // 6: port_len
-        data.push(3); // 7: rem_addr_len
-        data.push(3); // 8: arg_cnt
-        data.push(4); // 9+0: arg_1_len
-        data.push(5); // 9+1: arg_2_len
-        data.push(6); // 9+2: arg_3_len
+        let data: Vec<u8> = vec![
+            0, // 0: flags
+            0, // 1: authen_method
+            0, // 2: priv_lvl
+            0, // 3: authen_type
+            0, // 4: authen_service
+            1, // 5: user_len
+            2, // 6: port_len
+            3, // 7: rem_addr_len
+            3, // 8: arg_cnt
+            4, // 9+0: arg_1_len
+            5, // 9+1: arg_2_len
+            6, // 9+2: arg_3_len
+        ];
 
         let size = AccountingRequest::size_from_bytes(&data);
         assert_eq!(size, TACACS_ACCOUNTING_REQUEST_MIN_LENGTH + 1 + 2 + 3 + 4 + 5 + 6);
@@ -310,10 +321,16 @@ mod tests
         let accounting_request = AccountingRequest::from_bytes(data.as_slice()).unwrap();
 
         assert_eq!(accounting_request.flags.bits(), 0);
-        assert_eq!(accounting_request.authen_method, TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus);
+        assert_eq!(
+            accounting_request.authen_method,
+            TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus
+        );
         assert_eq!(accounting_request.priv_lvl, 0);
         assert_eq!(accounting_request.authen_type, TacacsAuthenticationType::TacPlusAuthenTypePap);
-        assert_eq!(accounting_request.authen_service, TacacsAuthenticationService::TacPlusAuthenSvcNone);
+        assert_eq!(
+            accounting_request.authen_service,
+            TacacsAuthenticationService::TacPlusAuthenSvcNone
+        );
         assert_eq!(accounting_request.user, "A");
         assert_eq!(accounting_request.port, "B");
         assert_eq!(accounting_request.rem_address, "C");
@@ -332,114 +349,91 @@ mod tests
         assert_eq!(data, new_data);
     }
 
-    
+
     #[test]
     fn test_read_string_exception_not_enough_data() {
         let data = vec![65_u8, 66, 67, 68, 69, 70];
         let mut cursor = Cursor::new(data.as_slice());
-        match AccountingRequest::read_string(&mut cursor, 700) {
-            Ok(_) => assert!(false),
-            Err(err) => {
-                assert!(err.to_string().contains("Remaining buffer too short"), "Error actual: {}", err);
-                return;
-            },
-        };
-
-        assert!(false, "Remaining buffer too short. Conversion should have failed with error.");
+        let err = AccountingRequest::read_string(&mut cursor, 700)
+            .expect_err("Remaining buffer too short. Conversion should have failed with error.");
+        assert!(err.to_string().contains("Remaining buffer too short"), "Error actual: {}", err);
     }
 
     #[test]
     fn test_read_bytes_not_enough_data() {
         let data = vec![65_u8, 66, 67, 68, 69, 70];
-        match AccountingRequest::from_bytes(data.as_slice()) {
-            Ok(_) => assert!(false),
-            Err(err) => {
-                assert!(err.to_string().contains("Data too short"), "Error actual: {}", err);
-                return;
-            },
-        };
-
-        assert!(false, "Data too short. from_bytes should have failed with error.");
+        let err = AccountingRequest::from_bytes(data.as_slice())
+            .expect_err("Data too short. from_bytes should have failed with error.");
+        assert!(err.to_string().contains("Data too short"), "Error actual: {}", err);
     }
 
     #[test]
     fn test_read_bytes_incorrect_accounting_flags() {
         let mut data = generate_accounting_request_data();
         data[0] = 0b11111111;
-        match AccountingRequest::from_bytes(data.as_slice()) {
-            Ok(_) => assert!(false),
-            Err(err) => {
-                assert!(err.to_string().contains("Invalid flags. Conversion failed with error"), "Error actual: {}", err);
-                return;
-            },
-        };
-
-        assert!(false, "Invalid flags. from_bytes should have failed with error.");
+        let err = AccountingRequest::from_bytes(data.as_slice())
+            .expect_err("Invalid flags. from_bytes should have failed with error.");
+        assert!(
+            err.to_string()
+                .contains("Invalid flags. Conversion failed with error"),
+            "Error actual: {}",
+            err
+        );
     }
 
     #[test]
     fn test_read_bytes_incorrect_authen_method() {
         let mut data = generate_accounting_request_data();
         data[1] = 0b11111111;
-        match AccountingRequest::from_bytes(data.as_slice()) {
-            Ok(_) => assert!(false),
-            Err(err) => {
-                assert!(err.to_string().contains("Invalid authen_method. Conversion failed with error"), "Error actual: {}", err);
-                return;
-            },
-        };
-
-        assert!(false, "Invalid authen_method. from_bytes should have failed with error.");
+        let err = AccountingRequest::from_bytes(data.as_slice())
+            .expect_err("Invalid authen_method. from_bytes should have failed with error.");
+        assert!(
+            err.to_string()
+                .contains("Invalid authen_method. Conversion failed with error"),
+            "Error actual: {}",
+            err
+        );
     }
 
     #[test]
     fn test_read_bytes_incorrect_authen_type() {
         let mut data = generate_accounting_request_data();
         data[3] = 0b11111111;
-        match AccountingRequest::from_bytes(data.as_slice()) {
-            Ok(_) => assert!(false),
-            Err(err) => {
-                assert!(err.to_string().contains("Invalid authen_type. Conversion failed with error"), "Error actual: {}", err);
-                return;
-            },
-        };
-
-        assert!(false, "Invalid authen_type. from_bytes should have failed with error.");
+        let err = AccountingRequest::from_bytes(data.as_slice())
+            .expect_err("Invalid authen_type. from_bytes should have failed with error.");
+        assert!(
+            err.to_string()
+                .contains("Invalid authen_type. Conversion failed with error"),
+            "Error actual: {}",
+            err
+        );
     }
 
     #[test]
     fn test_read_bytes_incorrect_authen_service() {
         let mut data = generate_accounting_request_data();
         data[4] = 0b11111111;
-        match AccountingRequest::from_bytes(data.as_slice()) {
-            Ok(_) => assert!(false),
-            Err(err) => {
-                assert!(err.to_string().contains("Invalid authen_service. Conversion failed with error"), "Error actual: {}", err);
-                return;
-            },
-        };
-
-        assert!(false, "Invalid authen_service. from_bytes should have failed with error.");
+        let err = AccountingRequest::from_bytes(data.as_slice())
+            .expect_err("Invalid authen_service. from_bytes should have failed with error.");
+        assert!(
+            err.to_string()
+                .contains("Invalid authen_service. Conversion failed with error"),
+            "Error actual: {}",
+            err
+        );
     }
 
     #[test]
     fn test_packet_has_nonzero_argcount_but_missing_arg_sizes_data() {
         let mut data = generate_accounting_request_data();
         data.truncate(TACACS_ACCOUNTING_REQUEST_MIN_LENGTH);
-        match AccountingRequest::from_bytes(data.as_slice()) {
-            Ok(_) => assert!(false),
-            Err(err) => {
-                assert!(err.to_string().contains("Invalid arg_size"), "Error actual: {}", err);
-                return;
-            },
-        };
-
-        assert!(false, "Invalid arg_size. Packet parsing should have failed.");
+        let err = AccountingRequest::from_bytes(data.as_slice())
+            .expect_err("Invalid arg_size. Packet parsing should have failed.");
+        assert!(err.to_string().contains("Invalid arg_size"), "Error actual: {}", err);
     }
 
     #[test]
-    fn test_from_packet()
-    {
+    fn test_from_packet() {
         let data = generate_accounting_request_data();
         let header = Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
@@ -459,8 +453,7 @@ mod tests
     }
 
     #[test]
-    fn test_correct_packet_size_with_invalid_size_based_on_parameters()
-    {
+    fn test_correct_packet_size_with_invalid_size_based_on_parameters() {
         let mut data = generate_accounting_request_data();
         data[5] = 255; // Set user_len to 255
 
@@ -476,14 +469,8 @@ mod tests
 
         let packet = Packet::new(header, data).unwrap();
 
-        match AccountingRequest::from_packet(&packet) {
-            Ok(_) => assert!(false),
-            Err(err) => {
-                assert!(err.to_string().contains("Invalid body length"), "Error actual: {}", err);
-                return;
-            },
-        };
-
-        assert!(false, "Invalid body length. Packet parsing should have failed.");
+        let err = AccountingRequest::from_packet(&packet)
+            .expect_err("Invalid body length. Packet parsing should have failed.");
+        assert!(err.to_string().contains("Invalid body length"), "Error actual: {}", err);
     }
 }
