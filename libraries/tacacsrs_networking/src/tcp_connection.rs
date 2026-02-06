@@ -34,9 +34,10 @@ impl TcpConnection
         let write_task = {
             let self_clone = Arc::clone(&self);
             let receiver = self_clone.connection.receiver.lock().await.take().unwrap();
+            let connection = Arc::clone(&self_clone.connection);
 
             task::spawn(async move {
-                match TcpConnection::write_handler(receiver, writer, self_clone.obfuscation_key.clone()).await
+                match TcpConnection::write_handler(receiver, writer, self_clone.obfuscation_key.clone(), connection).await
                 {
                     Ok(_) => Ok(()),
                     Err(e) => {
@@ -89,17 +90,33 @@ impl TcpConnection
         Ok(())
     }
 
-    async fn write_handler(mut receiver : tokio::sync::mpsc::Receiver<Packet>, mut writer: tokio::net::tcp::OwnedWriteHalf, obfuscation_key : Option<Vec<u8>>) -> anyhow::Result<()> {
+    async fn write_handler(mut receiver : tokio::sync::mpsc::Receiver<Packet>, mut writer: tokio::net::tcp::OwnedWriteHalf, obfuscation_key : Option<Vec<u8>>, connection: Arc<crate::session_manager::SessionManager>) -> anyhow::Result<()> {
         loop {
-            let mut packet = match receiver.recv().await {
-                Some(packet) => packet,
-                None => {
-                    log::error!(
+            let mut packet = tokio::select! {
+                // Wait for close signal
+                _ = connection.wait_for_close() => {
+                    log::info!(
                         target: "tacacsrs_networking::connection::write_handler",
-                        "No packet received from channel"
+                        "Received close signal. Shutting down write handler."
                     );
-
-                    return Err(anyhow::Error::msg("No packet received"))
+                    // Gracefully shutdown the write half
+                    let _ = writer.shutdown().await;
+                    return Ok(())
+                }
+                
+                // Wait for packet to send
+                packet = receiver.recv() => {
+                    match packet {
+                        Some(packet) => packet,
+                        None => {
+                            log::info!(
+                                target: "tacacsrs_networking::connection::write_handler",
+                                "Channel closed. Shutting down write handler."
+                            );
+                            let _ = writer.shutdown().await;
+                            return Ok(())
+                        }
+                    }
                 }
             };
 

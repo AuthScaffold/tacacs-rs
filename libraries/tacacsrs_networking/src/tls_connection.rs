@@ -38,17 +38,34 @@ impl TlsConnection {
         let write_task : JoinHandle<anyhow::Result<()>> = {
             let mut receiver = self.connection.receiver.lock().await.take().unwrap();
             let self_clone = Arc::clone(&self);
+            let connection = Arc::clone(&self_clone.connection);
             let write_future = async move {
                 loop {
-                    let mut packet = match receiver.recv().await {
-                        Some(packet) => packet,
-                        None => {
-                            log::error!(
+                    let mut packet = tokio::select! {
+                        // Wait for close signal
+                        _ = connection.wait_for_close() => {
+                            log::info!(
                                 target: "tacacsrs_networking::connection::write_handler",
-                                "No packet received from channel"
+                                "Received close signal. Shutting down write handler."
                             );
-        
-                            break Err(anyhow::Error::msg("No packet received"))
+                            // Gracefully shutdown the write half
+                            let _ = writer.shutdown().await;
+                            break Ok(())
+                        }
+                        
+                        // Wait for packet to send
+                        packet = receiver.recv() => {
+                            match packet {
+                                Some(packet) => packet,
+                                None => {
+                                    log::info!(
+                                        target: "tacacsrs_networking::connection::write_handler",
+                                        "Channel closed. Shutting down write handler."
+                                    );
+                                    let _ = writer.shutdown().await;
+                                    break Ok(())
+                                }
+                            }
                         }
                     };
 
