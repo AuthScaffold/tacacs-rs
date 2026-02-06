@@ -186,16 +186,42 @@ impl SessionManager
         *state = new_state;
     }
 
-    /// Marks that negotiation has started (first session created, awaiting response).
-    /// Transitions from Initial -> Negotiating.
-    async fn begin_negotiation(&self) {
+    /// Atomically checks if sessions can be created and begins negotiation if in Initial state.
+    /// 
+    /// This combines the check and state transition into a single atomic operation to prevent
+    /// race conditions where multiple threads could pass the can_create_sessions check and
+    /// both call begin_negotiation before the state transitions to Negotiating.
+    /// 
+    /// Returns Ok(()) if a session can be created, Err if not.
+    async fn try_begin_session(&self) -> anyhow::Result<()> {
+        // First check if new sessions are accepted at all
+        let can_accept_lock = self.can_accept_new_sessions.read().await;
+        if !*can_accept_lock {
+            return Err(anyhow::Error::msg("Connection is not accepting new sessions"));
+        }
+        drop(can_accept_lock);
+        
+        // Now atomically check state and transition if needed
         let mut state = self.single_connection_state.write().await;
-        if *state == SingleConnectionState::Initial {
-            log::debug!(
-                target: "tacacsrs_networking::session_manager::begin_negotiation",
-                "Transitioning from Initial to Negotiating"
-            );
-            *state = SingleConnectionState::Negotiating;
+        match *state {
+            SingleConnectionState::NotSupported => {
+                Err(anyhow::Error::msg("Connection is not accepting new sessions"))
+            }
+            SingleConnectionState::Negotiating => {
+                Err(anyhow::Error::msg("Connection is not accepting new sessions"))
+            }
+            SingleConnectionState::Initial => {
+                // Transition to Negotiating atomically within the same lock scope
+                log::debug!(
+                    target: "tacacsrs_networking::session_manager::try_begin_session",
+                    "Transitioning from Initial to Negotiating"
+                );
+                *state = SingleConnectionState::Negotiating;
+                Ok(())
+            }
+            SingleConnectionState::Supported => {
+                Ok(())
+            }
         }
     }
 
@@ -218,13 +244,8 @@ impl SessionManager
 
     async fn create_session_with_optional_id(self: &Arc<Self>, custom_session_id: Option<u32>) -> anyhow::Result<Session>
     {
-        if !self.can_create_sessions().await
-        {
-            return Err(anyhow::Error::msg("Connection is not accepting new sessions"));
-        }
-
-        // If this is the first session (state is Initial), transition to Negotiating
-        self.begin_negotiation().await;
+        // Atomically check if we can create sessions and begin negotiation if in Initial state
+        self.try_begin_session().await?;
 
         let (duplex_channel, session_id) = match custom_session_id {
             Some(id) => self.create_channel_with_id(id).await?,
@@ -253,10 +274,15 @@ impl SessionManager
             
             // Check if we should signal connection close
             // (no more sessions and single connection not supported)
+            // We must hold the duplex_channels lock while checking to prevent a race
+            // where a new session could be created between checking emptiness and signaling close.
             if duplex_channels.is_empty() {
-                drop(duplex_channels); // Release write lock before reading state
+                let state = self.single_connection_state.read().await;
+                let should_close = *state == SingleConnectionState::NotSupported;
+                drop(state);
+                drop(duplex_channels);
                 
-                if self.should_close_after_session().await {
+                if should_close {
                     log::info!(
                         target: "tacacsrs_networking::session_manager::remove_session",
                         "Last session completed and single connection mode not supported. Signaling connection close."
@@ -617,5 +643,225 @@ mod tests
         
         // Should close when state is NotSupported
         assert!(session_manager.should_close_after_session().await);
+    }
+
+    /// Test that concurrent session creation from Initial state only allows one session.
+    /// 
+    /// This tests the fix for the race condition where multiple threads could pass
+    /// the can_create_sessions() check when state is Initial, and both call begin_negotiation(),
+    /// potentially creating multiple sessions before state transitions to Negotiating.
+    #[tokio::test]
+    async fn test_concurrent_session_creation_from_initial_state()
+    {
+        // Run multiple iterations to increase the chance of catching race conditions
+        for _ in 0..100 {
+            let session_manager = Arc::new(SessionManager::new());
+            
+            // Spawn multiple tasks that all try to create a session simultaneously
+            let mut handles = Vec::new();
+            for _ in 0..10 {
+                let sm = Arc::clone(&session_manager);
+                handles.push(tokio::spawn(async move {
+                    sm.create_session().await
+                }));
+            }
+            
+            // Wait for all tasks to complete
+            let results: Vec<_> = futures::future::join_all(handles)
+                .await
+                .into_iter()
+                .map(|r| r.unwrap())
+                .collect();
+            
+            // Exactly one session should succeed (transitioning Initial -> Negotiating)
+            // All others should fail because state is Negotiating
+            let successes: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
+            let failures: Vec<_> = results.iter().filter(|r| r.is_err()).collect();
+            
+            assert_eq!(
+                successes.len(), 
+                1, 
+                "Expected exactly 1 successful session creation, got {}. \
+                 This indicates a race condition where multiple threads created sessions \
+                 before state transitioned to Negotiating.",
+                successes.len()
+            );
+            assert_eq!(
+                failures.len(), 
+                9, 
+                "Expected 9 failed session creations, got {}",
+                failures.len()
+            );
+            
+            // Verify state is Negotiating (not Initial, which would indicate the fix didn't work)
+            assert_eq!(
+                session_manager.single_connection_state().await,
+                SingleConnectionState::Negotiating,
+                "State should be Negotiating after first session creation"
+            );
+        }
+    }
+
+    /// Test that concurrent session creation works correctly when state is Supported.
+    /// 
+    /// Unlike the Initial state test, all concurrent creations should succeed when
+    /// single connection mode is supported.
+    #[tokio::test]
+    async fn test_concurrent_session_creation_when_supported()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+        
+        // Create first session and enable single connection mode
+        let _session1 = session_manager.create_session().await.unwrap();
+        session_manager.set_single_connection_state(true).await;
+        
+        // Spawn multiple tasks that all try to create sessions simultaneously
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let sm = Arc::clone(&session_manager);
+            handles.push(tokio::spawn(async move {
+                sm.create_session().await
+            }));
+        }
+        
+        // Wait for all tasks to complete
+        let results: Vec<_> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+        
+        // All sessions should succeed when single connection is supported
+        let successes: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
+        assert_eq!(
+            successes.len(), 
+            10, 
+            "All session creations should succeed when state is Supported, got {} successes",
+            successes.len()
+        );
+    }
+
+    /// Test that remove_session and create_session don't race on close notification.
+    /// 
+    /// This tests the fix for the race condition where after removing the last session
+    /// and before checking should_close_after_session(), a new session could be created,
+    /// making the duplex_channels.is_empty() check stale.
+    #[tokio::test]
+    async fn test_remove_session_and_create_session_no_race_on_close()
+    {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::time::{timeout, Duration};
+        
+        // Run multiple iterations to increase the chance of catching race conditions
+        for iteration in 0..50 {
+            let session_manager = Arc::new(SessionManager::new());
+            let close_notifications = Arc::new(AtomicUsize::new(0));
+            
+            // Create first session and set state to NotSupported
+            // This means closing the last session should trigger close notification
+            let session1 = session_manager.create_session().await.unwrap();
+            session_manager.set_single_connection_state(true).await;
+            
+            // Set up a waiter for close notification
+            let sm_for_waiter = Arc::clone(&session_manager);
+            let close_count = Arc::clone(&close_notifications);
+            let waiter_handle = tokio::spawn(async move {
+                // Use a timeout to avoid hanging forever if close is never signaled
+                if timeout(Duration::from_millis(100), sm_for_waiter.wait_for_close()).await.is_ok() {
+                    close_count.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+
+            // Now change state to NotSupported so completing sessions could trigger close
+            {
+                let mut state = session_manager.single_connection_state.write().await;
+                *state = SingleConnectionState::NotSupported;
+            }
+
+            // Spawn task to complete the session
+            let sm_for_complete = Arc::clone(&session_manager);
+            let session_id = session1.session_id();
+            let complete_handle = tokio::spawn(async move {
+                drop(session1); // This calls complete() which calls remove_session
+                sm_for_complete.remove_session(session_id).await;
+            });
+            
+            // Wait for completion
+            complete_handle.await.unwrap();
+            
+            // Give the waiter a moment to process
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            
+            // Cancel the waiter if it's still waiting
+            waiter_handle.abort();
+            let _ = waiter_handle.await;
+            
+            // Verify the close was notified (since state is NotSupported and no sessions remain)
+            let notifications = close_notifications.load(Ordering::SeqCst);
+            
+            // Check current session count
+            let session_count = session_manager.duplex_channels.read().await.len();
+            
+            // If no sessions remain and state is NotSupported, close should have been notified
+            if session_count == 0 {
+                assert_eq!(
+                    notifications, 
+                    1, 
+                    "Iteration {}: Close should have been notified exactly once when last session \
+                     completes and state is NotSupported. Got {} notifications.",
+                    iteration,
+                    notifications
+                );
+            }
+        }
+    }
+
+    /// Test that close notification only happens when truly the last session completes.
+    /// 
+    /// This verifies that if sessions are being created while another is being removed,
+    /// the close notification doesn't fire prematurely.
+    #[tokio::test]
+    async fn test_close_not_signaled_while_sessions_exist()
+    {
+        let session_manager = Arc::new(SessionManager::new());
+        
+        // Create first session and set state to Supported so we can create multiple
+        let session1 = session_manager.create_session().await.unwrap();
+        session_manager.set_single_connection_state(true).await;
+        
+        // Create a second session
+        let _session2 = session_manager.create_session().await.unwrap();
+        
+        // Now change state to NotSupported to test close behavior
+        {
+            let mut state = session_manager.single_connection_state.write().await;
+            *state = SingleConnectionState::NotSupported;
+        }
+        
+        // Set up a waiter that should NOT receive notification
+        let sm_for_waiter = Arc::clone(&session_manager);
+        let waiter_handle = tokio::spawn(async move {
+            tokio::time::timeout(
+                tokio::time::Duration::from_millis(100),
+                sm_for_waiter.wait_for_close()
+            ).await
+        });
+        
+        // Complete session1 - but session2 still exists, so close should NOT be signaled
+        session1.complete().await;
+        
+        // Wait for the timeout
+        let result = waiter_handle.await.unwrap();
+        
+        // The wait should have timed out (Err) because close should not be signaled
+        // while session2 still exists
+        assert!(
+            result.is_err(),
+            "Close should NOT be signaled while sessions still exist"
+        );
+        
+        // Verify session2 is still in the registry
+        let session_count = session_manager.duplex_channels.read().await.len();
+        assert_eq!(session_count, 1, "Session2 should still be in the registry");
     }
 }

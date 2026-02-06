@@ -21,6 +21,7 @@ rustls-pemfile = "2.2.0"
 webpki-roots = "1.0.6"
 test-log = "0.2.19"
 env_logger = "0.11.8"
+futures = "0.3"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
