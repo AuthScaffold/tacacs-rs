@@ -326,8 +326,7 @@ pub async fn execute_load_test(
     probe_server_capability(&connection, requests).await?;
 
     println!(
-        "Starting load test with {} total requests...\n",
-        total_requests
+        "Starting load test with {total_requests} total requests...\n"
     );
 
     // Set up progress tracking
@@ -472,6 +471,7 @@ async fn execute_load_test_single(
 }
 
 /// Builds the final load test result from execution data
+#[allow(clippy::unnecessary_wraps)]
 fn build_load_test_result(
     start_time: Instant,
     total_requests: usize,
@@ -480,7 +480,8 @@ fn build_load_test_result(
 ) -> anyhow::Result<LoadTestResult> {
     let duration = start_time.elapsed();
     let successful_requests = results.iter().filter(|&&r| r).count();
-    let failed_requests = if failure_msg.is_some() { 1 } else { 0 };
+    let failed_requests = usize::from(failure_msg.is_some());
+    #[allow(clippy::cast_precision_loss)]
     let requests_per_second = if duration.as_secs_f64() > 0.0 {
         successful_requests as f64 / duration.as_secs_f64()
     } else {

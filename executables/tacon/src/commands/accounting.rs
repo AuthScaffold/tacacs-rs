@@ -19,7 +19,7 @@ use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 /// * `rem_address` - Remote address of the client
 /// * `cmd` - The command being executed
 /// * `cmd_args` - Optional arguments to the command
-/// * `custom_flags` - Custom flags to set on the packet header (e.g., TAC_PLUS_CUSTOM_FLAG_1, TAC_PLUS_CUSTOM_FLAG_2)
+/// * `custom_flags` - Custom flags to set on the packet header (e.g., `TAC_PLUS_CUSTOM_FLAG_1`, `TAC_PLUS_CUSTOM_FLAG_2`)
 ///
 /// # Returns
 ///

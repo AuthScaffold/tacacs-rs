@@ -33,20 +33,11 @@ impl Header {
             return Err(anyhow::Error::msg("Data too short"));
         }
 
-        let major_version = match TacacsMajorVersion::try_from_primitive((data[0] >> 4) & 0x0f).with_context(|| "Invalid major version. Conversion failed with error") {
-            Ok(version) => version,
-            Err(err) => return Err(err),
-        };
+        let major_version = TacacsMajorVersion::try_from_primitive((data[0] >> 4) & 0x0f).with_context(|| "Invalid major version. Conversion failed with error")?;
 
-        let minor_version = match TacacsMinorVersion::try_from_primitive(data[0] & 0x0f).with_context(|| "Invalid minor version. Conversion failed with error") {
-            Ok(version) => version,
-            Err(err) => return Err(err),
-        };
+        let minor_version = TacacsMinorVersion::try_from_primitive(data[0] & 0x0f).with_context(|| "Invalid minor version. Conversion failed with error")?;
 
-        let tacacs_type = match TacacsType::try_from_primitive(data[1]).with_context(|| "Invalid TACACS+ type. Conversion failed with error") {
-                Ok(tacacs_type) => tacacs_type,
-                Err(err) => return Err(err),
-        };
+        let tacacs_type = TacacsType::try_from_primitive(data[1]).with_context(|| "Invalid TACACS+ type. Conversion failed with error")?;
      
         let seq_no = data[2];
 
@@ -167,7 +158,7 @@ mod tests {
             },
         };
 
-        assert!(false);
+        unreachable!();
     }
 
     #[test]
@@ -183,7 +174,7 @@ mod tests {
             },
         };
 
-        assert!(false, "Invalid major version. Conversion should have failed with error.");
+        unreachable!("Invalid major version. Conversion should have failed with error.");
     }
 
     #[test]
@@ -199,7 +190,7 @@ mod tests {
             },
         };
 
-        assert!(false, "Invalid minor version. Conversion should have failed with error.");
+        unreachable!("Invalid minor version. Conversion should have failed with error.");
     }
 
     #[test]
@@ -215,7 +206,7 @@ mod tests {
             },
         };
 
-        assert!(false, "Invalid TACACS+ type. Conversion should have failed with error.");
+        unreachable!("Invalid TACACS+ type. Conversion should have failed with error.");
     }
 
     #[test]
@@ -233,7 +224,7 @@ mod tests {
             },
         };
 
-        assert!(false, "Invalid flags. Conversion should have failed with error.");
+        unreachable!("Invalid flags. Conversion should have failed with error.");
     }
 
     #[test]

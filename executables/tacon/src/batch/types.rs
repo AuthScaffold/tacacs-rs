@@ -10,17 +10,17 @@ use tacacsrs_messages::enumerations::TacacsFlags;
 /// Custom flags that can be set on TACACS+ packet headers
 #[derive(Debug, Deserialize, Default, Clone, Copy)]
 pub struct CustomFlags {
-    /// Set TAC_PLUS_CUSTOM_FLAG_1 (0x40) on the packet header
+    /// Set `TAC_PLUS_CUSTOM_FLAG_1` (0x40) on the packet header
     #[serde(default)]
     pub custom_flag_1: bool,
 
-    /// Set TAC_PLUS_CUSTOM_FLAG_2 (0x80) on the packet header
+    /// Set `TAC_PLUS_CUSTOM_FLAG_2` (0x80) on the packet header
     #[serde(default)]
     pub custom_flag_2: bool,
 }
 
 impl CustomFlags {
-    /// Converts the custom flags to TacacsFlags
+    /// Converts the custom flags to `TacacsFlags`
     pub fn to_tacacs_flags(self) -> TacacsFlags {
         let mut flags = TacacsFlags::empty();
         if self.custom_flag_1 {

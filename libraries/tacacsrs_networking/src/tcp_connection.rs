@@ -44,7 +44,7 @@ impl TcpConnection
                         log::error!(
                             target: "tacacsrs_networking::connection::handle_connection",
                             "Write task failed with error: {}",
-                            e.to_string()
+                            e
                         );
 
                         Err(e)
@@ -63,7 +63,7 @@ impl TcpConnection
                         log::error!(
                             target: "tacacsrs_networking::connection::handle_connection",
                             "Read task failed with error: {}",
-                            e.to_string()
+                            e
                         );
 
                         // Close all sessions so that any outstanding sessions
@@ -188,7 +188,7 @@ impl TcpConnection
                             log::error!(
                                 target: "tacacsrs_networking::connection::read_handler",
                                 "Failed to read header from network due to error: {}",
-                                e.to_string()
+                                e
                             );
                             return Err(anyhow::Error::msg(e.to_string()))
                         }
@@ -202,7 +202,7 @@ impl TcpConnection
                     log::error!(
                         target: "tacacsrs_networking::connection::read_handler",
                         "Failed to parse header due to error: {}",
-                        e.to_string()
+                        e
                     );
 
                     continue
@@ -226,7 +226,7 @@ impl TcpConnection
                     log::error!(
                         target: "tacacsrs_networking::connection::read_handler",
                         "Failed to {} bytes from network for body session id {} due to error: {}",
-                        header.length, session_id, e.to_string()
+                        header.length, session_id, e
                     );
 
                     return Err(anyhow::Error::msg(e.to_string()))
@@ -246,7 +246,7 @@ impl TcpConnection
                     log::error!(
                         target: "tacacsrs_networking::connection::read_handler",
                         "Could not load packet for session id {}. Failed with error: {}",
-                        session_id, e.to_string()
+                        session_id, e
                     );
 
                     continue

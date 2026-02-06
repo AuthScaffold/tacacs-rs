@@ -141,7 +141,7 @@ impl MockConnection {
                         "Failed to send reply for session {} with sequence number {} due to error: {}",
                         session_id,
                         reply_sequence_number,
-                        e.to_string()
+                        e
                     );
                 }
             }

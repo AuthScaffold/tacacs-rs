@@ -12,9 +12,10 @@ use crate::session::Session;
 /// TACACS+ servers may or may not support single connection mode. This is indicated
 /// by the TAC_PLUS_SINGLE_CONNECT_FLAG in the response packet. Until we receive the
 /// first response, we don't know if the server supports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SingleConnectionState {
     /// No session has been created yet. The first session can be created.
+    #[default]
     Initial,
     /// A session has been created but we haven't received a response yet.
     /// No new sessions can be created until we receive the first response
@@ -26,12 +27,6 @@ pub enum SingleConnectionState {
     /// Server does not support single connection mode (TAC_PLUS_SINGLE_CONNECT_FLAG was not set).
     /// Connection should be closed after the current session completes.
     NotSupported,
-}
-
-impl Default for SingleConnectionState {
-    fn default() -> Self {
-        Self::Initial
-    }
 }
 
 #[derive(Debug)]
@@ -317,7 +312,7 @@ impl SessionManager
                         log::warn!(
                             target: "tacacsrs_networking::session_manager::send_message_to_session",
                             "Failed to send packet to client channel for session id: {} due to error: {}",
-                            session_id, e.to_string()
+                            session_id, e
                         );
 
                         Err(anyhow::Error::msg("Failed to send packet to client channel"))

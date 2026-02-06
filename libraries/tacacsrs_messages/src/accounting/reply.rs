@@ -70,15 +70,9 @@ impl AccountingReply {
             Err(err) => return Err(err),
         };
 
-        let server_msg = match read_string(&mut cursor, server_msg_len).with_context(|| "Unable to read server_msg") {
-            Ok(msg) => msg,
-            Err(err) => return Err(err),
-        };
+        let server_msg = read_string(&mut cursor, server_msg_len).with_context(|| "Unable to read server_msg")?;
 
-        let data = match read_string(&mut cursor, data_len).with_context(|| "Unable to read data") {
-            Ok(data) => data,
-            Err(err) => return Err(err),
-        };
+        let data = read_string(&mut cursor, data_len).with_context(|| "Unable to read data")?;
 
         Ok(AccountingReply{status, server_msg, data})
     }

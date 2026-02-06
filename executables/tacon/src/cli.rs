@@ -73,11 +73,11 @@ pub enum Command {
         #[arg(value_name = "ARG")]
         cmd_args: Option<Vec<String>>,
 
-        /// Set TAC_PLUS_CUSTOM_FLAG_1 (0x40) on the packet header
+        /// Set `TAC_PLUS_CUSTOM_FLAG_1` (0x40) on the packet header
         #[arg(long)]
         custom_flag_1: bool,
 
-        /// Set TAC_PLUS_CUSTOM_FLAG_2 (0x80) on the packet header
+        /// Set `TAC_PLUS_CUSTOM_FLAG_2` (0x80) on the packet header
         #[arg(long)]
         custom_flag_2: bool,
 

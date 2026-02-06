@@ -12,6 +12,7 @@ use tokio::task::JoinHandle;
 use super::types::{LoadTestResult, RequestResult};
 
 /// Configuration for progress display
+#[derive(Clone, Copy)]
 pub struct ProgressConfig {
     /// Total number of requests expected
     pub total_requests: usize,
@@ -63,30 +64,31 @@ impl ProgressTracker {
                 let count = progress_completed.load(Ordering::Relaxed);
                 let elapsed = start_time.elapsed();
                 let elapsed_secs = elapsed.as_secs_f64();
+                #[allow(clippy::cast_precision_loss)]
                 let throughput = if elapsed_secs > 0.0 {
                     count as f64 / elapsed_secs
                 } else {
                     0.0
                 };
 
+                #[allow(clippy::cast_precision_loss)]
                 let progress = if total_requests > 0 {
                     count as f64 / total_requests as f64
                 } else {
                     0.0
                 };
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
                 let filled = (progress * bar_width as f64) as usize;
                 let empty = bar_width - filled;
 
                 // Build the progress bar
-                let bar: String = std::iter::repeat('█')
-                    .take(filled)
-                    .chain(std::iter::repeat('░').take(empty))
+                let bar: String = std::iter::repeat_n('█', filled)
+                    .chain(std::iter::repeat_n('░', empty))
                     .collect();
 
                 // Print progress line (using \r to overwrite)
                 print!(
-                    "\r  [{bar}] {count:>7}/{total_requests:<7} | {throughput:>8.1} req/s | {elapsed:>6.1}s ",
-                    elapsed = elapsed_secs
+                    "\r  [{bar}] {count:>7}/{total_requests:<7} | {throughput:>8.1} req/s | {elapsed_secs:>6.1}s "
                 );
                 let _ = std::io::stdout().flush();
 
