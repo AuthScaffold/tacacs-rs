@@ -26,10 +26,8 @@ runs:
     - name: Install nightly toolchain for artifact-dir feature
       shell: bash
       run: |
-        # Install nightly if not already installed
-        if ! rustup toolchain list | grep -q 'nightly.*${{ inputs.target }}'; then
-          rustup toolchain install nightly --profile minimal --target ${{ inputs.target }}
-        fi
+        # Install nightly (rustup will skip if already installed with this target)
+        rustup toolchain install nightly --profile minimal --target ${{ inputs.target }}
 
     - name: Build release binary with artifact-dir
       shell: bash
