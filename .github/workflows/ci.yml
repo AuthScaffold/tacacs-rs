@@ -150,6 +150,8 @@ jobs:
 
   # ============================================
   # Build binaries for all platforms (outputs artifacts like release)
+  # Note: Matrix configuration is intentionally duplicated from release.yml
+  # to maintain explicit control over CI artifact generation
   # ============================================
   build-artifacts:
     name: Build Artifacts
@@ -246,7 +248,8 @@ jobs:
       - name: Generate SHA256 checksums
         run: |
           cd artifacts
-          sha256sum * > checksums-sha256.txt
+          # Use find to handle files robustly
+          find . -type f -exec sha256sum {} \; | sed 's|^\./||' > checksums-sha256.txt
           cat checksums-sha256.txt
 
       - name: Upload checksums
