@@ -73,8 +73,11 @@ runs:
       if: runner.os != 'Windows'
       shell: bash
       run: |
-        # Package debug symbols if they exist in target directory
-        if ls target/${{ inputs.target }}/release/*.dwp 1> /dev/null 2>&1; then
+        # Debug symbols may be in build-output or target directory
+        # Try build-output first (if --artifact-dir copied them)
+        if ls build-output/*.dwp 1> /dev/null 2>&1; then
+          cp build-output/*.dwp artifacts/${{ inputs.asset-name }}.dwp
+        elif ls target/${{ inputs.target }}/release/*.dwp 1> /dev/null 2>&1; then
           cp target/${{ inputs.target }}/release/*.dwp artifacts/${{ inputs.asset-name }}.dwp
         fi
 
@@ -82,10 +85,15 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        # Package PDB symbols if they exist in target directory
-        $pdbFile = "target/${{ inputs.target }}/release/${{ inputs.binary-name }}.pdb"
-        if (Test-Path $pdbFile) {
-          Copy-Item $pdbFile "artifacts/${{ inputs.asset-name }}.pdb"
+        # Debug symbols may be in build-output or target directory
+        # Try build-output first (if --artifact-dir copied them)
+        $pdbFileBuildOutput = "build-output/${{ inputs.binary-name }}.pdb"
+        $pdbFileTarget = "target/${{ inputs.target }}/release/${{ inputs.binary-name }}.pdb"
+        
+        if (Test-Path $pdbFileBuildOutput) {
+          Copy-Item $pdbFileBuildOutput "artifacts/${{ inputs.asset-name }}.pdb"
+        } elseif (Test-Path $pdbFileTarget) {
+          Copy-Item $pdbFileTarget "artifacts/${{ inputs.asset-name }}.pdb"
         }
 
     - name: Upload artifact
