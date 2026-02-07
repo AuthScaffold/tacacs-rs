@@ -115,11 +115,52 @@ jobs:
           asset-name: ${{ matrix.asset_name }}
 
   # ============================================
+  # Generate Software Bill of Materials (SBOM)
+  # ============================================
+  sbom:
+    name: Generate SBOM
+    needs: [check-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          cache-key: sbom
+
+      - name: Generate SBOM (JSON)
+        uses: ./.github/steps/generate-sbom
+        with:
+          output-format: json
+          all-features: 'true'
+
+      - name: Generate SBOM (XML)
+        uses: ./.github/steps/generate-sbom
+        with:
+          output-format: xml
+          all-features: 'true'
+
+      - name: Collect SBOM files
+        run: |
+          mkdir -p sbom-output
+          find . -name "*.cdx.json" -type f -exec cp {} sbom-output/ \;
+          find . -name "*.cdx.xml" -type f -exec cp {} sbom-output/ \;
+          echo "Collected SBOM files:"
+          ls -lh sbom-output/
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: sbom
+          path: sbom-output/*
+
+  # ============================================
   # Create checksums for all artifacts
   # ============================================
   checksums:
     name: Generate Checksums
-    needs: [check-release, build]
+    needs: [check-release, build, sbom]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -145,7 +186,7 @@ jobs:
   # ============================================
   release:
     name: Create Release
-    needs: [check-release, build, checksums]
+    needs: [check-release, build, sbom, checksums]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
