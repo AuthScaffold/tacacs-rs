@@ -160,7 +160,7 @@ jobs:
   # ============================================
   checksums:
     name: Generate Checksums
-    needs: [check-release, build, sbom]
+    needs: [check-release, build]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
