@@ -99,38 +99,10 @@ jobs:
     name: Build Debian Package
     needs: check-release
     if: needs.check-release.outputs.should-release == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Rust
-        uses: ./.github/steps/setup-rust
-        with:
-          targets: x86_64-unknown-linux-gnu
-          cache-key: release-deb
-
-      - name: Install cargo-deb
-        run: cargo install cargo-deb
-
-      - name: Build release binary
-        run: cargo build --release --package tacon
-
-      - name: Strip binary
-        run: strip target/release/tacon
-
-      - name: Compress Debian changelog
-        run: |
-          cd executables/tacon/debian
-          gzip -9 -n -c changelog > changelog.gz
-
-      - name: Generate .deb package
-        run: cargo deb --package tacon --no-build --no-strip
-
-      - name: Upload Debian package
-        uses: actions/upload-artifact@v6
-        with:
-          name: debian-package
-          path: target/debian/tacon_*.deb
+    uses: ./.github/workflows/reusable-deb.yml
+    with:
+      package-name: tacon
+      upload-artifacts: true
 
   # ============================================
   # Create checksums for all artifacts

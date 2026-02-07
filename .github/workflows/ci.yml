@@ -168,9 +168,19 @@ jobs:
     uses: ./.github/workflows/reusable-sbom.yml
 
   # ============================================
+  # Build Debian Package
+  # ============================================
+  build-deb:
+    name: Build Debian Package
+    uses: ./.github/workflows/reusable-deb.yml
+    with:
+      package-name: tacon
+      upload-artifacts: true
+
+  # ============================================
   # Create checksums for all artifacts
   # ============================================
   checksums:
     name: Generate Checksums
-    needs: [build-artifacts]
+    needs: [build-artifacts, build-deb]
     uses: ./.github/workflows/reusable-checksums.yml

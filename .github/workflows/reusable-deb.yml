@@ -1,0 +1,60 @@
+name: Reusable Debian Package Build
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        description: 'Name of the Rust package to build .deb for'
+        required: true
+        type: string
+      upload-artifacts:
+        description: 'Whether to upload the .deb package as an artifact'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  build-deb:
+    name: Build Debian Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          targets: x86_64-unknown-linux-gnu
+          cache-key: debian-${{ inputs.package-name }}
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build release binary
+        run: cargo build --release --package ${{ inputs.package-name }}
+
+      - name: Strip binary
+        run: strip target/release/${{ inputs.package-name }}
+
+      - name: Compress Debian changelog
+        run: |
+          cd executables/${{ inputs.package-name }}/debian
+          gzip -9 -n -c changelog > changelog.gz
+
+      - name: Generate .deb package
+        run: cargo deb --package ${{ inputs.package-name }} --no-build --no-strip
+
+      - name: Verify package with lintian
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lintian
+          lintian target/debian/${{ inputs.package-name }}_*.deb || true
+
+      - name: Display package info
+        run: dpkg --info target/debian/${{ inputs.package-name }}_*.deb
+
+      - name: Upload Debian package
+        if: inputs.upload-artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: debian-package
+          path: target/debian/${{ inputs.package-name }}_*.deb

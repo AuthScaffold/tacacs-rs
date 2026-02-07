@@ -58,11 +58,22 @@ jobs:
     uses: ./.github/workflows/reusable-sbom.yml
 
   # ============================================
+  # Build Debian Package
+  # ============================================
+  build-deb:
+    name: Build Debian Package
+    needs: [fmt, clippy]
+    uses: ./.github/workflows/reusable-deb.yml
+    with:
+      package-name: tacon
+      upload-artifacts: true
+
+  # ============================================
   # Create checksums for all artifacts
   # ============================================
   checksums:
     name: Generate Checksums
-    needs: [build-artifacts]
+    needs: [build-artifacts, build-deb]
     uses: ./.github/workflows/reusable-checksums.yml
 
   # ============================================
@@ -97,7 +108,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [fmt, clippy, test, build-artifacts, sbom, checksums, docs, coverage, audit]
+    needs: [fmt, clippy, test, build-artifacts, sbom, build-deb, checksums, docs, coverage, audit]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -107,6 +118,7 @@ jobs:
              [[ "${{ needs.test.result }}" != "success" ]] || \
              [[ "${{ needs.build-artifacts.result }}" != "success" ]] || \
              [[ "${{ needs.sbom.result }}" != "success" ]] || \
+             [[ "${{ needs.build-deb.result }}" != "success" ]] || \
              [[ "${{ needs.checksums.result }}" != "success" ]] || \
              [[ "${{ needs.docs.result }}" != "success" ]] || \
              [[ "${{ needs.coverage.result }}" != "success" ]] || \
