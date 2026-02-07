@@ -24,3 +24,7 @@ Cargo.lock
 #.idea/
 
 .vs/
+
+# SBOM files (generated during CI/CD)
+*.cdx.json
+*.cdx.xml

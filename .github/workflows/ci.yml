@@ -10,6 +10,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  BINARY_NAME: tacon
 
 jobs:
   # ============================================
@@ -146,3 +147,30 @@ jobs:
           RUSTDOCFLAGS: -D warnings --check -Z unstable-options
         run: cargo +nightly doc --workspace --no-deps --all-features
         continue-on-error: true
+
+  # ============================================
+  # Build binaries for all platforms (outputs artifacts like release)
+  # Uses reusable build workflow with artifact upload enabled
+  # ============================================
+  build-artifacts:
+    name: Build Artifacts
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      build-release: true
+      upload-artifacts: true
+      binary-name: tacon
+
+  # ============================================
+  # Generate Software Bill of Materials (SBOM)
+  # ============================================
+  sbom:
+    name: Generate SBOM
+    uses: ./.github/workflows/reusable-sbom.yml
+
+  # ============================================
+  # Create checksums for all artifacts
+  # ============================================
+  checksums:
+    name: Generate Checksums
+    needs: [build-artifacts]
+    uses: ./.github/workflows/reusable-checksums.yml

@@ -34,7 +34,29 @@ cargo install cargo-outdated
 
 # Security audit
 cargo install cargo-audit
+
+# SBOM generation (Software Bill of Materials)
+cargo install cargo-cyclonedx
 ```
+
+### Generating SBOM Locally
+
+To generate a Software Bill of Materials (SBOM) for compliance purposes:
+
+```bash
+# Generate SBOM in JSON format (CycloneDX standard)
+cargo cyclonedx --format json --all --all-features
+
+# Generate SBOM in XML format
+cargo cyclonedx --format xml --all --all-features
+
+# SBOM files are generated for each workspace member:
+# - executables/tacon/tacon.cdx.json
+# - libraries/tacacsrs_messages/tacacsrs-messages.cdx.json
+# - libraries/tacacsrs_networking/tacacsrs-networking.cdx.json
+```
+
+SBOMs are automatically generated and included with all releases.
 
 ## Development Setup
 
@@ -122,11 +144,16 @@ When you open a PR, the following checks run automatically:
 | **Clippy** | Linting and static analysis |
 | **Test** | Run tests on Linux and Windows |
 | **Build** | Verify compilation for all targets |
+| **Build Artifacts** | Build release binaries for all platforms (same as release) |
+| **SBOM** | Generate Software Bill of Materials (same as release) |
+| **Checksums** | Generate SHA256 checksums for all artifacts |
 | **Documentation** | Ensure docs build without warnings |
 | **Coverage** | Generate and upload code coverage |
 | **Security Audit** | Check for known vulnerabilities (when deps change) |
 
 All jobs must pass before merging.
+
+**Note:** The PR workflow now outputs all compiled assets identical to what the release build produces, including binaries for all platforms, SBOM files, and checksums. This ensures parity between CI and release environments.
 
 ### Main Branch CI
 
@@ -137,6 +164,14 @@ After merging to `main`, additional checks run:
 - Nightly compatibility check
 - Documentation link verification
 
+The CI workflow also generates the same artifacts as the release workflow:
+
+- **Release Binaries**: Built for all supported platforms (Linux GNU, Linux MUSL, Windows MSVC)
+- **SBOM Files**: Software Bill of Materials in CycloneDX format (JSON and XML)
+- **Checksums**: SHA256 checksums for all generated artifacts
+
+These artifacts are uploaded and retained for 7 days, allowing for testing and validation before official releases.
+
 ### Release Workflow
 
 Triggered automatically when a version tag (`v*.*.*`) is pushed. Builds release binaries for:
@@ -144,6 +179,13 @@ Triggered automatically when a version tag (`v*.*.*`) is pushed. Builds release 
 - `x86_64-unknown-linux-gnu`
 - `x86_64-unknown-linux-musl`
 - `x86_64-pc-windows-msvc`
+
+Additionally, the release workflow generates:
+
+- **Software Bill of Materials (SBOM)** in CycloneDX format (both JSON and XML)
+  - Compliant with supply chain security requirements
+  - Includes all dependencies and their licenses
+  - Separate SBOM files for each workspace crate (tacon, tacacsrs-messages, tacacsrs-networking)
 
 ## Releasing
 
@@ -196,9 +238,15 @@ This creates a PR that:
 When the PR is merged:
 1. The release workflow automatically triggers
 2. Builds release binaries for all platforms
-3. Creates and pushes the git tag (`vX.Y.Z`)
-4. Generates SHA256 checksums
-5. Creates a GitHub Release with all artifacts
+3. Generates Software Bill of Materials (SBOM) in CycloneDX format
+4. Creates and pushes the git tag (`vX.Y.Z`)
+5. Generates SHA256 checksums for all artifacts
+6. Creates a GitHub Release with all artifacts (binaries, checksums, and SBOMs)
+
+Release artifacts include:
+- Pre-built binaries for each platform
+- SHA256 checksums file
+- SBOM files in both JSON and XML formats (for supply chain compliance)
 
 ### Alternative: Manual Tag Release
 

@@ -72,47 +72,25 @@ jobs:
 
   # ============================================
   # Build binaries for all platforms
+  # Uses reusable build workflow with artifact upload enabled
   # ============================================
   build:
-    name: Build (${{ matrix.target }})
+    name: Build
     needs: check-release
     if: needs.check-release.outputs.should-release == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux GNU (glibc)
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            asset_name: tacon-linux-gnu-x86_64
-            
-          # Linux MUSL (static, Alpine compatible)
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            asset_name: tacon-linux-musl-x86_64
-            
-          # Windows MSVC
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            asset_name: tacon-windows-msvc-x86_64.exe
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      build-release: true
+      upload-artifacts: true
+      binary-name: tacon
 
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Rust
-        uses: ./.github/steps/setup-rust
-        with:
-          targets: ${{ matrix.target }}
-          cache-key: release-${{ matrix.target }}
-          install-musl-tools: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
-
-      - name: Build Binary
-        uses: ./.github/steps/build-binary
-        with:
-          target: ${{ matrix.target }}
-          binary-name: ${{ env.BINARY_NAME }}
-          asset-name: ${{ matrix.asset_name }}
+  # ============================================
+  # Generate Software Bill of Materials (SBOM)
+  # ============================================
+  sbom:
+    name: Generate SBOM
+    needs: [check-release]
+    uses: ./.github/workflows/reusable-sbom.yml
 
   # ============================================
   # Build Debian package
@@ -160,32 +138,14 @@ jobs:
   checksums:
     name: Generate Checksums
     needs: [check-release, build, build-deb]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v7
-        with:
-          path: artifacts
-          merge-multiple: true
-      
-      - name: Generate SHA256 checksums
-        run: |
-          cd artifacts
-          sha256sum * > checksums-sha256.txt
-          cat checksums-sha256.txt
-      
-      - name: Upload checksums
-        uses: actions/upload-artifact@v6
-        with:
-          name: checksums-sha256.txt
-          path: artifacts/checksums-sha256.txt
+    uses: ./.github/workflows/reusable-checksums.yml
 
   # ============================================
   # Create GitHub Release
   # ============================================
   release:
     name: Create Release
-    needs: [check-release, build, build-deb, checksums]
+    needs: [check-release, build, build-deb, sbom, checksums]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

@@ -1,0 +1,44 @@
+name: Reusable SBOM Generation
+
+on:
+  workflow_call:
+
+jobs:
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          cache-key: sbom
+
+      - name: Generate SBOM (JSON)
+        uses: ./.github/steps/generate-sbom
+        with:
+          output-format: json
+          all-features: 'true'
+
+      - name: Generate SBOM (XML)
+        uses: ./.github/steps/generate-sbom
+        with:
+          output-format: xml
+          all-features: 'true'
+
+      - name: Collect SBOM files
+        run: |
+          mkdir -p sbom-output
+          find . -name "*.cdx.json" -type f -exec cp {} sbom-output/ \;
+          find . -name "*.cdx.xml" -type f -exec cp {} sbom-output/ \;
+          echo "Collected SBOM files:"
+          ls -lh sbom-output/
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: sbom
+          path: sbom-output/*
