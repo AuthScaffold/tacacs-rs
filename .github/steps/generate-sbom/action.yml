@@ -1,0 +1,52 @@
+name: Generate SBOM
+description: Generate Software Bill of Materials (SBOM) in CycloneDX format
+
+inputs:
+  output-format:
+    description: 'Output format (json or xml)'
+    required: false
+    default: 'json'
+  all-features:
+    description: 'Enable all features when generating SBOM'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Install cargo-cyclonedx
+      shell: bash
+      run: |
+        cargo install cargo-cyclonedx --locked
+
+    - name: Generate SBOM
+      shell: bash
+      run: |
+        OUTPUT_FORMAT="${{ inputs.output-format }}"
+        ALL_FEATURES="${{ inputs.all-features }}"
+        
+        CMD="cargo cyclonedx --format $OUTPUT_FORMAT"
+        
+        # Add --all flag to include all dependencies (this is the default)
+        CMD="$CMD --all"
+        
+        # Add --all-features if requested
+        if [ "$ALL_FEATURES" = "true" ]; then
+          CMD="$CMD --all-features"
+        fi
+        
+        echo "Generating SBOM with command: $CMD"
+        $CMD
+        
+        # Find all generated SBOM files
+        SBOM_FILES=$(find . -name "*.cdx.$OUTPUT_FORMAT" -type f)
+        
+        if [ -z "$SBOM_FILES" ]; then
+          echo "Error: No SBOM files generated"
+          exit 1
+        fi
+        
+        echo "Generated SBOM files:"
+        for file in $SBOM_FILES; do
+          echo "  - $file ($(stat -c%s "$file" 2>/dev/null || stat -f%z "$file") bytes)"
+        done
