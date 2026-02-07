@@ -1,5 +1,5 @@
 name: Build Binary
-description: Build a release binary for a specific target with artifact upload
+description: Build a release binary for a specific target with artifact upload using Rust nightly artifact-dir feature
 
 inputs:
   target:
@@ -23,44 +23,66 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Determine artifact name
-      id: artifact
+    - name: Install nightly toolchain for artifact-dir feature
       shell: bash
       run: |
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          echo "name=${{ inputs.binary-name }}.exe" >> $GITHUB_OUTPUT
-        else
-          echo "name=${{ inputs.binary-name }}" >> $GITHUB_OUTPUT
-        fi
+        rustup toolchain install nightly --profile minimal --target ${{ inputs.target }}
 
-    - name: Build release binary
+    - name: Build release binary with artifact-dir
       shell: bash
-      run: cargo build --release --target ${{ inputs.target }} --bin ${{ inputs.binary-name }}
+      run: |
+        # Use nightly's --artifact-dir to output binaries to a predictable location
+        cargo +nightly build --release --target ${{ inputs.target }} --bin ${{ inputs.binary-name }} \
+          -Z unstable-options --artifact-dir=build-output
+
+    - name: Discover and prepare artifacts
+      shell: bash
+      run: |
+        mkdir -p artifacts
+        
+        # Determine the expected binary extension
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          BINARY_EXT=".exe"
+        else
+          BINARY_EXT=""
+        fi
+        
+        # The artifact-dir output should contain the binary
+        BINARY_NAME="${{ inputs.binary-name }}${BINARY_EXT}"
+        BINARY_PATH="build-output/${BINARY_NAME}"
+        
+        if [ ! -f "$BINARY_PATH" ]; then
+          echo "Error: Expected binary not found at $BINARY_PATH"
+          echo "Contents of build-output:"
+          ls -la build-output/
+          exit 1
+        fi
+        
+        echo "Found binary: $BINARY_PATH"
+        
+        # Copy and rename to asset name
+        cp "$BINARY_PATH" "artifacts/${{ inputs.asset-name }}"
+        chmod +x "artifacts/${{ inputs.asset-name }}" || true
 
     - name: Strip binary (Linux only)
       if: runner.os == 'Linux' && inputs.strip-binary == 'true'
       shell: bash
-      run: strip target/${{ inputs.target }}/release/${{ steps.artifact.outputs.name }}
+      run: strip artifacts/${{ inputs.asset-name }}
 
-    - name: Prepare artifact (Unix)
+    - name: Package debug symbols (Unix)
       if: runner.os != 'Windows'
       shell: bash
       run: |
-        mkdir -p artifacts
-        cp target/${{ inputs.target }}/release/${{ steps.artifact.outputs.name }} artifacts/${{ inputs.asset-name }}
-        chmod +x artifacts/${{ inputs.asset-name }}
-        # Package debug symbols if they exist
+        # Package debug symbols if they exist in target directory
         if ls target/${{ inputs.target }}/release/*.dwp 1> /dev/null 2>&1; then
           cp target/${{ inputs.target }}/release/*.dwp artifacts/${{ inputs.asset-name }}.dwp
         fi
 
-    - name: Prepare artifact (Windows)
+    - name: Package debug symbols (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        New-Item -ItemType Directory -Force -Path artifacts
-        Copy-Item "target/${{ inputs.target }}/release/${{ steps.artifact.outputs.name }}" "artifacts/${{ inputs.asset-name }}"
-        # Package PDB symbols if they exist
+        # Package PDB symbols if they exist in target directory
         $pdbFile = "target/${{ inputs.target }}/release/${{ inputs.binary-name }}.pdb"
         if (Test-Path $pdbFile) {
           Copy-Item $pdbFile "artifacts/${{ inputs.asset-name }}.pdb"
