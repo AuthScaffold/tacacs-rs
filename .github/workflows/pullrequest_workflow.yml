@@ -37,60 +37,17 @@ jobs:
     uses: ./.github/workflows/reusable-test.yml
 
   # ============================================
-  # Build Check - Verify compilation for all targets
-  # ============================================
-  build:
-    name: Build
-    needs: [fmt, clippy]
-    uses: ./.github/workflows/reusable-build.yml
-    with:
-      build-release: true
-
-  # ============================================
   # Build Artifacts - Generate all compiled assets like release
-  # Note: Matrix configuration is intentionally duplicated from release.yml
-  # to maintain explicit control over PR artifact generation
+  # Uses reusable build workflow with artifact upload enabled
   # ============================================
   build-artifacts:
     name: Build Artifacts
     needs: [fmt, clippy]
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux GNU (glibc)
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            asset_name: tacon-linux-gnu-x86_64
-
-          # Linux MUSL (static, Alpine compatible)
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            asset_name: tacon-linux-musl-x86_64
-
-          # Windows MSVC
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            asset_name: tacon-windows-msvc-x86_64.exe
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Rust
-        uses: ./.github/steps/setup-rust
-        with:
-          targets: ${{ matrix.target }}
-          cache-key: pr-build-${{ matrix.target }}
-          install-musl-tools: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
-
-      - name: Build Binary
-        uses: ./.github/steps/build-binary
-        with:
-          target: ${{ matrix.target }}
-          binary-name: ${{ env.BINARY_NAME }}
-          asset-name: ${{ matrix.asset_name }}
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      build-release: true
+      upload-artifacts: true
+      binary-name: tacon
 
   # ============================================
   # Generate Software Bill of Materials (SBOM)
@@ -140,7 +97,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [fmt, clippy, test, build, build-artifacts, sbom, checksums, docs, coverage, audit]
+    needs: [fmt, clippy, test, build-artifacts, sbom, checksums, docs, coverage, audit]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -148,7 +105,6 @@ jobs:
           if [[ "${{ needs.fmt.result }}" != "success" ]] || \
              [[ "${{ needs.clippy.result }}" != "success" ]] || \
              [[ "${{ needs.test.result }}" != "success" ]] || \
-             [[ "${{ needs.build.result }}" != "success" ]] || \
              [[ "${{ needs.build-artifacts.result }}" != "success" ]] || \
              [[ "${{ needs.sbom.result }}" != "success" ]] || \
              [[ "${{ needs.checksums.result }}" != "success" ]] || \
