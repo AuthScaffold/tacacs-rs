@@ -198,42 +198,7 @@ jobs:
   # ============================================
   sbom:
     name: Generate SBOM
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Rust
-        uses: ./.github/steps/setup-rust
-        with:
-          cache-key: sbom
-
-      - name: Generate SBOM (JSON)
-        uses: ./.github/steps/generate-sbom
-        with:
-          output-format: json
-          all-features: 'true'
-
-      - name: Generate SBOM (XML)
-        uses: ./.github/steps/generate-sbom
-        with:
-          output-format: xml
-          all-features: 'true'
-
-      - name: Collect SBOM files
-        run: |
-          mkdir -p sbom-output
-          find . -name "*.cdx.json" -type f -exec cp {} sbom-output/ \;
-          find . -name "*.cdx.xml" -type f -exec cp {} sbom-output/ \;
-          echo "Collected SBOM files:"
-          ls -lh sbom-output/
-
-      - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: sbom
-          path: sbom-output/*
+    uses: ./.github/workflows/reusable-sbom.yml
 
   # ============================================
   # Create checksums for all artifacts
@@ -241,25 +206,4 @@ jobs:
   checksums:
     name: Generate Checksums
     needs: [build-artifacts]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v7
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - name: Generate SHA256 checksums
-        run: |
-          cd artifacts
-          # Use find to handle files robustly
-          find . -type f -exec sha256sum {} \; | sed 's|^\./||' > checksums-sha256.txt
-          cat checksums-sha256.txt
-
-      - name: Upload checksums
-        uses: actions/upload-artifact@v6
-        with:
-          name: checksums-sha256.txt
-          path: artifacts/checksums-sha256.txt
+    uses: ./.github/workflows/reusable-checksums.yml
