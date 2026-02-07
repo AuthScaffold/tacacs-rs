@@ -56,7 +56,17 @@ Strip debug symbols to reduce package size:
 strip target/release/tacon
 ```
 
-### 3. Generate the .deb Package
+### 3. Compress the Debian Changelog
+
+Compress the changelog file (required by Debian policy):
+
+```bash
+cd executables/tacon/debian
+gzip -9 -n -c changelog > changelog.gz
+cd ../../..
+```
+
+### 4. Generate the .deb Package
 
 Generate the Debian package without rebuilding:
 
@@ -72,9 +82,10 @@ target/debian/tacon_0.1.1-1_amd64.deb
 
 ### Single Command
 
-You can also do all steps in one command (cargo-deb will build and strip automatically):
+You can also do all steps in one command (cargo-deb will build and strip automatically, but you still need to compress the changelog first):
 
 ```bash
+cd executables/tacon/debian && gzip -9 -n -c changelog > changelog.gz && cd ../../..
 cargo deb --package tacon
 ```
 
@@ -232,10 +243,10 @@ The simplest approach is to:
 
 When the workspace version changes (in root `Cargo.toml`):
 
-1. Update `executables/tacon/debian/changelog.gz`:
-   - Uncompress: `gunzip executables/tacon/debian/changelog.gz`
+1. Update `executables/tacon/debian/changelog`:
+   - Edit the uncompressed changelog file directly
    - Add new entry at the top following Debian changelog format
-   - Recompress: `gzip -9 -n executables/tacon/debian/changelog`
+   - The changelog will be automatically compressed during the build process
 
 2. Rebuild the package
 

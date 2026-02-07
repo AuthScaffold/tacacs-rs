@@ -140,6 +140,11 @@ jobs:
       - name: Strip binary
         run: strip target/release/tacon
 
+      - name: Compress Debian changelog
+        run: |
+          cd executables/tacon/debian
+          gzip -9 -n -c changelog > changelog.gz
+
       - name: Generate .deb package
         run: cargo deb --package tacon --no-build --no-strip
 
