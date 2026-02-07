@@ -10,6 +10,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  BINARY_NAME: tacon
 
 jobs:
   # ============================================
@@ -146,3 +147,110 @@ jobs:
           RUSTDOCFLAGS: -D warnings --check -Z unstable-options
         run: cargo +nightly doc --workspace --no-deps --all-features
         continue-on-error: true
+
+  # ============================================
+  # Build binaries for all platforms (outputs artifacts like release)
+  # ============================================
+  build-artifacts:
+    name: Build Artifacts
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux GNU (glibc)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: tacon-linux-gnu-x86_64
+            
+          # Linux MUSL (static, Alpine compatible)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset_name: tacon-linux-musl-x86_64
+            
+          # Windows MSVC
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: tacon-windows-msvc-x86_64.exe
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          targets: ${{ matrix.target }}
+          cache-key: ci-build-${{ matrix.target }}
+          install-musl-tools: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
+
+      - name: Build Binary
+        uses: ./.github/steps/build-binary
+        with:
+          target: ${{ matrix.target }}
+          binary-name: ${{ env.BINARY_NAME }}
+          asset-name: ${{ matrix.asset_name }}
+
+  # ============================================
+  # Generate Software Bill of Materials (SBOM)
+  # ============================================
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          cache-key: sbom
+
+      - name: Generate SBOM (JSON)
+        uses: ./.github/steps/generate-sbom
+        with:
+          output-format: json
+          all-features: 'true'
+
+      - name: Generate SBOM (XML)
+        uses: ./.github/steps/generate-sbom
+        with:
+          output-format: xml
+          all-features: 'true'
+
+      - name: Collect SBOM files
+        run: |
+          mkdir -p sbom-output
+          find . -name "*.cdx.json" -type f -exec cp {} sbom-output/ \;
+          find . -name "*.cdx.xml" -type f -exec cp {} sbom-output/ \;
+          echo "Collected SBOM files:"
+          ls -lh sbom-output/
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: sbom
+          path: sbom-output/*
+
+  # ============================================
+  # Create checksums for all artifacts
+  # ============================================
+  checksums:
+    name: Generate Checksums
+    needs: [build-artifacts]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          merge-multiple: true
+      
+      - name: Generate SHA256 checksums
+        run: |
+          cd artifacts
+          sha256sum * > checksums-sha256.txt
+          cat checksums-sha256.txt
+      
+      - name: Upload checksums
+        uses: actions/upload-artifact@v6
+        with:
+          name: checksums-sha256.txt
+          path: artifacts/checksums-sha256.txt

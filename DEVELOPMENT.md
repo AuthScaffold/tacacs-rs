@@ -144,11 +144,16 @@ When you open a PR, the following checks run automatically:
 | **Clippy** | Linting and static analysis |
 | **Test** | Run tests on Linux and Windows |
 | **Build** | Verify compilation for all targets |
+| **Build Artifacts** | Build release binaries for all platforms (same as release) |
+| **SBOM** | Generate Software Bill of Materials (same as release) |
+| **Checksums** | Generate SHA256 checksums for all artifacts |
 | **Documentation** | Ensure docs build without warnings |
 | **Coverage** | Generate and upload code coverage |
 | **Security Audit** | Check for known vulnerabilities (when deps change) |
 
 All jobs must pass before merging.
+
+**Note:** The PR workflow now outputs all compiled assets identical to what the release build produces, including binaries for all platforms, SBOM files, and checksums. This ensures parity between CI and release environments.
 
 ### Main Branch CI
 
@@ -158,6 +163,14 @@ After merging to `main`, additional checks run:
 - Minimal versions check
 - Nightly compatibility check
 - Documentation link verification
+
+The CI workflow also generates the same artifacts as the release workflow:
+
+- **Release Binaries**: Built for all supported platforms (Linux GNU, Linux MUSL, Windows MSVC)
+- **SBOM Files**: Software Bill of Materials in CycloneDX format (JSON and XML)
+- **Checksums**: SHA256 checksums for all generated artifacts
+
+These artifacts are uploaded and retained for 7 days, allowing for testing and validation before official releases.
 
 ### Release Workflow
 
