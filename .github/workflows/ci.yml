@@ -156,6 +156,8 @@ jobs:
   build-artifacts:
     name: Build Artifacts
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -197,6 +199,8 @@ jobs:
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
 
@@ -238,6 +242,8 @@ jobs:
     name: Generate Checksums
     needs: [build-artifacts]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v7
