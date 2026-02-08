@@ -172,10 +172,12 @@ jobs:
   # ============================================
   build-deb:
     name: Build Debian Package
+    needs: [build-artifacts]
     uses: ./.github/workflows/reusable-deb.yml
     with:
       package-name: tacon
       upload-artifacts: true
+      binary-artifact-name: tacon-linux-gnu-x86_64
 
   # ============================================
   # Create checksums for all artifacts

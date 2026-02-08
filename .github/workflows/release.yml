@@ -97,12 +97,13 @@ jobs:
   # ============================================
   build-deb:
     name: Build Debian Package
-    needs: check-release
+    needs: [check-release, build]
     if: needs.check-release.outputs.should-release == 'true'
     uses: ./.github/workflows/reusable-deb.yml
     with:
       package-name: tacon
       upload-artifacts: true
+      binary-artifact-name: tacon-linux-gnu-x86_64
 
   # ============================================
   # Create checksums for all artifacts
