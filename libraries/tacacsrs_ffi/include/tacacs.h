@@ -139,14 +139,18 @@ typedef struct tacacs_TacacsError {
 } tacacs_TacacsError;
 
 /**
- * Opaque pointer to a TACACS+ header
+ * Opaque type for TACACS+ header
  */
-typedef tacacs_RustHeader tacacs_TacacsHeader;
+typedef struct tacacs_TacacsHeader {
+    uint8_t private_[0];
+} tacacs_TacacsHeader;
 
 /**
- * Opaque pointer to a TACACS+ packet
+ * Opaque type for TACACS+ packet
  */
-typedef tacacs_RustPacket tacacs_TacacsPacket;
+typedef struct tacacs_TacacsPacket {
+    uint8_t private_[0];
+} tacacs_TacacsPacket;
 
 #ifdef __cplusplus
 extern "C" {
@@ -179,14 +183,14 @@ void tacacs_free_error(struct tacacs_TacacsError *error);
  * Returns a pointer to a newly allocated header that must be freed with `tacacs_header_free()`.
  * Returns null on allocation failure.
  */
-tacacs_TacacsHeader *tacacs_header_new(enum tacacs_CTacacsMajorVersion major_version,
-                                       enum tacacs_CTacacsMinorVersion minor_version,
-                                       enum tacacs_CTacacsType tacacs_type,
-                                       uint8_t seq_no,
-                                       uint8_t flags,
-                                       unsigned int session_id,
-                                       unsigned int length,
-                                       struct tacacs_TacacsError *error);
+struct tacacs_TacacsHeader *tacacs_header_new(enum tacacs_CTacacsMajorVersion major_version,
+                                              enum tacacs_CTacacsMinorVersion minor_version,
+                                              enum tacacs_CTacacsType tacacs_type,
+                                              uint8_t seq_no,
+                                              uint8_t flags,
+                                              unsigned int session_id,
+                                              unsigned int length,
+                                              struct tacacs_TacacsError *error);
 
 /**
  * Parse a TACACS+ header from bytes
@@ -197,9 +201,9 @@ tacacs_TacacsHeader *tacacs_header_new(enum tacacs_CTacacsMajorVersion major_ver
  * Returns a pointer to a newly allocated header that must be freed with `tacacs_header_free()`.
  * Returns null on parse failure or allocation failure.
  */
-tacacs_TacacsHeader *tacacs_header_from_bytes(const uint8_t *data,
-                                              uintptr_t data_len,
-                                              struct tacacs_TacacsError *error);
+struct tacacs_TacacsHeader *tacacs_header_from_bytes(const uint8_t *data,
+                                                     uintptr_t data_len,
+                                                     struct tacacs_TacacsError *error);
 
 /**
  * Serialize a TACACS+ header to bytes
@@ -210,7 +214,7 @@ tacacs_TacacsHeader *tacacs_header_from_bytes(const uint8_t *data,
  * The `buffer` pointer must point to at least 12 bytes of writable memory.
  * Returns the number of bytes written (always 12 for a valid header), or 0 on error.
  */
-uintptr_t tacacs_header_to_bytes(const tacacs_TacacsHeader *header,
+uintptr_t tacacs_header_to_bytes(const struct tacacs_TacacsHeader *header,
                                  uint8_t *buffer,
                                  uintptr_t buffer_len,
                                  struct tacacs_TacacsError *error);
@@ -223,7 +227,7 @@ uintptr_t tacacs_header_to_bytes(const tacacs_TacacsHeader *header,
  * The `header` pointer must be valid and point to a header created by this library.
  * Returns 0 if the pointer is null.
  */
-unsigned int tacacs_header_get_session_id(const tacacs_TacacsHeader *header);
+unsigned int tacacs_header_get_session_id(const struct tacacs_TacacsHeader *header);
 
 /**
  * Get the sequence number from a header
@@ -233,7 +237,7 @@ unsigned int tacacs_header_get_session_id(const tacacs_TacacsHeader *header);
  * The `header` pointer must be valid and point to a header created by this library.
  * Returns 0 if the pointer is null.
  */
-uint8_t tacacs_header_get_seq_no(const tacacs_TacacsHeader *header);
+uint8_t tacacs_header_get_seq_no(const struct tacacs_TacacsHeader *header);
 
 /**
  * Get the length from a header
@@ -243,7 +247,7 @@ uint8_t tacacs_header_get_seq_no(const tacacs_TacacsHeader *header);
  * The `header` pointer must be valid and point to a header created by this library.
  * Returns 0 if the pointer is null.
  */
-unsigned int tacacs_header_get_length(const tacacs_TacacsHeader *header);
+unsigned int tacacs_header_get_length(const struct tacacs_TacacsHeader *header);
 
 /**
  * Free a TACACS+ header
@@ -253,7 +257,7 @@ unsigned int tacacs_header_get_length(const tacacs_TacacsHeader *header);
  * The `header` pointer must be valid and must have been allocated by this library.
  * After calling this function, the pointer is invalid.
  */
-void tacacs_header_free(tacacs_TacacsHeader *header);
+void tacacs_header_free(struct tacacs_TacacsHeader *header);
 
 /**
  * Create a new TACACS+ packet from a header and body
@@ -265,10 +269,10 @@ void tacacs_header_free(tacacs_TacacsHeader *header);
  * - Returns a pointer to a newly allocated packet that must be freed with `tacacs_packet_free()`
  * - Returns null on error
  */
-tacacs_TacacsPacket *tacacs_packet_new(const tacacs_TacacsHeader *header,
-                                       const uint8_t *body,
-                                       uintptr_t body_len,
-                                       struct tacacs_TacacsError *error);
+struct tacacs_TacacsPacket *tacacs_packet_new(const struct tacacs_TacacsHeader *header,
+                                              const uint8_t *body,
+                                              uintptr_t body_len,
+                                              struct tacacs_TacacsError *error);
 
 /**
  * Parse a TACACS+ packet from bytes
@@ -279,9 +283,9 @@ tacacs_TacacsPacket *tacacs_packet_new(const tacacs_TacacsHeader *header,
  * - Returns a pointer to a newly allocated packet that must be freed with `tacacs_packet_free()`
  * - Returns null on parse failure or allocation failure
  */
-tacacs_TacacsPacket *tacacs_packet_from_bytes(const uint8_t *data,
-                                              uintptr_t data_len,
-                                              struct tacacs_TacacsError *error);
+struct tacacs_TacacsPacket *tacacs_packet_from_bytes(const uint8_t *data,
+                                                     uintptr_t data_len,
+                                                     struct tacacs_TacacsError *error);
 
 /**
  * Serialize a TACACS+ packet to bytes
@@ -295,7 +299,7 @@ tacacs_TacacsPacket *tacacs_packet_from_bytes(const uint8_t *data,
  * - The `out_len` pointer must be valid and will be set to the length of the output buffer
  * - Returns a pointer to the allocated buffer, or null on error
  */
-uint8_t *tacacs_packet_to_bytes(const tacacs_TacacsPacket *packet,
+uint8_t *tacacs_packet_to_bytes(const struct tacacs_TacacsPacket *packet,
                                 uintptr_t *out_len,
                                 struct tacacs_TacacsError *error);
 
@@ -311,10 +315,10 @@ uint8_t *tacacs_packet_to_bytes(const tacacs_TacacsPacket *packet,
  * - Returns a pointer to a newly allocated obfuscated packet, or null if already obfuscated
  * - The returned packet must be freed with `tacacs_packet_free()`
  */
-tacacs_TacacsPacket *tacacs_packet_obfuscate(const tacacs_TacacsPacket *packet,
-                                             const uint8_t *key,
-                                             uintptr_t key_len,
-                                             struct tacacs_TacacsError *error);
+struct tacacs_TacacsPacket *tacacs_packet_obfuscate(const struct tacacs_TacacsPacket *packet,
+                                                    const uint8_t *key,
+                                                    uintptr_t key_len,
+                                                    struct tacacs_TacacsError *error);
 
 /**
  * Deobfuscate a TACACS+ packet
@@ -328,10 +332,10 @@ tacacs_TacacsPacket *tacacs_packet_obfuscate(const tacacs_TacacsPacket *packet,
  * - Returns a pointer to a newly allocated deobfuscated packet, or null if already deobfuscated
  * - The returned packet must be freed with `tacacs_packet_free()`
  */
-tacacs_TacacsPacket *tacacs_packet_deobfuscate(const tacacs_TacacsPacket *packet,
-                                               const uint8_t *key,
-                                               uintptr_t key_len,
-                                               struct tacacs_TacacsError *error);
+struct tacacs_TacacsPacket *tacacs_packet_deobfuscate(const struct tacacs_TacacsPacket *packet,
+                                                      const uint8_t *key,
+                                                      uintptr_t key_len,
+                                                      struct tacacs_TacacsError *error);
 
 /**
  * Free a byte buffer allocated by the library
@@ -351,7 +355,7 @@ void tacacs_free_bytes(uint8_t *buffer);
  * The `packet` pointer must be valid and must have been allocated by this library.
  * After calling this function, the pointer is invalid.
  */
-void tacacs_packet_free(tacacs_TacacsPacket *packet);
+void tacacs_packet_free(struct tacacs_TacacsPacket *packet);
 
 /**
  * Free a string allocated by the library

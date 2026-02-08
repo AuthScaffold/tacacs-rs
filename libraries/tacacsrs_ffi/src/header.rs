@@ -10,8 +10,11 @@ use tacacsrs_messages::enumerations::{
 
 use crate::error::{TacacsError, TacacsResult};
 
-/// Opaque pointer to a TACACS+ header
-pub type TacacsHeader = RustHeader;
+/// Opaque type for TACACS+ header
+#[repr(C)]
+pub struct TacacsHeader {
+    _private: [u8; 0],
+}
 
 /// TACACS+ major version enumeration
 #[repr(C)]
@@ -103,7 +106,7 @@ pub unsafe extern "C" fn tacacs_header_new(
         *error = TacacsError::success();
     }
     
-    Box::into_raw(Box::new(header))
+    Box::into_raw(Box::new(header)) as *mut TacacsHeader
 }
 
 /// Parse a TACACS+ header from bytes
@@ -133,7 +136,7 @@ pub unsafe extern "C" fn tacacs_header_from_bytes(
             if !error.is_null() {
                 *error = TacacsError::success();
             }
-            Box::into_raw(Box::new(header))
+            Box::into_raw(Box::new(header)) as *mut TacacsHeader
         }
         Err(e) => {
             if !error.is_null() {
@@ -186,7 +189,7 @@ pub unsafe extern "C" fn tacacs_header_to_bytes(
         return 0;
     }
     
-    let header_ref = &*header;
+    let header_ref = &*(header as *const RustHeader);
     let bytes = header_ref.to_bytes();
     
     let buffer_slice = std::slice::from_raw_parts_mut(buffer, HEADER_SIZE);
@@ -210,7 +213,7 @@ pub unsafe extern "C" fn tacacs_header_get_session_id(header: *const TacacsHeade
     if header.is_null() {
         return 0;
     }
-    (*header).session_id
+    (*( header as *const RustHeader)).session_id
 }
 
 /// Get the sequence number from a header
@@ -224,7 +227,7 @@ pub unsafe extern "C" fn tacacs_header_get_seq_no(header: *const TacacsHeader) -
     if header.is_null() {
         return 0;
     }
-    (*header).seq_no
+    (*(header as *const RustHeader)).seq_no
 }
 
 /// Get the length from a header
@@ -238,7 +241,7 @@ pub unsafe extern "C" fn tacacs_header_get_length(header: *const TacacsHeader) -
     if header.is_null() {
         return 0;
     }
-    (*header).length
+    (*(header as *const RustHeader)).length
 }
 
 /// Free a TACACS+ header
@@ -250,7 +253,7 @@ pub unsafe extern "C" fn tacacs_header_get_length(header: *const TacacsHeader) -
 #[no_mangle]
 pub unsafe extern "C" fn tacacs_header_free(header: *mut TacacsHeader) {
     if !header.is_null() {
-        let _ = Box::from_raw(header);
+        let _ = Box::from_raw(header as *mut RustHeader);
     }
 }
 

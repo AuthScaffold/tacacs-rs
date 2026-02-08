@@ -4,12 +4,16 @@ use std::ptr;
 use std::slice;
 
 use tacacsrs_messages::packet::Packet as RustPacket;
+use tacacsrs_messages::header::Header as RustHeader;
 
 use crate::error::{TacacsError, TacacsResult};
 use crate::header::TacacsHeader;
 
-/// Opaque pointer to a TACACS+ packet
-pub type TacacsPacket = RustPacket;
+/// Opaque type for TACACS+ packet
+#[repr(C)]
+pub struct TacacsPacket {
+    _private: [u8; 0],
+}
 
 /// Create a new TACACS+ packet from a header and body
 ///
@@ -40,7 +44,7 @@ pub unsafe extern "C" fn tacacs_packet_new(
         return ptr::null_mut();
     }
     
-    let header_ref = &*header;
+    let header_ref = &*(header as *const RustHeader);
     let body_slice = if body_len > 0 {
         slice::from_raw_parts(body, body_len)
     } else {
@@ -52,7 +56,7 @@ pub unsafe extern "C" fn tacacs_packet_new(
             if !error.is_null() {
                 *error = TacacsError::success();
             }
-            Box::into_raw(Box::new(packet))
+            Box::into_raw(Box::new(packet)) as *mut TacacsPacket
         }
         Err(e) => {
             if !error.is_null() {
@@ -93,7 +97,7 @@ pub unsafe extern "C" fn tacacs_packet_from_bytes(
             if !error.is_null() {
                 *error = TacacsError::success();
             }
-            Box::into_raw(Box::new(packet))
+            Box::into_raw(Box::new(packet)) as *mut TacacsPacket
         }
         Err(e) => {
             if !error.is_null() {
@@ -137,7 +141,7 @@ pub unsafe extern "C" fn tacacs_packet_to_bytes(
         return ptr::null_mut();
     }
     
-    let packet_ref = &*packet;
+    let packet_ref = &*(packet as *const RustPacket);
     let bytes = packet_ref.to_bytes();
     
     *out_len = bytes.len();
@@ -190,7 +194,7 @@ pub unsafe extern "C" fn tacacs_packet_obfuscate(
         return ptr::null_mut();
     }
     
-    let packet_ref = &*packet;
+    let packet_ref = &*(packet as *const RustPacket);
     let key_slice = slice::from_raw_parts(key, key_len);
     
     match packet_ref.as_obfuscated(key_slice) {
@@ -198,7 +202,7 @@ pub unsafe extern "C" fn tacacs_packet_obfuscate(
             if !error.is_null() {
                 *error = TacacsError::success();
             }
-            Box::into_raw(Box::new(obfuscated))
+            Box::into_raw(Box::new(obfuscated)) as *mut TacacsPacket
         }
         None => {
             if !error.is_null() {
@@ -243,7 +247,7 @@ pub unsafe extern "C" fn tacacs_packet_deobfuscate(
         return ptr::null_mut();
     }
     
-    let packet_ref = &*packet;
+    let packet_ref = &*(packet as *const RustPacket);
     let key_slice = slice::from_raw_parts(key, key_len);
     
     match packet_ref.as_deobfuscated(key_slice) {
@@ -251,7 +255,7 @@ pub unsafe extern "C" fn tacacs_packet_deobfuscate(
             if !error.is_null() {
                 *error = TacacsError::success();
             }
-            Box::into_raw(Box::new(deobfuscated))
+            Box::into_raw(Box::new(deobfuscated)) as *mut TacacsPacket
         }
         None => {
             if !error.is_null() {
@@ -287,7 +291,7 @@ pub unsafe extern "C" fn tacacs_free_bytes(buffer: *mut u8) {
 #[no_mangle]
 pub unsafe extern "C" fn tacacs_packet_free(packet: *mut TacacsPacket) {
     if !packet.is_null() {
-        let _ = Box::from_raw(packet);
+        let _ = Box::from_raw(packet as *mut RustPacket);
     }
 }
 
