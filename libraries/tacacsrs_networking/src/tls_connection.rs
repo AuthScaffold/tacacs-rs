@@ -1,7 +1,5 @@
 use std::sync::Arc;
 use async_trait::async_trait;
-use tacacsrs_messages::enumerations::TacacsFlags;
-use tacacsrs_messages::packet::PacketTrait;
 
 use tokio::io::{split, ReadHalf};
 use tokio::net::TcpStream;
@@ -10,6 +8,7 @@ use tokio_rustls::client::TlsStream;
 use crate::packet_reader::{PacketReader, PacketReaderTrait, PacketReadResult};
 use crate::packet_writer::{PacketWriter, PacketWriterTrait};
 use crate::session::Session;
+use crate::single_connect_tracker::{LocalSingleConnectState, SingleConnectFlag};
 use crate::traits::SessionManagementTrait;
 
 #[async_trait]
@@ -107,10 +106,7 @@ impl TlsConnection {
         &self,
         mut reader: ReadHalf<TlsStream<TcpStream>>,
     ) -> anyhow::Result<()> {
-        // Track locally whether we've reached the terminal NotSupported state.
-        // NotSupported is terminal - once set, it won't change back.
-        // However, Supported can transition to NotSupported if the server signals shutdown.
-        let mut single_connection_mode_is_not_supported = false;
+        let mut local_state = LocalSingleConnectState::default();
 
         loop {
             // Use select to either read the next packet or receive a close signal
@@ -164,24 +160,10 @@ impl TlsConnection {
                 }
             };
 
-            // Check the single connect flag from the server's response and update our state.
-            // This is critical for determining if we can multiplex sessions on this connection.
-            // Skip if already NotSupported (terminal state), but keep checking if Supported
-            // since server can downgrade to NotSupported to signal graceful shutdown.
-            if !single_connection_mode_is_not_supported {
-                let server_supports_single_connect = packet
-                    .header()
-                    .flags
-                    .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
-                self.connection
-                    .set_single_connection_state(server_supports_single_connect)
-                    .await;
-                
-                // Once NotSupported, it's terminal - no need to check further
-                if !server_supports_single_connect {
-                    single_connection_mode_is_not_supported = true;
-                }
-            }
+            // Update single connection state based on the TAC_PLUS_SINGLE_CONNECT_FLAG.
+            // Only notify the session manager on state transitions.
+            let flag = SingleConnectFlag::from_packet(&packet);
+            local_state = local_state.process_packet(flag, &self.connection).await;
 
             let _ = self.connection.send_message_to_session(packet).await;
 
