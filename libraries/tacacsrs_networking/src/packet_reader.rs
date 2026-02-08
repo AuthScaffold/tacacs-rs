@@ -115,7 +115,9 @@ impl PacketReaderTrait for PacketReader {
             session_id, header.length
         );
 
-        // Safe to cast to usize after validation
+        // Safe to cast to usize after validation:
+        // TACACS_MAX_BODY_LENGTH (65536) fits comfortably within usize on all platforms
+        // (even 16-bit platforms have usize >= 16 bits = 65536 max value)
         let body_length = header.length as usize;
 
         // Read body
