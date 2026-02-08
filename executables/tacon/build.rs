@@ -4,6 +4,9 @@ use std::path::PathBuf;
 
 use clap::CommandFactory;
 
+// Include the CLI module to generate the man page from the actual CLI definitions.
+// This is safe because cli.rs only depends on clap, which is available in build-dependencies.
+// This ensures the man page is always in sync with the actual CLI implementation.
 include!("src/cli.rs");
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,3 +27,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
