@@ -50,7 +50,7 @@ pub trait PacketReaderTrait: Send + Sync {
     /// 4. Create and optionally deobfuscate the packet
     ///
     /// # Arguments
-    /// * `reader` - A mutable reference to a boxed async reader
+    /// * `reader` - A mutable reference to an async reader trait object
     ///
     /// # Returns
     /// A `PacketReadResult` indicating success or the type of failure encountered.
