@@ -40,7 +40,6 @@ impl Packet {
         Ok(Packet { header, body })
     }
 
-
     pub fn as_obfuscated(&self, obfuscation_key: &[u8]) -> Option<Self> {
         let is_obfuscated = !self
             .header
@@ -111,7 +110,6 @@ impl Packet {
         }
     }
 }
-
 
 impl PacketTrait for Packet {
     fn header(&self) -> &Header {
