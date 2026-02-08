@@ -97,6 +97,11 @@ impl TcpConnection {
         &self,
         mut reader: tokio::net::tcp::OwnedReadHalf,
     ) -> anyhow::Result<()> {
+        // Track locally whether we've reached the terminal NotSupported state.
+        // NotSupported is terminal - once set, it won't change back.
+        // However, Supported can transition to NotSupported if the server signals shutdown.
+        let mut single_connection_mode_is_not_supported = false;
+
         loop {
             // Use select to either read the next packet or receive a close signal
             let read_result = tokio::select! {
@@ -151,13 +156,22 @@ impl TcpConnection {
 
             // Check the single connect flag from the server's response and update our state.
             // This is critical for determining if we can multiplex sessions on this connection.
-            let server_supports_single_connect = packet
-                .header()
-                .flags
-                .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
-            self.connection
-                .set_single_connection_state(server_supports_single_connect)
-                .await;
+            // Skip if already NotSupported (terminal state), but keep checking if Supported
+            // since server can downgrade to NotSupported to signal graceful shutdown.
+            if !single_connection_mode_is_not_supported {
+                let server_supports_single_connect = packet
+                    .header()
+                    .flags
+                    .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
+                self.connection
+                    .set_single_connection_state(server_supports_single_connect)
+                    .await;
+                
+                // Once NotSupported, it's terminal - no need to check further
+                if !server_supports_single_connect {
+                    single_connection_mode_is_not_supported = true;
+                }
+            }
 
             let _ = self.connection.send_message_to_session(packet).await;
 
