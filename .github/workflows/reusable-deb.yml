@@ -55,12 +55,24 @@ jobs:
         if: inputs.binary-artifact-name == ''
         run: strip target/release/${{ inputs.package-name }}
 
+      - name: Build package to generate man page (when using pre-built binary)
+        if: inputs.binary-artifact-name != ''
+        run: cargo build --package ${{ inputs.package-name }}
+
       - name: Install cargo-deb
         run: cargo install cargo-deb
 
-      - name: Compress Debian changelog and man page
+      - name: Copy generated man page and compress Debian assets
         run: |
+          # Find the generated man page in the OUT_DIR
+          MAN_PAGE=$(find target -path "*/build/${{ inputs.package-name }}-*/out/man/${{ inputs.package-name }}.1" -type f | head -1)
+          if [ -z "$MAN_PAGE" ]; then
+            echo "Error: Generated man page not found"
+            exit 1
+          fi
+          # Copy to debian directory and compress
           cd executables/${{ inputs.package-name }}/debian
+          cp "$OLDPWD/$MAN_PAGE" ${{ inputs.package-name }}.1
           gzip -9 -n -c changelog > changelog.gz
           gzip -9 -n -c ${{ inputs.package-name }}.1 > ${{ inputs.package-name }}.1.gz
 

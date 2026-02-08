@@ -21,6 +21,10 @@ tacacsrs-messages = { path = "../../libraries/tacacsrs_messages" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
 tokio = { version = "1.49.0", features = ["full"] }
 
+[build-dependencies]
+clap = { version = "4.5.57", features = ["derive"] }
+clap_mangen = "0.2.25"
+
 [lints.rust]
 unsafe_code = "forbid"
 
