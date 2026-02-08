@@ -34,7 +34,7 @@ jobs:
       - name: Prepare pre-built binary
         if: inputs.binary-artifact-name != ''
         run: |
-          ls -al binary-artifact/
+          ls -alh binary-artifact/
           mkdir -p target/release
           cp binary-artifact/${{ inputs.binary-artifact-name }} target/release/${{ inputs.package-name }}
           chmod +x target/release/${{ inputs.package-name }}
@@ -65,7 +65,7 @@ jobs:
           gzip -9 -n -c ${{ inputs.package-name }}.1 > ${{ inputs.package-name }}.1.gz
 
       - name: Generate .deb package
-        run: cargo deb --package ${{ inputs.package-name }} --no-build --no-strip --dbgsym
+        run: cargo deb --package ${{ inputs.package-name }} --no-build --dbgsym
 
       - name: Verify package with lintian
         run: |
@@ -74,11 +74,15 @@ jobs:
           lintian target/debian/${{ inputs.package-name }}_*.deb || true
 
       - name: Display package info
-        run: dpkg --info target/debian/${{ inputs.package-name }}_*.deb
+        run: |
+          dpkg --info target/debian/${{ inputs.package-name }}_*.deb
+          if ls target/debian/${{ inputs.package-name }}-dbgsym_*.ddeb 1>/dev/null 2>&1; then
+            dpkg --info target/debian/${{ inputs.package-name }}-dbgsym_*.ddeb
+          fi
 
       - name: Upload Debian package
         if: inputs.upload-artifacts
         uses: actions/upload-artifact@v6
         with:
           name: debian-package
-          path: target/debian/${{ inputs.package-name }}_*.deb
+          path: target/debian/${{ inputs.package-name }}*.*deb
