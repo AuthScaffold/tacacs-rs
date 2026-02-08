@@ -29,3 +29,7 @@ Cargo.lock
 # SBOM files (generated during CI/CD)
 *.cdx.json
 *.cdx.xml
+
+# FFI example binaries
+libraries/tacacsrs_ffi/examples/c/simple_example
+libraries/tacacsrs_ffi/examples/cpp/simple_example
