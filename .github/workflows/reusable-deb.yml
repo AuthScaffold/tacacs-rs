@@ -34,6 +34,7 @@ jobs:
       - name: Prepare pre-built binary
         if: inputs.binary-artifact-name != ''
         run: |
+          ls -al binary-artifact/
           mkdir -p target/release
           cp binary-artifact/${{ inputs.binary-artifact-name }} target/release/${{ inputs.package-name }}
           chmod +x target/release/${{ inputs.package-name }}
@@ -64,7 +65,7 @@ jobs:
           gzip -9 -n -c ${{ inputs.package-name }}.1 > ${{ inputs.package-name }}.1.gz
 
       - name: Generate .deb package
-        run: cargo deb --package ${{ inputs.package-name }} --no-build --no-strip
+        run: cargo deb --package ${{ inputs.package-name }} --no-build --no-strip --dbgsym
 
       - name: Verify package with lintian
         run: |
