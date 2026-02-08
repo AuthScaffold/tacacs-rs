@@ -7,7 +7,6 @@ use tacacsrs_messages::{header::Header, packet::Packet};
 use tacacsrs_messages::constants::TACACS_HEADER_LENGTH;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::net::TcpStream;
-use tokio::task;
 
 use crate::session::Session;
 use crate::traits::SessionManagementTrait;
@@ -24,71 +23,60 @@ pub struct TcpConnection {
 }
 
 impl TcpConnection {
-    async fn handle_connection(self: Arc<Self>, stream: TcpStream) -> anyhow::Result<()> {
+    async fn handle_connection(&self, stream: TcpStream) -> anyhow::Result<()> {
         let (reader, writer) = stream.into_split();
+        let receiver = self.connection.receiver.lock().await.take().unwrap();
 
-        let write_task = {
-            let self_clone = Arc::clone(&self);
-            let receiver = self_clone.connection.receiver.lock().await.take().unwrap();
-            let connection = Arc::clone(&self_clone.connection);
-
-            task::spawn(async move {
-                match TcpConnection::write_handler(
-                    receiver,
-                    writer,
-                    self_clone.obfuscation_key.clone(),
-                    connection,
-                )
-                .await
-                {
-                    Ok(_) => Ok(()),
-                    Err(e) => {
-                        log::error!(
-                            target: "tacacsrs_networking::connection::handle_connection",
-                            "Write task failed with error: {}",
-                            e
-                        );
-
-                        Err(e)
-                    }
+        // Use async blocks with try_join! instead of spawning tasks.
+        // Since both are joined before this function returns, we can borrow
+        // from `self` instead of cloning Arcs into each task.
+        let write_future = async {
+            match TcpConnection::write_handler(
+                receiver,
+                writer,
+                self.obfuscation_key.clone(),
+                Arc::clone(&self.connection),
+            )
+            .await
+            {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    log::error!(
+                        target: "tacacsrs_networking::connection::handle_connection",
+                        "Write task failed with error: {}",
+                        e
+                    );
+                    Err(e)
                 }
-            })
+            }
         };
 
-        let read_task = {
-            let self_clone = Arc::clone(&self);
-            let connection = Arc::clone(&self.connection);
-            task::spawn(async move {
-                match self_clone.read_handler(reader).await {
-                    Ok(_) => Ok(()),
-                    Err(e) => {
-                        log::error!(
-                            target: "tacacsrs_networking::connection::handle_connection",
-                            "Read task failed with error: {}",
-                            e
-                        );
+        let read_future = async {
+            match self.read_handler(reader).await {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    log::error!(
+                        target: "tacacsrs_networking::connection::handle_connection",
+                        "Read task failed with error: {}",
+                        e
+                    );
 
-                        // Close all sessions so that any outstanding sessions
-                        // will stop awaiting for network responses
-                        connection.close_all_sessions().await;
+                    // Close all sessions so that any outstanding sessions
+                    // will stop awaiting for network responses
+                    self.connection.close_all_sessions().await;
 
-                        Err(e)
-                    }
+                    Err(e)
                 }
-            })
+            }
         };
 
-        // Wait for both tasks to complete, and return an error if either task fails.
-        let (write_result, read_result) = tokio::try_join!(write_task, read_task)?;
+        // Wait for both futures to complete concurrently.
+        // try_join! returns Ok only if both succeed, propagating the first error otherwise.
+        tokio::try_join!(write_future, read_future)?;
 
         // Set the can_accept_new_sessions flag to false, as the connection is now closed.
         self.connection.disable_new_sessions().await;
 
-        // Bubble up any errors that occurred during the tasks.
-        write_result?;
-        read_result?;
-
-        // Return Ok if both tasks completed successfully.
         Ok(())
     }
 
@@ -172,7 +160,7 @@ impl TcpConnection {
     }
 
     async fn read_handler(
-        self: Arc<Self>,
+        &self,
         mut _reader: tokio::net::tcp::OwnedReadHalf,
     ) -> anyhow::Result<()> {
         loop {
@@ -320,10 +308,7 @@ impl TcpConnectionTrait for TcpConnection {
 
 
     async fn run(self: &Arc<Self>, stream: TcpStream) -> anyhow::Result<()> {
-        let self_clone = Arc::clone(self);
-        task::spawn(async move { self_clone.handle_connection(stream).await });
-
-        Ok(())
+        self.handle_connection(stream).await
     }
 }
 
