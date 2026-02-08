@@ -41,6 +41,35 @@ cargo run -p tacon -- `
 
 Local testing uses Docker, and we have prepared a compose file in the `lde/containers` folder. You can simply run `docker compose up -d` and have a working TACACS+ server on port 49 for non-TLS and 449 for TLS (will change the default in the future when IANA assigns a well known port number to TACACS with TLS).
 
+## Installation
+
+### Debian/Ubuntu Package
+
+Download the latest `.deb` package from [GitHub Releases](https://github.com/AuthScaffold/tacacs-rs/releases) and install:
+
+```bash
+sudo dpkg -i tacon_*.deb
+```
+
+Or build from source:
+
+```bash
+cargo install cargo-deb
+cargo deb --package tacon
+sudo dpkg -i target/debian/tacon_*.deb
+```
+
+See [DEBIAN_PACKAGING.md](DEBIAN_PACKAGING.md) for detailed packaging documentation.
+
+### From Source
+
+Build and install using Cargo:
+
+```bash
+cargo build --release --package tacon
+sudo cp target/release/tacon /usr/local/bin/
+```
+
 ## Compiling for SONiC
 
 SONiC (Software for Open Networking in the Cloud) runs on Linux and requires statically-linked binaries for easy deployment. We use [musl](https://musl.libc.org/) to produce fully static executables.

@@ -15,4 +15,3 @@ repository = "https://github.com/AuthScaffold/tacacs-rs"
 # Release profile with debug symbols for crash analysis
 [profile.release]
 debug = "full"              # Full symbols (variable names, types, etc.) for detailed debugging
-split-debuginfo = "packed"  # Separate symbol files (.pdb on Windows, .dwp on Linux)

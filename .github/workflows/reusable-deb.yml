@@ -1,0 +1,96 @@
+name: Reusable Debian Package Build
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        description: 'Name of the Rust package to build .deb for'
+        required: true
+        type: string
+      upload-artifacts:
+        description: 'Whether to upload the .deb package as an artifact'
+        required: false
+        default: true
+        type: boolean
+      binary-artifact-name:
+        description: 'Name of the artifact containing the pre-built binary (e.g., tacon-linux-gnu-x86_64). If not provided, binary will be built from scratch.'
+        required: false
+        type: string
+
+jobs:
+  build-deb:
+    name: Build Debian Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download pre-built binary
+        if: inputs.binary-artifact-name != ''
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ inputs.binary-artifact-name }}
+          path: binary-artifact
+
+      - name: Prepare pre-built binary
+        if: inputs.binary-artifact-name != ''
+        run: |
+          ls -alh binary-artifact/
+          mkdir -p target/release
+          cp binary-artifact/${{ inputs.binary-artifact-name }} target/release/${{ inputs.package-name }}
+          chmod +x target/release/${{ inputs.package-name }}
+          strip target/release/${{ inputs.package-name }}
+
+      - name: Setup Rust (for building from scratch)
+        if: inputs.binary-artifact-name == ''
+        uses: ./.github/steps/setup-rust
+        with:
+          targets: x86_64-unknown-linux-gnu
+          cache-key: debian-${{ inputs.package-name }}
+
+      - name: Build release binary (from scratch)
+        if: inputs.binary-artifact-name == ''
+        run: cargo build --release --package ${{ inputs.package-name }}
+
+      - name: Strip binary (from scratch)
+        if: inputs.binary-artifact-name == ''
+        run: strip target/release/${{ inputs.package-name }}
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Compress Debian changelog and man page
+        run: |
+          cd executables/${{ inputs.package-name }}/debian
+          gzip -9 -n -c changelog > changelog.gz
+          gzip -9 -n -c ${{ inputs.package-name }}.1 > ${{ inputs.package-name }}.1.gz
+
+      - name: Generate .deb package
+        run: cargo deb --package ${{ inputs.package-name }} --no-build --dbgsym
+
+      - name: Verify package with lintian
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lintian
+          lintian target/debian/${{ inputs.package-name }}_*.deb || true
+
+      - name: Display package info
+        run: |
+          dpkg --info target/debian/${{ inputs.package-name }}_*.deb
+          if ls target/debian/${{ inputs.package-name }}-dbgsym_*.ddeb 1>/dev/null 2>&1; then
+            dpkg --info target/debian/${{ inputs.package-name }}-dbgsym_*.ddeb
+          fi
+
+      - name: Upload Debian package
+        if: inputs.upload-artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.package-name }}.deb
+          path: target/debian/${{ inputs.package-name }}_*.deb
+
+      - name: Upload Debian debug symbols package
+        if: inputs.upload-artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.package-name }}-dbgsym.ddeb
+          path: target/debian/${{ inputs.package-name }}-dbgsym_*.ddeb
+          if-no-files-found: ignore
