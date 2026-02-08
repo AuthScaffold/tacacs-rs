@@ -18,7 +18,7 @@ all: build-lib $(TARGET)
 # Build the Rust library first
 build-lib:
 	@echo "Building Rust FFI library..."
-	@cd ../../../../.. && cargo build --package tacacsrs-ffi --release
+	@cd ../../../.. && cargo build --package tacacsrs-ffi --release
 
 $(TARGET): $(SOURCE)
 	@echo "Compiling C example..."
