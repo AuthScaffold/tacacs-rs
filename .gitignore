@@ -32,4 +32,5 @@ Cargo.lock
 
 # FFI example binaries
 libraries/tacacsrs_ffi/examples/c/simple_example
+libraries/tacacsrs_ffi/examples/c/accounting_example
 libraries/tacacsrs_ffi/examples/cpp/simple_example
