@@ -84,5 +84,13 @@ jobs:
         if: inputs.upload-artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: debian-package
-          path: target/debian/${{ inputs.package-name }}*.*deb
+          name: ${{ inputs.package-name }}.deb
+          path: target/debian/${{ inputs.package-name }}_*.deb
+
+      - name: Upload Debian debug symbols package
+        if: inputs.upload-artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.package-name }}-dbgsym.ddeb
+          path: target/debian/${{ inputs.package-name }}-dbgsym_*.ddeb
+          if-no-files-found: ignore
