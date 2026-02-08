@@ -23,11 +23,160 @@
 #include <stdlib.h>
 
 /**
+ * TACACS+ accounting flags
+ */
+#define tacacs_TACACS_ACCOUNTING_FLAG_START 2
+
+#define tacacs_TACACS_ACCOUNTING_FLAG_STOP 4
+
+#define tacacs_TACACS_ACCOUNTING_FLAG_WATCHDOG 8
+
+/**
  * TACACS+ flags
  */
 #define tacacs_TACACS_FLAG_UNENCRYPTED 1
 
 #define tacacs_TACACS_FLAG_SINGLE_CONNECTION 4
+
+/**
+ * TACACS+ accounting status enumeration
+ */
+typedef enum tacacs_CTacacsAccountingStatus {
+    /**
+     * Accounting success
+     */
+    TACACS_C_TACACS_ACCOUNTING_STATUS_TAC_PLUS_ACCT_STATUS_SUCCESS = 1,
+    /**
+     * Accounting error
+     */
+    TACACS_C_TACACS_ACCOUNTING_STATUS_TAC_PLUS_ACCT_STATUS_ERROR = 2,
+    /**
+     * Follow-up required
+     */
+    TACACS_C_TACACS_ACCOUNTING_STATUS_TAC_PLUS_ACCT_STATUS_FOLLOW = 33,
+} tacacs_CTacacsAccountingStatus;
+
+/**
+ * TACACS+ authentication method enumeration
+ */
+typedef enum tacacs_CTacacsAuthenticationMethod {
+    /**
+     * Not set
+     */
+    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_NOT_SET = 0,
+    /**
+     * None
+     */
+    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_NONE = 1,
+    /**
+     * Kerberos 5
+     */
+    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_KRB5 = 2,
+    /**
+     * Line
+     */
+    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_LINE = 3,
+    /**
+     * Enable
+     */
+    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_ENABLE = 4,
+    /**
+     * Local
+     */
+    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_LOCAL = 5,
+    /**
+     * TACACSPlus
+     */
+    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_TACACS_PLUS = 6,
+    /**
+     * Guest
+     */
+    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_GUEST = 8,
+    /**
+     * RADIUS
+     */
+    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_RADIUS = 16,
+    /**
+     * Kerberos 4
+     */
+    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_KRB4 = 17,
+    /**
+     * RCMD
+     */
+    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_RCMD = 32,
+} tacacs_CTacacsAuthenticationMethod;
+
+/**
+ * TACACS+ authentication service enumeration
+ */
+typedef enum tacacs_CTacacsAuthenticationService {
+    /**
+     * None
+     */
+    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_NONE = 0,
+    /**
+     * Login
+     */
+    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_LOGIN = 1,
+    /**
+     * Enable
+     */
+    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_ENABLE = 2,
+    /**
+     * PPP
+     */
+    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_PPP = 3,
+    /**
+     * PT
+     */
+    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_PT = 5,
+    /**
+     * RCMD
+     */
+    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_RCMD = 6,
+    /**
+     * X25
+     */
+    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_X25 = 7,
+    /**
+     * NASI
+     */
+    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_NASI = 8,
+    /**
+     * FWProxy
+     */
+    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_FWPROXY = 9,
+} tacacs_CTacacsAuthenticationService;
+
+/**
+ * TACACS+ authentication type enumeration
+ */
+typedef enum tacacs_CTacacsAuthenticationType {
+    /**
+     * Not set
+     */
+    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_NOT_SET = 0,
+    /**
+     * ASCII
+     */
+    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_ASCII = 1,
+    /**
+     * PAP
+     */
+    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_PAP = 2,
+    /**
+     * CHAP
+     */
+    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_CHAP = 3,
+    /**
+     * MSCHAP
+     */
+    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_MSCHAP = 5,
+    /**
+     * MSCHAPv2
+     */
+    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_MSCHAPV2 = 6,
+} tacacs_CTacacsAuthenticationType;
 
 /**
  * TACACS+ major version enumeration
@@ -122,6 +271,13 @@ typedef enum tacacs_TacacsResult {
 } tacacs_TacacsResult;
 
 /**
+ * Opaque type for TACACS+ accounting request
+ */
+typedef struct tacacs_TacacsAccountingRequest {
+    uint8_t private_[0];
+} tacacs_TacacsAccountingRequest;
+
+/**
  * Error information structure
  *
  * Contains an error code and an optional error message.
@@ -139,22 +295,220 @@ typedef struct tacacs_TacacsError {
 } tacacs_TacacsError;
 
 /**
- * Opaque type for TACACS+ header
- */
-typedef struct tacacs_TacacsHeader {
-    uint8_t private_[0];
-} tacacs_TacacsHeader;
-
-/**
  * Opaque type for TACACS+ packet
  */
 typedef struct tacacs_TacacsPacket {
     uint8_t private_[0];
 } tacacs_TacacsPacket;
 
+/**
+ * Opaque type for TACACS+ accounting reply
+ */
+typedef struct tacacs_TacacsAccountingReply {
+    uint8_t private_[0];
+} tacacs_TacacsAccountingReply;
+
+/**
+ * Opaque type for TACACS+ header
+ */
+typedef struct tacacs_TacacsHeader {
+    uint8_t private_[0];
+} tacacs_TacacsHeader;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+/**
+ * Create a new TACACS+ accounting request
+ *
+ * # Safety
+ *
+ * - All string pointers must be valid null-terminated UTF-8 strings
+ * - The `args` array must contain `args_count` valid string pointers
+ * - Returns a pointer to a newly allocated request that must be freed with `tacacs_accounting_request_free()`
+ * - Returns null on error
+ */
+struct tacacs_TacacsAccountingRequest *tacacs_accounting_request_new(uint8_t flags,
+                                                                     enum tacacs_CTacacsAuthenticationMethod authen_method,
+                                                                     uint8_t priv_lvl,
+                                                                     enum tacacs_CTacacsAuthenticationType authen_type,
+                                                                     enum tacacs_CTacacsAuthenticationService authen_service,
+                                                                     const char *user,
+                                                                     const char *port,
+                                                                     const char *rem_address,
+                                                                     const char *const *args,
+                                                                     uintptr_t args_count,
+                                                                     struct tacacs_TacacsError *error);
+
+/**
+ * Parse a TACACS+ accounting request from a packet
+ *
+ * # Safety
+ *
+ * - The `packet` pointer must be valid and point to a packet created by this library
+ * - Returns a pointer to a newly allocated request that must be freed with `tacacs_accounting_request_free()`
+ * - Returns null on parse failure or allocation failure
+ */
+struct tacacs_TacacsAccountingRequest *tacacs_accounting_request_from_packet(const struct tacacs_TacacsPacket *packet,
+                                                                             struct tacacs_TacacsError *error);
+
+/**
+ * Convert a TACACS+ accounting request to bytes
+ *
+ * # Safety
+ *
+ * - The `request` pointer must be valid and point to a request created by this library
+ * - Returns a pointer to an allocated byte buffer, or null on error
+ * - The returned buffer must be freed with `tacacs_free_bytes()`
+ */
+uint8_t *tacacs_accounting_request_to_bytes(const struct tacacs_TacacsAccountingRequest *request,
+                                            uintptr_t *out_len,
+                                            struct tacacs_TacacsError *error);
+
+/**
+ * Get the user field from an accounting request
+ *
+ * # Safety
+ *
+ * - The `request` pointer must be valid and point to a request created by this library
+ * - Returns an allocated string that must be freed with `tacacs_free_string()`
+ * - Returns null if the pointer is null
+ */
+char *tacacs_accounting_request_get_user(const struct tacacs_TacacsAccountingRequest *request);
+
+/**
+ * Get the port field from an accounting request
+ *
+ * # Safety
+ *
+ * - The `request` pointer must be valid and point to a request created by this library
+ * - Returns an allocated string that must be freed with `tacacs_free_string()`
+ * - Returns null if the pointer is null
+ */
+char *tacacs_accounting_request_get_port(const struct tacacs_TacacsAccountingRequest *request);
+
+/**
+ * Get the remote address field from an accounting request
+ *
+ * # Safety
+ *
+ * - The `request` pointer must be valid and point to a request created by this library
+ * - Returns an allocated string that must be freed with `tacacs_free_string()`
+ * - Returns null if the pointer is null
+ */
+char *tacacs_accounting_request_get_rem_address(const struct tacacs_TacacsAccountingRequest *request);
+
+/**
+ * Get the privilege level from an accounting request
+ *
+ * # Safety
+ *
+ * - The `request` pointer must be valid and point to a request created by this library
+ * - Returns 0 if the pointer is null
+ */
+uint8_t tacacs_accounting_request_get_priv_lvl(const struct tacacs_TacacsAccountingRequest *request);
+
+/**
+ * Get the flags from an accounting request
+ *
+ * # Safety
+ *
+ * - The `request` pointer must be valid and point to a request created by this library
+ * - Returns 0 if the pointer is null
+ */
+uint8_t tacacs_accounting_request_get_flags(const struct tacacs_TacacsAccountingRequest *request);
+
+/**
+ * Free a TACACS+ accounting request
+ *
+ * # Safety
+ *
+ * - The `request` pointer must be valid and must have been allocated by this library
+ * - After calling this function, the pointer is invalid
+ */
+void tacacs_accounting_request_free(struct tacacs_TacacsAccountingRequest *request);
+
+/**
+ * Create a new TACACS+ accounting reply
+ *
+ * # Safety
+ *
+ * - All string pointers must be valid null-terminated UTF-8 strings
+ * - Returns a pointer to a newly allocated reply that must be freed with `tacacs_accounting_reply_free()`
+ * - Returns null on error
+ */
+struct tacacs_TacacsAccountingReply *tacacs_accounting_reply_new(enum tacacs_CTacacsAccountingStatus status,
+                                                                 const char *server_msg,
+                                                                 const char *data,
+                                                                 struct tacacs_TacacsError *error);
+
+/**
+ * Parse a TACACS+ accounting reply from a packet
+ *
+ * # Safety
+ *
+ * - The `packet` pointer must be valid and point to a packet created by this library
+ * - Returns a pointer to a newly allocated reply that must be freed with `tacacs_accounting_reply_free()`
+ * - Returns null on parse failure or allocation failure
+ */
+struct tacacs_TacacsAccountingReply *tacacs_accounting_reply_from_packet(const struct tacacs_TacacsPacket *packet,
+                                                                         struct tacacs_TacacsError *error);
+
+/**
+ * Convert a TACACS+ accounting reply to bytes
+ *
+ * # Safety
+ *
+ * - The `reply` pointer must be valid and point to a reply created by this library
+ * - Returns a pointer to an allocated byte buffer, or null on error
+ * - The returned buffer must be freed with `tacacs_free_bytes()`
+ */
+uint8_t *tacacs_accounting_reply_to_bytes(const struct tacacs_TacacsAccountingReply *reply,
+                                          uintptr_t *out_len,
+                                          struct tacacs_TacacsError *error);
+
+/**
+ * Get the server message from an accounting reply
+ *
+ * # Safety
+ *
+ * - The `reply` pointer must be valid and point to a reply created by this library
+ * - Returns an allocated string that must be freed with `tacacs_free_string()`
+ * - Returns null if the pointer is null
+ */
+char *tacacs_accounting_reply_get_server_msg(const struct tacacs_TacacsAccountingReply *reply);
+
+/**
+ * Get the data field from an accounting reply
+ *
+ * # Safety
+ *
+ * - The `reply` pointer must be valid and point to a reply created by this library
+ * - Returns an allocated string that must be freed with `tacacs_free_string()`
+ * - Returns null if the pointer is null
+ */
+char *tacacs_accounting_reply_get_data(const struct tacacs_TacacsAccountingReply *reply);
+
+/**
+ * Get the status from an accounting reply
+ *
+ * # Safety
+ *
+ * - The `reply` pointer must be valid and point to a reply created by this library
+ * - Returns the status code, or TacPlusAcctStatusError if the pointer is null
+ */
+enum tacacs_CTacacsAccountingStatus tacacs_accounting_reply_get_status(const struct tacacs_TacacsAccountingReply *reply);
+
+/**
+ * Free a TACACS+ accounting reply
+ *
+ * # Safety
+ *
+ * - The `reply` pointer must be valid and must have been allocated by this library
+ * - After calling this function, the pointer is invalid
+ */
+void tacacs_accounting_reply_free(struct tacacs_TacacsAccountingReply *reply);
 
 /**
  * Free an error message allocated by the library

@@ -12,11 +12,13 @@
 //! - String pointers point to valid null-terminated UTF-8
 //! - Memory is freed using the corresponding `_free` functions
 
+mod accounting;
 mod error;
 mod header;
 mod packet;
 mod string_utils;
 
+pub use accounting::*;
 pub use error::*;
 pub use header::*;
 pub use packet::*;
