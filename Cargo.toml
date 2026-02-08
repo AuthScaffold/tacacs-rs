@@ -4,7 +4,7 @@ members = [
     "libraries/tacacsrs_messages",
     "libraries/tacacsrs_networking", 
     "executables/tacon"
-]
+, "libraries/tacacsrs_ffi"]
 
 [workspace.package]
 version = "0.1.1"

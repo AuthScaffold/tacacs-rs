@@ -1,0 +1,19 @@
+[package]
+name = "tacacsrs-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "tacacsrs"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+tacacsrs-messages = { path = "../tacacsrs_messages" }
+tacacsrs-networking = { path = "../tacacsrs_networking" }
+libc = "0.2"
+anyhow = "1.0"
+
+[build-dependencies]
+cbindgen = "0.28"
