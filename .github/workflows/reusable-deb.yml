@@ -57,10 +57,11 @@ jobs:
       - name: Install cargo-deb
         run: cargo install cargo-deb
 
-      - name: Compress Debian changelog
+      - name: Compress Debian changelog and man page
         run: |
           cd executables/${{ inputs.package-name }}/debian
           gzip -9 -n -c changelog > changelog.gz
+          gzip -9 -n -c ${{ inputs.package-name }}.1 > ${{ inputs.package-name }}.1.gz
 
       - name: Generate .deb package
         run: cargo deb --package ${{ inputs.package-name }} --no-build --no-strip

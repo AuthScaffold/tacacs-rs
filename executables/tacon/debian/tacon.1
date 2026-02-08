@@ -1,0 +1,155 @@
+.TH TACON 1 "February 2026" "tacon 0.1.1" "User Commands"
+.SH NAME
+tacon \- TACACS+ client CLI for authentication, authorization, and accounting
+.SH SYNOPSIS
+.B tacon
+[\fIOPTIONS\fR]
+\fB\-s\fR|\fB\-\-server\-addr\fR \fIHOST:PORT\fR
+\fICOMMAND\fR
+.SH DESCRIPTION
+.B tacon
+is a command-line TACACS+ client for authentication, authorization, and accounting (AAA) operations. It supports both traditional TACACS+ with obfuscation and modern TACACS+ over TLS 1.3, making it suitable for both legacy and next-generation network infrastructure.
+.SH OPTIONS
+.TP
+.BR \-s ", " \-\-server\-addr " " \fIHOST:PORT\fR
+IP address and port of the TACACS+ server (e.g., "192.168.1.1:49"). This option is required.
+.TP
+.BR \-k ", " \-\-obfuscation\-key " " \fIKEY\fR
+Obfuscation key (shared secret) for encrypting TACACS+ messages.
+.TP
+.BR \-\-use\-tls
+Use TLS 1.3 for the connection to the TACACS+ server.
+.TP
+.BR \-\-client\-certificate " " \fIFILE\fR
+Path to client certificate file for TLS authentication.
+.TP
+.BR \-\-client\-key " " \fIFILE\fR
+Path to client private key file for TLS authentication.
+.TP
+.BR \-v ", " \-\-verbose
+Increase verbosity level. Can be specified multiple times:
+.RS
+.IP "\-v" 10
+Warning level
+.IP "\-vv"
+Info level
+.IP "\-vvv"
+Debug level
+.IP "\-vvvv"
+Trace level
+.RE
+.TP
+.BR \-h ", " \-\-help
+Print help information.
+.TP
+.BR \-V ", " \-\-version
+Print version information.
+.SH COMMANDS
+.TP
+.B accounting
+Send an accounting record to the TACACS+ server.
+.TP
+.B authentication
+Perform authentication against the TACACS+ server (not yet implemented).
+.TP
+.B authorization
+Perform authorization check against the TACACS+ server (not yet implemented).
+.TP
+.B batch
+Run in batch mode using commands from a JSON file.
+.TP
+.B help
+Print help information for a specific command.
+.SH ACCOUNTING COMMAND
+.PP
+Record command execution to the TACACS+ server:
+.PP
+.nf
+.RS
+tacon \-s 192.168.1.1:49 \-k "secret" accounting \\
+    \-\-user admin \\
+    \-\-port tty0 \\
+    \-\-rem\-addr 10.0.0.100 \\
+    "show running\-config"
+.RE
+.fi
+.PP
+.B Accounting Options:
+.TP
+.BR \-u ", " \-\-user " " \fIUSER\fR
+Username for the request.
+.TP
+.BR \-p ", " \-\-port " " \fIPORT\fR
+Port identifier (e.g., "tty0", "console").
+.TP
+.BR \-r ", " \-\-rem\-addr " " \fIADDR\fR
+Remote address of the client.
+.TP
+.BR \-\-custom\-flag\-1
+Set TAC_PLUS_CUSTOM_FLAG_1 (0x40) on packet header.
+.TP
+.BR \-\-custom\-flag\-2
+Set TAC_PLUS_CUSTOM_FLAG_2 (0x80) on packet header.
+.TP
+.BR \-\-session\-id " " \fIID\fR
+Use a specific session ID instead of random.
+.SH BATCH COMMAND
+.PP
+Execute multiple requests from a JSON file:
+.PP
+.nf
+.RS
+tacon \-s 192.168.1.1:49 \-k "secret" batch requests.json
+.RE
+.fi
+.PP
+Batch files use JSON format to define multiple TACACS+ requests with optional parallel execution.
+.SH EXAMPLES
+.TP
+.B Traditional TACACS+ with Obfuscation:
+.nf
+tacon \\
+    \-\-server\-addr tacacsserver.local:49 \\
+    \-\-obfuscation\-key "tac_plus_key" \\
+    \-\-user testuser \\
+    \-\-port tty1 \\
+    \-\-rem\-addr 192.168.1.100 \\
+    \-vvv \\
+    accounting "show version"
+.fi
+.TP
+.B TACACS+ over TLS 1.3:
+.nf
+tacon \\
+    \-\-server\-addr tacacsserver.local:449 \\
+    \-\-use\-tls \\
+    \-\-client\-certificate /path/to/client.crt \\
+    \-\-client\-key /path/to/client.key \\
+    \-\-user testuser \\
+    \-\-port tty1 \\
+    \-\-rem\-addr 192.168.1.100 \\
+    accounting "show interfaces"
+.fi
+.SH EXIT STATUS
+.TP
+.B 0
+Success
+.TP
+.B 1
+Error (connection failure, invalid arguments, or request failure)
+.SH FILES
+.TP
+.I /usr/bin/tacon
+The tacon executable
+.TP
+.I /usr/share/doc/tacon/
+Documentation directory
+.SH SEE ALSO
+.PP
+Full documentation and examples: <https://github.com/AuthScaffold/tacacs-rs>
+.SH BUGS
+Report bugs at: <https://github.com/AuthScaffold/tacacs-rs/issues>
+.SH AUTHOR
+AuthScaffold <support@authscaffold.com>
+.SH COPYRIGHT
+Copyright \(co 2024 AuthScaffold. License: MIT.

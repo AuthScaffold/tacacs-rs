@@ -58,11 +58,12 @@ strip target/release/tacon
 
 ### 3. Compress the Debian Changelog
 
-Compress the changelog file (required by Debian policy):
+Compress the changelog and man page (required by Debian policy):
 
 ```bash
 cd executables/tacon/debian
 gzip -9 -n -c changelog > changelog.gz
+gzip -9 -n -c tacon.1 > tacon.1.gz
 cd ../../..
 ```
 
@@ -82,10 +83,10 @@ target/debian/tacon_0.1.1-1_amd64.deb
 
 ### Single Command
 
-You can also do all steps in one command (cargo-deb will build and strip automatically, but you still need to compress the changelog first):
+You can also do all steps in one command (cargo-deb will build and strip automatically, but you still need to compress the changelog and man page first):
 
 ```bash
-cd executables/tacon/debian && gzip -9 -n -c changelog > changelog.gz && cd ../../..
+cd executables/tacon/debian && gzip -9 -n -c changelog > changelog.gz && gzip -9 -n -c tacon.1 > tacon.1.gz && cd ../../..
 cargo deb --package tacon
 ```
 
@@ -111,7 +112,7 @@ lintian target/debian/tacon_*.deb
 
 Expected output:
 - No errors
-- One warning about missing manual page (acceptable for now)
+- No warnings (man page included)
 
 ## Installing the Package
 
@@ -144,6 +145,7 @@ The Debian package includes:
 /usr/share/doc/tacon/LICENSE             # License file
 /usr/share/doc/tacon/copyright           # Debian copyright file
 /usr/share/doc/tacon/changelog.Debian.gz # Debian changelog (compressed)
+/usr/share/man/man1/tacon.1.gz           # Man page (compressed)
 ```
 
 ## Configuration Files

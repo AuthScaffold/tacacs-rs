@@ -15,6 +15,7 @@ Cargo.lock
 
 # Debian packaging - generated files
 **/debian/changelog.gz
+**/debian/*.1.gz
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
