@@ -244,7 +244,8 @@ mod tests {
 
         // Create a header with body length exceeding the maximum
         let excessive_length = TACACS_MAX_BODY_LENGTH + 1;
-        let header = create_test_header(12345, excessive_length, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+        let header =
+            create_test_header(12345, excessive_length, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
         let header_bytes = header.to_bytes();
 
         let mut reader = Cursor::new(header_bytes.to_vec());
@@ -269,7 +270,11 @@ mod tests {
         use tacacsrs_messages::constants::TACACS_MAX_BODY_LENGTH;
 
         // Test that exactly the maximum body length is accepted
-        let header = create_test_header(12345, TACACS_MAX_BODY_LENGTH, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+        let header = create_test_header(
+            12345,
+            TACACS_MAX_BODY_LENGTH,
+            TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+        );
         let header_bytes = header.to_bytes();
 
         // Create a body of exactly max length
