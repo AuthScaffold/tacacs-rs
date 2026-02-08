@@ -40,8 +40,7 @@ impl SingleConnectFlag {
 /// - Initial negotiation on first packet
 /// - Detecting graceful shutdown when server removes the flag
 /// - Terminal state when single connection is not supported
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LocalSingleConnectState {
     /// Haven't received any packets yet - need to notify on first packet
     #[default]

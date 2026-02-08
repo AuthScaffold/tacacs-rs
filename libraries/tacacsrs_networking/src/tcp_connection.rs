@@ -70,7 +70,7 @@ impl TcpConnection {
         // Always disable new sessions when the connection ends, regardless of success or failure.
         // This ensures the session manager won't accept new sessions on a closed/failed connection.
         self.connection.disable_new_sessions().await;
-        
+
         // Close all sessions so that any outstanding sessions
         // will stop awaiting for network responses
         self.connection.close_all_sessions().await;
