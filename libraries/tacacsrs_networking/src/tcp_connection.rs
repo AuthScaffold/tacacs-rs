@@ -2,6 +2,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use tokio::net::TcpStream;
+use tokio::task;
 
 use crate::packet_reader::{PacketReader, PacketReaderTrait, PacketReadResult};
 use crate::packet_writer::{PacketWriter, PacketWriterTrait};
@@ -174,7 +175,9 @@ impl TcpConnectionTrait for TcpConnection {
 
 
     async fn run(self: &Arc<Self>, stream: TcpStream) -> anyhow::Result<()> {
-        self.handle_connection(stream).await
+        let self_clone = Arc::clone(self);
+        task::spawn(async move { self_clone.handle_connection(stream).await });
+        Ok(())
     }
 }
 

@@ -3,6 +3,7 @@ use async_trait::async_trait;
 
 use tokio::io::{split, ReadHalf};
 use tokio::net::TcpStream;
+use tokio::task;
 use tokio_rustls::client::TlsStream;
 
 use crate::packet_reader::{PacketReader, PacketReaderTrait, PacketReadResult};
@@ -174,7 +175,9 @@ impl TlsConnection {
 #[async_trait]
 impl TLSConnectionTrait for TlsConnection {
     async fn run(self: &Arc<Self>, stream: TlsStream<TcpStream>) -> anyhow::Result<()> {
-        self.handle_connection(stream).await
+        let self_clone = Arc::clone(self);
+        task::spawn(async move { self_clone.handle_connection(stream).await });
+        Ok(())
     }
 }
 
