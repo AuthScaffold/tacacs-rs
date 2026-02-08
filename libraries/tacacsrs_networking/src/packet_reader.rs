@@ -15,8 +15,11 @@ pub enum PacketReadResult {
     HeaderParseError(anyhow::Error),
     /// Body length exceeds maximum allowed size.
     BodyLengthExceeded {
+        /// The session ID from the rejected packet.
         session_id: u32,
+        /// The body length that exceeded the limit.
         body_length: u32,
+        /// The maximum allowed body length.
         max_length: u32,
     },
     /// Failed to read body from stream.
