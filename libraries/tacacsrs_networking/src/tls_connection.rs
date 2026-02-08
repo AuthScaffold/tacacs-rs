@@ -92,11 +92,13 @@ impl TlsConnection {
 
         // Wait for both futures to complete concurrently.
         // try_join! returns Ok only if both succeed, propagating the first error otherwise.
-        tokio::try_join!(write_future, read_future)?;
+        let result = tokio::try_join!(write_future, read_future);
 
-        // Set the can_accept_new_sessions flag to false, as the connection is now closed.
+        // Always disable new sessions when the connection ends, regardless of success or failure.
+        // This ensures the session manager won't accept new sessions on a closed/failed connection.
         self.connection.disable_new_sessions().await;
 
+        result?;
         Ok(())
     }
 
