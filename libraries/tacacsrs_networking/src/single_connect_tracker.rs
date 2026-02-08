@@ -41,8 +41,10 @@ impl SingleConnectFlag {
 /// - Detecting graceful shutdown when server removes the flag
 /// - Terminal state when single connection is not supported
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum LocalSingleConnectState {
     /// Haven't received any packets yet - need to notify on first packet
+    #[default]
     AwaitingFirstPacket,
     /// Server supports single connection - watch for flag removal (graceful shutdown)
     Supported,
@@ -50,11 +52,6 @@ pub enum LocalSingleConnectState {
     NotSupported,
 }
 
-impl Default for LocalSingleConnectState {
-    fn default() -> Self {
-        Self::AwaitingFirstPacket
-    }
-}
 
 impl LocalSingleConnectState {
     /// Process a packet and return the new state, notifying the session manager if needed.
