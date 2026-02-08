@@ -34,7 +34,7 @@ impl SingleConnectFlag {
 }
 
 /// Local state machine for tracking single connection mode.
-/// 
+///
 /// This mirrors the session manager state but is tracked locally to minimize async calls.
 /// The state machine handles:
 /// - Initial negotiation on first packet
@@ -58,9 +58,9 @@ impl Default for LocalSingleConnectState {
 
 impl LocalSingleConnectState {
     /// Process a packet and return the new state, notifying the session manager if needed.
-    /// 
+    ///
     /// # State Transitions
-    /// 
+    ///
     /// ```text
     /// ┌──────────────────────────┐
     /// │   AwaitingFirstPacket    │
@@ -116,9 +116,11 @@ mod tests {
     async fn test_awaiting_first_packet_with_flag_set() {
         let connection = Arc::new(SessionManager::new());
         let state = LocalSingleConnectState::AwaitingFirstPacket;
-        
-        let new_state = state.process_packet(SingleConnectFlag::Set, &connection).await;
-        
+
+        let new_state = state
+            .process_packet(SingleConnectFlag::Set, &connection)
+            .await;
+
         assert_eq!(new_state, LocalSingleConnectState::Supported);
     }
 
@@ -126,9 +128,11 @@ mod tests {
     async fn test_awaiting_first_packet_with_flag_not_set() {
         let connection = Arc::new(SessionManager::new());
         let state = LocalSingleConnectState::AwaitingFirstPacket;
-        
-        let new_state = state.process_packet(SingleConnectFlag::NotSet, &connection).await;
-        
+
+        let new_state = state
+            .process_packet(SingleConnectFlag::NotSet, &connection)
+            .await;
+
         assert_eq!(new_state, LocalSingleConnectState::NotSupported);
     }
 
@@ -137,11 +141,14 @@ mod tests {
         let connection = Arc::new(SessionManager::new());
         // First get to Supported state
         let state = LocalSingleConnectState::AwaitingFirstPacket
-            .process_packet(SingleConnectFlag::Set, &connection).await;
-        
+            .process_packet(SingleConnectFlag::Set, &connection)
+            .await;
+
         // Now check that it remains Supported
-        let new_state = state.process_packet(SingleConnectFlag::Set, &connection).await;
-        
+        let new_state = state
+            .process_packet(SingleConnectFlag::Set, &connection)
+            .await;
+
         assert_eq!(new_state, LocalSingleConnectState::Supported);
     }
 
@@ -150,11 +157,14 @@ mod tests {
         let connection = Arc::new(SessionManager::new());
         // First get to Supported state
         let state = LocalSingleConnectState::AwaitingFirstPacket
-            .process_packet(SingleConnectFlag::Set, &connection).await;
-        
+            .process_packet(SingleConnectFlag::Set, &connection)
+            .await;
+
         // Server removes flag (graceful shutdown)
-        let new_state = state.process_packet(SingleConnectFlag::NotSet, &connection).await;
-        
+        let new_state = state
+            .process_packet(SingleConnectFlag::NotSet, &connection)
+            .await;
+
         assert_eq!(new_state, LocalSingleConnectState::NotSupported);
     }
 
@@ -163,11 +173,14 @@ mod tests {
         let connection = Arc::new(SessionManager::new());
         // First get to NotSupported state
         let state = LocalSingleConnectState::AwaitingFirstPacket
-            .process_packet(SingleConnectFlag::NotSet, &connection).await;
-        
+            .process_packet(SingleConnectFlag::NotSet, &connection)
+            .await;
+
         // Even if server now sends flag, state doesn't change
-        let new_state = state.process_packet(SingleConnectFlag::Set, &connection).await;
-        
+        let new_state = state
+            .process_packet(SingleConnectFlag::Set, &connection)
+            .await;
+
         assert_eq!(new_state, LocalSingleConnectState::NotSupported);
     }
 }

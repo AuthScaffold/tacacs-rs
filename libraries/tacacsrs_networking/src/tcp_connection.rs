@@ -30,12 +30,10 @@ impl TcpConnection {
         // Since both are joined before this function returns, we can borrow
         // from `self` instead of cloning Arcs into each task.
         let write_future = async {
-            match self.packet_writer.run_write_loop(
-                receiver,
-                &mut writer,
-                Arc::clone(&self.connection),
-            )
-            .await
+            match self
+                .packet_writer
+                .run_write_loop(receiver, &mut writer, Arc::clone(&self.connection))
+                .await
             {
                 Ok(_) => Ok(()),
                 Err(e) => {
@@ -79,7 +77,7 @@ impl TcpConnection {
     }
 
     /// Creates a new `TcpConnection` with custom packet reader and writer for dependency injection.
-    /// 
+    ///
     /// This is useful for testing where you want to inject mock implementations.
     pub fn with_packet_handlers(
         packet_reader: Arc<dyn PacketReaderTrait>,
@@ -92,10 +90,7 @@ impl TcpConnection {
         }
     }
 
-    async fn read_handler(
-        &self,
-        mut reader: tokio::net::tcp::OwnedReadHalf,
-    ) -> anyhow::Result<()> {
+    async fn read_handler(&self, mut reader: tokio::net::tcp::OwnedReadHalf) -> anyhow::Result<()> {
         let mut local_state = LocalSingleConnectState::default();
 
         loop {

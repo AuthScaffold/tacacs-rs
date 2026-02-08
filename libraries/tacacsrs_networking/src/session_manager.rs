@@ -666,7 +666,7 @@ mod tests {
 
         // Server signals graceful shutdown by removing the flag
         session_manager.set_single_connection_state(false).await;
-        
+
         // State should transition to NotSupported
         assert_eq!(
             session_manager.single_connection_state().await,
@@ -675,7 +675,7 @@ mod tests {
 
         // No new sessions should be allowed (traffic should transition away)
         assert!(!session_manager.can_create_sessions().await);
-        
+
         // should_close_after_session should now return true
         assert!(session_manager.should_close_after_session().await);
     }
@@ -700,7 +700,7 @@ mod tests {
         session_manager.set_single_connection_state(true).await;
         session_manager.set_single_connection_state(true).await;
         session_manager.set_single_connection_state(true).await;
-        
+
         assert_eq!(
             session_manager.single_connection_state().await,
             SingleConnectionState::Supported
@@ -723,7 +723,7 @@ mod tests {
         // Establish connection with single-connect support
         let session1 = session_manager.create_session().await.unwrap();
         session_manager.set_single_connection_state(true).await;
-        
+
         // Create additional session while supported
         let session2 = session_manager.create_session().await.unwrap();
 
@@ -742,7 +742,7 @@ mod tests {
 
         // Complete first session - close should NOT be signaled yet
         session1.complete().await;
-        
+
         // Give a moment for any premature close signal
         tokio::time::sleep(Duration::from_millis(50)).await;
 

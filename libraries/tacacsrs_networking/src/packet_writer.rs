@@ -20,27 +20,27 @@ pub enum PacketWriteResult {
 }
 
 /// Trait for writing TACACS+ packets to a stream.
-/// 
+///
 /// This trait abstracts the packet writing logic to allow for dependency injection
 /// and easier testing. Implementations can provide custom behavior for obfuscating
 /// and writing packets.
 #[async_trait]
 pub trait PacketWriterTrait: Send + Sync {
     /// Prepares a packet for writing by optionally obfuscating it.
-    /// 
+    ///
     /// # Arguments
     /// * `packet` - The packet to prepare
-    /// 
+    ///
     /// # Returns
     /// The packet (potentially obfuscated) ready to be written.
     fn prepare_packet(&self, packet: Packet) -> Packet;
 
     /// Writes a single packet to the provided writer.
-    /// 
+    ///
     /// # Arguments
     /// * `writer` - A mutable reference to an async writer
     /// * `packet` - The packet to write
-    /// 
+    ///
     /// # Returns
     /// A `PacketWriteResult` indicating success or failure.
     async fn write_packet(
@@ -50,18 +50,18 @@ pub trait PacketWriterTrait: Send + Sync {
     ) -> PacketWriteResult;
 
     /// Runs the write handler loop, receiving packets from the channel and writing them.
-    /// 
+    ///
     /// This method will:
     /// 1. Wait for packets from the receiver or a close signal
     /// 2. Prepare (potentially obfuscate) each packet
     /// 3. Write the packet to the stream
     /// 4. Continue until close signal or channel closed
-    /// 
+    ///
     /// # Arguments
     /// * `receiver` - The channel receiver for outgoing packets
     /// * `writer` - A mutable reference to an async writer
     /// * `connection` - The session manager for close signal coordination
-    /// 
+    ///
     /// # Returns
     /// `Ok(())` on graceful shutdown, `Err` on write failure.
     async fn run_write_loop(
@@ -134,7 +134,7 @@ pub trait PacketWriterTrait: Send + Sync {
 }
 
 /// Default implementation of `PacketWriterTrait` for writing TACACS+ packets.
-/// 
+///
 /// Handles writing packets to any async writer, including optional obfuscation
 /// using the provided key.
 pub struct PacketWriter {
@@ -143,7 +143,7 @@ pub struct PacketWriter {
 
 impl PacketWriter {
     /// Creates a new `PacketWriter` with an optional obfuscation key.
-    /// 
+    ///
     /// # Arguments
     /// * `obfuscation_key` - Optional key used to obfuscate outgoing packets.
     ///   If `None`, packets are sent unencrypted.
@@ -194,7 +194,9 @@ impl PacketWriterTrait for PacketWriter {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use tacacsrs_messages::enumerations::{TacacsFlags, TacacsType, TacacsMajorVersion, TacacsMinorVersion};
+    use tacacsrs_messages::enumerations::{
+        TacacsFlags, TacacsType, TacacsMajorVersion, TacacsMinorVersion,
+    };
     use tacacsrs_messages::header::Header;
 
     fn create_test_header(session_id: u32, body_length: u32, flags: TacacsFlags) -> Header {
@@ -216,7 +218,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_packet_success() {
-        let packet = create_test_packet(12345, vec![0x01, 0x02, 0x03, 0x04], TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+        let packet = create_test_packet(
+            12345,
+            vec![0x01, 0x02, 0x03, 0x04],
+            TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+        );
         let expected_bytes = packet.to_bytes();
 
         let mut buffer = Cursor::new(Vec::new());
@@ -233,27 +239,35 @@ mod tests {
     #[tokio::test]
     async fn test_prepare_packet_no_obfuscation_key() {
         let body = vec![0x01, 0x02, 0x03, 0x04];
-        let packet = create_test_packet(12345, body.clone(), TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+        let packet =
+            create_test_packet(12345, body.clone(), TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
         let packet_writer = PacketWriter::new(None);
 
         let prepared = packet_writer.prepare_packet(packet);
-        
+
         // Without obfuscation key, packet should be unchanged
-        assert!(prepared.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
+        assert!(prepared
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
         assert_eq!(prepared.body(), &body);
     }
 
     #[tokio::test]
     async fn test_prepare_packet_with_obfuscation_key() {
         let body = vec![0x01, 0x02, 0x03, 0x04];
-        let packet = create_test_packet(12345, body.clone(), TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+        let packet =
+            create_test_packet(12345, body.clone(), TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
         let obfuscation_key = b"test_key".to_vec();
         let packet_writer = PacketWriter::new(Some(obfuscation_key));
 
         let prepared = packet_writer.prepare_packet(packet);
-        
+
         // With obfuscation key, packet should be obfuscated (flag removed, body changed)
-        assert!(!prepared.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
+        assert!(!prepared
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
         assert_ne!(prepared.body(), &body); // Body should be different after obfuscation
     }
 
@@ -266,9 +280,12 @@ mod tests {
         let packet_writer = PacketWriter::new(Some(obfuscation_key));
 
         let prepared = packet_writer.prepare_packet(packet);
-        
+
         // Already obfuscated packet should not be double-obfuscated
-        assert!(!prepared.header().flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
+        assert!(!prepared
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
         assert_eq!(prepared.body(), &body); // Body should remain unchanged
     }
 }

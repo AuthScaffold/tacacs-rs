@@ -14,39 +14,42 @@ pub enum PacketReadResult {
     /// Failed to parse header bytes.
     HeaderParseError(anyhow::Error),
     /// Failed to read body from stream.
-    BodyReadError { session_id: u32, error: std::io::Error },
+    BodyReadError {
+        session_id: u32,
+        error: std::io::Error,
+    },
     /// Failed to create packet from header and body.
-    PacketCreateError { session_id: u32, error: anyhow::Error },
+    PacketCreateError {
+        session_id: u32,
+        error: anyhow::Error,
+    },
 }
 
 /// Trait for reading TACACS+ packets from a stream.
-/// 
+///
 /// This trait abstracts the packet reading logic to allow for dependency injection
 /// and easier testing. Implementations can provide custom behavior for reading,
 /// parsing, and deobfuscating packets.
 #[async_trait]
 pub trait PacketReaderTrait: Send + Sync {
     /// Reads a single packet from the provided reader.
-    /// 
+    ///
     /// This method will:
     /// 1. Read the TACACS+ header (12 bytes)
     /// 2. Parse the header to determine body length
     /// 3. Read the body
     /// 4. Create and optionally deobfuscate the packet
-    /// 
+    ///
     /// # Arguments
     /// * `reader` - A mutable reference to a boxed async reader
-    /// 
+    ///
     /// # Returns
     /// A `PacketReadResult` indicating success or the type of failure encountered.
-    async fn read_packet(
-        &self,
-        reader: &mut (dyn AsyncRead + Unpin + Send),
-    ) -> PacketReadResult;
+    async fn read_packet(&self, reader: &mut (dyn AsyncRead + Unpin + Send)) -> PacketReadResult;
 }
 
 /// Default implementation of `PacketReaderTrait` for reading TACACS+ packets.
-/// 
+///
 /// Handles reading packets from any async reader, including optional deobfuscation
 /// using the provided key.
 pub struct PacketReader {
@@ -55,7 +58,7 @@ pub struct PacketReader {
 
 impl PacketReader {
     /// Creates a new `PacketReader` with an optional obfuscation key.
-    /// 
+    ///
     /// # Arguments
     /// * `obfuscation_key` - Optional key used to deobfuscate incoming packets.
     ///   If `None`, packets are assumed to be unencrypted.
@@ -66,10 +69,7 @@ impl PacketReader {
 
 #[async_trait]
 impl PacketReaderTrait for PacketReader {
-    async fn read_packet(
-        &self,
-        reader: &mut (dyn AsyncRead + Unpin + Send),
-    ) -> PacketReadResult {
+    async fn read_packet(&self, reader: &mut (dyn AsyncRead + Unpin + Send)) -> PacketReadResult {
         // Read header
         let mut header_buffer = [0_u8; TACACS_HEADER_LENGTH];
         if let Err(e) = reader.read_exact(&mut header_buffer).await {
@@ -141,7 +141,9 @@ impl PacketReaderTrait for PacketReader {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use tacacsrs_messages::enumerations::{TacacsFlags, TacacsType, TacacsMajorVersion, TacacsMinorVersion};
+    use tacacsrs_messages::enumerations::{
+        TacacsFlags, TacacsType, TacacsMajorVersion, TacacsMinorVersion,
+    };
 
     fn create_test_header(session_id: u32, body_length: u32, flags: TacacsFlags) -> Header {
         Header {
