@@ -26,7 +26,6 @@ pub struct Header {
 // |                              length                               |
 // +----------------+----------------+----------------+----------------+
 
-
 impl Header {
     pub fn from_bytes(data: &[u8]) -> anyhow::Result<Self> {
         if data.len() < TACACS_HEADER_LENGTH {
@@ -49,7 +48,6 @@ impl Header {
         let session_id = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
 
         let length = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-
 
         Ok(Header {
             major_version,
@@ -79,12 +77,10 @@ impl Header {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::enumerations::{TacacsMajorVersion, TacacsMinorVersion, TacacsType, TacacsFlags};
-
 
     fn generate_packet(
         major_version_o: Option<TacacsMajorVersion>,

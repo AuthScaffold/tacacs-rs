@@ -130,6 +130,18 @@ impl TcpConnection {
                     );
                     continue;
                 }
+                PacketReadResult::BodyLengthExceeded {
+                    session_id,
+                    body_length,
+                    max_length,
+                } => {
+                    log::error!(
+                        target: "tacacsrs_networking::connection::read_handler",
+                        "Rejecting packet for session id {} with excessive body length {} (max allowed: {})",
+                        session_id, body_length, max_length
+                    );
+                    continue;
+                }
                 PacketReadResult::BodyReadError { session_id, error } => {
                     log::error!(
                         target: "tacacsrs_networking::connection::read_handler",
