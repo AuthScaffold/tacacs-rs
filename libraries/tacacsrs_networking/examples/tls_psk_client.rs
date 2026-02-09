@@ -18,10 +18,8 @@ async fn main() -> anyhow::Result<()> {
     let obfuscation_key: Option<Vec<u8>> = None;
 
     // Configure the PSK identity and key for TLS 1.3 out-of-band PSK.
-    let psk_identity = PskIdentity::new(
-        "tacacs-client-01".to_string(),
-        b"my-pre-shared-key-material".to_vec(),
-    );
+    let psk_identity =
+        PskIdentity::new("tacacs-client-01".to_string(), b"my-pre-shared-key-material".to_vec());
 
     let tcp_stream = connect_tcp(hostname).await?;
 
