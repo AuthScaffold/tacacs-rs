@@ -18,7 +18,7 @@ use super::{PskIdentity, create_psk_ssl_context};
 /// use tacacsrs_networking::helpers::connect_tcp;
 ///
 /// # async fn example() -> anyhow::Result<()> {
-/// let psk = PskIdentity::new("client1", b"shared_key");
+/// let psk = PskIdentity::new("client1", b"shared_key_at_least_16")?;
 ///
 /// let tcp_stream = connect_tcp("tacacs.example.com:49").await?;
 /// let tls_stream = PskConfigurationBuilder::new(psk)
@@ -86,7 +86,7 @@ impl PskConfigurationBuilder {
     /// - The SSL object cannot be created
     /// - The TLS handshake fails
     pub async fn connect(self, stream: TcpStream) -> anyhow::Result<SslStream<TcpStream>> {
-        let ssl_context = create_psk_ssl_context(&self.psk)?;
+        let ssl_context = create_psk_ssl_context(&self.psk, self.ciphersuites.as_deref())?;
 
         let mut ssl = Ssl::new(&ssl_context)?;
 

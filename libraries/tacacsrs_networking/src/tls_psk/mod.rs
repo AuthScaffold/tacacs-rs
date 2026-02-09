@@ -19,7 +19,7 @@
 //! use tacacsrs_networking::helpers::connect_tcp;
 //!
 //! # async fn example() -> anyhow::Result<()> {
-//! let psk = PskIdentity::new("my-tacacs-client", b"shared_secret_key_here");
+//! let psk = PskIdentity::new("my-tacacs-client", b"shared_secret_key_here!!")?;
 //!
 //! let tcp_stream = connect_tcp("tacacs.example.com:49").await?;
 //! let tls_stream = connect_tls_psk(tcp_stream, &psk).await?;
@@ -58,25 +58,65 @@ pub struct PskIdentity {
 }
 
 impl PskIdentity {
+    /// The minimum required key length in bytes.
+    ///
+    /// TLS 1.3 PSK requires keys of sufficient entropy. 16 bytes (128 bits) is
+    /// the minimum recommended length.
+    pub const MIN_KEY_LENGTH: usize = 16;
+
     /// Creates a new PSK identity with the given identity string and key.
     ///
     /// # Arguments
     ///
-    /// * `identity` - A string identifying this client to the server (e.g., "tacacs-client-1")
-    /// * `key` - The shared secret key bytes
+    /// * `identity` - A string identifying this client to the server (e.g., "tacacs-client-1").
+    ///   Must not contain NUL (`\0`) bytes, as the identity is sent as a null-terminated
+    ///   C string during the TLS handshake.
+    /// * `key` - The shared secret key bytes. Must be at least [`Self::MIN_KEY_LENGTH`] bytes
+    ///   (16 bytes / 128 bits).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `identity` contains a NUL byte (`\0`)
+    /// - `identity` is empty
+    /// - `key` is shorter than [`Self::MIN_KEY_LENGTH`] bytes
     ///
     /// # Example
     ///
     /// ```
     /// use tacacsrs_networking::tls_psk::PskIdentity;
     ///
-    /// let psk = PskIdentity::new("my-client", b"super_secret_key");
+    /// let psk = PskIdentity::new("my-client", b"super_secret_key!").unwrap();
+    ///
+    /// // NUL bytes in identity are rejected
+    /// assert!(PskIdentity::new("bad\0id", b"super_secret_key!").is_err());
+    ///
+    /// // Keys shorter than 16 bytes are rejected
+    /// assert!(PskIdentity::new("my-client", b"too_short").is_err());
     /// ```
-    pub fn new(identity: impl Into<String>, key: impl Into<Vec<u8>>) -> Self {
-        Self {
-            identity: identity.into(),
-            key: key.into(),
+    pub fn new(identity: impl Into<String>, key: impl Into<Vec<u8>>) -> anyhow::Result<Self> {
+        let identity = identity.into();
+        let key = key.into();
+
+        if identity.is_empty() {
+            anyhow::bail!("PSK identity must not be empty");
         }
+
+        if identity.contains('\0') {
+            anyhow::bail!(
+                "PSK identity must not contain NUL bytes (identity is sent as a null-terminated C string)"
+            );
+        }
+
+        if key.len() < Self::MIN_KEY_LENGTH {
+            anyhow::bail!(
+                "PSK key must be at least {} bytes, got {} bytes",
+                Self::MIN_KEY_LENGTH,
+                key.len()
+            );
+        }
+
+        Ok(Self { identity, key })
     }
 
     /// Returns the PSK identity string.
@@ -122,7 +162,7 @@ impl std::fmt::Debug for PskIdentity {
 /// use tacacsrs_networking::helpers::connect_tcp;
 ///
 /// # async fn example() -> anyhow::Result<()> {
-/// let psk = PskIdentity::new("client1", b"shared_key");
+/// let psk = PskIdentity::new("client1", b"shared_key_at_least_16")?;
 /// let tcp = connect_tcp("tacacs.example.com:49").await?;
 /// let tls = connect_tls_psk(tcp, &psk).await?;
 /// # Ok(())
@@ -141,7 +181,16 @@ pub async fn connect_tls_psk(
 ///
 /// This is used internally by [`PskConfigurationBuilder`] but can also be used
 /// directly for advanced configuration scenarios.
-fn create_psk_ssl_context(psk: &PskIdentity) -> anyhow::Result<SslContext> {
+///
+/// # Arguments
+///
+/// * `psk` - The pre-shared key identity and secret
+/// * `ciphersuites` - Optional TLS 1.3 ciphersuites override. If `None`, defaults
+///   to `TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256`.
+fn create_psk_ssl_context(
+    psk: &PskIdentity,
+    ciphersuites: Option<&str>,
+) -> anyhow::Result<SslContext> {
     let mut ctx_builder = SslContext::builder(SslMethod::tls_client())?;
 
     // Restrict to TLS 1.3 only
@@ -194,7 +243,8 @@ fn create_psk_ssl_context(psk: &PskIdentity) -> anyhow::Result<SslContext> {
     });
 
     // Set TLS 1.3 ciphersuites compatible with PSK
-    ctx_builder.set_ciphersuites("TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256")?;
+    let ciphersuites = ciphersuites.unwrap_or("TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256");
+    ctx_builder.set_ciphersuites(ciphersuites)?;
 
     Ok(ctx_builder.build())
 }

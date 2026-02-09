@@ -83,7 +83,8 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
         {
             // TLS 1.3 PSK mode
-            let psk = PskIdentity::new(psk_identity, psk_key.as_bytes());
+            let psk = PskIdentity::new(psk_identity, psk_key.as_bytes())
+                .context("Invalid PSK credentials")?;
 
             let tls_stream = PskConfigurationBuilder::new(psk)
                 .connect(tcp_stream)
