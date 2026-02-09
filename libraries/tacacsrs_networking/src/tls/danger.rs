@@ -1,8 +1,7 @@
-use tokio_rustls::rustls;
-use rustls::client::danger::HandshakeSignatureValid;
-use rustls::crypto::{verify_tls13_signature, CryptoProvider};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::DigitallySignedStruct;
+use tokio_rustls::rustls::client::danger::HandshakeSignatureValid;
+use tokio_rustls::rustls::crypto::{verify_tls13_signature, CryptoProvider};
+use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use tokio_rustls::rustls::DigitallySignedStruct;
 
 /// A certificate verifier that disables certificate verification.
 ///
@@ -19,7 +18,7 @@ impl NoCertificateVerification {
     }
 }
 
-impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
+impl tokio_rustls::rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
     fn verify_server_cert(
         &self,
         _end_entity: &CertificateDer<'_>,
@@ -27,12 +26,13 @@ impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
         _server_name: &ServerName<'_>,
         _ocsp: &[u8],
         _now: UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+    ) -> Result<tokio_rustls::rustls::client::danger::ServerCertVerified, tokio_rustls::rustls::Error>
+    {
         log::warn!(
             target: "tacacsrs_networking::tls::danger::NoCertificateVerification",
             "Certificate verification disabled"
         );
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
+        Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -40,8 +40,8 @@ impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
         _message: &[u8],
         _cert: &CertificateDer<'_>,
         _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Err(rustls::Error::General("TLS 1.2 not supported".to_string()))
+    ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+        Err(tokio_rustls::rustls::Error::General("TLS 1.2 not supported".to_string()))
     }
 
     fn verify_tls13_signature(
@@ -49,11 +49,11 @@ impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
         message: &[u8],
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+    ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
         verify_tls13_signature(message, cert, dss, &self.0.signature_verification_algorithms)
     }
 
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
         self.0.signature_verification_algorithms.supported_schemes()
     }
 }
