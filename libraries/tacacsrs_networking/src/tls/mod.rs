@@ -54,7 +54,9 @@ pub async fn connect_tls(
         rustls::pki_types::ServerName::IpAddress(ip.into())
     } else {
         rustls::pki_types::ServerName::try_from(server_name)
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid server name"))?
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid server name")
+            })?
             .to_owned()
     };
 

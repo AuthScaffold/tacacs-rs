@@ -130,9 +130,11 @@ impl TlsConfigurationBuilder {
         }
 
         if self.disable_certificate_verification {
-            config.dangerous().set_certificate_verifier(Arc::new(
-                NoCertificateVerification::new(rustls::crypto::aws_lc_rs::default_provider()),
-            ));
+            config
+                .dangerous()
+                .set_certificate_verifier(Arc::new(NoCertificateVerification::new(
+                    rustls::crypto::aws_lc_rs::default_provider(),
+                )));
         }
 
         Ok(config)

@@ -324,7 +324,9 @@ impl SessionManagementTrait for TacacsConnection {
     }
 
     async fn create_session_with_id(self: &Arc<Self>, session_id: u32) -> anyhow::Result<Session> {
-        self.session_manager.create_session_with_id(session_id).await
+        self.session_manager
+            .create_session_with_id(session_id)
+            .await
     }
 
     async fn single_connection_state(
