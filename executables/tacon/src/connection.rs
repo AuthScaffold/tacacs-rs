@@ -5,6 +5,8 @@ use tacacsrs_networking::{
     session::Session, connection::TacacsConnection, tls::TlsConfigurationBuilder,
     traits::SessionManagementTrait, SingleConnectionState,
 };
+#[cfg(feature = "psk")]
+use tacacsrs_networking::tls_psk::{PskIdentity, PskConfigurationBuilder};
 
 use crate::cli::Cli;
 
@@ -76,14 +78,35 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
     let connection = Arc::new(TacacsConnection::new(obfuscation_key));
 
     if cli.use_tls {
+        #[cfg(feature = "psk")]
+        if let (Some(psk_identity), Some(psk_key)) =
+            (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
+        {
+            // TLS 1.3 PSK mode
+            let psk = PskIdentity::new(psk_identity, psk_key.as_bytes());
+
+            let tls_stream = PskConfigurationBuilder::new(psk)
+                .connect(tcp_stream)
+                .await
+                .context("Failed to establish TLS PSK connection")?;
+
+            connection
+                .run(tls_stream)
+                .await
+                .context("Failed to start TLS PSK connection handler")?;
+
+            return Ok(Connection { inner: connection });
+        }
+
+        // Certificate-based TLS mode
         let client_cert = cli
             .client_certificate
             .as_ref()
-            .context("TLS requires a client certificate")?;
+            .context("TLS requires a client certificate or PSK credentials")?;
         let client_key = cli
             .client_key
             .as_ref()
-            .context("TLS requires a client key")?;
+            .context("TLS requires a client key or PSK credentials")?;
 
         let tls_config = Arc::new(
             TlsConfigurationBuilder::new()
@@ -95,10 +118,13 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
                 .context("Failed to build TLS configuration")?,
         );
 
-        let tls_stream =
-            tacacsrs_networking::tls::connect_tls(&tls_config, tcp_stream, "tacacsserver.local")
-                .await
-                .context("Failed to establish TLS connection")?;
+        let tls_stream = tacacsrs_networking::tls::connect_tls(
+            &tls_config,
+            tcp_stream,
+            "tacacsserver.local",
+        )
+        .await
+        .context("Failed to establish TLS connection")?;
 
         connection
             .run(tls_stream)
