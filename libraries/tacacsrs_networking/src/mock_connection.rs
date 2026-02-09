@@ -1,7 +1,5 @@
 //! **Warning**: This module is intended for use in test harnesses only.
 //! Do not use this as a reference for how to implement real network connections.
-//! For production connection handling, see [`TcpConnection`](crate::tcp_connection::TcpConnection)
-//! or [`TlsConnection`](crate::tls_connection::TlsConnection).
 
 use async_trait::async_trait;
 use log::info;

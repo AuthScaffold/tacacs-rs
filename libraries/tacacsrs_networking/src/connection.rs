@@ -8,7 +8,7 @@
 //!
 //! The connection handler separates concerns:
 //! - **Transport**: The underlying stream (TCP, TLS, etc.) - see [`transport`](crate::transport)
-//! - **Session Management**: Creating and tracking sessions - see [`SessionManager`](crate::session_manager::SessionManager)
+//! - **Session Management**: Creating and tracking sessions - see [`SessionManager`]
 //! - **Packet I/O**: Reading and writing packets - see [`PacketReaderTrait`] and [`PacketWriterTrait`]
 //!
 //! # Example
