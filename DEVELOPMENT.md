@@ -72,6 +72,74 @@ cargo build --workspace
 cargo test --workspace
 ```
 
+### Building with TLS 1.3 PSK Support (Optional)
+
+The `tacacsrs_networking` library includes optional TLS 1.3 Pre-Shared Key support behind the `psk` feature flag. This feature depends on OpenSSL and requires additional setup.
+
+#### Linux
+
+Install the OpenSSL development libraries from your distribution's package manager:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install libssl-dev pkg-config
+
+# Fedora/RHEL
+sudo dnf install openssl-devel
+
+# Build with PSK support
+cargo build --workspace --features tacacsrs-networking/psk
+```
+
+#### Windows
+
+A pre-built OpenSSL installation is required. The recommended approach is to use [vcpkg](https://vcpkg.io/) to install OpenSSL.
+
+##### Installing OpenSSL with vcpkg (Recommended)
+
+1. Follow the [vcpkg getting started instructions](https://learn.microsoft.com/en-us/vcpkg/get_started/get-started) to install vcpkg.
+2. Install OpenSSL:
+
+   ```powershell
+   vcpkg install openssl
+   ```
+
+3. Set your environment variables to point to the vcpkg-installed OpenSSL directory:
+
+   ```powershell
+   $env:OPENSSL_DIR = "X:\vcpkg\installed\x64-windows"
+   ```
+
+   Adjust the path to match your vcpkg installation location. The directory must contain `include/openssl` and `lib` subdirectories.
+
+4. Build with PSK support:
+
+   ```powershell
+   cargo build --features tacacsrs-networking/psk
+   ```
+
+Set `OPENSSL_DIR` permanently via **System Properties → Environment Variables** so it persists across terminals.
+
+##### Manual OpenSSL installation
+
+If you prefer not to use vcpkg, you can point to any pre-built OpenSSL installation by setting the following environment variables:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `OPENSSL_DIR` | Root of the OpenSSL installation (must contain an `include/openssl` subdirectory) | `C:\development\tools\openssl` |
+| `OPENSSL_LIB_DIR` | Directory containing `libssl.lib` and `libcrypto.lib` | `C:\development\tools\openssl\lib\VC\x64\MD` |
+
+> **Note:** Use the **MD** (Multi-threaded DLL) variant of the OpenSSL libraries. Rust's MSVC toolchain links against the dynamic C runtime, which must match the OpenSSL build. Using MT, MDd, or MTd variants will cause linker errors or runtime issues.
+
+```powershell
+$env:OPENSSL_DIR     = "C:\development\tools\openssl"
+$env:OPENSSL_LIB_DIR = "C:\development\tools\openssl\lib\VC\x64\MD"
+
+cargo build --features tacacsrs-networking/psk
+```
+
+> **Tip:** Without the `psk` feature, the default build uses rustls (pure Rust) and requires no external dependencies.
+
 ## Running Tests
 
 ```bash
