@@ -4,13 +4,11 @@ use env_logger::Env;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::*;
 use tacacsrs_networking::helpers::connect_tcp;
+use tacacsrs_networking::tls::{TlsConfigurationBuilder, connect_tls};
+use tacacsrs_networking::TacacsConnection;
 
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
-use tacacsrs_networking::tls_connection::TLSConnectionTrait;
-
-
-use tacacsrs_networking::helpers::*;
 
 
 #[tokio::main]
@@ -67,9 +65,7 @@ async fn main() -> anyhow::Result<()> {
     let tcp_stream = connect_tcp(hostname).await?;
     let tls_stream = connect_tls(&tls_config, tcp_stream, "tacacsserver.local").await?;
 
-    let connection = Arc::new(tacacsrs_networking::tls_connection::TlsConnection::new(
-        obfuscation_key.as_deref(),
-    ));
+    let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
     connection.run(tls_stream).await?;
 
     let session = connection.create_session().await?;
