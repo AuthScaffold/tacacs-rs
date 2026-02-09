@@ -46,6 +46,17 @@ impl Transport for TlsStream<TcpStream> {
     }
 }
 
+/// TLS-PSK transport implementation (OpenSSL).
+#[cfg(feature = "psk")]
+impl Transport for tokio_openssl::SslStream<TcpStream> {
+    type ReadHalf = tokio::io::ReadHalf<tokio_openssl::SslStream<TcpStream>>;
+    type WriteHalf = tokio::io::WriteHalf<tokio_openssl::SslStream<TcpStream>>;
+
+    fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
+        tokio::io::split(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
