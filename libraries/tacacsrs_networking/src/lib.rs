@@ -10,6 +10,8 @@ pub mod packet_reader;
 pub mod packet_writer;
 pub mod single_connect_tracker;
 pub mod tls;
+#[cfg(feature = "psk")]
+pub mod tls_psk;
 pub mod transport;
 pub mod connection;
 
