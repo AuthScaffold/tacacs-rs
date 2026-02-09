@@ -11,6 +11,7 @@ pub mod traits;
 pub mod packet_reader;
 pub mod packet_writer;
 pub mod single_connect_tracker;
+pub mod tls;
 
 pub use session_manager::SingleConnectionState;
 pub use packet_reader::{PacketReader, PacketReaderTrait, PacketReadResult};

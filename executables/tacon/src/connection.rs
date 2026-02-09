@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use tacacsrs_networking::{
-    helpers::TlsConfigurationBuilder,
     session::Session,
     tcp_connection::{TcpConnection, TcpConnectionTrait},
+    tls::TlsConfigurationBuilder,
     tls_connection::{TlsConnection, TLSConnectionTrait},
     traits::SessionManagementTrait,
     SingleConnectionState,
@@ -110,7 +110,7 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
                 .context("Failed to build TLS configuration")?,
         );
 
-        let tls_stream = tacacsrs_networking::helpers::connect_tls(
+        let tls_stream = tacacsrs_networking::tls::connect_tls(
             &tls_config,
             tcp_stream,
             "tacacsserver.local",
