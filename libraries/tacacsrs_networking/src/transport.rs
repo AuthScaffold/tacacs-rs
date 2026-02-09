@@ -71,4 +71,10 @@ mod tests {
     fn _check_tls(s: TlsStream<TcpStream>) {
         _assert_tcp_transport(s);
     }
+
+    // Compile-time check that SslStream (PSK) implements Transport
+    #[cfg(feature = "psk")]
+    fn _check_psk(s: tokio_openssl::SslStream<TcpStream>) {
+        _assert_tcp_transport(s);
+    }
 }
