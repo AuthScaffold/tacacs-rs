@@ -30,20 +30,20 @@ pub struct TacacsAccountingReply {
 }
 
 /// TACACS+ accounting flags
-pub const TACACS_ACCOUNTING_FLAG_START: u8 = 0x02;
-pub const TACACS_ACCOUNTING_FLAG_STOP: u8 = 0x04;
-pub const TACACS_ACCOUNTING_FLAG_WATCHDOG: u8 = 0x08;
+pub const TACACS_ACCOUNTING_FLAG_START: u8 = TacacsAccountingFlags::START.bits();
+pub const TACACS_ACCOUNTING_FLAG_STOP: u8 = TacacsAccountingFlags::STOP.bits();
+pub const TACACS_ACCOUNTING_FLAG_WATCHDOG: u8 = TacacsAccountingFlags::WATCHDOG.bits();
 
 /// TACACS+ accounting status enumeration
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CTacacsAccountingStatus {
     /// Accounting success
-    TacPlusAcctStatusSuccess = 0x01,
+    TacPlusAcctStatusSuccess = TacacsAccountingStatus::TacPlusAcctStatusSuccess as isize,
     /// Accounting error
-    TacPlusAcctStatusError = 0x02,
+    TacPlusAcctStatusError = TacacsAccountingStatus::TacPlusAcctStatusError as isize,
     /// Follow-up required
-    TacPlusAcctStatusFollow = 0x21,
+    TacPlusAcctStatusFollow = TacacsAccountingStatus::TacPlusAcctStatusFollow as isize,
 }
 
 /// TACACS+ authentication method enumeration
@@ -51,27 +51,27 @@ pub enum CTacacsAccountingStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CTacacsAuthenticationMethod {
     /// Not set
-    TacPlusAuthenMethodNotSet = 0x00,
+    TacPlusAuthenMethodNotSet = TacacsAuthenticationMethod::TacPlusAuthenMethodNotSet as isize,
     /// None
-    TacPlusAuthenMethodNone = 0x01,
+    TacPlusAuthenMethodNone = TacacsAuthenticationMethod::TacPlusAuthenMethodNone as isize,
     /// Kerberos 5
-    TacPlusAuthenMethodKrb5 = 0x02,
+    TacPlusAuthenMethodKrb5 = TacacsAuthenticationMethod::TacPlusAuthenMethodKrb5 as isize,
     /// Line
-    TacPlusAuthenMethodLine = 0x03,
+    TacPlusAuthenMethodLine = TacacsAuthenticationMethod::TacPlusAuthenMethodLine as isize,
     /// Enable
-    TacPlusAuthenMethodEnable = 0x04,
+    TacPlusAuthenMethodEnable = TacacsAuthenticationMethod::TacPlusAuthenMethodEnable as isize,
     /// Local
-    TacPlusAuthenMethodLocal = 0x05,
+    TacPlusAuthenMethodLocal = TacacsAuthenticationMethod::TacPlusAuthenMethodLocal as isize,
     /// TACACSPlus
-    TacPlusAuthenMethodTacacsPlus = 0x06,
+    TacPlusAuthenMethodTacacsPlus = TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus as isize,
     /// Guest
-    TacPlusAuthenMethodGuest = 0x08,
+    TacPlusAuthenMethodGuest = TacacsAuthenticationMethod::TacPlusAuthenMethodGuest as isize,
     /// RADIUS
-    TacPlusAuthenMethodRadius = 0x10,
+    TacPlusAuthenMethodRadius = TacacsAuthenticationMethod::TacPlusAuthenMethodRadius as isize,
     /// Kerberos 4
-    TacPlusAuthenMethodKrb4 = 0x11,
+    TacPlusAuthenMethodKrb4 = TacacsAuthenticationMethod::TacPlusAuthenMethodKrb4 as isize,
     /// RCMD
-    TacPlusAuthenMethodRcmd = 0x20,
+    TacPlusAuthenMethodRcmd = TacacsAuthenticationMethod::TacPlusAuthenMethodRcmd as isize,
 }
 
 /// TACACS+ authentication service enumeration
@@ -79,23 +79,23 @@ pub enum CTacacsAuthenticationMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CTacacsAuthenticationService {
     /// None
-    TacPlusAuthenSvcNone = 0x0,
+    TacPlusAuthenSvcNone = TacacsAuthenticationService::TacPlusAuthenSvcNone as isize,
     /// Login
-    TacPlusAuthenSvcLogin = 0x1,
+    TacPlusAuthenSvcLogin = TacacsAuthenticationService::TacPlusAuthenSvcLogin as isize,
     /// Enable
-    TacPlusAuthenSvcEnable = 0x2,
+    TacPlusAuthenSvcEnable = TacacsAuthenticationService::TacPlusAuthenSvcEnable as isize,
     /// PPP
-    TacPlusAuthenSvcPpp = 0x3,
+    TacPlusAuthenSvcPpp = TacacsAuthenticationService::TacPlusAuthenSvcPpp as isize,
     /// PT
-    TacPlusAuthenSvcPt = 0x5,
+    TacPlusAuthenSvcPt = TacacsAuthenticationService::TacPlusAuthenSvcPt as isize,
     /// RCMD
-    TacPlusAuthenSvcRcmd = 0x6,
+    TacPlusAuthenSvcRcmd = TacacsAuthenticationService::TacPlusAuthenSvcRcmd as isize,
     /// X25
-    TacPlusAuthenSvcX25 = 0x7,
+    TacPlusAuthenSvcX25 = TacacsAuthenticationService::TacPlusAuthenSvcX25 as isize,
     /// NASI
-    TacPlusAuthenSvcNasi = 0x8,
+    TacPlusAuthenSvcNasi = TacacsAuthenticationService::TacPlusAuthenSvcNasi as isize,
     /// FWProxy
-    TacPlusAuthenSvcFwproxy = 0x9,
+    TacPlusAuthenSvcFwproxy = TacacsAuthenticationService::TacPlusAuthenSvcFwproxy as isize,
 }
 
 /// TACACS+ authentication type enumeration
@@ -103,17 +103,17 @@ pub enum CTacacsAuthenticationService {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CTacacsAuthenticationType {
     /// Not set
-    TacPlusAuthenTypeNotSet = 0x00,
+    TacPlusAuthenTypeNotSet = TacacsAuthenticationType::TacPlusAuthenTypeNotSet as isize,
     /// ASCII
-    TacPlusAuthenTypeAscii = 0x1,
+    TacPlusAuthenTypeAscii = TacacsAuthenticationType::TacPlusAuthenTypeAscii as isize,
     /// PAP
-    TacPlusAuthenTypePap = 0x2,
+    TacPlusAuthenTypePap = TacacsAuthenticationType::TacPlusAuthenTypePap as isize,
     /// CHAP
-    TacPlusAuthenTypeChap = 0x3,
+    TacPlusAuthenTypeChap = TacacsAuthenticationType::TacPlusAuthenTypeChap as isize,
     /// MSCHAP
-    TacPlusAuthenTypeMschap = 0x5,
+    TacPlusAuthenTypeMschap = TacacsAuthenticationType::TacPlusAuthenTypeMschap as isize,
     /// MSCHAPv2
-    TacPlusAuthenTypeMschapv2 = 0x6,
+    TacPlusAuthenTypeMschapv2 = TacacsAuthenticationType::TacPlusAuthenTypeMschapv2 as isize,
 }
 
 /// Create a new TACACS+ accounting request
