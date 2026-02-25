@@ -22,194 +22,97 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-/**
- * TACACS+ flags
- */
-#define tacacs_TACACS_FLAG_UNENCRYPTED 1
+enum tacacs_TacacsAccountingStatus
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    TACACS_TACACS_ACCOUNTING_STATUS_TAC_PLUS_ACCT_STATUS_SUCCESS = 1,
+    TACACS_TACACS_ACCOUNTING_STATUS_TAC_PLUS_ACCT_STATUS_ERROR = 2,
+    TACACS_TACACS_ACCOUNTING_STATUS_TAC_PLUS_ACCT_STATUS_FOLLOW = 33,
+};
+#ifndef __cplusplus
+typedef uint8_t tacacs_TacacsAccountingStatus;
+#endif // __cplusplus
 
-#define tacacs_TACACS_FLAG_SINGLE_CONNECTION 4
+enum tacacs_TacacsAuthenticationMethod
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    TACACS_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_NOT_SET = 0,
+    TACACS_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_NONE = 1,
+    TACACS_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_KRB5 = 2,
+    TACACS_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_LINE = 3,
+    TACACS_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_ENABLE = 4,
+    TACACS_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_LOCAL = 5,
+    TACACS_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_TACACSPLUS = 6,
+    TACACS_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_GUEST = 8,
+    TACACS_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_RADIUS = 16,
+    TACACS_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_KRB4 = 17,
+    TACACS_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_RCMD = 32,
+};
+#ifndef __cplusplus
+typedef uint8_t tacacs_TacacsAuthenticationMethod;
+#endif // __cplusplus
 
-/**
- * TACACS+ accounting status enumeration
- */
-typedef enum tacacs_CTacacsAccountingStatus {
-    /**
-     * Accounting success
-     */
-    TACACS_C_TACACS_ACCOUNTING_STATUS_TAC_PLUS_ACCT_STATUS_SUCCESS = (intptr_t)tacacs_TacacsAccountingStatus_TacPlusAcctStatusSuccess,
-    /**
-     * Accounting error
-     */
-    TACACS_C_TACACS_ACCOUNTING_STATUS_TAC_PLUS_ACCT_STATUS_ERROR = (intptr_t)tacacs_TacacsAccountingStatus_TacPlusAcctStatusError,
-    /**
-     * Follow-up required
-     */
-    TACACS_C_TACACS_ACCOUNTING_STATUS_TAC_PLUS_ACCT_STATUS_FOLLOW = (intptr_t)tacacs_TacacsAccountingStatus_TacPlusAcctStatusFollow,
-} tacacs_CTacacsAccountingStatus;
+enum tacacs_TacacsAuthenticationService
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    TACACS_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_NONE = 0,
+    TACACS_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_LOGIN = 1,
+    TACACS_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_ENABLE = 2,
+    TACACS_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_PPP = 3,
+    TACACS_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_PT = 5,
+    TACACS_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_RCMD = 6,
+    TACACS_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_X25 = 7,
+    TACACS_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_NASI = 8,
+    TACACS_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_FWPROXY = 9,
+};
+#ifndef __cplusplus
+typedef uint8_t tacacs_TacacsAuthenticationService;
+#endif // __cplusplus
 
-/**
- * TACACS+ authentication method enumeration
- */
-typedef enum tacacs_CTacacsAuthenticationMethod {
-    /**
-     * Not set
-     */
-    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_NOT_SET = (intptr_t)tacacs_TacacsAuthenticationMethod_TacPlusAuthenMethodNotSet,
-    /**
-     * None
-     */
-    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_NONE = (intptr_t)tacacs_TacacsAuthenticationMethod_TacPlusAuthenMethodNone,
-    /**
-     * Kerberos 5
-     */
-    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_KRB5 = (intptr_t)tacacs_TacacsAuthenticationMethod_TacPlusAuthenMethodKrb5,
-    /**
-     * Line
-     */
-    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_LINE = (intptr_t)tacacs_TacacsAuthenticationMethod_TacPlusAuthenMethodLine,
-    /**
-     * Enable
-     */
-    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_ENABLE = (intptr_t)tacacs_TacacsAuthenticationMethod_TacPlusAuthenMethodEnable,
-    /**
-     * Local
-     */
-    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_LOCAL = (intptr_t)tacacs_TacacsAuthenticationMethod_TacPlusAuthenMethodLocal,
-    /**
-     * TACACSPlus
-     */
-    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_TACACS_PLUS = (intptr_t)tacacs_TacacsAuthenticationMethod_TacPlusAuthenMethodTacacsplus,
-    /**
-     * Guest
-     */
-    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_GUEST = (intptr_t)tacacs_TacacsAuthenticationMethod_TacPlusAuthenMethodGuest,
-    /**
-     * RADIUS
-     */
-    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_RADIUS = (intptr_t)tacacs_TacacsAuthenticationMethod_TacPlusAuthenMethodRadius,
-    /**
-     * Kerberos 4
-     */
-    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_KRB4 = (intptr_t)tacacs_TacacsAuthenticationMethod_TacPlusAuthenMethodKrb4,
-    /**
-     * RCMD
-     */
-    TACACS_C_TACACS_AUTHENTICATION_METHOD_TAC_PLUS_AUTHEN_METHOD_RCMD = (intptr_t)tacacs_TacacsAuthenticationMethod_TacPlusAuthenMethodRcmd,
-} tacacs_CTacacsAuthenticationMethod;
+enum tacacs_TacacsAuthenticationType
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    TACACS_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_NOT_SET = 0,
+    TACACS_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_ASCII = 1,
+    TACACS_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_PAP = 2,
+    TACACS_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_CHAP = 3,
+    TACACS_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_MSCHAP = 5,
+    TACACS_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_MSCHAPV2 = 6,
+};
+#ifndef __cplusplus
+typedef uint8_t tacacs_TacacsAuthenticationType;
+#endif // __cplusplus
 
-/**
- * TACACS+ authentication service enumeration
- */
-typedef enum tacacs_CTacacsAuthenticationService {
-    /**
-     * None
-     */
-    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_NONE = (intptr_t)tacacs_TacacsAuthenticationService_TacPlusAuthenSvcNone,
-    /**
-     * Login
-     */
-    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_LOGIN = (intptr_t)tacacs_TacacsAuthenticationService_TacPlusAuthenSvcLogin,
-    /**
-     * Enable
-     */
-    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_ENABLE = (intptr_t)tacacs_TacacsAuthenticationService_TacPlusAuthenSvcEnable,
-    /**
-     * PPP
-     */
-    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_PPP = (intptr_t)tacacs_TacacsAuthenticationService_TacPlusAuthenSvcPpp,
-    /**
-     * PT
-     */
-    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_PT = (intptr_t)tacacs_TacacsAuthenticationService_TacPlusAuthenSvcPt,
-    /**
-     * RCMD
-     */
-    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_RCMD = (intptr_t)tacacs_TacacsAuthenticationService_TacPlusAuthenSvcRcmd,
-    /**
-     * X25
-     */
-    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_X25 = (intptr_t)tacacs_TacacsAuthenticationService_TacPlusAuthenSvcX25,
-    /**
-     * NASI
-     */
-    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_NASI = (intptr_t)tacacs_TacacsAuthenticationService_TacPlusAuthenSvcNasi,
-    /**
-     * FWProxy
-     */
-    TACACS_C_TACACS_AUTHENTICATION_SERVICE_TAC_PLUS_AUTHEN_SVC_FWPROXY = (intptr_t)tacacs_TacacsAuthenticationService_TacPlusAuthenSvcFwproxy,
-} tacacs_CTacacsAuthenticationService;
+enum tacacs_TacacsMajorVersion
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    TACACS_TACACS_MAJOR_VERSION_TACACS_PLUS_MAJOR1 = 12,
+};
+#ifndef __cplusplus
+typedef uint8_t tacacs_TacacsMajorVersion;
+#endif // __cplusplus
 
-/**
- * TACACS+ authentication type enumeration
- */
-typedef enum tacacs_CTacacsAuthenticationType {
-    /**
-     * Not set
-     */
-    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_NOT_SET = (intptr_t)tacacs_TacacsAuthenticationType_TacPlusAuthenTypeNotSet,
-    /**
-     * ASCII
-     */
-    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_ASCII = (intptr_t)tacacs_TacacsAuthenticationType_TacPlusAuthenTypeAscii,
-    /**
-     * PAP
-     */
-    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_PAP = (intptr_t)tacacs_TacacsAuthenticationType_TacPlusAuthenTypePap,
-    /**
-     * CHAP
-     */
-    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_CHAP = (intptr_t)tacacs_TacacsAuthenticationType_TacPlusAuthenTypeChap,
-    /**
-     * MSCHAP
-     */
-    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_MSCHAP = (intptr_t)tacacs_TacacsAuthenticationType_TacPlusAuthenTypeMschap,
-    /**
-     * MSCHAPv2
-     */
-    TACACS_C_TACACS_AUTHENTICATION_TYPE_TAC_PLUS_AUTHEN_TYPE_MSCHAPV2 = (intptr_t)tacacs_TacacsAuthenticationType_TacPlusAuthenTypeMschapv2,
-} tacacs_CTacacsAuthenticationType;
-
-/**
- * TACACS+ major version enumeration
- */
-typedef enum tacacs_CTacacsMajorVersion {
-    /**
-     * TACACS+ Major Version 1 (0xC)
-     */
-    TACACS_C_TACACS_MAJOR_VERSION_TACACS_PLUS_MAJOR1 = 12,
-} tacacs_CTacacsMajorVersion;
-
-/**
- * TACACS+ minor version enumeration
- */
-typedef enum tacacs_CTacacsMinorVersion {
-    /**
-     * TACACS+ Minor Version 0 (Default)
-     */
-    TACACS_C_TACACS_MINOR_VERSION_TACACS_PLUS_MINOR_VER_DEFAULT = 0,
-    /**
-     * TACACS+ Minor Version 1
-     */
-    TACACS_C_TACACS_MINOR_VERSION_TACACS_PLUS_MINOR_VER_ONE = 1,
-} tacacs_CTacacsMinorVersion;
-
-/**
- * TACACS+ packet type enumeration
- */
-typedef enum tacacs_CTacacsType {
-    /**
-     * Authentication packet
-     */
-    TACACS_C_TACACS_TYPE_TAC_PLUS_AUTHENTICATION = 1,
-    /**
-     * Authorization packet (note: British spelling in protocol)
-     */
-    TACACS_C_TACACS_TYPE_TAC_PLUS_AUTHORISATION = 2,
-    /**
-     * Accounting packet
-     */
-    TACACS_C_TACACS_TYPE_TAC_PLUS_ACCOUNTING = 3,
-} tacacs_CTacacsType;
+enum tacacs_TacacsMinorVersion
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    TACACS_TACACS_MINOR_VERSION_TACACS_PLUS_MINOR_VER_DEFAULT = 0,
+    TACACS_TACACS_MINOR_VERSION_TACACS_PLUS_MINOR_VER_ONE = 1,
+};
+#ifndef __cplusplus
+typedef uint8_t tacacs_TacacsMinorVersion;
+#endif // __cplusplus
 
 /**
  * Result codes for TACACS FFI operations
@@ -260,6 +163,19 @@ typedef enum tacacs_TacacsResult {
      */
     TACACS_TACACS_RESULT_UNKNOWN = 255,
 } tacacs_TacacsResult;
+
+enum tacacs_TacacsType
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    TACACS_TACACS_TYPE_TAC_PLUS_AUTHENTICATION = 1,
+    TACACS_TACACS_TYPE_TAC_PLUS_AUTHORISATION = 2,
+    TACACS_TACACS_TYPE_TAC_PLUS_ACCOUNTING = 3,
+};
+#ifndef __cplusplus
+typedef uint8_t tacacs_TacacsType;
+#endif // __cplusplus
 
 /**
  * Opaque type for TACACS+ accounting request
@@ -321,10 +237,10 @@ extern "C" {
  * - Returns null on error
  */
 struct tacacs_TacacsAccountingRequest *tacacs_accounting_request_new(uint8_t flags,
-                                                                     enum tacacs_CTacacsAuthenticationMethod authen_method,
+                                                                     tacacs_TacacsAuthenticationMethod authen_method,
                                                                      uint8_t priv_lvl,
-                                                                     enum tacacs_CTacacsAuthenticationType authen_type,
-                                                                     enum tacacs_CTacacsAuthenticationService authen_service,
+                                                                     tacacs_TacacsAuthenticationType authen_type,
+                                                                     tacacs_TacacsAuthenticationService authen_service,
                                                                      const char *user,
                                                                      const char *port,
                                                                      const char *rem_address,
@@ -429,7 +345,7 @@ void tacacs_accounting_request_free(struct tacacs_TacacsAccountingRequest *reque
  * - Returns a pointer to a newly allocated reply that must be freed with `tacacs_accounting_reply_free()`
  * - Returns null on error
  */
-struct tacacs_TacacsAccountingReply *tacacs_accounting_reply_new(enum tacacs_CTacacsAccountingStatus status,
+struct tacacs_TacacsAccountingReply *tacacs_accounting_reply_new(tacacs_TacacsAccountingStatus status,
                                                                  const char *server_msg,
                                                                  const char *data,
                                                                  struct tacacs_TacacsError *error);
@@ -489,7 +405,7 @@ char *tacacs_accounting_reply_get_data(const struct tacacs_TacacsAccountingReply
  * - The `reply` pointer must be valid and point to a reply created by this library
  * - Returns the status code, or TacPlusAcctStatusError if the pointer is null
  */
-enum tacacs_CTacacsAccountingStatus tacacs_accounting_reply_get_status(const struct tacacs_TacacsAccountingReply *reply);
+tacacs_TacacsAccountingStatus tacacs_accounting_reply_get_status(const struct tacacs_TacacsAccountingReply *reply);
 
 /**
  * Free a TACACS+ accounting reply
@@ -528,9 +444,9 @@ void tacacs_free_error(struct tacacs_TacacsError *error);
  * Returns a pointer to a newly allocated header that must be freed with `tacacs_header_free()`.
  * Returns null on allocation failure.
  */
-struct tacacs_TacacsHeader *tacacs_header_new(enum tacacs_CTacacsMajorVersion major_version,
-                                              enum tacacs_CTacacsMinorVersion minor_version,
-                                              enum tacacs_CTacacsType tacacs_type,
+struct tacacs_TacacsHeader *tacacs_header_new(tacacs_TacacsMajorVersion major_version,
+                                              tacacs_TacacsMinorVersion minor_version,
+                                              tacacs_TacacsType tacacs_type,
                                               uint8_t seq_no,
                                               uint8_t flags,
                                               unsigned int session_id,

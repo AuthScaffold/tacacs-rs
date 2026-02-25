@@ -39,6 +39,6 @@ derive_eq = false
 derive_neq = false
 
 [parse]
-parse_deps = false
-include = []
+parse_deps = true
+include = ["tacacsrs-messages"]
 

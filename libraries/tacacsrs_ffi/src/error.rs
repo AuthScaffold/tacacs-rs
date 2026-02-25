@@ -51,16 +51,15 @@ pub struct TacacsError {
 impl TacacsError {
     /// Create a new error with a code and message
     pub fn new(code: TacacsResult, message: &str) -> Self {
-        let c_message = CString::new(message).unwrap_or_else(|_| {
-            CString::new("Failed to create error message").unwrap()
-        });
-        
+        let c_message = CString::new(message)
+            .unwrap_or_else(|_| CString::new("Failed to create error message").unwrap());
+
         TacacsError {
             code,
             message: c_message.into_raw(),
         }
     }
-    
+
     /// Create a success error (no error)
     pub fn success() -> Self {
         TacacsError {
@@ -68,7 +67,7 @@ impl TacacsError {
             message: ptr::null_mut(),
         }
     }
-    
+
     /// Create an error from an anyhow::Error
     pub fn from_anyhow(error: anyhow::Error) -> Self {
         let message = format!("{:#}", error);
@@ -107,7 +106,7 @@ pub unsafe extern "C" fn tacacs_free_error(error: *mut TacacsError) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_error_creation() {
         let error = TacacsError::new(TacacsResult::InvalidInput, "Test error");
@@ -117,7 +116,7 @@ mod tests {
             tacacs_free_error_message(error.message);
         }
     }
-    
+
     #[test]
     fn test_success_error() {
         let error = TacacsError::success();

@@ -36,21 +36,21 @@ pub unsafe extern "C" fn tacacs_packet_new(
         }
         return ptr::null_mut();
     }
-    
+
     if body.is_null() && body_len > 0 {
         if !error.is_null() {
             *error = TacacsError::new(TacacsResult::NullPointer, "Body pointer is null");
         }
         return ptr::null_mut();
     }
-    
+
     let header_ref = &*(header as *const RustHeader);
     let body_slice = if body_len > 0 {
         slice::from_raw_parts(body, body_len)
     } else {
         &[]
     };
-    
+
     match RustPacket::new(header_ref.clone(), body_slice.to_vec()) {
         Ok(packet) => {
             if !error.is_null() {
@@ -89,9 +89,9 @@ pub unsafe extern "C" fn tacacs_packet_from_bytes(
         }
         return ptr::null_mut();
     }
-    
+
     let slice = slice::from_raw_parts(data, data_len);
-    
+
     match RustPacket::from_bytes(slice) {
         Ok(packet) => {
             if !error.is_null() {
@@ -133,23 +133,23 @@ pub unsafe extern "C" fn tacacs_packet_to_bytes(
         }
         return ptr::null_mut();
     }
-    
+
     if out_len.is_null() {
         if !error.is_null() {
             *error = TacacsError::new(TacacsResult::NullPointer, "Output length pointer is null");
         }
         return ptr::null_mut();
     }
-    
+
     let packet_ref = &*(packet as *const RustPacket);
     let bytes = packet_ref.to_bytes();
-    
+
     *out_len = bytes.len();
-    
+
     if !error.is_null() {
         *error = TacacsError::success();
     }
-    
+
     // Allocate a new buffer and copy the bytes
     let buffer = libc::malloc(bytes.len()) as *mut u8;
     if buffer.is_null() {
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn tacacs_packet_to_bytes(
         }
         return ptr::null_mut();
     }
-    
+
     ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len());
     buffer
 }
@@ -186,17 +186,17 @@ pub unsafe extern "C" fn tacacs_packet_obfuscate(
         }
         return ptr::null_mut();
     }
-    
+
     if key.is_null() {
         if !error.is_null() {
             *error = TacacsError::new(TacacsResult::NullPointer, "Key pointer is null");
         }
         return ptr::null_mut();
     }
-    
+
     let packet_ref = &*(packet as *const RustPacket);
     let key_slice = slice::from_raw_parts(key, key_len);
-    
+
     match packet_ref.as_obfuscated(key_slice) {
         Some(obfuscated) => {
             if !error.is_null() {
@@ -206,10 +206,8 @@ pub unsafe extern "C" fn tacacs_packet_obfuscate(
         }
         None => {
             if !error.is_null() {
-                *error = TacacsError::new(
-                    TacacsResult::InvalidInput,
-                    "Packet is already obfuscated",
-                );
+                *error =
+                    TacacsError::new(TacacsResult::InvalidInput, "Packet is already obfuscated");
             }
             ptr::null_mut()
         }
@@ -239,17 +237,17 @@ pub unsafe extern "C" fn tacacs_packet_deobfuscate(
         }
         return ptr::null_mut();
     }
-    
+
     if key.is_null() {
         if !error.is_null() {
             *error = TacacsError::new(TacacsResult::NullPointer, "Key pointer is null");
         }
         return ptr::null_mut();
     }
-    
+
     let packet_ref = &*(packet as *const RustPacket);
     let key_slice = slice::from_raw_parts(key, key_len);
-    
+
     match packet_ref.as_deobfuscated(key_slice) {
         Some(deobfuscated) => {
             if !error.is_null() {
@@ -259,10 +257,8 @@ pub unsafe extern "C" fn tacacs_packet_deobfuscate(
         }
         None => {
             if !error.is_null() {
-                *error = TacacsError::new(
-                    TacacsResult::InvalidInput,
-                    "Packet is already deobfuscated",
-                );
+                *error =
+                    TacacsError::new(TacacsResult::InvalidInput, "Packet is already deobfuscated");
             }
             ptr::null_mut()
         }
@@ -299,58 +295,59 @@ pub unsafe extern "C" fn tacacs_packet_free(packet: *mut TacacsPacket) {
 mod tests {
     use super::*;
     use crate::header::*;
-    
+    use tacacsrs_messages::enumerations::{TacacsMajorVersion, TacacsMinorVersion, TacacsType};
+
     #[test]
     fn test_packet_creation() {
         unsafe {
             let mut error = TacacsError::success();
             let header = tacacs_header_new(
-                CTacacsMajorVersion::TacacsPlusMajor1,
-                CTacacsMinorVersion::TacacsPlusMinorVerOne,
-                CTacacsType::TacPlusAuthentication,
+                TacacsMajorVersion::TacacsPlusMajor1,
+                TacacsMinorVersion::TacacsPlusMinorVerOne,
+                TacacsType::TacPlusAuthentication,
                 1,
                 TACACS_FLAG_UNENCRYPTED,
                 12345,
                 5,
                 &mut error,
             );
-            
+
             let body = b"hello";
             let packet = tacacs_packet_new(header, body.as_ptr(), body.len(), &mut error);
-            
+
             assert!(!packet.is_null());
             assert_eq!(error.code, TacacsResult::Success);
-            
+
             tacacs_packet_free(packet);
             tacacs_header_free(header);
         }
     }
-    
+
     #[test]
     fn test_packet_serialization() {
         unsafe {
             let mut error = TacacsError::success();
             let header = tacacs_header_new(
-                CTacacsMajorVersion::TacacsPlusMajor1,
-                CTacacsMinorVersion::TacacsPlusMinorVerOne,
-                CTacacsType::TacPlusAuthentication,
+                TacacsMajorVersion::TacacsPlusMajor1,
+                TacacsMinorVersion::TacacsPlusMinorVerOne,
+                TacacsType::TacPlusAuthentication,
                 1,
                 TACACS_FLAG_UNENCRYPTED,
                 12345,
                 5,
                 &mut error,
             );
-            
+
             let body = b"hello";
             let packet = tacacs_packet_new(header, body.as_ptr(), body.len(), &mut error);
-            
+
             let mut out_len = 0;
             let buffer = tacacs_packet_to_bytes(packet, &mut out_len, &mut error);
-            
+
             assert!(!buffer.is_null());
             assert_eq!(out_len, 12 + 5); // header + body
             assert_eq!(error.code, TacacsResult::Success);
-            
+
             tacacs_free_bytes(buffer);
             tacacs_packet_free(packet);
             tacacs_header_free(header);

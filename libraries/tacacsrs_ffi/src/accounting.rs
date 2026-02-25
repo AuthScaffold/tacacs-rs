@@ -4,18 +4,18 @@ use std::os::raw::c_char;
 use std::ptr;
 use std::slice;
 
-use tacacsrs_messages::accounting::request::AccountingRequest as RustAccountingRequest;
 use tacacsrs_messages::accounting::reply::AccountingReply as RustAccountingReply;
-use tacacsrs_messages::packet::Packet as RustPacket;
+use tacacsrs_messages::accounting::request::AccountingRequest as RustAccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
     TacacsAuthenticationService, TacacsAuthenticationType,
 };
+use tacacsrs_messages::packet::Packet as RustPacket;
 use tacacsrs_messages::traits::TacacsBodyTrait;
 
 use crate::error::{TacacsError, TacacsResult};
-use crate::string_utils::{c_str_to_rust, rust_str_to_c};
 use crate::packet::TacacsPacket;
+use crate::string_utils::{c_str_to_rust, rust_str_to_c};
 
 /// Opaque type for TACACS+ accounting request
 #[repr(C)]
@@ -34,88 +34,6 @@ pub const TACACS_ACCOUNTING_FLAG_START: u8 = TacacsAccountingFlags::START.bits()
 pub const TACACS_ACCOUNTING_FLAG_STOP: u8 = TacacsAccountingFlags::STOP.bits();
 pub const TACACS_ACCOUNTING_FLAG_WATCHDOG: u8 = TacacsAccountingFlags::WATCHDOG.bits();
 
-/// TACACS+ accounting status enumeration
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CTacacsAccountingStatus {
-    /// Accounting success
-    TacPlusAcctStatusSuccess = TacacsAccountingStatus::TacPlusAcctStatusSuccess as isize,
-    /// Accounting error
-    TacPlusAcctStatusError = TacacsAccountingStatus::TacPlusAcctStatusError as isize,
-    /// Follow-up required
-    TacPlusAcctStatusFollow = TacacsAccountingStatus::TacPlusAcctStatusFollow as isize,
-}
-
-/// TACACS+ authentication method enumeration
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CTacacsAuthenticationMethod {
-    /// Not set
-    TacPlusAuthenMethodNotSet = TacacsAuthenticationMethod::TacPlusAuthenMethodNotSet as isize,
-    /// None
-    TacPlusAuthenMethodNone = TacacsAuthenticationMethod::TacPlusAuthenMethodNone as isize,
-    /// Kerberos 5
-    TacPlusAuthenMethodKrb5 = TacacsAuthenticationMethod::TacPlusAuthenMethodKrb5 as isize,
-    /// Line
-    TacPlusAuthenMethodLine = TacacsAuthenticationMethod::TacPlusAuthenMethodLine as isize,
-    /// Enable
-    TacPlusAuthenMethodEnable = TacacsAuthenticationMethod::TacPlusAuthenMethodEnable as isize,
-    /// Local
-    TacPlusAuthenMethodLocal = TacacsAuthenticationMethod::TacPlusAuthenMethodLocal as isize,
-    /// TACACSPlus
-    TacPlusAuthenMethodTacacsPlus = TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus as isize,
-    /// Guest
-    TacPlusAuthenMethodGuest = TacacsAuthenticationMethod::TacPlusAuthenMethodGuest as isize,
-    /// RADIUS
-    TacPlusAuthenMethodRadius = TacacsAuthenticationMethod::TacPlusAuthenMethodRadius as isize,
-    /// Kerberos 4
-    TacPlusAuthenMethodKrb4 = TacacsAuthenticationMethod::TacPlusAuthenMethodKrb4 as isize,
-    /// RCMD
-    TacPlusAuthenMethodRcmd = TacacsAuthenticationMethod::TacPlusAuthenMethodRcmd as isize,
-}
-
-/// TACACS+ authentication service enumeration
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CTacacsAuthenticationService {
-    /// None
-    TacPlusAuthenSvcNone = TacacsAuthenticationService::TacPlusAuthenSvcNone as isize,
-    /// Login
-    TacPlusAuthenSvcLogin = TacacsAuthenticationService::TacPlusAuthenSvcLogin as isize,
-    /// Enable
-    TacPlusAuthenSvcEnable = TacacsAuthenticationService::TacPlusAuthenSvcEnable as isize,
-    /// PPP
-    TacPlusAuthenSvcPpp = TacacsAuthenticationService::TacPlusAuthenSvcPpp as isize,
-    /// PT
-    TacPlusAuthenSvcPt = TacacsAuthenticationService::TacPlusAuthenSvcPt as isize,
-    /// RCMD
-    TacPlusAuthenSvcRcmd = TacacsAuthenticationService::TacPlusAuthenSvcRcmd as isize,
-    /// X25
-    TacPlusAuthenSvcX25 = TacacsAuthenticationService::TacPlusAuthenSvcX25 as isize,
-    /// NASI
-    TacPlusAuthenSvcNasi = TacacsAuthenticationService::TacPlusAuthenSvcNasi as isize,
-    /// FWProxy
-    TacPlusAuthenSvcFwproxy = TacacsAuthenticationService::TacPlusAuthenSvcFwproxy as isize,
-}
-
-/// TACACS+ authentication type enumeration
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CTacacsAuthenticationType {
-    /// Not set
-    TacPlusAuthenTypeNotSet = TacacsAuthenticationType::TacPlusAuthenTypeNotSet as isize,
-    /// ASCII
-    TacPlusAuthenTypeAscii = TacacsAuthenticationType::TacPlusAuthenTypeAscii as isize,
-    /// PAP
-    TacPlusAuthenTypePap = TacacsAuthenticationType::TacPlusAuthenTypePap as isize,
-    /// CHAP
-    TacPlusAuthenTypeChap = TacacsAuthenticationType::TacPlusAuthenTypeChap as isize,
-    /// MSCHAP
-    TacPlusAuthenTypeMschap = TacacsAuthenticationType::TacPlusAuthenTypeMschap as isize,
-    /// MSCHAPv2
-    TacPlusAuthenTypeMschapv2 = TacacsAuthenticationType::TacPlusAuthenTypeMschapv2 as isize,
-}
-
 /// Create a new TACACS+ accounting request
 ///
 /// # Safety
@@ -127,10 +45,10 @@ pub enum CTacacsAuthenticationType {
 #[no_mangle]
 pub unsafe extern "C" fn tacacs_accounting_request_new(
     flags: u8,
-    authen_method: CTacacsAuthenticationMethod,
+    authen_method: TacacsAuthenticationMethod,
     priv_lvl: u8,
-    authen_type: CTacacsAuthenticationType,
-    authen_service: CTacacsAuthenticationService,
+    authen_type: TacacsAuthenticationType,
+    authen_service: TacacsAuthenticationService,
     user: *const c_char,
     port: *const c_char,
     rem_address: *const c_char,
@@ -197,48 +115,12 @@ pub unsafe extern "C" fn tacacs_accounting_request_new(
         }
     };
 
-    // Convert enums
-    let rust_authen_method = match authen_method {
-        CTacacsAuthenticationMethod::TacPlusAuthenMethodNotSet => TacacsAuthenticationMethod::TacPlusAuthenMethodNotSet,
-        CTacacsAuthenticationMethod::TacPlusAuthenMethodNone => TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
-        CTacacsAuthenticationMethod::TacPlusAuthenMethodKrb5 => TacacsAuthenticationMethod::TacPlusAuthenMethodKrb5,
-        CTacacsAuthenticationMethod::TacPlusAuthenMethodLine => TacacsAuthenticationMethod::TacPlusAuthenMethodLine,
-        CTacacsAuthenticationMethod::TacPlusAuthenMethodEnable => TacacsAuthenticationMethod::TacPlusAuthenMethodEnable,
-        CTacacsAuthenticationMethod::TacPlusAuthenMethodLocal => TacacsAuthenticationMethod::TacPlusAuthenMethodLocal,
-        CTacacsAuthenticationMethod::TacPlusAuthenMethodTacacsPlus => TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus,
-        CTacacsAuthenticationMethod::TacPlusAuthenMethodGuest => TacacsAuthenticationMethod::TacPlusAuthenMethodGuest,
-        CTacacsAuthenticationMethod::TacPlusAuthenMethodRadius => TacacsAuthenticationMethod::TacPlusAuthenMethodRadius,
-        CTacacsAuthenticationMethod::TacPlusAuthenMethodKrb4 => TacacsAuthenticationMethod::TacPlusAuthenMethodKrb4,
-        CTacacsAuthenticationMethod::TacPlusAuthenMethodRcmd => TacacsAuthenticationMethod::TacPlusAuthenMethodRcmd,
-    };
-
-    let rust_authen_type = match authen_type {
-        CTacacsAuthenticationType::TacPlusAuthenTypeNotSet => TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
-        CTacacsAuthenticationType::TacPlusAuthenTypeAscii => TacacsAuthenticationType::TacPlusAuthenTypeAscii,
-        CTacacsAuthenticationType::TacPlusAuthenTypePap => TacacsAuthenticationType::TacPlusAuthenTypePap,
-        CTacacsAuthenticationType::TacPlusAuthenTypeChap => TacacsAuthenticationType::TacPlusAuthenTypeChap,
-        CTacacsAuthenticationType::TacPlusAuthenTypeMschap => TacacsAuthenticationType::TacPlusAuthenTypeMschap,
-        CTacacsAuthenticationType::TacPlusAuthenTypeMschapv2 => TacacsAuthenticationType::TacPlusAuthenTypeMschapv2,
-    };
-
-    let rust_authen_service = match authen_service {
-        CTacacsAuthenticationService::TacPlusAuthenSvcNone => TacacsAuthenticationService::TacPlusAuthenSvcNone,
-        CTacacsAuthenticationService::TacPlusAuthenSvcLogin => TacacsAuthenticationService::TacPlusAuthenSvcLogin,
-        CTacacsAuthenticationService::TacPlusAuthenSvcEnable => TacacsAuthenticationService::TacPlusAuthenSvcEnable,
-        CTacacsAuthenticationService::TacPlusAuthenSvcPpp => TacacsAuthenticationService::TacPlusAuthenSvcPpp,
-        CTacacsAuthenticationService::TacPlusAuthenSvcPt => TacacsAuthenticationService::TacPlusAuthenSvcPt,
-        CTacacsAuthenticationService::TacPlusAuthenSvcRcmd => TacacsAuthenticationService::TacPlusAuthenSvcRcmd,
-        CTacacsAuthenticationService::TacPlusAuthenSvcX25 => TacacsAuthenticationService::TacPlusAuthenSvcX25,
-        CTacacsAuthenticationService::TacPlusAuthenSvcNasi => TacacsAuthenticationService::TacPlusAuthenSvcNasi,
-        CTacacsAuthenticationService::TacPlusAuthenSvcFwproxy => TacacsAuthenticationService::TacPlusAuthenSvcFwproxy,
-    };
-
     let request = RustAccountingRequest {
         flags: rust_flags,
-        authen_method: rust_authen_method,
+        authen_method,
         priv_lvl,
-        authen_type: rust_authen_type,
-        authen_service: rust_authen_service,
+        authen_type,
+        authen_service,
         user: user_str,
         port: port_str,
         rem_address: rem_address_str,
@@ -455,7 +337,7 @@ pub unsafe extern "C" fn tacacs_accounting_request_free(request: *mut TacacsAcco
 /// - Returns null on error
 #[no_mangle]
 pub unsafe extern "C" fn tacacs_accounting_reply_new(
-    status: CTacacsAccountingStatus,
+    status: TacacsAccountingStatus,
     server_msg: *const c_char,
     data: *const c_char,
     error: *mut TacacsError,
@@ -480,14 +362,8 @@ pub unsafe extern "C" fn tacacs_accounting_reply_new(
         }
     };
 
-    let rust_status = match status {
-        CTacacsAccountingStatus::TacPlusAcctStatusSuccess => TacacsAccountingStatus::TacPlusAcctStatusSuccess,
-        CTacacsAccountingStatus::TacPlusAcctStatusError => TacacsAccountingStatus::TacPlusAcctStatusError,
-        CTacacsAccountingStatus::TacPlusAcctStatusFollow => TacacsAccountingStatus::TacPlusAcctStatusFollow,
-    };
-
     let reply = RustAccountingReply {
-        status: rust_status,
+        status,
         server_msg: server_msg_str,
         data: data_str,
     };
@@ -634,17 +510,13 @@ pub unsafe extern "C" fn tacacs_accounting_reply_get_data(
 #[no_mangle]
 pub unsafe extern "C" fn tacacs_accounting_reply_get_status(
     reply: *const TacacsAccountingReply,
-) -> CTacacsAccountingStatus {
+) -> TacacsAccountingStatus {
     if reply.is_null() {
-        return CTacacsAccountingStatus::TacPlusAcctStatusError;
+        return TacacsAccountingStatus::TacPlusAcctStatusError;
     }
 
     let reply_ref = &*(reply as *const RustAccountingReply);
-    match reply_ref.status {
-        TacacsAccountingStatus::TacPlusAcctStatusSuccess => CTacacsAccountingStatus::TacPlusAcctStatusSuccess,
-        TacacsAccountingStatus::TacPlusAcctStatusError => CTacacsAccountingStatus::TacPlusAcctStatusError,
-        TacacsAccountingStatus::TacPlusAcctStatusFollow => CTacacsAccountingStatus::TacPlusAcctStatusFollow,
-    }
+    reply_ref.status
 }
 
 /// Free a TACACS+ accounting reply
@@ -663,22 +535,22 @@ pub unsafe extern "C" fn tacacs_accounting_reply_free(reply: *mut TacacsAccounti
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_accounting_request_creation() {
         unsafe {
             let mut error = TacacsError::success();
-            
+
             let user = std::ffi::CString::new("testuser").unwrap();
             let port = std::ffi::CString::new("tty1").unwrap();
             let rem_addr = std::ffi::CString::new("192.168.1.1").unwrap();
-            
+
             let request = tacacs_accounting_request_new(
                 TACACS_ACCOUNTING_FLAG_START,
-                CTacacsAuthenticationMethod::TacPlusAuthenMethodLocal,
+                TacacsAuthenticationMethod::TacPlusAuthenMethodLocal,
                 15,
-                CTacacsAuthenticationType::TacPlusAuthenTypeAscii,
-                CTacacsAuthenticationService::TacPlusAuthenSvcLogin,
+                TacacsAuthenticationType::TacPlusAuthenTypeAscii,
+                TacacsAuthenticationService::TacPlusAuthenSvcLogin,
                 user.as_ptr(),
                 port.as_ptr(),
                 rem_addr.as_ptr(),
@@ -686,38 +558,38 @@ mod tests {
                 0,
                 &mut error,
             );
-            
+
             assert!(!request.is_null());
             assert_eq!(error.code, TacacsResult::Success);
-            
+
             let priv_lvl = tacacs_accounting_request_get_priv_lvl(request);
             assert_eq!(priv_lvl, 15);
-            
+
             tacacs_accounting_request_free(request);
         }
     }
-    
+
     #[test]
     fn test_accounting_reply_creation() {
         unsafe {
             let mut error = TacacsError::success();
-            
+
             let server_msg = std::ffi::CString::new("Success").unwrap();
             let data = std::ffi::CString::new("").unwrap();
-            
+
             let reply = tacacs_accounting_reply_new(
-                CTacacsAccountingStatus::TacPlusAcctStatusSuccess,
+                TacacsAccountingStatus::TacPlusAcctStatusSuccess,
                 server_msg.as_ptr(),
                 data.as_ptr(),
                 &mut error,
             );
-            
+
             assert!(!reply.is_null());
             assert_eq!(error.code, TacacsResult::Success);
-            
+
             let status = tacacs_accounting_reply_get_status(reply);
-            assert_eq!(status, CTacacsAccountingStatus::TacPlusAcctStatusSuccess);
-            
+            assert_eq!(status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+
             tacacs_accounting_reply_free(reply);
         }
     }

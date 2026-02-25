@@ -4,9 +4,7 @@ use std::os::raw::c_uint;
 use std::ptr;
 
 use tacacsrs_messages::header::Header as RustHeader;
-use tacacsrs_messages::enumerations::{
-    TacacsMajorVersion, TacacsMinorVersion, TacacsType, TacacsFlags,
-};
+use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
 
 use crate::error::{TacacsError, TacacsResult};
 
@@ -16,39 +14,9 @@ pub struct TacacsHeader {
     _private: [u8; 0],
 }
 
-/// TACACS+ major version enumeration
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CTacacsMajorVersion {
-    /// TACACS+ Major Version 1 (0xC)
-    TacacsPlusMajor1 = 12,
-}
-
-/// TACACS+ minor version enumeration
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CTacacsMinorVersion {
-    /// TACACS+ Minor Version 0 (Default)
-    TacacsPlusMinorVerDefault = 0,
-    /// TACACS+ Minor Version 1
-    TacacsPlusMinorVerOne = 1,
-}
-
-/// TACACS+ packet type enumeration
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CTacacsType {
-    /// Authentication packet
-    TacPlusAuthentication = 1,
-    /// Authorization packet (note: British spelling in protocol)
-    TacPlusAuthorisation = 2,
-    /// Accounting packet
-    TacPlusAccounting = 3,
-}
-
 /// TACACS+ flags
-pub const TACACS_FLAG_UNENCRYPTED: u8 = 0x01;
-pub const TACACS_FLAG_SINGLE_CONNECTION: u8 = 0x04;
+pub const TACACS_FLAG_UNENCRYPTED: u8 = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG.bits();
+pub const TACACS_FLAG_SINGLE_CONNECTION: u8 = TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG.bits();
 
 /// Create a new TACACS+ header
 ///
@@ -58,30 +26,15 @@ pub const TACACS_FLAG_SINGLE_CONNECTION: u8 = 0x04;
 /// Returns null on allocation failure.
 #[no_mangle]
 pub unsafe extern "C" fn tacacs_header_new(
-    major_version: CTacacsMajorVersion,
-    minor_version: CTacacsMinorVersion,
-    tacacs_type: CTacacsType,
+    major_version: TacacsMajorVersion,
+    minor_version: TacacsMinorVersion,
+    tacacs_type: TacacsType,
     seq_no: u8,
     flags: u8,
     session_id: c_uint,
     length: c_uint,
     error: *mut TacacsError,
 ) -> *mut TacacsHeader {
-    let rust_major = match major_version {
-        CTacacsMajorVersion::TacacsPlusMajor1 => TacacsMajorVersion::TacacsPlusMajor1,
-    };
-    
-    let rust_minor = match minor_version {
-        CTacacsMinorVersion::TacacsPlusMinorVerDefault => TacacsMinorVersion::TacacsPlusMinorVerDefault,
-        CTacacsMinorVersion::TacacsPlusMinorVerOne => TacacsMinorVersion::TacacsPlusMinorVerOne,
-    };
-    
-    let rust_type = match tacacs_type {
-        CTacacsType::TacPlusAuthentication => TacacsType::TacPlusAuthentication,
-        CTacacsType::TacPlusAuthorisation => TacacsType::TacPlusAuthorisation,
-        CTacacsType::TacPlusAccounting => TacacsType::TacPlusAccounting,
-    };
-    
     let rust_flags = match TacacsFlags::from_bits(flags) {
         Some(f) => f,
         None => {
@@ -91,21 +44,21 @@ pub unsafe extern "C" fn tacacs_header_new(
             return ptr::null_mut();
         }
     };
-    
+
     let header = RustHeader {
-        major_version: rust_major,
-        minor_version: rust_minor,
-        tacacs_type: rust_type,
+        major_version,
+        minor_version,
+        tacacs_type,
         seq_no,
         flags: rust_flags,
         session_id,
         length,
     };
-    
+
     if !error.is_null() {
         *error = TacacsError::success();
     }
-    
+
     Box::into_raw(Box::new(header)) as *mut TacacsHeader
 }
 
@@ -128,9 +81,9 @@ pub unsafe extern "C" fn tacacs_header_from_bytes(
         }
         return ptr::null_mut();
     }
-    
+
     let slice = std::slice::from_raw_parts(data, data_len);
-    
+
     match RustHeader::from_bytes(slice) {
         Ok(header) => {
             if !error.is_null() {
@@ -170,14 +123,14 @@ pub unsafe extern "C" fn tacacs_header_to_bytes(
         }
         return 0;
     }
-    
+
     if buffer.is_null() {
         if !error.is_null() {
             *error = TacacsError::new(TacacsResult::NullPointer, "Buffer pointer is null");
         }
         return 0;
     }
-    
+
     const HEADER_SIZE: usize = 12;
     if buffer_len < HEADER_SIZE {
         if !error.is_null() {
@@ -188,17 +141,17 @@ pub unsafe extern "C" fn tacacs_header_to_bytes(
         }
         return 0;
     }
-    
+
     let header_ref = &*(header as *const RustHeader);
     let bytes = header_ref.to_bytes();
-    
+
     let buffer_slice = std::slice::from_raw_parts_mut(buffer, HEADER_SIZE);
     buffer_slice.copy_from_slice(&bytes);
-    
+
     if !error.is_null() {
         *error = TacacsError::success();
     }
-    
+
     HEADER_SIZE
 }
 
@@ -213,7 +166,7 @@ pub unsafe extern "C" fn tacacs_header_get_session_id(header: *const TacacsHeade
     if header.is_null() {
         return 0;
     }
-    (*( header as *const RustHeader)).session_id
+    (*(header as *const RustHeader)).session_id
 }
 
 /// Get the sequence number from a header
@@ -260,53 +213,54 @@ pub unsafe extern "C" fn tacacs_header_free(header: *mut TacacsHeader) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_header_creation() {
         unsafe {
             let mut error = TacacsError::success();
             let header = tacacs_header_new(
-                CTacacsMajorVersion::TacacsPlusMajor1,
-                CTacacsMinorVersion::TacacsPlusMinorVerOne,
-                CTacacsType::TacPlusAuthentication,
+                TacacsMajorVersion::TacacsPlusMajor1,
+                TacacsMinorVersion::TacacsPlusMinorVerOne,
+                TacacsType::TacPlusAuthentication,
                 1,
                 TACACS_FLAG_UNENCRYPTED,
                 12345,
                 100,
                 &mut error,
             );
-            
+
             assert!(!header.is_null());
             assert_eq!(error.code, TacacsResult::Success);
             assert_eq!(tacacs_header_get_session_id(header), 12345);
             assert_eq!(tacacs_header_get_seq_no(header), 1);
             assert_eq!(tacacs_header_get_length(header), 100);
-            
+
             tacacs_header_free(header);
         }
     }
-    
+
     #[test]
     fn test_header_serialization() {
         unsafe {
             let mut error = TacacsError::success();
             let header = tacacs_header_new(
-                CTacacsMajorVersion::TacacsPlusMajor1,
-                CTacacsMinorVersion::TacacsPlusMinorVerOne,
-                CTacacsType::TacPlusAuthentication,
+                TacacsMajorVersion::TacacsPlusMajor1,
+                TacacsMinorVersion::TacacsPlusMinorVerOne,
+                TacacsType::TacPlusAuthentication,
                 1,
                 TACACS_FLAG_UNENCRYPTED,
                 12345,
                 100,
                 &mut error,
             );
-            
+
             let mut buffer = [0u8; 12];
-            let written = tacacs_header_to_bytes(header, buffer.as_mut_ptr(), buffer.len(), &mut error);
-            
+            let written =
+                tacacs_header_to_bytes(header, buffer.as_mut_ptr(), buffer.len(), &mut error);
+
             assert_eq!(written, 12);
             assert_eq!(error.code, TacacsResult::Success);
-            
+
             tacacs_header_free(header);
         }
     }
