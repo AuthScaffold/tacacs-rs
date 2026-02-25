@@ -4,7 +4,9 @@ use std::vec;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::*;
 
+use tacacsrs_networking::TacacsConnection;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
+use tacacsrs_networking::traits::SessionManagementTrait;
 
 
 #[tokio::main]
@@ -18,13 +20,11 @@ async fn main() -> anyhow::Result<()> {
         console_subscriber::init();
     }
 
-    let tcp_connection = tacacsrs_networking::helpers::connect_tcp(hostname).await?;
-    let tacacs_connection = Arc::new(tacacsrs_networking::tcp_connection::TcpConnection::new(
-        obfuscation_key.as_deref(),
-    ));
-    tacacs_connection.run(tcp_connection).await?;
+    let tcp_stream = tacacsrs_networking::helpers::connect_tcp(hostname).await?;
+    let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
+    connection.run(tcp_stream).await?;
 
-    let session = tacacs_connection.clone().create_session().await?;
+    let session = connection.clone().create_session().await?;
 
     let accounting_request = AccountingRequest {
         flags: TacacsAccountingFlags::START,
@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Received accounting response: {:#?}", response);
 
 
-    let session = tacacs_connection.clone().create_session().await?;
+    let session = connection.clone().create_session().await?;
 
     let response = match session
         .send_accounting_request(AccountingRequest {
@@ -88,8 +88,6 @@ async fn main() -> anyhow::Result<()> {
 
 use log::{Record, Level, Metadata};
 use log::{SetLoggerError, LevelFilter};
-use tacacsrs_networking::tcp_connection::TcpConnectionTrait;
-use tacacsrs_networking::traits::SessionManagementTrait;
 static LOGGER: SimpleLogger = SimpleLogger;
 
 struct SimpleLogger;

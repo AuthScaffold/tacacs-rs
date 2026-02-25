@@ -34,3 +34,6 @@ Cargo.lock
 libraries/tacacsrs_ffi/examples/c/simple_example
 libraries/tacacsrs_ffi/examples/c/accounting_example
 libraries/tacacsrs_ffi/examples/cpp/simple_example
+
+# Other files
+lde/convert-ipaddress.ps1

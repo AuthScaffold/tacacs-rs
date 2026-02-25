@@ -1,3 +1,6 @@
+//! **Warning**: This module is intended for use in test harnesses only.
+//! Do not use this as a reference for how to implement real network connections.
+
 use async_trait::async_trait;
 use log::info;
 use tokio::sync::RwLock;

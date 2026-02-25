@@ -1,7 +1,6 @@
 use md5::{Md5, Digest};
 use crate::header::Header;
 
-
 pub fn convert(header: &Header, data: &[u8], obfuscation_key: &[u8]) -> Vec<u8> {
     let pad = generate_pad(header, obfuscation_key);
     let output: Vec<u8> = data.iter().zip(pad.iter()).map(|(a, b)| a ^ b).collect();
@@ -24,7 +23,6 @@ fn generate_pad(header: &Header, obfuscation_key: &[u8]) -> Vec<u8> {
     let iv = get_first_block(header, obfuscation_key);
     let mut hashed = hash_block(&iv);
     pad.extend(hashed);
-
 
     while pad.len() < pad_size {
         let mut rolling_hash: Vec<u8> = Vec::new();
@@ -54,7 +52,6 @@ fn get_first_block(header: &Header, obfuscation_key: &[u8]) -> Vec<u8> {
 
     pad
 }
-
 
 #[cfg(test)]
 mod tests {

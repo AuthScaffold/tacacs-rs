@@ -4,66 +4,29 @@ use env_logger::Env;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::*;
 use tacacsrs_networking::helpers::connect_tcp;
-use tacacsrs_networking::tls::{TlsConfigurationBuilder, connect_tls};
+use tacacsrs_networking::tls_psk::{PskConfigurationBuilder, PskIdentity};
 use tacacsrs_networking::TacacsConnection;
 
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
 
-    let binary_path = std::env::current_exe()?;
-    let parent_folder = match binary_path
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-    {
-        Some(folder) => folder,
-        None => {
-            println!("Failed to get parent folder of binary path.");
-            return Err(anyhow::Error::msg("Failed to get parent folder of binary path."));
-        }
-    };
-
-    let examples_folder = parent_folder
-        .join("libraries")
-        .join("tacacsrs_networking")
-        .join("examples");
-
-    let client_certificate = examples_folder.join("samples").join("client.crt");
-    let client_key = examples_folder.join("samples").join("client.key");
-
-    if !client_certificate.exists() || !client_key.exists() {
-        println!(
-            "Client certificate {} or key {} does not exist.",
-            client_certificate.display(),
-            client_key.display()
-        );
-        return Err(anyhow::Error::msg("Client certificate or key does not exist."));
-    }
-
-
     let hostname = "tacacsserver.local:449";
-    //let obfuscation_key = Some(b"tac_plus_key".to_vec());
     let obfuscation_key: Option<Vec<u8>> = None;
 
-    let tls_config = Arc::new(
-        TlsConfigurationBuilder::new()
-            .with_client_auth_cert_files(&client_certificate, &client_key)
-            .await?
-            .with_certificate_verification_disabled(true)
-            .build()?,
-    );
+    // Configure the PSK identity and key for TLS 1.3 out-of-band PSK.
+    let psk_identity =
+        PskIdentity::new("tacacs-client-01".to_string(), b"my-pre-shared-key-material".to_vec())?;
 
     let tcp_stream = connect_tcp(hostname).await?;
-    let tls_stream = connect_tls(&tls_config, tcp_stream, "tacacsserver.local").await?;
+
+    let tls_stream = PskConfigurationBuilder::new(psk_identity)
+        .with_server_name("tacacsserver.local")
+        .connect(tcp_stream)
+        .await?;
 
     let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
     connection.run(tls_stream).await?;
