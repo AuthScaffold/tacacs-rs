@@ -199,16 +199,10 @@ impl Transport for MockTransport {
         // Spawn the background task that processes written bytes.
         // It shares `self.state` with the coordinator and pushes reply bytes
         // into `self.read_tx` which feeds the MockReadHalf.
-        let processor_handle = Self::spawn_write_processor(
-            write_rx,
-            Arc::clone(&self.state),
-            self.read_tx,
-        );
+        let processor_handle =
+            Self::spawn_write_processor(write_rx, Arc::clone(&self.state), self.read_tx);
 
-        (
-            MockReadHalf::new(self.read_rx),
-            MockWriteHalf::new(write_tx, processor_handle),
-        )
+        (MockReadHalf::new(self.read_rx), MockWriteHalf::new(write_tx, processor_handle))
     }
 }
 
@@ -324,7 +318,7 @@ mod tests {
 
         // Consume the reply so the processor has finished recording.
         let mut sink = vec![0u8; 128];
-        read_half.read(&mut sink).await.unwrap();
+        let _ = read_half.read(&mut sink).await.unwrap();
 
         let requests = coordinator.get_requests_for_session(2000).await.unwrap();
         assert_eq!(requests.len(), 1);
@@ -356,10 +350,7 @@ mod tests {
         // After delivery, no replies should remain.
         let after = coordinator.get_replies_for_session(3000).await;
         // Either no entry or empty map.
-        assert!(
-            after.is_err() || after.unwrap().is_empty(),
-            "reply should have been consumed"
-        );
+        assert!(after.is_err() || after.unwrap().is_empty(), "reply should have been consumed");
     }
 
     #[tokio::test]
