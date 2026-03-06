@@ -18,6 +18,7 @@ log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tacacsrs-messages = { path = "../../libraries/tacacsrs_messages" }
+tacacsrs-flows = { path = "../../libraries/tacacsrs_flows" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
 tokio = { version = "1.49.0", features = ["full"] }
 

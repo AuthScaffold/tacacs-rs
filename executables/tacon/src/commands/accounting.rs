@@ -6,8 +6,7 @@ use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
     TacacsAuthenticationType, TacacsFlags,
 };
-use tacacsrs_networking::session::Session;
-use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
+use tacacsrs_flows::ClientSessionIo;
 
 /// Sends an accounting request to record command execution.
 ///
@@ -25,7 +24,7 @@ use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 ///
 /// The accounting reply from the server, or an error if the request failed.
 pub async fn send_accounting_request(
-    session: &Session,
+    session: &dyn ClientSessionIo,
     user: &str,
     port: &str,
     rem_address: &str,
@@ -47,10 +46,13 @@ pub async fn send_accounting_request(
         args,
     };
 
-    let response = session
-        .send_accounting_request_with_flags(request, custom_flags)
-        .await
-        .context("Failed to send accounting request")?;
+    let response = tacacsrs_flows::accounting::send_accounting_request_with_flags(
+        session,
+        request,
+        custom_flags,
+    )
+    .await
+    .context("Failed to send accounting request")?;
 
     log::info!("Received accounting response: {response:?}");
 

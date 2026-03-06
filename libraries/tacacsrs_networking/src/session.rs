@@ -1,6 +1,10 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use async_trait::async_trait;
+use tacacsrs_flows::ClientSessionIo;
+use tacacsrs_messages::packet::Packet;
+
 use crate::duplex_channel::DuplexChannel;
 use crate::session_manager::SessionManager;
 
@@ -68,6 +72,35 @@ impl Session {
 
         let session_complete_lock = self.session_complete.read().await;
         *session_complete_lock
+    }
+}
+
+#[async_trait]
+impl ClientSessionIo for Session {
+    fn session_id(&self) -> u32 {
+        self.session_id
+    }
+
+    async fn next_sequence_number(&self) -> u8 {
+        Session::next_sequence_number(self).await
+    }
+
+    async fn is_complete(&self) -> bool {
+        Session::is_complete(self).await
+    }
+
+    async fn complete(&self) {
+        Session::complete(self).await;
+    }
+
+    async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {
+        self.duplex_channel.sender.send(packet).await?;
+        Ok(())
+    }
+
+    async fn receive_packet(&self) -> Option<Packet> {
+        let mut reader_lock = self.duplex_channel.receiver.write().await;
+        reader_lock.recv().await
     }
 }
 
