@@ -211,7 +211,7 @@ fn create_psk_ssl_context(
         let identity_bytes = psk_identity.as_bytes();
         if identity_bytes.len() + 1 > identity_out.len() {
             log::error!(
-                target: "tacacsrs_networking::transport::tls_psk",
+                target: module_path!(),
                 "PSK identity buffer too small: need {} bytes, have {}",
                 identity_bytes.len() + 1,
                 identity_out.len()
@@ -225,7 +225,7 @@ fn create_psk_ssl_context(
         // Write the PSK key
         if psk_key.len() > psk_out.len() {
             log::error!(
-                target: "tacacsrs_networking::transport::tls_psk",
+                target: module_path!(),
                 "PSK key buffer too small: need {} bytes, have {}",
                 psk_key.len(),
                 psk_out.len()
@@ -236,7 +236,7 @@ fn create_psk_ssl_context(
         psk_out[..psk_key.len()].copy_from_slice(&psk_key);
 
         log::debug!(
-            target: "tacacsrs_networking::transport::tls_psk",
+            target: module_path!(),
             "Provided PSK for TLS 1.3 handshake (identity: {})",
             std::str::from_utf8(identity_bytes).unwrap_or("<invalid utf8>")
         );

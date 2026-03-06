@@ -100,7 +100,7 @@ impl PskConfigurationBuilder {
         tokio_openssl::SslStream::connect(std::pin::Pin::new(&mut tls_stream)).await?;
 
         log::info!(
-            target: "tacacsrs_networking::transport::tls_psk",
+            target: module_path!(),
             "TLS 1.3 PSK connection established (identity: {})",
             self.psk.identity()
         );
