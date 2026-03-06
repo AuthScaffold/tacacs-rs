@@ -1,3 +1,9 @@
+//! TACACS+ networking primitives, session handling, and transport abstractions.
+//!
+//! Transport support is organized in [`transport`], with shared traits in
+//! [`transport::abstractions`] and protocol-specific implementations in
+//! [`transport::tcp`], [`transport::tls`], and (when enabled) [`transport::tls_psk`].
+
 pub mod sender;
 pub mod session;
 pub mod sessions;
