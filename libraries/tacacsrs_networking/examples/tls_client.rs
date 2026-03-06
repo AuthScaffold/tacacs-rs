@@ -4,7 +4,7 @@ use env_logger::Env;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::*;
 use tacacsrs_networking::helpers::connect_tcp;
-use tacacsrs_networking::tls::{TlsConfigurationBuilder, connect_tls};
+use tacacsrs_networking::transport::tls::{connect_tls, TlsConfigurationBuilder};
 use tacacsrs_networking::TacacsConnection;
 
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;

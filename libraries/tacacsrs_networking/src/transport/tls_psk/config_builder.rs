@@ -14,7 +14,7 @@ use super::{PskIdentity, create_psk_ssl_context};
 /// # Example
 ///
 /// ```no_run
-/// use tacacsrs_networking::tls_psk::{PskIdentity, PskConfigurationBuilder};
+/// use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
 /// use tacacsrs_networking::helpers::connect_tcp;
 ///
 /// # async fn example() -> anyhow::Result<()> {
@@ -100,7 +100,7 @@ impl PskConfigurationBuilder {
         tokio_openssl::SslStream::connect(std::pin::Pin::new(&mut tls_stream)).await?;
 
         log::info!(
-            target: "tacacsrs_networking::tls_psk",
+            target: "tacacsrs_networking::transport::tls_psk",
             "TLS 1.3 PSK connection established (identity: {})",
             self.psk.identity()
         );
