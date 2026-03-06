@@ -7,8 +7,10 @@
 /// # Security
 ///
 /// The PSK key material is sensitive. Avoid logging or displaying it.
-/// Use strong, randomly generated keys of sufficient length (at least 32 bytes
-/// is recommended for TLS 1.3).
+/// Per [RFC 9257 §6], a PSK MUST be at least 128 bits (16 bytes) and SHOULD
+/// be derived from at least 128 bits of entropy.
+///
+/// [RFC 9257 §6]: https://www.rfc-editor.org/rfc/rfc9257.html#section-6
 #[derive(Clone)]
 pub struct PskIdentity {
     /// The identity string sent to the server during the TLS handshake.
@@ -23,8 +25,7 @@ pub struct PskIdentity {
 impl PskIdentity {
     /// The minimum required key length in bytes.
     ///
-    /// TLS 1.3 PSK requires keys of sufficient entropy. 16 bytes (128 bits) is
-    /// the minimum recommended length.
+    /// Per RFC 9257 §6, PSKs MUST be at least 128 bits (16 bytes).
     pub const MIN_KEY_LENGTH: usize = 16;
 
     /// Creates a new PSK identity with the given identity string and key.
@@ -35,7 +36,7 @@ impl PskIdentity {
     ///   Must not contain NUL (`\0`) bytes, as the identity is sent as a null-terminated
     ///   C string during the TLS handshake.
     /// * `key` - The shared secret key bytes. Must be at least [`Self::MIN_KEY_LENGTH`] bytes
-    ///   (16 bytes / 128 bits).
+    ///   (16 bytes / 128 bits), per RFC 9257 §6.
     ///
     /// # Errors
     ///
@@ -73,7 +74,7 @@ impl PskIdentity {
 
         if key.len() < Self::MIN_KEY_LENGTH {
             anyhow::bail!(
-                "PSK key must be at least {} bytes, got {} bytes",
+                "PSK key must be at least {} bytes (128 bits), per RFC 9257 §6; got {} bytes",
                 Self::MIN_KEY_LENGTH,
                 key.len()
             );
