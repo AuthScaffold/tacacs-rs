@@ -62,6 +62,7 @@ impl AsyncWrite for MockWriteHalf {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        log::debug!("mock write half: forwarding {} byte(s) to write processor", buf.len());
         self.write_tx
             .send(buf.to_vec())
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "mock write processor gone"))?;

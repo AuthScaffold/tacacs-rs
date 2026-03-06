@@ -70,7 +70,7 @@ impl MockTransport {
     /// Returns a [`MockTransportCoordinator`] handle for configuring and inspecting
     /// this transport.
     ///
-    /// The coordinator shares the same [`MockState`] and can be used **before and
+    /// The coordinator shares the same `MockState` and can be used **before and
     /// during** a connection run — for example to add replies after the connection
     /// has already started processing.
     ///
@@ -130,6 +130,10 @@ impl MockTransport {
                         // In TACACS+, the server reply has seq_no = request_seq + 1.
                         let reply_seq = request_seq.saturating_add(1);
 
+                        log::info!(
+                            "mock write processor: captured request for session {session_id} seq_no {request_seq}"
+                        );
+
                         // Acquire the shared state to record the request and look up
                         // the reply. This is an async lock — it cooperates with the
                         // tokio runtime.
@@ -152,18 +156,34 @@ impl MockTransport {
 
                         if let Some(reply_config) = reply {
                             if let Some(delay) = reply_config.delay {
+                                log::info!(
+                                    "mock write processor: scheduling delayed reply ({delay:?}) for session {session_id} seq_no {reply_seq}"
+                                );
                                 let tx = read_tx.clone();
                                 tokio::spawn(async move {
                                     tokio::time::sleep(delay).await;
+                                    log::info!(
+                                        "mock write processor: sending delayed reply for session {session_id} seq_no {reply_seq}"
+                                    );
                                     let _ = tx.send(reply_config.bytes);
                                 });
                             } else {
+                                log::info!(
+                                    "mock write processor: sending reply for session {session_id} seq_no {reply_seq}"
+                                );
                                 let _ = read_tx.send(reply_config.bytes);
                             }
+                        } else {
+                            log::debug!(
+                                "mock write processor: no reply configured for session {session_id} seq_no {reply_seq}"
+                            );
                         }
                     }
                     // Channel closed (EOF) — MockWriteHalf was dropped.
-                    PacketReadResult::HeaderReadError(_) => break,
+                    PacketReadResult::HeaderReadError(_) => {
+                        log::info!("mock write processor: channel closed (EOF), exiting");
+                        break;
+                    }
                     // Any other error is unexpected in a mock — surface it loudly.
                     PacketReadResult::HeaderParseError(e) => panic!(
                         "mock transport write processor: header parse error: {e}"
@@ -193,6 +213,8 @@ impl Transport for MockTransport {
     /// This consumes `self`, so it can only be called once (enforced by the
     /// compiler — no runtime checks needed).
     fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
+        log::info!("mock transport: splitting into read and write halves");
+
         // Create the write channel: MockWriteHalf → write processor task.
         let (write_tx, write_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 

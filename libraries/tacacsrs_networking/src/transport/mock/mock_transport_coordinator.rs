@@ -19,7 +19,7 @@ use super::mock_state::{MockState, ReplyConfig};
 /// Control handle for configuring and inspecting a [`super::MockTransport`].
 ///
 /// Obtained via [`MockTransport::coordinator()`](super::MockTransport::coordinator).
-/// This handle shares the same [`MockState`] as the transport, connected through an
+/// This handle shares the same `MockState` as the transport, connected through an
 /// `Arc<Mutex<..>>`. It can be held independently from the transport instance that
 /// is consumed by `TacacsConnection::run()`, so tests do not need to clone the
 /// transport itself.
@@ -41,7 +41,10 @@ impl MockTransportCoordinator {
     ///
     /// The session ID and sequence number are extracted from the packet header.
     pub async fn add_reply(&self, reply: Packet) -> anyhow::Result<()> {
-        self.add_reply_bytes(reply.header().session_id, reply.header().seq_no, reply.to_bytes())
+        let session_id = reply.header().session_id;
+        let seq_no = reply.header().seq_no;
+        log::info!("mock coordinator: registering reply for session {session_id} seq_no {seq_no}");
+        self.add_reply_bytes(session_id, seq_no, reply.to_bytes())
             .await
     }
 
@@ -62,6 +65,10 @@ impl MockTransportCoordinator {
         seq_no: u8,
         reply_bytes: Vec<u8>,
     ) -> anyhow::Result<()> {
+        log::info!(
+            "mock coordinator: registering raw reply bytes ({} bytes) for session {session_id} seq_no {seq_no}",
+            reply_bytes.len()
+        );
         let mut state = self.state.lock().await;
         let reply_list = state.replies.entry(session_id).or_default();
         reply_list.insert(
@@ -79,6 +86,11 @@ impl MockTransportCoordinator {
     /// Useful for testing timeout behaviour — the write processor spawns a task
     /// that sleeps for `delay` before sending the reply bytes.
     pub async fn add_reply_with_delay(&self, reply: Packet, delay: Duration) -> anyhow::Result<()> {
+        log::info!(
+            "mock coordinator: registering delayed reply ({delay:?}) for session {} seq_no {}",
+            reply.header().session_id,
+            reply.header().seq_no
+        );
         let mut state = self.state.lock().await;
         let reply_list = state.replies.entry(reply.header().session_id).or_default();
         reply_list.insert(
@@ -183,7 +195,12 @@ impl MockTransportCoordinator {
         session_id: u32,
     ) -> anyhow::Result<HashMap<u8, Packet>> {
         let state = self.state.lock().await;
-        state.requests.get(&session_id).cloned().ok_or_else(|| {
+        let result = state.requests.get(&session_id).cloned();
+        let count = result.as_ref().map_or(0, |m| m.len());
+        log::debug!(
+            "mock coordinator: get_requests_for_session({session_id}) → {count} request(s)"
+        );
+        result.ok_or_else(|| {
             anyhow::anyhow!("No requests recorded for session {session_id} (session not seen)")
         })
     }
@@ -205,6 +222,10 @@ impl MockTransportCoordinator {
         let configured = state.replies.get(&session_id).ok_or_else(|| {
             anyhow::anyhow!("No replies configured for session {session_id} (session not found)")
         })?;
+        log::debug!(
+            "mock coordinator: get_replies_for_session({session_id}) → {} unconsumed reply(ies)",
+            configured.len()
+        );
 
         configured
             .iter()

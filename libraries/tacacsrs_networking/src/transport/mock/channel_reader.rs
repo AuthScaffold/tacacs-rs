@@ -4,8 +4,8 @@
 //! byte-stream interface expected by [`AsyncRead`]. It buffers leftover bytes
 //! across calls and polls the channel for new chunks when the buffer is empty.
 //!
-//! Used by both [`super::MockReadHalf`] (to deliver reply bytes) and the write
-//! processor task (to feed incoming request bytes into
+//! Used by both [`MockReadHalf`](super::mock_read_half::MockReadHalf) (to deliver reply bytes)
+//! and the write processor task (to feed incoming request bytes into
 //! [`PacketReader`](crate::packet_reader::PacketReader)).
 
 use std::io;

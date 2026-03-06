@@ -1,6 +1,6 @@
 //! [`MockReadHalf`] — the read side of the mock transport.
 //!
-//! Implements [`AsyncRead`] by delegating to a [`ChannelReader`](super::channel_reader::ChannelReader)
+//! Implements [`AsyncRead`] by delegating to a [`ChannelReader`]
 //! that receives reply bytes dispatched by the background write processor task.
 
 use std::io;
