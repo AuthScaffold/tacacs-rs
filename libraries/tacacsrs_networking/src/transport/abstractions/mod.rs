@@ -41,6 +41,11 @@ mod tests {
         _assert_transport(s);
     }
 
+    // Compile-time check that MockTransport implements Transport
+    fn _check_mock(s: crate::transport::mock::MockTransport) {
+        _assert_transport(s);
+    }
+
     // Compile-time check that SslStream (PSK) implements Transport
     #[cfg(feature = "psk")]
     fn _check_psk(s: tokio_openssl::SslStream<TcpStream>) {

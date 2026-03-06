@@ -7,6 +7,7 @@
 //! - [`tls_psk`] for TLS-PSK transport support (feature-gated)
 
 pub mod abstractions;
+pub mod mock;
 pub mod tcp;
 pub mod tls;
 #[cfg(feature = "psk")]

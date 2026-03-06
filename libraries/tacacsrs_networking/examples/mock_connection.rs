@@ -9,7 +9,8 @@ use tacacsrs_messages::enumerations::*;
 use tacacsrs_messages::packet::Packet;
 use tacacsrs_messages::header::Header;
 use tacacsrs_messages::traits::TacacsBodyTrait;
-use tacacsrs_networking::mock_connection::MockConnection;
+use tacacsrs_networking::connection::TacacsConnection;
+use tacacsrs_networking::transport::mock::MockTransport;
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
@@ -24,8 +25,10 @@ async fn main() -> anyhow::Result<()> {
         console_subscriber::init();
     }
 
-    let tacacs_connection = Arc::new(tacacsrs_networking::mock_connection::MockConnection::new());
-    tacacs_connection.run().await?;
+    let mock_transport = MockTransport::new();
+    let mock_control = mock_transport.coordinator();
+    let tacacs_connection = Arc::new(TacacsConnection::new(None));
+    tacacs_connection.run(mock_transport).await?;
 
     let session = tacacs_connection.create_session().await?;
 
@@ -51,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
         data: "".to_string(),
     };
 
-    tacacs_connection
+    mock_control
         .add_accounting_reply(&session, 2, &accounting_reply)
         .await?;
 
@@ -72,7 +75,7 @@ pub trait MockConnectionAccountingSessionTrait {
 }
 
 #[async_trait]
-impl MockConnectionAccountingSessionTrait for MockConnection {
+impl MockConnectionAccountingSessionTrait for MockTransport {
     async fn add_accounting_reply(
         self: &Arc<Self>,
         session: &Session,
@@ -95,6 +98,6 @@ impl MockConnectionAccountingSessionTrait for MockConnection {
         )
         .unwrap();
 
-        self.add_reply(accounting_reply_packet).await
+        self.coordinator().add_reply(accounting_reply_packet).await
     }
 }
