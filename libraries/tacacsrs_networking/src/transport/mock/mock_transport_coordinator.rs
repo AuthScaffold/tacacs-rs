@@ -1,3 +1,7 @@
+//! The [`MockTransportCoordinator`] — the test-facing control handle for the mock transport.
+//!
+//! See the [module-level documentation](super) for the overall architecture.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,21 +18,44 @@ use crate::transport::mock::mock_transport::{MockState, ReplyConfig};
 
 /// Control handle for configuring and inspecting a [`super::MockTransport`].
 ///
-/// This handle can be held independently from the transport instance consumed by
-/// `TacacsConnection::run()`, so tests do not need to clone the transport object.
+/// Obtained via [`MockTransport::coordinator()`](super::MockTransport::coordinator).
+/// This handle shares the same [`MockState`] as the transport, connected through an
+/// `Arc<Mutex<..>>`. It can be held independently from the transport instance that
+/// is consumed by `TacacsConnection::run()`, so tests do not need to clone the
+/// transport itself.
+///
+/// # Concurrency
+///
+/// All methods acquire the shared async mutex, so it is safe to call these
+/// **while the connection is running** (e.g. to add a reply mid-conversation).
+/// The mutex is held only for the duration of the HashMap insert/lookup.
 #[derive(Clone, Debug)]
 pub struct MockTransportCoordinator {
+    /// Shared state with the write processor task.
     pub(crate) state: Arc<Mutex<MockState>>,
 }
 
 impl MockTransportCoordinator {
-    /// Add a reply packet.
+    /// Registers a reply packet that will be sent when the write processor
+    /// receives a request for the same `session_id` with `seq_no - 1`.
+    ///
+    /// The session ID and sequence number are extracted from the packet header.
     pub async fn add_reply(&self, reply: Packet) -> anyhow::Result<()> {
         self.add_reply_bytes(reply.header().session_id, reply.header().seq_no, reply.to_bytes())
             .await
     }
 
-    /// Add raw binary reply bytes.
+    /// Registers raw pre-serialised reply bytes for a given session and sequence number.
+    ///
+    /// This is the low-level building block used by the other `add_reply*` methods.
+    /// Use this when you need full control over the byte representation (e.g. to
+    /// test malformed packets).
+    ///
+    /// # Arguments
+    ///
+    /// * `session_id` — the TACACS+ session ID the reply belongs to.
+    /// * `seq_no` — the sequence number of the reply (must be `request_seq + 1`).
+    /// * `reply_bytes` — the complete serialised packet bytes.
     pub async fn add_reply_bytes(
         &self,
         session_id: u32,
@@ -47,7 +74,10 @@ impl MockTransportCoordinator {
         Ok(())
     }
 
-    /// Add a reply packet with delay.
+    /// Registers a reply packet that will be delivered after a specified delay.
+    ///
+    /// Useful for testing timeout behaviour — the write processor spawns a task
+    /// that sleeps for `delay` before sending the reply bytes.
     pub async fn add_reply_with_delay(&self, reply: Packet, delay: Duration) -> anyhow::Result<()> {
         let mut state = self.state.lock().await;
         let reply_list = state.replies.entry(reply.header().session_id).or_default();
@@ -61,7 +91,14 @@ impl MockTransportCoordinator {
         Ok(())
     }
 
-    /// Add an accounting reply.
+    /// Convenience method: builds and registers an accounting reply packet with
+    /// the default unencrypted flag.
+    ///
+    /// # Arguments
+    ///
+    /// * `session` — the session to associate the reply with (provides the session ID).
+    /// * `reply_sequence_number` — the sequence number for the reply.
+    /// * `reply` — the accounting reply body.
     pub async fn add_accounting_reply(
         &self,
         session: &Session,
@@ -77,7 +114,8 @@ impl MockTransportCoordinator {
         .await
     }
 
-    /// Add an accounting reply with delay.
+    /// Same as [`add_accounting_reply`](Self::add_accounting_reply), but delivered
+    /// after a specified delay (see [`add_reply_with_delay`](Self::add_reply_with_delay)).
     pub async fn add_accounting_reply_with_delay(
         &self,
         session: &Session,
@@ -101,7 +139,8 @@ impl MockTransportCoordinator {
         self.add_reply_with_delay(packet, delay).await
     }
 
-    /// Add an accounting reply with explicit flags.
+    /// Builds and registers an accounting reply packet with caller-specified
+    /// TACACS+ flags (e.g. encrypted vs unencrypted).
     pub async fn add_accounting_reply_with_flags(
         &self,
         session: &Session,
@@ -125,7 +164,14 @@ impl MockTransportCoordinator {
         self.add_reply(packet).await
     }
 
-    /// Retrieve captured request packets for a session.
+    /// Returns all request packets captured for the given `session_id`.
+    ///
+    /// The returned map is keyed by sequence number. These are the packets that
+    /// the connection actually wrote through the transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no requests have been recorded for `session_id`.
     pub async fn get_requests_for_session(
         &self,
         session_id: u32,
@@ -138,7 +184,15 @@ impl MockTransportCoordinator {
             .ok_or_else(|| anyhow::Error::msg("No requests for session"))
     }
 
-    /// Retrieve currently configured replies for a session.
+    /// Returns **unconsumed** reply packets still configured for the given `session_id`.
+    ///
+    /// Replies that have already been matched and sent by the write processor
+    /// are removed from the map and will **not** appear here. This is useful
+    /// for verifying that all expected replies were actually consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no replies are configured for `session_id`.
     pub async fn get_replies_for_session(
         &self,
         session_id: u32,
