@@ -183,15 +183,9 @@ impl MockTransportCoordinator {
         session_id: u32,
     ) -> anyhow::Result<HashMap<u8, Packet>> {
         let state = self.state.lock().await;
-        let requests = state.requests.get(&session_id).ok_or_else(|| {
+        state.requests.get(&session_id).cloned().ok_or_else(|| {
             anyhow::anyhow!("No requests recorded for session {session_id} (session not seen)")
-        })?;
-        if requests.is_empty() {
-            anyhow::bail!(
-                "No requests recorded for session {session_id} (entry exists but is empty)"
-            );
-        }
-        Ok(requests.clone())
+        })
     }
 
     /// Returns **unconsumed** reply packets still configured for the given `session_id`.
@@ -211,11 +205,6 @@ impl MockTransportCoordinator {
         let configured = state.replies.get(&session_id).ok_or_else(|| {
             anyhow::anyhow!("No replies configured for session {session_id} (session not found)")
         })?;
-        if configured.is_empty() {
-            anyhow::bail!(
-                "No replies configured for session {session_id} (entry exists but is empty)"
-            );
-        }
 
         configured
             .iter()
