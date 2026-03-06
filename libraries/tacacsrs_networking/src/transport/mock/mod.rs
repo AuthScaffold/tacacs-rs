@@ -24,8 +24,8 @@
 //!  When TacacsConnection::run() calls transport.split(), the mock
 //!  produces two halves and a background processor task:
 //!
-//!  ┌──────────────┐  raw bytes   ┌──────────────────┐  reply bytes  ┌──────────────┐
-//!  │ MockWriteHalf│─────────────▶│ Write Processor  │─────────────▶│ MockReadHalf │
+//!  ┌──────────────┐  raw bytes   ┌───────────────────┐  reply bytes ┌──────────────┐
+//!  │ MockWriteHalf│─────────────>│ Write Processor   │─────────────>│ MockReadHalf │
 //!  │ (AsyncWrite) │  (channel)   │ (spawned task)    │  (channel)   │ (AsyncRead)  │
 //!  └──────────────┘              │                   │              └──────────────┘
 //!                                │ • accumulates     │
@@ -35,7 +35,7 @@
 //!                                │   in MockState    │
 //!                                │ • looks up replies│
 //!                                │   and sends them  │
-//!                                └──────────────────┘
+//!                                └───────────────────┘
 //!                                        ▲
 //!                                        │ shared MockState
 //!                                        │ (async Mutex)
@@ -79,8 +79,12 @@
 //! [`TacacsConnection::run`]: crate::connection::TacacsConnection::run
 //! [`MockTransport::coordinator()`]: MockTransport::coordinator
 
+mod channel_reader;
+mod mock_read_half;
+mod mock_state;
 mod mock_transport;
 mod mock_transport_coordinator;
+mod mock_write_half;
 
 pub use mock_transport::MockTransport;
 pub use mock_transport_coordinator::MockTransportCoordinator;

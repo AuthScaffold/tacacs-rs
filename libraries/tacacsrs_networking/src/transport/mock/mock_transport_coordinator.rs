@@ -14,7 +14,7 @@ use tacacsrs_messages::packet::{Packet, PacketTrait};
 use tacacsrs_messages::traits::TacacsBodyTrait;
 
 use crate::session::Session;
-use crate::transport::mock::mock_transport::{MockState, ReplyConfig};
+use super::mock_state::{MockState, ReplyConfig};
 
 /// Control handle for configuring and inspecting a [`super::MockTransport`].
 ///
@@ -168,6 +168,12 @@ impl MockTransportCoordinator {
     ///
     /// The returned map is keyed by sequence number. These are the packets that
     /// the connection actually wrote through the transport.
+    ///
+    /// **Note:** The mock transport does **not** deobfuscate packets — it
+    /// operates like a network capture (pcap). If the connection under test
+    /// uses an obfuscation key, the packet bodies returned here will still
+    /// be obfuscated. Call [`Packet::to_deobfuscated`] with the appropriate
+    /// key if you need to inspect cleartext content.
     ///
     /// # Errors
     ///
