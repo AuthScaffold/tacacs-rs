@@ -2,7 +2,8 @@
 resolver = "2"
 members = [
     "libraries/tacacsrs_messages",
-    "libraries/tacacsrs_networking", 
+    "libraries/tacacsrs_networking",
+    "libraries/tacacsrs_flows",
     "executables/tacon"
 ]
 

@@ -1,103 +1,42 @@
 use async_trait::async_trait;
-use log::info;
-use tacacsrs_messages::header::Header;
-use tacacsrs_messages::packet::{Packet, PacketTrait};
-use tacacsrs_messages::traits::TacacsBodyTrait;
-use tacacsrs_messages::accounting::{request::AccountingRequest, reply::AccountingReply};
-use tacacsrs_messages::enumerations::{TacacsMajorVersion, TacacsMinorVersion, TacacsType, TacacsFlags};
+use tacacsrs_flows::accounting::ClientAccountingFlowIo;
+use tacacsrs_messages::packet::Packet;
 
 use crate::session::Session;
 
-#[async_trait]
-pub trait AccountingSessionTrait {
-    /// Sends an accounting request with default flags (TAC_PLUS_UNENCRYPTED_FLAG)
-    async fn send_accounting_request(
-        &self,
-        request: AccountingRequest,
-    ) -> anyhow::Result<AccountingReply>;
-
-    /// Sends an accounting request with custom flags added to the header
-    ///
-    /// # Arguments
-    ///
-    /// * `request` - The accounting request to send
-    /// * `custom_flags` - Additional flags to set on the packet header (e.g., TAC_PLUS_CUSTOM_FLAG_1, TAC_PLUS_CUSTOM_FLAG_2)
-    async fn send_accounting_request_with_flags(
-        &self,
-        request: AccountingRequest,
-        custom_flags: TacacsFlags,
-    ) -> anyhow::Result<AccountingReply>;
-}
+pub use tacacsrs_flows::accounting::AccountingFlowTrait as AccountingSessionTrait;
 
 #[async_trait]
-impl AccountingSessionTrait for Session {
-    async fn send_accounting_request(
-        &self,
-        request: AccountingRequest,
-    ) -> anyhow::Result<AccountingReply> {
-        self.send_accounting_request_with_flags(request, TacacsFlags::empty())
-            .await
+impl ClientAccountingFlowIo for Session {
+    async fn is_complete(&self) -> bool {
+        self.is_complete().await
     }
 
-    async fn send_accounting_request_with_flags(
-        &self,
-        request: AccountingRequest,
-        custom_flags: TacacsFlags,
-    ) -> anyhow::Result<AccountingReply> {
-        if self.is_complete().await {
-            return Err(anyhow::Error::msg("Session is already complete"));
-        }
+    async fn next_sequence_number(&self) -> u8 {
+        self.next_sequence_number().await
+    }
 
-        let sequence_number = self.next_sequence_number().await;
+    fn session_id(&self) -> u32 {
+        self.session_id()
+    }
 
-        let data = request.to_bytes();
-
-        // Combine the base flag with any custom flags
-        let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | custom_flags;
-
-        let packet = Packet::new(
-            Header {
-                major_version: TacacsMajorVersion::TacacsPlusMajor1,
-                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
-                tacacs_type: TacacsType::TacPlusAccounting,
-                seq_no: sequence_number,
-                flags,
-                session_id: self.session_id(),
-                length: data.len() as u32,
-            },
-            data,
-        )?;
-
-        info!(
-            target: "tacacsrs_networking::sessions::accounting_session",
-            "Sending Accounting Request with sequence number {} for session {} (flags: {:?})",
-            sequence_number, self.session_id(), flags
-        );
-
+    async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {
         self.duplex_channel.sender.send(packet).await?;
+        Ok(())
+    }
 
-        // Setup a reader lock to receive the response, it needs to be mutable so that we can call recv on it
-        // therefore we need to use write() instead of read()
+    async fn receive_packet(&self) -> anyhow::Result<Packet> {
         let mut reader_lock = self.duplex_channel.receiver.write().await;
+        match reader_lock.recv().await {
+            Some(response) => Ok(response),
+            None => Err(anyhow::Error::msg("Failed to receive response")),
+        }
+    }
 
-        let response = match reader_lock.recv().await {
-            Some(response) => response,
-            None => return Err(anyhow::Error::msg("Failed to receive response")),
-        };
-
-        let reply = AccountingReply::from_bytes(response.body())?;
-
+    async fn complete(&self) {
         self.complete().await;
-
-        log::info!(
-            target: "tacacsrs_networking::sessions::accounting_session",
-            "Received Accounting Reply. Session now complete"
-        );
-
-        Ok(reply)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -105,13 +44,15 @@ mod tests {
 
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+    use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
     use tacacsrs_messages::enumerations::*;
+    use tacacsrs_messages::header::Header;
+    use tacacsrs_messages::traits::TacacsBodyTrait;
 
     use crate::connection::TacacsConnection;
     use crate::transport::mock::MockTransport;
     use crate::traits::SessionManagementTrait;
     use test_log::test;
-
 
     #[test(tokio::test)]
     async fn test_send_accounting_request() -> anyhow::Result<()> {
@@ -154,7 +95,6 @@ mod tests {
 
         assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
 
-
         let requests = mock_control
             .get_requests_for_session(session.session_id)
             .await?;
@@ -168,7 +108,6 @@ mod tests {
             0,
             "There was replies registered to session when they should have all been removed"
         );
-
 
         Ok(())
     }

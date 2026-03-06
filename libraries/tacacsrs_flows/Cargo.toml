@@ -1,0 +1,13 @@
+[package]
+name = "tacacsrs-flows"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { version = "1.0.100", features = ["backtrace"] }
+async-trait = "0.1.89"
+log = "0.4.29"
+tacacsrs-messages = { path = "../tacacsrs_messages" }
+
+[dev-dependencies]
+tokio = { version = "1.49.0", features = ["full"] }
