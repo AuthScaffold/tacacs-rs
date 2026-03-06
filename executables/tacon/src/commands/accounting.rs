@@ -6,8 +6,8 @@ use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
     TacacsAuthenticationType, TacacsFlags,
 };
+use tacacsrs_flows::accounting::AccountingFlowTrait;
 use tacacsrs_networking::session::Session;
-use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 
 /// Sends an accounting request to record command execution.
 ///

@@ -1,21 +1,11 @@
 use async_trait::async_trait;
 use log::info;
+use tacacsrs_flow_abstractions::accounting::ClientAccountingFlowIo;
 use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
 use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
 use tacacsrs_messages::header::Header;
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 use tacacsrs_messages::traits::TacacsBodyTrait;
-
-/// Minimal client-side session I/O required by TACACS+ accounting flow logic.
-#[async_trait]
-pub trait ClientAccountingFlowIo {
-    async fn is_complete(&self) -> bool;
-    async fn next_sequence_number(&self) -> u8;
-    fn session_id(&self) -> u32;
-    async fn send_packet(&self, packet: Packet) -> anyhow::Result<()>;
-    async fn receive_packet(&self) -> anyhow::Result<Packet>;
-    async fn complete(&self);
-}
 
 /// Fixed TACACS+ client accounting flow.
 ///

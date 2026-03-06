@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::vec;
 
 use async_trait::async_trait;
+use tacacsrs_flows::accounting::AccountingFlowTrait;
 use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::*;
@@ -12,7 +13,6 @@ use tacacsrs_messages::traits::TacacsBodyTrait;
 use tacacsrs_networking::connection::TacacsConnection;
 use tacacsrs_networking::transport::mock::MockTransport;
 use tacacsrs_networking::session::Session;
-use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 
 

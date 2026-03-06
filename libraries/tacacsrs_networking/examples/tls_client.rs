@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use env_logger::Env;
+use tacacsrs_flows::accounting::AccountingFlowTrait;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::*;
 use tacacsrs_networking::helpers::connect_tcp;
 use tacacsrs_networking::transport::tls::{connect_tls, TlsConfigurationBuilder};
 use tacacsrs_networking::TacacsConnection;
 
-use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 
 

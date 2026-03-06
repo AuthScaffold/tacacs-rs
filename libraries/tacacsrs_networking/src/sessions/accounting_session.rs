@@ -1,10 +1,8 @@
 use async_trait::async_trait;
-use tacacsrs_flows::accounting::ClientAccountingFlowIo;
+use tacacsrs_flow_abstractions::accounting::ClientAccountingFlowIo;
 use tacacsrs_messages::packet::Packet;
 
 use crate::session::Session;
-
-pub use tacacsrs_flows::accounting::AccountingFlowTrait as AccountingSessionTrait;
 
 #[async_trait]
 impl ClientAccountingFlowIo for Session {
@@ -44,6 +42,7 @@ mod tests {
 
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+    use tacacsrs_flows::accounting::AccountingFlowTrait;
     use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
     use tacacsrs_messages::enumerations::*;
     use tacacsrs_messages::header::Header;

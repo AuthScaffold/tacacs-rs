@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::vec;
 
+use tacacsrs_flows::accounting::AccountingFlowTrait;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
@@ -9,7 +10,6 @@ use tacacsrs_messages::enumerations::{
 
 use tacacsrs_networking::helpers::*;
 use tacacsrs_networking::session::Session;
-use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 use tacacsrs_networking::TacacsConnection;
 use tokio::task::JoinHandle;

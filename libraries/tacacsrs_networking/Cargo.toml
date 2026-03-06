@@ -6,8 +6,8 @@ edition.workspace = true
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
 tokio = { version = "1.49.0", features = ["full"] }
+tacacsrs-flow-abstractions = { path = "../tacacsrs_flow_abstractions" }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
-tacacsrs-flows = { path = "../tacacsrs_flows" }
 async-trait = "0.1.89"
 rand = "0.10.0"
 log = "0.4.29"
@@ -28,6 +28,7 @@ webpki-roots = "1.0.6"
 test-log = "0.2.19"
 env_logger = "0.11.8"
 futures = "0.3"
+tacacsrs-flows = { path = "../tacacsrs_flows" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }

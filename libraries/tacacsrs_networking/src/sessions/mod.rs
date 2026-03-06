@@ -1,6 +1,7 @@
-//! Session-facing flow traits.
+//! Session-to-flow I/O adapters.
 //!
-//! Concrete TACACS+ flow logic lives in `tacacsrs-flows`; this module wires
-//! networking [`crate::session::Session`] into those flow I/O traits.
+//! Concrete TACACS+ flow logic lives in external flow crates (for example
+//! `tacacsrs-flows`). This module wires networking [`crate::session::Session`]
+//! into shared flow I/O traits from `tacacsrs-flow-abstractions`.
 
 pub mod accounting_session;
