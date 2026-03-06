@@ -23,16 +23,23 @@ pub struct MockWriteHalf {
     /// Channel sender to the write processor task.
     write_tx: mpsc::UnboundedSender<Vec<u8>>,
 
-    /// Handle to the background write processor task. Stored here so the task
-    /// stays alive for as long as the write half exists. When [`MockWriteHalf`]
-    /// is dropped, the `write_tx` channel closes, which causes the processor
-    /// task to exit on its next `recv().await`.
+    /// Handle to the background write processor task.
+    ///
+    /// The task itself continues running independently of this handle; dropping
+    /// the handle does **not** cancel or stop the task. The handle is retained
+    /// so that the processor task can be joined or aborted in the future if
+    /// needed. When [`MockWriteHalf`] is dropped, the `write_tx` channel closes,
+    /// which causes the processor task to exit on its next `recv().await`.
     _processor_handle: JoinHandle<()>,
 }
 
 impl MockWriteHalf {
     /// Creates a new `MockWriteHalf` from the given channel sender and
-    /// processor task handle.
+    /// the handle to the background write processor task.
+    ///
+    /// Note: the processor task is not kept alive by the handle; it will keep
+    /// running until it completes or the `write_tx` channel is closed, at which
+    /// point it exits on its next `recv().await`.
     pub(super) fn new(
         write_tx: mpsc::UnboundedSender<Vec<u8>>,
         processor_handle: JoinHandle<()>,

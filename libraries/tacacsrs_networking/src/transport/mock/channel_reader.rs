@@ -28,6 +28,9 @@ pub(super) struct ChannelReader {
     /// Leftover bytes from the last received chunk that didn't fit into the
     /// caller's buffer.
     pending: Vec<u8>,
+
+    /// Read offset into `pending`, avoiding repeated memmoves from `drain`.
+    offset: usize,
 }
 
 impl ChannelReader {
@@ -35,6 +38,7 @@ impl ChannelReader {
         Self {
             rx,
             pending: Vec::new(),
+            offset: 0,
         }
     }
 }
@@ -46,20 +50,29 @@ impl AsyncRead for ChannelReader {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         // Serve any leftover bytes from the previous message first.
-        if self.pending.is_empty() {
+        if self.offset >= self.pending.len() {
             match Pin::new(&mut self.rx).poll_recv(cx) {
                 Poll::Pending => return Poll::Pending,
                 // Channel closed → EOF.
                 Poll::Ready(None) => return Poll::Ready(Ok(())),
                 Poll::Ready(Some(bytes)) => {
                     self.pending = bytes;
+                    self.offset = 0;
                 }
             }
         }
 
-        let to_copy = buf.remaining().min(self.pending.len());
-        buf.put_slice(&self.pending[..to_copy]);
-        self.pending.drain(..to_copy);
+        let remaining = &self.pending[self.offset..];
+        let to_copy = buf.remaining().min(remaining.len());
+        buf.put_slice(&remaining[..to_copy]);
+        self.offset += to_copy;
+
+        // Free the buffer once fully consumed so it doesn't linger.
+        if self.offset >= self.pending.len() {
+            self.pending = Vec::new();
+            self.offset = 0;
+        }
+
         Poll::Ready(Ok(()))
     }
 }

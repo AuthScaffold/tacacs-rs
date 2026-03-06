@@ -56,6 +56,7 @@
 //! # Example (simplified)
 //!
 //! ```rust,no_run
+//! # use std::sync::Arc;
 //! # use tacacsrs_networking::transport::mock::MockTransport;
 //! # async fn example() {
 //! // 1. Build transport + coordinator
@@ -66,8 +67,8 @@
 //! // coordinator.add_reply(some_reply_packet).await.unwrap();
 //!
 //! // 3. Hand the transport to a TacacsConnection
-//! // let conn = TacacsConnection::new(transport);
-//! // conn.run().await;
+//! // let conn = Arc::new(TacacsConnection::new(Some(b"secret")));
+//! // conn.run(transport).await.unwrap();
 //!
 //! // 4. Inspect what the connection sent
 //! // let reqs = coordinator.get_requests_for_session(session_id).await.unwrap();
