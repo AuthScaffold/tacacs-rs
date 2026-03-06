@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use tacacsrs_networking::{
-    session::Session, connection::TacacsConnection, tls::TlsConfigurationBuilder,
-    traits::SessionManagementTrait, SingleConnectionState,
+    connection::TacacsConnection, session::Session, traits::SessionManagementTrait,
+    transport::tls::TlsConfigurationBuilder, SingleConnectionState,
 };
 #[cfg(feature = "psk")]
-use tacacsrs_networking::tls_psk::{PskIdentity, PskConfigurationBuilder};
+use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
 
 use crate::cli::Cli;
 
@@ -119,10 +119,13 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
                 .context("Failed to build TLS configuration")?,
         );
 
-        let tls_stream =
-            tacacsrs_networking::tls::connect_tls(&tls_config, tcp_stream, "tacacsserver.local")
-                .await
-                .context("Failed to establish TLS connection")?;
+        let tls_stream = tacacsrs_networking::transport::tls::connect_tls(
+            &tls_config,
+            tcp_stream,
+            "tacacsserver.local",
+        )
+        .await
+        .context("Failed to establish TLS connection")?;
 
         connection
             .run(tls_stream)

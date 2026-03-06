@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
 
     // For TLS, use:
     // let tcp_stream = connect_tcp(hostname).await?;
-    // let tls_stream = tacacsrs_networking::tls::connect_tls(&tls_config, tcp_stream, "tacacsserver.local").await?;
+    // let tls_stream = tacacsrs_networking::transport::tls::connect_tls(&tls_config, tcp_stream, "tacacsserver.local").await?;
     // let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
     // connection.run(tls_stream).await?;
 

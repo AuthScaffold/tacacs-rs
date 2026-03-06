@@ -17,7 +17,7 @@ use super::danger::NoCertificateVerification;
 /// # Example
 ///
 /// ```no_run
-/// use tacacsrs_networking::tls::TlsConfigurationBuilder;
+/// use tacacsrs_networking::transport::tls::TlsConfigurationBuilder;
 ///
 /// # async fn example() -> anyhow::Result<()> {
 /// let config = TlsConfigurationBuilder::new()

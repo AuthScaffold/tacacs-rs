@@ -1,4 +1,4 @@
-//! TLS configuration and utilities for TACACS+ connections.
+//! TLS configuration and transport utilities for TACACS+ connections.
 //!
 //! This module provides:
 //! - [`TlsConfigurationBuilder`] - A builder for creating TLS client configurations
@@ -8,7 +8,7 @@
 //!
 //! ```no_run
 //! use std::sync::Arc;
-//! use tacacsrs_networking::tls::{TlsConfigurationBuilder, connect_tls};
+//! use tacacsrs_networking::transport::tls::{TlsConfigurationBuilder, connect_tls};
 //! use tacacsrs_networking::helpers::connect_tcp;
 //!
 //! # async fn example() -> anyhow::Result<()> {
@@ -21,6 +21,8 @@
 
 mod config_builder;
 mod danger;
+#[allow(clippy::module_inception)]
+mod tls;
 
 pub use config_builder::TlsConfigurationBuilder;
 

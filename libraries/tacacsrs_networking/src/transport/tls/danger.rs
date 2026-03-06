@@ -29,7 +29,7 @@ impl tokio_rustls::rustls::client::danger::ServerCertVerifier for NoCertificateV
     ) -> Result<tokio_rustls::rustls::client::danger::ServerCertVerified, tokio_rustls::rustls::Error>
     {
         log::warn!(
-            target: "tacacsrs_networking::tls::danger::NoCertificateVerification",
+            target: module_path!(),
             "Certificate verification disabled"
         );
         Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())

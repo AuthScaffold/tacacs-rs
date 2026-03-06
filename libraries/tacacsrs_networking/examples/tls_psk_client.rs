@@ -4,7 +4,7 @@ use env_logger::Env;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::*;
 use tacacsrs_networking::helpers::connect_tcp;
-use tacacsrs_networking::tls_psk::{PskConfigurationBuilder, PskIdentity};
+use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
 use tacacsrs_networking::TacacsConnection;
 
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
