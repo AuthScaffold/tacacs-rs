@@ -69,8 +69,8 @@ impl TacacsClientService {
 
     /// Starts serving local IPC requests until the process is terminated.
     ///
-    /// Startup first performs a best-effort warm-up of all configured upstream
-    /// servers and, when multiple servers are configured, launches the
+    /// Startup first performs a best-effort warm-up of the first responsive
+    /// upstream server and, when multiple servers are configured, launches the
     /// background probe that returns new sessions to the preferred server after
     /// recovery.
     ///

@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use anyhow::bail;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::time::Instant;
 
 use crate::codec::{read_message, write_message};
 use crate::protocol::{ServiceError, ServiceRequest, ServiceResponse};
@@ -32,6 +33,8 @@ pub(super) struct ServiceState {
 struct ServerState {
     address: String,
     connection: RwLock<Option<Arc<dyn UpstreamConnection>>>,
+    connect_lock: Mutex<()>,
+    retry_after: RwLock<Option<Instant>>,
 }
 
 pub(super) struct BoundServer {
@@ -108,6 +111,8 @@ impl ServiceState {
                 .map(|address| ServerState {
                     address,
                     connection: RwLock::new(None),
+                    connect_lock: Mutex::new(()),
+                    retry_after: RwLock::new(None),
                 })
                 .collect(),
             connector,
@@ -117,22 +122,46 @@ impl ServiceState {
         }
     }
 
-    /// Attempts to establish or refresh a cached connection for every
-    /// configured server in sequence.
+    /// Attempts to establish or refresh the first responsive cached connection
+    /// for startup.
     ///
-    /// This warm-up pass is best-effort: it does **not** stop at the first
-    /// successful connection and it does **not** fail service startup if some
-    /// servers are down. Its only goal is to reduce latency for early requests
-    /// by opportunistically populating the cache.
+    /// This warm-up pass is best-effort and load-conscious: it walks the
+    /// configured server list until one usable upstream connection is cached,
+    /// then stops immediately. It does **not** fan out and establish
+    /// connections to every configured server, because large deployments may
+    /// have many more clients than TACACS+ servers.
+    ///
+    /// If no server is reachable during startup the service still starts; the
+    /// first IPC requests will retry failover on demand.
     pub(super) async fn warm_connections(&self) {
-        for index in 0..self.servers.len() {
-            if let Err(error) = self.ensure_connection(index).await {
-                log::warn!(
-                    "Initial connection attempt to {} failed: {error}",
-                    self.servers[index].address
-                );
+        let start_index = *self.active_index.read().await;
+
+        for offset in 0..self.servers.len() {
+            let index = (start_index + offset) % self.servers.len();
+            match self.ensure_connection(index).await {
+                Ok(connection) if connection.is_usable_for_new_sessions().await => {
+                    *self.active_index.write().await = index;
+                    log::info!(
+                        "Initialized startup upstream connection using {}",
+                        connection.server_address()
+                    );
+                    return;
+                }
+                Ok(_) => {
+                    self.note_failure(index).await;
+                }
+                Err(error) => {
+                    log::warn!(
+                        "Initial connection attempt to {} failed: {error}",
+                        self.servers[index].address
+                    );
+                }
             }
         }
+
+        log::warn!(
+            "Startup did not find a responsive TACACS+ server; requests will retry on demand"
+        );
     }
 
     pub(super) fn server_count(&self) -> usize {
@@ -240,10 +269,12 @@ impl ServiceState {
     /// an unusable connection, the method records that failure and advances to
     /// the next server, wrapping at the end of the list.
     ///
-    /// Concurrent callers may race to reconnect the same server after a
-    /// failure. That is acceptable for the current design: whichever successful
-    /// connection is stored last becomes the cached reusable connection, and
-    /// subsequent calls observe that cached result.
+    /// Connection establishment is serialized per server. Concurrent IPC
+    /// clients therefore share one in-flight reconnect attempt instead of
+    /// stampeding the same TACACS+ server with many simultaneous handshakes.
+    /// After a connect failure the server enters a short retry cooldown, so
+    /// callers that were already in flight skip that server instead of
+    /// immediately retrying the same failing connect path.
     ///
     /// The service constructor rejects an empty server list up front, so the
     /// final "no responsive servers" error indicates that all configured
@@ -279,9 +310,15 @@ impl ServiceState {
     /// if the cache is empty or no longer usable for new sessions.
     ///
     /// This method is the reconnect path used by both warm-up and per-request
-    /// server selection. It does not notify IPC clients directly; instead,
-    /// callers translate any returned error into a retriable
-    /// [`crate::protocol::ServiceError`] for the affected IPC request.
+    /// server selection. It serializes connection establishment per server so
+    /// bursty IPC traffic does not multiply upstream handshakes. After a
+    /// failed connect attempt the server is placed into a retry cooldown for
+    /// `preferred_probe_interval`, which lets other callers fail over instead
+    /// of repeatedly retrying the same down server.
+    ///
+    /// This method does not notify IPC clients directly; callers translate any
+    /// returned error into a retriable [`crate::protocol::ServiceError`] for
+    /// the affected IPC request.
     async fn ensure_connection(&self, index: usize) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         if let Some(existing) = self.servers[index].connection.read().await.clone() {
             if existing.is_usable_for_new_sessions().await {
@@ -298,10 +335,35 @@ impl ServiceState {
             );
         }
 
+        self.check_retry_cooldown(index).await?;
+        let _connect_guard = self.servers[index].connect_lock.lock().await;
+
+        if let Some(existing) = self.servers[index].connection.read().await.clone() {
+            if existing.is_usable_for_new_sessions().await {
+                log::debug!(
+                    "Reusing cached upstream connection for {} after waiting on another reconnect",
+                    self.servers[index].address
+                );
+                return Ok(existing);
+            }
+        }
+
+        // Re-check while holding the per-server lock in case another task
+        // recorded a fresh failure cooldown before we acquired it.
+        self.check_retry_cooldown(index).await?;
+
         log::debug!("Opening upstream connection to {}", self.servers[index].address);
-        let connection = self.connector.connect(&self.servers[index].address).await?;
-        *self.servers[index].connection.write().await = Some(Arc::clone(&connection));
-        Ok(connection)
+        match self.connector.connect(&self.servers[index].address).await {
+            Ok(connection) => {
+                *self.servers[index].connection.write().await = Some(Arc::clone(&connection));
+                *self.servers[index].retry_after.write().await = None;
+                Ok(connection)
+            }
+            Err(error) => {
+                self.record_retry_cooldown(index).await;
+                Err(error)
+            }
+        }
     }
 
     /// Records that the server at `index` failed for new-session purposes.
@@ -315,7 +377,13 @@ impl ServiceState {
     /// the failure receives the error from the request execution path, while
     /// this method updates shared state for subsequent clients.
     async fn note_failure(&self, index: usize) {
+        // Keep failure recording ordered with connect attempts so a waiter that
+        // is about to reconnect observes both the cleared cache and retry
+        // cooldown as one atomic state transition, rather than seeing a cleared
+        // cache before the retry cooldown is visible.
+        let _connect_guard = self.servers[index].connect_lock.lock().await;
         *self.servers[index].connection.write().await = None;
+        self.record_retry_cooldown(index).await;
         let mut active_index = self.active_index.write().await;
         if *active_index == index {
             let next_index = (index + 1) % self.servers.len();
@@ -332,5 +400,41 @@ impl ServiceState {
     /// stopped accepting new connections.
     pub(super) async fn wait_for_active_clients(&self) {
         self.client_tracker.wait_for_zero().await;
+    }
+
+    /// Verifies that the server at `index` is no longer inside its retry
+    /// cooldown window.
+    ///
+    /// Callers use this in two places:
+    /// - as a fast-fail check before waiting on that server's `connect_lock`
+    /// - as the authoritative check while holding the lock, just before
+    ///   creating a new upstream connection
+    ///
+    /// An error means a recent failure already recorded a cooldown for this
+    /// server, so the caller should fail over instead of retrying immediately.
+    async fn check_retry_cooldown(&self, index: usize) -> anyhow::Result<()> {
+        if let Some(retry_after) = *self.servers[index].retry_after.read().await {
+            let now = Instant::now();
+            if now < retry_after {
+                bail!(
+                    "TACACS+ server {} is still in retry cooldown after a recent failure",
+                    self.servers[index].address
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Records a retry cooldown for the server at `index`.
+    ///
+    /// This is called after connect failures and request-time connection
+    /// failures so later IPC requests avoid immediately retrying the same
+    /// broken upstream path. In this module it is used from code paths that
+    /// already coordinate with the server's `connect_lock` when pairing the
+    /// cooldown update with connection-cache changes.
+    async fn record_retry_cooldown(&self, index: usize) {
+        *self.servers[index].retry_after.write().await =
+            Some(Instant::now() + self.preferred_probe_interval);
     }
 }

@@ -193,10 +193,20 @@ The only way to opt into the built-in default endpoint is to call
 ### Upstream warm-up behavior
 
 At startup the service performs a best-effort warm-up pass across the configured
-TACACS+ servers. That pass walks the server list sequentially and attempts to
-populate the connection cache for **every** configured server. It does not stop
-after the first success, and failures only emit warnings so the service can
-still start and answer IPC requests with the healthy subset of servers.
+TACACS+ servers until it finds the first responsive server. Once one usable
+upstream connection has been cached, the warm-up stops immediately; it does
+**not** establish full TACACS+ connections to every configured server.
+
+This keeps startup load bounded in large deployments where many clients may
+start at once against a relatively small TACACS+ server pool. If no server is
+reachable during startup, the service still starts and later IPC requests retry
+failover on demand.
+
+Per-server reconnect attempts are also serialized inside the service. When many
+IPC requests arrive at once, they share one in-flight reconnect attempt for a
+given TACACS+ server instead of generating a burst of duplicate TLS handshakes.
+After a failed connect attempt, that server enters a short retry cooldown so
+concurrent callers fail over quickly instead of hammering the same down server.
 
 ### Per-client request handling
 

@@ -2,11 +2,12 @@ use std::collections::HashMap;
 #[cfg(not(unix))]
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use super::config::{IpcEndpoint, ServiceConfig};
 use super::coordinator::TacacsClientService;
@@ -53,21 +54,70 @@ impl UpstreamConnection for FakeConnection {
 #[derive(Debug)]
 struct FakeConnector {
     connections: HashMap<String, Arc<FakeConnection>>,
+    connect_attempts: Mutex<HashMap<String, usize>>,
+    connect_delay: Duration,
+    in_flight_connects: AtomicUsize,
+    max_in_flight_connects: AtomicUsize,
+}
+
+impl FakeConnector {
+    fn new(connections: HashMap<String, Arc<FakeConnection>>) -> Self {
+        Self {
+            connections,
+            connect_attempts: Mutex::new(HashMap::new()),
+            connect_delay: Duration::ZERO,
+            in_flight_connects: AtomicUsize::new(0),
+            max_in_flight_connects: AtomicUsize::new(0),
+        }
+    }
+
+    fn with_connect_delay(mut self, connect_delay: Duration) -> Self {
+        self.connect_delay = connect_delay;
+        self
+    }
+
+    async fn connect_attempts_for(&self, address: &str) -> usize {
+        *self
+            .connect_attempts
+            .lock()
+            .await
+            .get(address)
+            .unwrap_or(&0)
+    }
+
+    fn max_in_flight_connects(&self) -> usize {
+        self.max_in_flight_connects.load(Ordering::Relaxed)
+    }
 }
 
 #[async_trait]
 impl UpstreamConnector for FakeConnector {
     async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        {
+            let mut attempts = self.connect_attempts.lock().await;
+            *attempts.entry(address.to_owned()).or_default() += 1;
+        }
+
+        let in_flight = self.in_flight_connects.fetch_add(1, Ordering::Relaxed) + 1;
+        self.max_in_flight_connects
+            .fetch_max(in_flight, Ordering::Relaxed);
+        if !self.connect_delay.is_zero() {
+            tokio::time::sleep(self.connect_delay).await;
+        }
+
         let connection = self
             .connections
             .get(address)
             .with_context(|| format!("missing fake connection for {address}"))?;
 
-        if !connection.usable.load(Ordering::Relaxed) {
-            anyhow::bail!("{address} is currently down");
-        }
+        let result = if connection.usable.load(Ordering::Relaxed) {
+            Ok(Arc::clone(connection) as Arc<dyn UpstreamConnection>)
+        } else {
+            Err(anyhow::anyhow!("{address} is currently down"))
+        };
 
-        Ok(Arc::clone(connection) as Arc<dyn UpstreamConnection>)
+        self.in_flight_connects.fetch_sub(1, Ordering::Relaxed);
+        result
     }
 }
 
@@ -132,13 +182,11 @@ async fn test_server_selection_wraps_to_later_server() {
         fail_next_request: AtomicBool::new(false),
     });
 
-    let connector = Arc::new(FakeConnector {
-        connections: HashMap::from([
-            (first.address.clone(), Arc::clone(&first)),
-            (second.address.clone(), Arc::clone(&second)),
-            (third.address.clone(), Arc::clone(&third)),
-        ]),
-    });
+    let connector = Arc::new(FakeConnector::new(HashMap::from([
+        (first.address.clone(), Arc::clone(&first)),
+        (second.address.clone(), Arc::clone(&second)),
+        (third.address.clone(), Arc::clone(&third)),
+    ])));
 
     let state = ServiceState::new(
         vec![
@@ -168,12 +216,10 @@ async fn test_unix_socket_failover_and_preferred_recovery() {
         fail_next_request: AtomicBool::new(false),
     });
 
-    let connector = Arc::new(FakeConnector {
-        connections: HashMap::from([
-            (primary.address.clone(), Arc::clone(&primary)),
-            (secondary.address.clone(), Arc::clone(&secondary)),
-        ]),
-    });
+    let connector = Arc::new(FakeConnector::new(HashMap::from([
+        (primary.address.clone(), Arc::clone(&primary)),
+        (secondary.address.clone(), Arc::clone(&secondary)),
+    ])));
 
     let endpoint = test_endpoint("tacacs-service-test");
     let config =
@@ -221,9 +267,10 @@ async fn test_existing_socket_path_is_not_unlinked() {
         fail_next_request: AtomicBool::new(false),
     });
 
-    let connector = Arc::new(FakeConnector {
-        connections: HashMap::from([(primary.address.clone(), Arc::clone(&primary))]),
-    });
+    let connector = Arc::new(FakeConnector::new(HashMap::from([(
+        primary.address.clone(),
+        Arc::clone(&primary),
+    )])));
 
     let endpoint = test_endpoint("tacacs-service-existing-socket");
     let path = match &endpoint {
@@ -251,9 +298,10 @@ async fn test_stale_socket_path_is_replaced() {
         fail_next_request: AtomicBool::new(false),
     });
 
-    let connector = Arc::new(FakeConnector {
-        connections: HashMap::from([(primary.address.clone(), Arc::clone(&primary))]),
-    });
+    let connector = Arc::new(FakeConnector::new(HashMap::from([(
+        primary.address.clone(),
+        Arc::clone(&primary),
+    )])));
 
     let endpoint = test_endpoint("tacacs-service-stale-socket");
     let path = match &endpoint {
@@ -272,4 +320,94 @@ async fn test_stale_socket_path_is_replaced() {
 
     assert!(tokio::fs::try_exists(&path).await.unwrap());
     let _ = tokio::fs::remove_file(path).await;
+}
+
+#[tokio::test]
+async fn test_warm_connections_stops_after_first_responsive_server() {
+    let first = Arc::new(FakeConnection {
+        address: "server-a:49".to_owned(),
+        usable: AtomicBool::new(false),
+        fail_next_request: AtomicBool::new(false),
+    });
+    let second = Arc::new(FakeConnection {
+        address: "server-b:49".to_owned(),
+        usable: AtomicBool::new(true),
+        fail_next_request: AtomicBool::new(false),
+    });
+    let third = Arc::new(FakeConnection {
+        address: "server-c:49".to_owned(),
+        usable: AtomicBool::new(true),
+        fail_next_request: AtomicBool::new(false),
+    });
+
+    let connector = Arc::new(FakeConnector::new(HashMap::from([
+        (first.address.clone(), Arc::clone(&first)),
+        (second.address.clone(), Arc::clone(&second)),
+        (third.address.clone(), Arc::clone(&third)),
+    ])));
+
+    let state = ServiceState::new(
+        vec![
+            first.address.clone(),
+            second.address.clone(),
+            third.address.clone(),
+        ],
+        Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+        Duration::from_millis(25),
+    );
+
+    state.warm_connections().await;
+
+    assert_eq!(connector.connect_attempts_for(&first.address).await, 1);
+    assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
+    assert_eq!(connector.connect_attempts_for(&third.address).await, 0);
+
+    let bound = state.bind_server_for_new_session().await.unwrap();
+    assert_eq!(bound.connection.server_address(), second.address);
+    assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
+}
+
+#[tokio::test]
+async fn test_concurrent_failover_coalesces_connection_attempts() {
+    let first = Arc::new(FakeConnection {
+        address: "server-a:49".to_owned(),
+        usable: AtomicBool::new(false),
+        fail_next_request: AtomicBool::new(false),
+    });
+    let second = Arc::new(FakeConnection {
+        address: "server-b:49".to_owned(),
+        usable: AtomicBool::new(true),
+        fail_next_request: AtomicBool::new(false),
+    });
+
+    let connector = Arc::new(
+        FakeConnector::new(HashMap::from([
+            (first.address.clone(), Arc::clone(&first)),
+            (second.address.clone(), Arc::clone(&second)),
+        ]))
+        .with_connect_delay(Duration::from_millis(25)),
+    );
+
+    let state = Arc::new(ServiceState::new(
+        vec![first.address.clone(), second.address.clone()],
+        Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+        Duration::from_millis(200),
+    ));
+
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let state = Arc::clone(&state);
+        tasks.push(tokio::spawn(async move {
+            let bound = state.bind_server_for_new_session().await.unwrap();
+            bound.connection.server_address().to_owned()
+        }));
+    }
+
+    for task in tasks {
+        assert_eq!(task.await.unwrap(), second.address);
+    }
+
+    assert_eq!(connector.connect_attempts_for(&first.address).await, 1);
+    assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
+    assert_eq!(connector.max_in_flight_connects(), 1);
 }
