@@ -4,6 +4,13 @@
 //! headers so local callers can issue accounting requests without having to
 //! understand TACACS+ framing details. The schema generated from these types is
 //! checked into the repository and validated in tests.
+//!
+//! Maintainability note: the Rust types in this module are the source of truth.
+//! The checked-in JSON schema exists so non-Rust consumers can inspect the
+//! contract in GitHub, while the schema-matching test ensures the repository
+//! does not drift out of sync. For this small internal IPC contract, that is a
+//! lower-maintenance choice than introducing a schema-first code generation
+//! pipeline.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

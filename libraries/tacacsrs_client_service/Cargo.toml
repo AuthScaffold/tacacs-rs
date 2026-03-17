@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Reusable central TACACS+ client service components and IPC protocol"
+readme = "README.md"
 
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
