@@ -1,3 +1,9 @@
+//! Listener orchestration for the central TACACS+ client service.
+//!
+//! This module owns process-level behavior: startup validation, IPC listener
+//! creation, graceful shutdown, and delegation into [`super::state::ServiceState`]
+//! for per-client request handling and upstream failover decisions.
+
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -12,6 +18,9 @@ use super::state::ServiceState;
 use crate::upstream::{NetworkUpstreamConnector, UpstreamConnector};
 
 /// Long-lived local TACACS+ client service.
+///
+/// [`TacacsClientService`] is the bridge between operator-facing configuration
+/// and the shared runtime state used by all accepted IPC clients.
 pub struct TacacsClientService {
     config: ServiceConfig,
     state: Arc<ServiceState>,
@@ -60,6 +69,11 @@ impl TacacsClientService {
 
     /// Starts serving local IPC requests until the process is terminated.
     ///
+    /// Startup first performs a best-effort warm-up of all configured upstream
+    /// servers and, when multiple servers are configured, launches the
+    /// background probe that returns new sessions to the preferred server after
+    /// recovery.
+    ///
     /// # Errors
     ///
     /// Returns an error if the IPC listener cannot be created or if the local
@@ -83,6 +97,10 @@ impl TacacsClientService {
     }
 
     #[cfg(unix)]
+    /// Serves Unix domain socket IPC clients until shutdown is requested.
+    ///
+    /// After shutdown is signalled the listener stops accepting new clients,
+    /// waits for active handlers to drain, and then removes the socket path.
     async fn serve_unix(&self, path: &PathBuf) -> anyhow::Result<()> {
         let listener = self.prepare_unix_listener(path).await?;
 
@@ -112,6 +130,8 @@ impl TacacsClientService {
     }
 
     #[cfg(unix)]
+    /// Creates the Unix listener, safely handling either a live competing
+    /// service instance or a stale filesystem entry from a previous run.
     pub(super) async fn prepare_unix_listener(
         &self,
         path: &PathBuf,
@@ -147,6 +167,10 @@ impl TacacsClientService {
         Ok(listener)
     }
 
+    /// Serves loopback TCP IPC clients until shutdown is requested.
+    ///
+    /// This path exists primarily for non-Unix development workflows where a
+    /// Unix domain socket is not available.
     async fn serve_tcp(&self, address: SocketAddr) -> anyhow::Result<()> {
         if !address.ip().is_loopback() {
             bail!("TCP IPC endpoint must be loopback-only: {address}");
@@ -179,6 +203,11 @@ impl TacacsClientService {
     }
 }
 
+/// Waits for a process termination signal that should stop the service from
+/// accepting new IPC clients.
+///
+/// Unix builds listen for both `SIGTERM` and Ctrl-C. Other platforms fall back
+/// to Ctrl-C only.
 async fn shutdown_signal() {
     #[cfg(unix)]
     {

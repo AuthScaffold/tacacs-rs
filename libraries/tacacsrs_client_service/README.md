@@ -174,6 +174,43 @@ On Unix systems the listener follows this startup sequence:
 Shutdown stops accepting new IPC connections first, waits for active clients to
 finish, and then removes the Unix socket path.
 
+## Configuration details
+
+### IPC endpoint format
+
+`ServiceConfig::endpoint` is explicit rather than permissive:
+
+- on Unix, values containing `/` are treated as Unix socket paths, for example
+  `/run/tacacs.sock`
+- on all platforms, values that parse as `SocketAddr` are treated as TCP
+  endpoints, for example `127.0.0.1:9049`
+- an empty string is rejected as invalid configuration; it does **not** fall
+  back to the platform default endpoint
+
+The only way to opt into the built-in default endpoint is to call
+`IpcEndpoint::default_local()`.
+
+### Upstream warm-up behavior
+
+At startup the service performs a best-effort warm-up pass across the configured
+TACACS+ servers. That pass walks the server list sequentially and attempts to
+populate the connection cache for **every** configured server. It does not stop
+after the first success, and failures only emit warnings so the service can
+still start and answer IPC requests with the healthy subset of servers.
+
+### Per-client request handling
+
+Each accepted IPC connection currently carries a single request/response
+exchange:
+
+1. decode one `ServiceRequest`
+2. select the upstream server for that IPC session
+3. execute the request against that bound server
+4. encode one `ServiceResponse`
+
+Unsupported request kinds do not enter the dispatch path because they fail
+during JSON decoding of the tagged `ServiceRequest` enum.
+
 ## Protocol source of truth
 
 The maintainable choice for this crate is:
