@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
-    TacacsAuthenticationType, TacacsFlags,
+    TacacsAuthenticationType,
 };
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
@@ -119,17 +119,14 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         &self,
         request: &AccountingOperation,
     ) -> anyhow::Result<AccountingOperationResponse> {
-        let session = match request.session_id {
-            Some(session_id) => self.connection.create_session_with_id(session_id).await,
-            None => self.connection.create_session().await,
-        }
-        .with_context(|| format!("Failed to create session on {}", self.server_address))?;
+        let session = self
+            .connection
+            .create_session()
+            .await
+            .with_context(|| format!("Failed to create session on {}", self.server_address))?;
 
         let response = session
-            .send_accounting_request_with_flags(
-                build_accounting_request(request),
-                build_custom_flags(request),
-            )
+            .send_accounting_request(build_accounting_request(request))
             .await
             .with_context(|| {
                 format!("Failed to send accounting request via {}", self.server_address)
@@ -163,17 +160,6 @@ fn build_accounting_args(command: &str, command_arguments: &[String]) -> Vec<Str
     let base_args = ["service=shell".to_owned(), format!("cmd={command}")];
     let extra_args = command_arguments.iter().map(|arg| format!("cmd-arg={arg}"));
     base_args.into_iter().chain(extra_args).collect()
-}
-
-fn build_custom_flags(request: &AccountingOperation) -> TacacsFlags {
-    let mut flags = TacacsFlags::empty();
-    if request.custom_flag_1 {
-        flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1;
-    }
-    if request.custom_flag_2 {
-        flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
-    }
-    flags
 }
 
 async fn connect_upstream(
@@ -269,18 +255,17 @@ mod tests {
     }
 
     #[test]
-    fn test_build_custom_flags() {
-        let flags = build_custom_flags(&AccountingOperation {
+    fn test_build_accounting_request_uses_standard_fields_only() {
+        let request = build_accounting_request(&AccountingOperation {
             user: "user".to_owned(),
             port: "tty0".to_owned(),
             remote_address: "127.0.0.1".to_owned(),
             command: "show".to_owned(),
-            command_arguments: vec![],
-            custom_flag_1: true,
-            custom_flag_2: false,
-            session_id: None,
+            command_arguments: vec!["users".to_owned()],
         });
-        assert!(flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1));
-        assert!(!flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2));
+        assert_eq!(request.user, "user");
+        assert_eq!(request.port, "tty0");
+        assert_eq!(request.rem_address, "127.0.0.1");
+        assert_eq!(request.args, vec!["service=shell", "cmd=show", "cmd-arg=users"]);
     }
 }

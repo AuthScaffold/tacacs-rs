@@ -65,9 +65,6 @@ mod tests {
             remote_address: "127.0.0.1".to_owned(),
             command: "show".to_owned(),
             command_arguments: vec!["users".to_owned()],
-            custom_flag_1: true,
-            custom_flag_2: false,
-            session_id: Some(42),
         });
 
         write_message(&mut client, &message).await.unwrap();

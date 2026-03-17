@@ -1,19 +1,23 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "operation", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum ServiceRequest {
     Accounting(AccountingOperation),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "result", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum ServiceResponse {
     Accounting(AccountingOperationResponse),
     Error(ServiceError),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AccountingOperation {
     pub user: String,
     pub port: String,
@@ -21,15 +25,10 @@ pub struct AccountingOperation {
     pub command: String,
     #[serde(default)]
     pub command_arguments: Vec<String>,
-    #[serde(default)]
-    pub custom_flag_1: bool,
-    #[serde(default)]
-    pub custom_flag_2: bool,
-    #[serde(default)]
-    pub session_id: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AccountingOperationResponse {
     pub server: String,
     pub status_code: u8,
@@ -38,7 +37,8 @@ pub struct AccountingOperationResponse {
     pub data: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceError {
     pub message: String,
     pub server: Option<String>,
@@ -66,5 +66,58 @@ impl ServiceError {
     pub const fn retriable(mut self, retriable: bool) -> Self {
         self.retriable = retriable;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use schemars::schema_for;
+    use serde_json::json;
+
+    use super::*;
+
+    #[allow(dead_code)]
+    #[derive(JsonSchema)]
+    struct ServiceProtocolSchemaDocument {
+        request: ServiceRequest,
+        response: ServiceResponse,
+    }
+
+    fn protocol_schema_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ipc-protocol.schema.json")
+    }
+
+    fn generated_schema() -> serde_json::Value {
+        schema_for!(ServiceProtocolSchemaDocument).to_value()
+    }
+
+    #[test]
+    fn test_checked_in_schema_matches_protocol_types() {
+        let expected: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(protocol_schema_path()).expect("schema file should exist"),
+        )
+        .expect("schema file should be valid json");
+
+        assert_eq!(generated_schema(), expected);
+    }
+
+    #[test]
+    fn test_accounting_operation_rejects_unknown_fields() {
+        let invalid_request = json!({
+            "operation": "accounting",
+            "user": "admin",
+            "port": "tty0",
+            "remote_address": "127.0.0.1",
+            "command": "show",
+            "command_arguments": ["users"],
+            "custom_flag_1": true,
+            "session_id": 42
+        });
+
+        let error =
+            serde_json::from_value::<ServiceRequest>(invalid_request).expect_err("must reject");
+        assert!(error.to_string().contains("unknown field"));
     }
 }

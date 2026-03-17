@@ -20,6 +20,11 @@ struct Cli {
     #[arg(long)]
     listen_endpoint: Option<String>,
 
+    /// File mode applied to the Unix domain socket path (octal string, e.g. 660).
+    #[cfg(unix)]
+    #[arg(long, default_value = "660")]
+    socket_mode: String,
+
     /// Obfuscation key for TACACS+ messages.
     #[arg(short = 'k', long)]
     obfuscation_key: Option<String>,
@@ -53,6 +58,16 @@ struct Cli {
     psk_key: Option<String>,
 }
 
+#[cfg(unix)]
+fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
+    u32::from_str_radix(mode, 8).with_context(|| format!("Invalid socket mode: {mode}"))
+}
+
+/// Starts the central TACACS+ client service process.
+///
+/// The service listens on the configured local IPC endpoint, maintains
+/// persistent upstream TACACS+ connections with ordered failover, and shuts
+/// down gracefully when it receives a termination signal.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -83,6 +98,8 @@ async fn main() -> anyhow::Result<()> {
             connect_timeout: Duration::from_secs(cli.connect_timeout_seconds),
         },
         preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
+        #[cfg(unix)]
+        socket_mode: parse_socket_mode(&cli.socket_mode)?,
     })
     .context("Failed to build TACACS+ client service configuration")?;
 

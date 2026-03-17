@@ -4,7 +4,8 @@ members = [
     "libraries/tacacsrs_messages",
     "libraries/tacacsrs_networking", 
     "libraries/tacacsrs_client_service",
-    "executables/tacon"
+    "executables/tacon",
+    "executables/tacacs_client_service"
 ]
 
 [workspace.package]

@@ -86,6 +86,20 @@ async fn execute_command(command: &Command, session: &Session) -> anyhow::Result
     Ok(())
 }
 
+fn ensure_service_mode_accounting_supported(
+    custom_flag_1: bool,
+    custom_flag_2: bool,
+    session_id: Option<u32>,
+) -> anyhow::Result<()> {
+    if custom_flag_1 || custom_flag_2 || session_id.is_some() {
+        anyhow::bail!(
+            "Central TACACS+ service mode does not support custom TACACS+ flags or client-specified session IDs"
+        );
+    }
+
+    Ok(())
+}
+
 async fn execute_command_via_service(cli: &Cli, command: &Command) -> anyhow::Result<()> {
     let endpoint = cli
         .service_endpoint
@@ -103,6 +117,7 @@ async fn execute_command_via_service(cli: &Cli, command: &Command) -> anyhow::Re
             custom_flag_2,
             session_id,
         } => {
+            ensure_service_mode_accounting_supported(*custom_flag_1, *custom_flag_2, *session_id)?;
             let response = client
                 .send_accounting(AccountingOperation {
                     user: args.user.clone(),
@@ -110,9 +125,6 @@ async fn execute_command_via_service(cli: &Cli, command: &Command) -> anyhow::Re
                     remote_address: args.rem_addr.clone(),
                     command: cmd.clone(),
                     command_arguments: cmd_args.clone().unwrap_or_default(),
-                    custom_flag_1: *custom_flag_1,
-                    custom_flag_2: *custom_flag_2,
-                    session_id: *session_id,
                 })
                 .await?;
 
@@ -208,4 +220,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     run(cli).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_service_mode_accounting_supported;
+
+    #[test]
+    fn test_service_mode_rejects_custom_flags_and_session_ids() {
+        assert!(ensure_service_mode_accounting_supported(true, false, None).is_err());
+        assert!(ensure_service_mode_accounting_supported(false, true, None).is_err());
+        assert!(ensure_service_mode_accounting_supported(false, false, Some(7)).is_err());
+        assert!(ensure_service_mode_accounting_supported(false, false, None).is_ok());
+    }
 }

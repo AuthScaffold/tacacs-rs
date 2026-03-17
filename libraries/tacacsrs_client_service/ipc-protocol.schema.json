@@ -1,0 +1,126 @@
+{
+  "$defs": {
+    "ServiceRequest": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "command_arguments": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "operation": {
+              "const": "accounting",
+              "type": "string"
+            },
+            "port": {
+              "type": "string"
+            },
+            "remote_address": {
+              "type": "string"
+            },
+            "user": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "user",
+            "port",
+            "remote_address",
+            "command"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ServiceResponse": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "type": "string"
+            },
+            "result": {
+              "const": "accounting",
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
+            },
+            "server_message": {
+              "type": "string"
+            },
+            "status_code": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "status_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "server",
+            "status_code",
+            "status_name",
+            "server_message",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "result": {
+              "const": "error",
+              "type": "string"
+            },
+            "retriable": {
+              "default": false,
+              "type": "boolean"
+            },
+            "server": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "result",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "request": {
+      "$ref": "#/$defs/ServiceRequest"
+    },
+    "response": {
+      "$ref": "#/$defs/ServiceResponse"
+    }
+  },
+  "required": [
+    "request",
+    "response"
+  ],
+  "title": "ServiceProtocolSchemaDocument",
+  "type": "object"
+}

@@ -1,14 +1,15 @@
 use std::net::SocketAddr;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{bail, Context};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Notify, RwLock};
 
 use crate::codec::{read_message, write_message};
 use crate::protocol::{ServiceError, ServiceRequest, ServiceResponse};
@@ -60,6 +61,8 @@ pub struct ServiceConfig {
     pub server_addresses: Vec<String>,
     pub upstream: UpstreamConnectionOptions,
     pub preferred_probe_interval: Duration,
+    #[cfg(unix)]
+    pub socket_mode: u32,
 }
 
 pub struct TacacsClientService {
@@ -116,14 +119,20 @@ impl TacacsClientService {
     /// endpoint configuration is invalid for the current platform.
     pub async fn serve(self) -> anyhow::Result<()> {
         self.state.warm_connections().await;
-        let _probe_task =
+        let probe_task =
             (self.state.server_count() > 1).then(|| self.state.spawn_preferred_probe());
 
-        match &self.config.endpoint {
+        let result = match &self.config.endpoint {
             #[cfg(unix)]
             IpcEndpoint::Unix(path) => self.serve_unix(path).await,
             IpcEndpoint::Tcp(address) => self.serve_tcp(*address).await,
+        };
+
+        if let Some(task) = probe_task {
+            task.abort();
         }
+
+        result
     }
 
     #[cfg(unix)]
@@ -138,29 +147,47 @@ impl TacacsClientService {
             .await
             .with_context(|| format!("Failed to inspect socket path {}", path.display()))?
         {
-            tokio::fs::remove_file(path)
-                .await
-                .with_context(|| format!("Failed to remove existing socket {}", path.display()))?;
+            match tokio::net::UnixStream::connect(path).await {
+                Ok(_) => bail!(
+                    "Unix socket {} is already accepting connections; another service instance may already be running",
+                    path.display()
+                ),
+                Err(error) => bail!(
+                    "Unix socket path {} already exists and is not accepting connections ({error}); refusing to unlink it automatically",
+                    path.display()
+                ),
+            }
         }
 
         let listener = tokio::net::UnixListener::bind(path)
             .with_context(|| format!("Failed to bind Unix socket {}", path.display()))?;
 
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(self.config.socket_mode))
             .with_context(|| format!("Failed to set permissions on socket {}", path.display()))?;
 
+        let shutdown = shutdown_signal();
+        tokio::pin!(shutdown);
+
         loop {
-            let (stream, _) = listener
-                .accept()
-                .await
-                .context("Failed to accept Unix socket connection")?;
-            let state = Arc::clone(&self.state);
-            tokio::spawn(async move {
-                if let Err(error) = state.handle_client(stream).await {
-                    log::error!("IPC client handling failed: {error}");
+            tokio::select! {
+                () = &mut shutdown => break,
+                accept_result = listener.accept() => {
+                    let (stream, _) = accept_result.context("Failed to accept Unix socket connection")?;
+                    let state = Arc::clone(&self.state);
+                    tokio::spawn(async move {
+                        if let Err(error) = state.handle_client(stream).await {
+                            log::error!("IPC client handling failed: {error}");
+                        }
+                    });
                 }
-            });
+            }
         }
+
+        self.state.wait_for_active_clients().await;
+        tokio::fs::remove_file(path)
+            .await
+            .with_context(|| format!("Failed to remove socket {}", path.display()))?;
+        Ok(())
     }
 
     async fn serve_tcp(&self, address: SocketAddr) -> anyhow::Result<()> {
@@ -172,26 +199,35 @@ impl TacacsClientService {
             .await
             .with_context(|| format!("Failed to bind TCP IPC endpoint {address}"))?;
 
+        let shutdown = shutdown_signal();
+        tokio::pin!(shutdown);
+
         loop {
-            let (stream, _) = listener
-                .accept()
-                .await
-                .context("Failed to accept TCP IPC connection")?;
-            let state = Arc::clone(&self.state);
-            tokio::spawn(async move {
-                if let Err(error) = state.handle_client(stream).await {
-                    log::error!("IPC client handling failed: {error}");
+            tokio::select! {
+                () = &mut shutdown => break,
+                accept_result = listener.accept() => {
+                    let (stream, _) = accept_result.context("Failed to accept TCP IPC connection")?;
+                    let state = Arc::clone(&self.state);
+                    tokio::spawn(async move {
+                        if let Err(error) = state.handle_client(stream).await {
+                            log::error!("IPC client handling failed: {error}");
+                        }
+                    });
                 }
-            });
+            }
         }
+
+        self.state.wait_for_active_clients().await;
+        Ok(())
     }
 }
 
 struct ServiceState {
     servers: Vec<ServerState>,
     connector: Arc<dyn UpstreamConnector>,
-    active_index: Mutex<usize>,
+    active_index: RwLock<usize>,
     preferred_probe_interval: Duration,
+    client_tracker: Arc<ClientTracker>,
 }
 
 struct ServerState {
@@ -202,6 +238,43 @@ struct ServerState {
 struct BoundServer {
     index: usize,
     connection: Arc<dyn UpstreamConnection>,
+}
+
+#[derive(Default)]
+struct ClientTracker {
+    active_clients: AtomicUsize,
+    drained: Notify,
+}
+
+struct ClientGuard {
+    tracker: Arc<ClientTracker>,
+}
+
+impl ClientTracker {
+    fn start_guard(self: &Arc<Self>) -> ClientGuard {
+        self.active_clients.fetch_add(1, Ordering::Relaxed);
+        ClientGuard {
+            tracker: Arc::clone(self),
+        }
+    }
+
+    async fn wait_for_zero(&self) {
+        loop {
+            let notified = self.drained.notified();
+            if self.active_clients.load(Ordering::Relaxed) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        if self.tracker.active_clients.fetch_sub(1, Ordering::Relaxed) == 1 {
+            self.tracker.drained.notify_waiters();
+        }
+    }
 }
 
 impl ServiceState {
@@ -219,8 +292,9 @@ impl ServiceState {
                 })
                 .collect(),
             connector,
-            active_index: Mutex::new(0),
+            active_index: RwLock::new(0),
             preferred_probe_interval,
+            client_tracker: Arc::new(ClientTracker::default()),
         }
     }
 
@@ -249,7 +323,7 @@ impl ServiceState {
                     continue;
                 }
 
-                let active_index = *state.active_index.lock().await;
+                let active_index = *state.active_index.read().await;
                 if active_index == 0 {
                     continue;
                 }
@@ -260,7 +334,7 @@ impl ServiceState {
                             "Preferred TACACS+ server {} recovered; routing new sessions back to it",
                             connection.server_address()
                         );
-                        *state.active_index.lock().await = 0;
+                        *state.active_index.write().await = 0;
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -275,6 +349,7 @@ impl ServiceState {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        let _client_guard = self.client_tracker.start_guard();
         let request: ServiceRequest = read_message(&mut stream).await?;
         let response = match self.bind_server_for_new_session().await {
             Ok(bound_server) => self.execute_request(bound_server, request).await,
@@ -309,13 +384,13 @@ impl ServiceState {
     }
 
     async fn bind_server_for_new_session(&self) -> anyhow::Result<BoundServer> {
-        let start_index = *self.active_index.lock().await;
+        let start_index = *self.active_index.read().await;
 
         for offset in 0..self.servers.len() {
             let index = (start_index + offset) % self.servers.len();
             match self.ensure_connection(index).await {
                 Ok(connection) if connection.is_usable_for_new_sessions().await => {
-                    *self.active_index.lock().await = index;
+                    *self.active_index.write().await = index;
                     return Ok(BoundServer { index, connection });
                 }
                 Ok(_) => {
@@ -348,10 +423,38 @@ impl ServiceState {
 
     async fn note_failure(&self, index: usize) {
         *self.servers[index].connection.write().await = None;
-        let mut active_index = self.active_index.lock().await;
+        let mut active_index = self.active_index.write().await;
         if *active_index == index {
             *active_index = (index + 1) % self.servers.len();
         }
+    }
+
+    async fn wait_for_active_clients(&self) {
+        self.client_tracker.wait_for_zero().await;
+    }
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate_signal) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate_signal.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 
@@ -509,6 +612,7 @@ mod tests {
             server_addresses: vec![primary.address.clone(), secondary.address.clone()],
             upstream: UpstreamConnectionOptions::default(),
             preferred_probe_interval: Duration::from_millis(50),
+            socket_mode: 0o660,
         };
 
         let service = TacacsClientService::new_with_connector(config, connector).unwrap();
@@ -522,9 +626,6 @@ mod tests {
             remote_address: "127.0.0.1".to_owned(),
             command: "show".to_owned(),
             command_arguments: vec!["users".to_owned()],
-            custom_flag_1: false,
-            custom_flag_2: false,
-            session_id: None,
         };
 
         let first = client.send_accounting(request.clone()).await.unwrap();
@@ -551,5 +652,41 @@ mod tests {
         if let IpcEndpoint::Unix(path) = endpoint {
             let _ = tokio::fs::remove_file(path).await;
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_existing_socket_path_is_not_unlinked() {
+        let primary = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+
+        let connector = Arc::new(FakeConnector {
+            connections: HashMap::from([(primary.address.clone(), Arc::clone(&primary))]),
+        });
+
+        let endpoint = test_endpoint("tacacs-service-existing-socket");
+        let path = match &endpoint {
+            IpcEndpoint::Unix(path) => path.clone(),
+            IpcEndpoint::Tcp(_) => unreachable!(),
+        };
+
+        let existing_listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let config = ServiceConfig {
+            endpoint,
+            server_addresses: vec![primary.address.clone()],
+            upstream: UpstreamConnectionOptions::default(),
+            preferred_probe_interval: Duration::from_millis(50),
+            socket_mode: 0o660,
+        };
+
+        let service = TacacsClientService::new_with_connector(config, connector).unwrap();
+        let error = service.serve().await.unwrap_err();
+        assert!(error.to_string().contains("already accepting connections"));
+
+        drop(existing_listener);
+        let _ = tokio::fs::remove_file(path).await;
     }
 }

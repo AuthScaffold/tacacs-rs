@@ -1,24 +1,20 @@
 [package]
-name = "tacacsrs-client-service"
+name = "tacacs-client-service"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Central TACACS+ client service for local consumers"
 
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
-async-trait = "0.1.89"
-log = "0.4.29"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-schemars = { version = "1.2.1", features = ["derive"] }
-tacacsrs-messages = { path = "../tacacsrs_messages" }
-tacacsrs-networking = { path = "../tacacsrs_networking" }
+clap = { version = "4.5.57", features = ["derive"] }
+tacacsrs-client-service = { path = "../../libraries/tacacsrs_client_service" }
 tokio = { version = "1.49.0", features = ["full"] }
 
 [features]
 default = []
-psk = ["tacacsrs-networking/psk"]
+psk = ["tacacsrs-client-service/psk"]
 
 [lints.rust]
 unsafe_code = "forbid"

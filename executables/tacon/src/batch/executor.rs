@@ -37,9 +37,22 @@ fn to_service_accounting_request(request: &super::types::AccountingRequest) -> A
         remote_address: request.rem_addr.clone(),
         command: request.cmd.clone(),
         command_arguments: request.cmd_args.clone(),
-        custom_flag_1: request.custom_flags.custom_flag_1,
-        custom_flag_2: request.custom_flags.custom_flag_2,
-        session_id: request.session_id,
+    }
+}
+
+fn validate_service_mode_request(request: &BatchRequest) -> Result<(), String> {
+    match request {
+        BatchRequest::Accounting(req)
+            if req.custom_flags.custom_flag_1
+                || req.custom_flags.custom_flag_2
+                || req.session_id.is_some() =>
+        {
+            Err(
+                "Central TACACS+ service mode does not support custom TACACS+ flags or client-specified session IDs"
+                    .to_owned(),
+            )
+        }
+        _ => Ok(()),
     }
 }
 
@@ -93,6 +106,7 @@ async fn execute_single_request_via_service(
     request: &BatchRequest,
 ) -> Result<String, String> {
     let client = service_client(cli).map_err(|error| error.to_string())?;
+    validate_service_mode_request(request)?;
 
     match request {
         BatchRequest::Accounting(req) => client
@@ -705,5 +719,39 @@ async fn execute_batch_load_test(
         Ok(vec![])
     } else {
         anyhow::bail!("Load test failed: {}", result.first_failure.unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_service_mode_request;
+    use crate::batch::types::{AccountingRequest, BatchRequest, CustomFlags};
+
+    #[test]
+    fn test_service_mode_rejects_custom_flags_and_session_ids_in_batch_requests() {
+        let request = BatchRequest::Accounting(AccountingRequest {
+            user: "admin".to_owned(),
+            port: "tty0".to_owned(),
+            rem_addr: "127.0.0.1".to_owned(),
+            cmd: "show".to_owned(),
+            cmd_args: vec![],
+            custom_flags: CustomFlags {
+                custom_flag_1: true,
+                custom_flag_2: false,
+            },
+            session_id: None,
+        });
+        assert!(validate_service_mode_request(&request).is_err());
+
+        let request = BatchRequest::Accounting(AccountingRequest {
+            user: "admin".to_owned(),
+            port: "tty0".to_owned(),
+            rem_addr: "127.0.0.1".to_owned(),
+            cmd: "show".to_owned(),
+            cmd_args: vec![],
+            custom_flags: CustomFlags::default(),
+            session_id: Some(7),
+        });
+        assert!(validate_service_mode_request(&request).is_err());
     }
 }
