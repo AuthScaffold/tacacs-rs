@@ -28,6 +28,16 @@ pub struct Cli {
     #[arg(long, value_name = "FILE", requires = "client_certificate")]
     pub client_key: Option<String>,
 
+    /// PSK identity string sent to the server during the TLS 1.3 handshake
+    #[cfg(feature = "psk")]
+    #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
+    pub psk_identity: Option<String>,
+
+    /// Pre-shared key for TLS 1.3 PSK authentication
+    #[cfg(feature = "psk")]
+    #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key"])]
+    pub psk_key: Option<String>,
+
     /// Increase verbosity level (-v, -vv, -vvv, -vvvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,

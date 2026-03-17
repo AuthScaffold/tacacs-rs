@@ -11,7 +11,7 @@ use tacacsrs_networking::helpers::*;
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
-use tacacsrs_networking::tcp_connection::TcpConnectionTrait;
+use tacacsrs_networking::TacacsConnection;
 use tokio::task::JoinHandle;
 
 
@@ -26,26 +26,21 @@ async fn main() -> anyhow::Result<()> {
         console_subscriber::init();
     }
 
-    let tcp_connection = connect_tcp(hostname).await?;
-    let tacacs_connection = Arc::new(tacacsrs_networking::tcp_connection::TcpConnection::new(
-        obfuscation_key.as_deref(),
-    ));
+    let tcp_stream = connect_tcp(hostname).await?;
+    let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
+    connection.run(tcp_stream).await?;
 
-    tacacs_connection.run(tcp_connection).await?;
-
-    // use ssl:
+    // For TLS, use:
     // let tcp_stream = connect_tcp(hostname).await?;
-    // let tls_stream = connect_tls(tcp_stream, "tacacsserver.local").await?;
-    // let tacacs_connection = Arc::new(
-    //     tacacsrs_networking::tls_connection::TlsConnection::new(obfuscation_key.as_deref())
-    // );
-    // tacacs_connection.run(tls_stream).await?;
+    // let tls_stream = tacacsrs_networking::transport::tls::connect_tls(&tls_config, tcp_stream, "tacacsserver.local").await?;
+    // let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
+    // connection.run(tls_stream).await?;
 
     let session_count = 100000;
 
     let session_creation = (0..session_count).map(|_| {
-        let connection = tacacs_connection.clone();
-        tokio::spawn(async move { connection.create_session().await })
+        let conn = connection.clone();
+        tokio::spawn(async move { conn.create_session().await })
     });
 
     let mut sessions = Vec::<Session>::with_capacity(session_count);

@@ -316,7 +316,6 @@ bitflags! {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u8)]
 pub enum TacacsAccountingStatus {

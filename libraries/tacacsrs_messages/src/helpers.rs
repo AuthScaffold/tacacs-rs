@@ -1,7 +1,6 @@
 use std::io::{Cursor, Read};
 use anyhow::Context;
 
-
 pub fn read_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<String, anyhow::Error> {
     let remaining_buffer = cursor.get_ref().len() - cursor.position() as usize;
     if remaining_buffer < len {

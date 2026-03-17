@@ -11,7 +11,7 @@ jobs:
       contents: read
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -24,7 +24,7 @@ jobs:
           cat checksums-sha256.txt
 
       - name: Upload checksums
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: checksums-sha256.txt
           path: artifacts/checksums-sha256.txt

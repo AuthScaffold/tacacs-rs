@@ -203,7 +203,6 @@ impl AccountingRequest {
             args.push(arg);
         }
 
-
         Ok(AccountingRequest {
             flags,
             authen_method,
@@ -217,7 +216,6 @@ impl AccountingRequest {
         })
     }
 }
-
 
 impl TacacsBodyTrait for AccountingRequest {
     fn to_bytes(&self) -> Vec<u8> {
@@ -348,7 +346,6 @@ mod tests {
 
         assert_eq!(data, new_data);
     }
-
 
     #[test]
     fn test_read_string_exception_not_enough_data() {
