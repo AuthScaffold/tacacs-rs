@@ -13,6 +13,12 @@ log = "0.4.29"
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "logging"] }
 rustls-pki-types = "1.14.0"
 rustls-cert-file-reader = "0.4.2"
+openssl = { version = "0.10.48", optional = true }
+tokio-openssl = { version = "0.6", optional = true }
+
+[features]
+default = []
+psk = ["dep:openssl", "dep:tokio-openssl"]
 
 [dev-dependencies]
 argh = "0.1.13"

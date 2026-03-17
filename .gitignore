@@ -30,3 +30,4 @@ Cargo.lock
 # SBOM files (generated during CI/CD)
 *.cdx.json
 *.cdx.xml
+lde/convert-ipaddress.ps1
