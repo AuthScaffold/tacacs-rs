@@ -5,13 +5,11 @@
 //! drain tracking used during graceful shutdown.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::bail;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, Notify, RwLock};
-use tokio::time::Instant;
 
 use crate::codec::{read_message, write_message};
 use crate::protocol::{ServiceError, ServiceRequest, ServiceResponse};
@@ -26,8 +24,7 @@ pub(super) struct ServiceState {
     servers: Vec<ServerState>,
     connector: Arc<dyn UpstreamConnector>,
     active_index: RwLock<usize>,
-    connect_retry_cooldown: Duration,
-    preferred_probe_interval: Duration,
+    preferred_probe_interval: std::time::Duration,
     client_tracker: Arc<ClientTracker>,
 }
 
@@ -35,7 +32,7 @@ struct ServerState {
     address: String,
     connection: RwLock<Option<Arc<dyn UpstreamConnection>>>,
     connect_lock: Mutex<()>,
-    retry_after: RwLock<Option<Instant>>,
+    completed_connect_attempts: AtomicU64,
 }
 
 pub(super) struct BoundServer {
@@ -104,8 +101,7 @@ impl ServiceState {
     pub(super) fn new(
         server_addresses: Vec<String>,
         connector: Arc<dyn UpstreamConnector>,
-        connect_retry_cooldown: Duration,
-        preferred_probe_interval: Duration,
+        preferred_probe_interval: std::time::Duration,
     ) -> Self {
         Self {
             servers: server_addresses
@@ -114,12 +110,11 @@ impl ServiceState {
                     address,
                     connection: RwLock::new(None),
                     connect_lock: Mutex::new(()),
-                    retry_after: RwLock::new(None),
+                    completed_connect_attempts: AtomicU64::new(0),
                 })
                 .collect(),
             connector,
             active_index: RwLock::new(0),
-            connect_retry_cooldown,
             preferred_probe_interval,
             client_tracker: Arc::new(ClientTracker::default()),
         }
@@ -271,9 +266,10 @@ impl ServiceState {
     /// Connection establishment is serialized per server. Concurrent IPC
     /// clients therefore share one in-flight reconnect attempt instead of
     /// stampeding the same TACACS+ server with many simultaneous handshakes.
-    /// After a connect failure the server enters a short retry cooldown, so
-    /// callers that were already in flight skip that server instead of
-    /// immediately retrying the same failing connect path.
+    /// Callers that arrive while another task is reconnecting wait on that
+    /// server's reconnect lock. Once the lock is released they either reuse the
+    /// cached connection created by that one reconnect attempt, or skip that
+    /// server for this IPC request if the reconnect attempt already failed.
     ///
     /// The service constructor rejects an empty server list up front, so the
     /// final "no responsive servers" error indicates that all configured
@@ -310,14 +306,16 @@ impl ServiceState {
     ///
     /// 1. check the cached connection without taking the per-server connect lock
     /// 2. if it is still usable for new sessions, return it immediately
-    /// 3. otherwise, fast-fail if the server is still inside its retry cooldown
+    /// 3. record the current completed-reconnect generation for this server
     /// 4. wait for the per-server connect lock so only one task can reconnect
     /// 5. once the lock is held, re-check the cache because another waiter may
     ///    already have populated it
-    /// 6. re-check the retry cooldown while still holding the lock
-    /// 7. perform one real upstream connect attempt
-    /// 8. cache the successful connection so queued callers reuse it, or record
-    ///    a short retry cooldown if the connect attempt failed
+    /// 6. if the reconnect generation changed while this caller waited, then
+    ///    another task already completed the one allowed reconnect attempt; do
+    ///    not immediately retry the same server again for this request
+    /// 7. otherwise perform one real upstream connect attempt
+    /// 8. cache the successful connection so queued callers reuse it, or mark
+    ///    that one reconnect attempt as completed so queued callers fail over
     ///
     /// If the cached connection has learned that the server does not support
     /// TACACS+ single-connection reuse (or has later withdrawn that support for
@@ -344,7 +342,9 @@ impl ServiceState {
             );
         }
 
-        self.check_retry_cooldown(index).await?;
+        let reconnect_generation = self.servers[index]
+            .completed_connect_attempts
+            .load(Ordering::Acquire);
         let _connect_guard = self.servers[index].connect_lock.lock().await;
 
         if let Some(existing) = self.servers[index].connection.read().await.clone() {
@@ -357,19 +357,31 @@ impl ServiceState {
             }
         }
 
-        // Re-check while holding the per-server lock in case another task
-        // recorded a fresh failure cooldown before we acquired it.
-        self.check_retry_cooldown(index).await?;
+        if self.servers[index]
+            .completed_connect_attempts
+            .load(Ordering::Acquire)
+            != reconnect_generation
+        {
+            bail!(
+                "Another reconnect attempt for TACACS+ server {} already completed for this request wave",
+                self.servers[index].address
+            );
+        }
 
         log::debug!("Opening upstream connection to {}", self.servers[index].address);
         match self.connector.connect(&self.servers[index].address).await {
             Ok(connection) => {
                 *self.servers[index].connection.write().await = Some(Arc::clone(&connection));
-                *self.servers[index].retry_after.write().await = None;
+                self.servers[index]
+                    .completed_connect_attempts
+                    .fetch_add(1, Ordering::AcqRel);
                 Ok(connection)
             }
             Err(error) => {
-                self.record_retry_cooldown(index).await;
+                *self.servers[index].connection.write().await = None;
+                self.servers[index]
+                    .completed_connect_attempts
+                    .fetch_add(1, Ordering::AcqRel);
                 Err(error)
             }
         }
@@ -386,13 +398,11 @@ impl ServiceState {
     /// the failure receives the error from the request execution path, while
     /// this method updates shared state for subsequent clients.
     async fn note_failure(&self, index: usize) {
-        // Keep failure recording ordered with connect attempts so a waiter that
-        // is about to reconnect observes both the cleared cache and retry
-        // cooldown as one atomic state transition, rather than seeing a cleared
-        // cache before the retry cooldown is visible.
+        // Keep request-time failure recording ordered with reconnect attempts
+        // so a waiter that is about to reconnect observes the cleared cache
+        // before it decides whether it must establish a fresh connection.
         let _connect_guard = self.servers[index].connect_lock.lock().await;
         *self.servers[index].connection.write().await = None;
-        self.record_retry_cooldown(index).await;
         let mut active_index = self.active_index.write().await;
         if *active_index == index {
             let next_index = (index + 1) % self.servers.len();
@@ -409,41 +419,5 @@ impl ServiceState {
     /// stopped accepting new connections.
     pub(super) async fn wait_for_active_clients(&self) {
         self.client_tracker.wait_for_zero().await;
-    }
-
-    /// Verifies that the server at `index` is no longer inside its retry
-    /// cooldown window.
-    ///
-    /// Callers use this in two places:
-    /// - as a fast-fail check before waiting on that server's `connect_lock`
-    /// - as the authoritative check while holding the lock, just before
-    ///   creating a new upstream connection
-    ///
-    /// An error means a recent failure already recorded a cooldown for this
-    /// server, so the caller should fail over instead of retrying immediately.
-    async fn check_retry_cooldown(&self, index: usize) -> anyhow::Result<()> {
-        if let Some(retry_after) = *self.servers[index].retry_after.read().await {
-            let now = Instant::now();
-            if now < retry_after {
-                bail!(
-                    "TACACS+ server {} is still in retry cooldown after a recent failure",
-                    self.servers[index].address
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Records a retry cooldown for the server at `index`.
-    ///
-    /// This is called after connect failures and request-time connection
-    /// failures so later IPC requests avoid immediately retrying the same
-    /// broken upstream path. In this module it is used from code paths that
-    /// already coordinate with the server's `connect_lock` when pairing the
-    /// cooldown update with connection-cache changes.
-    async fn record_retry_cooldown(&self, index: usize) {
-        *self.servers[index].retry_after.write().await =
-            Some(Instant::now() + self.connect_retry_cooldown);
     }
 }

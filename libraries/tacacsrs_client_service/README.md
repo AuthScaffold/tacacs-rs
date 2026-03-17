@@ -205,9 +205,9 @@ failover on demand.
 Per-server reconnect attempts are also serialized inside the service. When many
 IPC requests arrive at once, they share one in-flight reconnect attempt for a
 given TACACS+ server instead of generating a burst of duplicate TLS handshakes.
-After a failed connect attempt, that server enters a short retry cooldown
-(capped at 250ms and never longer than the configured connect timeout) so
-concurrent callers fail over quickly instead of hammering the same down server.
+After that reconnect attempt finishes, queued callers reuse the cached
+connection if it succeeded, or fail over without immediately retrying the same
+server again for that same burst of IPC work if it failed.
 
 ### Per-client request handling
 

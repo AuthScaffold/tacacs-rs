@@ -62,7 +62,7 @@ impl Default for UpstreamConnectionOptions {
 
 #[async_trait]
 /// Abstracts a single persistent TACACS+ server connection used by the service.
-pub trait UpstreamConnection: Send + Sync {
+pub(crate) trait UpstreamConnection: Send + Sync {
     fn server_address(&self) -> &str;
     async fn is_usable_for_new_sessions(&self) -> bool;
     async fn send_accounting(
@@ -73,19 +73,19 @@ pub trait UpstreamConnection: Send + Sync {
 
 #[async_trait]
 /// Creates upstream connections for a configured TACACS+ server address.
-pub trait UpstreamConnector: Send + Sync {
+pub(crate) trait UpstreamConnector: Send + Sync {
     async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
 }
 
 /// Production connector backed by `tacacsrs_networking`.
 #[derive(Debug, Clone)]
-pub struct NetworkUpstreamConnector {
+pub(crate) struct NetworkUpstreamConnector {
     options: UpstreamConnectionOptions,
 }
 
 impl NetworkUpstreamConnector {
     #[must_use]
-    pub fn new(options: UpstreamConnectionOptions) -> Self {
+    pub(crate) fn new(options: UpstreamConnectionOptions) -> Self {
         Self { options }
     }
 }

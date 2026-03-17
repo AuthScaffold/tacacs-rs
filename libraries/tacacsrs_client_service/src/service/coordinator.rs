@@ -10,7 +10,6 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, bail};
 
@@ -25,17 +24,6 @@ use crate::upstream::{NetworkUpstreamConnector, UpstreamConnector};
 pub struct TacacsClientService {
     config: ServiceConfig,
     state: Arc<ServiceState>,
-}
-
-/// Returns the short retry cooldown used after a failed upstream connect or a
-/// request-time connection failure.
-///
-/// Upstream addresses are commonly VIPs or software load balancers, so the
-/// reconnect backoff should be much shorter than the preferred-server probe
-/// interval. We still cap it to the upstream connect timeout so a caller that
-/// already chose an aggressive timeout does not get a longer retry penalty.
-fn connect_retry_cooldown(connect_timeout: Duration) -> Duration {
-    connect_timeout.min(Duration::from_millis(250))
 }
 
 impl TacacsClientService {
@@ -55,7 +43,6 @@ impl TacacsClientService {
         let state = Arc::new(ServiceState::new(
             config.server_addresses.clone(),
             connector,
-            connect_retry_cooldown(config.upstream.connect_timeout),
             config.preferred_probe_interval,
         ));
 
@@ -74,7 +61,6 @@ impl TacacsClientService {
         let state = Arc::new(ServiceState::new(
             config.server_addresses.clone(),
             connector,
-            connect_retry_cooldown(config.upstream.connect_timeout),
             config.preferred_probe_interval,
         ));
 

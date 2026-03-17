@@ -247,7 +247,6 @@ async fn test_server_selection_wraps_to_later_server() {
         ],
         connector,
         Duration::from_millis(25),
-        Duration::from_millis(25),
     );
 
     let bound = state.bind_server_for_new_session().await.unwrap();
@@ -406,7 +405,6 @@ async fn test_warm_connections_stops_after_first_responsive_server() {
         ],
         Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
         Duration::from_millis(25),
-        Duration::from_millis(25),
     );
 
     state.warm_connections().await;
@@ -444,7 +442,6 @@ async fn test_concurrent_failover_coalesces_connection_attempts() {
     let state = Arc::new(ServiceState::new(
         vec![first.address.clone(), second.address.clone()],
         Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
-        Duration::from_millis(25),
         Duration::from_millis(200),
     ));
 
@@ -476,7 +473,6 @@ async fn test_non_single_connection_is_reconnected_for_next_request() {
     let state = ServiceState::new(
         vec![connector.address.clone()],
         Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
-        Duration::from_millis(25),
         Duration::from_millis(200),
     );
 
