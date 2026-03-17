@@ -71,7 +71,11 @@ impl Connection {
 /// - TLS handshake fails
 pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
     let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
-    let tcp_stream = tacacsrs_networking::helpers::connect_tcp(&cli.server_addr)
+    let server_addr = cli
+        .server_addr
+        .as_deref()
+        .context("A TACACS+ server address is required for direct mode")?;
+    let tcp_stream = tacacsrs_networking::helpers::connect_tcp(server_addr)
         .await
         .context("Failed to establish TCP connection")?;
 

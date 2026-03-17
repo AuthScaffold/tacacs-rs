@@ -22,7 +22,7 @@ use std::path::Path;
 pub use types::{BatchFile, RequestResult};
 
 // Re-export execution functions
-pub use executor::execute_batch;
+pub use executor::{execute_batch, execute_batch_via_service};
 
 // Re-export display functions
 pub use progress::print_results_summary;

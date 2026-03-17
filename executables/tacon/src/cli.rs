@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 
 /// TACACS+ Client CLI
 ///
@@ -7,35 +7,49 @@ use clap::{Parser, Subcommand};
 #[derive(Parser, Clone)]
 #[command(name = "tacon", version, author)]
 #[command(about = "TACACS+ client CLI", long_about = None)]
+#[command(group(
+    ArgGroup::new("transport_target")
+        .required(true)
+        .args(["server_addr", "service_endpoint"])
+))]
 pub struct Cli {
     /// IP address and port of the TACACS+ server (e.g., "192.168.1.1:49")
-    #[arg(short, long)]
-    pub server_addr: String,
+    #[arg(short, long, conflicts_with = "service_endpoint")]
+    pub server_addr: Option<String>,
+
+    /// IPC endpoint for the central TACACS+ client service
+    #[arg(long, value_name = "PATH_OR_ADDR", conflicts_with = "server_addr")]
+    pub service_endpoint: Option<String>,
 
     /// Obfuscation key for encrypting TACACS+ messages
-    #[arg(short = 'k', long)]
+    #[arg(short = 'k', long, conflicts_with = "service_endpoint")]
     pub obfuscation_key: Option<String>,
 
     /// Use TLS for the connection
-    #[arg(long)]
+    #[arg(long, conflicts_with = "service_endpoint")]
     pub use_tls: bool,
 
     /// Path to client certificate file for TLS authentication
-    #[arg(long, value_name = "FILE", requires = "client_key")]
+    #[arg(long, value_name = "FILE", requires = "client_key", conflicts_with = "service_endpoint")]
     pub client_certificate: Option<String>,
 
     /// Path to client private key file for TLS authentication
-    #[arg(long, value_name = "FILE", requires = "client_certificate")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "client_certificate",
+        conflicts_with = "service_endpoint"
+    )]
     pub client_key: Option<String>,
 
     /// PSK identity string sent to the server during the TLS 1.3 handshake
     #[cfg(feature = "psk")]
-    #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
+    #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
     pub psk_identity: Option<String>,
 
     /// Pre-shared key for TLS 1.3 PSK authentication
     #[cfg(feature = "psk")]
-    #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key"])]
+    #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
     pub psk_key: Option<String>,
 
     /// Increase verbosity level (-v, -vv, -vvv, -vvvv)
@@ -193,6 +207,40 @@ mod tests {
             "--use-tls",
             "--client-certificate",
             "cert.pem",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_service_endpoint_parses_without_server_addr() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--service-endpoint",
+            "/run/tacacs.sock",
+            "accounting",
+            "--user",
+            "testuser",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.168.1.100",
+            "test_cmd",
+        ]);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_server_addr_conflicts_with_service_endpoint() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--service-endpoint",
+            "/run/tacacs.sock",
             "batch",
             "batch.txt",
         ]);

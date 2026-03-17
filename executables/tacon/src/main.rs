@@ -4,9 +4,11 @@ mod commands;
 mod connection;
 
 use std::path::Path;
+use std::str::FromStr;
 
 use anyhow::{bail, Context};
 use clap::Parser;
+use tacacsrs_client_service::{AccountingOperation, IpcEndpoint, ServiceClient};
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::session::Session;
 
@@ -84,6 +86,54 @@ async fn execute_command(command: &Command, session: &Session) -> anyhow::Result
     Ok(())
 }
 
+async fn execute_command_via_service(cli: &Cli, command: &Command) -> anyhow::Result<()> {
+    let endpoint = cli
+        .service_endpoint
+        .as_deref()
+        .context("Service endpoint is required for service mode")?;
+    let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
+    let client = ServiceClient::new(endpoint);
+
+    match command {
+        Command::Accounting {
+            args,
+            cmd,
+            cmd_args,
+            custom_flag_1,
+            custom_flag_2,
+            session_id,
+        } => {
+            let response = client
+                .send_accounting(AccountingOperation {
+                    user: args.user.clone(),
+                    port: args.port.clone(),
+                    remote_address: args.rem_addr.clone(),
+                    command: cmd.clone(),
+                    command_arguments: cmd_args.clone().unwrap_or_default(),
+                    custom_flag_1: *custom_flag_1,
+                    custom_flag_2: *custom_flag_2,
+                    session_id: *session_id,
+                })
+                .await?;
+
+            println!("Received accounting response: {response:#?}");
+        }
+        Command::Authentication { .. } => {
+            log::info!("Authentication command not yet implemented");
+            println!("Authentication command not yet implemented");
+        }
+        Command::Authorization { .. } => {
+            log::info!("Authorization command not yet implemented");
+            println!("Authorization command not yet implemented");
+        }
+        Command::Batch { .. } => {
+            unreachable!("Batch command should be handled before execute_command")
+        }
+    }
+
+    Ok(())
+}
+
 /// Runs the CLI in batch mode, executing requests from a JSON file
 ///
 /// # Errors
@@ -98,8 +148,12 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
         batch_file.metadata.parallel
     );
 
-    let connection = establish_connection(cli).await?;
-    let results = batch::execute_batch(cli, connection, &batch_file).await?;
+    let results = if cli.service_endpoint.is_some() {
+        batch::execute_batch_via_service(cli, &batch_file).await?
+    } else {
+        let connection = establish_connection(cli).await?;
+        batch::execute_batch(cli, connection, &batch_file).await?
+    };
 
     batch::print_results_summary(&results);
 
@@ -127,6 +181,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Command::Batch { file } = &cli.command {
         log::info!("Running in batch mode with file: {file}");
         return run_batch_mode(&cli, Path::new(file)).await;
+    }
+
+    if cli.service_endpoint.is_some() {
+        return execute_command_via_service(&cli, &cli.command).await;
     }
 
     let connection = establish_connection(&cli).await?;

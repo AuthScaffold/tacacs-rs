@@ -1,0 +1,90 @@
+use std::str::FromStr;
+use std::time::Duration;
+
+use anyhow::Context;
+use clap::{ArgGroup, Parser};
+use tacacsrs_client_service::{
+    IpcEndpoint, ServiceConfig, TacacsClientService, UpstreamConnectionOptions,
+};
+
+#[derive(Debug, Parser)]
+#[command(name = "tacacs-client-service", version, author)]
+#[command(about = "Central TACACS+ client service for local consumers")]
+#[command(group(ArgGroup::new("ipc-endpoint").args(["listen_endpoint"])))]
+struct Cli {
+    /// Ordered list of TACACS+ upstream servers. The first server is preferred.
+    #[arg(long = "server-addr", required = true)]
+    server_addresses: Vec<String>,
+
+    /// Local IPC endpoint. Use a Unix socket path on Linux (default: /run/tacacs.sock).
+    #[arg(long)]
+    listen_endpoint: Option<String>,
+
+    /// Obfuscation key for TACACS+ messages.
+    #[arg(short = 'k', long)]
+    obfuscation_key: Option<String>,
+
+    /// Use TLS for upstream TACACS+ server connections.
+    #[arg(long)]
+    use_tls: bool,
+
+    /// Path to client certificate file for TLS authentication.
+    #[arg(long, value_name = "FILE", requires = "client_key")]
+    client_certificate: Option<String>,
+
+    /// Path to client private key file for TLS authentication.
+    #[arg(long, value_name = "FILE", requires = "client_certificate")]
+    client_key: Option<String>,
+
+    /// Timeout, in seconds, for establishing a new upstream TACACS+ connection.
+    #[arg(long, default_value_t = 5)]
+    connect_timeout_seconds: u64,
+
+    /// Probe interval, in seconds, used when checking whether the preferred server has recovered.
+    #[arg(long, default_value_t = 30)]
+    preferred_probe_interval_seconds: u64,
+
+    #[cfg(feature = "psk")]
+    #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
+    psk_identity: Option<String>,
+
+    #[cfg(feature = "psk")]
+    #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key"])]
+    psk_key: Option<String>,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    let endpoint = cli
+        .listen_endpoint
+        .as_deref()
+        .map(IpcEndpoint::from_str)
+        .transpose()?
+        .unwrap_or_else(IpcEndpoint::default_local);
+
+    #[cfg(unix)]
+    if matches!(endpoint, IpcEndpoint::Tcp(_)) {
+        anyhow::bail!("Linux deployments must use a Unix domain socket endpoint");
+    }
+
+    let service = TacacsClientService::new(ServiceConfig {
+        endpoint,
+        server_addresses: cli.server_addresses,
+        upstream: UpstreamConnectionOptions {
+            obfuscation_key: cli.obfuscation_key,
+            use_tls: cli.use_tls,
+            client_certificate: cli.client_certificate,
+            client_key: cli.client_key,
+            #[cfg(feature = "psk")]
+            psk_identity: cli.psk_identity,
+            #[cfg(feature = "psk")]
+            psk_key: cli.psk_key,
+            connect_timeout: Duration::from_secs(cli.connect_timeout_seconds),
+        },
+        preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
+    })
+    .context("Failed to build TACACS+ client service configuration")?;
+
+    service.serve().await
+}

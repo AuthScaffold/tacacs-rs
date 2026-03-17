@@ -6,7 +6,9 @@
 use anyhow::Context;
 use futures::future::join_all;
 use futures::stream::{self, StreamExt};
+use std::str::FromStr;
 use std::time::Instant;
+use tacacsrs_client_service::{AccountingOperation, IpcEndpoint, ServiceClient};
 
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::SingleConnectionState;
@@ -17,6 +19,28 @@ use crate::connection::{establish_connection, Connection};
 
 use super::progress::{print_load_test_summary, ProgressConfig, ProgressTracker};
 use super::types::{BatchRequest, LoadTestConfig, LoadTestResult, RequestResult};
+
+fn service_client(cli: &Cli) -> anyhow::Result<ServiceClient> {
+    let endpoint = cli
+        .service_endpoint
+        .as_deref()
+        .context("Service endpoint is required for service mode")?;
+    let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
+    Ok(ServiceClient::new(endpoint))
+}
+
+fn to_service_accounting_request(request: &super::types::AccountingRequest) -> AccountingOperation {
+    AccountingOperation {
+        user: request.user.clone(),
+        port: request.port.clone(),
+        remote_address: request.rem_addr.clone(),
+        command: request.cmd.clone(),
+        command_arguments: request.cmd_args.clone(),
+        custom_flag_1: request.custom_flags.custom_flag_1,
+        custom_flag_2: request.custom_flags.custom_flag_2,
+        session_id: request.session_id,
+    }
+}
 
 /// Executes a single batch request on a session
 pub async fn execute_single_request(
@@ -57,6 +81,29 @@ pub async fn execute_single_request(
 
         BatchRequest::Authorization(req) => {
             // TODO: Implement authorization
+            log::warn!("Authorization not yet implemented for user: {}", req.user);
+            Err(format!("Authorization not yet implemented (user: {})", req.user))
+        }
+    }
+}
+
+async fn execute_single_request_via_service(
+    cli: &Cli,
+    request: &BatchRequest,
+) -> Result<String, String> {
+    let client = service_client(cli).map_err(|error| error.to_string())?;
+
+    match request {
+        BatchRequest::Accounting(req) => client
+            .send_accounting(to_service_accounting_request(req))
+            .await
+            .map(|response| format!("Accounting success: {response:?}"))
+            .map_err(|error| format!("Accounting failed: {error}")),
+        BatchRequest::Authentication(req) => {
+            log::warn!("Authentication not yet implemented for user: {}", req.user);
+            Err(format!("Authentication not yet implemented (user: {})", req.user))
+        }
+        BatchRequest::Authorization(req) => {
             log::warn!("Authorization not yet implemented for user: {}", req.user);
             Err(format!("Authorization not yet implemented (user: {})", req.user))
         }
@@ -472,6 +519,133 @@ fn build_load_test_result(
         first_failure: failure_msg,
         requests_per_second,
     })
+}
+
+pub async fn execute_batch_via_service(
+    cli: &Cli,
+    batch: &super::types::BatchFile,
+) -> anyhow::Result<Vec<RequestResult>> {
+    if let Some(desc) = &batch.metadata.description {
+        log::info!("Executing batch: {desc}");
+        println!("Batch: {desc}");
+    }
+
+    if let Some(load_config) = &batch.metadata.load_test {
+        return execute_batch_load_test_via_service(cli, batch, load_config).await;
+    }
+
+    let request_count = batch.requests.len();
+    log::info!(
+        "Processing {request_count} requests through central service (parallel: {})",
+        batch.metadata.parallel
+    );
+
+    if batch.metadata.parallel {
+        let futures: Vec<_> = batch
+            .requests
+            .iter()
+            .enumerate()
+            .map(|(index, request)| async move {
+                let result = execute_single_request_via_service(cli, request).await;
+                RequestResult {
+                    index,
+                    request_type: request.type_name(),
+                    result,
+                }
+            })
+            .collect();
+        Ok(join_all(futures).await)
+    } else {
+        let mut results = Vec::with_capacity(batch.requests.len());
+        for (index, request) in batch.requests.iter().enumerate() {
+            let result = execute_single_request_via_service(cli, request).await;
+            results.push(RequestResult {
+                index,
+                request_type: request.type_name(),
+                result,
+            });
+        }
+        Ok(results)
+    }
+}
+
+async fn execute_batch_load_test_via_service(
+    cli: &Cli,
+    batch: &super::types::BatchFile,
+    load_config: &LoadTestConfig,
+) -> anyhow::Result<Vec<RequestResult>> {
+    log::info!(
+        "Service load testing mode enabled: {} repetitions, max {} parallel",
+        load_config.repetitions,
+        load_config.max_parallel
+    );
+    println!(
+        "\n=== Load Testing Mode ===\nRepetitions: {}\nMax parallel: {}\nTotal requests: {}",
+        load_config.repetitions,
+        load_config.max_parallel,
+        load_config.repetitions * batch.requests.len()
+    );
+
+    let total_requests = batch.requests.len() * load_config.repetitions;
+    let start_time = Instant::now();
+    let tracker = ProgressTracker::new(ProgressConfig {
+        total_requests,
+        ..Default::default()
+    });
+
+    let cli = cli.clone();
+    let results = stream::iter((0..load_config.repetitions).flat_map(|rep| {
+        batch
+            .requests
+            .iter()
+            .enumerate()
+            .map(move |(idx, req)| (rep, idx, req))
+    }))
+    .map(|(rep, idx, request)| {
+        let cli = cli.clone();
+        let completed = tracker.completed.clone();
+        let failed = tracker.failed.clone();
+        let first_failure = tracker.first_failure.clone();
+
+        async move {
+            if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                return false;
+            }
+
+            match execute_single_request_via_service(&cli, request).await {
+                Ok(_) => {
+                    completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    true
+                }
+                Err(error) => {
+                    if !failed.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        let mut failure = first_failure.lock().await;
+                        *failure = Some(format!(
+                            "Request failed at rep {}, request {} ({}): {}",
+                            rep + 1,
+                            idx + 1,
+                            request.type_name(),
+                            error
+                        ));
+                    }
+                    false
+                }
+            }
+        }
+    })
+    .buffer_unordered(load_config.max_parallel)
+    .collect::<Vec<_>>()
+    .await;
+
+    let failure_msg = tracker.finish().await;
+    let result = build_load_test_result(start_time, total_requests, &results, failure_msg)?;
+    print_load_test_summary(&result);
+
+    if result.is_success() {
+        Ok(vec![])
+    } else {
+        anyhow::bail!("Load test failed: {}", result.first_failure.unwrap_or_default())
+    }
 }
 
 /// Entry point for executing a batch file

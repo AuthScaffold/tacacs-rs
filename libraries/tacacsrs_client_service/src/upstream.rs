@@ -1,0 +1,269 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Context;
+use async_trait::async_trait;
+use tacacsrs_messages::accounting::request::AccountingRequest;
+use tacacsrs_messages::enumerations::{
+    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
+    TacacsAuthenticationType, TacacsFlags,
+};
+use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
+use tacacsrs_networking::traits::SessionManagementTrait;
+use tacacsrs_networking::{connection::TacacsConnection, transport::tls::TlsConfigurationBuilder};
+#[cfg(feature = "psk")]
+use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
+
+use crate::protocol::{AccountingOperation, AccountingOperationResponse};
+
+#[derive(Debug, Clone)]
+pub struct UpstreamConnectionOptions {
+    pub obfuscation_key: Option<String>,
+    pub use_tls: bool,
+    pub client_certificate: Option<String>,
+    pub client_key: Option<String>,
+    #[cfg(feature = "psk")]
+    pub psk_identity: Option<String>,
+    #[cfg(feature = "psk")]
+    pub psk_key: Option<String>,
+    pub connect_timeout: Duration,
+}
+
+impl Default for UpstreamConnectionOptions {
+    fn default() -> Self {
+        Self {
+            obfuscation_key: None,
+            use_tls: false,
+            client_certificate: None,
+            client_key: None,
+            #[cfg(feature = "psk")]
+            psk_identity: None,
+            #[cfg(feature = "psk")]
+            psk_key: None,
+            connect_timeout: Duration::from_secs(5),
+        }
+    }
+}
+
+#[async_trait]
+pub trait UpstreamConnection: Send + Sync {
+    fn server_address(&self) -> &str;
+    async fn is_usable_for_new_sessions(&self) -> bool;
+    async fn send_accounting(
+        &self,
+        request: &AccountingOperation,
+    ) -> anyhow::Result<AccountingOperationResponse>;
+}
+
+#[async_trait]
+pub trait UpstreamConnector: Send + Sync {
+    async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
+}
+
+#[derive(Debug, Clone)]
+pub struct NetworkUpstreamConnector {
+    options: UpstreamConnectionOptions,
+}
+
+impl NetworkUpstreamConnector {
+    #[must_use]
+    pub fn new(options: UpstreamConnectionOptions) -> Self {
+        Self { options }
+    }
+}
+
+#[async_trait]
+impl UpstreamConnector for NetworkUpstreamConnector {
+    async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        let connection = connect_upstream(address, &self.options).await?;
+        Ok(Arc::new(TacacsUpstreamConnection {
+            server_address: address.to_owned(),
+            connection,
+        }))
+    }
+}
+
+struct TacacsUpstreamConnection {
+    server_address: String,
+    connection: Arc<TacacsConnection>,
+}
+
+#[async_trait]
+impl UpstreamConnection for TacacsUpstreamConnection {
+    fn server_address(&self) -> &str {
+        &self.server_address
+    }
+
+    async fn is_usable_for_new_sessions(&self) -> bool {
+        self.connection.can_create_sessions().await
+    }
+
+    async fn send_accounting(
+        &self,
+        request: &AccountingOperation,
+    ) -> anyhow::Result<AccountingOperationResponse> {
+        let session = match request.session_id {
+            Some(session_id) => self.connection.create_session_with_id(session_id).await,
+            None => self.connection.create_session().await,
+        }
+        .with_context(|| format!("Failed to create session on {}", self.server_address))?;
+
+        let response = session
+            .send_accounting_request_with_flags(
+                build_accounting_request(request),
+                build_custom_flags(request),
+            )
+            .await
+            .with_context(|| {
+                format!("Failed to send accounting request via {}", self.server_address)
+            })?;
+
+        Ok(AccountingOperationResponse {
+            server: self.server_address.clone(),
+            status_code: response.status as u8,
+            status_name: format!("{:?}", response.status),
+            server_message: response.server_msg,
+            data: response.data,
+        })
+    }
+}
+
+fn build_accounting_request(request: &AccountingOperation) -> AccountingRequest {
+    AccountingRequest {
+        flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
+        authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
+        priv_lvl: 0,
+        authen_type: TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
+        authen_service: TacacsAuthenticationService::TacPlusAuthenSvcNone,
+        user: request.user.clone(),
+        port: request.port.clone(),
+        rem_address: request.remote_address.clone(),
+        args: build_accounting_args(&request.command, &request.command_arguments),
+    }
+}
+
+fn build_accounting_args(command: &str, command_arguments: &[String]) -> Vec<String> {
+    let base_args = ["service=shell".to_owned(), format!("cmd={command}")];
+    let extra_args = command_arguments.iter().map(|arg| format!("cmd-arg={arg}"));
+    base_args.into_iter().chain(extra_args).collect()
+}
+
+fn build_custom_flags(request: &AccountingOperation) -> TacacsFlags {
+    let mut flags = TacacsFlags::empty();
+    if request.custom_flag_1 {
+        flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1;
+    }
+    if request.custom_flag_2 {
+        flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
+    }
+    flags
+}
+
+async fn connect_upstream(
+    address: &str,
+    options: &UpstreamConnectionOptions,
+) -> anyhow::Result<Arc<TacacsConnection>> {
+    let stream = tokio::time::timeout(
+        options.connect_timeout,
+        tacacsrs_networking::helpers::connect_tcp(address),
+    )
+    .await
+    .with_context(|| format!("Timed out connecting to {address}"))?
+    .with_context(|| format!("Failed to establish TCP connection to {address}"))?;
+
+    let connection =
+        Arc::new(TacacsConnection::new(options.obfuscation_key.as_deref().map(str::as_bytes)));
+
+    if options.use_tls {
+        #[cfg(feature = "psk")]
+        if let (Some(psk_identity), Some(psk_key)) =
+            (options.psk_identity.as_ref(), options.psk_key.as_ref())
+        {
+            let psk = PskIdentity::new(psk_identity, psk_key.as_bytes())
+                .context("Invalid PSK credentials")?;
+            let tls_stream = PskConfigurationBuilder::new(psk)
+                .connect(stream)
+                .await
+                .context("Failed to establish TLS PSK connection")?;
+            connection
+                .run(tls_stream)
+                .await
+                .context("Failed to start TLS PSK connection handler")?;
+            return Ok(connection);
+        }
+
+        let client_cert = options
+            .client_certificate
+            .as_ref()
+            .context("TLS requires a client certificate or PSK credentials")?;
+        let client_key = options
+            .client_key
+            .as_ref()
+            .context("TLS requires a client key or PSK credentials")?;
+
+        let tls_config = Arc::new(
+            TlsConfigurationBuilder::new()
+                .with_client_auth_cert_files(client_cert, client_key)
+                .await
+                .context("Failed to load TLS certificates")?
+                .with_certificate_verification_disabled(true)
+                .build()
+                .context("Failed to build TLS configuration")?,
+        );
+
+        let tls_stream = tacacsrs_networking::transport::tls::connect_tls(
+            &tls_config,
+            stream,
+            "tacacsserver.local",
+        )
+        .await
+        .context("Failed to establish TLS connection")?;
+
+        connection
+            .run(tls_stream)
+            .await
+            .context("Failed to start TLS connection handler")?;
+    } else {
+        connection
+            .run(stream)
+            .await
+            .context("Failed to start TCP connection handler")?;
+    }
+
+    Ok(connection)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_accounting_args() {
+        let args = build_accounting_args("show", &["users".to_owned(), "brief".to_owned()]);
+        assert_eq!(
+            args,
+            vec![
+                "service=shell",
+                "cmd=show",
+                "cmd-arg=users",
+                "cmd-arg=brief"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_custom_flags() {
+        let flags = build_custom_flags(&AccountingOperation {
+            user: "user".to_owned(),
+            port: "tty0".to_owned(),
+            remote_address: "127.0.0.1".to_owned(),
+            command: "show".to_owned(),
+            command_arguments: vec![],
+            custom_flag_1: true,
+            custom_flag_2: false,
+            session_id: None,
+        });
+        assert!(flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1));
+        assert!(!flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2));
+    }
+}
