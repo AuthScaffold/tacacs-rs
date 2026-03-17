@@ -3,16 +3,16 @@
 Reusable building blocks for the central TACACS+ client service introduced for
 local IPC consumers such as TACON.
 
-The crate keeps the transport-independent protocol, IPC framing, local listener,
-and upstream failover logic together in one library while the runnable process
-lives in `executables/tacacs_client_service`.
+The crate keeps the transport-independent domain types, checked-in protobuf IPC
+contract, local listener, and upstream failover logic together in one library
+while the runnable process lives in `executables/tacacs_client_service`.
 
 ## Design goals
 
 - expose a higher-level RPC contract instead of raw TACACS+ packet headers
 - keep upstream TACACS+ connections persistent and reusable
 - support ordered failover with preferred-server recovery
-- keep the protocol visible to non-Rust consumers through a checked-in JSON
+- keep the IPC contract visible and versioned through a checked-in `.proto`
   schema
 - make the same architecture documentation visible in both rustdoc and GitHub
 
@@ -21,8 +21,8 @@ lives in `executables/tacacs_client_service`.
 ```text
 tacacsrs_client_service
 ├── client      - short-lived IPC client wrapper
-├── codec       - framed JSON read/write helpers
-├── protocol    - operation-centric IPC request/response contract
+├── ipc         - generated protobuf / gRPC bindings
+├── protocol    - operation-centric domain request/response contract
 ├── service
 │   ├── config       - public listener and failover configuration
 │   ├── coordinator  - long-lived service runtime and listener lifecycle
@@ -39,13 +39,13 @@ tacacsrs_client_service
 │ (for example    │
 │ TACON)          │
 └──────┬──────────┘
-       │ ServiceRequest / ServiceResponse
+       │ protobuf request / response messages
        v
 ┌─────────────────┐
 │ ServiceClient   │
-│ + codec         │
+│ + tonic client  │
 └──────┬──────────┘
-       │ framed JSON over Unix socket / loopback TCP
+       │ gRPC over Unix socket / loopback TCP
        v
 ┌──────────────────────────────┐
 │ TacacsClientService          │
@@ -73,8 +73,7 @@ tacacsrs_client_service
 
 ## Request activity diagram
 
-The runtime uses one framed request/response exchange per local IPC session in
-the current accounting-focused scope.
+The runtime currently uses one unary accounting RPC per local IPC session.
 
 ```text
 Client
@@ -83,7 +82,7 @@ Client
 connect to IPC endpoint
   |
   v
-send ServiceRequest::Accounting
+send Accounting RPC
   |
   v
 TacacsClientService accepts client
@@ -111,12 +110,12 @@ send TACACS+ accounting request
   |   clear cached connection
   |   advance active index
   |   return ServiceError { server, retriable: true }
-  |
-  v
+   |
+   v
 map reply to AccountingOperationResponse
   |
   v
-write ServiceResponse::Accounting
+return AccountingResponse
 ```
 
 ## Failover state chart
@@ -171,7 +170,7 @@ On Unix systems the listener follows this startup sequence:
 4. if the path is stale, remove the filesystem entry and bind a new socket
 5. apply the configured socket mode
 
-Shutdown stops accepting new IPC connections first, waits for active clients to
+Shutdown stops accepting new IPC connections first, waits for active RPCs to
 finish, and then removes the Unix socket path.
 
 ## Configuration details
@@ -211,33 +210,27 @@ server again for that same burst of IPC work if it failed.
 
 ### Per-client request handling
 
-Each accepted IPC connection currently carries a single request/response
-exchange:
+Each accepted IPC connection currently carries a single unary RPC exchange:
 
-1. decode one `ServiceRequest`
+1. decode one protobuf accounting request
 2. select the upstream server for that IPC session
 3. execute the request against that bound server
-4. encode one `ServiceResponse`
-
-Unsupported request kinds do not enter the dispatch path because they fail
-during JSON decoding of the tagged `ServiceRequest` enum.
+4. encode one protobuf accounting reply envelope
 
 ## Protocol source of truth
 
 The maintainable choice for this crate is:
 
-- define the IPC contract directly in Rust in `src/protocol.rs`
-- derive `serde` for runtime serialization
-- derive `schemars::JsonSchema` for schema generation
-- check the generated schema into `ipc-protocol.schema.json`
-- keep a test that ensures the checked-in schema matches the Rust types
+- define the wire contract in `proto/tacacsrs_client_service.proto`
+- generate the Rust gRPC/protobuf bindings at build time
+- keep the operation-centric domain types in `src/protocol.rs`
+- keep focused conversion tests between the domain types and protobuf messages
 
-This keeps the runtime types, the schema visible in GitHub, and the validation
-logic aligned without introducing a separate code generation pipeline. The
-protocol is intentionally small and internal to the repository, so adding a
-schema-first build step would increase moving parts without reducing day-to-day
-maintenance cost.
+This keeps the on-the-wire IPC schema explicit and type-safe while still
+letting the rest of the crate work with small hand-written domain types. The
+checked-in `.proto` is the compatibility surface for local IPC, and the build
+step ensures the generated Rust transport bindings stay aligned with it.
 
 There is also no compatibility promise for this IPC protocol today. When the
-contract changes, the Rust types and checked-in schema should change together in
-the same patch.
+contract changes, the `.proto`, generated transport bindings, and domain-type
+conversions should change together in the same patch.

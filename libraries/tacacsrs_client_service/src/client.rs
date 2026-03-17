@@ -1,17 +1,22 @@
-//! Local IPC client helpers for talking to the central TACACS+ service.
+//! Local gRPC client helpers for talking to the central TACACS+ service.
 //!
-//! The client is intentionally lightweight: callers create a new IPC
-//! connection per request or per higher-level workflow and exchange one framed
-//! JSON request/response pair without taking ownership of TACACS+ protocol
-//! details.
+//! The client is intentionally lightweight: callers point it at a local IPC
+//! endpoint and each request is carried through the protobuf/gRPC contract
+//! without exposing TACACS+ wire details to the caller.
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
+use http::Uri;
+use hyper_util::rt::TokioIo;
+use tonic::transport::{Channel, Endpoint};
+use tower::service_fn;
 
-use crate::codec::{read_message, write_message};
-use crate::protocol::{
-    AccountingOperation, AccountingOperationResponse, ServiceRequest, ServiceResponse,
-};
+use crate::ipc;
+use crate::ipc::local_tacacs_client_service_client::LocalTacacsClientServiceClient;
+use crate::protocol::{AccountingOperation, AccountingOperationResponse, ServiceError};
 use crate::service::IpcEndpoint;
+
+#[cfg(unix)]
+const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 
 /// Convenience wrapper for making local IPC calls to the central service.
 #[derive(Debug, Clone)]
@@ -30,18 +35,26 @@ impl ServiceClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the IPC connection fails, the request/response
-    /// exchange cannot be encoded or decoded, or the service returns an error.
+    /// Returns an error if the IPC connection fails, the gRPC exchange cannot
+    /// be completed, or the service returns a structured error.
     pub async fn send_accounting(
         &self,
         request: AccountingOperation,
     ) -> anyhow::Result<AccountingOperationResponse> {
-        match self
-            .send_request(ServiceRequest::Accounting(request))
-            .await?
-        {
-            ServiceResponse::Accounting(response) => Ok(response),
-            ServiceResponse::Error(error) => {
+        let mut client = self.connect().await?;
+        let rpc_request: ipc::AccountingRequest = (&request).into();
+        let reply = client
+            .accounting(rpc_request)
+            .await
+            .context("Failed to execute accounting RPC")?
+            .into_inner();
+
+        match reply.result.context("Accounting RPC returned no result")? {
+            ipc::accounting_reply::Result::Response(response) => {
+                AccountingOperationResponse::from_proto(response)
+            }
+            ipc::accounting_reply::Result::Error(error) => {
+                let error = ServiceError::from_proto(error);
                 let retry_note = if error.retriable {
                     " (retriable)"
                 } else {
@@ -56,25 +69,35 @@ impl ServiceClient {
         }
     }
 
-    async fn send_request(&self, request: ServiceRequest) -> anyhow::Result<ServiceResponse> {
+    async fn connect(&self) -> anyhow::Result<LocalTacacsClientServiceClient<Channel>> {
         match &self.endpoint {
             #[cfg(unix)]
             IpcEndpoint::Unix(path) => {
-                let mut stream =
-                    tokio::net::UnixStream::connect(path)
-                        .await
-                        .with_context(|| {
-                            format!("Failed to connect to service socket {}", path.display())
-                        })?;
-                write_message(&mut stream, &request).await?;
-                read_message(&mut stream).await
+                let path = path.clone();
+                let connect_path = path.clone();
+                let channel = Endpoint::try_from(UDS_GRPC_CONNECT_URI)
+                    .context("Failed to build Unix IPC gRPC endpoint")?
+                    .connect_with_connector(service_fn(move |_: Uri| {
+                        let path = connect_path.clone();
+                        async move {
+                            tokio::net::UnixStream::connect(path)
+                                .await
+                                .map(TokioIo::new)
+                        }
+                    }))
+                    .await
+                    .with_context(|| {
+                        format!("Failed to connect to service socket {}", path.display())
+                    })?;
+                Ok(LocalTacacsClientServiceClient::new(channel))
             }
             IpcEndpoint::Tcp(address) => {
-                let mut stream = tokio::net::TcpStream::connect(address)
+                let channel = Endpoint::from_shared(format!("http://{address}"))
+                    .context("Failed to build TCP IPC gRPC endpoint")?
+                    .connect()
                     .await
                     .with_context(|| format!("Failed to connect to service endpoint {address}"))?;
-                write_message(&mut stream, &request).await?;
-                read_message(&mut stream).await
+                Ok(LocalTacacsClientServiceClient::new(channel))
             }
         }
     }

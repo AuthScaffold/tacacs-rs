@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package tacacsrs.client_service.v1;
+
+service LocalTacacsClientService {
+  rpc Accounting(AccountingRequest) returns (AccountingReply);
+}
+
+message AccountingRequest {
+  string user = 1;
+  string port = 2;
+  string remote_address = 3;
+  string command = 4;
+  repeated string command_arguments = 5;
+}
+
+enum AccountingStatus {
+  ACCOUNTING_STATUS_UNSPECIFIED = 0;
+  ACCOUNTING_STATUS_SUCCESS = 1;
+  ACCOUNTING_STATUS_ERROR = 2;
+  ACCOUNTING_STATUS_FOLLOW = 33;
+}
+
+message AccountingResponse {
+  string server = 1;
+  AccountingStatus status = 2;
+  string server_message = 3;
+  string data = 4;
+}
+
+message ServiceError {
+  string message = 1;
+  string server = 2;
+  bool retriable = 3;
+}
+
+message AccountingReply {
+  oneof result {
+    AccountingResponse response = 1;
+    ServiceError error = 2;
+  }
+}

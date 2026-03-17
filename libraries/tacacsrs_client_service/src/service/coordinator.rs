@@ -12,9 +12,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
+#[cfg(unix)]
+use tokio_stream::wrappers::UnixListenerStream;
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::{Request, Response, Status};
 
 use super::config::{IpcEndpoint, ServiceConfig};
 use super::state::ServiceState;
+use crate::ipc;
+use crate::ipc::local_tacacs_client_service_server::{
+    LocalTacacsClientService, LocalTacacsClientServiceServer,
+};
+use crate::protocol::AccountingOperation;
 use crate::upstream::{NetworkUpstreamConnector, UpstreamConnector};
 
 /// Long-lived local TACACS+ client service.
@@ -24,6 +33,31 @@ use crate::upstream::{NetworkUpstreamConnector, UpstreamConnector};
 pub struct TacacsClientService {
     config: ServiceConfig,
     state: Arc<ServiceState>,
+}
+
+#[derive(Clone)]
+struct GrpcService {
+    state: Arc<ServiceState>,
+}
+
+#[tonic::async_trait]
+impl LocalTacacsClientService for GrpcService {
+    async fn accounting(
+        &self,
+        request: Request<ipc::AccountingRequest>,
+    ) -> Result<Response<ipc::AccountingReply>, Status> {
+        let request = AccountingOperation::try_from(request.into_inner())
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let result = match self.state.execute_accounting_request(request).await {
+            Ok(response) => ipc::AccountingReply {
+                result: Some(ipc::accounting_reply::Result::Response(response.into_proto())),
+            },
+            Err(error) => ipc::AccountingReply {
+                result: Some(ipc::accounting_reply::Result::Error(error.into_proto())),
+            },
+        };
+        Ok(Response::new(result))
+    }
 }
 
 impl TacacsClientService {
@@ -99,33 +133,32 @@ impl TacacsClientService {
     #[cfg(unix)]
     /// Serves Unix domain socket IPC clients until shutdown is requested.
     ///
-    /// After shutdown is signalled the listener stops accepting new clients,
-    /// waits for active handlers to drain, and then removes the socket path.
+    /// The gRPC server stops accepting new requests once shutdown is signalled,
+    /// waits for active RPC handlers to drain, and then removes the socket path.
     async fn serve_unix(&self, path: &PathBuf) -> anyhow::Result<()> {
         let listener = self.prepare_unix_listener(path).await?;
+        let incoming = UnixListenerStream::new(listener);
+        let grpc_service = GrpcService {
+            state: Arc::clone(&self.state),
+        };
 
-        let shutdown = shutdown_signal();
-        tokio::pin!(shutdown);
-
-        loop {
-            tokio::select! {
-                () = &mut shutdown => break,
-                accept_result = listener.accept() => {
-                    let (stream, _) = accept_result.context("Failed to accept Unix socket connection")?;
-                    let state = Arc::clone(&self.state);
-                    tokio::spawn(async move {
-                        if let Err(error) = state.handle_client(stream).await {
-                            log::error!("IPC client handling failed: {error}");
-                        }
-                    });
-                }
-            }
-        }
+        tonic::transport::Server::builder()
+            .add_service(LocalTacacsClientServiceServer::new(grpc_service))
+            .serve_with_incoming_shutdown(incoming, shutdown_signal())
+            .await
+            .with_context(|| format!("Unix IPC server {} failed", path.display()))?;
 
         self.state.wait_for_active_clients().await;
-        tokio::fs::remove_file(path)
-            .await
-            .with_context(|| format!("Failed to remove socket {}", path.display()))?;
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                log::debug!("Unix socket {} was already removed during shutdown", path.display());
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to remove socket {}", path.display()));
+            }
+        }
         Ok(())
     }
 
@@ -151,10 +184,24 @@ impl TacacsClientService {
                     "Unix socket {} is already accepting connections; another service instance may already be running",
                     path.display()
                 ),
-                Err(_) => {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::NotFound
+                    ) =>
+                {
                     tokio::fs::remove_file(path).await.with_context(|| {
                         format!("Failed to remove stale socket {}", path.display())
                     })?;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "Refusing to remove existing socket {} because it may still belong to another service instance",
+                            path.display()
+                        )
+                    });
                 }
             }
         }
@@ -179,24 +226,16 @@ impl TacacsClientService {
         let listener = tokio::net::TcpListener::bind(address)
             .await
             .with_context(|| format!("Failed to bind TCP IPC endpoint {address}"))?;
+        let incoming = TcpListenerStream::new(listener);
+        let grpc_service = GrpcService {
+            state: Arc::clone(&self.state),
+        };
 
-        let shutdown = shutdown_signal();
-        tokio::pin!(shutdown);
-
-        loop {
-            tokio::select! {
-                () = &mut shutdown => break,
-                accept_result = listener.accept() => {
-                    let (stream, _) = accept_result.context("Failed to accept TCP IPC connection")?;
-                    let state = Arc::clone(&self.state);
-                    tokio::spawn(async move {
-                        if let Err(error) = state.handle_client(stream).await {
-                            log::error!("IPC client handling failed: {error}");
-                        }
-                    });
-                }
-            }
-        }
+        tonic::transport::Server::builder()
+            .add_service(LocalTacacsClientServiceServer::new(grpc_service))
+            .serve_with_incoming_shutdown(incoming, shutdown_signal())
+            .await
+            .with_context(|| format!("TCP IPC server {address} failed"))?;
 
         self.state.wait_for_active_clients().await;
         Ok(())

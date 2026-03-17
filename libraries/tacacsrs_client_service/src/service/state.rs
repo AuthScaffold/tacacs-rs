@@ -8,11 +8,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::bail;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, Notify, RwLock};
 
-use crate::codec::{read_message, write_message};
-use crate::protocol::{ServiceError, ServiceRequest, ServiceResponse};
+use crate::protocol::{AccountingOperation, AccountingOperationResponse, ServiceError};
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
 
 /// Shared runtime state for all IPC client handlers spawned by the listener.
@@ -200,57 +198,30 @@ impl ServiceState {
         })
     }
 
-    /// Handles one IPC client connection from first framed request through the
-    /// final framed response.
+    /// Executes one IPC accounting RPC against the currently selected upstream
+    /// TACACS+ server.
     ///
-    /// The current protocol allows exactly one request per IPC connection in
-    /// this service path, so the method reads one [`ServiceRequest`], binds the
-    /// session to an upstream server, and writes one [`ServiceResponse`].
-    ///
-    /// Unknown or unsupported request kinds do not reach the dispatch match
-    /// below: deserialization in [`read_message`] fails first because
-    /// [`ServiceRequest`] is a tagged enum with `deny_unknown_fields`.
-    pub(super) async fn handle_client<S>(&self, mut stream: S) -> anyhow::Result<()>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
-        let _client_guard = self.client_tracker.start_guard();
-        let request: ServiceRequest = read_message(&mut stream).await?;
-        let response = match self.bind_server_for_new_session().await {
-            Ok(bound_server) => self.execute_request(bound_server, request).await,
-            Err(error) => {
-                ServiceResponse::Error(ServiceError::new(error.to_string()).retriable(true))
-            }
-        };
-
-        write_message(&mut stream, &response).await
-    }
-
-    /// Executes a decoded IPC request against the upstream server already bound
-    /// to this IPC session.
-    ///
-    /// The match is exhaustive over [`ServiceRequest`]. If a future request
-    /// variant is added, Rust will require this handler to define how that new
-    /// operation should behave. Unsupported request kinds therefore fail at
-    /// decode time today and become compile-time work when the protocol grows.
-    async fn execute_request(
+    /// Each unary gRPC call maps to exactly one execution of this method. The
+    /// state records the request as in-flight for graceful shutdown, binds it to
+    /// an upstream server for new-session purposes, and returns either the
+    /// upstream accounting reply or a structured retriable service error.
+    pub(super) async fn execute_accounting_request(
         &self,
-        bound_server: BoundServer,
-        request: ServiceRequest,
-    ) -> ServiceResponse {
-        match request {
-            ServiceRequest::Accounting(accounting) => {
-                match bound_server.connection.send_accounting(&accounting).await {
-                    Ok(response) => ServiceResponse::Accounting(response),
-                    Err(error) => {
-                        self.note_failure(bound_server.index).await;
-                        ServiceResponse::Error(
-                            ServiceError::new(error.to_string())
-                                .with_server(bound_server.connection.server_address())
-                                .retriable(true),
-                        )
-                    }
-                }
+        request: AccountingOperation,
+    ) -> Result<AccountingOperationResponse, ServiceError> {
+        let _client_guard = self.client_tracker.start_guard();
+        let bound_server = self
+            .bind_server_for_new_session()
+            .await
+            .map_err(|error| ServiceError::new(error.to_string()).retriable(true))?;
+
+        match bound_server.connection.send_accounting(&request).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                self.note_failure(bound_server.index).await;
+                Err(ServiceError::new(error.to_string())
+                    .with_server(bound_server.connection.server_address())
+                    .retriable(true))
             }
         }
     }
