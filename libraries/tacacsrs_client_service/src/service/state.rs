@@ -26,6 +26,7 @@ pub(super) struct ServiceState {
     servers: Vec<ServerState>,
     connector: Arc<dyn UpstreamConnector>,
     active_index: RwLock<usize>,
+    connect_retry_cooldown: Duration,
     preferred_probe_interval: Duration,
     client_tracker: Arc<ClientTracker>,
 }
@@ -103,6 +104,7 @@ impl ServiceState {
     pub(super) fn new(
         server_addresses: Vec<String>,
         connector: Arc<dyn UpstreamConnector>,
+        connect_retry_cooldown: Duration,
         preferred_probe_interval: Duration,
     ) -> Self {
         Self {
@@ -117,6 +119,7 @@ impl ServiceState {
                 .collect(),
             connector,
             active_index: RwLock::new(0),
+            connect_retry_cooldown,
             preferred_probe_interval,
             client_tracker: Arc::new(ClientTracker::default()),
         }
@@ -139,16 +142,13 @@ impl ServiceState {
         for offset in 0..self.servers.len() {
             let index = (start_index + offset) % self.servers.len();
             match self.ensure_connection(index).await {
-                Ok(connection) if connection.is_usable_for_new_sessions().await => {
+                Ok(connection) => {
                     *self.active_index.write().await = index;
                     log::info!(
                         "Initialized startup upstream connection using {}",
                         connection.server_address()
                     );
                     return;
-                }
-                Ok(_) => {
-                    self.note_failure(index).await;
                 }
                 Err(error) => {
                     log::warn!(
@@ -190,14 +190,13 @@ impl ServiceState {
                 }
 
                 match state.ensure_connection(0).await {
-                    Ok(connection) if connection.is_usable_for_new_sessions().await => {
+                    Ok(connection) => {
                         log::info!(
                             "Preferred TACACS+ server {} recovered; routing new sessions back to it",
                             connection.server_address()
                         );
                         *state.active_index.write().await = 0;
                     }
-                    Ok(_) => {}
                     Err(error) => {
                         log::debug!("Preferred TACACS+ server probe failed: {error}");
                     }
@@ -286,12 +285,9 @@ impl ServiceState {
         for offset in 0..self.servers.len() {
             let index = (start_index + offset) % self.servers.len();
             match self.ensure_connection(index).await {
-                Ok(connection) if connection.is_usable_for_new_sessions().await => {
+                Ok(connection) => {
                     *self.active_index.write().await = index;
                     return Ok(BoundServer { index, connection });
-                }
-                Ok(_) => {
-                    self.note_failure(index).await;
                 }
                 Err(error) => {
                     log::warn!(
@@ -310,11 +306,24 @@ impl ServiceState {
     /// if the cache is empty or no longer usable for new sessions.
     ///
     /// This method is the reconnect path used by both warm-up and per-request
-    /// server selection. It serializes connection establishment per server so
-    /// bursty IPC traffic does not multiply upstream handshakes. After a
-    /// failed connect attempt the server is placed into a retry cooldown for
-    /// `preferred_probe_interval`, which lets other callers fail over instead
-    /// of repeatedly retrying the same down server.
+    /// server selection. The flow is intentionally exact:
+    ///
+    /// 1. check the cached connection without taking the per-server connect lock
+    /// 2. if it is still usable for new sessions, return it immediately
+    /// 3. otherwise, fast-fail if the server is still inside its retry cooldown
+    /// 4. wait for the per-server connect lock so only one task can reconnect
+    /// 5. once the lock is held, re-check the cache because another waiter may
+    ///    already have populated it
+    /// 6. re-check the retry cooldown while still holding the lock
+    /// 7. perform one real upstream connect attempt
+    /// 8. cache the successful connection so queued callers reuse it, or record
+    ///    a short retry cooldown if the connect attempt failed
+    ///
+    /// If the cached connection has learned that the server does not support
+    /// TACACS+ single-connection reuse (or has later withdrawn that support for
+    /// graceful shutdown), [`UpstreamConnection::is_usable_for_new_sessions`]
+    /// returns `false` and the next IPC request reconnects instead of trying to
+    /// reuse the drained connection.
     ///
     /// This method does not notify IPC clients directly; callers translate any
     /// returned error into a retriable [`crate::protocol::ServiceError`] for
@@ -330,7 +339,7 @@ impl ServiceState {
             }
 
             log::debug!(
-                "Cached upstream connection for {} is no longer usable; reconnecting",
+                "Cached upstream connection for {} is no longer usable for new sessions; reconnecting",
                 self.servers[index].address
             );
         }
@@ -435,6 +444,6 @@ impl ServiceState {
     /// cooldown update with connection-cache changes.
     async fn record_retry_cooldown(&self, index: usize) {
         *self.servers[index].retry_after.write().await =
-            Some(Instant::now() + self.preferred_probe_interval);
+            Some(Instant::now() + self.connect_retry_cooldown);
     }
 }

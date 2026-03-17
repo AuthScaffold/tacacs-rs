@@ -60,6 +60,54 @@ struct FakeConnector {
     max_in_flight_connects: AtomicUsize,
 }
 
+#[derive(Debug)]
+struct SingleSessionConnection {
+    address: String,
+    usable: AtomicBool,
+}
+
+#[async_trait]
+impl UpstreamConnection for SingleSessionConnection {
+    fn server_address(&self) -> &str {
+        &self.address
+    }
+
+    async fn is_usable_for_new_sessions(&self) -> bool {
+        self.usable.load(Ordering::Relaxed)
+    }
+
+    async fn send_accounting(
+        &self,
+        _request: &AccountingOperation,
+    ) -> anyhow::Result<AccountingOperationResponse> {
+        self.usable.store(false, Ordering::Relaxed);
+        Ok(AccountingOperationResponse {
+            server: self.address.clone(),
+            status: AccountingResponseStatus::Success,
+            server_message: "single-session upstream".to_owned(),
+            data: String::new(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct SingleSessionConnector {
+    address: String,
+    connect_attempts: AtomicUsize,
+}
+
+#[async_trait]
+impl UpstreamConnector for SingleSessionConnector {
+    async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        assert_eq!(address, self.address);
+        self.connect_attempts.fetch_add(1, Ordering::Relaxed);
+        Ok(Arc::new(SingleSessionConnection {
+            address: self.address.clone(),
+            usable: AtomicBool::new(true),
+        }))
+    }
+}
+
 impl FakeConnector {
     fn new(connections: HashMap<String, Arc<FakeConnection>>) -> Self {
         Self {
@@ -135,7 +183,10 @@ fn service_config(endpoint: IpcEndpoint, server_addresses: Vec<String>) -> Servi
     ServiceConfig {
         endpoint,
         server_addresses,
-        upstream: UpstreamConnectionOptions::default(),
+        upstream: UpstreamConnectionOptions {
+            connect_timeout: Duration::from_millis(50),
+            ..UpstreamConnectionOptions::default()
+        },
         preferred_probe_interval: Duration::from_millis(50),
         #[cfg(unix)]
         socket_mode: 0o660,
@@ -195,6 +246,7 @@ async fn test_server_selection_wraps_to_later_server() {
             third.address.clone(),
         ],
         connector,
+        Duration::from_millis(25),
         Duration::from_millis(25),
     );
 
@@ -354,6 +406,7 @@ async fn test_warm_connections_stops_after_first_responsive_server() {
         ],
         Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
         Duration::from_millis(25),
+        Duration::from_millis(25),
     );
 
     state.warm_connections().await;
@@ -391,6 +444,7 @@ async fn test_concurrent_failover_coalesces_connection_attempts() {
     let state = Arc::new(ServiceState::new(
         vec![first.address.clone(), second.address.clone()],
         Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+        Duration::from_millis(25),
         Duration::from_millis(200),
     ));
 
@@ -410,4 +464,30 @@ async fn test_concurrent_failover_coalesces_connection_attempts() {
     assert_eq!(connector.connect_attempts_for(&first.address).await, 1);
     assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
     assert_eq!(connector.max_in_flight_connects(), 1);
+}
+
+#[tokio::test]
+async fn test_non_single_connection_is_reconnected_for_next_request() {
+    let connector = Arc::new(SingleSessionConnector {
+        address: "server-a:49".to_owned(),
+        connect_attempts: AtomicUsize::new(0),
+    });
+
+    let state = ServiceState::new(
+        vec![connector.address.clone()],
+        Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+        Duration::from_millis(25),
+        Duration::from_millis(200),
+    );
+
+    let first = state.bind_server_for_new_session().await.unwrap();
+    first
+        .connection
+        .send_accounting(&build_request())
+        .await
+        .unwrap();
+
+    let second = state.bind_server_for_new_session().await.unwrap();
+    assert_eq!(second.connection.server_address(), connector.address);
+    assert_eq!(connector.connect_attempts.load(Ordering::Relaxed), 2);
 }
