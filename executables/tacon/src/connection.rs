@@ -2,30 +2,13 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use tacacsrs_networking::{
-    connection::TacacsConnection, session::Session, traits::SessionManagementTrait,
-    transport::tls::TlsConfigurationBuilder, SingleConnectionState,
+    connection::TacacsConnection, helpers::tls_server_name, session::Session,
+    traits::SessionManagementTrait, transport::tls::TlsConfigurationBuilder, SingleConnectionState,
 };
 #[cfg(feature = "psk")]
 use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
 
 use crate::cli::Cli;
-
-fn tls_server_name(server_addr: &str) -> &str {
-    if let Some(stripped) = server_addr
-        .strip_prefix('[')
-        .and_then(|value| value.split_once(']').map(|(host, _)| host))
-    {
-        return stripped;
-    }
-
-    if let Some((host, port)) = server_addr.rsplit_once(':') {
-        if port.parse::<u16>().is_ok() {
-            return host;
-        }
-    }
-
-    server_addr
-}
 
 /// Represents an active TACACS+ connection (either plain TCP or TLS)
 pub struct Connection {
@@ -135,7 +118,9 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
                 .with_client_auth_cert_files(client_cert, client_key)
                 .await
                 .context("Failed to load TLS certificates")?
-                .with_certificate_verification_disabled(true)
+                .with_certificate_verification_disabled(
+                    cli.insecure_disable_certificate_verification,
+                )
                 .build()
                 .context("Failed to build TLS configuration")?,
         );

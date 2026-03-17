@@ -42,6 +42,10 @@ pub struct Cli {
     )]
     pub client_key: Option<String>,
 
+    /// Dangerously disable TLS certificate verification for direct server connections.
+    #[arg(long, requires = "use_tls", conflicts_with = "service_endpoint")]
+    pub insecure_disable_certificate_verification: bool,
+
     /// PSK identity string sent to the server during the TLS 1.3 handshake
     #[cfg(feature = "psk")]
     #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]

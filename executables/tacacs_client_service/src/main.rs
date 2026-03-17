@@ -41,6 +41,10 @@ struct Cli {
     #[arg(long, value_name = "FILE", requires = "client_certificate")]
     client_key: Option<String>,
 
+    /// Dangerously disable upstream TLS certificate verification.
+    #[arg(long, requires = "use_tls")]
+    insecure_disable_certificate_verification: bool,
+
     /// Timeout, in seconds, for establishing a new upstream TACACS+ connection.
     #[arg(long, default_value_t = 5)]
     connect_timeout_seconds: u64,
@@ -91,6 +95,8 @@ async fn main() -> anyhow::Result<()> {
             use_tls: cli.use_tls,
             client_certificate: cli.client_certificate,
             client_key: cli.client_key,
+            insecure_disable_certificate_verification: cli
+                .insecure_disable_certificate_verification,
             #[cfg(feature = "psk")]
             psk_identity: cli.psk_identity,
             #[cfg(feature = "psk")]

@@ -15,6 +15,7 @@ use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
     TacacsAuthenticationService, TacacsAuthenticationType,
 };
+use tacacsrs_networking::helpers::tls_server_name;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 use tacacsrs_networking::{connection::TacacsConnection, transport::tls::TlsConfigurationBuilder};
@@ -40,6 +41,11 @@ pub struct UpstreamConnectionOptions {
     #[cfg(feature = "psk")]
     /// Optional TLS-PSK key for feature-gated PSK upstream transport.
     pub psk_key: Option<String>,
+    /// Dangerously disable upstream TLS certificate verification.
+    ///
+    /// This exists only for development or controlled environments using
+    /// self-signed or otherwise untrusted certificates.
+    pub insecure_disable_certificate_verification: bool,
     /// Timeout applied while establishing a fresh upstream TCP connection.
     pub connect_timeout: Duration,
 }
@@ -55,6 +61,7 @@ impl Default for UpstreamConnectionOptions {
             psk_identity: None,
             #[cfg(feature = "psk")]
             psk_key: None,
+            insecure_disable_certificate_verification: false,
             connect_timeout: Duration::from_secs(5),
         }
     }
@@ -88,23 +95,6 @@ impl NetworkUpstreamConnector {
     pub(crate) fn new(options: UpstreamConnectionOptions) -> Self {
         Self { options }
     }
-}
-
-fn tls_server_name(server_addr: &str) -> &str {
-    if let Some(stripped) = server_addr
-        .strip_prefix('[')
-        .and_then(|value| value.split_once(']').map(|(host, _)| host))
-    {
-        return stripped;
-    }
-
-    if let Some((host, port)) = server_addr.rsplit_once(':') {
-        if port.parse::<u16>().is_ok() {
-            return host;
-        }
-    }
-
-    server_addr
 }
 
 #[async_trait]
@@ -234,7 +224,9 @@ async fn connect_upstream(
                 .with_client_auth_cert_files(client_cert, client_key)
                 .await
                 .context("Failed to load TLS certificates")?
-                .with_certificate_verification_disabled(true)
+                .with_certificate_verification_disabled(
+                    options.insecure_disable_certificate_verification,
+                )
                 .build()
                 .context("Failed to build TLS configuration")?,
         );

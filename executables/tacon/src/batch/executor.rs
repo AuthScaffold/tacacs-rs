@@ -102,10 +102,9 @@ pub async fn execute_single_request(
 }
 
 async fn execute_single_request_via_service(
-    cli: &Cli,
+    client: &ServiceClient,
     request: &BatchRequest,
 ) -> Result<String, String> {
-    let client = service_client(cli).map_err(|error| error.to_string())?;
     validate_service_mode_request(request)?;
 
     match request {
@@ -540,6 +539,8 @@ pub async fn execute_batch_via_service(
     cli: &Cli,
     batch: &super::types::BatchFile,
 ) -> anyhow::Result<Vec<RequestResult>> {
+    let client = service_client(cli)?;
+
     if let Some(desc) = &batch.metadata.description {
         log::info!("Executing batch: {desc}");
         println!("Batch: {desc}");
@@ -560,12 +561,15 @@ pub async fn execute_batch_via_service(
             .requests
             .iter()
             .enumerate()
-            .map(|(index, request)| async move {
-                let result = execute_single_request_via_service(cli, request).await;
-                RequestResult {
-                    index,
-                    request_type: request.type_name(),
-                    result,
+            .map(|(index, request)| {
+                let client = client.clone();
+                async move {
+                    let result = execute_single_request_via_service(&client, request).await;
+                    RequestResult {
+                        index,
+                        request_type: request.type_name(),
+                        result,
+                    }
                 }
             })
             .collect();
@@ -573,7 +577,7 @@ pub async fn execute_batch_via_service(
     } else {
         let mut results = Vec::with_capacity(batch.requests.len());
         for (index, request) in batch.requests.iter().enumerate() {
-            let result = execute_single_request_via_service(cli, request).await;
+            let result = execute_single_request_via_service(&client, request).await;
             results.push(RequestResult {
                 index,
                 request_type: request.type_name(),
@@ -589,6 +593,8 @@ async fn execute_batch_load_test_via_service(
     batch: &super::types::BatchFile,
     load_config: &LoadTestConfig,
 ) -> anyhow::Result<Vec<RequestResult>> {
+    let client = Arc::new(service_client(cli)?);
+
     log::info!(
         "Service load testing mode enabled: {} repetitions, max {} parallel",
         load_config.repetitions,
@@ -608,7 +614,6 @@ async fn execute_batch_load_test_via_service(
         ..Default::default()
     });
 
-    let cli = Arc::new(cli.clone());
     let results = stream::iter((0..load_config.repetitions).flat_map(|rep| {
         batch
             .requests
@@ -617,7 +622,7 @@ async fn execute_batch_load_test_via_service(
             .map(move |(idx, req)| (rep, idx, req))
     }))
     .map(|(rep, idx, request)| {
-        let cli = Arc::clone(&cli);
+        let client = Arc::clone(&client);
         let completed = tracker.completed.clone();
         let failed = tracker.failed.clone();
         let first_failure = tracker.first_failure.clone();
@@ -627,7 +632,7 @@ async fn execute_batch_load_test_via_service(
                 return false;
             }
 
-            match execute_single_request_via_service(cli.as_ref(), request).await {
+            match execute_single_request_via_service(client.as_ref(), request).await {
                 Ok(_) => {
                     completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     true
