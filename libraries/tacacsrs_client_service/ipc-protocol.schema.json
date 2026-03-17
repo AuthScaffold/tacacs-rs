@@ -1,15 +1,39 @@
 {
   "$defs": {
+    "AccountingResponseStatus": {
+      "description": "Normalized TACACS+ accounting reply status values.",
+      "oneOf": [
+        {
+          "const": "success",
+          "description": "`TAC_PLUS_ACCT_STATUS_SUCCESS` (`0x01`) indicates the accounting record\nwas accepted successfully by the TACACS+ server.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "`TAC_PLUS_ACCT_STATUS_ERROR` (`0x02`) indicates the server rejected the\naccounting operation or encountered an error processing it.",
+          "type": "string"
+        },
+        {
+          "const": "follow",
+          "description": "`TAC_PLUS_ACCT_STATUS_FOLLOW` (`0x21`) indicates the client should\ncontinue with a follow-up action defined by the server deployment.",
+          "type": "string"
+        }
+      ]
+    },
     "ServiceRequest": {
+      "description": "Top-level IPC request envelope.",
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Execute a single TACACS+ accounting transaction.",
           "properties": {
             "command": {
+              "description": "Command name to report, matching the TACACS+ `cmd` accounting argument.",
               "type": "string"
             },
             "command_arguments": {
               "default": [],
+              "description": "Additional command arguments encoded as TACACS+ `cmd-arg` values.",
               "items": {
                 "type": "string"
               },
@@ -20,12 +44,15 @@
               "type": "string"
             },
             "port": {
+              "description": "NAS or tty/port identifier reported to the TACACS+ server.",
               "type": "string"
             },
             "remote_address": {
+              "description": "Remote client address to report in the TACACS+ accounting record.",
               "type": "string"
             },
             "user": {
+              "description": "TACACS+ username associated with the command being accounted for.",
               "type": "string"
             }
           },
@@ -41,11 +68,14 @@
       ]
     },
     "ServiceResponse": {
+      "description": "Top-level IPC response envelope.",
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Successful TACACS+ accounting reply from the selected upstream server.",
           "properties": {
             "data": {
+              "description": "Optional opaque data returned by the TACACS+ server.",
               "type": "string"
             },
             "result": {
@@ -53,26 +83,22 @@
               "type": "string"
             },
             "server": {
+              "description": "Upstream TACACS+ server that handled the request.",
               "type": "string"
             },
             "server_message": {
+              "description": "Human-readable message returned by the TACACS+ server.",
               "type": "string"
             },
-            "status_code": {
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "status_name": {
-              "type": "string"
+            "status": {
+              "$ref": "#/$defs/AccountingResponseStatus",
+              "description": "TACACS+ accounting reply status.\n\nThis abstracts the RFC 8907 accounting status octet:\n- `success` => `TAC_PLUS_ACCT_STATUS_SUCCESS` (`0x01`)\n- `error` => `TAC_PLUS_ACCT_STATUS_ERROR` (`0x02`)\n- `follow` => `TAC_PLUS_ACCT_STATUS_FOLLOW` (`0x21`)"
             }
           },
           "required": [
             "result",
             "server",
-            "status_code",
-            "status_name",
+            "status",
             "server_message",
             "data"
           ],
@@ -80,8 +106,10 @@
         },
         {
           "additionalProperties": false,
+          "description": "Service-side or upstream failure information.",
           "properties": {
             "message": {
+              "description": "Error text suitable for logs and operator-facing diagnostics.",
               "type": "string"
             },
             "result": {
@@ -90,9 +118,11 @@
             },
             "retriable": {
               "default": false,
+              "description": "Whether retrying against the service may succeed after failover or recovery.",
               "type": "boolean"
             },
             "server": {
+              "description": "Upstream server associated with the error, if one had already been chosen.",
               "type": [
                 "string",
                 "null"

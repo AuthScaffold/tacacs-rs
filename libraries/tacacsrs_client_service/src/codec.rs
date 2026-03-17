@@ -1,3 +1,9 @@
+//! Framed JSON transport helpers shared by the service and local clients.
+//!
+//! The IPC layer uses a length-prefixed framing format so the same message
+//! encoding can be carried over Unix domain sockets on Linux and loopback TCP
+//! on non-Unix developer platforms.
+
 use anyhow::Context;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

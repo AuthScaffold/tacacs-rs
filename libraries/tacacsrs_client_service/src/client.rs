@@ -1,3 +1,10 @@
+//! Local IPC client helpers for talking to the central TACACS+ service.
+//!
+//! The client is intentionally lightweight: callers create a new IPC
+//! connection per request or per higher-level workflow and exchange one framed
+//! JSON request/response pair without taking ownership of TACACS+ protocol
+//! details.
+
 use anyhow::{bail, Context};
 
 use crate::codec::{read_message, write_message};
@@ -6,12 +13,14 @@ use crate::protocol::{
 };
 use crate::service::IpcEndpoint;
 
+/// Convenience wrapper for making local IPC calls to the central service.
 #[derive(Debug, Clone)]
 pub struct ServiceClient {
     endpoint: IpcEndpoint,
 }
 
 impl ServiceClient {
+    /// Creates a client targeting the given local IPC endpoint.
     #[must_use]
     pub fn new(endpoint: IpcEndpoint) -> Self {
         Self { endpoint }

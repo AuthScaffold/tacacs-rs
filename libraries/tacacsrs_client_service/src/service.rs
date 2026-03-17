@@ -1,3 +1,11 @@
+//! Local listener, failover coordinator, and graceful-shutdown behavior.
+//!
+//! The service accepts local IPC requests, binds each new request to the
+//! currently preferred upstream TACACS+ server, and advances through the
+//! configured server list when a connection becomes unusable. While operating
+//! on a secondary server, a background task probes the preferred server so new
+//! requests return to it once it recovers.
+
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -17,10 +25,13 @@ use crate::upstream::{
     NetworkUpstreamConnector, UpstreamConnection, UpstreamConnectionOptions, UpstreamConnector,
 };
 
+/// Local IPC endpoint used between local consumers and the central service.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IpcEndpoint {
+    /// Unix domain socket endpoint used for Linux-style local IPC.
     #[cfg(unix)]
     Unix(PathBuf),
+    /// Loopback TCP fallback used for non-Unix developer workflows.
     Tcp(SocketAddr),
 }
 
@@ -55,16 +66,23 @@ impl FromStr for IpcEndpoint {
     }
 }
 
+/// Configuration for the long-lived TACACS+ client service process.
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
+    /// Local IPC endpoint exposed to local consumers.
     pub endpoint: IpcEndpoint,
+    /// Ordered upstream TACACS+ servers. Index zero is the preferred server.
     pub server_addresses: Vec<String>,
+    /// Shared options applied to each upstream TACACS+ connection.
     pub upstream: UpstreamConnectionOptions,
+    /// How often the preferred server should be reprobed while failed over.
     pub preferred_probe_interval: Duration,
     #[cfg(unix)]
+    /// File mode applied to the bound Unix socket path.
     pub socket_mode: u32,
 }
 
+/// Long-lived local TACACS+ client service.
 pub struct TacacsClientService {
     config: ServiceConfig,
     state: Arc<ServiceState>,
@@ -137,33 +155,7 @@ impl TacacsClientService {
 
     #[cfg(unix)]
     async fn serve_unix(&self, path: &PathBuf) -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!("Failed to create socket directory {}", parent.display())
-            })?;
-        }
-
-        if tokio::fs::try_exists(path)
-            .await
-            .with_context(|| format!("Failed to inspect socket path {}", path.display()))?
-        {
-            match tokio::net::UnixStream::connect(path).await {
-                Ok(_) => bail!(
-                    "Unix socket {} is already accepting connections; another service instance may already be running",
-                    path.display()
-                ),
-                Err(error) => bail!(
-                    "Unix socket path {} already exists and is not accepting connections ({error}); refusing to unlink it automatically",
-                    path.display()
-                ),
-            }
-        }
-
-        let listener = tokio::net::UnixListener::bind(path)
-            .with_context(|| format!("Failed to bind Unix socket {}", path.display()))?;
-
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(self.config.socket_mode))
-            .with_context(|| format!("Failed to set permissions on socket {}", path.display()))?;
+        let listener = self.prepare_unix_listener(path).await?;
 
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
@@ -188,6 +180,42 @@ impl TacacsClientService {
             .await
             .with_context(|| format!("Failed to remove socket {}", path.display()))?;
         Ok(())
+    }
+
+    #[cfg(unix)]
+    async fn prepare_unix_listener(
+        &self,
+        path: &PathBuf,
+    ) -> anyhow::Result<tokio::net::UnixListener> {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.with_context(|| {
+                format!("Failed to create socket directory {}", parent.display())
+            })?;
+        }
+
+        if tokio::fs::try_exists(path)
+            .await
+            .with_context(|| format!("Failed to inspect socket path {}", path.display()))?
+        {
+            match tokio::net::UnixStream::connect(path).await {
+                Ok(_) => bail!(
+                    "Unix socket {} is already accepting connections; another service instance may already be running",
+                    path.display()
+                ),
+                Err(_) => {
+                    tokio::fs::remove_file(path).await.with_context(|| {
+                        format!("Failed to remove stale socket {}", path.display())
+                    })?;
+                }
+            }
+        }
+
+        let listener = tokio::net::UnixListener::bind(path)
+            .with_context(|| format!("Failed to bind Unix socket {}", path.display()))?;
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(self.config.socket_mode))
+            .with_context(|| format!("Failed to set permissions on socket {}", path.display()))?;
+        Ok(listener)
     }
 
     async fn serve_tcp(&self, address: SocketAddr) -> anyhow::Result<()> {
@@ -462,7 +490,7 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use crate::client::ServiceClient;
-    use crate::protocol::{AccountingOperation, AccountingOperationResponse};
+    use crate::protocol::{AccountingOperation, AccountingOperationResponse, AccountingResponseStatus};
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -495,8 +523,7 @@ mod tests {
 
             Ok(AccountingOperationResponse {
                 server: self.address.clone(),
-                status_code: 1,
-                status_name: "Success".to_owned(),
+                status: AccountingResponseStatus::Success,
                 server_message: format!("handled by {}", self.address),
                 data: String::new(),
             })
@@ -687,6 +714,44 @@ mod tests {
         assert!(error.to_string().contains("already accepting connections"));
 
         drop(existing_listener);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_stale_socket_path_is_replaced() {
+        let primary = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+
+        let connector = Arc::new(FakeConnector {
+            connections: HashMap::from([(primary.address.clone(), Arc::clone(&primary))]),
+        });
+
+        let endpoint = test_endpoint("tacacs-service-stale-socket");
+        let path = match &endpoint {
+            IpcEndpoint::Unix(path) => path.clone(),
+            IpcEndpoint::Tcp(_) => unreachable!(),
+        };
+
+        let stale_listener = tokio::net::UnixListener::bind(&path).unwrap();
+        drop(stale_listener);
+
+        let config = ServiceConfig {
+            endpoint,
+            server_addresses: vec![primary.address.clone()],
+            upstream: UpstreamConnectionOptions::default(),
+            preferred_probe_interval: Duration::from_millis(50),
+            socket_mode: 0o660,
+        };
+
+        let service = TacacsClientService::new_with_connector(config, connector).unwrap();
+        let listener = service.prepare_unix_listener(&path).await.unwrap();
+        drop(listener);
+
+        assert!(tokio::fs::try_exists(&path).await.unwrap());
         let _ = tokio::fs::remove_file(path).await;
     }
 }

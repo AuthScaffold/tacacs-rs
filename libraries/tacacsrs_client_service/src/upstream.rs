@@ -1,3 +1,10 @@
+//! Persistent upstream TACACS+ connection management.
+//!
+//! This module adapts the lower-level networking/session APIs into the
+//! service's higher-level operation model. Each upstream connection can be
+//! reused for many IPC requests, while the service keeps ownership of failover
+//! decisions and connection lifecycle.
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -5,8 +12,8 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
-    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
-    TacacsAuthenticationType,
+    TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
+    TacacsAuthenticationService, TacacsAuthenticationType,
 };
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
@@ -14,18 +21,26 @@ use tacacsrs_networking::{connection::TacacsConnection, transport::tls::TlsConfi
 #[cfg(feature = "psk")]
 use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
 
-use crate::protocol::{AccountingOperation, AccountingOperationResponse};
+use crate::protocol::{AccountingOperation, AccountingOperationResponse, AccountingResponseStatus};
 
+/// Connection options shared by all upstream TACACS+ server connections.
 #[derive(Debug, Clone)]
 pub struct UpstreamConnectionOptions {
+    /// Optional TACACS+ obfuscation key for legacy/non-TLS exchanges.
     pub obfuscation_key: Option<String>,
+    /// Whether the service should use TLS for upstream TACACS+ connections.
     pub use_tls: bool,
+    /// Optional client certificate path for mTLS upstream connections.
     pub client_certificate: Option<String>,
+    /// Optional private key path matching `client_certificate`.
     pub client_key: Option<String>,
     #[cfg(feature = "psk")]
+    /// Optional TLS-PSK identity for feature-gated PSK upstream transport.
     pub psk_identity: Option<String>,
     #[cfg(feature = "psk")]
+    /// Optional TLS-PSK key for feature-gated PSK upstream transport.
     pub psk_key: Option<String>,
+    /// Timeout applied while establishing a fresh upstream TCP connection.
     pub connect_timeout: Duration,
 }
 
@@ -46,6 +61,7 @@ impl Default for UpstreamConnectionOptions {
 }
 
 #[async_trait]
+/// Abstracts a single persistent TACACS+ server connection used by the service.
 pub trait UpstreamConnection: Send + Sync {
     fn server_address(&self) -> &str;
     async fn is_usable_for_new_sessions(&self) -> bool;
@@ -56,10 +72,12 @@ pub trait UpstreamConnection: Send + Sync {
 }
 
 #[async_trait]
+/// Creates upstream connections for a configured TACACS+ server address.
 pub trait UpstreamConnector: Send + Sync {
     async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
 }
 
+/// Production connector backed by `tacacsrs_networking`.
 #[derive(Debug, Clone)]
 pub struct NetworkUpstreamConnector {
     options: UpstreamConnectionOptions,
@@ -134,11 +152,18 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
         Ok(AccountingOperationResponse {
             server: self.server_address.clone(),
-            status_code: response.status as u8,
-            status_name: format!("{:?}", response.status),
+            status: accounting_status(response.status),
             server_message: response.server_msg,
             data: response.data,
         })
+    }
+}
+
+fn accounting_status(status: TacacsAccountingStatus) -> AccountingResponseStatus {
+    match status {
+        TacacsAccountingStatus::TacPlusAcctStatusSuccess => AccountingResponseStatus::Success,
+        TacacsAccountingStatus::TacPlusAcctStatusError => AccountingResponseStatus::Error,
+        TacacsAccountingStatus::TacPlusAcctStatusFollow => AccountingResponseStatus::Follow,
     }
 }
 
