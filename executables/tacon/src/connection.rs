@@ -10,6 +10,23 @@ use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdenti
 
 use crate::cli::Cli;
 
+fn tls_server_name(server_addr: &str) -> &str {
+    if let Some(stripped) = server_addr
+        .strip_prefix('[')
+        .and_then(|value| value.split_once(']').map(|(host, _)| host))
+    {
+        return stripped;
+    }
+
+    if let Some((host, port)) = server_addr.rsplit_once(':') {
+        if port.parse::<u16>().is_ok() {
+            return host;
+        }
+    }
+
+    server_addr
+}
+
 /// Represents an active TACACS+ connection (either plain TCP or TLS)
 pub struct Connection {
     inner: Arc<TacacsConnection>,
@@ -126,7 +143,7 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
         let tls_stream = tacacsrs_networking::transport::tls::connect_tls(
             &tls_config,
             tcp_stream,
-            "tacacsserver.local",
+            tls_server_name(server_addr),
         )
         .await
         .context("Failed to establish TLS connection")?;

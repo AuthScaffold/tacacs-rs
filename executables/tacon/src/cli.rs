@@ -14,11 +14,11 @@ use clap::{ArgGroup, Parser, Subcommand};
 ))]
 pub struct Cli {
     /// IP address and port of the TACACS+ server (e.g., "192.168.1.1:49")
-    #[arg(short, long, conflicts_with = "service_endpoint")]
+    #[arg(short, long)]
     pub server_addr: Option<String>,
 
     /// IPC endpoint for the central TACACS+ client service
-    #[arg(long, value_name = "PATH_OR_ADDR", conflicts_with = "server_addr")]
+    #[arg(long, value_name = "PATH_OR_ADDR")]
     pub service_endpoint: Option<String>,
 
     /// Obfuscation key for encrypting TACACS+ messages

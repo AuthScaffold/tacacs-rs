@@ -79,7 +79,7 @@ async fn execute_command(command: &Command, session: &Session) -> anyhow::Result
 
         Command::Batch { .. } => {
             // Batch mode is handled separately in run() before this function is called
-            unreachable!("Batch command should be handled before execute_command");
+            unreachable!("Batch commands are handled by run_batch_mode before execute_command");
         }
     }
 
@@ -127,7 +127,9 @@ async fn execute_command_via_service(cli: &Cli, command: &Command) -> anyhow::Re
             println!("Authorization command not yet implemented");
         }
         Command::Batch { .. } => {
-            unreachable!("Batch command should be handled before execute_command")
+            unreachable!(
+                "Batch commands are handled by run_batch_mode before execute_command_via_service"
+            )
         }
     }
 

@@ -72,6 +72,23 @@ impl NetworkUpstreamConnector {
     }
 }
 
+fn tls_server_name(server_addr: &str) -> &str {
+    if let Some(stripped) = server_addr
+        .strip_prefix('[')
+        .and_then(|value| value.split_once(']').map(|(host, _)| host))
+    {
+        return stripped;
+    }
+
+    if let Some((host, port)) = server_addr.rsplit_once(':') {
+        if port.parse::<u16>().is_ok() {
+            return host;
+        }
+    }
+
+    server_addr
+}
+
 #[async_trait]
 impl UpstreamConnector for NetworkUpstreamConnector {
     async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
@@ -214,7 +231,7 @@ async fn connect_upstream(
         let tls_stream = tacacsrs_networking::transport::tls::connect_tls(
             &tls_config,
             stream,
-            "tacacsserver.local",
+            tls_server_name(address),
         )
         .await
         .context("Failed to establish TLS connection")?;

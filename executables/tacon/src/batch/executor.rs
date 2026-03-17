@@ -6,6 +6,7 @@
 use anyhow::Context;
 use futures::future::join_all;
 use futures::stream::{self, StreamExt};
+use std::sync::Arc;
 use std::str::FromStr;
 use std::time::Instant;
 use tacacsrs_client_service::{AccountingOperation, IpcEndpoint, ServiceClient};
@@ -593,7 +594,7 @@ async fn execute_batch_load_test_via_service(
         ..Default::default()
     });
 
-    let cli = cli.clone();
+    let cli = Arc::new(cli.clone());
     let results = stream::iter((0..load_config.repetitions).flat_map(|rep| {
         batch
             .requests
@@ -602,7 +603,7 @@ async fn execute_batch_load_test_via_service(
             .map(move |(idx, req)| (rep, idx, req))
     }))
     .map(|(rep, idx, request)| {
-        let cli = cli.clone();
+        let cli = Arc::clone(&cli);
         let completed = tracker.completed.clone();
         let failed = tracker.failed.clone();
         let first_failure = tracker.first_failure.clone();
@@ -612,7 +613,7 @@ async fn execute_batch_load_test_via_service(
                 return false;
             }
 
-            match execute_single_request_via_service(&cli, request).await {
+            match execute_single_request_via_service(cli.as_ref(), request).await {
                 Ok(_) => {
                     completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     true

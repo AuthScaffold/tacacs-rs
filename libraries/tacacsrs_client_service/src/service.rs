@@ -116,7 +116,8 @@ impl TacacsClientService {
     /// endpoint configuration is invalid for the current platform.
     pub async fn serve(self) -> anyhow::Result<()> {
         self.state.warm_connections().await;
-        let _probe_task = self.state.spawn_preferred_probe();
+        let _probe_task =
+            (self.state.server_count() > 1).then(|| self.state.spawn_preferred_probe());
 
         match &self.config.endpoint {
             #[cfg(unix)]
@@ -133,7 +134,10 @@ impl TacacsClientService {
             })?;
         }
 
-        if tokio::fs::try_exists(path).await.unwrap_or(false) {
+        if tokio::fs::try_exists(path)
+            .await
+            .with_context(|| format!("Failed to inspect socket path {}", path.display()))?
+        {
             tokio::fs::remove_file(path)
                 .await
                 .with_context(|| format!("Failed to remove existing socket {}", path.display()))?;
@@ -142,7 +146,7 @@ impl TacacsClientService {
         let listener = tokio::net::UnixListener::bind(path)
             .with_context(|| format!("Failed to bind Unix socket {}", path.display()))?;
 
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .with_context(|| format!("Failed to set permissions on socket {}", path.display()))?;
 
         loop {
@@ -229,6 +233,10 @@ impl ServiceState {
                 );
             }
         }
+    }
+
+    fn server_count(&self) -> usize {
+        self.servers.len()
     }
 
     fn spawn_preferred_probe(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
