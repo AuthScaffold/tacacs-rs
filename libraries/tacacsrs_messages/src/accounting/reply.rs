@@ -17,7 +17,6 @@ use crate::enumerations::TacacsAccountingStatus;
 // |     data ...
 // +----------------+
 
-
 #[derive(Debug)]
 pub struct AccountingReply {
     pub status: TacacsAccountingStatus,
@@ -105,7 +104,6 @@ impl AccountingReply {
     }
 }
 
-
 impl TacacsBodyTrait for AccountingReply {
     fn to_bytes(&self) -> Vec<u8> {
         let bytes = vec![
@@ -122,7 +120,6 @@ impl TacacsBodyTrait for AccountingReply {
         bytes
     }
 }
-
 
 #[cfg(test)]
 pub mod tests {

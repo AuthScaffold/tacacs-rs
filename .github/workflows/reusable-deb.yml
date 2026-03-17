@@ -26,7 +26,7 @@ jobs:
 
       - name: Download pre-built binary
         if: inputs.binary-artifact-name != ''
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.binary-artifact-name }}
           path: binary-artifact
@@ -64,8 +64,12 @@ jobs:
 
       - name: Copy generated man page and compress Debian assets
         run: |
-          # Find the generated man page in the OUT_DIR
-          MAN_PAGE=$(find target -path "*/build/${{ inputs.package-name }}-*/out/man/${{ inputs.package-name }}.1" -type f | head -1)
+          # Prefer the release build output when we built the package locally.
+          # Fall back to debug output when only generating the man page for a pre-built binary.
+          MAN_PAGE=$(find target/release/build -path "*/out/man/${{ inputs.package-name }}.1" -type f | head -1)
+          if [ -z "$MAN_PAGE" ]; then
+            MAN_PAGE=$(find target/debug/build -path "*/out/man/${{ inputs.package-name }}.1" -type f | head -1)
+          fi
           if [ -z "$MAN_PAGE" ]; then
             echo "Error: Generated man page not found"
             exit 1
@@ -95,14 +99,14 @@ jobs:
 
       - name: Upload Debian package
         if: inputs.upload-artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.package-name }}.deb
           path: target/debian/${{ inputs.package-name }}_*.deb
 
       - name: Upload Debian debug symbols package
         if: inputs.upload-artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.package-name }}-dbgsym.ddeb
           path: target/debian/${{ inputs.package-name }}-dbgsym_*.ddeb

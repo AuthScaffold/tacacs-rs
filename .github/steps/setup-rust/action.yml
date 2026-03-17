@@ -61,6 +61,9 @@ runs:
       shell: bash
       run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+    - name: Setup OpenSSL
+      uses: ./.github/steps/setup-openssl
+
     - name: Setup Rust cache
       uses: Swatinem/rust-cache@v2
       with:

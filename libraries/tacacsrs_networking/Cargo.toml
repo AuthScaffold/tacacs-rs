@@ -8,11 +8,17 @@ anyhow = { version = "1.0.100", features = ["backtrace"] }
 tokio = { version = "1.49.0", features = ["full"] }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
 async-trait = "0.1.89"
-rand = "0.9.2"
+rand = "0.10.0"
 log = "0.4.29"
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "logging"] }
 rustls-pki-types = "1.14.0"
 rustls-cert-file-reader = "0.4.2"
+openssl = { version = "0.10", optional = true }
+tokio-openssl = { version = "0.6", optional = true }
+
+[features]
+default = []
+psk = ["dep:openssl", "dep:tokio-openssl"]
 
 [dev-dependencies]
 argh = "0.1.13"
@@ -24,3 +30,7 @@ futures = "0.3"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+
+[[example]]
+name = "tls_psk_client"
+required-features = ["psk"]

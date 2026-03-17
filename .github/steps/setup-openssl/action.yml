@@ -1,0 +1,42 @@
+name: Setup OpenSSL
+description: Install OpenSSL for building with the PSK feature. Uses apt on Linux and vcpkg with caching on Windows.
+
+inputs:
+  vcpkg-version:
+    description: 'vcpkg commit or tag to checkout (used as part of the cache key)'
+    required: false
+    default: '2025.06.13'
+
+runs:
+  using: composite
+  steps:
+    # ── Linux ──────────────────────────────────────────────
+    - name: Install OpenSSL (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+    # ── Windows: restore cached vcpkg install ─────────────
+    - name: Restore vcpkg OpenSSL cache (Windows)
+      if: runner.os == 'Windows'
+      id: vcpkg-cache
+      uses: actions/cache@v4
+      with:
+        path: C:\vcpkg\installed
+        key: vcpkg-openssl-windows-x64-${{ inputs.vcpkg-version }}
+
+    - name: Install OpenSSL via vcpkg (Windows)
+      if: runner.os == 'Windows' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        vcpkg install openssl:x64-windows
+        vcpkg integrate install
+
+    - name: Set OpenSSL environment variables (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $opensslDir = "C:\vcpkg\installed\x64-windows"
+        echo "OPENSSL_DIR=$opensslDir" >> $env:GITHUB_ENV
+        echo "OPENSSL_LIB_DIR=$opensslDir\lib" >> $env:GITHUB_ENV
+        echo "OpenSSL configured: OPENSSL_DIR=$opensslDir"

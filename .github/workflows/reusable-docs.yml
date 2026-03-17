@@ -22,4 +22,4 @@ jobs:
       - name: Build documentation
         env:
           RUSTDOCFLAGS: ${{ inputs.deny-warnings && '-D warnings' || '' }}
-        run: cargo doc --workspace --no-deps --all-features
+        run: cargo doc --workspace --no-deps --all-features --document-private-items
