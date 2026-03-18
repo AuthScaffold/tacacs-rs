@@ -3,6 +3,21 @@
 //! This module owns process-level behavior: startup validation, IPC listener
 //! creation, graceful shutdown, and delegation into [`super::state::ServiceState`]
 //! for per-client request handling and upstream failover decisions.
+//!
+//! # Startup sequence
+//!
+//! 1. [`TacacsClientService::new`] validates configuration (≥1 server, etc.).
+//! 2. [`TacacsClientService::serve`] warms upstream connections, optionally
+//!    spawns the preferred-server probe, and binds the IPC listener.
+//! 3. The gRPC server accepts clients until a shutdown signal is received.
+//!
+//! # Graceful shutdown
+//!
+//! Shutdown is cooperative:
+//!
+//! 1. The listener stops accepting new connections (signal handler fires).
+//! 2. In-flight RPC handlers run to completion.
+//! 3. The Unix socket path is removed (Unix only).
 
 use std::net::SocketAddr;
 #[cfg(unix)]
@@ -29,12 +44,39 @@ use crate::upstream::{NetworkUpstreamConnector, UpstreamConnector};
 /// Long-lived local TACACS+ client service.
 ///
 /// [`TacacsClientService`] is the bridge between operator-facing configuration
-/// and the shared runtime state used by all accepted IPC clients.
+/// and the shared runtime state used by all accepted IPC clients. Construction
+/// validates the configuration and creates the internal failover state machine;
+/// calling [`serve`](TacacsClientService::serve) starts the IPC listener.
+///
+/// The type is not `Clone` because it owns the listener lifecycle. Use
+/// [`ServiceConfig`] to share configuration before constructing the service.
+///
+/// # Service lifecycle
+///
+/// ```text
+/// [start]
+///    |
+///    v
+/// Configuring ──> Validating ──> WarmingUp ──> Serving
+///                                                 |
+///                                          shutdown signal
+///                                                 |
+///                                                 v
+///                                              Draining ──> Cleanup ──> [end]
+/// ```
 pub struct TacacsClientService {
+    /// Validated operator configuration snapshot.
     config: ServiceConfig,
+    /// Shared failover state used by all IPC client handlers.
     state: Arc<ServiceState>,
 }
 
+/// Thin gRPC service adapter that delegates every RPC into the shared
+/// [`ServiceState`].
+///
+/// Each [`tonic`] handler creates a fresh instance of this adapter (it's
+/// `Clone`), registers itself as an active client, and forwards the decoded
+/// request into the state machine.
 #[derive(Clone)]
 struct GrpcService {
     state: Arc<ServiceState>,
@@ -42,6 +84,14 @@ struct GrpcService {
 
 #[tonic::async_trait]
 impl LocalTacacsClientService for GrpcService {
+    /// Handles one unary accounting RPC from a local IPC client.
+    ///
+    /// Decodes the protobuf request, delegates to [`ServiceState`] for server
+    /// selection and upstream execution, and encodes the result into the oneof
+    /// `AccountingReply` envelope. Transport-level gRPC errors (e.g. invalid
+    /// argument) are returned as [`Status`]; application-level errors (e.g.
+    /// upstream failure) are returned inside the `ServiceError` variant of the
+    /// reply.
     async fn accounting(
         &self,
         request: Request<ipc::AccountingRequest>,

@@ -3,11 +3,25 @@
 //! The client is intentionally lightweight: callers point it at a local IPC
 //! endpoint and each request is carried through the protobuf/gRPC contract
 //! without exposing TACACS+ wire details to the caller.
+//!
+//! # Platform behavior
+//!
+//! | Platform | Transport | Notes |
+//! |----------|-----------|-------|
+//! | Linux / macOS | Unix domain socket | Default: `/run/tacacs.sock` |
+//! | Windows / other | Loopback TCP | Default: `127.0.0.1:9049` |
+//!
+//! Each [`ServiceClient::send_accounting`] call opens a fresh gRPC channel.
+//! This matches the service's one-request-per-IPC-connection model and keeps
+//! the client stateless and cheap to construct.
 
 use anyhow::{Context, bail};
+#[cfg(unix)]
 use http::Uri;
+#[cfg(unix)]
 use hyper_util::rt::TokioIo;
 use tonic::transport::{Channel, Endpoint};
+#[cfg(unix)]
 use tower::service_fn;
 
 use crate::ipc;
@@ -19,13 +33,65 @@ use crate::IpcEndpoint;
 const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 
 /// Convenience wrapper for making local IPC calls to the central service.
+///
+/// `ServiceClient` is intentionally stateless. Each call opens a new gRPC
+/// channel, issues exactly one unary RPC, and drops the channel. Construction
+/// is cheap and the type is both [`Clone`] and [`Send`].
+///
+/// # Connection flow
+///
+/// ```text
+/// Caller           ServiceClient        IpcEndpoint       Central Service
+///   |                   |                   |                   |
+///   | send_accounting() |                   |                   |
+///   |------------------>|                   |                   |
+///   |                   | resolve endpoint  |                   |
+///   |                   |------------------>|                   |
+///   |                   |                   |                   |
+///   |                   | gRPC Accounting(request)              |
+///   |                   |-------------------------------------->|
+///   |                   |                                       |
+///   |                   |              AccountingReply          |
+///   |                   |<--------------------------------------|
+///   |                   |                                       |
+///   |   Ok(response)    |                                       |
+///   |   or Err(error)   |                                       |
+///   |<------------------|                                       |
+/// ```
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// # use tacacsrs_client_service_client::{
+/// #     AccountingOperation, IpcEndpoint, ServiceClient,
+/// # };
+/// # async fn example() -> anyhow::Result<()> {
+/// let client = ServiceClient::new(IpcEndpoint::default_local());
+///
+/// let response = client
+///     .send_accounting(AccountingOperation {
+///         user: "admin".into(),
+///         port: "tty0".into(),
+///         remote_address: "10.0.0.1".into(),
+///         command: "show".into(),
+///         command_arguments: vec!["users".into()],
+///     })
+///     .await?;
+///
+/// println!("Handled by {} → {:?}", response.server, response.status);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct ServiceClient {
+    /// The local IPC endpoint used when connecting to the central service.
     endpoint: IpcEndpoint,
 }
 
 impl ServiceClient {
     /// Creates a client targeting the given local IPC endpoint.
+    ///
+    /// No connection is established until a request method is called.
     #[must_use]
     pub fn new(endpoint: IpcEndpoint) -> Self {
         Self { endpoint }
@@ -33,10 +99,19 @@ impl ServiceClient {
 
     /// Sends a single accounting request to the local TACACS+ client service.
     ///
+    /// The call opens a fresh gRPC channel, converts the domain
+    /// [`AccountingOperation`] into a protobuf request, issues the unary RPC,
+    /// and converts the reply back into the domain response type.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the IPC connection fails, the gRPC exchange cannot
-    /// be completed, or the service returns a structured error.
+    /// Returns an error if:
+    /// - The IPC connection cannot be established (socket missing, service not
+    ///   running, etc.).
+    /// - The gRPC exchange fails at the transport level.
+    /// - The service returns a structured [`ServiceError`] (e.g. all upstream
+    ///   TACACS+ servers are unavailable). The error message includes the
+    ///   server name (if known) and whether the caller should retry.
     pub async fn send_accounting(
         &self,
         request: AccountingOperation,
@@ -69,6 +144,11 @@ impl ServiceClient {
         }
     }
 
+    /// Opens a gRPC channel to the configured IPC endpoint.
+    ///
+    /// On Unix, this connects over a Unix domain socket using `tonic`'s
+    /// `connect_with_connector` to bridge `tokio::net::UnixStream` into the
+    /// HTTP/2 transport. On other platforms it connects over loopback TCP.
     async fn connect(&self) -> anyhow::Result<LocalTacacsClientServiceClient<Channel>> {
         match &self.endpoint {
             #[cfg(unix)]

@@ -4,6 +4,30 @@
 //! service's higher-level operation model. Each upstream connection can be
 //! reused for many IPC requests, while the service keeps ownership of failover
 //! decisions and connection lifecycle.
+//!
+//! # Transport selection
+//!
+//! The [`UpstreamConnectionOptions`] type controls which transport is used for
+//! each upstream TACACS+ connection:
+//!
+//! | Configuration | Transport |
+//! |---------------|-----------|
+//! | `use_tls = false` | Plain TCP |
+//! | `use_tls = true` + client cert | mTLS (X.509) |
+//! | `use_tls = true` + PSK identity | TLS-PSK (feature-gated) |
+//!
+//! Certificate verification is enabled by default. The
+//! `insecure_disable_certificate_verification` flag exists only for
+//! development environments using self-signed certificates.
+//!
+//! # Connection reuse
+//!
+//! Each upstream connection wraps a single persistent TCP/TLS connection
+//! to one TACACS+ server. The TACACS+ protocol supports multiplexed sessions
+//! over one connection when both sides negotiate single-connection mode. If
+//! the server does not support reuse, the connection reports itself as
+//! unusable for new sessions and the service reconnects for the next IPC
+//! request.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +50,44 @@ use tacacsrs_networking::{connection::TacacsConnection, transport::tls::TlsConfi
 use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
 
 /// Connection options shared by all upstream TACACS+ server connections.
+///
+/// These options are configured once at service startup and applied uniformly
+/// to every upstream connection attempt. The service creates a network
+/// connector from these options and passes it to the
+/// internal failover state machine.
+///
+/// # Connection selection
+///
+/// ```text
+/// IPC Request ──> ServiceState
+///                     |
+///              cached connection usable?
+///                /              \
+///              Yes               No
+///               |                 |
+///         Reuse connection   UpstreamConnector
+///               |                 |
+///               |          TLS enabled?
+///               |         /    |     \
+///               |       mTLS  PSK  Plain TCP
+///               |         \    |     /
+///               |      TacacsConnection
+///               |             |
+///               +------+------+
+///                      |
+///               Create TACACS+ session
+/// ```
+///
+/// # Defaults
+///
+/// | Field | Default |
+/// |-------|---------|
+/// | `obfuscation_key` | `None` |
+/// | `use_tls` | `false` |
+/// | `client_certificate` | `None` |
+/// | `client_key` | `None` |
+/// | `insecure_disable_certificate_verification` | `false` |
+/// | `connect_timeout` | 5 seconds |
 #[derive(Debug, Clone)]
 pub struct UpstreamConnectionOptions {
     /// Optional TACACS+ obfuscation key for legacy/non-TLS exchanges.
@@ -70,9 +132,29 @@ impl Default for UpstreamConnectionOptions {
 
 #[async_trait]
 /// Abstracts a single persistent TACACS+ server connection used by the service.
+///
+/// This trait is the seam between the service's failover state machine and the
+/// actual network I/O. Production code uses [`TacacsUpstreamConnection`] which
+/// wraps a [`TacacsConnection`]; tests inject fakes that simulate failures,
+/// single-session servers, and connection delays.
 pub(crate) trait UpstreamConnection: Send + Sync {
+    /// Returns the `host:port` address string for this upstream server.
     fn server_address(&self) -> &str;
+
+    /// Returns `true` if this connection can still accept new TACACS+ sessions.
+    ///
+    /// Connections may become unusable when:
+    /// - The server does not support single-connection multiplexing.
+    /// - The server has sent a graceful-shutdown notification.
+    /// - A previous session encountered an unrecoverable transport error.
     async fn is_usable_for_new_sessions(&self) -> bool;
+
+    /// Sends one accounting request and returns the server's reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session cannot be created or the accounting
+    /// exchange fails at the TACACS+ protocol level.
     async fn send_accounting(
         &self,
         request: &AccountingOperation,
@@ -81,11 +163,24 @@ pub(crate) trait UpstreamConnection: Send + Sync {
 
 #[async_trait]
 /// Creates upstream connections for a configured TACACS+ server address.
+///
+/// The connector is called by [`ServiceState`](crate::service) whenever a
+/// fresh upstream connection is needed—either during startup warm-up or when
+/// a cached connection is no longer usable.
 pub(crate) trait UpstreamConnector: Send + Sync {
+    /// Establishes a new connection to the given TACACS+ server address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TCP connection, TLS handshake, or TACACS+
+    /// connection setup fails.
     async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
 }
 
-/// Production connector backed by `tacacsrs_networking`.
+/// Production connector backed by [`tacacsrs_networking`].
+///
+/// Takes a snapshot of [`UpstreamConnectionOptions`] at construction time and
+/// applies those options to every upstream connection it creates.
 #[derive(Debug, Clone)]
 pub(crate) struct NetworkUpstreamConnector {
     options: UpstreamConnectionOptions,
@@ -109,8 +204,15 @@ impl UpstreamConnector for NetworkUpstreamConnector {
     }
 }
 
+/// Wraps a persistent [`TacacsConnection`] for use by the service state machine.
+///
+/// Each instance represents one open TCP/TLS connection to a single upstream
+/// TACACS+ server. It is stored in the per-server connection cache and shared
+/// across concurrent IPC handlers via `Arc`.
 struct TacacsUpstreamConnection {
+    /// The `host:port` of the upstream server this connection targets.
     server_address: String,
+    /// The underlying multiplexed TACACS+ connection.
     connection: Arc<TacacsConnection>,
 }
 
@@ -150,6 +252,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
     }
 }
 
+/// Maps a TACACS+ protocol accounting status to the domain enum.
 fn accounting_status(status: TacacsAccountingStatus) -> AccountingResponseStatus {
     match status {
         TacacsAccountingStatus::TacPlusAcctStatusSuccess => AccountingResponseStatus::Success,
@@ -158,6 +261,9 @@ fn accounting_status(status: TacacsAccountingStatus) -> AccountingResponseStatus
     }
 }
 
+/// Converts a domain [`AccountingOperation`] into a TACACS+ accounting request
+/// message with the standard service-level defaults (WATCHDOG flags, no
+/// privilege level, shell service type).
 fn build_accounting_request(request: &AccountingOperation) -> AccountingRequest {
     AccountingRequest {
         flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
@@ -172,12 +278,28 @@ fn build_accounting_request(request: &AccountingOperation) -> AccountingRequest 
     }
 }
 
+/// Builds the TACACS+ argument list for an accounting request.
+///
+/// The resulting list always starts with `service=shell` and `cmd=<command>`,
+/// followed by one `cmd-arg=<arg>` entry for each element of
+/// `command_arguments`.
 fn build_accounting_args(command: &str, command_arguments: &[String]) -> Vec<String> {
     let base_args = ["service=shell".to_owned(), format!("cmd={command}")];
     let extra_args = command_arguments.iter().map(|arg| format!("cmd-arg={arg}"));
     base_args.into_iter().chain(extra_args).collect()
 }
 
+/// Establishes a new TCP (or TLS/PSK) connection to an upstream TACACS+ server.
+///
+/// The connection sequence is:
+/// 1. Open a TCP stream with the configured connect timeout.
+/// 2. If TLS is enabled, negotiate the TLS handshake (mTLS or PSK).
+/// 3. Start the TACACS+ connection handler on the resulting stream.
+///
+/// # Errors
+///
+/// Returns an error if TCP connection times out, TLS negotiation fails, or
+/// the TACACS+ connection handler cannot start.
 async fn connect_upstream(
     address: &str,
     options: &UpstreamConnectionOptions,

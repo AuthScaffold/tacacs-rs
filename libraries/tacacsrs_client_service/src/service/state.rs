@@ -3,6 +3,21 @@
 //! [`ServiceState`] is shared by all listener tasks. It owns the currently
 //! preferred server index, cached upstream connections, and the active-client
 //! drain tracking used during graceful shutdown.
+//!
+//! # Concurrency model
+//!
+//! Multiple IPC handlers may call into `ServiceState` simultaneously. The
+//! design uses fine-grained locking to minimize contention:
+//!
+//! | Lock | Scope | Purpose |
+//! |------|-------|---------|
+//! | `active_index` (`RwLock`) | Global | Current preferred server index |
+//! | `connection` (`RwLock`) | Per-server | Cached upstream connection |
+//! | `connect_lock` (`Mutex`) | Per-server | Serializes reconnect attempts |
+//!
+//! The per-server `connect_lock` ensures that concurrent IPC handlers share
+//! one in-flight reconnect attempt instead of stampeding the same TACACS+
+//! server with duplicate TLS handshakes.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -18,34 +33,72 @@ use crate::upstream::{UpstreamConnection, UpstreamConnector};
 /// Each incoming IPC connection calls into this type exactly once. The state
 /// then binds that request to an upstream TACACS+ server, executes the
 /// operation, and records any failover information needed for future requests.
+///
+/// The state machine maintains a circular walk through the configured server
+/// list, starting from `active_index`. On failure the index advances; a
+/// background probe can reset it back to `0` (the preferred server) once
+/// recovery is detected.
 pub(super) struct ServiceState {
+    /// Per-server state including cached connections and reconnect locks.
     servers: Vec<ServerState>,
+    /// Factory for creating new upstream connections.
     connector: Arc<dyn UpstreamConnector>,
+    /// Index into `servers` of the currently preferred server for new sessions.
     active_index: RwLock<usize>,
+    /// Interval between preferred-server recovery probes.
     preferred_probe_interval: std::time::Duration,
+    /// Tracks in-flight IPC handlers for graceful shutdown draining.
     client_tracker: Arc<ClientTracker>,
 }
 
+/// Per-server cached connection state.
+///
+/// Each configured TACACS+ server gets its own `ServerState` so that
+/// reconnect serialization and connection caching are independent.
 struct ServerState {
+    /// The `host:port` address of this server.
     address: String,
+    /// Cached upstream connection, if any. `None` means the server needs
+    /// a fresh connection on the next request.
     connection: RwLock<Option<Arc<dyn UpstreamConnection>>>,
+    /// Lock that serializes reconnect attempts for this server.
     connect_lock: Mutex<()>,
+    /// Monotonically increasing counter of completed connect attempts.
+    /// Used to detect when another task has already reconnected while
+    /// this task was waiting for the lock.
     completed_connect_attempts: AtomicU64,
 }
 
+/// The result of binding an IPC request to an upstream server.
+///
+/// Contains both the server index (for recording failover) and the
+/// connection handle (for executing the request).
 pub(super) struct BoundServer {
+    /// Index into the service's server list.
     pub(super) index: usize,
+    /// The upstream connection to use for this request.
     pub(super) connection: Arc<dyn UpstreamConnection>,
 }
 
 /// Tracks how many client handlers are currently executing so shutdown can stop
 /// accepting new work first and then wait for in-flight requests to complete.
+///
+/// The tracker uses an atomic counter plus a [`Notify`] to avoid holding a
+/// lock during the entire RPC handler lifetime. Incrementing and decrementing
+/// the counter is lock-free; only the shutdown waiter blocks on the notification.
 #[derive(Default)]
 struct ClientTracker {
+    /// Number of IPC handlers currently executing a request.
     active_clients: AtomicUsize,
+    /// Notification signalled when `active_clients` reaches zero.
     drained: Notify,
 }
 
+/// RAII guard that decrements the active-client count on drop.
+///
+/// Created by [`ClientTracker::start_guard`] and held for the duration of
+/// one IPC request handler. When the last guard drops, the tracker notifies
+/// the shutdown waiter.
 struct ClientGuard {
     tracker: Arc<ClientTracker>,
 }
@@ -157,6 +210,7 @@ impl ServiceState {
         );
     }
 
+    /// Returns the number of configured upstream TACACS+ servers.
     pub(super) fn server_count(&self) -> usize {
         self.servers.len()
     }
