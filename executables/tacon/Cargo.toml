@@ -17,7 +17,7 @@ futures = "0.3"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tacacsrs-client-service-client = { path = "../../libraries/tacacsrs_client_service_client" }
+tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
 tacacsrs-messages = { path = "../../libraries/tacacsrs_messages" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
 tokio = { version = "1.49.0", features = ["full"] }

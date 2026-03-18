@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tacacsrs_client_service_client::{
+use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus, IpcEndpoint,
     ServiceClient,
 };

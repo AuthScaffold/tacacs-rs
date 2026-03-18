@@ -1,4 +1,4 @@
-# tacacsrs-client-service-client
+# tacacsrs-agent-client
 
 Reusable local IPC client and shared protocol types for the central TACACS+
 client service.
@@ -23,7 +23,7 @@ long-lived TACACS+ client service.
 ## Module hierarchy
 
 ```text
-tacacsrs_client_service_client
+tacacsrs_agent_client
 ├── client      - ServiceClient wrapper
 ├── endpoint    - IpcEndpoint parsing
 ├── protocol    - domain request/response types
@@ -48,7 +48,7 @@ tacacsrs_client_service_client
 ┌──────────────────────────────┐
 │ Central TACACS+ Client       │
 │ Service                      │
-│ (tacacsrs-client-service)    │
+│ (tacacsrs-agent)             │
 └──────┬───────────────────────┘
        │ gRPC reply
        v
@@ -104,7 +104,7 @@ fidelity is covered by unit tests.
 ## Usage example
 
 ```rust,no_run
-use tacacsrs_client_service_client::{
+use tacacsrs_agent_client::{
     AccountingOperation, IpcEndpoint, ServiceClient,
 };
 

@@ -123,7 +123,7 @@ impl AccountingResponseStatus {
     /// # Examples
     ///
     /// ```
-    /// # use tacacsrs_client_service_client::AccountingResponseStatus;
+    /// # use tacacsrs_agent_client::AccountingResponseStatus;
     /// assert_eq!(AccountingResponseStatus::Success.code(), 0x01);
     /// assert_eq!(AccountingResponseStatus::Error.code(), 0x02);
     /// assert_eq!(AccountingResponseStatus::Follow.code(), 0x21);
@@ -170,7 +170,7 @@ impl AccountingResponseStatus {
 /// # Builder pattern
 ///
 /// ```
-/// # use tacacsrs_client_service_client::ServiceError;
+/// # use tacacsrs_agent_client::ServiceError;
 /// let error = ServiceError::new("connection reset")
 ///     .with_server("tacacs-a:49")
 ///     .retriable(true);

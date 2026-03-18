@@ -6,7 +6,7 @@
 //!
 //! # Configuration flow
 //!
-//! The executable (e.g. `tacacs_client_service`) parses CLI flags or
+//! The executable (e.g. `tacacsrs_agentd`) parses CLI flags or
 //! environment variables into a [`ServiceConfig`], passes it to
 //! [`TacacsClientService::new`](crate::TacacsClientService::new) for
 //! validation, and then calls
@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use tacacsrs_client_service_client::IpcEndpoint;
+use tacacsrs_agent_client::IpcEndpoint;
 
 use crate::upstream::UpstreamConnectionOptions;
 
@@ -34,8 +34,8 @@ use crate::upstream::UpstreamConnectionOptions;
 ///
 /// ```rust
 /// # use std::time::Duration;
-/// # use tacacsrs_client_service::{ServiceConfig, UpstreamConnectionOptions};
-/// # use tacacsrs_client_service_client::IpcEndpoint;
+/// # use tacacsrs_agent::{ServiceConfig, UpstreamConnectionOptions};
+/// # use tacacsrs_agent_client::IpcEndpoint;
 /// let config = ServiceConfig {
 ///     endpoint: IpcEndpoint::default_local(),
 ///     server_addresses: vec!["tacacs-primary:49".into(), "tacacs-backup:49".into()],

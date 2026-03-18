@@ -27,11 +27,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
-use tacacsrs_client_service_client::ipc;
-use tacacsrs_client_service_client::ipc::local_tacacs_client_service_server::{
+use tacacsrs_agent_client::ipc;
+use tacacsrs_agent_client::ipc::local_tacacs_client_service_server::{
     LocalTacacsClientService, LocalTacacsClientServiceServer,
 };
-use tacacsrs_client_service_client::{AccountingOperation, IpcEndpoint};
+use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint};
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_stream::wrappers::TcpListenerStream;

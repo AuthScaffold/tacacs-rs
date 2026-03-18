@@ -1,5 +1,5 @@
 [package]
-name = "tacacs-client-service"
+name = "tacacsrs-agentd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,13 +9,13 @@ description = "Central TACACS+ client service for local consumers"
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
 clap = { version = "4.5.57", features = ["derive"] }
-tacacsrs-client-service-client = { path = "../../libraries/tacacsrs_client_service_client" }
-tacacsrs-client-service = { path = "../../libraries/tacacsrs_client_service" }
+tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
+tacacsrs-agent = { path = "../../libraries/tacacsrs_agent" }
 tokio = { version = "1.49.0", features = ["full"] }
 
 [features]
 default = []
-psk = ["tacacsrs-client-service/psk"]
+psk = ["tacacsrs-agent/psk"]
 
 [lints.rust]
 unsafe_code = "forbid"

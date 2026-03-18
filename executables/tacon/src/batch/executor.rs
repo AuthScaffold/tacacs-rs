@@ -9,7 +9,7 @@ use futures::stream::{self, StreamExt};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
-use tacacsrs_client_service_client::{AccountingOperation, IpcEndpoint, ServiceClient};
+use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
 
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::SingleConnectionState;

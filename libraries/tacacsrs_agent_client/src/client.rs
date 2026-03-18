@@ -62,7 +62,7 @@ const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 /// # Examples
 ///
 /// ```rust,no_run
-/// # use tacacsrs_client_service_client::{
+/// # use tacacsrs_agent_client::{
 /// #     AccountingOperation, IpcEndpoint, ServiceClient,
 /// # };
 /// # async fn example() -> anyhow::Result<()> {

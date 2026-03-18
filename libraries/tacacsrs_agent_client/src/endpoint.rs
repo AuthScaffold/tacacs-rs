@@ -33,7 +33,7 @@ use anyhow::{Context, bail};
 /// as a socket path; otherwise the value is parsed as a `SocketAddr`.
 ///
 /// ```
-/// # use tacacsrs_client_service_client::IpcEndpoint;
+/// # use tacacsrs_agent_client::IpcEndpoint;
 /// let tcp: IpcEndpoint = "127.0.0.1:9049".parse().unwrap();
 /// assert!(matches!(tcp, IpcEndpoint::Tcp(_)));
 /// ```

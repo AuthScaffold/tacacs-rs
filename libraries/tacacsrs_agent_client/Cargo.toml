@@ -1,5 +1,5 @@
 [package]
-name = "tacacsrs-client-service-client"
+name = "tacacsrs-agent-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

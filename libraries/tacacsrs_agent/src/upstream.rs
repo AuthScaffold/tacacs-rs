@@ -39,7 +39,7 @@ use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
     TacacsAuthenticationService, TacacsAuthenticationType,
 };
-use tacacsrs_client_service_client::{
+use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
 };
 use tacacsrs_networking::helpers::tls_server_name;

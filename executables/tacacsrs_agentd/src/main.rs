@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::{ArgGroup, Parser};
-use tacacsrs_client_service::{ServiceConfig, TacacsClientService, UpstreamConnectionOptions};
-use tacacsrs_client_service_client::IpcEndpoint;
+use tacacsrs_agent::{ServiceConfig, TacacsClientService, UpstreamConnectionOptions};
+use tacacsrs_agent_client::IpcEndpoint;
 
 #[derive(Debug, Parser)]
-#[command(name = "tacacs-client-service", version, author)]
+#[command(name = "tacacsrs-agentd", version, author)]
 #[command(about = "Central TACACS+ client service for local consumers")]
 #[command(group(ArgGroup::new("ipc-endpoint").args(["listen_endpoint"])))]
 struct Cli {

@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::bail;
-use tacacsrs_client_service_client::{AccountingOperation, AccountingOperationResponse, ServiceError};
+use tacacsrs_agent_client::{AccountingOperation, AccountingOperationResponse, ServiceError};
 use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
@@ -350,7 +350,7 @@ impl ServiceState {
     ///
     /// This method does not notify IPC clients directly; callers translate any
     /// returned error into a retriable
-    /// [`tacacsrs_client_service_client::ServiceError`] for
+    /// [`tacacsrs_agent_client::ServiceError`] for
     /// the affected IPC request.
     async fn ensure_connection(&self, index: usize) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         if let Some(existing) = self.servers[index].connection.read().await.clone() {

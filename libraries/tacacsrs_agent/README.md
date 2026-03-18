@@ -1,13 +1,13 @@
-# tacacsrs-client-service
+# tacacsrs-agent
 
 Reusable building blocks for the central TACACS+ client service introduced for
 local IPC consumers such as TACON.
 
 The crate keeps the local listener, upstream failover logic, and persistent
 connection management together in one library while the runnable process lives
-in `executables/tacacs_client_service`. Transport-independent domain types and
+in `executables/tacacsrs_agentd`. Transport-independent domain types and
 the checked-in protobuf IPC contract live in the companion
-[`tacacsrs-client-service-client`](../tacacsrs_client_service_client/) crate so
+[`tacacsrs-agent-client`](../tacacsrs_agent_client/) crate so
 that both the server and local consumers share the same protocol definitions.
 
 ## Design goals
@@ -22,8 +22,7 @@ that both the server and local consumers share the same protocol definitions.
 ## Module hierarchy
 
 ```text
-tacacsrs_client_service
-├── service
+tacacsrs_agent├── service
 │   ├── config       - listener & failover configuration
 │   ├── coordinator  - runtime & listener lifecycle
 │   ├── state        - failover state & request routing
@@ -225,13 +224,13 @@ Each accepted IPC connection currently carries a single unary RPC exchange:
 ## Protocol source of truth
 
 The maintainable split between this crate and
-[`tacacsrs-client-service-client`](../tacacsrs_client_service_client/) is:
+[`tacacsrs-agent-client`](../tacacsrs_agent_client/) is:
 
 - Define the wire contract in the client crate's
-  [`proto/tacacsrs_client_service.proto`](../tacacsrs_client_service_client/proto/tacacsrs_client_service.proto).
+  [`proto/tacacsrs_client_service.proto`](../tacacsrs_agent_client/proto/tacacsrs_client_service.proto).
 - Generate the Rust gRPC/protobuf bindings at build time in the client crate.
 - Keep the operation-centric domain types in the client crate's
-  [`protocol`](../tacacsrs_client_service_client/src/protocol.rs) module.
+  [`protocol`](../tacacsrs_agent_client/src/protocol.rs) module.
 - Keep focused conversion tests between the domain types and protobuf messages.
 
 This keeps the on-the-wire IPC schema explicit and type-safe while still

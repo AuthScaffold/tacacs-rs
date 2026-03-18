@@ -13,7 +13,7 @@ mod endpoint;
 /// Generated protobuf/gRPC types for the local IPC transport.
 ///
 /// The `.proto` file
-/// ([`proto/tacacsrs_client_service.proto`](https://github.com/AuthScaffold/tacacs-rs/blob/main/libraries/tacacsrs_client_service_client/proto/tacacsrs_client_service.proto))
+/// ([`proto/tacacsrs_client_service.proto`](https://github.com/AuthScaffold/tacacs-rs/blob/main/libraries/tacacsrs_agent_client/proto/tacacsrs_client_service.proto))
 /// is checked into the repository as the source of truth for the on-the-wire
 /// IPC contract. The generated Rust bindings are included at build time so
 /// the rest of the crate can convert between domain types and the transport
