@@ -456,3 +456,285 @@ impl ServiceState {
         self.client_tracker.wait_for_zero().await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use tokio::sync::Notify;
+
+    use super::ServiceState;
+    use super::super::test_support::{
+        BlockingConnection, BlockingConnector, FakeConnection, FakeConnector,
+        SingleSessionConnector, build_request,
+    };
+    use crate::upstream::UpstreamConnector;
+
+    #[tokio::test]
+    async fn test_server_selection_wraps_to_later_server() {
+        let first = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(false),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let second = Arc::new(FakeConnection {
+            address: "server-b:49".to_owned(),
+            usable: AtomicBool::new(false),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let third = Arc::new(FakeConnection {
+            address: "server-c:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+
+        let connector = Arc::new(FakeConnector::new(HashMap::from([
+            (first.address.clone(), Arc::clone(&first)),
+            (second.address.clone(), Arc::clone(&second)),
+            (third.address.clone(), Arc::clone(&third)),
+        ])));
+
+        let state = ServiceState::new(
+            vec![
+                first.address.clone(),
+                second.address.clone(),
+                third.address.clone(),
+            ],
+            connector,
+            Duration::from_millis(25),
+        );
+
+        let bound = state.bind_server_for_new_session().await.unwrap();
+        assert_eq!(bound.connection.server_address(), "server-c:49");
+    }
+
+    #[tokio::test]
+    async fn test_warm_connections_stops_after_first_responsive_server() {
+        let first = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(false),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let second = Arc::new(FakeConnection {
+            address: "server-b:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let third = Arc::new(FakeConnection {
+            address: "server-c:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+
+        let connector = Arc::new(FakeConnector::new(HashMap::from([
+            (first.address.clone(), Arc::clone(&first)),
+            (second.address.clone(), Arc::clone(&second)),
+            (third.address.clone(), Arc::clone(&third)),
+        ])));
+
+        let state = ServiceState::new(
+            vec![
+                first.address.clone(),
+                second.address.clone(),
+                third.address.clone(),
+            ],
+            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(25),
+        );
+
+        state.warm_connections().await;
+
+        assert_eq!(connector.connect_attempts_for(&first.address).await, 1);
+        assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
+        assert_eq!(connector.connect_attempts_for(&third.address).await, 0);
+
+        let bound = state.bind_server_for_new_session().await.unwrap();
+        assert_eq!(bound.connection.server_address(), second.address);
+        assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_failover_coalesces_connection_attempts() {
+        let first = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(false),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let second = Arc::new(FakeConnection {
+            address: "server-b:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+
+        let connector = Arc::new(
+            FakeConnector::new(HashMap::from([
+                (first.address.clone(), Arc::clone(&first)),
+                (second.address.clone(), Arc::clone(&second)),
+            ]))
+            .with_connect_delay(Duration::from_millis(25)),
+        );
+
+        let state = Arc::new(ServiceState::new(
+            vec![first.address.clone(), second.address.clone()],
+            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(200),
+        ));
+
+        let mut tasks = Vec::new();
+        for _ in 0..16 {
+            let state = Arc::clone(&state);
+            tasks.push(tokio::spawn(async move {
+                let bound = state.bind_server_for_new_session().await.unwrap();
+                bound.connection.server_address().to_owned()
+            }));
+        }
+
+        for task in tasks {
+            assert_eq!(task.await.unwrap(), second.address);
+        }
+
+        assert_eq!(connector.connect_attempts_for(&first.address).await, 1);
+        assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
+        assert_eq!(connector.max_in_flight_connects(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_non_single_connection_is_reconnected_for_next_request() {
+        let connector = Arc::new(SingleSessionConnector {
+            address: "server-a:49".to_owned(),
+            connect_attempts: AtomicUsize::new(0),
+        });
+
+        let state = ServiceState::new(
+            vec![connector.address.clone()],
+            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(200),
+        );
+
+        let first = state.bind_server_for_new_session().await.unwrap();
+        first
+            .connection
+            .send_accounting(&build_request())
+            .await
+            .unwrap();
+
+        let second = state.bind_server_for_new_session().await.unwrap();
+        assert_eq!(second.connection.server_address(), connector.address);
+        assert_eq!(connector.connect_attempts.load(Ordering::Relaxed), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // ClientTracker / drain-wait tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_drain_returns_immediately_with_no_active_clients() {
+        let release = Arc::new(Notify::new());
+        let connector = Arc::new(BlockingConnector {
+            connection: Arc::new(BlockingConnection {
+                address: "server:49".to_owned(),
+                release,
+            }),
+        });
+        let state =
+            ServiceState::new(vec!["server:49".to_owned()], connector, Duration::from_mins(1));
+
+        // No requests in flight — drain should return immediately.
+        tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients())
+            .await
+            .expect("wait_for_active_clients should return immediately with no active clients");
+    }
+
+    #[tokio::test]
+    async fn test_drain_waits_for_in_flight_request_then_completes() {
+        let release = Arc::new(Notify::new());
+        let connector = Arc::new(BlockingConnector {
+            connection: Arc::new(BlockingConnection {
+                address: "server:49".to_owned(),
+                release: Arc::clone(&release),
+            }),
+        });
+        let state = Arc::new(ServiceState::new(
+            vec!["server:49".to_owned()],
+            connector,
+            Duration::from_mins(1),
+        ));
+        state.warm_connections().await;
+
+        // Spawn an in-flight request that blocks inside send_accounting.
+        let state_bg = Arc::clone(&state);
+        let request_handle = tokio::spawn(async move {
+            state_bg
+                .execute_accounting_request(build_request())
+                .await
+                .unwrap();
+        });
+
+        // Give the spawned task time to enter send_accounting and acquire the guard.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Drain should NOT complete while the request is in flight.
+        let drain_result =
+            tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients()).await;
+        assert!(
+            drain_result.is_err(),
+            "wait_for_active_clients should block while a request is in flight"
+        );
+
+        // Release the blocked request so the guard drops.
+        release.notify_waiters();
+        request_handle.await.unwrap();
+
+        // Now drain should complete promptly.
+        tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients())
+            .await
+            .expect("wait_for_active_clients should complete after all requests finish");
+    }
+
+    #[tokio::test]
+    async fn test_drain_completes_when_guard_drops_between_check_and_await() {
+        // Regression test for the lost-wakeup race: the guard drops (and
+        // notifies) in the window between the load-check and the notified().await
+        // inside wait_for_zero. The fix ensures the Notify future is registered
+        // before the recheck so no wakeup is lost.
+        let release = Arc::new(Notify::new());
+        let connector = Arc::new(BlockingConnector {
+            connection: Arc::new(BlockingConnection {
+                address: "server:49".to_owned(),
+                release: Arc::clone(&release),
+            }),
+        });
+        let state = Arc::new(ServiceState::new(
+            vec!["server:49".to_owned()],
+            connector,
+            Duration::from_mins(1),
+        ));
+        state.warm_connections().await;
+
+        // Spawn a request then release it almost immediately so the guard drop
+        // races with the drain waiter.
+        let state_bg = Arc::clone(&state);
+        let request_handle = tokio::spawn(async move {
+            state_bg
+                .execute_accounting_request(build_request())
+                .await
+                .unwrap();
+        });
+
+        // Yield briefly to let the task start.
+        tokio::task::yield_now().await;
+
+        // Release the request immediately — the guard will drop while the drain
+        // waiter is still setting up, exercising the race window.
+        release.notify_waiters();
+        request_handle.await.unwrap();
+
+        // Drain must still complete; a lost wakeup would cause this to hang.
+        tokio::time::timeout(Duration::from_millis(200), state.wait_for_active_clients())
+            .await
+            .expect("wait_for_active_clients must not hang after a racing guard drop");
+    }
+}

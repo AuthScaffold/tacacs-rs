@@ -12,7 +12,6 @@
 //! | `config` | Public listener and failover configuration |
 //! | `coordinator` | Long-lived service runtime and IPC listener lifecycle |
 //! | `state` | Internal failover state, request routing, and active-client tracking |
-//! | `tests` | Integration tests covering failover, warm-up, and socket lifecycle |
 
 mod config;
 mod coordinator;
@@ -22,4 +21,4 @@ pub use config::ServiceConfig;
 pub use coordinator::TacacsClientService;
 
 #[cfg(test)]
-mod tests;
+mod test_support;

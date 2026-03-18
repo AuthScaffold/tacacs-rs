@@ -131,7 +131,7 @@ impl TacacsClientService {
         Ok(Self { config, state })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn new_with_connector(
         config: ServiceConfig,
         connector: Arc<dyn UpstreamConnector>,
@@ -317,5 +317,179 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use std::collections::HashMap;
+    #[cfg(unix)]
+    use std::sync::Arc;
+    #[cfg(unix)]
+    use std::sync::atomic::{AtomicBool, Ordering};
+    #[cfg(unix)]
+    use std::time::Duration;
+
+    #[cfg(unix)]
+    use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+
+    #[cfg(unix)]
+    use super::TacacsClientService;
+    #[cfg(unix)]
+    use super::super::config::ServiceConfig;
+    #[cfg(unix)]
+    use super::super::test_support::{FakeConnection, FakeConnector, build_request};
+    #[cfg(unix)]
+    use crate::upstream::UpstreamConnectionOptions;
+
+    #[cfg(unix)]
+    fn service_config(endpoint: IpcEndpoint, server_addresses: Vec<String>) -> ServiceConfig {
+        ServiceConfig {
+            endpoint,
+            server_addresses,
+            upstream: UpstreamConnectionOptions {
+                connect_timeout: Duration::from_millis(50),
+                ..UpstreamConnectionOptions::default()
+            },
+            preferred_probe_interval: Duration::from_millis(50),
+            socket_mode: 0o660,
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_endpoint(socket_name: &str) -> IpcEndpoint {
+        let unique = format!(
+            "{}-{}-{}.sock",
+            socket_name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        IpcEndpoint::Unix(std::env::temp_dir().join(unique))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_unix_socket_failover_and_preferred_recovery() {
+        let primary = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let secondary = Arc::new(FakeConnection {
+            address: "secondary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+
+        let connector = Arc::new(FakeConnector::new(HashMap::from([
+            (primary.address.clone(), Arc::clone(&primary)),
+            (secondary.address.clone(), Arc::clone(&secondary)),
+        ])));
+
+        let endpoint = test_endpoint("tacacs-service-test");
+        let config = service_config(
+            endpoint.clone(),
+            vec![primary.address.clone(), secondary.address.clone()],
+        );
+
+        let service = TacacsClientService::new_with_connector(config, connector).unwrap();
+        let service_task = tokio::spawn(async move { service.serve().await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let client = ServiceClient::new(endpoint.clone());
+        let request = build_request();
+
+        let first = client.send_accounting(request.clone()).await.unwrap();
+        assert_eq!(first.server, "primary:49");
+
+        primary.fail_next_request.store(true, Ordering::Relaxed);
+        let failure = client.send_accounting(request.clone()).await.unwrap_err();
+        assert!(failure
+            .to_string()
+            .contains("simulated failure from primary:49"));
+
+        let second = client.send_accounting(request.clone()).await.unwrap();
+        assert_eq!(second.server, "secondary:49");
+
+        primary.usable.store(true, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let third = client.send_accounting(request).await.unwrap();
+        assert_eq!(third.server, "primary:49");
+
+        service_task.abort();
+        let _ = service_task.await;
+
+        if let IpcEndpoint::Unix(path) = endpoint {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_existing_socket_path_is_not_unlinked() {
+        let primary = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            primary.address.clone(),
+            Arc::clone(&primary),
+        )])));
+
+        let endpoint = test_endpoint("tacacs-service-existing-socket");
+        let path = match &endpoint {
+            IpcEndpoint::Unix(path) => path.clone(),
+            IpcEndpoint::Tcp(_) => unreachable!(),
+        };
+
+        let existing_listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let config = service_config(endpoint, vec![primary.address.clone()]);
+
+        let service = TacacsClientService::new_with_connector(config, connector).unwrap();
+        let error = service.serve().await.unwrap_err();
+        assert!(error.to_string().contains("already accepting connections"));
+
+        drop(existing_listener);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_stale_socket_path_is_replaced() {
+        let primary = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            primary.address.clone(),
+            Arc::clone(&primary),
+        )])));
+
+        let endpoint = test_endpoint("tacacs-service-stale-socket");
+        let path = match &endpoint {
+            IpcEndpoint::Unix(path) => path.clone(),
+            IpcEndpoint::Tcp(_) => unreachable!(),
+        };
+
+        let stale_listener = tokio::net::UnixListener::bind(&path).unwrap();
+        drop(stale_listener);
+
+        let config = service_config(endpoint, vec![primary.address.clone()]);
+
+        let service = TacacsClientService::new_with_connector(config, connector).unwrap();
+        let listener = service.prepare_unix_listener(&path).await.unwrap();
+        drop(listener);
+
+        assert!(tokio::fs::try_exists(&path).await.unwrap());
+        let _ = tokio::fs::remove_file(path).await;
     }
 }
