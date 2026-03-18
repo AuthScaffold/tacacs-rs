@@ -74,6 +74,9 @@ pub fn tls_server_name(server_addr: &str) -> &str {
         return stripped;
     }
 
+    // Only attempt host:port splitting when exactly one colon is present.
+    // Any valid IPv6 literal contains ≥2 colons, so this guard ensures
+    // unbracketed IPv6 addresses are never misinterpreted as host:port.
     if server_addr.matches(':').count() == 1 {
         if let Some((host, port)) = server_addr.rsplit_once(':') {
             if port.parse::<u16>().is_ok() {
@@ -114,6 +117,34 @@ mod tests {
     #[test]
     fn test_tls_server_name_unbracketed_ipv6_literal_is_unchanged() {
         assert_eq!(tls_server_name("2001:db8::1"), "2001:db8::1");
+    }
+
+    #[test]
+    fn test_tls_server_name_unbracketed_ipv6_localhost_is_unchanged() {
+        assert_eq!(tls_server_name("::1"), "::1");
+    }
+
+    #[test]
+    fn test_tls_server_name_unbracketed_ipv6_full_is_unchanged() {
+        assert_eq!(
+            tls_server_name("2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
+            "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
+        );
+    }
+
+    #[test]
+    fn test_tls_server_name_bracketed_ipv6_without_port() {
+        assert_eq!(tls_server_name("[2001:db8::1]"), "2001:db8::1");
+    }
+
+    #[test]
+    fn test_tls_server_name_hostname_with_port() {
+        assert_eq!(tls_server_name("tacacs.example.com:49"), "tacacs.example.com");
+    }
+
+    #[test]
+    fn test_tls_server_name_hostname_with_non_numeric_port_is_unchanged() {
+        assert_eq!(tls_server_name("host:notaport"), "host:notaport");
     }
 
     #[test]
