@@ -122,7 +122,16 @@ impl ClientTracker {
     /// waiter starts sleeping.
     async fn wait_for_zero(&self) {
         loop {
+            if self.active_clients.load(Ordering::Relaxed) == 0 {
+                log::debug!("All in-flight IPC client handlers have drained");
+                return;
+            }
+
+            // Register for notification *before* the recheck so that a
+            // decrement-to-zero that races between the recheck and the await
+            // is captured by the already-registered future.
             let notified = self.drained.notified();
+
             let active_clients = self.active_clients.load(Ordering::Relaxed);
             if active_clients == 0 {
                 log::debug!("All in-flight IPC client handlers have drained");

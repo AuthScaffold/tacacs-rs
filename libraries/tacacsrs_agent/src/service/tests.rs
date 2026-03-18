@@ -11,7 +11,7 @@ use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus, IpcEndpoint,
     ServiceClient,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use super::config::ServiceConfig;
 use super::coordinator::TacacsClientService;
@@ -488,4 +488,163 @@ async fn test_non_single_connection_is_reconnected_for_next_request() {
     let second = state.bind_server_for_new_session().await.unwrap();
     assert_eq!(second.connection.server_address(), connector.address);
     assert_eq!(connector.connect_attempts.load(Ordering::Relaxed), 2);
+}
+
+// ---------------------------------------------------------------------------
+// ClientTracker / drain-wait tests
+// ---------------------------------------------------------------------------
+
+/// Connection whose `send_accounting` blocks until an external signal fires.
+/// This lets tests hold the client guard alive for a controlled duration.
+#[derive(Debug)]
+struct BlockingConnection {
+    address: String,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl UpstreamConnection for BlockingConnection {
+    fn server_address(&self) -> &str {
+        &self.address
+    }
+
+    async fn is_usable_for_new_sessions(&self) -> bool {
+        true
+    }
+
+    async fn send_accounting(
+        &self,
+        _request: &AccountingOperation,
+    ) -> anyhow::Result<AccountingOperationResponse> {
+        self.release.notified().await;
+        Ok(AccountingOperationResponse {
+            server: self.address.clone(),
+            status: AccountingResponseStatus::Success,
+            server_message: String::new(),
+            data: String::new(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct BlockingConnector {
+    connection: Arc<BlockingConnection>,
+}
+
+#[async_trait]
+impl UpstreamConnector for BlockingConnector {
+    async fn connect(&self, _address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        Ok(Arc::clone(&self.connection) as Arc<dyn UpstreamConnection>)
+    }
+}
+
+#[tokio::test]
+async fn test_drain_returns_immediately_with_no_active_clients() {
+    let release = Arc::new(Notify::new());
+    let connector = Arc::new(BlockingConnector {
+        connection: Arc::new(BlockingConnection {
+            address: "server:49".to_owned(),
+            release,
+        }),
+    });
+    let state = ServiceState::new(
+        vec!["server:49".to_owned()],
+        connector,
+        Duration::from_secs(60),
+    );
+
+    // No requests in flight — drain should return immediately.
+    tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients())
+        .await
+        .expect("wait_for_active_clients should return immediately with no active clients");
+}
+
+#[tokio::test]
+async fn test_drain_waits_for_in_flight_request_then_completes() {
+    let release = Arc::new(Notify::new());
+    let connector = Arc::new(BlockingConnector {
+        connection: Arc::new(BlockingConnection {
+            address: "server:49".to_owned(),
+            release: Arc::clone(&release),
+        }),
+    });
+    let state = Arc::new(ServiceState::new(
+        vec!["server:49".to_owned()],
+        connector,
+        Duration::from_secs(60),
+    ));
+    state.warm_connections().await;
+
+    // Spawn an in-flight request that blocks inside send_accounting.
+    let state_bg = Arc::clone(&state);
+    let request_handle = tokio::spawn(async move {
+        state_bg
+            .execute_accounting_request(build_request())
+            .await
+            .unwrap();
+    });
+
+    // Give the spawned task time to enter send_accounting and acquire the guard.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Drain should NOT complete while the request is in flight.
+    let drain_result =
+        tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients()).await;
+    assert!(
+        drain_result.is_err(),
+        "wait_for_active_clients should block while a request is in flight"
+    );
+
+    // Release the blocked request so the guard drops.
+    release.notify_waiters();
+    request_handle.await.unwrap();
+
+    // Now drain should complete promptly.
+    tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients())
+        .await
+        .expect("wait_for_active_clients should complete after all requests finish");
+}
+
+#[tokio::test]
+async fn test_drain_completes_when_guard_drops_between_check_and_await() {
+    // Regression test for the lost-wakeup race: the guard drops (and
+    // notifies) in the window between the load-check and the notified().await
+    // inside wait_for_zero. The fix ensures the Notify future is registered
+    // before the recheck so no wakeup is lost.
+    let release = Arc::new(Notify::new());
+    let connector = Arc::new(BlockingConnector {
+        connection: Arc::new(BlockingConnection {
+            address: "server:49".to_owned(),
+            release: Arc::clone(&release),
+        }),
+    });
+    let state = Arc::new(ServiceState::new(
+        vec!["server:49".to_owned()],
+        connector,
+        Duration::from_secs(60),
+    ));
+    state.warm_connections().await;
+
+    // Spawn a request then release it almost immediately so the guard drop
+    // races with the drain waiter.
+    let state_bg = Arc::clone(&state);
+    let request_handle = tokio::spawn(async move {
+        state_bg
+            .execute_accounting_request(build_request())
+            .await
+            .unwrap();
+    });
+
+    // Yield briefly to let the task start.
+    tokio::task::yield_now().await;
+
+    // Release the request immediately — the guard will drop while the drain
+    // waiter is still setting up, exercising the race window.
+    release.notify_waiters();
+    request_handle.await.unwrap();
+
+    // Drain must still complete; a lost wakeup would cause this to hang.
+    tokio::time::timeout(Duration::from_millis(200), state.wait_for_active_clients())
+        .await
+        .expect("wait_for_active_clients must not hang after a racing guard drop");
 }
