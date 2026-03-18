@@ -15,14 +15,15 @@ use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
     TacacsAuthenticationService, TacacsAuthenticationType,
 };
+use tacacsrs_client_service_client::{
+    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
+};
 use tacacsrs_networking::helpers::tls_server_name;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 use tacacsrs_networking::{connection::TacacsConnection, transport::tls::TlsConfigurationBuilder};
 #[cfg(feature = "psk")]
 use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
-
-use crate::protocol::{AccountingOperation, AccountingOperationResponse, AccountingResponseStatus};
 
 /// Connection options shared by all upstream TACACS+ server connections.
 #[derive(Debug, Clone)]

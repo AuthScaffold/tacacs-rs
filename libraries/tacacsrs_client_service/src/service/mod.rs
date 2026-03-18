@@ -7,7 +7,7 @@ mod config;
 mod coordinator;
 mod state;
 
-pub use config::{IpcEndpoint, ServiceConfig};
+pub use config::ServiceConfig;
 pub use coordinator::TacacsClientService;
 
 #[cfg(test)]

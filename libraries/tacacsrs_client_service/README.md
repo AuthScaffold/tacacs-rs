@@ -221,9 +221,9 @@ Each accepted IPC connection currently carries a single unary RPC exchange:
 
 The maintainable choice for this crate is:
 
-- define the wire contract in `proto/tacacsrs_client_service.proto`
-- generate the Rust gRPC/protobuf bindings at build time
-- keep the operation-centric domain types in `src/protocol.rs`
+- define the wire contract in `../tacacsrs_client_service_client/proto/tacacsrs_client_service.proto`
+- generate the Rust gRPC/protobuf bindings at build time in the dedicated client crate
+- keep the operation-centric domain types in `../tacacsrs_client_service_client/src/protocol.rs`
 - keep focused conversion tests between the domain types and protobuf messages
 
 This keeps the on-the-wire IPC schema explicit and type-safe while still

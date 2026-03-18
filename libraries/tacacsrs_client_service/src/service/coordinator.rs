@@ -12,18 +12,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
+use tacacsrs_client_service_client::ipc;
+use tacacsrs_client_service_client::ipc::local_tacacs_client_service_server::{
+    LocalTacacsClientService, LocalTacacsClientServiceServer,
+};
+use tacacsrs_client_service_client::{AccountingOperation, IpcEndpoint};
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Request, Response, Status};
 
-use super::config::{IpcEndpoint, ServiceConfig};
+use super::config::ServiceConfig;
 use super::state::ServiceState;
-use crate::ipc;
-use crate::ipc::local_tacacs_client_service_server::{
-    LocalTacacsClientService, LocalTacacsClientServiceServer,
-};
-use crate::protocol::AccountingOperation;
 use crate::upstream::{NetworkUpstreamConnector, UpstreamConnector};
 
 /// Long-lived local TACACS+ client service.
@@ -209,7 +209,8 @@ impl TacacsClientService {
         let listener = tokio::net::UnixListener::bind(path)
             .with_context(|| format!("Failed to bind Unix socket {}", path.display()))?;
 
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(self.config.socket_mode))
+        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(self.config.socket_mode))
+            .await
             .with_context(|| format!("Failed to set permissions on socket {}", path.display()))?;
         Ok(listener)
     }

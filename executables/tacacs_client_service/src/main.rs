@@ -3,9 +3,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::{ArgGroup, Parser};
-use tacacsrs_client_service::{
-    IpcEndpoint, ServiceConfig, TacacsClientService, UpstreamConnectionOptions,
-};
+use tacacsrs_client_service::{ServiceConfig, TacacsClientService, UpstreamConnectionOptions};
+use tacacsrs_client_service_client::IpcEndpoint;
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacs-client-service", version, author)]

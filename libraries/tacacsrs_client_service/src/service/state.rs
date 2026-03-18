@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::bail;
+use tacacsrs_client_service_client::{AccountingOperation, AccountingOperationResponse, ServiceError};
 use tokio::sync::{Mutex, Notify, RwLock};
 
-use crate::protocol::{AccountingOperation, AccountingOperationResponse, ServiceError};
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
 
 /// Shared runtime state for all IPC client handlers spawned by the listener.
@@ -295,7 +295,8 @@ impl ServiceState {
     /// reuse the drained connection.
     ///
     /// This method does not notify IPC clients directly; callers translate any
-    /// returned error into a retriable [`crate::protocol::ServiceError`] for
+    /// returned error into a retriable
+    /// [`tacacsrs_client_service_client::ServiceError`] for
     /// the affected IPC request.
     async fn ensure_connection(&self, index: usize) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         if let Some(existing) = self.servers[index].connection.read().await.clone() {

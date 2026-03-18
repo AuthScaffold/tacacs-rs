@@ -74,9 +74,11 @@ pub fn tls_server_name(server_addr: &str) -> &str {
         return stripped;
     }
 
-    if let Some((host, port)) = server_addr.rsplit_once(':') {
-        if port.parse::<u16>().is_ok() {
-            return host;
+    if server_addr.matches(':').count() == 1 {
+        if let Some((host, port)) = server_addr.rsplit_once(':') {
+            if port.parse::<u16>().is_ok() {
+                return host;
+            }
         }
     }
 
@@ -107,6 +109,11 @@ mod tests {
     #[test]
     fn test_tls_server_name_ipv6_with_port() {
         assert_eq!(tls_server_name("[2001:db8::1]:49"), "2001:db8::1");
+    }
+
+    #[test]
+    fn test_tls_server_name_unbracketed_ipv6_literal_is_unchanged() {
+        assert_eq!(tls_server_name("2001:db8::1"), "2001:db8::1");
     }
 
     #[test]

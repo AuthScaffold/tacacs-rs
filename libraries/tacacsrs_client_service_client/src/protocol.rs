@@ -118,7 +118,8 @@ impl ServiceError {
         self
     }
 
-    pub(crate) fn into_proto(self) -> ipc::ServiceError {
+    #[must_use]
+    pub fn into_proto(self) -> ipc::ServiceError {
         ipc::ServiceError {
             message: self.message,
             server: self.server.unwrap_or_default(),
@@ -126,7 +127,8 @@ impl ServiceError {
         }
     }
 
-    pub(crate) fn from_proto(proto: ipc::ServiceError) -> Self {
+    #[must_use]
+    pub fn from_proto(proto: ipc::ServiceError) -> Self {
         Self {
             message: proto.message,
             server: (!proto.server.is_empty()).then_some(proto.server),
@@ -174,7 +176,8 @@ impl TryFrom<ipc::AccountingRequest> for AccountingOperation {
 }
 
 impl AccountingOperationResponse {
-    pub(crate) fn into_proto(self) -> ipc::AccountingResponse {
+    #[must_use]
+    pub fn into_proto(self) -> ipc::AccountingResponse {
         ipc::AccountingResponse {
             server: self.server,
             status: self.status.into_proto(),
@@ -183,7 +186,13 @@ impl AccountingOperationResponse {
         }
     }
 
-    pub(crate) fn from_proto(proto: ipc::AccountingResponse) -> anyhow::Result<Self> {
+    /// Converts a protobuf accounting response into the typed domain response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the protobuf status code is missing, out of range, or
+    /// not one of the supported TACACS+ accounting reply status values.
+    pub fn from_proto(proto: ipc::AccountingResponse) -> anyhow::Result<Self> {
         Ok(Self {
             server: proto.server,
             status: AccountingResponseStatus::from_proto(proto.status)?,

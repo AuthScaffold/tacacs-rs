@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use anyhow::{bail, Context};
 use clap::Parser;
-use tacacsrs_client_service::{AccountingOperation, IpcEndpoint, ServiceClient};
+use tacacsrs_client_service_client::{AccountingOperation, IpcEndpoint, ServiceClient};
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::session::Session;
 

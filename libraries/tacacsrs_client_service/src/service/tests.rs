@@ -7,13 +7,15 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
+use tacacsrs_client_service_client::{
+    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus, IpcEndpoint,
+    ServiceClient,
+};
 use tokio::sync::Mutex;
 
-use super::config::{IpcEndpoint, ServiceConfig};
+use super::config::ServiceConfig;
 use super::coordinator::TacacsClientService;
 use super::state::ServiceState;
-use crate::client::ServiceClient;
-use crate::protocol::{AccountingOperation, AccountingOperationResponse, AccountingResponseStatus};
 use crate::upstream::{UpstreamConnection, UpstreamConnectionOptions, UpstreamConnector};
 
 #[derive(Debug)]

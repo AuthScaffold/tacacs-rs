@@ -13,7 +13,7 @@ use tower::service_fn;
 use crate::ipc;
 use crate::ipc::local_tacacs_client_service_client::LocalTacacsClientServiceClient;
 use crate::protocol::{AccountingOperation, AccountingOperationResponse, ServiceError};
-use crate::service::IpcEndpoint;
+use crate::IpcEndpoint;
 
 #[cfg(unix)]
 const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
