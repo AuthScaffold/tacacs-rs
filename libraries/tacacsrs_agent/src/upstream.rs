@@ -230,6 +230,13 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         &self,
         request: &AccountingOperation,
     ) -> anyhow::Result<AccountingOperationResponse> {
+        log::debug!(
+            "Creating TACACS+ session on {} for accounting request (user={}, cmd={})",
+            self.server_address,
+            request.user,
+            request.command,
+        );
+
         let session = self
             .connection
             .create_session()
@@ -238,10 +245,29 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
         let response = session
             .send_accounting_request(build_accounting_request(request))
-            .await
-            .with_context(|| {
-                format!("Failed to send accounting request via {}", self.server_address)
-            })?;
+            .await;
+
+        match &response {
+            Ok(resp) => {
+                log::debug!(
+                    "Accounting response from {}: status={:?}, server_msg={}",
+                    self.server_address,
+                    resp.status,
+                    if resp.server_msg.is_empty() {
+                        "(empty)"
+                    } else {
+                        &resp.server_msg
+                    },
+                );
+            }
+            Err(error) => {
+                log::warn!("Accounting request to {} failed: {error:#}", self.server_address,);
+            }
+        }
+
+        let response = response.with_context(|| {
+            format!("Failed to send accounting request via {}", self.server_address)
+        })?;
 
         Ok(AccountingOperationResponse {
             server: self.server_address.clone(),
@@ -304,13 +330,27 @@ async fn connect_upstream(
     address: &str,
     options: &UpstreamConnectionOptions,
 ) -> anyhow::Result<Arc<TacacsConnection>> {
+    log::debug!(
+        "Connecting to upstream TACACS+ server {address} (TLS: {}, timeout: {:?})",
+        options.use_tls,
+        options.connect_timeout,
+    );
+
     let stream = tokio::time::timeout(
         options.connect_timeout,
         tacacsrs_networking::helpers::connect_tcp(address),
     )
     .await
-    .with_context(|| format!("Timed out connecting to {address}"))?
-    .with_context(|| format!("Failed to establish TCP connection to {address}"))?;
+    .with_context(|| {
+        log::warn!("Connection to {address} timed out after {:?}", options.connect_timeout,);
+        format!("Timed out connecting to {address}")
+    })?
+    .with_context(|| {
+        log::warn!("TCP connection to {address} failed");
+        format!("Failed to establish TCP connection to {address}")
+    })?;
+
+    log::debug!("TCP connection to {address} established");
 
     let connection =
         Arc::new(TacacsConnection::new(options.obfuscation_key.as_deref().map(str::as_bytes)));
@@ -320,18 +360,26 @@ async fn connect_upstream(
         if let (Some(psk_identity), Some(psk_key)) =
             (options.psk_identity.as_ref(), options.psk_key.as_ref())
         {
+            log::debug!("Negotiating TLS-PSK handshake with {address}");
             let psk = PskIdentity::new(psk_identity, psk_key.as_bytes())
                 .context("Invalid PSK credentials")?;
             let tls_stream = PskConfigurationBuilder::new(psk)
                 .connect(stream)
                 .await
+                .inspect_err(|e| log::warn!("TLS-PSK handshake with {address} failed: {e:#}"))
                 .context("Failed to establish TLS PSK connection")?;
             connection
                 .run(tls_stream)
                 .await
+                .inspect_err(|e| {
+                    log::warn!("TLS-PSK connection handler start for {address} failed: {e:#}");
+                })
                 .context("Failed to start TLS PSK connection handler")?;
+            log::debug!("TLS-PSK connection to {address} ready");
             return Ok(connection);
         }
+
+        log::debug!("Negotiating mTLS handshake with {address}");
 
         let client_cert = options
             .client_certificate
@@ -346,11 +394,13 @@ async fn connect_upstream(
             TlsConfigurationBuilder::new()
                 .with_client_auth_cert_files(client_cert, client_key)
                 .await
+                .inspect_err(|e| log::warn!("Failed to load TLS certificates for {address}: {e:#}"))
                 .context("Failed to load TLS certificates")?
                 .with_certificate_verification_disabled(
                     options.insecure_disable_certificate_verification,
                 )
                 .build()
+                .inspect_err(|e| log::warn!("Failed to build TLS config for {address}: {e:#}"))
                 .context("Failed to build TLS configuration")?,
         );
 
@@ -360,17 +410,26 @@ async fn connect_upstream(
             tls_server_name(address),
         )
         .await
+        .inspect_err(|e| log::warn!("TLS handshake with {address} failed: {e:#}"))
         .context("Failed to establish TLS connection")?;
 
         connection
             .run(tls_stream)
             .await
+            .inspect_err(|e| {
+                log::warn!("TLS connection handler start for {address} failed: {e:#}");
+            })
             .context("Failed to start TLS connection handler")?;
+        log::debug!("TLS connection to {address} ready");
     } else {
         connection
             .run(stream)
             .await
+            .inspect_err(|e| {
+                log::warn!("TCP connection handler start for {address} failed: {e:#}");
+            })
             .context("Failed to start TCP connection handler")?;
+        log::debug!("TCP connection to {address} ready");
     }
 
     Ok(connection)

@@ -52,6 +52,10 @@ struct Cli {
     #[arg(long, default_value_t = 30)]
     preferred_probe_interval_seconds: u64,
 
+    /// Increase verbosity level (-v, -vv, -vvv, -vvvv)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
+
     #[cfg(feature = "psk")]
     #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
     psk_identity: Option<String>,
@@ -66,6 +70,24 @@ fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
     u32::from_str_radix(mode, 8).with_context(|| format!("Invalid socket mode: {mode}"))
 }
 
+/// Initializes the logger based on verbosity level.
+fn init_logger(verbose: u8) {
+    let level = match verbose {
+        0 => return,
+        1 => "warn",
+        2 => "info",
+        3 => "debug",
+        _ => "trace",
+    };
+
+    if env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level))
+        .try_init()
+        .is_ok()
+    {
+        log::debug!("Logging initialized at level: {level}");
+    }
+}
+
 /// Starts the central TACACS+ client service process.
 ///
 /// The service listens on the configured local IPC endpoint, maintains
@@ -74,6 +96,8 @@ fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    init_logger(cli.verbose);
+
     let endpoint = cli
         .listen_endpoint
         .as_deref()
@@ -81,10 +105,20 @@ async fn main() -> anyhow::Result<()> {
         .transpose()?
         .unwrap_or_else(IpcEndpoint::default_local);
 
+    log::info!("IPC endpoint: {endpoint:?}");
+
     #[cfg(unix)]
     if matches!(endpoint, IpcEndpoint::Tcp(_)) {
         anyhow::bail!("Linux deployments must use a Unix domain socket endpoint");
     }
+
+    log::info!(
+        "Upstream servers: {:?}, TLS: {}, connect timeout: {}s, probe interval: {}s",
+        cli.server_addresses,
+        cli.use_tls,
+        cli.connect_timeout_seconds,
+        cli.preferred_probe_interval_seconds,
+    );
 
     let service = TacacsClientService::new(ServiceConfig {
         endpoint,

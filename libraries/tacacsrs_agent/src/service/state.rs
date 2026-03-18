@@ -242,8 +242,18 @@ impl ServiceState {
 
                 let active_index = *state.active_index.read().await;
                 if active_index == 0 {
+                    log::trace!(
+                        "Preferred server probe: already using preferred server {}",
+                        state.servers[0].address,
+                    );
                     continue;
                 }
+
+                log::debug!(
+                    "Probing preferred server {} (currently failed over to {})",
+                    state.servers[0].address,
+                    state.servers[active_index].address,
+                );
 
                 match state.ensure_connection(0).await {
                     Ok(connection) => {
@@ -254,7 +264,10 @@ impl ServiceState {
                         *state.active_index.write().await = 0;
                     }
                     Err(error) => {
-                        log::debug!("Preferred TACACS+ server probe failed: {error}");
+                        log::debug!(
+                            "Preferred TACACS+ server {} probe failed: {error:#}",
+                            state.servers[0].address,
+                        );
                     }
                 }
             }
@@ -273,14 +286,24 @@ impl ServiceState {
         request: AccountingOperation,
     ) -> Result<AccountingOperationResponse, ServiceError> {
         let _client_guard = self.client_tracker.start_guard();
-        let bound_server = self
-            .bind_server_for_new_session()
-            .await
-            .map_err(|error| ServiceError::new(error.to_string()).retriable(true))?;
+        let bound_server = self.bind_server_for_new_session().await.map_err(|error| {
+            log::warn!("Failed to bind IPC request to an upstream server: {error:#}");
+            ServiceError::new(error.to_string()).retriable(true)
+        })?;
+
+        log::debug!(
+            "Executing accounting request via {} (server index {})",
+            bound_server.connection.server_address(),
+            bound_server.index,
+        );
 
         match bound_server.connection.send_accounting(&request).await {
             Ok(response) => Ok(response),
             Err(error) => {
+                log::warn!(
+                    "Accounting request failed on {}: {error:#}",
+                    bound_server.connection.server_address(),
+                );
                 self.note_failure(bound_server.index).await;
                 Err(ServiceError::new(error.to_string())
                     .with_server(bound_server.connection.server_address())
@@ -329,7 +352,10 @@ impl ServiceState {
             }
         }
 
-        bail!("No responsive TACACS+ servers are currently available")
+        log::error!(
+            "All configured TACACS+ servers are currently non-responsive; failing IPC request"
+        );
+        bail!("No responsive TACACS+ servers are currently available");
     }
 
     /// Returns a usable cached connection for `index`, or creates a fresh one
@@ -397,6 +423,10 @@ impl ServiceState {
             .load(Ordering::Acquire)
             != reconnect_generation
         {
+            log::debug!(
+                "Skipping duplicate reconnect to {}; another attempt already completed",
+                self.servers[index].address,
+            );
             bail!(
                 "Another reconnect attempt for TACACS+ server {} already completed for this request wave",
                 self.servers[index].address
@@ -406,6 +436,10 @@ impl ServiceState {
         log::debug!("Opening upstream connection to {}", self.servers[index].address);
         match self.connector.connect(&self.servers[index].address).await {
             Ok(connection) => {
+                log::info!(
+                    "Upstream connection to {} established successfully",
+                    self.servers[index].address,
+                );
                 *self.servers[index].connection.write().await = Some(Arc::clone(&connection));
                 self.servers[index]
                     .completed_connect_attempts
@@ -413,6 +447,10 @@ impl ServiceState {
                 Ok(connection)
             }
             Err(error) => {
+                log::warn!(
+                    "Failed to connect to upstream TACACS+ server {}: {error:#}",
+                    self.servers[index].address,
+                );
                 *self.servers[index].connection.write().await = None;
                 self.servers[index]
                     .completed_connect_attempts

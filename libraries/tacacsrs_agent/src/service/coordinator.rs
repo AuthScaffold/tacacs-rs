@@ -94,15 +94,32 @@ impl TacacsAgent for GrpcService {
         &self,
         request: Request<ipc::AccountingRequest>,
     ) -> Result<Response<ipc::AccountingReply>, Status> {
-        let request = AccountingOperation::try_from(request.into_inner())
-            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let request = AccountingOperation::try_from(request.into_inner()).map_err(|error| {
+            log::warn!("Invalid IPC accounting request: {error}");
+            Status::invalid_argument(error.to_string())
+        })?;
+        log::debug!(
+            "Received IPC accounting request: user={}, cmd={}",
+            request.user,
+            request.command,
+        );
         let result = match self.state.execute_accounting_request(request).await {
-            Ok(response) => ipc::AccountingReply {
-                result: Some(ipc::accounting_reply::Result::Response(response.into_proto())),
-            },
-            Err(error) => ipc::AccountingReply {
-                result: Some(ipc::accounting_reply::Result::Error(error.into_proto())),
-            },
+            Ok(response) => {
+                log::debug!(
+                    "IPC accounting request completed: server={}, status={:?}",
+                    response.server,
+                    response.status,
+                );
+                ipc::AccountingReply {
+                    result: Some(ipc::accounting_reply::Result::Response(response.into_proto())),
+                }
+            }
+            Err(error) => {
+                log::warn!("IPC accounting request failed: {error:?}");
+                ipc::AccountingReply {
+                    result: Some(ipc::accounting_reply::Result::Error(error.into_proto())),
+                }
+            }
         };
         Ok(Response::new(result))
     }
@@ -161,9 +178,17 @@ impl TacacsClientService {
     /// Returns an error if the IPC listener cannot be created or if the local
     /// endpoint configuration is invalid for the current platform.
     pub async fn serve(self) -> anyhow::Result<()> {
+        log::info!("Warming upstream TACACS+ connections");
         self.state.warm_connections().await;
-        let probe_task =
-            (self.state.server_count() > 1).then(|| self.state.spawn_preferred_probe());
+        let probe_task = if self.state.server_count() > 1 {
+            log::info!(
+                "Starting preferred-server probe task (interval: {:?})",
+                self.config.preferred_probe_interval,
+            );
+            Some(self.state.spawn_preferred_probe())
+        } else {
+            None
+        };
 
         let result = match &self.config.endpoint {
             #[cfg(unix)]
@@ -175,6 +200,7 @@ impl TacacsClientService {
             task.abort();
         }
 
+        log::info!("TACACS+ client service has shut down");
         result
     }
 
@@ -190,15 +216,20 @@ impl TacacsClientService {
             state: Arc::clone(&self.state),
         };
 
+        log::info!("Listening for IPC clients on Unix socket {}", path.display());
+
         tonic::transport::Server::builder()
             .add_service(TacacsAgentServer::new(grpc_service))
             .serve_with_incoming_shutdown(incoming, shutdown_signal())
             .await
             .with_context(|| format!("Unix IPC server {} failed", path.display()))?;
 
+        log::info!("Shutdown signal received; draining active IPC clients");
         self.state.wait_for_active_clients().await;
         match tokio::fs::remove_file(path).await {
-            Ok(()) => {}
+            Ok(()) => {
+                log::debug!("Removed Unix socket {}", path.display());
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 log::debug!("Unix socket {} was already removed during shutdown", path.display());
             }
@@ -227,23 +258,37 @@ impl TacacsClientService {
             .await
             .with_context(|| format!("Failed to inspect socket path {}", path.display()))?
         {
+            log::debug!("Socket path {} already exists; checking if it is active", path.display());
             match tokio::net::UnixStream::connect(path).await {
-                Ok(_) => bail!(
-                    "Unix socket {} is already accepting connections; another service instance may already be running",
-                    path.display()
-                ),
+                Ok(_) => {
+                    log::error!(
+                        "Unix socket {} is already accepting connections; refusing to start",
+                        path.display()
+                    );
+                    bail!(
+                        "Unix socket {} is already accepting connections; another service instance may already be running",
+                        path.display()
+                    );
+                }
                 Err(error)
                     if matches!(
                         error.kind(),
-                        std::io::ErrorKind::ConnectionRefused
-                            | std::io::ErrorKind::NotFound
+                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
                     ) =>
                 {
+                    log::info!(
+                        "Removing stale Unix socket {} (previous instance likely crashed)",
+                        path.display()
+                    );
                     tokio::fs::remove_file(path).await.with_context(|| {
                         format!("Failed to remove stale socket {}", path.display())
                     })?;
                 }
                 Err(error) => {
+                    log::error!(
+                        "Cannot determine state of existing socket {}: {error}",
+                        path.display()
+                    );
                     return Err(error).with_context(|| {
                         format!(
                             "Refusing to remove existing socket {} because it may still belong to another service instance",
@@ -269,6 +314,7 @@ impl TacacsClientService {
     /// Unix domain socket is not available.
     async fn serve_tcp(&self, address: SocketAddr) -> anyhow::Result<()> {
         if !address.ip().is_loopback() {
+            log::error!("Refusing non-loopback TCP IPC endpoint: {address}");
             bail!("TCP IPC endpoint must be loopback-only: {address}");
         }
 
@@ -280,12 +326,15 @@ impl TacacsClientService {
             state: Arc::clone(&self.state),
         };
 
+        log::info!("Listening for IPC clients on TCP {address}");
+
         tonic::transport::Server::builder()
             .add_service(TacacsAgentServer::new(grpc_service))
             .serve_with_incoming_shutdown(incoming, shutdown_signal())
             .await
             .with_context(|| format!("TCP IPC server {address} failed"))?;
 
+        log::info!("Shutdown signal received; draining active IPC clients");
         self.state.wait_for_active_clients().await;
         Ok(())
     }
@@ -304,12 +353,17 @@ async fn shutdown_signal() {
         match signal(SignalKind::terminate()) {
             Ok(mut terminate_signal) => {
                 tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = terminate_signal.recv() => {}
+                    _ = tokio::signal::ctrl_c() => {
+                        log::info!("Received Ctrl-C; initiating graceful shutdown");
+                    }
+                    _ = terminate_signal.recv() => {
+                        log::info!("Received SIGTERM; initiating graceful shutdown");
+                    }
                 }
             }
             Err(_) => {
                 let _ = tokio::signal::ctrl_c().await;
+                log::info!("Received Ctrl-C; initiating graceful shutdown");
             }
         }
     }
@@ -317,6 +371,7 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+        log::info!("Received Ctrl-C; initiating graceful shutdown");
     }
 }
 
