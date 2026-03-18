@@ -28,9 +28,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use tacacsrs_agent_client::ipc;
-use tacacsrs_agent_client::ipc::local_tacacs_client_service_server::{
-    LocalTacacsClientService, LocalTacacsClientServiceServer,
-};
+use tacacsrs_agent_client::ipc::tacacs_agent_server::{TacacsAgent, TacacsAgentServer};
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint};
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
@@ -83,7 +81,7 @@ struct GrpcService {
 }
 
 #[tonic::async_trait]
-impl LocalTacacsClientService for GrpcService {
+impl TacacsAgent for GrpcService {
     /// Handles one unary accounting RPC from a local IPC client.
     ///
     /// Decodes the protobuf request, delegates to [`ServiceState`] for server
@@ -193,7 +191,7 @@ impl TacacsClientService {
         };
 
         tonic::transport::Server::builder()
-            .add_service(LocalTacacsClientServiceServer::new(grpc_service))
+            .add_service(TacacsAgentServer::new(grpc_service))
             .serve_with_incoming_shutdown(incoming, shutdown_signal())
             .await
             .with_context(|| format!("Unix IPC server {} failed", path.display()))?;
@@ -283,7 +281,7 @@ impl TacacsClientService {
         };
 
         tonic::transport::Server::builder()
-            .add_service(LocalTacacsClientServiceServer::new(grpc_service))
+            .add_service(TacacsAgentServer::new(grpc_service))
             .serve_with_incoming_shutdown(incoming, shutdown_signal())
             .await
             .with_context(|| format!("TCP IPC server {address} failed"))?;

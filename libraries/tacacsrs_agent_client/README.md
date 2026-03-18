@@ -85,7 +85,7 @@ Unix(path)  parse as SocketAddr
 ## Protocol mapping
 
 The protobuf schema
-([`proto/tacacsrs_client_service.proto`](proto/tacacsrs_client_service.proto))
+([`proto/tacacsrs_agent.proto`](proto/tacacsrs_agent.proto))
 defines the on-the-wire contract. Rust domain types in the `protocol` module
 provide ergonomic, type-safe wrappers:
 

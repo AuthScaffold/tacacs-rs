@@ -40,7 +40,7 @@
 
 syntax = "proto3";
 
-package tacacsrs.client_service.v1;
+package tacacsrs.agent.v1;
 
 // The local TACACS+ client service interface.
 //
@@ -51,7 +51,7 @@ package tacacsrs.client_service.v1;
 // Currently the only supported operation is command accounting. Future
 // operations (authentication, authorization) may be added as new RPCs
 // without breaking the existing Accounting call.
-service LocalTacacsClientService {
+service TacacsAgent {
   // Records a shell command execution against the configured TACACS+ server
   // pool.
   //

@@ -25,7 +25,7 @@ use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;
 
 use crate::ipc;
-use crate::ipc::local_tacacs_client_service_client::LocalTacacsClientServiceClient;
+use crate::ipc::tacacs_agent_client::TacacsAgentClient;
 use crate::protocol::{AccountingOperation, AccountingOperationResponse, ServiceError};
 use crate::IpcEndpoint;
 
@@ -149,7 +149,7 @@ impl ServiceClient {
     /// On Unix, this connects over a Unix domain socket using `tonic`'s
     /// `connect_with_connector` to bridge `tokio::net::UnixStream` into the
     /// HTTP/2 transport. On other platforms it connects over loopback TCP.
-    async fn connect(&self) -> anyhow::Result<LocalTacacsClientServiceClient<Channel>> {
+    async fn connect(&self) -> anyhow::Result<TacacsAgentClient<Channel>> {
         match &self.endpoint {
             #[cfg(unix)]
             IpcEndpoint::Unix(path) => {
@@ -169,7 +169,7 @@ impl ServiceClient {
                     .with_context(|| {
                         format!("Failed to connect to service socket {}", path.display())
                     })?;
-                Ok(LocalTacacsClientServiceClient::new(channel))
+                Ok(TacacsAgentClient::new(channel))
             }
             IpcEndpoint::Tcp(address) => {
                 let channel = Endpoint::from_shared(format!("http://{address}"))
@@ -177,7 +177,7 @@ impl ServiceClient {
                     .connect()
                     .await
                     .with_context(|| format!("Failed to connect to service endpoint {address}"))?;
-                Ok(LocalTacacsClientServiceClient::new(channel))
+                Ok(TacacsAgentClient::new(channel))
             }
         }
     }

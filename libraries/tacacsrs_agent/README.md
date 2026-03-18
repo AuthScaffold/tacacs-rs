@@ -227,7 +227,7 @@ The maintainable split between this crate and
 [`tacacsrs-agent-client`](../tacacsrs_agent_client/) is:
 
 - Define the wire contract in the client crate's
-  [`proto/tacacsrs_client_service.proto`](../tacacsrs_agent_client/proto/tacacsrs_client_service.proto).
+  [`proto/tacacsrs_agent.proto`](../tacacsrs_agent_client/proto/tacacsrs_agent.proto).
 - Generate the Rust gRPC/protobuf bindings at build time in the client crate.
 - Keep the operation-centric domain types in the client crate's
   [`protocol`](../tacacsrs_agent_client/src/protocol.rs) module.
