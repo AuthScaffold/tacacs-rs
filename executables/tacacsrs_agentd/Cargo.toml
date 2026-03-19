@@ -1,0 +1,29 @@
+[package]
+name = "tacacsrs-agentd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Central TACACS+ client service for local consumers"
+
+[dependencies]
+anyhow = { version = "1.0.100", features = ["backtrace"] }
+clap = { version = "4.5.57", features = ["derive"] }
+console-subscriber = { version = "0.4", optional = true }
+env_logger = "0.11.8"
+log = "0.4"
+tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
+tacacsrs-agent = { path = "../../libraries/tacacsrs_agent" }
+tokio = { version = "1.49.0", features = ["full"] }
+
+[features]
+default = []
+console = ["console-subscriber"]
+psk = ["tacacsrs-agent/psk"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

@@ -4,9 +4,11 @@ mod commands;
 mod connection;
 
 use std::path::Path;
+use std::str::FromStr;
 
 use anyhow::{bail, Context};
 use clap::Parser;
+use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::session::Session;
 
@@ -77,7 +79,69 @@ async fn execute_command(command: &Command, session: &Session) -> anyhow::Result
 
         Command::Batch { .. } => {
             // Batch mode is handled separately in run() before this function is called
-            unreachable!("Batch command should be handled before execute_command");
+            unreachable!("Batch commands are handled by run_batch_mode before execute_command");
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_service_mode_accounting_supported(
+    custom_flag_1: bool,
+    custom_flag_2: bool,
+    session_id: Option<u32>,
+) -> anyhow::Result<()> {
+    if custom_flag_1 || custom_flag_2 || session_id.is_some() {
+        anyhow::bail!(
+            "Central TACACS+ service mode does not support custom TACACS+ flags or client-specified session IDs"
+        );
+    }
+
+    Ok(())
+}
+
+async fn execute_command_via_service(cli: &Cli, command: &Command) -> anyhow::Result<()> {
+    let endpoint = cli
+        .service_endpoint
+        .as_deref()
+        .context("Service endpoint is required for service mode")?;
+    let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
+    let client = ServiceClient::new(endpoint);
+
+    match command {
+        Command::Accounting {
+            args,
+            cmd,
+            cmd_args,
+            custom_flag_1,
+            custom_flag_2,
+            session_id,
+        } => {
+            ensure_service_mode_accounting_supported(*custom_flag_1, *custom_flag_2, *session_id)?;
+            let response = client
+                .send_accounting(AccountingOperation {
+                    user: args.user.clone(),
+                    port: args.port.clone(),
+                    remote_address: args.rem_addr.clone(),
+                    command: cmd.clone(),
+                    command_arguments: cmd_args.clone().unwrap_or_default(),
+                })
+                .await?;
+
+            println!("Received accounting response: {response:#?}");
+        }
+        Command::Authentication { .. } => {
+            log::info!("Authentication command not yet implemented");
+            println!("Authentication command not yet implemented");
+        }
+        Command::Authorization { .. } => {
+            log::info!("Authorization command not yet implemented");
+            println!("Authorization command not yet implemented");
+        }
+        Command::Batch { .. } => {
+            unreachable!(
+                "Batch commands are handled by run_batch_mode before execute_command_via_service"
+            )
         }
     }
 
@@ -98,8 +162,12 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
         batch_file.metadata.parallel
     );
 
-    let connection = establish_connection(cli).await?;
-    let results = batch::execute_batch(cli, connection, &batch_file).await?;
+    let results = if cli.service_endpoint.is_some() {
+        batch::execute_batch_via_service(cli, &batch_file).await?
+    } else {
+        let connection = establish_connection(cli).await?;
+        batch::execute_batch(cli, connection, &batch_file).await?
+    };
 
     batch::print_results_summary(&results);
 
@@ -129,6 +197,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return run_batch_mode(&cli, Path::new(file)).await;
     }
 
+    if cli.service_endpoint.is_some() {
+        return execute_command_via_service(&cli, &cli.command).await;
+    }
+
     let connection = establish_connection(&cli).await?;
 
     let custom_session_id = cli.command.session_id();
@@ -148,4 +220,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     run(cli).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_service_mode_accounting_supported;
+
+    #[test]
+    fn test_service_mode_rejects_custom_flags_and_session_ids() {
+        assert!(ensure_service_mode_accounting_supported(true, false, None).is_err());
+        assert!(ensure_service_mode_accounting_supported(false, true, None).is_err());
+        assert!(ensure_service_mode_accounting_supported(false, false, Some(7)).is_err());
+        assert!(ensure_service_mode_accounting_supported(false, false, None).is_ok());
+    }
 }

@@ -1,0 +1,178 @@
+// Local IPC contract for the central TACACS+ client service.
+//
+// This schema defines the gRPC interface exposed by the long-lived TACACS+
+// client service over a local transport (Unix domain socket on Linux, loopback
+// TCP elsewhere). Local consumers — such as CLI tools, PAM modules, or custom
+// integrations — use this contract to send TACACS+ operations without managing
+// TACACS+ connections, TLS, failover, or protocol details themselves.
+//
+// ## Building your own client
+//
+// 1. Generate gRPC stubs from this file using protoc and the gRPC plugin for
+//    your language (e.g. grpcio-tools for Python, protoc-gen-go-grpc for Go).
+//
+// 2. Connect to the local IPC endpoint:
+//      - Linux default: Unix domain socket at /run/tacacs.sock
+//      - Non-Unix / dev fallback: loopback TCP at 127.0.0.1:9049
+//    The endpoint is configurable by the service operator.
+//
+// 3. Issue a unary Accounting RPC. The service handles upstream server
+//    selection, connection pooling, TLS, and failover transparently.
+//
+// 4. Inspect the AccountingReply oneof:
+//      - "response" on success, containing the TACACS+ server's reply.
+//      - "error" on failure, with a human-readable message and a retriable
+//        flag indicating whether the caller should retry.
+//
+// ## Versioning
+//
+// This is a v1 contract with no cross-version compatibility promise today.
+// When the schema changes, the service and all clients must be updated
+// together. Pin to a known commit or release tag for stability.
+//
+// ## Transport notes
+//
+// - Each IPC connection carries exactly one RPC exchange. The service does
+//   not expect HTTP/2 stream reuse across requests, so clients may open a
+//   fresh connection per call.
+// - The service enforces loopback-only binding for TCP endpoints; the IPC
+//   contract is not intended for network exposure.
+
+syntax = "proto3";
+
+package tacacsrs.agent.v1;
+
+// The local TACACS+ client service interface.
+//
+// Exposes high-level TACACS+ operations as unary RPCs so that local consumers
+// never need to handle TACACS+ packet framing, session multiplexing, or
+// upstream server selection directly.
+//
+// Currently the only supported operation is command accounting. Future
+// operations (authentication, authorization) may be added as new RPCs
+// without breaking the existing Accounting call.
+service TacacsAgent {
+  // Records a shell command execution against the configured TACACS+ server
+  // pool.
+  //
+  // The service selects an upstream server, opens or reuses a TACACS+
+  // session, sends a TAC_PLUS_ACCT request with START|STOP flags, and
+  // returns the server's reply wrapped in an AccountingReply envelope.
+  //
+  // On upstream failure the service performs transparent failover and
+  // returns a ServiceError with retriable=true so the caller can decide
+  // whether to retry.
+  rpc Accounting(AccountingRequest) returns (AccountingReply);
+}
+
+// Client-supplied inputs for a TACACS+ accounting operation.
+//
+// The service translates these fields into a TAC_PLUS_ACCT request body
+// (RFC 8907 §7). Callers do not need to set TACACS+ header flags, session
+// IDs, or authentication method fields — the service fills those in.
+message AccountingRequest {
+  // The username associated with the command being accounted for.
+  // Maps to the "user" field of the TACACS+ accounting request body.
+  string user = 1;
+
+  // NAS port or tty identifier (e.g. "tty0", "pts/1", "console").
+  // Maps to the "port" field of the TACACS+ accounting request body.
+  string port = 2;
+
+  // Remote client address to report (e.g. "10.0.0.1", "192.168.1.42").
+  // Maps to the "rem_address" field of the TACACS+ accounting request body.
+  string remote_address = 3;
+
+  // The command name being accounted for (e.g. "show", "configure").
+  // Encoded as the TACACS+ argument "cmd={value}".
+  string command = 4;
+
+  // Additional arguments for the command (e.g. ["users", "brief"]).
+  // Each element is encoded as a TACACS+ argument "cmd-arg={value}".
+  // The service always prepends "service=shell" automatically.
+  repeated string command_arguments = 5;
+}
+
+// TACACS+ accounting reply status values from RFC 8907 §7.2.
+//
+// The numeric values match the on-the-wire TACACS+ status octets where
+// possible. UNSPECIFIED (0) is the protobuf zero-value sentinel and must
+// never be returned by the service.
+enum AccountingStatus {
+  // Protobuf zero-value sentinel. Never returned by the service; clients
+  // should treat this as an unexpected / malformed response.
+  ACCOUNTING_STATUS_UNSPECIFIED = 0;
+
+  // TAC_PLUS_ACCT_STATUS_SUCCESS (0x01) — the accounting record was
+  // accepted by the upstream TACACS+ server.
+  ACCOUNTING_STATUS_SUCCESS = 1;
+
+  // TAC_PLUS_ACCT_STATUS_ERROR (0x02) — the upstream TACACS+ server
+  // rejected the accounting operation or encountered a processing error.
+  ACCOUNTING_STATUS_ERROR = 2;
+
+  // TAC_PLUS_ACCT_STATUS_FOLLOW (0x21 = 33 decimal) — the server
+  // indicates the client should continue with a follow-up action as
+  // defined by the server deployment. See RFC 8907 §7.2 for details.
+  ACCOUNTING_STATUS_FOLLOW = 33;
+}
+
+// Successful accounting response from an upstream TACACS+ server.
+//
+// Returned inside AccountingReply.response when the upstream server
+// accepted and processed the accounting request.
+message AccountingResponse {
+  // The upstream TACACS+ server that handled this request
+  // (e.g. "tacacs-primary:49"). Useful for debugging and logging.
+  string server = 1;
+
+  // The accounting status from the upstream server's reply.
+  // See AccountingStatus for the possible values and their RFC meaning.
+  AccountingStatus status = 2;
+
+  // Human-readable message from the TACACS+ server, if any.
+  // This corresponds to the "server_msg" field of the TACACS+ reply body.
+  // May be empty if the server did not include a message.
+  string server_message = 3;
+
+  // Opaque data from the TACACS+ server, if any.
+  // This corresponds to the "data" field of the TACACS+ reply body.
+  // May be empty; interpretation is deployment-specific.
+  string data = 4;
+}
+
+// Structured error returned when the service cannot fulfill a request.
+//
+// Returned inside AccountingReply.error. Clients should inspect the
+// retriable flag to decide whether to retry the same request.
+message ServiceError {
+  // Human-readable error description suitable for logs and diagnostics.
+  // Examples: "No responsive TACACS+ servers are currently available",
+  //           "connection reset by peer".
+  string message = 1;
+
+  // The upstream TACACS+ server associated with the error, if one had
+  // already been selected. Empty string means no server was chosen yet
+  // (e.g. all servers were unreachable during selection).
+  string server = 2;
+
+  // Whether the caller should consider retrying the request.
+  // true  — the service may succeed on retry after failover or recovery.
+  // false — the error is permanent for this request (e.g. bad input).
+  bool retriable = 3;
+}
+
+// Reply envelope for the Accounting RPC.
+//
+// Uses a oneof so clients can distinguish between a successful TACACS+
+// response and a service-level error in a single reply message. Exactly
+// one of the two fields will be set.
+message AccountingReply {
+  oneof result {
+    // Set on success: contains the upstream TACACS+ server's response.
+    AccountingResponse response = 1;
+
+    // Set on failure: contains a structured error with retry guidance.
+    ServiceError error = 2;
+  }
+}

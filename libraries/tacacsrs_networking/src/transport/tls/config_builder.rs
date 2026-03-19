@@ -44,7 +44,7 @@ impl TlsConfigurationBuilder {
     /// Creates a new `TlsConfigurationBuilder` with default settings.
     pub fn new() -> Self {
         Self {
-            root_cert_store: rustls::RootCertStore::empty(),
+            root_cert_store: crate::helpers::default_root_cert_store(),
             resumption_enabled: false,
             certificate_chain: None,
             private_key: None,

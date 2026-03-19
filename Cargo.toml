@@ -3,7 +3,10 @@ resolver = "2"
 members = [
     "libraries/tacacsrs_messages",
     "libraries/tacacsrs_networking", 
-    "executables/tacon"
+    "libraries/tacacsrs_agent_client",
+    "libraries/tacacsrs_agent",
+    "executables/tacon",
+    "executables/tacacsrs_agentd"
 ]
 
 [workspace.package]
