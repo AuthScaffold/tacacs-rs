@@ -20,10 +20,11 @@
 //! server with duplicate TLS handshakes.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::bail;
 use tacacsrs_agent_client::{AccountingOperation, AccountingOperationResponse, ServiceError};
+use tacacsrs_networking::SingleConnectionState;
 use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
@@ -67,6 +68,15 @@ struct ServerState {
     /// Used to detect when another task has already reconnected while
     /// this task was waiting for the lock.
     completed_connect_attempts: AtomicU64,
+    /// Whether this server has been observed to support TACACS+
+    /// single-connection mode.
+    ///
+    /// Starts `false` (pessimistic — assume dedicated connections until
+    /// proven otherwise).  Set to `true` when a completed session reports
+    /// [`SingleConnectionState::Supported`], allowing future requests to
+    /// multiplex over the shared cached connection.  Can revert to `false`
+    /// if the server later withdraws support (e.g. traffic-shifting).
+    single_connection_supported: AtomicBool,
 }
 
 /// The result of binding an IPC request to an upstream server.
@@ -171,6 +181,7 @@ impl ServiceState {
                     connection: RwLock::new(None),
                     connect_lock: Mutex::new(()),
                     completed_connect_attempts: AtomicU64::new(0),
+                    single_connection_supported: AtomicBool::new(false),
                 })
                 .collect(),
             connector,
@@ -277,29 +288,89 @@ impl ServiceState {
     /// Executes one IPC accounting RPC against the currently selected upstream
     /// TACACS+ server.
     ///
-    /// Each unary gRPC call maps to exactly one execution of this method. The
-    /// state records the request as in-flight for graceful shutdown, binds it to
-    /// an upstream server for new-session purposes, and returns either the
-    /// upstream accounting reply or a structured retriable service error.
+    /// # Connection strategy
+    ///
+    /// By default every request gets its own dedicated short-lived TCP
+    /// connection (the safe path for servers that do not support
+    /// single-connection mode).
+    ///
+    /// Once a server proves it supports single-connection mode
+    /// ([`SingleConnectionState::Supported`]), future requests multiplex
+    /// sessions over a shared cached connection.  The server may later
+    /// withdraw that support (e.g. for traffic-shifting), in which case the
+    /// service reverts to dedicated connections.
     pub(super) async fn execute_accounting_request(
         &self,
         request: AccountingOperation,
     ) -> Result<AccountingOperationResponse, ServiceError> {
         let _client_guard = self.client_tracker.start_guard();
+        let active_index = *self.active_index.read().await;
+
+        // When the server has proven single-connection support, reuse the
+        // shared cached connection for session multiplexing.
+        if self.servers[active_index]
+            .single_connection_supported
+            .load(Ordering::Relaxed)
+        {
+            return self.execute_on_shared_connection(&request).await;
+        }
+
+        // Default path: one dedicated TCP connection per request.
+        self.execute_with_dedicated_connection(active_index, &request)
+            .await
+    }
+
+    /// Executes a request over the shared cached connection (single-connection
+    /// mode).
+    ///
+    /// If the cached connection becomes unusable mid-request (e.g. the server
+    /// revoked single-connection support), the request is transparently
+    /// retried on a fresh dedicated connection.
+    async fn execute_on_shared_connection(
+        &self,
+        request: &AccountingOperation,
+    ) -> Result<AccountingOperationResponse, ServiceError> {
         let bound_server = self.bind_server_for_new_session().await.map_err(|error| {
             log::warn!("Failed to bind IPC request to an upstream server: {error:#}");
             ServiceError::new(error.to_string()).retriable(true)
         })?;
 
         log::debug!(
-            "Executing accounting request via {} (server index {})",
+            "Executing accounting request via {} (server index {}, shared connection)",
             bound_server.connection.server_address(),
             bound_server.index,
         );
 
-        match bound_server.connection.send_accounting(&request).await {
-            Ok(response) => Ok(response),
+        match bound_server.connection.send_accounting(request).await {
+            Ok(response) => {
+                self.check_single_connection_negotiation(
+                    bound_server.index,
+                    &*bound_server.connection,
+                )
+                .await;
+                Ok(response)
+            }
             Err(error) => {
+                // If the connection is no longer usable for new sessions the
+                // failure is a local connection-capacity issue (the server may
+                // have revoked single-connection support), not a remote server
+                // outage.  Fall back to a dedicated connection.
+                if !bound_server.connection.is_usable_for_new_sessions().await {
+                    log::info!(
+                        "Shared connection to {} no longer usable; \
+                         falling back to a dedicated connection",
+                        self.servers[bound_server.index].address,
+                    );
+                    self.check_single_connection_negotiation(
+                        bound_server.index,
+                        &*bound_server.connection,
+                    )
+                    .await;
+                    return self
+                        .execute_with_dedicated_connection(bound_server.index, request)
+                        .await;
+                }
+
                 log::warn!(
                     "Accounting request failed on {}: {error:#}",
                     bound_server.connection.server_address(),
@@ -309,6 +380,98 @@ impl ServiceState {
                     .with_server(bound_server.connection.server_address())
                     .retriable(true))
             }
+        }
+    }
+
+    /// Creates a dedicated (non-cached) connection to the server at `index`
+    /// and executes a single accounting request on it.
+    ///
+    /// This is the normal path for servers that do not support TACACS+
+    /// single-connection mode.  Each IPC request gets its own short-lived
+    /// upstream TCP connection, which is discarded after the response.
+    ///
+    /// If the connection attempt fails the server is recorded as failed so
+    /// the active index can advance for subsequent requests.
+    async fn execute_with_dedicated_connection(
+        &self,
+        index: usize,
+        request: &AccountingOperation,
+    ) -> Result<AccountingOperationResponse, ServiceError> {
+        let address = &self.servers[index].address;
+        log::debug!("Creating dedicated connection to {address} (non-single-connection server)");
+
+        let connection = match self.connector.connect(address).await {
+            Ok(c) => c,
+            Err(error) => {
+                log::warn!("Dedicated connection to {address} failed: {error:#}");
+                self.note_failure(index).await;
+                return Err(ServiceError::new(error.to_string())
+                    .with_server(address)
+                    .retriable(true));
+            }
+        };
+
+        let result = connection.send_accounting(request).await;
+
+        // Detect single-connection support from the dedicated connection's
+        // negotiation outcome so the flag is set even when discovery happens
+        // via the retry path.
+        if result.is_ok() {
+            self.check_single_connection_negotiation(index, &*connection)
+                .await;
+        }
+
+        result.map_err(|error| {
+            log::warn!(
+                "Accounting request on dedicated connection to {address} failed: {error:#}",
+            );
+            ServiceError::new(error.to_string())
+                .with_server(address)
+                .retriable(true)
+        })
+    }
+
+    /// Inspects the single-connection negotiation result on `connection` and
+    /// updates the per-server flag in either direction.
+    ///
+    /// - [`Supported`](SingleConnectionState::Supported) → enables the shared
+    ///   cached-connection path for future requests.
+    /// - [`NotSupported`](SingleConnectionState::NotSupported) → reverts to
+    ///   dedicated per-request connections (e.g. the server withdrew support
+    ///   for traffic-shifting).
+    /// - `Initial` / `Negotiating` — no actionable information yet.
+    async fn check_single_connection_negotiation(
+        &self,
+        index: usize,
+        connection: &dyn UpstreamConnection,
+    ) {
+        match connection.single_connection_state().await {
+            SingleConnectionState::Supported => {
+                if !self.servers[index]
+                    .single_connection_supported
+                    .swap(true, Ordering::Relaxed)
+                {
+                    log::info!(
+                        "Server {} supports single-connection mode; \
+                         switching to shared connections for future requests",
+                        self.servers[index].address,
+                    );
+                }
+            }
+            SingleConnectionState::NotSupported => {
+                if self.servers[index]
+                    .single_connection_supported
+                    .swap(false, Ordering::Relaxed)
+                {
+                    log::info!(
+                        "Server {} revoked single-connection support; \
+                         switching to dedicated connections for future requests",
+                        self.servers[index].address,
+                    );
+                }
+            }
+            // Initial or Negotiating — no actionable information yet.
+            _ => {}
         }
     }
 
@@ -506,8 +669,8 @@ mod tests {
 
     use super::ServiceState;
     use super::super::test_support::{
-        BlockingConnection, BlockingConnector, FakeConnection, FakeConnector,
-        SingleSessionConnector, build_request,
+        BlockingConnection, BlockingConnector, ExclusiveSessionConnector, FakeConnection,
+        FakeConnector, SingleSessionConnector, build_request,
     };
     use crate::upstream::UpstreamConnector;
 
@@ -774,5 +937,82 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(200), state.wait_for_active_clients())
             .await
             .expect("wait_for_active_clients must not hang after a racing guard drop");
+    }
+
+    // -----------------------------------------------------------------------
+    // Dedicated / shared connection mode tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_default_dedicated_connections_handle_concurrent_requests() {
+        let connector = Arc::new(ExclusiveSessionConnector {
+            address: "server:49".to_owned(),
+            connect_attempts: AtomicUsize::new(0),
+        });
+
+        let state = Arc::new(ServiceState::new(
+            vec!["server:49".to_owned()],
+            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(200),
+        ));
+        state.warm_connections().await;
+
+        // By default the service assumes non-single-connection, so every
+        // request gets its own dedicated connection.  All 10 concurrent
+        // requests should succeed without any retry logic.
+        let mut tasks = Vec::new();
+        for _ in 0..10 {
+            let state = Arc::clone(&state);
+            tasks.push(tokio::spawn(async move {
+                state.execute_accounting_request(build_request()).await
+            }));
+        }
+
+        for task in tasks {
+            let result = task.await.unwrap();
+            assert!(result.is_ok(), "Request should succeed: {result:?}");
+        }
+
+        // 1 warm-up + 10 dedicated = 11 total connections.
+        let total = connector.connect_attempts.load(Ordering::Relaxed);
+        assert_eq!(total, 11, "Expected 1 warm-up + 10 dedicated connections");
+    }
+
+    #[tokio::test]
+    async fn test_upgrade_to_shared_connections_after_supported_discovery() {
+        let connection = Arc::new(FakeConnection {
+            address: "server:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            "server:49".to_owned(),
+            Arc::clone(&connection),
+        )])));
+
+        let state = ServiceState::new(
+            vec!["server:49".to_owned()],
+            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(200),
+        );
+        state.warm_connections().await;
+        // warm-up: 1 connect
+
+        // First request: flag=false → dedicated → discovers Supported → sets
+        // flag to true.
+        let first = state.execute_accounting_request(build_request()).await;
+        assert!(first.is_ok());
+        let connects_after_first = connector.connect_attempts_for("server:49").await;
+        assert_eq!(connects_after_first, 2, "warm-up + 1 dedicated");
+
+        // Second request: flag=true → shared cached connection → no new
+        // connection created.
+        let second = state.execute_accounting_request(build_request()).await;
+        assert!(second.is_ok());
+        let connects_after_second = connector.connect_attempts_for("server:49").await;
+        assert_eq!(
+            connects_after_second, connects_after_first,
+            "Shared path should reuse the cached connection"
+        );
     }
 }

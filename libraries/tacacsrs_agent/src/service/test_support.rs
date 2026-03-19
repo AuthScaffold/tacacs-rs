@@ -17,6 +17,7 @@ use tacacsrs_agent_client::{
 use tokio::sync::{Mutex, Notify};
 
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
+use tacacsrs_networking::SingleConnectionState;
 
 // ---------------------------------------------------------------------------
 // FakeConnection / FakeConnector — configurable success/failure per server
@@ -37,6 +38,14 @@ impl UpstreamConnection for FakeConnection {
 
     async fn is_usable_for_new_sessions(&self) -> bool {
         self.usable.load(Ordering::Relaxed)
+    }
+
+    async fn single_connection_state(&self) -> SingleConnectionState {
+        if self.usable.load(Ordering::Relaxed) {
+            SingleConnectionState::Supported
+        } else {
+            SingleConnectionState::NotSupported
+        }
     }
 
     async fn send_accounting(
@@ -148,6 +157,14 @@ impl UpstreamConnection for SingleSessionConnection {
         self.usable.load(Ordering::Relaxed)
     }
 
+    async fn single_connection_state(&self) -> SingleConnectionState {
+        if self.usable.load(Ordering::Relaxed) {
+            SingleConnectionState::Initial
+        } else {
+            SingleConnectionState::NotSupported
+        }
+    }
+
     async fn send_accounting(
         &self,
         _request: &AccountingOperation,
@@ -201,6 +218,10 @@ impl UpstreamConnection for BlockingConnection {
         true
     }
 
+    async fn single_connection_state(&self) -> SingleConnectionState {
+        SingleConnectionState::Supported
+    }
+
     async fn send_accounting(
         &self,
         _request: &AccountingOperation,
@@ -224,6 +245,70 @@ pub(super) struct BlockingConnector {
 impl UpstreamConnector for BlockingConnector {
     async fn connect(&self, _address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         Ok(Arc::clone(&self.connection) as Arc<dyn UpstreamConnection>)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ExclusiveSessionConnection / ExclusiveSessionConnector — allows exactly one
+// session per connection; subsequent send_accounting calls fail, simulating a
+// server that does not support single-connection mode under concurrent load.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub(super) struct ExclusiveSessionConnection {
+    address: String,
+    session_claimed: AtomicBool,
+}
+
+#[async_trait]
+impl UpstreamConnection for ExclusiveSessionConnection {
+    fn server_address(&self) -> &str {
+        &self.address
+    }
+
+    async fn is_usable_for_new_sessions(&self) -> bool {
+        !self.session_claimed.load(Ordering::Relaxed)
+    }
+
+    async fn single_connection_state(&self) -> SingleConnectionState {
+        if self.session_claimed.load(Ordering::Relaxed) {
+            SingleConnectionState::NotSupported
+        } else {
+            SingleConnectionState::Initial
+        }
+    }
+
+    async fn send_accounting(
+        &self,
+        _request: &AccountingOperation,
+    ) -> anyhow::Result<AccountingOperationResponse> {
+        if self.session_claimed.swap(true, Ordering::Relaxed) {
+            anyhow::bail!("Connection is not accepting new sessions");
+        }
+        Ok(AccountingOperationResponse {
+            server: self.address.clone(),
+            status: AccountingResponseStatus::Success,
+            server_message: "exclusive-session upstream".to_owned(),
+            data: String::new(),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct ExclusiveSessionConnector {
+    pub address: String,
+    pub connect_attempts: AtomicUsize,
+}
+
+#[async_trait]
+impl UpstreamConnector for ExclusiveSessionConnector {
+    async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        assert_eq!(address, self.address);
+        self.connect_attempts.fetch_add(1, Ordering::Relaxed);
+        Ok(Arc::new(ExclusiveSessionConnection {
+            address: self.address.clone(),
+            session_claimed: AtomicBool::new(false),
+        }))
     }
 }
 

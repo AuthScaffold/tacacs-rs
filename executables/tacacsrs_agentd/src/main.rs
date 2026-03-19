@@ -71,6 +71,17 @@ fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
 }
 
 /// Initializes the logger based on verbosity level.
+///
+/// When built with the `console` feature, the tokio-console tracing
+/// subscriber is used instead of `env_logger`, enabling real-time async
+/// runtime profiling via the `tokio-console` tool.
+#[cfg(feature = "console")]
+fn init_logger(_verbose: u8) {
+    console_subscriber::init();
+}
+
+/// Initializes the logger based on verbosity level.
+#[cfg(not(feature = "console"))]
 fn init_logger(verbose: u8) {
     let level = match verbose {
         0 => return,

@@ -42,6 +42,7 @@ use tacacsrs_messages::enumerations::{
 use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
 };
+use tacacsrs_networking::SingleConnectionState;
 use tacacsrs_networking::helpers::tls_server_name;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
@@ -149,6 +150,13 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// - A previous session encountered an unrecoverable transport error.
     async fn is_usable_for_new_sessions(&self) -> bool;
 
+    /// Returns the TACACS+ single-connection negotiation state.
+    ///
+    /// The state indicates whether the server supports multiplexing multiple
+    /// sessions over one connection.  The service uses `NotSupported` to
+    /// permanently switch a server to dedicated per-request connections.
+    async fn single_connection_state(&self) -> SingleConnectionState;
+
     /// Sends one accounting request and returns the server's reply.
     ///
     /// # Errors
@@ -224,6 +232,10 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
     async fn is_usable_for_new_sessions(&self) -> bool {
         self.connection.can_create_sessions().await
+    }
+
+    async fn single_connection_state(&self) -> SingleConnectionState {
+        self.connection.single_connection_state().await
     }
 
     async fn send_accounting(
