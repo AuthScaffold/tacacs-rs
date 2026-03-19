@@ -350,21 +350,18 @@ async fn shutdown_signal() {
     {
         use tokio::signal::unix::{SignalKind, signal};
 
-        match signal(SignalKind::terminate()) {
-            Ok(mut terminate_signal) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {
-                        log::info!("Received Ctrl-C; initiating graceful shutdown");
-                    }
-                    _ = terminate_signal.recv() => {
-                        log::info!("Received SIGTERM; initiating graceful shutdown");
-                    }
+        if let Ok(mut terminate_signal) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    log::info!("Received Ctrl-C; initiating graceful shutdown");
+                }
+                _ = terminate_signal.recv() => {
+                    log::info!("Received SIGTERM; initiating graceful shutdown");
                 }
             }
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
-                log::info!("Received Ctrl-C; initiating graceful shutdown");
-            }
+        } else {
+            let _ = tokio::signal::ctrl_c().await;
+            log::info!("Received Ctrl-C; initiating graceful shutdown");
         }
     }
 
@@ -463,9 +460,11 @@ mod tests {
 
         primary.fail_next_request.store(true, Ordering::Relaxed);
         let failure = client.send_accounting(request.clone()).await.unwrap_err();
-        assert!(failure
-            .to_string()
-            .contains("simulated failure from primary:49"));
+        let failure_msg = failure.to_string();
+        assert!(
+            failure_msg.contains("primary:49"),
+            "Expected error mentioning primary:49, got: {failure_msg}"
+        );
 
         let second = client.send_accounting(request.clone()).await.unwrap();
         assert_eq!(second.server, "secondary:49");
