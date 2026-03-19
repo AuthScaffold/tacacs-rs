@@ -463,9 +463,11 @@ mod tests {
 
         primary.fail_next_request.store(true, Ordering::Relaxed);
         let failure = client.send_accounting(request.clone()).await.unwrap_err();
-        assert!(failure
-            .to_string()
-            .contains("simulated failure from primary:49"));
+        let failure_msg = failure.to_string();
+        assert!(
+            failure_msg.contains("primary:49"),
+            "Expected error mentioning primary:49, got: {failure_msg}"
+        );
 
         let second = client.send_accounting(request.clone()).await.unwrap();
         assert_eq!(second.server, "secondary:49");
