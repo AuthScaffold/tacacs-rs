@@ -976,7 +976,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_shared_connection_path_used_when_flag_is_true() {
+    async fn test_dedicated_exchange_upgrades_to_shared_connection() {
         let connection = Arc::new(FakeConnection {
             address: "server:49".to_owned(),
             usable: AtomicBool::new(true),
@@ -995,21 +995,37 @@ mod tests {
         state.warm_connections().await;
         // warm-up: 1 connect
 
-        // Manually set the single-connection-supported flag (simulating a
-        // server that has been confirmed to support single-connection mode).
-        state.servers[0]
-            .single_connection_supported
-            .store(true, Ordering::Relaxed);
+        // Flag starts false (pessimistic default).
+        assert!(
+            !state.servers[0]
+                .single_connection_supported
+                .load(Ordering::Relaxed),
+            "single_connection_supported should start false"
+        );
 
-        // Request should go through the shared cached connection path,
+        // First request goes through the dedicated path. Because
+        // FakeConnection reports SingleConnectionState::Supported, the
+        // dedicated exchange returns single_connect_supported = true and
+        // the state machine sets the per-server flag automatically.
+        let result = state.execute_accounting_request(build_request()).await;
+        assert!(result.is_ok());
+        assert!(
+            state.servers[0]
+                .single_connection_supported
+                .load(Ordering::Relaxed),
+            "execute_with_dedicated_connection should set the flag when the server supports single-connection"
+        );
+        // warm-up (1) + dedicated send_accounting_dedicated (1) = 2
+        assert_eq!(connector.connect_attempts_for("server:49").await, 2);
+
+        // Second request should now take the shared cached-connection path,
         // reusing the warm-up connection without creating a new one.
         let result = state.execute_accounting_request(build_request()).await;
         assert!(result.is_ok());
-
-        let connects = connector.connect_attempts_for("server:49").await;
         assert_eq!(
-            connects, 1,
-            "Shared path should reuse the warm-up connection (1 total connect)"
+            connector.connect_attempts_for("server:49").await,
+            2,
+            "Shared path should reuse the cached connection (no additional connects)"
         );
     }
 }
