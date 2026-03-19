@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
+use tokio::time::timeout;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
@@ -507,10 +508,13 @@ async fn send_dedicated_accounting(
         {
             let psk = PskIdentity::new(psk_identity, psk_key.as_bytes())
                 .context("Invalid PSK credentials")?;
-            let tls_stream = PskConfigurationBuilder::new(psk)
-                .connect(stream)
-                .await
-                .context("Failed to establish TLS PSK connection")?;
+            let tls_stream = timeout(
+                options.connect_timeout,
+                PskConfigurationBuilder::new(psk).connect(stream),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("TLS PSK handshake timed out"))?
+            .context("Failed to establish TLS PSK connection")?;
             let mut conn = DedicatedConnection::new(tls_stream, obfuscation_key);
             return conn
                 .send_accounting(tacacs_request, TacacsFlags::empty())
@@ -539,12 +543,16 @@ async fn send_dedicated_accounting(
                 .context("Failed to build TLS configuration")?,
         );
 
-        let tls_stream = tacacsrs_networking::transport::tls::connect_tls(
-            &tls_config,
-            stream,
-            tls_server_name(address),
+        let tls_stream = timeout(
+            options.connect_timeout,
+            tacacsrs_networking::transport::tls::connect_tls(
+                &tls_config,
+                stream,
+                tls_server_name(address),
+            ),
         )
         .await
+        .map_err(|_| anyhow::anyhow!("TLS handshake timed out"))?
         .context("Failed to establish TLS connection")?;
 
         let mut conn = DedicatedConnection::new(tls_stream, obfuscation_key);
