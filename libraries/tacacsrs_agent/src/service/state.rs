@@ -383,52 +383,49 @@ impl ServiceState {
         }
     }
 
-    /// Creates a dedicated (non-cached) connection to the server at `index`
-    /// and executes a single accounting request on it.
+    /// Sends a single accounting request over a dedicated one-shot TCP
+    /// connection (no background tasks, no session multiplexing).
     ///
-    /// This is the normal path for servers that do not support TACACS+
-    /// single-connection mode.  Each IPC request gets its own short-lived
+    /// This is the default path.  Each IPC request gets its own short-lived
     /// upstream TCP connection, which is discarded after the response.
-    ///
-    /// If the connection attempt fails the server is recorded as failed so
-    /// the active index can advance for subsequent requests.
+    /// The outgoing packet includes the single-connect flag so the server's
+    /// response reveals whether it supports multiplexing; if it does, the
+    /// per-server flag is set so future requests upgrade to the shared
+    /// cached-connection path.
     async fn execute_with_dedicated_connection(
         &self,
         index: usize,
         request: &AccountingOperation,
     ) -> Result<AccountingOperationResponse, ServiceError> {
         let address = &self.servers[index].address;
-        log::debug!("Creating dedicated connection to {address} (non-single-connection server)");
+        log::debug!("Sending dedicated accounting request to {address}");
 
-        let connection = match self.connector.connect(address).await {
-            Ok(c) => c,
-            Err(error) => {
-                log::warn!("Dedicated connection to {address} failed: {error:#}");
-                self.note_failure(index).await;
-                return Err(ServiceError::new(error.to_string())
-                    .with_server(address)
-                    .retriable(true));
+        match self
+            .connector
+            .send_accounting_dedicated(address, request)
+            .await
+        {
+            Ok(result) => {
+                if result.single_connect_supported
+                    && !self.servers[index]
+                        .single_connection_supported
+                        .swap(true, Ordering::Relaxed)
+                {
+                    log::info!(
+                        "Server {address} supports single-connection mode; \
+                         switching to shared connections for future requests",
+                    );
+                }
+                Ok(result.response)
             }
-        };
-
-        let result = connection.send_accounting(request).await;
-
-        // Detect single-connection support from the dedicated connection's
-        // negotiation outcome so the flag is set even when discovery happens
-        // via the retry path.
-        if result.is_ok() {
-            self.check_single_connection_negotiation(index, &*connection)
-                .await;
+            Err(error) => {
+                log::warn!("Dedicated accounting request to {address} failed: {error:#}");
+                self.note_failure(index).await;
+                Err(ServiceError::new(error.to_string())
+                    .with_server(address)
+                    .retriable(true))
+            }
         }
-
-        result.map_err(|error| {
-            log::warn!(
-                "Accounting request on dedicated connection to {address} failed: {error:#}",
-            );
-            ServiceError::new(error.to_string())
-                .with_server(address)
-                .retriable(true)
-        })
     }
 
     /// Inspects the single-connection negotiation result on `connection` and
@@ -979,7 +976,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_upgrade_to_shared_connections_after_supported_discovery() {
+    async fn test_shared_connection_path_used_when_flag_is_true() {
         let connection = Arc::new(FakeConnection {
             address: "server:49".to_owned(),
             usable: AtomicBool::new(true),
@@ -998,21 +995,21 @@ mod tests {
         state.warm_connections().await;
         // warm-up: 1 connect
 
-        // First request: flag=false → dedicated → discovers Supported → sets
-        // flag to true.
-        let first = state.execute_accounting_request(build_request()).await;
-        assert!(first.is_ok());
-        let connects_after_first = connector.connect_attempts_for("server:49").await;
-        assert_eq!(connects_after_first, 2, "warm-up + 1 dedicated");
+        // Manually set the single-connection-supported flag (simulating a
+        // server that has been confirmed to support single-connection mode).
+        state.servers[0]
+            .single_connection_supported
+            .store(true, Ordering::Relaxed);
 
-        // Second request: flag=true → shared cached connection → no new
-        // connection created.
-        let second = state.execute_accounting_request(build_request()).await;
-        assert!(second.is_ok());
-        let connects_after_second = connector.connect_attempts_for("server:49").await;
+        // Request should go through the shared cached connection path,
+        // reusing the warm-up connection without creating a new one.
+        let result = state.execute_accounting_request(build_request()).await;
+        assert!(result.is_ok());
+
+        let connects = connector.connect_attempts_for("server:49").await;
         assert_eq!(
-            connects_after_second, connects_after_first,
-            "Shared path should reuse the cached connection"
+            connects, 1,
+            "Shared path should reuse the warm-up connection (1 total connect)"
         );
     }
 }

@@ -16,12 +16,14 @@ pub mod packet_writer;
 pub mod single_connect_tracker;
 pub mod transport;
 pub mod connection;
+pub mod dedicated_connection;
 
 pub use session_manager::SingleConnectionState;
 pub use packet_reader::{PacketReader, PacketReaderTrait, PacketReadResult};
 pub use packet_writer::{PacketWriter, PacketWriterTrait, PacketWriteResult};
 pub use single_connect_tracker::{LocalSingleConnectState, SingleConnectFlag};
 pub use connection::TacacsConnection;
+pub use dedicated_connection::{DedicatedConnection, ExchangeResult};
 pub use transport::Transport;
 pub use transport::mock::MockTransport;
 pub use transport::tls;

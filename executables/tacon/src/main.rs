@@ -11,6 +11,7 @@ use clap::Parser;
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::session::Session;
+use tacacsrs_networking::DedicatedConnection;
 
 use cli::{Cli, Command};
 use commands::accounting::send_accounting_request;
@@ -164,6 +165,8 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
 
     let results = if cli.service_endpoint.is_some() {
         batch::execute_batch_via_service(cli, &batch_file).await?
+    } else if cli.dedicated {
+        batch::execute_batch_dedicated(cli, &batch_file).await?
     } else {
         let connection = establish_connection(cli).await?;
         batch::execute_batch(cli, connection, &batch_file).await?
@@ -201,6 +204,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return execute_command_via_service(&cli, &cli.command).await;
     }
 
+    // Dedicated connection mode: minimal one-shot TCP per request, no
+    // background tasks, no session multiplexing.
+    if cli.dedicated {
+        return execute_command_dedicated(&cli).await;
+    }
+
     let connection = establish_connection(&cli).await?;
 
     let custom_session_id = cli.command.session_id();
@@ -214,6 +223,74 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     execute_command(&cli.command, &session).await
+}
+
+/// Executes the command using a dedicated connection — a minimal one-shot
+/// TCP connection with no background tasks or session multiplexing.
+async fn execute_command_dedicated(cli: &Cli) -> anyhow::Result<()> {
+    log::info!("Running in dedicated connection mode");
+
+    let server_addr = cli
+        .server_addr
+        .as_deref()
+        .context("--server-addr is required for --dedicated mode")?;
+
+    match &cli.command {
+        Command::Accounting {
+            args,
+            cmd,
+            cmd_args,
+            custom_flag_1,
+            custom_flag_2,
+            session_id: _,
+        } => {
+            let stream = tacacsrs_networking::helpers::connect_tcp(server_addr)
+                .await
+                .context("Failed to connect to TACACS+ server")?;
+
+            let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
+            let mut conn = DedicatedConnection::new(stream, obfuscation_key);
+
+            let mut custom_flags = TacacsFlags::empty();
+            if *custom_flag_1 {
+                custom_flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1;
+            }
+            if *custom_flag_2 {
+                custom_flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
+            }
+
+            let request = commands::accounting::build_accounting_request(
+                &args.user,
+                &args.port,
+                &args.rem_addr,
+                cmd,
+                cmd_args.as_ref(),
+            );
+
+            let result = conn
+                .send_accounting(request, custom_flags)
+                .await
+                .context("Dedicated accounting request failed")?;
+
+            log::info!(
+                "Received accounting response: {:?} (single_connect_supported: {})",
+                result.reply,
+                result.single_connect_supported,
+            );
+        }
+
+        Command::Authentication { .. } => {
+            bail!("Authentication is not yet implemented");
+        }
+        Command::Authorization { .. } => {
+            bail!("Authorization is not yet implemented");
+        }
+        Command::Batch { .. } => {
+            unreachable!("Batch is handled before this point");
+        }
+    }
+
+    Ok(())
 }
 
 #[tokio::main]

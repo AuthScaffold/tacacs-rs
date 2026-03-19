@@ -8,6 +8,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use crate::session_manager::SessionManager;
 
 /// Result of writing a packet to the stream.
+#[derive(Debug)]
 pub enum PacketWriteResult {
     /// Successfully wrote the packet.
     Success,

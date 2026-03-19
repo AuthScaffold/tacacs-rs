@@ -60,6 +60,13 @@ pub struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
+    /// Use a minimal dedicated connection (no single-connection negotiation,
+    /// no background tasks).  Each request opens and closes its own TCP
+    /// connection.  Useful for performance testing against servers that do
+    /// not support single-connection mode.
+    #[arg(long, conflicts_with = "service_endpoint")]
+    pub dedicated: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
