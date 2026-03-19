@@ -96,8 +96,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DedicatedConnection<S> {
             .await
             .context("TACACS+ accounting exchange failed")?;
 
-        let single_connect_supported = response
-            .header()
+        let header = response.header();
+        if header.session_id != session_id
+            || header.seq_no != 2
+            || header.tacacs_type != TacacsType::TacPlusAccounting
+        {
+            anyhow::bail!(
+                "unexpected TACACS+ accounting response header: session_id={:#x}, seq_no={}, type={:?}",
+                header.session_id,
+                header.seq_no,
+                header.tacacs_type,
+            );
+        }
+
+        let single_connect_supported = header
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
 
