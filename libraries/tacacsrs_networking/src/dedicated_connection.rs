@@ -211,7 +211,6 @@ mod tests {
         TacacsAuthenticationService, TacacsAuthenticationType, TacacsFlags,
     };
     use tacacsrs_messages::packet::PacketTrait;
-    use tacacsrs_messages::traits::TacacsBodyTrait;
 
     use super::DedicatedConnection;
     use crate::transport::mock::MockTransport;
@@ -250,28 +249,20 @@ mod tests {
         let coordinator = mock.coordinator();
 
         coordinator
-            .add_accounting_reply_for_session_id(
-                TEST_SESSION_ID,
-                2,
-                &test_reply(),
-                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG
-                    | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
-            )
+            .accounting_reply_for_id(TEST_SESSION_ID, 2, &test_reply())
+            .with_single_connect()
+            .send()
             .await
             .unwrap();
 
-        let mut conn =
-            DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
+        let mut conn = DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
 
         let result = conn
             .send_accounting(test_request(), TacacsFlags::empty())
             .await
             .unwrap();
 
-        assert_eq!(
-            result.reply.status,
-            TacacsAccountingStatus::TacPlusAcctStatusSuccess
-        );
+        assert_eq!(result.reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
         assert_eq!(result.reply.server_msg, "OK");
         assert!(result.single_connect_supported);
 
@@ -291,17 +282,12 @@ mod tests {
 
         // Server reply does NOT include the single-connect flag.
         coordinator
-            .add_accounting_reply_for_session_id(
-                TEST_SESSION_ID,
-                2,
-                &test_reply(),
-                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-            )
+            .accounting_reply_for_id(TEST_SESSION_ID, 2, &test_reply())
+            .send()
             .await
             .unwrap();
 
-        let mut conn =
-            DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
+        let mut conn = DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
 
         let result = conn
             .send_accounting(test_request(), TacacsFlags::empty())
@@ -320,17 +306,11 @@ mod tests {
         // The mock transport records and replays raw bytes without
         // deobfuscation, so we must register an obfuscated reply.
         let reply = test_reply();
-        let flags =
-            TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
-
         coordinator
-            .add_obfuscated_accounting_reply_for_session_id(
-                TEST_SESSION_ID,
-                2,
-                &reply,
-                flags,
-                key,
-            )
+            .accounting_reply_for_id(TEST_SESSION_ID, 2, &reply)
+            .with_single_connect()
+            .with_obfuscation_key(key)
+            .send()
             .await
             .unwrap();
 
@@ -342,10 +322,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            result.reply.status,
-            TacacsAccountingStatus::TacPlusAcctStatusSuccess
-        );
+        assert_eq!(result.reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
         assert_eq!(result.reply.server_msg, "OK");
         assert!(result.single_connect_supported);
 
@@ -377,32 +354,18 @@ mod tests {
         // Register a reply under a DIFFERENT session_id.
         let wrong_session_id = TEST_SESSION_ID.wrapping_add(1);
         coordinator
-            .add_accounting_reply_for_session_id(
-                wrong_session_id,
-                2,
-                &test_reply(),
-                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-            )
+            .accounting_reply_for_id(wrong_session_id, 2, &test_reply())
+            .send()
             .await
             .unwrap();
 
         // Also register under the real session_id with wrong seq_no=2 but
         // using the wrong session_id in the packet header, by providing raw
         // reply bytes with a mismatched session_id.
-        let reply_body = test_reply().to_bytes();
-        let bad_reply = tacacsrs_messages::packet::Packet::new(
-            tacacsrs_messages::header::Header {
-                major_version: tacacsrs_messages::enumerations::TacacsMajorVersion::TacacsPlusMajor1,
-                minor_version: tacacsrs_messages::enumerations::TacacsMinorVersion::TacacsPlusMinorVerDefault,
-                tacacs_type: tacacsrs_messages::enumerations::TacacsType::TacPlusAccounting,
-                seq_no: 2,
-                flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-                session_id: wrong_session_id,
-                length: reply_body.len() as u32,
-            },
-            reply_body,
-        )
-        .unwrap();
+        let bad_reply = coordinator
+            .accounting_reply_for_id(wrong_session_id, 2, &test_reply())
+            .build()
+            .unwrap();
 
         // Register the bad reply under the correct session_id so the mock
         // write processor will find and deliver it.
@@ -411,8 +374,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut conn =
-            DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
+        let mut conn = DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
 
         let result = conn
             .send_accounting(test_request(), TacacsFlags::empty())
@@ -433,28 +395,17 @@ mod tests {
 
         // Register a reply with seq_no=3 (wrong; expected 2), keyed on
         // the correct session_id + seq_no=2 so the mock delivers it.
-        let reply_body = test_reply().to_bytes();
-        let bad_reply = tacacsrs_messages::packet::Packet::new(
-            tacacsrs_messages::header::Header {
-                major_version: tacacsrs_messages::enumerations::TacacsMajorVersion::TacacsPlusMajor1,
-                minor_version: tacacsrs_messages::enumerations::TacacsMinorVersion::TacacsPlusMinorVerDefault,
-                tacacs_type: tacacsrs_messages::enumerations::TacacsType::TacPlusAccounting,
-                seq_no: 3,
-                flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-                session_id: TEST_SESSION_ID,
-                length: reply_body.len() as u32,
-            },
-            reply_body,
-        )
-        .unwrap();
+        let bad_reply = coordinator
+            .accounting_reply_for_id(TEST_SESSION_ID, 3, &test_reply())
+            .build()
+            .unwrap();
 
         coordinator
             .add_reply_bytes(TEST_SESSION_ID, 2, bad_reply.to_bytes())
             .await
             .unwrap();
 
-        let mut conn =
-            DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
+        let mut conn = DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
 
         let result = conn
             .send_accounting(test_request(), TacacsFlags::empty())
@@ -474,28 +425,17 @@ mod tests {
         let coordinator = mock.coordinator();
 
         coordinator
-            .add_accounting_reply_for_session_id(
-                TEST_SESSION_ID,
-                2,
-                &test_reply(),
-                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-            )
+            .accounting_reply_for_id(TEST_SESSION_ID, 2, &test_reply())
+            .send()
             .await
             .unwrap();
 
-        let mut conn =
-            DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
+        let mut conn = DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
 
         let custom = TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1 | TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
-        let result = conn
-            .send_accounting(test_request(), custom)
-            .await
-            .unwrap();
+        let result = conn.send_accounting(test_request(), custom).await.unwrap();
 
-        assert_eq!(
-            result.reply.status,
-            TacacsAccountingStatus::TacPlusAcctStatusSuccess
-        );
+        assert_eq!(result.reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
 
         // Verify the captured request has both custom flags and the
         // single-connect flag set.
