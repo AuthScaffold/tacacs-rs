@@ -42,6 +42,7 @@ impl Default for TlsConfigurationBuilder {
 
 impl TlsConfigurationBuilder {
     /// Creates a new `TlsConfigurationBuilder` with default settings.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             root_cert_store: crate::helpers::default_root_cert_store(),
@@ -53,12 +54,14 @@ impl TlsConfigurationBuilder {
     }
 
     /// Sets the root certificate store for verifying server certificates.
+    #[must_use]
     pub fn with_root_certificates(mut self, root_cert_store: rustls::RootCertStore) -> Self {
         self.root_cert_store = root_cert_store;
         self
     }
 
     /// Enables or disables TLS session resumption.
+    #[must_use]
     pub fn with_resumption(mut self, enabled: bool) -> Self {
         self.resumption_enabled = enabled;
         self
@@ -70,6 +73,11 @@ impl TlsConfigurationBuilder {
     ///
     /// * `certificate_chain_file` - Path to the PEM-encoded certificate chain file
     /// * `private_key_file` - Path to the PEM-encoded private key file
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - A certificate chain is provided without a private key
+    /// - The TLS certificate/key files cannot be read
     pub async fn with_client_auth_cert_files(
         mut self,
         certificate_chain_file: impl Into<PathBuf>,
@@ -94,6 +102,7 @@ impl TlsConfigurationBuilder {
     ///
     /// This is dangerous and should only be used for testing or in controlled environments.
     /// Using this in production exposes you to man-in-the-middle attacks.
+    #[must_use]
     pub fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
         self.disable_certificate_verification = disabled;
         self

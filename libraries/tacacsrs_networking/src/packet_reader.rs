@@ -71,6 +71,7 @@ impl PacketReader {
     /// # Arguments
     /// * `obfuscation_key` - Optional key used to deobfuscate incoming packets.
     ///   If `None`, packets are assumed to be unencrypted.
+    #[must_use]
     pub fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
         Self { obfuscation_key }
     }
@@ -131,8 +132,7 @@ impl PacketReaderTrait for PacketReader {
 
         log::info!(
             target: "tacacsrs_networking::packet_reader::read_packet",
-            "Received body for session id: {}",
-            session_id
+            "Received body for session id: {session_id}"
         );
 
         // Create packet
@@ -157,8 +157,7 @@ impl PacketReaderTrait for PacketReader {
                 packet = packet.to_deobfuscated(key);
                 log::info!(
                     target: "tacacsrs_networking::packet_reader::read_packet",
-                    "Deobfuscated packet for session id: {}",
-                    session_id
+                    "Deobfuscated packet for session id: {session_id}"
                 );
             }
         }

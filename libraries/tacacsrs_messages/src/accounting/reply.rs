@@ -25,6 +25,8 @@ pub struct AccountingReply {
 }
 
 impl AccountingReply {
+    /// # Errors
+    /// Returns an error if the packet body is too short or contains invalid fields.
     pub fn from_packet(packet: &Packet) -> Result<Self, anyhow::Error> {
         let expected_length = Self::size_from_bytes(packet.body())
             .with_context(|| "Unable to determine expected length of packet")?;
@@ -66,6 +68,8 @@ impl AccountingReply {
         Ok(TACACS_ACCOUNTING_REPLY_MIN_LENGTH + server_msg_len + data_len)
     }
 
+    /// # Errors
+    /// Returns an error if the data is too short or contains invalid field values.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         let mut cursor = Cursor::new(bytes);
 
@@ -96,7 +100,7 @@ impl AccountingReply {
 
         let data = read_string(&mut cursor, data_len).with_context(|| "Unable to read data")?;
 
-        Ok(AccountingReply {
+        Ok(Self {
             status,
             server_msg,
             data,
@@ -169,8 +173,7 @@ pub mod tests {
             error
                 .to_string()
                 .contains("Unable to convert status to TacacsAccountingStatus"),
-            "Actual Error: {}",
-            error
+            "Actual Error: {error}"
         );
     }
 
@@ -182,7 +185,7 @@ pub mod tests {
         assert!(reply.is_err());
 
         let error = reply.unwrap_err();
-        assert!(error.to_string().contains("Unable to read data"), "Actual Error: {}", error);
+        assert!(error.to_string().contains("Unable to read data"), "Actual Error: {error}");
     }
 
     #[test]

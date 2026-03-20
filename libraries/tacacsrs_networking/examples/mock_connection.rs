@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::enumerations::*;
+use tacacsrs_messages::enumerations::{
+    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationType,
+    TacacsAuthenticationService, TacacsAccountingStatus,
+};
 
 use tacacsrs_networking::connection::TacacsConnection;
 use tacacsrs_networking::transport::mock::MockTransport;
@@ -45,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let accounting_reply = AccountingReply {
         status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
         server_msg: "Test".to_string(),
-        data: "".to_string(),
+        data: String::new(),
     };
 
     mock_control

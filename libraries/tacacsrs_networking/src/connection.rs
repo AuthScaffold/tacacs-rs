@@ -82,8 +82,9 @@ impl TacacsConnection {
     /// // Without obfuscation (cleartext)
     /// let conn = TacacsConnection::new(None);
     /// ```
+    #[must_use]
     pub fn new(obfuscation_key: Option<&[u8]>) -> Self {
-        let key = obfuscation_key.map(|k| k.to_vec());
+        let key = obfuscation_key.map(<[u8]>::to_vec);
         Self {
             session_manager: Arc::new(SessionManager::new()),
             packet_reader: Arc::new(PacketReader::new(key.clone())),
@@ -154,6 +155,9 @@ impl TacacsConnection {
     /// # Ok(())
     /// # }
     /// ```
+    /// # Errors
+    /// Returns an error if the transport handler task fails to spawn.
+    #[allow(clippy::unused_async)]
     pub async fn run<T: Transport>(self: &Arc<Self>, transport: T) -> anyhow::Result<()> {
         let self_clone = Arc::clone(self);
         task::spawn(async move { self_clone.handle_connection(transport).await });
@@ -177,12 +181,11 @@ impl TacacsConnection {
                 .run_write_loop(receiver, &mut writer, Arc::clone(&self.session_manager))
                 .await
             {
-                Ok(_) => Ok(()),
+                Ok(()) => Ok(()),
                 Err(e) => {
                     log::error!(
                         target: "tacacsrs_networking::connection::handle_connection",
-                        "Write task failed with error: {}",
-                        e
+                        "Write task failed with error: {e}"
                     );
                     Err(e)
                 }
@@ -191,12 +194,11 @@ impl TacacsConnection {
 
         let read_future = async {
             match self.read_handler(&mut reader).await {
-                Ok(_) => Ok(()),
+                Ok(()) => Ok(()),
                 Err(e) => {
                     log::error!(
                         target: "tacacsrs_networking::connection::handle_connection",
-                        "Read task failed with error: {}",
-                        e
+                        "Read task failed with error: {e}"
                     );
 
                     Err(e)
@@ -234,7 +236,7 @@ impl TacacsConnection {
             // Use select to either read the next packet or receive a close signal
             let read_result = tokio::select! {
                 // Wait for close signal (triggered when last session completes and single connection not supported)
-                _ = self.session_manager.wait_for_close() => {
+                () = self.session_manager.wait_for_close() => {
                     log::info!(
                         target: "tacacsrs_networking::connection::read_handler",
                         "Received close signal. Server does not support single connection mode and all sessions complete."
@@ -251,16 +253,14 @@ impl TacacsConnection {
                 PacketReadResult::HeaderReadError(e) => {
                     log::error!(
                         target: "tacacsrs_networking::connection::read_handler",
-                        "Failed to read header from network due to error: {}",
-                        e
+                        "Failed to read header from network due to error: {e}"
                     );
                     return Err(anyhow::Error::msg(e.to_string()));
                 }
                 PacketReadResult::HeaderParseError(e) => {
                     log::error!(
                         target: "tacacsrs_networking::connection::read_handler",
-                        "Failed to parse header due to error: {}",
-                        e
+                        "Failed to parse header due to error: {e}"
                     );
                     continue;
                 }
@@ -271,27 +271,23 @@ impl TacacsConnection {
                 } => {
                     log::error!(
                         target: "tacacsrs_networking::connection::read_handler",
-                        "Rejecting packet for session id {} with excessive body length {} (max allowed: {}). Closing connection to prevent stream desynchronization.",
-                        session_id, body_length, max_length
+                        "Rejecting packet for session id {session_id} with excessive body length {body_length} (max allowed: {max_length}). Closing connection to prevent stream desynchronization."
                     );
                     return Err(anyhow::Error::msg(format!(
-                        "Packet body length {} exceeds maximum allowed {}",
-                        body_length, max_length
+                        "Packet body length {body_length} exceeds maximum allowed {max_length}"
                     )));
                 }
                 PacketReadResult::BodyReadError { session_id, error } => {
                     log::error!(
                         target: "tacacsrs_networking::connection::read_handler",
-                        "Failed to read body for session id {} due to error: {}",
-                        session_id, error
+                        "Failed to read body for session id {session_id} due to error: {error}"
                     );
                     return Err(anyhow::Error::msg(error.to_string()));
                 }
                 PacketReadResult::PacketCreateError { session_id, error } => {
                     log::error!(
                         target: "tacacsrs_networking::connection::read_handler",
-                        "Could not load packet for session id {}. Failed with error: {}",
-                        session_id, error
+                        "Could not load packet for session id {session_id}. Failed with error: {error}"
                     );
                     continue;
                 }

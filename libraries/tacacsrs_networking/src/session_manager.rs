@@ -10,7 +10,7 @@ use crate::session::Session;
 /// Represents the state of single connection mode negotiation with the server.
 ///
 /// TACACS+ servers may or may not support single connection mode. This is indicated
-/// by the TAC_PLUS_SINGLE_CONNECT_FLAG in the response packet. Until we receive the
+/// by the `TAC_PLUS_SINGLE_CONNECT_FLAG` in the response packet. Until we receive the
 /// first response, we don't know if the server supports it.
 ///
 /// ## State Transitions
@@ -44,13 +44,13 @@ pub enum SingleConnectionState {
     /// No new sessions can be created until we receive the first response
     /// and determine if single connection mode is supported.
     Negotiating,
-    /// Server supports single connection mode (TAC_PLUS_SINGLE_CONNECT_FLAG was set).
+    /// Server supports single connection mode (`TAC_PLUS_SINGLE_CONNECT_FLAG` was set).
     /// Multiple sessions can be multiplexed over this connection.
     ///
     /// Note: This state can transition to `NotSupported` if the server later removes
     /// the flag to signal graceful shutdown.
     Supported,
-    /// Server does not support single connection mode (TAC_PLUS_SINGLE_CONNECT_FLAG was not set).
+    /// Server does not support single connection mode (`TAC_PLUS_SINGLE_CONNECT_FLAG` was not set).
     /// Connection should be closed after the current session completes.
     ///
     /// This is a terminal state - once set, it cannot change back to `Supported`.
@@ -112,33 +112,28 @@ impl SessionManager {
         let session_id = {
             let duplex_channels = self.duplex_channels.read().await;
 
-            match custom_session_id {
-                Some(id) => {
-                    // If a custom session ID is provided, check if it already exists and is still active
-                    if let Some(existing_sender) = duplex_channels.get(&id) {
-                        if !existing_sender.is_closed() {
-                            return Err(anyhow::Error::msg(format!(
-                                "Session ID {} is already in use",
-                                id
-                            )));
-                        }
-                        // Existing session is complete (channel closed), allow reuse
-                        log::debug!(
-                            target: "tacacsrs_networking::session_manager::create_channel",
-                            "Reusing completed session ID {}",
-                            id
-                        );
+            if let Some(id) = custom_session_id {
+                // If a custom session ID is provided, check if it already exists and is still active
+                if let Some(existing_sender) = duplex_channels.get(&id) {
+                    if !existing_sender.is_closed() {
+                        return Err(anyhow::Error::msg(format!(
+                            "Session ID {id} is already in use"
+                        )));
                     }
-                    id
+                    // Existing session is complete (channel closed), allow reuse
+                    log::debug!(
+                        target: "tacacsrs_networking::session_manager::create_channel",
+                        "Reusing completed session ID {id}"
+                    );
                 }
-                None => {
-                    // Generate new session id, regenerate if it already exists
-                    let mut id = rand::random::<u32>();
-                    while duplex_channels.contains_key(&id) {
-                        id = rand::random::<u32>();
-                    }
-                    id
+                id
+            } else {
+                // Generate new session id, regenerate if it already exists
+                let mut id = rand::random::<u32>();
+                while duplex_channels.contains_key(&id) {
+                    id = rand::random::<u32>();
                 }
+                id
             }
         };
 
@@ -166,10 +161,8 @@ impl SessionManager {
         // Check single connection state
         let state = self.single_connection_state.read().await;
         match *state {
-            SingleConnectionState::NotSupported => false,
-            SingleConnectionState::Supported => true,
-            SingleConnectionState::Initial => true, // First session can always be created
-            SingleConnectionState::Negotiating => false, // Must wait for negotiation to complete
+            SingleConnectionState::NotSupported | SingleConnectionState::Negotiating => false,
+            SingleConnectionState::Supported | SingleConnectionState::Initial => true,
         }
     }
 
@@ -211,8 +204,7 @@ impl SessionManager {
 
                 log::info!(
                     target: "tacacsrs_networking::session_manager::set_single_connection_state",
-                    "Setting single connection state to {:?}",
-                    new_state
+                    "Setting single connection state to {new_state:?}"
                 );
 
                 *state = new_state;
@@ -242,8 +234,8 @@ impl SessionManager {
     /// Atomically checks if sessions can be created and begins negotiation if in Initial state.
     ///
     /// This combines the check and state transition into a single atomic operation to prevent
-    /// race conditions where multiple threads could pass the can_create_sessions check and
-    /// both call begin_negotiation before the state transitions to Negotiating.
+    /// race conditions where multiple threads could pass the `can_create_sessions` check and
+    /// both call `begin_negotiation` before the state transitions to Negotiating.
     ///
     /// Returns Ok(()) if a session can be created, Err if not.
     async fn try_begin_session(&self) -> anyhow::Result<()> {
@@ -257,10 +249,7 @@ impl SessionManager {
         // Now atomically check state and transition if needed
         let mut state = self.single_connection_state.write().await;
         match *state {
-            SingleConnectionState::NotSupported => {
-                Err(anyhow::Error::msg("Connection is not accepting new sessions"))
-            }
-            SingleConnectionState::Negotiating => {
+            SingleConnectionState::NotSupported | SingleConnectionState::Negotiating => {
                 Err(anyhow::Error::msg("Connection is not accepting new sessions"))
             }
             SingleConnectionState::Initial => {
@@ -283,10 +272,15 @@ impl SessionManager {
         *state == SingleConnectionState::NotSupported
     }
 
+    /// # Errors
+    /// Returns an error if the connection is not accepting new sessions.
     pub async fn create_session(self: &Arc<Self>) -> anyhow::Result<Session> {
         self.create_session_with_optional_id(None).await
     }
 
+    /// # Errors
+    /// Returns an error if the connection is not accepting new sessions or
+    /// the given session ID is already in use.
     pub async fn create_session_with_id(
         self: &Arc<Self>,
         session_id: u32,
@@ -321,8 +315,7 @@ impl SessionManager {
         if duplex_channels.remove(&session_id).is_some() {
             log::info!(
                 target: "tacacsrs_networking::session_manager::remove_session",
-                "Removed session {} from duplex_channels registry",
-                session_id
+                "Removed session {session_id} from duplex_channels registry"
             );
 
             // Check if we should signal connection close
@@ -353,7 +346,7 @@ impl SessionManager {
         self.close_notify.notified().await;
     }
 
-    /// Closes all sessions by clearing the duplex_channels registry.
+    /// Closes all sessions by clearing the `duplex_channels` registry.
     /// This will cause any sessions waiting on channel receivers to receive None,
     /// allowing them to terminate gracefully.
     pub async fn close_all_sessions(&self) {
@@ -363,11 +356,12 @@ impl SessionManager {
 
         log::info!(
             target: "tacacsrs_networking::session_manager::close_all_sessions",
-            "Closed all {} sessions from duplex_channels registry",
-            session_count
+            "Closed all {session_count} sessions from duplex_channels registry"
         );
     }
 
+    /// # Errors
+    /// Returns an error if the session is not found in the registry.
     pub async fn send_message_to_session(&self, packet: Packet) -> anyhow::Result<()> {
         // Get a read lock on the duplex_channels dictionary and
         // find the appropriate channel to forward the packet to.
@@ -378,17 +372,15 @@ impl SessionManager {
             Some(channel) => {
                 log::info!(
                     target: "tacacsrs_networking::session_manager::send_message_to_session",
-                    "Found client channel for session id {}, forwarding packet",
-                    session_id
+                    "Found client channel for session id {session_id}, forwarding packet"
                 );
 
                 match channel.send(packet).await {
-                    Ok(_) => Ok(()),
+                    Ok(()) => Ok(()),
                     Err(e) => {
                         log::warn!(
                             target: "tacacsrs_networking::session_manager::send_message_to_session",
-                            "Failed to send packet to client channel for session id: {} due to error: {}",
-                            session_id, e
+                            "Failed to send packet to client channel for session id: {session_id} due to error: {e}"
                         );
 
                         Err(anyhow::Error::msg("Failed to send packet to client channel"))
@@ -466,7 +458,7 @@ mod tests {
     async fn test_create_session_with_custom_id() {
         let session_manager = Arc::new(SessionManager::new());
 
-        let custom_id = 12345678_u32;
+        let custom_id = 12_345_678_u32;
         let session = session_manager
             .create_session_with_id(custom_id)
             .await
@@ -480,7 +472,7 @@ mod tests {
         let session_manager = Arc::new(SessionManager::new());
 
         // Create first session to move to Negotiating, then simulate server response
-        let custom_id = 12345678_u32;
+        let custom_id = 12_345_678_u32;
         let _session1 = session_manager
             .create_session_with_id(custom_id)
             .await
@@ -496,8 +488,7 @@ mod tests {
         let err_msg = result.err().unwrap().to_string();
         assert!(
             err_msg.contains("already in use"),
-            "Expected 'already in use' error, got: {}",
-            err_msg
+            "Expected 'already in use' error, got: {err_msg}"
         );
     }
 
@@ -505,7 +496,7 @@ mod tests {
     async fn test_create_channel_with_custom_id() {
         let session_manager = SessionManager::new();
 
-        let custom_id = 87654321_u32;
+        let custom_id = 87_654_321_u32;
         let (_, session_id) = session_manager
             .create_channel_with_id(custom_id)
             .await
@@ -518,7 +509,7 @@ mod tests {
     async fn test_create_session_with_same_id_after_completion() {
         let session_manager = Arc::new(SessionManager::new());
 
-        let custom_id = 99999999_u32;
+        let custom_id = 99_999_999_u32;
 
         // Create first session with custom ID (moves to Negotiating)
         let session1 = session_manager
@@ -545,7 +536,7 @@ mod tests {
     async fn test_session_complete_removes_from_registry() {
         let session_manager = Arc::new(SessionManager::new());
 
-        let custom_id = 55555555_u32;
+        let custom_id = 55_555_555_u32;
 
         // Create session with custom ID
         let session = session_manager
@@ -837,7 +828,7 @@ mod tests {
     /// Test that concurrent session creation from Initial state only allows one session.
     ///
     /// This tests the fix for the race condition where multiple threads could pass
-    /// the can_create_sessions() check when state is Initial, and both call begin_negotiation(),
+    /// the `can_create_sessions()` check when state is Initial, and both call `begin_negotiation()`,
     /// potentially creating multiple sessions before state transitions to Negotiating.
     #[tokio::test]
     async fn test_concurrent_session_creation_from_initial_state() {
@@ -924,11 +915,11 @@ mod tests {
         );
     }
 
-    /// Test that remove_session and create_session don't race on close notification.
+    /// Test that `remove_session` and `create_session` don't race on close notification.
     ///
     /// This tests the fix for the race condition where after removing the last session
-    /// and before checking should_close_after_session(), a new session could be created,
-    /// making the duplex_channels.is_empty() check stale.
+    /// and before checking `should_close_after_session()`, a new session could be created,
+    /// making the `duplex_channels.is_empty()` check stale.
     #[tokio::test]
     async fn test_remove_session_and_create_session_no_race_on_close() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -991,9 +982,8 @@ mod tests {
             if session_count == 0 {
                 assert_eq!(
                     notifications, 1,
-                    "Iteration {}: Close should have been notified exactly once when last session \
-                     completes and state is NotSupported. Got {} notifications.",
-                    iteration, notifications
+                    "Iteration {iteration}: Close should have been notified exactly once when last session \
+                     completes and state is NotSupported. Got {notifications} notifications."
                 );
             }
         }

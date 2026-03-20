@@ -11,7 +11,7 @@ pub enum TacacsMajorVersion {
 impl fmt::Display for TacacsMajorVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TacacsMajorVersion::TacacsPlusMajor1 => write!(f, "TACACS_PLUS_MAJOR_1"),
+            Self::TacacsPlusMajor1 => write!(f, "TACACS_PLUS_MAJOR_1"),
         }
     }
 }
@@ -26,10 +26,10 @@ pub enum TacacsMinorVersion {
 impl fmt::Display for TacacsMinorVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TacacsMinorVersion::TacacsPlusMinorVerDefault => {
+            Self::TacacsPlusMinorVerDefault => {
                 write!(f, "TACACS_PLUS_MINOR_VER_DEFAULT")
             }
-            TacacsMinorVersion::TacacsPlusMinorVerOne => write!(f, "TACACS_PLUS_MINOR_VER_ONE"),
+            Self::TacacsPlusMinorVerOne => write!(f, "TACACS_PLUS_MINOR_VER_ONE"),
         }
     }
 }
@@ -45,9 +45,9 @@ pub enum TacacsType {
 impl fmt::Display for TacacsType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TacacsType::TacPlusAuthentication => write!(f, "TAC_PLUS_AUTHENTICATION"),
-            TacacsType::TacPlusAuthorisation => write!(f, "TAC_PLUS_AUTHORISATION"),
-            TacacsType::TacPlusAccounting => write!(f, "TAC_PLUS_ACCOUNTING"),
+            Self::TacPlusAuthentication => write!(f, "TAC_PLUS_AUTHENTICATION"),
+            Self::TacPlusAuthorisation => write!(f, "TAC_PLUS_AUTHORISATION"),
+            Self::TacPlusAccounting => write!(f, "TAC_PLUS_ACCOUNTING"),
         }
     }
 }
@@ -76,9 +76,9 @@ pub enum TacacsAuthenticationAction {
 impl fmt::Display for TacacsAuthenticationAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TacacsAuthenticationAction::TacPlusAuthenLogin => write!(f, "TAC_PLUS_AUTHEN_LOGIN"),
-            TacacsAuthenticationAction::TacPlusAuthenChpass => write!(f, "TAC_PLUS_AUTHEN_CHPASS"),
-            TacacsAuthenticationAction::TacPlusAuthenSendauth => {
+            Self::TacPlusAuthenLogin => write!(f, "TAC_PLUS_AUTHEN_LOGIN"),
+            Self::TacPlusAuthenChpass => write!(f, "TAC_PLUS_AUTHEN_CHPASS"),
+            Self::TacPlusAuthenSendauth => {
                 write!(f, "TAC_PLUS_AUTHEN_SENDAUTH")
             }
         }
@@ -99,20 +99,20 @@ pub enum TacacsAuthenticationType {
 impl fmt::Display for TacacsAuthenticationType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TacacsAuthenticationType::TacPlusAuthenTypeNotSet => {
+            Self::TacPlusAuthenTypeNotSet => {
                 write!(f, "TAC_PLUS_AUTHEN_TYPE_NOT_SET")
             }
-            TacacsAuthenticationType::TacPlusAuthenTypeAscii => {
+            Self::TacPlusAuthenTypeAscii => {
                 write!(f, "TAC_PLUS_AUTHEN_TYPE_ASCII")
             }
-            TacacsAuthenticationType::TacPlusAuthenTypePap => write!(f, "TAC_PLUS_AUTHEN_TYPE_PAP"),
-            TacacsAuthenticationType::TacPlusAuthenTypeChap => {
+            Self::TacPlusAuthenTypePap => write!(f, "TAC_PLUS_AUTHEN_TYPE_PAP"),
+            Self::TacPlusAuthenTypeChap => {
                 write!(f, "TAC_PLUS_AUTHEN_TYPE_CHAP")
             }
-            TacacsAuthenticationType::TacPlusAuthenTypeMschap => {
+            Self::TacPlusAuthenTypeMschap => {
                 write!(f, "TAC_PLUS_AUTHEN_TYPE_MSCHAP")
             }
-            TacacsAuthenticationType::TacPlusAuthenTypeMschapv2 => {
+            Self::TacPlusAuthenTypeMschapv2 => {
                 write!(f, "TAC_PLUS_AUTHEN_TYPE_MSCHAPV2")
             }
         }
@@ -136,29 +136,29 @@ pub enum TacacsAuthenticationService {
 impl fmt::Display for TacacsAuthenticationService {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TacacsAuthenticationService::TacPlusAuthenSvcNone => {
+            Self::TacPlusAuthenSvcNone => {
                 write!(f, "TAC_PLUS_AUTHEN_SVC_NONE")
             }
-            TacacsAuthenticationService::TacPlusAuthenSvcLogin => {
+            Self::TacPlusAuthenSvcLogin => {
                 write!(f, "TAC_PLUS_AUTHEN_SVC_LOGIN")
             }
-            TacacsAuthenticationService::TacPlusAuthenSvcEnable => {
+            Self::TacPlusAuthenSvcEnable => {
                 write!(f, "TAC_PLUS_AUTHEN_SVC_ENABLE")
             }
-            TacacsAuthenticationService::TacPlusAuthenSvcPpp => {
+            Self::TacPlusAuthenSvcPpp => {
                 write!(f, "TAC_PLUS_AUTHEN_SVC_PPP")
             }
-            TacacsAuthenticationService::TacPlusAuthenSvcPt => write!(f, "TAC_PLUS_AUTHEN_SVC_PT"),
-            TacacsAuthenticationService::TacPlusAuthenSvcRcmd => {
+            Self::TacPlusAuthenSvcPt => write!(f, "TAC_PLUS_AUTHEN_SVC_PT"),
+            Self::TacPlusAuthenSvcRcmd => {
                 write!(f, "TAC_PLUS_AUTHEN_SVC_RCMD")
             }
-            TacacsAuthenticationService::TacPlusAuthenSvcX25 => {
+            Self::TacPlusAuthenSvcX25 => {
                 write!(f, "TAC_PLUS_AUTHEN_SVC_X25")
             }
-            TacacsAuthenticationService::TacPlusAuthenSvcNasi => {
+            Self::TacPlusAuthenSvcNasi => {
                 write!(f, "TAC_PLUS_AUTHEN_SVC_NASI")
             }
-            TacacsAuthenticationService::TacPlusAuthenSvcFwproxy => {
+            Self::TacPlusAuthenSvcFwproxy => {
                 write!(f, "TAC_PLUS_AUTHEN_SVC_FWPROXY")
             }
         }
@@ -180,28 +180,28 @@ pub enum TacacsAuthenticationStatus {
 impl fmt::Display for TacacsAuthenticationStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TacacsAuthenticationStatus::TacPlusAuthenStatusPass => {
+            Self::TacPlusAuthenStatusPass => {
                 write!(f, "TAC_PLUS_AUTHEN_STATUS_PASS")
             }
-            TacacsAuthenticationStatus::TacPlusAuthenStatusFail => {
+            Self::TacPlusAuthenStatusFail => {
                 write!(f, "TAC_PLUS_AUTHEN_STATUS_FAIL")
             }
-            TacacsAuthenticationStatus::TacPlusAuthenStatusGetdata => {
+            Self::TacPlusAuthenStatusGetdata => {
                 write!(f, "TAC_PLUS_AUTHEN_STATUS_GETDATA")
             }
-            TacacsAuthenticationStatus::TacPlusAuthenStatusGetuser => {
+            Self::TacPlusAuthenStatusGetuser => {
                 write!(f, "TAC_PLUS_AUTHEN_STATUS_GETUSER")
             }
-            TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass => {
+            Self::TacPlusAuthenStatusGetpass => {
                 write!(f, "TAC_PLUS_AUTHEN_STATUS_GETPASS")
             }
-            TacacsAuthenticationStatus::TacPlusAuthenStatusRestart => {
+            Self::TacPlusAuthenStatusRestart => {
                 write!(f, "TAC_PLUS_AUTHEN_STATUS_RESTART")
             }
-            TacacsAuthenticationStatus::TacPlusAuthenStatusError => {
+            Self::TacPlusAuthenStatusError => {
                 write!(f, "TAC_PLUS_AUTHEN_STATUS_ERROR")
             }
-            TacacsAuthenticationStatus::TacPlusAuthenStatusFollow => {
+            Self::TacPlusAuthenStatusFollow => {
                 write!(f, "TAC_PLUS_AUTHEN_STATUS_FOLLOW")
             }
         }
@@ -223,7 +223,7 @@ pub enum TacacsAuthenticationContinueStatus {
 impl fmt::Display for TacacsAuthenticationContinueStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TacacsAuthenticationContinueStatus::TacPlusContinueFlagAbort => {
+            Self::TacPlusContinueFlagAbort => {
                 write!(f, "TAC_PLUS_CONTINUE_FLAG_ABORT")
             }
         }
@@ -249,37 +249,37 @@ pub enum TacacsAuthenticationMethod {
 impl fmt::Display for TacacsAuthenticationMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TacacsAuthenticationMethod::TacPlusAuthenMethodNotSet => {
+            Self::TacPlusAuthenMethodNotSet => {
                 write!(f, "TAC_PLUS_AUTHEN_METH_NOT_SET")
             }
-            TacacsAuthenticationMethod::TacPlusAuthenMethodNone => {
+            Self::TacPlusAuthenMethodNone => {
                 write!(f, "TAC_PLUS_AUTHEN_METH_NONE")
             }
-            TacacsAuthenticationMethod::TacPlusAuthenMethodKrb5 => {
+            Self::TacPlusAuthenMethodKrb5 => {
                 write!(f, "TAC_PLUS_AUTHEN_METH_KRB5")
             }
-            TacacsAuthenticationMethod::TacPlusAuthenMethodLine => {
+            Self::TacPlusAuthenMethodLine => {
                 write!(f, "TAC_PLUS_AUTHEN_METH_LINE")
             }
-            TacacsAuthenticationMethod::TacPlusAuthenMethodEnable => {
+            Self::TacPlusAuthenMethodEnable => {
                 write!(f, "TAC_PLUS_AUTHEN_METH_ENABLE")
             }
-            TacacsAuthenticationMethod::TacPlusAuthenMethodLocal => {
+            Self::TacPlusAuthenMethodLocal => {
                 write!(f, "TAC_PLUS_AUTHEN_METH_LOCAL")
             }
-            TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus => {
+            Self::TacPlusAuthenMethodTacacsplus => {
                 write!(f, "TAC_PLUS_AUTHEN_METH_TACACSPLUS")
             }
-            TacacsAuthenticationMethod::TacPlusAuthenMethodGuest => {
+            Self::TacPlusAuthenMethodGuest => {
                 write!(f, "TAC_PLUS_AUTHEN_METH_GUEST")
             }
-            TacacsAuthenticationMethod::TacPlusAuthenMethodRadius => {
+            Self::TacPlusAuthenMethodRadius => {
                 write!(f, "TAC_PLUS_AUTHEN_METH_RADIUS")
             }
-            TacacsAuthenticationMethod::TacPlusAuthenMethodKrb4 => {
+            Self::TacPlusAuthenMethodKrb4 => {
                 write!(f, "TAC_PLUS_AUTHEN_METH_KRB4")
             }
-            TacacsAuthenticationMethod::TacPlusAuthenMethodRcmd => {
+            Self::TacPlusAuthenMethodRcmd => {
                 write!(f, "TAC_PLUS_AUTHEN_METH_RCMD")
             }
         }
@@ -298,11 +298,11 @@ pub enum TacacsAuthorizationStatus {
 impl fmt::Display for TacacsAuthorizationStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TacacsAuthorizationStatus::TacPlusPassAdd => write!(f, "TAC_PLUS_PASS_ADD"),
-            TacacsAuthorizationStatus::TacPlusPassRepl => write!(f, "TAC_PLUS_PASS_REPL"),
-            TacacsAuthorizationStatus::TacPlusFail => write!(f, "TAC_PLUS_FAIL"),
-            TacacsAuthorizationStatus::TacPlusError => write!(f, "TAC_PLUS_ERROR"),
-            TacacsAuthorizationStatus::TacPlusFollow => write!(f, "TAC_PLUS_FOLLOW"),
+            Self::TacPlusPassAdd => write!(f, "TAC_PLUS_PASS_ADD"),
+            Self::TacPlusPassRepl => write!(f, "TAC_PLUS_PASS_REPL"),
+            Self::TacPlusFail => write!(f, "TAC_PLUS_FAIL"),
+            Self::TacPlusError => write!(f, "TAC_PLUS_ERROR"),
+            Self::TacPlusFollow => write!(f, "TAC_PLUS_FOLLOW"),
         }
     }
 }
@@ -327,13 +327,13 @@ pub enum TacacsAccountingStatus {
 impl fmt::Display for TacacsAccountingStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TacacsAccountingStatus::TacPlusAcctStatusSuccess => {
+            Self::TacPlusAcctStatusSuccess => {
                 write!(f, "TAC_PLUS_ACCT_STATUS_SUCCESS")
             }
-            TacacsAccountingStatus::TacPlusAcctStatusError => {
+            Self::TacPlusAcctStatusError => {
                 write!(f, "TAC_PLUS_ACCT_STATUS_ERROR")
             }
-            TacacsAccountingStatus::TacPlusAcctStatusFollow => {
+            Self::TacPlusAcctStatusFollow => {
                 write!(f, "TAC_PLUS_ACCT_STATUS_FOLLOW")
             }
         }

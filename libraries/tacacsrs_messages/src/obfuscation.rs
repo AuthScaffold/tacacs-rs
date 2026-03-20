@@ -68,7 +68,7 @@ mod tests {
             tacacs_type: TacacsType::TacPlusAccounting,
             seq_no: 1,
             flags: TacacsFlags::empty(),
-            session_id: 0xdeadbeef,
+            session_id: 0xdead_beef,
             length: 16,
         };
 
@@ -86,7 +86,7 @@ mod tests {
             tacacs_type: TacacsType::TacPlusAccounting,
             seq_no: 1,
             flags: TacacsFlags::empty(),
-            session_id: 0xdeadbeef,
+            session_id: 0xdead_beef,
             length: 16,
         };
 

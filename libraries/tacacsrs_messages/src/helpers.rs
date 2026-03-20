@@ -12,7 +12,7 @@ pub fn read_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<String, any
     let mut buffer = vec![0; len];
     cursor
         .read_exact(&mut buffer)
-        .with_context(|| format!("Unable to read {} bytes from cursor", len))?;
+        .with_context(|| format!("Unable to read {len} bytes from cursor"))?;
 
     let string = String::from_utf8(buffer)
         .with_context(|| "Unable to read data into UTF8 formatted string")?;

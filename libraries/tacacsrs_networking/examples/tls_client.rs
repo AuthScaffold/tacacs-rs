@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use env_logger::Env;
 use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::enumerations::*;
+use tacacsrs_messages::enumerations::{
+    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationType,
+    TacacsAuthenticationService,
+};
 use tacacsrs_networking::helpers::connect_tcp;
 use tacacsrs_networking::transport::tls::{connect_tls, TlsConfigurationBuilder};
 use tacacsrs_networking::TacacsConnection;
@@ -16,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
 
     let binary_path = std::env::current_exe()?;
-    let parent_folder = match binary_path
+    let Some(parent_folder) = binary_path
         .parent()
         .unwrap()
         .parent()
@@ -24,12 +27,9 @@ async fn main() -> anyhow::Result<()> {
         .parent()
         .unwrap()
         .parent()
-    {
-        Some(folder) => folder,
-        None => {
-            println!("Failed to get parent folder of binary path.");
-            return Err(anyhow::Error::msg("Failed to get parent folder of binary path."));
-        }
+    else {
+        println!("Failed to get parent folder of binary path.");
+        return Err(anyhow::Error::msg("Failed to get parent folder of binary path."));
     };
 
     let examples_folder = parent_folder
@@ -90,12 +90,12 @@ async fn main() -> anyhow::Result<()> {
     {
         Ok(response) => response,
         Err(e) => {
-            println!("Failed to send accounting request: {}", e);
+            println!("Failed to send accounting request: {e}");
             return Err(e);
         }
     };
 
-    println!("Received accounting response: {:#?}", response);
+    println!("Received accounting response: {response:#?}");
 
     Ok(())
 }

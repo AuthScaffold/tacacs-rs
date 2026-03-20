@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use env_logger::Env;
 use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::enumerations::*;
+use tacacsrs_messages::enumerations::{
+    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationType,
+    TacacsAuthenticationService,
+};
 use tacacsrs_networking::helpers::connect_tcp;
 use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
 use tacacsrs_networking::TacacsConnection;
@@ -53,12 +56,12 @@ async fn main() -> anyhow::Result<()> {
     {
         Ok(response) => response,
         Err(e) => {
-            println!("Failed to send accounting request: {}", e);
+            println!("Failed to send accounting request: {e}");
             return Err(e);
         }
     };
 
-    println!("Received accounting response: {:#?}", response);
+    println!("Received accounting response: {response:#?}");
 
     Ok(())
 }

@@ -47,6 +47,8 @@ pub struct AccountingRequest {
 }
 
 impl AccountingRequest {
+    /// # Errors
+    /// Returns an error if the packet body is too short or contains invalid fields.
     pub fn from_packet(packet: &Packet) -> Result<Self, anyhow::Error> {
         // Check if the packet the correct length
         let expected_length = Self::size_from_bytes(packet.body());
@@ -62,8 +64,7 @@ impl AccountingRequest {
             Ok(accounting_request) => accounting_request,
             Err(err) => {
                 let context = format!(
-                    "Invalid TACACS+ AccountingRequest. Conversion failed with error: {}",
-                    err
+                    "Invalid TACACS+ AccountingRequest. Conversion failed with error: {err}"
                 );
                 return Err(err).with_context(|| context);
             }
@@ -106,7 +107,7 @@ impl AccountingRequest {
         let mut buffer = vec![0; len];
         cursor
             .read_exact(&mut buffer)
-            .with_context(|| format!("Unable to read {} bytes from cursor", len))?;
+            .with_context(|| format!("Unable to read {len} bytes from cursor"))?;
 
         let string = String::from_utf8(buffer)
             .with_context(|| "Unable to read data into UTF8 formatted string")?;
@@ -114,6 +115,8 @@ impl AccountingRequest {
         Ok(string)
     }
 
+    /// # Errors
+    /// Returns an error if the data is too short or contains invalid field values.
     pub fn from_bytes(data: &[u8]) -> Result<Self, anyhow::Error> {
         if data.len() < TACACS_ACCOUNTING_REQUEST_MIN_LENGTH {
             return Err(anyhow::Error::msg("Data too short"));
@@ -203,7 +206,7 @@ impl AccountingRequest {
             args.push(arg);
         }
 
-        Ok(AccountingRequest {
+        Ok(Self {
             flags,
             authen_method,
             priv_lvl,
@@ -353,7 +356,7 @@ mod tests {
         let mut cursor = Cursor::new(data.as_slice());
         let err = AccountingRequest::read_string(&mut cursor, 700)
             .expect_err("Remaining buffer too short. Conversion should have failed with error.");
-        assert!(err.to_string().contains("Remaining buffer too short"), "Error actual: {}", err);
+        assert!(err.to_string().contains("Remaining buffer too short"), "Error actual: {err}");
     }
 
     #[test]
@@ -361,62 +364,58 @@ mod tests {
         let data = vec![65_u8, 66, 67, 68, 69, 70];
         let err = AccountingRequest::from_bytes(data.as_slice())
             .expect_err("Data too short. from_bytes should have failed with error.");
-        assert!(err.to_string().contains("Data too short"), "Error actual: {}", err);
+        assert!(err.to_string().contains("Data too short"), "Error actual: {err}");
     }
 
     #[test]
     fn test_read_bytes_incorrect_accounting_flags() {
         let mut data = generate_accounting_request_data();
-        data[0] = 0b11111111;
+        data[0] = 0b1111_1111;
         let err = AccountingRequest::from_bytes(data.as_slice())
             .expect_err("Invalid flags. from_bytes should have failed with error.");
         assert!(
             err.to_string()
                 .contains("Invalid flags. Conversion failed with error"),
-            "Error actual: {}",
-            err
+            "Error actual: {err}"
         );
     }
 
     #[test]
     fn test_read_bytes_incorrect_authen_method() {
         let mut data = generate_accounting_request_data();
-        data[1] = 0b11111111;
+        data[1] = 0b1111_1111;
         let err = AccountingRequest::from_bytes(data.as_slice())
             .expect_err("Invalid authen_method. from_bytes should have failed with error.");
         assert!(
             err.to_string()
                 .contains("Invalid authen_method. Conversion failed with error"),
-            "Error actual: {}",
-            err
+            "Error actual: {err}"
         );
     }
 
     #[test]
     fn test_read_bytes_incorrect_authen_type() {
         let mut data = generate_accounting_request_data();
-        data[3] = 0b11111111;
+        data[3] = 0b1111_1111;
         let err = AccountingRequest::from_bytes(data.as_slice())
             .expect_err("Invalid authen_type. from_bytes should have failed with error.");
         assert!(
             err.to_string()
                 .contains("Invalid authen_type. Conversion failed with error"),
-            "Error actual: {}",
-            err
+            "Error actual: {err}"
         );
     }
 
     #[test]
     fn test_read_bytes_incorrect_authen_service() {
         let mut data = generate_accounting_request_data();
-        data[4] = 0b11111111;
+        data[4] = 0b1111_1111;
         let err = AccountingRequest::from_bytes(data.as_slice())
             .expect_err("Invalid authen_service. from_bytes should have failed with error.");
         assert!(
             err.to_string()
                 .contains("Invalid authen_service. Conversion failed with error"),
-            "Error actual: {}",
-            err
+            "Error actual: {err}"
         );
     }
 
@@ -426,7 +425,7 @@ mod tests {
         data.truncate(TACACS_ACCOUNTING_REQUEST_MIN_LENGTH);
         let err = AccountingRequest::from_bytes(data.as_slice())
             .expect_err("Invalid arg_size. Packet parsing should have failed.");
-        assert!(err.to_string().contains("Invalid arg_size"), "Error actual: {}", err);
+        assert!(err.to_string().contains("Invalid arg_size"), "Error actual: {err}");
     }
 
     #[test]
@@ -468,6 +467,6 @@ mod tests {
 
         let err = AccountingRequest::from_packet(&packet)
             .expect_err("Invalid body length. Packet parsing should have failed.");
-        assert!(err.to_string().contains("Invalid body length"), "Error actual: {}", err);
+        assert!(err.to_string().contains("Invalid body length"), "Error actual: {err}");
     }
 }

@@ -10,7 +10,7 @@ use crate::session::Session;
 
 #[async_trait]
 pub trait AccountingSessionTrait {
-    /// Sends an accounting request with default flags (TAC_PLUS_UNENCRYPTED_FLAG)
+    /// Sends an accounting request with default flags (`TAC_PLUS_UNENCRYPTED_FLAG`)
     async fn send_accounting_request(
         &self,
         request: AccountingRequest,
@@ -21,7 +21,7 @@ pub trait AccountingSessionTrait {
     /// # Arguments
     ///
     /// * `request` - The accounting request to send
-    /// * `custom_flags` - Additional flags to set on the packet header (e.g., TAC_PLUS_CUSTOM_FLAG_1, TAC_PLUS_CUSTOM_FLAG_2)
+    /// * `custom_flags` - Additional flags to set on the packet header (e.g., `TAC_PLUS_CUSTOM_FLAG_1`, `TAC_PLUS_CUSTOM_FLAG_2`)
     async fn send_accounting_request_with_flags(
         &self,
         request: AccountingRequest,
@@ -80,9 +80,9 @@ impl AccountingSessionTrait for Session {
         // therefore we need to use write() instead of read()
         let mut reader_lock = self.duplex_channel.receiver.write().await;
 
-        let response = match reader_lock.recv().await {
-            Some(response) => response,
-            None => return Err(anyhow::Error::msg("Failed to receive response")),
+        let response = reader_lock.recv().await;
+        let Some(response) = response else {
+            return Err(anyhow::Error::msg("Failed to receive response"));
         };
 
         let reply = AccountingReply::from_bytes(response.body())?;
@@ -143,7 +143,7 @@ mod tests {
         let accounting_reply = AccountingReply {
             status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             server_msg: "Test".to_string(),
-            data: "".to_string(),
+            data: String::new(),
         };
 
         mock_control
@@ -204,7 +204,7 @@ mod tests {
         let accounting_reply = AccountingReply {
             status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             server_msg: "Test".to_string(),
-            data: "".to_string(),
+            data: String::new(),
         };
 
         // Configure reply with a delay
@@ -221,8 +221,7 @@ mod tests {
         assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
         assert!(
             elapsed >= Duration::from_millis(100),
-            "Expected at least 100ms delay but got {:?}",
-            elapsed
+            "Expected at least 100ms delay but got {elapsed:?}"
         );
 
         Ok(())
@@ -255,7 +254,7 @@ mod tests {
         let accounting_reply1 = AccountingReply {
             status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             server_msg: "Reply1".to_string(),
-            data: "".to_string(),
+            data: String::new(),
         };
 
         // Configure first reply with single connect flag to enable multiple sessions
@@ -289,7 +288,7 @@ mod tests {
         let accounting_reply2 = AccountingReply {
             status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             server_msg: "Reply2".to_string(),
-            data: "".to_string(),
+            data: String::new(),
         };
 
         // Configure reply for second session with delay

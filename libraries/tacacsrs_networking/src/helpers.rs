@@ -45,16 +45,15 @@ pub async fn connect_tcp(hostname: &str) -> anyhow::Result<tokio::net::TcpStream
             Ok(stream) => {
                 log::info!(
                     target: "tacacsrs_networking::helpers::connect_tcp",
-                    "Connected to server: {}", server_address);
+                    "Connected to server: {server_address}");
                 return Ok(stream);
             }
             Err(e) => {
                 log::error!(
                     target: "tacacsrs_networking::helpers::connect_tcp",
-                    "Failed to connect to server {}: {}", server_address, e);
-                continue;
+                    "Failed to connect to server {server_address}: {e}");
             }
-        };
+        }
     }
 
     Err(anyhow::Error::msg("Failed to connect to any server"))
@@ -92,7 +91,9 @@ pub fn tls_server_name(server_addr: &str) -> &str {
 /// client verification.
 #[must_use]
 pub fn default_root_cert_store() -> rustls::RootCertStore {
-    rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned())
+    rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    }
 }
 
 #[cfg(test)]

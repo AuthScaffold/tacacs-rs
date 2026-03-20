@@ -548,7 +548,8 @@ impl ServiceState {
     /// [`tacacsrs_agent_client::ServiceError`] for
     /// the affected IPC request.
     async fn ensure_connection(&self, index: usize) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        if let Some(existing) = self.servers[index].connection.read().await.clone() {
+        let existing_conn = self.servers[index].connection.read().await.clone();
+        if let Some(existing) = existing_conn {
             if existing.is_usable_for_new_sessions().await {
                 log::debug!(
                     "Reusing cached upstream connection for {}",
@@ -568,7 +569,8 @@ impl ServiceState {
             .load(Ordering::Acquire);
         let _connect_guard = self.servers[index].connect_lock.lock().await;
 
-        if let Some(existing) = self.servers[index].connection.read().await.clone() {
+        let existing_conn = self.servers[index].connection.read().await.clone();
+        if let Some(existing) = existing_conn {
             if existing.is_usable_for_new_sessions().await {
                 log::debug!(
                     "Reusing cached upstream connection for {} after waiting on another reconnect",
