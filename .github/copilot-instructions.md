@@ -71,7 +71,7 @@ The `psk` feature enables TLS 1.3 Pre-Shared Key support via OpenSSL. Without it
 
 ### Design Principles
 
-- **Follow existing patterns** — Before introducing new abstractions, check how the codebase already solves the same problem. New code should mirror established patterns (e.g. `DedicatedConnection` mirrors `TacacsConnection`: non-generic struct, generic method that accepts `impl Transport`).
+- **Follow existing patterns** — Before introducing new abstractions, check how the codebase already solves the same problem. New code should mirror established patterns (e.g. `DedicatedConnection<R, W>` mirrors `TacacsConnection<R, W>`: generic structs over read/write halves that implement `Transport`).
 - **Prefer non-generic structs with generic methods** — Keep structs concrete and push generics to the method level. Store type-erased (`Box<dyn Trait>`) halves when needed for ownership. Do not add type parameters to structs unless there is a compelling reason.
 - **Reuse existing trait abstractions** — Use `Transport` for anything that can be split into read/write halves. Do not re-derive `AsyncRead`/`AsyncWrite` wrappers, enum-based manual trait delegation, or parallel trait hierarchies when the existing abstraction already covers the use case.
 - **Type erasure only at the boundary** — Use `BoxedTransport` only where runtime polymorphism is genuinely needed (e.g. `establish_stream` choosing TCP vs TLS from CLI flags). Callers that know the concrete type at compile time should pass it directly as `impl Transport`.

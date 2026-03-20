@@ -770,7 +770,7 @@ async fn execute_single_request_dedicated(
 
 /// Executes all batch requests using dedicated connections.
 ///
-/// Each request opens and closes its own TCP connection with no session
+/// Each request opens and closes its own TCP/TLS transport connection with no session
 /// multiplexing and no background tasks.  Supports sequential, parallel,
 /// and load-test modes.
 pub async fn execute_batch_dedicated(

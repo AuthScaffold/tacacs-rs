@@ -204,8 +204,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return execute_command_via_service(&cli, &cli.command).await;
     }
 
-    // Dedicated connection mode: minimal one-shot TCP per request, no
-    // background tasks, no session multiplexing.
+    // Dedicated connection mode: minimal one-shot connection (TCP or TLS) per
+    // request, no background tasks, no session multiplexing.
     if cli.dedicated {
         return execute_command_dedicated(&cli).await;
     }
