@@ -21,6 +21,7 @@ use tacacsrs_messages::traits::TacacsBodyTrait;
 
 use crate::packet_reader::{PacketReadResult, PacketReader, PacketReaderTrait};
 use crate::packet_writer::{PacketWriteResult, PacketWriter, PacketWriterTrait};
+use crate::transport::Transport;
 
 /// The result of a one-shot TACACS+ accounting exchange.
 #[derive(Debug)]
@@ -33,29 +34,32 @@ pub struct ExchangeResult {
 }
 
 /// A minimal TACACS+ connection that carries exactly one request-response
-/// exchange over a raw async stream.
+/// exchange over a [`Transport`].
 ///
 /// Unlike [`TacacsConnection`](crate::connection::TacacsConnection), this
 /// type spawns no background tasks and performs no session multiplexing.
 /// It writes one packet, reads one response, and reports whether the
 /// server supports single-connection mode.
-pub struct DedicatedConnection<S> {
-    stream: S,
+pub struct DedicatedConnection {
+    reader_half: Box<dyn AsyncRead + Unpin + Send>,
+    writer_half: Box<dyn AsyncWrite + Unpin + Send>,
     reader: PacketReader,
     writer: PacketWriter,
 }
 
-impl<S: AsyncRead + AsyncWrite + Unpin + Send> DedicatedConnection<S> {
-    /// Creates a new dedicated connection over `stream`.
+impl DedicatedConnection {
+    /// Creates a new dedicated connection by splitting a [`Transport`] into
+    /// its read and write halves.
     ///
     /// If `obfuscation_key` is provided, outgoing packets are obfuscated
     /// and incoming packets are deobfuscated using the TACACS+ MD5-based
     /// XOR pad.
-    #[must_use]
-    pub fn new(stream: S, obfuscation_key: Option<&[u8]>) -> Self {
+    pub fn new(transport: impl Transport, obfuscation_key: Option<&[u8]>) -> Self {
         let key = obfuscation_key.map(<[u8]>::to_vec);
+        let (reader_half, writer_half) = transport.split();
         Self {
-            stream,
+            reader_half: Box::new(reader_half),
+            writer_half: Box::new(writer_half),
             reader: PacketReader::new(key.clone()),
             writer: PacketWriter::new(key),
         }
@@ -124,7 +128,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DedicatedConnection<S> {
 
     /// Writes one TACACS+ packet and reads one response.
     async fn exchange(&mut self, packet: Packet) -> anyhow::Result<Packet> {
-        match self.writer.write_packet(&mut self.stream, packet).await {
+        match self
+            .writer
+            .write_packet(&mut self.writer_half, packet)
+            .await
+        {
             PacketWriteResult::Success => {}
             PacketWriteResult::WriteError(e) => {
                 return Err(e).context("failed to write TACACS+ packet");
@@ -132,7 +140,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DedicatedConnection<S> {
             other => anyhow::bail!("unexpected write result: {other:?}"),
         }
 
-        match self.reader.read_packet(&mut self.stream).await {
+        match self.reader.read_packet(&mut self.reader_half).await {
             PacketReadResult::Success(packet) => Ok(packet),
             PacketReadResult::HeaderReadError(e) => {
                 Err(e).context("failed to read TACACS+ response header")

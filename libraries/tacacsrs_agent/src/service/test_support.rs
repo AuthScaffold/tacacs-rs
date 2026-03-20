@@ -294,7 +294,7 @@ impl UpstreamConnector for BlockingConnector {
 }
 
 // ---------------------------------------------------------------------------
-// ExclusiveSessionConnection / ExclusiveSessionConnector— allows exactly one
+// ExclusiveSessionConnection / ExclusiveSessionConnector — allows exactly one
 // session per connection; subsequent send_accounting calls fail, simulating a
 // server that does not support single-connection mode under concurrent load.
 // ---------------------------------------------------------------------------

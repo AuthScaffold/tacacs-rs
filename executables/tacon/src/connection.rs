@@ -3,7 +3,8 @@ use std::sync::Arc;
 use anyhow::Context;
 use tacacsrs_networking::{
     connection::TacacsConnection, helpers::tls_server_name, session::Session,
-    traits::SessionManagementTrait, transport::tls::TlsConfigurationBuilder, SingleConnectionState,
+    traits::SessionManagementTrait, transport::tls::TlsConfigurationBuilder, BoxedTransport,
+    SingleConnectionState,
 };
 #[cfg(feature = "psk")]
 use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
@@ -71,6 +72,31 @@ impl Connection {
 /// - TLS handshake fails
 pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
     let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
+    let stream = establish_stream(cli).await?;
+
+    let connection = Arc::new(TacacsConnection::new(obfuscation_key));
+    connection
+        .run(stream)
+        .await
+        .context("Failed to start connection handler")?;
+
+    Ok(Connection { inner: connection })
+}
+
+/// Establishes a TCP or TLS stream to the TACACS+ server based on CLI options.
+///
+/// This is the shared connection-setup logic used by both
+/// [`establish_connection`] (multiplexed sessions) and the dedicated
+/// connection path (one-shot exchanges).
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - A server address is not provided
+/// - TCP connection cannot be established
+/// - TLS is requested but certificate/key are missing or invalid
+/// - TLS handshake fails
+pub(crate) async fn establish_stream(cli: &Cli) -> anyhow::Result<BoxedTransport> {
     let server_addr = cli
         .server_addr
         .as_deref()
@@ -79,14 +105,11 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
         .await
         .context("Failed to establish TCP connection")?;
 
-    let connection = Arc::new(TacacsConnection::new(obfuscation_key));
-
     if cli.use_tls {
         #[cfg(feature = "psk")]
         if let (Some(psk_identity), Some(psk_key)) =
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
         {
-            // TLS 1.3 PSK mode
             let psk = PskIdentity::new(psk_identity, psk_key.as_bytes())
                 .context("Invalid PSK credentials")?;
 
@@ -95,15 +118,9 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
                 .await
                 .context("Failed to establish TLS PSK connection")?;
 
-            connection
-                .run(tls_stream)
-                .await
-                .context("Failed to start TLS PSK connection handler")?;
-
-            return Ok(Connection { inner: connection });
+            return Ok(BoxedTransport::new(tls_stream));
         }
 
-        // Certificate-based TLS mode
         let client_cert = cli
             .client_certificate
             .as_ref()
@@ -133,16 +150,8 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
         .await
         .context("Failed to establish TLS connection")?;
 
-        connection
-            .run(tls_stream)
-            .await
-            .context("Failed to start TLS connection handler")?;
+        Ok(BoxedTransport::new(tls_stream))
     } else {
-        connection
-            .run(tcp_stream)
-            .await
-            .context("Failed to start TCP connection handler")?;
+        Ok(BoxedTransport::new(tcp_stream))
     }
-
-    Ok(Connection { inner: connection })
 }

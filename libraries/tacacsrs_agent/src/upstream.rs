@@ -508,13 +508,11 @@ async fn send_dedicated_accounting(
         {
             let psk = PskIdentity::new(psk_identity, psk_key.as_bytes())
                 .context("Invalid PSK credentials")?;
-            let tls_stream = timeout(
-                options.connect_timeout,
-                PskConfigurationBuilder::new(psk).connect(stream),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("TLS PSK handshake timed out"))?
-            .context("Failed to establish TLS PSK connection")?;
+            let tls_stream =
+                timeout(options.connect_timeout, PskConfigurationBuilder::new(psk).connect(stream))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("TLS PSK handshake timed out"))?
+                    .context("Failed to establish TLS PSK connection")?;
             let mut conn = DedicatedConnection::new(tls_stream, obfuscation_key);
             return conn
                 .send_accounting(tacacs_request, TacacsFlags::empty())

@@ -25,6 +25,7 @@ pub use single_connect_tracker::{LocalSingleConnectState, SingleConnectFlag};
 pub use connection::TacacsConnection;
 pub use dedicated_connection::{DedicatedConnection, ExchangeResult};
 pub use transport::Transport;
+pub use transport::BoxedTransport;
 pub use transport::mock::MockTransport;
 pub use transport::tls;
 #[cfg(feature = "psk")]

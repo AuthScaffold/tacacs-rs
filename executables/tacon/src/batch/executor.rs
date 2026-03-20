@@ -16,7 +16,7 @@ use tacacsrs_networking::{DedicatedConnection, SingleConnectionState};
 
 use crate::cli::Cli;
 use crate::commands::accounting::{build_accounting_request, send_accounting_request};
-use crate::connection::{establish_connection, Connection};
+use crate::connection::{establish_connection, establish_stream, Connection};
 
 use super::progress::{print_load_test_summary, ProgressConfig, ProgressTracker};
 use super::types::{BatchRequest, LoadTestConfig, LoadTestResult, RequestResult};
@@ -737,14 +737,9 @@ async fn execute_single_request_dedicated(
     cli: &Cli,
     request: &BatchRequest,
 ) -> Result<String, String> {
-    let server_addr = cli
-        .server_addr
-        .as_deref()
-        .ok_or_else(|| "--server-addr is required for --dedicated mode".to_owned())?;
-
     match request {
         BatchRequest::Accounting(req) => {
-            let stream = tacacsrs_networking::helpers::connect_tcp(server_addr)
+            let stream = establish_stream(cli)
                 .await
                 .map_err(|e| format!("Connection failed: {e}"))?;
 
