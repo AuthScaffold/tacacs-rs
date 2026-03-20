@@ -231,7 +231,7 @@ impl ServiceState {
     }
 
     /// Returns the number of configured upstream TACACS+ servers.
-    pub(super) const fn server_count(&self) -> usize {
+    pub(super) fn server_count(&self) -> usize {
         self.servers.len()
     }
 
