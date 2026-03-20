@@ -230,11 +230,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 async fn execute_command_dedicated(cli: &Cli) -> anyhow::Result<()> {
     log::info!("Running in dedicated connection mode");
 
-    let server_addr = cli
-        .server_addr
-        .as_deref()
-        .context("--server-addr is required for --dedicated mode")?;
-
     match &cli.command {
         Command::Accounting {
             args,
@@ -244,9 +239,9 @@ async fn execute_command_dedicated(cli: &Cli) -> anyhow::Result<()> {
             custom_flag_2,
             session_id: _,
         } => {
-            let stream = tacacsrs_networking::helpers::connect_tcp(server_addr)
+            let stream = connection::establish_stream(cli)
                 .await
-                .context("Failed to connect to TACACS+ server")?;
+                .context("Connection failed")?;
 
             let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
             let mut conn = DedicatedConnection::new(stream, obfuscation_key);

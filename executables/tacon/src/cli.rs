@@ -64,7 +64,7 @@ pub struct Cli {
     /// request opens and closes its own TCP connection, rather than
     /// reusing connections managed by the central service. Useful for
     /// testing or simple one-off requests.
-    #[arg(long, conflicts_with = "service_endpoint")]
+    #[arg(long, requires = "server_addr", conflicts_with = "service_endpoint")]
     pub dedicated: bool,
 
     #[command(subcommand)]
