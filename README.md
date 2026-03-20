@@ -2,6 +2,22 @@
 
 `tacacs-rs` is a reference implementation of the TACACS+ protocol, designed to provide a robust and efficient solution for authentication, authorization, and accounting (AAA) services.
 
+## Minimum Supported Rust Version (MSRV)
+
+This project's Minimum Supported Rust Version (MSRV) is **Rust 1.85.0**.
+
+The MSRV is defined as the minimum Rust toolchain required to build the project and its resolved runtime dependency graph. This floor reflects the requirements of core runtime dependencies, including cryptographic and serialization libraries, and is intentionally aligned with the modern Rust ecosystem to avoid maintaining fragile dependency pinning or forks.
+
+For SONiC releases that do not ship a Rust toolchain, or that ship an older Rust version, the required Rust toolchain (Rust 1.85.0) is provisioned by the build environment using `rustup`. Building executables in this manner provides the greatest level of reproducibility achievable across supported SONiC versions.
+
+The MSRV may be raised in the future as required by upstream dependencies or security considerations. Such changes will be documented explicitly.
+
+<details>
+<summary>If auditors ask "why not lower?"</summary>
+
+Lower Rust versions are not supported because upstream runtime dependencies have adopted newer language editions and MSRV requirements; supporting older toolchains would require extensive and fragile dependency pinning with no security or operational benefit.
+</details>
+
 ## Demo
 
 **Demo 1: Existing (Legacy) TACACS+ with Obfuscation**
