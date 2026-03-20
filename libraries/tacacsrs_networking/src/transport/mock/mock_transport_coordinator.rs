@@ -187,6 +187,7 @@ impl MockTransportCoordinator {
                 delay: None,
             },
         );
+        drop(state);
         Ok(())
     }
 
@@ -211,6 +212,7 @@ impl MockTransportCoordinator {
                 delay: Some(delay),
             },
         );
+        drop(state);
         Ok(())
     }
 
@@ -284,6 +286,8 @@ impl MockTransportCoordinator {
     ) -> anyhow::Result<HashMap<u8, Packet>> {
         let state = self.state.lock().await;
         let result = state.requests.get(&session_id).cloned();
+        drop(state);
+
         let count = result.as_ref().map_or(0, std::collections::HashMap::len);
         log::debug!(
             "mock coordinator: get_requests_for_session({session_id}) → {count} request(s)"
@@ -307,9 +311,17 @@ impl MockTransportCoordinator {
         session_id: u32,
     ) -> anyhow::Result<HashMap<u8, Packet>> {
         let state = self.state.lock().await;
-        let configured = state.replies.get(&session_id).ok_or_else(|| {
-            anyhow::anyhow!("No replies configured for session {session_id} (session not found)")
-        })?;
+        let configured = state
+            .replies
+            .get(&session_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No replies configured for session {session_id} (session not found)"
+                )
+            })?
+            .clone();
+        drop(state);
+
         log::debug!(
             "mock coordinator: get_replies_for_session({session_id}) → {} unconsumed reply(ies)",
             configured.len()

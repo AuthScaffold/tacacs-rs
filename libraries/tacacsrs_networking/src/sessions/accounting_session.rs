@@ -81,6 +81,7 @@ impl AccountingSessionTrait for Session {
         let mut reader_lock = self.duplex_channel.receiver.write().await;
 
         let response = reader_lock.recv().await;
+        drop(reader_lock);
         let Some(response) = response else {
             return Err(anyhow::Error::msg("Failed to receive response"));
         };

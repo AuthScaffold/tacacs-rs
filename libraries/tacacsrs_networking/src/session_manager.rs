@@ -195,37 +195,36 @@ impl SessionManager {
 
         match *state {
             SingleConnectionState::Negotiating => {
-                // First response from server - set initial state
                 let new_state = if server_supports_single_connection {
                     SingleConnectionState::Supported
                 } else {
                     SingleConnectionState::NotSupported
                 };
 
+                *state = new_state;
+                drop(state);
+
                 log::info!(
                     target: "tacacsrs_networking::session_manager::set_single_connection_state",
                     "Setting single connection state to {new_state:?}"
                 );
-
-                *state = new_state;
             }
             SingleConnectionState::Supported if !server_supports_single_connection => {
-                // Server is signaling graceful shutdown - transition to NotSupported
-                // This tells the client to stop creating new sessions and drain existing ones
+                *state = SingleConnectionState::NotSupported;
+                drop(state);
+
                 log::info!(
                     target: "tacacsrs_networking::session_manager::set_single_connection_state",
                     "Server removed single-connect flag, transitioning to NotSupported (graceful shutdown signal)"
                 );
-
-                *state = SingleConnectionState::NotSupported;
             }
             _ => {
-                // NotSupported is terminal, Initial should go through Negotiating,
-                // and Supported staying Supported is a no-op
+                let current = *state;
+                drop(state);
+
                 log::debug!(
                     target: "tacacsrs_networking::session_manager::set_single_connection_state",
-                    "Single connection state is {:?}, ignoring update to {}",
-                    *state, server_supports_single_connection
+                    "Single connection state is {current:?}, ignoring update to {server_supports_single_connection}",
                 );
             }
         }
@@ -353,6 +352,7 @@ impl SessionManager {
         let mut duplex_channels = self.duplex_channels.write().await;
         let session_count = duplex_channels.len();
         duplex_channels.clear();
+        drop(duplex_channels);
 
         log::info!(
             target: "tacacsrs_networking::session_manager::close_all_sessions",
