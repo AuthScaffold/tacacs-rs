@@ -176,6 +176,69 @@ impl MockTransportCoordinator {
         self.add_reply(packet).await
     }
 
+    /// Builds and registers an accounting reply for a known `session_id`.
+    ///
+    /// This is the counterpart of [`add_accounting_reply_with_flags`](Self::add_accounting_reply_with_flags)
+    /// for callers that do not have a [`Session`] reference — e.g. when
+    /// testing [`DedicatedConnection`](crate::DedicatedConnection) with a
+    /// predetermined session ID.
+    pub async fn add_accounting_reply_for_session_id(
+        &self,
+        session_id: u32,
+        reply_sequence_number: u8,
+        reply: &AccountingReply,
+        flags: TacacsFlags,
+    ) -> anyhow::Result<()> {
+        let data = reply.to_bytes();
+        let packet = Packet::new(
+            Header {
+                major_version: TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                tacacs_type: TacacsType::TacPlusAccounting,
+                seq_no: reply_sequence_number,
+                flags,
+                session_id,
+                length: data.len() as u32,
+            },
+            data,
+        )?;
+        self.add_reply(packet).await
+    }
+
+    /// Builds, obfuscates, and registers an accounting reply for a known
+    /// `session_id`.
+    ///
+    /// The packet is constructed with the given `flags` (which should
+    /// include [`TAC_PLUS_UNENCRYPTED_FLAG`](TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG))
+    /// and then obfuscated with `obfuscation_key` via
+    /// [`Packet::to_obfuscated`]. The mock transport replays raw bytes, so
+    /// the reply must be pre-obfuscated to match what a real server would
+    /// send.
+    pub async fn add_obfuscated_accounting_reply_for_session_id(
+        &self,
+        session_id: u32,
+        reply_sequence_number: u8,
+        reply: &AccountingReply,
+        flags: TacacsFlags,
+        obfuscation_key: &[u8],
+    ) -> anyhow::Result<()> {
+        let data = reply.to_bytes();
+        let packet = Packet::new(
+            Header {
+                major_version: TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                tacacs_type: TacacsType::TacPlusAccounting,
+                seq_no: reply_sequence_number,
+                flags,
+                session_id,
+                length: data.len() as u32,
+            },
+            data,
+        )?
+        .to_obfuscated(obfuscation_key);
+        self.add_reply(packet).await
+    }
+
     /// Returns all request packets captured for the given `session_id`.
     ///
     /// The returned map is keyed by sequence number. These are the packets that

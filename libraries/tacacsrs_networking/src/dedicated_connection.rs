@@ -48,6 +48,7 @@ pub struct DedicatedConnection<R, W> {
     writer_half: W,
     reader: PacketReader,
     writer: PacketWriter,
+    session_id_fn: fn() -> u32,
 }
 
 impl<R, W> DedicatedConnection<R, W>
@@ -72,6 +73,32 @@ where
             writer_half,
             reader: PacketReader::new(key.clone()),
             writer: PacketWriter::new(key),
+            session_id_fn: rand::random,
+        }
+    }
+
+    /// Creates a new dedicated connection with a caller-supplied session ID
+    /// generator.
+    ///
+    /// This is primarily useful in tests where a deterministic session ID
+    /// is needed to pre-register replies on a mock transport.
+    #[cfg(test)]
+    fn new_with_session_id_fn<T>(
+        transport: T,
+        obfuscation_key: Option<&[u8]>,
+        session_id_fn: fn() -> u32,
+    ) -> Self
+    where
+        T: Transport<ReadHalf = R, WriteHalf = W>,
+    {
+        let key = obfuscation_key.map(<[u8]>::to_vec);
+        let (reader_half, writer_half) = transport.split();
+        Self {
+            reader_half,
+            writer_half,
+            reader: PacketReader::new(key.clone()),
+            writer: PacketWriter::new(key),
+            session_id_fn,
         }
     }
 
@@ -86,7 +113,7 @@ where
         request: AccountingRequest,
         custom_flags: TacacsFlags,
     ) -> anyhow::Result<ExchangeResult> {
-        let session_id: u32 = rand::random();
+        let session_id: u32 = (self.session_id_fn)();
         let body = request.to_bytes();
         let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG
             | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG
@@ -172,5 +199,314 @@ where
                 Err(error).context("failed to create packet from response")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tacacsrs_messages::accounting::reply::AccountingReply;
+    use tacacsrs_messages::accounting::request::AccountingRequest;
+    use tacacsrs_messages::enumerations::{
+        TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
+        TacacsAuthenticationService, TacacsAuthenticationType, TacacsFlags,
+    };
+    use tacacsrs_messages::packet::PacketTrait;
+    use tacacsrs_messages::traits::TacacsBodyTrait;
+
+    use super::DedicatedConnection;
+    use crate::transport::mock::MockTransport;
+
+    const TEST_SESSION_ID: u32 = 0xDEAD_BEEF;
+
+    fn fixed_session_id() -> u32 {
+        TEST_SESSION_ID
+    }
+
+    fn test_request() -> AccountingRequest {
+        AccountingRequest {
+            flags: TacacsAccountingFlags::START,
+            authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
+            priv_lvl: 0,
+            authen_type: TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
+            authen_service: TacacsAuthenticationService::TacPlusAuthenSvcNone,
+            user: "admin".to_string(),
+            port: "tty0".to_string(),
+            rem_address: "10.0.0.1".to_string(),
+            args: vec!["service=shell".to_string(), "cmd=show".to_string()],
+        }
+    }
+
+    fn test_reply() -> AccountingReply {
+        AccountingReply {
+            status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            server_msg: "OK".to_string(),
+            data: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_round_trip_without_obfuscation() {
+        let mock = MockTransport::new();
+        let coordinator = mock.coordinator();
+
+        coordinator
+            .add_accounting_reply_for_session_id(
+                TEST_SESSION_ID,
+                2,
+                &test_reply(),
+                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG
+                    | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+            )
+            .await
+            .unwrap();
+
+        let mut conn =
+            DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
+
+        let result = conn
+            .send_accounting(test_request(), TacacsFlags::empty())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.reply.status,
+            TacacsAccountingStatus::TacPlusAcctStatusSuccess
+        );
+        assert_eq!(result.reply.server_msg, "OK");
+        assert!(result.single_connect_supported);
+
+        // Verify the request was captured by the mock.
+        let requests = coordinator
+            .get_requests_for_session(TEST_SESSION_ID)
+            .await
+            .unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests.contains_key(&1));
+    }
+
+    #[tokio::test]
+    async fn test_single_connect_not_supported_when_flag_absent() {
+        let mock = MockTransport::new();
+        let coordinator = mock.coordinator();
+
+        // Server reply does NOT include the single-connect flag.
+        coordinator
+            .add_accounting_reply_for_session_id(
+                TEST_SESSION_ID,
+                2,
+                &test_reply(),
+                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            )
+            .await
+            .unwrap();
+
+        let mut conn =
+            DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
+
+        let result = conn
+            .send_accounting(test_request(), TacacsFlags::empty())
+            .await
+            .unwrap();
+
+        assert!(!result.single_connect_supported);
+    }
+
+    #[tokio::test]
+    async fn test_round_trip_with_obfuscation() {
+        let key = b"test_secret";
+        let mock = MockTransport::new();
+        let coordinator = mock.coordinator();
+
+        // The mock transport records and replays raw bytes without
+        // deobfuscation, so we must register an obfuscated reply.
+        let reply = test_reply();
+        let flags =
+            TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
+
+        coordinator
+            .add_obfuscated_accounting_reply_for_session_id(
+                TEST_SESSION_ID,
+                2,
+                &reply,
+                flags,
+                key,
+            )
+            .await
+            .unwrap();
+
+        let mut conn =
+            DedicatedConnection::new_with_session_id_fn(mock, Some(key), fixed_session_id);
+
+        let result = conn
+            .send_accounting(test_request(), TacacsFlags::empty())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.reply.status,
+            TacacsAccountingStatus::TacPlusAcctStatusSuccess
+        );
+        assert_eq!(result.reply.server_msg, "OK");
+        assert!(result.single_connect_supported);
+
+        // Verify the captured request was obfuscated (UNENCRYPTED flag cleared).
+        let requests = coordinator
+            .get_requests_for_session(TEST_SESSION_ID)
+            .await
+            .unwrap();
+        let captured = &requests[&1];
+        assert!(
+            !captured
+                .header()
+                .flags
+                .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG),
+            "captured request should be obfuscated"
+        );
+
+        // Deobfuscate and verify the body parses.
+        let deobfuscated = captured.clone().to_deobfuscated(key);
+        AccountingRequest::from_bytes(deobfuscated.body())
+            .expect("deobfuscated request body should parse");
+    }
+
+    #[tokio::test]
+    async fn test_header_mismatch_session_id_returns_error() {
+        let mock = MockTransport::new();
+        let coordinator = mock.coordinator();
+
+        // Register a reply under a DIFFERENT session_id.
+        let wrong_session_id = TEST_SESSION_ID.wrapping_add(1);
+        coordinator
+            .add_accounting_reply_for_session_id(
+                wrong_session_id,
+                2,
+                &test_reply(),
+                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            )
+            .await
+            .unwrap();
+
+        // Also register under the real session_id with wrong seq_no=2 but
+        // using the wrong session_id in the packet header, by providing raw
+        // reply bytes with a mismatched session_id.
+        let reply_body = test_reply().to_bytes();
+        let bad_reply = tacacsrs_messages::packet::Packet::new(
+            tacacsrs_messages::header::Header {
+                major_version: tacacsrs_messages::enumerations::TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: tacacsrs_messages::enumerations::TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                tacacs_type: tacacsrs_messages::enumerations::TacacsType::TacPlusAccounting,
+                seq_no: 2,
+                flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                session_id: wrong_session_id,
+                length: reply_body.len() as u32,
+            },
+            reply_body,
+        )
+        .unwrap();
+
+        // Register the bad reply under the correct session_id so the mock
+        // write processor will find and deliver it.
+        coordinator
+            .add_reply_bytes(TEST_SESSION_ID, 2, bad_reply.to_bytes())
+            .await
+            .unwrap();
+
+        let mut conn =
+            DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
+
+        let result = conn
+            .send_accounting(test_request(), TacacsFlags::empty())
+            .await;
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("unexpected TACACS+ accounting response header"),
+            "error should mention header mismatch, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_header_mismatch_seq_no_returns_error() {
+        let mock = MockTransport::new();
+        let coordinator = mock.coordinator();
+
+        // Register a reply with seq_no=3 (wrong; expected 2), keyed on
+        // the correct session_id + seq_no=2 so the mock delivers it.
+        let reply_body = test_reply().to_bytes();
+        let bad_reply = tacacsrs_messages::packet::Packet::new(
+            tacacsrs_messages::header::Header {
+                major_version: tacacsrs_messages::enumerations::TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: tacacsrs_messages::enumerations::TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                tacacs_type: tacacsrs_messages::enumerations::TacacsType::TacPlusAccounting,
+                seq_no: 3,
+                flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                session_id: TEST_SESSION_ID,
+                length: reply_body.len() as u32,
+            },
+            reply_body,
+        )
+        .unwrap();
+
+        coordinator
+            .add_reply_bytes(TEST_SESSION_ID, 2, bad_reply.to_bytes())
+            .await
+            .unwrap();
+
+        let mut conn =
+            DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
+
+        let result = conn
+            .send_accounting(test_request(), TacacsFlags::empty())
+            .await;
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("unexpected TACACS+ accounting response header"),
+            "error should mention header mismatch, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_custom_flags_are_set_on_outgoing_packet() {
+        let mock = MockTransport::new();
+        let coordinator = mock.coordinator();
+
+        coordinator
+            .add_accounting_reply_for_session_id(
+                TEST_SESSION_ID,
+                2,
+                &test_reply(),
+                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            )
+            .await
+            .unwrap();
+
+        let mut conn =
+            DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
+
+        let custom = TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1 | TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
+        let result = conn
+            .send_accounting(test_request(), custom)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.reply.status,
+            TacacsAccountingStatus::TacPlusAcctStatusSuccess
+        );
+
+        // Verify the captured request has both custom flags and the
+        // single-connect flag set.
+        let requests = coordinator
+            .get_requests_for_session(TEST_SESSION_ID)
+            .await
+            .unwrap();
+        let captured = &requests[&1];
+        let flags = captured.header().flags;
+        assert!(flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1));
+        assert!(flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2));
+        assert!(flags.contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
     }
 }
