@@ -57,6 +57,7 @@ impl MockTransport {
     ///
     /// After construction, call [`coordinator()`](Self::coordinator) to get a handle
     /// for configuring replies and inspecting captured requests.
+    #[must_use]
     pub fn new() -> Self {
         // This channel carries reply bytes from the write processor → MockReadHalf.
         let (read_tx, read_rx) = mpsc::unbounded_channel();
@@ -75,6 +76,7 @@ impl MockTransport {
     /// has already started processing.
     ///
     /// Multiple coordinators may be created; they all share the same underlying state.
+    #[must_use]
     pub fn coordinator(&self) -> MockTransportCoordinator {
         MockTransportCoordinator {
             state: Arc::clone(&self.state),
@@ -254,6 +256,7 @@ mod tests {
     }
 
     /// Helper: creates a complete TACACS+ Packet for testing.
+    #[allow(clippy::cast_possible_truncation)] // test data is small
     fn test_packet(session_id: u32, seq_no: u8, body: Vec<u8>) -> Packet {
         let header = test_header(session_id, seq_no, body.len() as u32);
         Packet::new(header, body).unwrap()
@@ -433,9 +436,9 @@ mod tests {
         let transport = MockTransport::new();
         let coordinator = transport.coordinator();
 
-        let req_a = test_packet(6000, 1, vec![0xAA]);
+        let request_a = test_packet(6000, 1, vec![0xAA]);
         let reply_a = test_packet(6000, 2, vec![0xA1]);
-        let req_b = test_packet(7000, 1, vec![0xBB]);
+        let request_b = test_packet(7000, 1, vec![0xBB]);
         let reply_b = test_packet(7000, 2, vec![0xB1]);
 
         coordinator.add_reply(reply_a.clone()).await.unwrap();
@@ -444,8 +447,8 @@ mod tests {
         let (mut read_half, mut write_half) = transport.split();
 
         // Write both requests.
-        write_half.write_all(&req_a.to_bytes()).await.unwrap();
-        write_half.write_all(&req_b.to_bytes()).await.unwrap();
+        write_half.write_all(&request_a.to_bytes()).await.unwrap();
+        write_half.write_all(&request_b.to_bytes()).await.unwrap();
 
         // Read both replies (order matches write order).
         let mut buf_a = vec![0u8; reply_a.to_bytes().len()];
@@ -457,10 +460,10 @@ mod tests {
         assert_eq!(buf_b, reply_b.to_bytes());
 
         // Each session should have its own captured request.
-        let reqs_a = coordinator.get_requests_for_session(6000).await.unwrap();
-        assert_eq!(reqs_a.len(), 1);
-        let reqs_b = coordinator.get_requests_for_session(7000).await.unwrap();
-        assert_eq!(reqs_b.len(), 1);
+        let captured_a = coordinator.get_requests_for_session(6000).await.unwrap();
+        assert_eq!(captured_a.len(), 1);
+        let captured_b = coordinator.get_requests_for_session(7000).await.unwrap();
+        assert_eq!(captured_b.len(), 1);
     }
 
     // ── Delayed replies ──────────────────────────────────────────────

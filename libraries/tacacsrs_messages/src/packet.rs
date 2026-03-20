@@ -13,20 +13,22 @@ pub struct Packet {
 }
 
 impl Packet {
+    /// # Errors
+    /// Returns an error if the body is shorter than the length declared in the header.
     pub fn new(header: Header, body: Vec<u8>) -> anyhow::Result<Self> {
         if body.len() < (header.length as usize) {
             let expected_length = header.length as usize;
             let actual_length = body.len();
             let error_message = format!(
-                "Invalid body length. Expected: {}, Actual: {}",
-                expected_length, actual_length
+                "Invalid body length. Expected: {expected_length}, Actual: {actual_length}"
             );
             return Err(anyhow::Error::msg(error_message));
         }
 
-        Ok(Packet { header, body })
+        Ok(Self { header, body })
     }
 
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.header.length as usize);
         bytes.extend_from_slice(&self.header.to_bytes());
@@ -34,12 +36,17 @@ impl Packet {
         bytes
     }
 
+    /// # Errors
+    /// Returns an error if the header cannot be parsed.
     pub fn from_bytes(data: &[u8]) -> anyhow::Result<Self> {
         let header = Header::from_bytes(data)?;
         let body = data[TACACS_HEADER_LENGTH..].to_vec();
-        Ok(Packet { header, body })
+        Ok(Self { header, body })
     }
 
+    /// # Panics
+    /// Panics if the obfuscated body length is inconsistent with the header.
+    #[must_use]
     pub fn as_obfuscated(&self, obfuscation_key: &[u8]) -> Option<Self> {
         let is_obfuscated = !self
             .header
@@ -55,9 +62,12 @@ impl Packet {
             .remove(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
 
         let obfuscated_body = convert(&self.header, &self.body, obfuscation_key);
-        Some(Packet::new(cloned_header, obfuscated_body).unwrap())
+        Some(Self::new(cloned_header, obfuscated_body).unwrap())
     }
 
+    /// # Panics
+    /// Panics if the deobfuscated body length is inconsistent with the header.
+    #[must_use]
     pub fn as_deobfuscated(&self, obfuscation_key: &[u8]) -> Option<Self> {
         let is_deobfuscated = self
             .header
@@ -73,41 +83,37 @@ impl Packet {
             .insert(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
 
         let deobfuscated_body = convert(&self.header, &self.body, obfuscation_key);
-        Some(Packet::new(cloned_header, deobfuscated_body).unwrap())
+        Some(Self::new(cloned_header, deobfuscated_body).unwrap())
     }
 
+    #[must_use]
     pub fn to_obfuscated(mut self, obfuscation_key: &[u8]) -> Self {
         let is_obfuscated = !self
             .header
             .flags
             .contains(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
-        match is_obfuscated {
-            true => self,
-            false => {
-                self.header
-                    .flags
-                    .set(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, false);
-                convert_inplace(&self.header, &mut self.body, obfuscation_key);
-                self
-            }
+        if !is_obfuscated {
+            self.header
+                .flags
+                .set(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, false);
+            convert_inplace(&self.header, &mut self.body, obfuscation_key);
         }
+        self
     }
 
+    #[must_use]
     pub fn to_deobfuscated(mut self, obfuscation_key: &[u8]) -> Self {
         let is_deobfuscated = self
             .header
             .flags
             .contains(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
-        match is_deobfuscated {
-            true => self,
-            false => {
-                self.header
-                    .flags
-                    .set(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, true);
-                convert_inplace(&self.header, &mut self.body, obfuscation_key);
-                self
-            }
+        if !is_deobfuscated {
+            self.header
+                .flags
+                .set(crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, true);
+            convert_inplace(&self.header, &mut self.body, obfuscation_key);
         }
+        self
     }
 }
 

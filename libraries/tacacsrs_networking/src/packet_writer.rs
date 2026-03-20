@@ -74,7 +74,7 @@ pub trait PacketWriterTrait: Send + Sync {
         loop {
             let packet = tokio::select! {
                 // Wait for close signal
-                _ = connection.wait_for_close() => {
+                () = connection.wait_for_close() => {
                     log::info!(
                         target: "tacacsrs_networking::packet_writer::run_write_loop",
                         "Received close signal. Shutting down write handler."
@@ -86,16 +86,13 @@ pub trait PacketWriterTrait: Send + Sync {
 
                 // Wait for packet to send
                 packet = receiver.recv() => {
-                    match packet {
-                        Some(packet) => packet,
-                        None => {
-                            log::info!(
-                                target: "tacacsrs_networking::packet_writer::run_write_loop",
-                                "Channel closed. Shutting down write handler."
-                            );
-                            let _ = writer.shutdown().await;
-                            return Ok(())
-                        }
+                    if let Some(packet) = packet { packet } else {
+                        log::info!(
+                            target: "tacacsrs_networking::packet_writer::run_write_loop",
+                            "Channel closed. Shutting down write handler."
+                        );
+                        let _ = writer.shutdown().await;
+                        return Ok(())
                     }
                 }
             };
@@ -104,23 +101,20 @@ pub trait PacketWriterTrait: Send + Sync {
 
             log::info!(
                 target: "tacacsrs_networking::packet_writer::run_write_loop",
-                "Received packet for session id {} to send to network",
-                session_id
+                "Received packet for session id {session_id} to send to network"
             );
 
             match self.write_packet(writer, packet).await {
                 PacketWriteResult::Success => {
                     log::info!(
                         target: "tacacsrs_networking::packet_writer::run_write_loop",
-                        "Sent packet for session id {} to network",
-                        session_id
+                        "Sent packet for session id {session_id} to network"
                     );
                 }
                 PacketWriteResult::WriteError(e) => {
                     log::error!(
                         target: "tacacsrs_networking::packet_writer::run_write_loop",
-                        "Failed to write packet for session id {} due to error: {}",
-                        session_id, e
+                        "Failed to write packet for session id {session_id} due to error: {e}"
                     );
                     return Err(anyhow::Error::msg(e.to_string()));
                 }
@@ -148,7 +142,8 @@ impl PacketWriter {
     /// # Arguments
     /// * `obfuscation_key` - Optional key used to obfuscate outgoing packets.
     ///   If `None`, packets are sent unencrypted.
-    pub fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
+    #[must_use]
+    pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
         Self { obfuscation_key }
     }
 }
@@ -167,8 +162,7 @@ impl PacketWriterTrait for PacketWriter {
                 packet = packet.to_obfuscated(key);
                 log::info!(
                     target: "tacacsrs_networking::packet_writer::prepare_packet",
-                    "Obfuscated packet for session id {}",
-                    session_id
+                    "Obfuscated packet for session id {session_id}"
                 );
             }
         }
@@ -185,7 +179,7 @@ impl PacketWriterTrait for PacketWriter {
         let bytes = packet.to_bytes();
 
         match writer.write_all(&bytes).await {
-            Ok(_) => PacketWriteResult::Success,
+            Ok(()) => PacketWriteResult::Success,
             Err(e) => PacketWriteResult::WriteError(e),
         }
     }
@@ -212,6 +206,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)] // test data is small
     fn create_test_packet(session_id: u32, body: Vec<u8>, flags: TacacsFlags) -> Packet {
         let header = create_test_header(session_id, body.len() as u32, flags);
         Packet::new(header, body).unwrap()

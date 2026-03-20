@@ -7,6 +7,6 @@ impl Transport for TcpStream {
     type WriteHalf = tokio::net::tcp::OwnedWriteHalf;
 
     fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
-        TcpStream::into_split(self)
+        Self::into_split(self)
     }
 }

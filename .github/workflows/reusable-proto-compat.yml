@@ -1,0 +1,30 @@
+name: Reusable Protobuf Compatibility
+
+on:
+  workflow_call:
+    inputs:
+      against-ref:
+        description: 'Git ref to check backward compatibility against'
+        required: false
+        default: 'main'
+        type: string
+      continue-on-error:
+        description: 'Whether to allow this check to fail without failing the workflow'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  proto-compat:
+    name: Protobuf Compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: bufbuild/buf-setup-action@v1
+
+      - name: Check protobuf backward compatibility
+        run: buf breaking --against '.git#branch=${{ inputs.against-ref }}'
+        continue-on-error: ${{ inputs.continue-on-error }}

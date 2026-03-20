@@ -8,16 +8,27 @@ on:
         required: false
         default: true
         type: boolean
+      os-matrix:
+        description: 'JSON array of OS runners'
+        required: false
+        default: '["ubuntu-latest", "windows-latest"]'
+        type: string
 
 jobs:
   docs:
-    name: Documentation
-    runs-on: ubuntu-latest
+    name: Documentation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJson(inputs.os-matrix) }}
     steps:
       - uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
+        with:
+          cache-key: docs-${{ matrix.os }}
 
       - name: Build documentation
         env:

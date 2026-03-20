@@ -108,6 +108,9 @@ where
     /// The outgoing packet always includes `TAC_PLUS_SINGLE_CONNECT_FLAG`.
     /// If the server echoes the flag in its response, the caller knows it
     /// can switch to a shared multiplexed connection for future requests.
+    /// # Errors
+    /// Returns an error if the exchange fails (write, read, header mismatch, or parse failure).
+    #[allow(clippy::cast_possible_truncation)] // body length bounded by u8 field sizes
     pub async fn send_accounting(
         &mut self,
         request: AccountingRequest,

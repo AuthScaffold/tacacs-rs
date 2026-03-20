@@ -13,11 +13,20 @@ on:
         required: false
         default: true
         type: boolean
+      os-matrix:
+        description: 'JSON array of OS runners'
+        required: false
+        default: '["ubuntu-latest", "windows-latest"]'
+        type: string
 
 jobs:
   clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
+    name: Clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJson(inputs.os-matrix) }}
     steps:
       - uses: actions/checkout@v6
 
@@ -26,6 +35,7 @@ jobs:
         with:
           toolchain: ${{ inputs.toolchain }}
           components: clippy
+          cache-key: clippy-${{ matrix.os }}
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features ${{ inputs.deny-warnings && '-- -D warnings' || '' }}

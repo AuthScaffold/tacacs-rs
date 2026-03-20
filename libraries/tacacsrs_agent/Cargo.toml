@@ -22,9 +22,5 @@ tonic = "0.14.5"
 default = []
 psk = ["tacacsrs-networking/psk"]
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
+[lints]
+workspace = true

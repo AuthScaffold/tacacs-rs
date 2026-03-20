@@ -44,20 +44,23 @@ impl<'a> MockAccountingReplyBuilder<'a> {
     ///
     /// By default the builder uses [`TAC_PLUS_UNENCRYPTED_FLAG`](TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG).
     /// Calling this **replaces** the flags entirely.
-    pub fn with_flags(mut self, flags: TacacsFlags) -> Self {
+    #[must_use]
+    pub const fn with_flags(mut self, flags: TacacsFlags) -> Self {
         self.flags = flags;
         self
     }
 
     /// Adds [`TAC_PLUS_SINGLE_CONNECT_FLAG`](TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG)
     /// to the reply packet header flags.
+    #[must_use]
     pub fn with_single_connect(mut self) -> Self {
         self.flags |= TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
         self
     }
 
     /// Delivers the reply after `delay` instead of immediately.
-    pub fn with_delay(mut self, delay: Duration) -> Self {
+    #[must_use]
+    pub const fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = Some(delay);
         self
     }
@@ -67,12 +70,15 @@ impl<'a> MockAccountingReplyBuilder<'a> {
     /// The mock transport replays raw bytes without deobfuscation, so
     /// an obfuscated reply must be pre-obfuscated to match what a real
     /// TACACS+ server would send.
-    pub fn with_obfuscation_key(mut self, key: &'a [u8]) -> Self {
+    #[must_use]
+    pub const fn with_obfuscation_key(mut self, key: &'a [u8]) -> Self {
         self.obfuscation_key = Some(key);
         self
     }
 
     /// Builds the accounting reply packet and registers it on the coordinator.
+    /// # Errors
+    /// Returns an error if the reply packet cannot be constructed.
     pub async fn send(self) -> anyhow::Result<()> {
         let coordinator = self.coordinator;
         let delay = self.delay;
@@ -90,6 +96,9 @@ impl<'a> MockAccountingReplyBuilder<'a> {
     /// This is useful when a test needs to register the packet under a
     /// different session ID or sequence number than the one in the header
     /// (e.g. to test header-mismatch error handling).
+    /// # Errors
+    /// Returns an error if the reply packet cannot be constructed.
+    #[allow(clippy::cast_possible_truncation)] // body length bounded by u16 field sizes
     pub fn build(self) -> anyhow::Result<Packet> {
         let data = self.reply.to_bytes();
         let mut packet = Packet::new(
@@ -125,7 +134,7 @@ impl<'a> MockAccountingReplyBuilder<'a> {
 ///
 /// All methods acquire the shared async mutex, so it is safe to call these
 /// **while the connection is running** (e.g. to add a reply mid-conversation).
-/// The mutex is held only for the duration of the HashMap insert/lookup.
+/// The mutex is held only for the duration of the `HashMap` insert/lookup.
 #[derive(Clone, Debug)]
 pub struct MockTransportCoordinator {
     /// Shared state with the write processor task.
@@ -137,6 +146,8 @@ impl MockTransportCoordinator {
     /// receives a request for the same `session_id` with `seq_no - 1`.
     ///
     /// The session ID and sequence number are extracted from the packet header.
+    /// # Errors
+    /// Returns an error if the packet header cannot be read.
     pub async fn add_reply(&self, reply: Packet) -> anyhow::Result<()> {
         let session_id = reply.header().session_id;
         let seq_no = reply.header().seq_no;
@@ -156,6 +167,8 @@ impl MockTransportCoordinator {
     /// * `session_id` — the TACACS+ session ID the reply belongs to.
     /// * `seq_no` — the sequence number of the reply (must be `request_seq + 1`).
     /// * `reply_bytes` — the complete serialised packet bytes.
+    /// # Errors
+    /// This method is infallible but returns `Result` for API consistency.
     pub async fn add_reply_bytes(
         &self,
         session_id: u32,
@@ -175,6 +188,7 @@ impl MockTransportCoordinator {
                 delay: None,
             },
         );
+        drop(state);
         Ok(())
     }
 
@@ -182,6 +196,8 @@ impl MockTransportCoordinator {
     ///
     /// Useful for testing timeout behaviour — the write processor spawns a task
     /// that sleeps for `delay` before sending the reply bytes.
+    /// # Errors
+    /// This method is infallible but returns `Result` for API consistency.
     pub async fn add_reply_with_delay(&self, reply: Packet, delay: Duration) -> anyhow::Result<()> {
         log::info!(
             "mock coordinator: registering delayed reply ({delay:?}) for session {} seq_no {}",
@@ -197,6 +213,7 @@ impl MockTransportCoordinator {
                 delay: Some(delay),
             },
         );
+        drop(state);
         Ok(())
     }
 
@@ -208,7 +225,7 @@ impl MockTransportCoordinator {
     /// * `session` — provides the session ID for the reply.
     /// * `reply_sequence_number` — the sequence number for the reply.
     /// * `reply` — the accounting reply body.
-    pub fn accounting_reply<'a>(
+    pub const fn accounting_reply<'a>(
         &'a self,
         session: &Session,
         reply_sequence_number: u8,
@@ -232,7 +249,8 @@ impl MockTransportCoordinator {
     /// for callers that do not have a [`Session`] reference — e.g. when
     /// testing [`DedicatedConnection`](crate::DedicatedConnection) with a
     /// predetermined session ID.
-    pub fn accounting_reply_for_id<'a>(
+    #[must_use]
+    pub const fn accounting_reply_for_id<'a>(
         &'a self,
         session_id: u32,
         reply_sequence_number: u8,
@@ -269,7 +287,9 @@ impl MockTransportCoordinator {
     ) -> anyhow::Result<HashMap<u8, Packet>> {
         let state = self.state.lock().await;
         let result = state.requests.get(&session_id).cloned();
-        let count = result.as_ref().map_or(0, |m| m.len());
+        drop(state);
+
+        let count = result.as_ref().map_or(0, std::collections::HashMap::len);
         log::debug!(
             "mock coordinator: get_requests_for_session({session_id}) → {count} request(s)"
         );
@@ -292,9 +312,17 @@ impl MockTransportCoordinator {
         session_id: u32,
     ) -> anyhow::Result<HashMap<u8, Packet>> {
         let state = self.state.lock().await;
-        let configured = state.replies.get(&session_id).ok_or_else(|| {
-            anyhow::anyhow!("No replies configured for session {session_id} (session not found)")
-        })?;
+        let configured = state
+            .replies
+            .get(&session_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No replies configured for session {session_id} (session not found)"
+                )
+            })?
+            .clone();
+        drop(state);
+
         log::debug!(
             "mock coordinator: get_replies_for_session({session_id}) → {} unconsumed reply(ies)",
             configured.len()

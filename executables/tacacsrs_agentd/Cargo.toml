@@ -21,9 +21,5 @@ default = []
 console = ["console-subscriber"]
 psk = ["tacacsrs-agent/psk"]
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
+[lints]
+workspace = true

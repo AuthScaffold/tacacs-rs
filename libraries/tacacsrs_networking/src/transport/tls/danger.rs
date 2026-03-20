@@ -13,7 +13,7 @@ use tokio_rustls::rustls::DigitallySignedStruct;
 pub struct NoCertificateVerification(CryptoProvider);
 
 impl NoCertificateVerification {
-    pub fn new(provider: CryptoProvider) -> Self {
+    pub const fn new(provider: CryptoProvider) -> Self {
         Self(provider)
     }
 }

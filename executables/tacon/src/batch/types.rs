@@ -71,7 +71,7 @@ pub struct LoadTestConfig {
     pub max_parallel: usize,
 }
 
-fn default_max_parallel() -> usize {
+const fn default_max_parallel() -> usize {
     10
 }
 
@@ -100,7 +100,7 @@ impl BatchRequest {
     }
 
     /// Returns the optional custom session ID for this request
-    pub fn session_id(&self) -> Option<u32> {
+    pub const fn session_id(&self) -> Option<u32> {
         match self {
             Self::Accounting(req) => req.session_id,
             Self::Authentication(req) => req.session_id,
@@ -238,7 +238,7 @@ pub struct LoadTestResult {
 
 impl LoadTestResult {
     /// Returns true if the load test completed without failures
-    pub fn is_success(&self) -> bool {
+    pub const fn is_success(&self) -> bool {
         self.first_failure.is_none()
     }
 }

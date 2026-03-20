@@ -11,7 +11,7 @@ pub struct Session {
 
     pub current_sequence_number: RwLock<u8>,
     pub session_complete: RwLock<bool>,
-    session_manager: Option<Arc<SessionManager>>,
+    manager: Option<Arc<SessionManager>>,
 }
 
 
@@ -23,18 +23,18 @@ impl Session {
     pub fn new_with_manager(
         session_id: u32,
         duplex_channel: DuplexChannel,
-        session_manager: Option<Arc<SessionManager>>,
+        manager: Option<Arc<SessionManager>>,
     ) -> Self {
         Self {
             session_id,
             duplex_channel,
             current_sequence_number: 1_u8.into(),
             session_complete: false.into(),
-            session_manager,
+            manager,
         }
     }
 
-    pub fn session_id(&self) -> u32 {
+    pub const fn session_id(&self) -> u32 {
         self.session_id
     }
 
@@ -52,13 +52,13 @@ impl Session {
         drop(session_complete_lock);
 
         // Notify the session manager to remove this session from the registry
-        if let Some(manager) = &self.session_manager {
-            manager.remove_session(self.session_id).await;
+        if let Some(mgr) = &self.manager {
+            mgr.remove_session(self.session_id).await;
         }
     }
 
     pub async fn is_complete(&self) -> bool {
-        if self.duplex_channel.sender_closed().await {
+        if self.duplex_channel.sender_closed() {
             return true;
         }
 
@@ -112,22 +112,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_complete_network_closed() {
-        let (network_sender, _network_receiver) = mpsc::channel::<Packet>(32);
-        let (_client_sender, client_receiver) = mpsc::channel::<Packet>(32);
+        let (network_sender, network_receiver) = mpsc::channel::<Packet>(32);
+        let (client_sender, client_receiver) = mpsc::channel::<Packet>(32);
         let duplex_channel = DuplexChannel::new(client_receiver, network_sender);
 
         let session = Session::new(1, duplex_channel);
         assert!(!(session.is_complete().await));
 
         // Close the client sender, this should propagate to the session
-        drop(_client_sender);
+        drop(client_sender);
 
         // session is complete because the client sender is closed
         assert!(session.is_complete().await);
 
         // the client sender is still open because it'll be used by many sessions
-        assert!(!_network_receiver.is_closed());
-        assert!(!(session.duplex_channel.sender_closed().await));
+        assert!(!network_receiver.is_closed());
+        assert!(!(session.duplex_channel.sender_closed()));
 
         // the client receiver is closed
         assert!(session.duplex_channel.receiver_closed().await);

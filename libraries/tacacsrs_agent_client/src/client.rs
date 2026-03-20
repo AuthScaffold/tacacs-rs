@@ -93,7 +93,7 @@ impl ServiceClient {
     ///
     /// No connection is established until a request method is called.
     #[must_use]
-    pub fn new(endpoint: IpcEndpoint) -> Self {
+    pub const fn new(endpoint: IpcEndpoint) -> Self {
         Self { endpoint }
     }
 

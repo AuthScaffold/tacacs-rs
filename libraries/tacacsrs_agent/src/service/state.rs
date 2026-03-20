@@ -548,7 +548,8 @@ impl ServiceState {
     /// [`tacacsrs_agent_client::ServiceError`] for
     /// the affected IPC request.
     async fn ensure_connection(&self, index: usize) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        if let Some(existing) = self.servers[index].connection.read().await.clone() {
+        let existing_conn = self.servers[index].connection.read().await.clone();
+        if let Some(existing) = existing_conn {
             if existing.is_usable_for_new_sessions().await {
                 log::debug!(
                     "Reusing cached upstream connection for {}",
@@ -568,7 +569,8 @@ impl ServiceState {
             .load(Ordering::Acquire);
         let _connect_guard = self.servers[index].connect_lock.lock().await;
 
-        if let Some(existing) = self.servers[index].connection.read().await.clone() {
+        let existing_conn = self.servers[index].connection.read().await.clone();
+        if let Some(existing) = existing_conn {
             if existing.is_usable_for_new_sessions().await {
                 log::debug!(
                     "Reusing cached upstream connection for {} after waiting on another reconnect",
@@ -838,7 +840,7 @@ mod tests {
             }),
         });
         let state =
-            ServiceState::new(vec!["server:49".to_owned()], connector, Duration::from_mins(1));
+            ServiceState::new(vec!["server:49".to_owned()], connector, Duration::from_secs(60));
 
         // No requests in flight — drain should return immediately.
         tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients())
@@ -858,7 +860,7 @@ mod tests {
         let state = Arc::new(ServiceState::new(
             vec!["server:49".to_owned()],
             connector,
-            Duration::from_mins(1),
+            Duration::from_secs(60),
         ));
         state.warm_connections().await;
 
@@ -908,7 +910,7 @@ mod tests {
         let state = Arc::new(ServiceState::new(
             vec!["server:49".to_owned()],
             connector,
-            Duration::from_mins(1),
+            Duration::from_secs(60),
         ));
         state.warm_connections().await;
 

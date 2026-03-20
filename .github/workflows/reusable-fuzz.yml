@@ -1,0 +1,43 @@
+name: Reusable Fuzz
+
+on:
+  workflow_call:
+    inputs:
+      fuzz-seconds:
+        description: 'Seconds to run each fuzz target'
+        required: false
+        default: 30
+        type: number
+      continue-on-error:
+        description: 'Whether to allow this check to fail without failing the workflow'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  fuzz:
+    name: Fuzz Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: nightly
+          cache-key: fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz header parsing
+        run: cargo +nightly fuzz run fuzz_header_parse -- -max_total_time=${{ inputs.fuzz-seconds }}
+        continue-on-error: ${{ inputs.continue-on-error }}
+
+      - name: Fuzz accounting request parsing
+        run: cargo +nightly fuzz run fuzz_accounting_request_parse -- -max_total_time=${{ inputs.fuzz-seconds }}
+        continue-on-error: ${{ inputs.continue-on-error }}
+
+      - name: Fuzz accounting reply parsing
+        run: cargo +nightly fuzz run fuzz_accounting_reply_parse -- -max_total_time=${{ inputs.fuzz-seconds }}
+        continue-on-error: ${{ inputs.continue-on-error }}

@@ -40,7 +40,7 @@ impl MockWriteHalf {
     /// Note: the processor task is not kept alive by the handle; it will keep
     /// running until it completes or the `write_tx` channel is closed, at which
     /// point it exits on its next `recv().await`.
-    pub(super) fn new(
+    pub(super) const fn new(
         write_tx: mpsc::UnboundedSender<Vec<u8>>,
         processor_handle: JoinHandle<()>,
     ) -> Self {

@@ -84,11 +84,13 @@ impl PskIdentity {
     }
 
     /// Returns the PSK identity string.
+    #[must_use]
     pub fn identity(&self) -> &str {
         &self.identity
     }
 
     /// Returns the PSK key bytes.
+    #[must_use]
     pub fn key(&self) -> &[u8] {
         &self.key
     }

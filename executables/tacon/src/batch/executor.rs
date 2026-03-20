@@ -398,7 +398,7 @@ pub async fn execute_load_test(
     // Wait for progress display to finish
     let failure_msg = tracker.finish().await;
 
-    build_load_test_result(start_time, total_requests, &results, failure_msg)
+    Ok(build_load_test_result(start_time, total_requests, &results, failure_msg))
 }
 
 /// Probes the server to check for single-connection support
@@ -508,13 +508,12 @@ async fn execute_load_test_single(
 }
 
 /// Builds the final load test result from execution data
-#[allow(clippy::unnecessary_wraps)]
 fn build_load_test_result(
     start_time: Instant,
     total_requests: usize,
     results: &[bool],
     failure_msg: Option<String>,
-) -> anyhow::Result<LoadTestResult> {
+) -> LoadTestResult {
     let duration = start_time.elapsed();
     let successful_requests = results.iter().filter(|&&r| r).count();
     let failed_requests = usize::from(failure_msg.is_some());
@@ -525,14 +524,14 @@ fn build_load_test_result(
         0.0
     };
 
-    Ok(LoadTestResult {
+    LoadTestResult {
         total_requests,
         successful_requests,
         failed_requests,
         duration,
         first_failure: failure_msg,
         requests_per_second,
-    })
+    }
 }
 
 pub async fn execute_batch_via_service(
@@ -658,7 +657,7 @@ async fn execute_batch_load_test_via_service(
     .await;
 
     let failure_msg = tracker.finish().await;
-    let result = build_load_test_result(start_time, total_requests, &results, failure_msg)?;
+    let result = build_load_test_result(start_time, total_requests, &results, failure_msg);
     print_load_test_summary(&result);
 
     if result.is_success() {
@@ -890,7 +889,7 @@ async fn execute_batch_load_test_dedicated(
         .await;
 
     let failure_msg = tracker.finish().await;
-    let result = build_load_test_result(start_time, total_requests, &results, failure_msg)?;
+    let result = build_load_test_result(start_time, total_requests, &results, failure_msg);
     print_load_test_summary(&result);
 
     if result.is_success() {

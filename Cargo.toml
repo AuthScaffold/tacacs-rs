@@ -8,12 +8,40 @@ members = [
     "executables/tacon",
     "executables/tacacsrs_agentd"
 ]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/AuthScaffold/tacacs-rs"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+
+[workspace.lints.clippy]
+# Lint groups (low priority so individual overrides win).
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# --- Workspace-wide allows for genuinely opinionated lints ---
+
+# Style preferences — not worth fighting over.
+module_name_repetitions = "allow"
+option_if_let_else = "allow"
+redundant_pub_crate = "allow"
+significant_drop_tightening = "allow"
+
+# Const-fn promotion is still unstable for many patterns; revisit when stable.
+missing_const_for_fn = "allow"
+
+# Transitive dependency version conflicts are outside our control.
+multiple_crate_versions = "allow"
+# Internal workspace crates don't need full crates.io metadata.
+cargo_common_metadata = "allow"
 
 # Release profile with debug symbols for crash analysis
 [profile.release]

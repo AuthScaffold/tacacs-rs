@@ -40,7 +40,8 @@ impl PskConfigurationBuilder {
     /// # Arguments
     ///
     /// * `psk` - The pre-shared key identity and secret to use for authentication
-    pub fn new(psk: PskIdentity) -> Self {
+    #[must_use]
+    pub const fn new(psk: PskIdentity) -> Self {
         Self {
             psk,
             server_name: None,
@@ -56,6 +57,7 @@ impl PskConfigurationBuilder {
     /// # Arguments
     ///
     /// * `server_name` - The server hostname for SNI
+    #[must_use]
     pub fn with_server_name(mut self, server_name: impl Into<String>) -> Self {
         self.server_name = Some(server_name.into());
         self
@@ -68,6 +70,7 @@ impl PskConfigurationBuilder {
     /// # Arguments
     ///
     /// * `ciphersuites` - Colon-separated list of TLS 1.3 cipher suite names
+    #[must_use]
     pub fn with_ciphersuites(mut self, ciphersuites: impl Into<String>) -> Self {
         self.ciphersuites = Some(ciphersuites.into());
         self
