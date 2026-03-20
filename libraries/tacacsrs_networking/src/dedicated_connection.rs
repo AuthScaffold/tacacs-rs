@@ -40,26 +40,36 @@ pub struct ExchangeResult {
 /// type spawns no background tasks and performs no session multiplexing.
 /// It writes one packet, reads one response, and reports whether the
 /// server supports single-connection mode.
-pub struct DedicatedConnection {
-    reader_half: Box<dyn AsyncRead + Unpin + Send>,
-    writer_half: Box<dyn AsyncWrite + Unpin + Send>,
+///
+/// The struct is generic over the transport's read and write half types,
+/// avoiding dynamic dispatch and extra allocations.
+pub struct DedicatedConnection<R, W> {
+    reader_half: R,
+    writer_half: W,
     reader: PacketReader,
     writer: PacketWriter,
 }
 
-impl DedicatedConnection {
+impl<R, W> DedicatedConnection<R, W>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
     /// Creates a new dedicated connection by splitting a [`Transport`] into
     /// its read and write halves.
     ///
     /// If `obfuscation_key` is provided, outgoing packets are obfuscated
     /// and incoming packets are deobfuscated using the TACACS+ MD5-based
     /// XOR pad.
-    pub fn new(transport: impl Transport, obfuscation_key: Option<&[u8]>) -> Self {
+    pub fn new<T>(transport: T, obfuscation_key: Option<&[u8]>) -> Self
+    where
+        T: Transport<ReadHalf = R, WriteHalf = W>,
+    {
         let key = obfuscation_key.map(<[u8]>::to_vec);
         let (reader_half, writer_half) = transport.split();
         Self {
-            reader_half: Box::new(reader_half),
-            writer_half: Box::new(writer_half),
+            reader_half,
+            writer_half,
             reader: PacketReader::new(key.clone()),
             writer: PacketWriter::new(key),
         }
