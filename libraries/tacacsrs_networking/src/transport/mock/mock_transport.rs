@@ -256,6 +256,7 @@ mod tests {
     }
 
     /// Helper: creates a complete TACACS+ Packet for testing.
+    #[allow(clippy::cast_possible_truncation)] // test data is small
     fn test_packet(session_id: u32, seq_no: u8, body: Vec<u8>) -> Packet {
         let header = test_header(session_id, seq_no, body.len() as u32);
         Packet::new(header, body).unwrap()

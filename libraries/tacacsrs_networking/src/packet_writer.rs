@@ -206,6 +206,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)] // test data is small
     fn create_test_packet(session_id: u32, body: Vec<u8>, flags: TacacsFlags) -> Packet {
         let header = create_test_header(session_id, body.len() as u32, flags);
         Packet::new(header, body).unwrap()

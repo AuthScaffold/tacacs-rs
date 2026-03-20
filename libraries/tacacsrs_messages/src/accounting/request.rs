@@ -97,6 +97,8 @@ impl AccountingRequest {
     }
 
     fn read_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<String, anyhow::Error> {
+        // Cursor position is bounded by packet data length which fits in usize.
+        #[allow(clippy::cast_possible_truncation)]
         let remaining_buffer = cursor.get_ref().len() - cursor.position() as usize;
         if remaining_buffer < len {
             return Err(anyhow::Error::msg(
@@ -222,20 +224,29 @@ impl AccountingRequest {
 
 impl TacacsBodyTrait for AccountingRequest {
     fn to_bytes(&self) -> Vec<u8> {
+        // TACACS+ protocol encodes these lengths as u8; panic on overflow
+        // rather than producing a silently malformed packet.
+        let user_len = u8::try_from(self.user.len()).expect("user field exceeds 255 bytes");
+        let port_len = u8::try_from(self.port.len()).expect("port field exceeds 255 bytes");
+        let rem_addr_len =
+            u8::try_from(self.rem_address.len()).expect("rem_address field exceeds 255 bytes");
+        let arg_cnt = u8::try_from(self.args.len()).expect("args count exceeds 255");
+
         let mut data = vec![
             self.flags.bits(),
             self.authen_method as u8,
             self.priv_lvl,
             self.authen_type as u8,
             self.authen_service as u8,
-            self.user.len() as u8,
-            self.port.len() as u8,
-            self.rem_address.len() as u8,
-            self.args.len() as u8,
+            user_len,
+            port_len,
+            rem_addr_len,
+            arg_cnt,
         ];
 
         for arg in &self.args {
-            data.push(arg.len() as u8);
+            let arg_len = u8::try_from(arg.len()).expect("arg field exceeds 255 bytes");
+            data.push(arg_len);
         }
 
         data.extend(self.user.as_bytes());
@@ -431,6 +442,7 @@ mod tests {
     #[test]
     fn test_from_packet() {
         let data = generate_accounting_request_data();
+        #[allow(clippy::cast_possible_truncation)] // test data is small
         let header = Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
             minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
@@ -453,6 +465,7 @@ mod tests {
         let mut data = generate_accounting_request_data();
         data[5] = 255; // Set user_len to 255
 
+        #[allow(clippy::cast_possible_truncation)] // test data is small
         let header = Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
             minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,

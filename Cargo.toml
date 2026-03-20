@@ -38,9 +38,6 @@ significant_drop_tightening = "allow"
 # Const-fn promotion is still unstable for many patterns; revisit when stable.
 missing_const_for_fn = "allow"
 
-# Protocol code intentionally truncates u32→u8 etc. after validation.
-cast_possible_truncation = "allow"
-
 # Transitive dependency version conflicts are outside our control.
 multiple_crate_versions = "allow"
 # Internal workspace crates don't need full crates.io metadata.

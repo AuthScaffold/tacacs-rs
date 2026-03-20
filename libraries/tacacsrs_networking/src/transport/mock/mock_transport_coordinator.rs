@@ -98,6 +98,7 @@ impl<'a> MockAccountingReplyBuilder<'a> {
     /// (e.g. to test header-mismatch error handling).
     /// # Errors
     /// Returns an error if the reply packet cannot be constructed.
+    #[allow(clippy::cast_possible_truncation)] // body length bounded by u16 field sizes
     pub fn build(self) -> anyhow::Result<Packet> {
         let data = self.reply.to_bytes();
         let mut packet = Packet::new(

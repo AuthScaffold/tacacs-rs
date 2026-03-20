@@ -39,6 +39,7 @@ impl AccountingSessionTrait for Session {
             .await
     }
 
+    #[allow(clippy::cast_possible_truncation)] // body length bounded by u8 field sizes
     async fn send_accounting_request_with_flags(
         &self,
         request: AccountingRequest,

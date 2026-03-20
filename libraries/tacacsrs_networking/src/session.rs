@@ -58,7 +58,7 @@ impl Session {
     }
 
     pub async fn is_complete(&self) -> bool {
-        if self.duplex_channel.sender_closed().await {
+        if self.duplex_channel.sender_closed() {
             return true;
         }
 
@@ -127,7 +127,7 @@ mod tests {
 
         // the client sender is still open because it'll be used by many sessions
         assert!(!network_receiver.is_closed());
-        assert!(!(session.duplex_channel.sender_closed().await));
+        assert!(!(session.duplex_channel.sender_closed()));
 
         // the client receiver is closed
         assert!(session.duplex_channel.receiver_closed().await);

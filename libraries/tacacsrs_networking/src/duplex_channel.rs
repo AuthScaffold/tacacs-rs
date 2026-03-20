@@ -19,8 +19,7 @@ impl DuplexChannel {
         }
     }
 
-    #[allow(clippy::unused_async)]
-    pub async fn sender_closed(&self) -> bool {
+    pub fn sender_closed(&self) -> bool {
         self.sender.is_closed()
     }
 

@@ -110,15 +110,15 @@ impl AccountingReply {
 
 impl TacacsBodyTrait for AccountingReply {
     fn to_bytes(&self) -> Vec<u8> {
-        let bytes = vec![
-            (self.server_msg.len() >> 8) as u8,
-            self.server_msg.len() as u8,
-            (self.data.len() >> 8) as u8,
-            self.data.len() as u8,
-            self.status as u8,
-        ];
+        // TACACS+ protocol encodes these lengths as u16 BE.
+        let server_msg_len =
+            u16::try_from(self.server_msg.len()).expect("server_msg exceeds 65535 bytes");
+        let data_len = u16::try_from(self.data.len()).expect("data exceeds 65535 bytes");
 
-        let mut bytes = bytes;
+        let mut bytes = Vec::new();
+        bytes.extend(server_msg_len.to_be_bytes());
+        bytes.extend(data_len.to_be_bytes());
+        bytes.push(self.status as u8);
         bytes.extend(self.server_msg.as_bytes());
         bytes.extend(self.data.as_bytes());
         bytes
@@ -134,6 +134,7 @@ pub mod tests {
 
     use super::*;
 
+    #[allow(clippy::cast_possible_truncation)] // test data is small
     fn generate_accounting_reply_data() -> Vec<u8> {
         let server_message_string = "server_msg";
         let data_string = "data";
@@ -207,6 +208,7 @@ pub mod tests {
     #[test]
     fn test_reply_from_packet() {
         let data = generate_accounting_reply_data();
+        #[allow(clippy::cast_possible_truncation)] // test data is small
         let header = Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
             minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
@@ -230,6 +232,7 @@ pub mod tests {
         let mut data = generate_accounting_reply_data();
         data[0] = 0xff; // first byte of server_msg_len is set to 0xff
 
+        #[allow(clippy::cast_possible_truncation)] // test data is small
         let header = Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
             minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
