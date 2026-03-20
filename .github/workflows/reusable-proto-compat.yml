@@ -6,7 +6,7 @@ on:
       against-ref:
         description: 'Git ref to check backward compatibility against'
         required: false
-        default: 'HEAD~1'
+        default: 'main'
         type: string
       continue-on-error:
         description: 'Whether to allow this check to fail without failing the workflow'
