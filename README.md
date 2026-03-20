@@ -1,14 +1,27 @@
 # TACACS-rs
 
-`tacacs-rs` is a reference implementation of the TACACS+ protocol, designed to provide a robust and efficient solution for authentication, authorization, and accounting (AAA) services.
+`tacacs-rs` is a Rust implementation of the TACACS+ protocol, providing authentication, authorization, and accounting (AAA) services for network infrastructure. It supports both traditional TACACS+ with obfuscation and modern TACACS+ over TLS 1.3.
+
+## Components
+
+| Component | Description |
+|-----------|-------------|
+| **tacon** | CLI client for sending TACACS+ requests (accounting, authentication, authorization) |
+| **tacacsrs-agentd** | Central service daemon that manages persistent TACACS+ connections with automatic failover |
+
+## Documentation
+
+- [tacon Usage Guide](docs/tacon.md) — CLI client reference, connection modes, batch execution
+- [tacacsrs-agentd Usage Guide](docs/tacacsrs-agentd.md) — Central service deployment, failover, IPC protocol
+- [Building for SONiC](docs/sonic-build-guide.md) — Static musl binaries for network switches
+- [Debian Packaging](DEBIAN_PACKAGING.md) — Building `.deb` packages
+- [Development Guide](DEVELOPMENT.md) — Building, testing, CI, project structure
 
 ## Minimum Supported Rust Version (MSRV)
 
 This project's Minimum Supported Rust Version (MSRV) is **Rust 1.85.0**.
 
 The MSRV is defined as the minimum Rust toolchain required to build the project and its resolved runtime dependency graph. This floor reflects the requirements of core runtime dependencies, including cryptographic and serialization libraries, and is intentionally aligned with the modern Rust ecosystem to avoid maintaining fragile dependency pinning or forks.
-
-For SONiC releases that do not ship a Rust toolchain, or that ship an older Rust version, the required Rust toolchain (Rust 1.85.0) is provisioned by the build environment using `rustup`. Building executables in this manner provides the greatest level of reproducibility achievable across supported SONiC versions.
 
 The MSRV may be raised in the future as required by upstream dependencies or security considerations. Such changes will be documented explicitly.
 
@@ -18,114 +31,46 @@ The MSRV may be raised in the future as required by upstream dependencies or sec
 Lower Rust versions are not supported because upstream runtime dependencies have adopted newer language editions and MSRV requirements; supporting older toolchains would require extensive and fragile dependency pinning with no security or operational benefit.
 </details>
 
-## Demo
+## Quick Start
 
-**Demo 1: Existing (Legacy) TACACS+ with Obfuscation**
+### Installation
 
-```powershell
-clear
-cargo run -p tacon -- `
-    --obfuscation-key tac_plus_key `
-    -s tacacsserver.local:49 `
-    --user test `
-    --port 1 `
-    --rem-addr 1.1.1.1 `
-    -vvv `
-    accounting test
-```
-
-**Demo 2: Upcoming TACACS+ with TLS 1.3**
-
-```powershell
-clear
-$client_certificate = Join-Path -Path $(pwd) -ChildPath libraries tacacsrs_networking examples samples client.crt
-$client_key = Join-Path -Path $(pwd) -ChildPath libraries tacacsrs_networking examples samples client.key
-cargo run -p tacon -- `
-    --use-tls `
-    --client-certificate $client_certificate `
-    --client-key $client_key `
-    -s tacacsserver.local:449 `
-    --user test `
-    --port 1 `
-    --rem-addr 1.1.1.1 `
-    -vvv `
-    accounting test
-```
-
-
-## TACACS+ server for Local Testing
-
-Local testing uses Docker, and we have prepared a compose file in the `lde/containers` folder. You can simply run `docker compose up -d` and have a working TACACS+ server on port 49 for non-TLS and 449 for TLS (will change the default in the future when IANA assigns a well known port number to TACACS with TLS).
-
-## Installation
-
-### Debian/Ubuntu Package
-
-Download the latest `.deb` package from [GitHub Releases](https://github.com/AuthScaffold/tacacs-rs/releases) and install:
+**From GitHub Releases (Debian/Ubuntu):**
 
 ```bash
 sudo dpkg -i tacon_*.deb
 ```
 
-Or build from source:
-
-```bash
-cargo install cargo-deb
-cargo deb --package tacon
-sudo dpkg -i target/debian/tacon_*.deb
-```
-
-See [DEBIAN_PACKAGING.md](DEBIAN_PACKAGING.md) for detailed packaging documentation.
-
-### From Source
-
-Build and install using Cargo:
+**From source:**
 
 ```bash
 cargo build --release --package tacon
 sudo cp target/release/tacon /usr/local/bin/
 ```
 
-## Compiling for SONiC
-
-SONiC (Software for Open Networking in the Cloud) runs on Linux and requires statically-linked binaries for easy deployment. We use [musl](https://musl.libc.org/) to produce fully static executables.
-
-### Prerequisites
-
-Install the musl toolchain and add the Rust target:
+### Basic Usage
 
 ```bash
-# Install musl tools (Debian/Ubuntu)
-sudo apt install -y musl-tools
+# Send an accounting record (direct connection)
+tacon -s tacacs-server:49 -k shared_secret \
+    --user admin --port tty0 --rem-addr 10.0.0.1 \
+    accounting "show running-config"
 
-# Add the musl target to Rust
-rustup target add x86_64-unknown-linux-musl
+# Send via the central agent service
+tacon --service-endpoint /run/tacacs.sock \
+    --user admin --port tty0 --rem-addr 10.0.0.1 \
+    accounting "show running-config"
 ```
 
-### Building
+## Local Testing
 
-Build all workspace crates with the musl target:
+Local testing uses Docker. A compose file in `lde/containers` provides a TACACS+ server on port 49 (plain) and 449 (TLS):
 
 ```bash
-cargo build --release --workspace --target x86_64-unknown-linux-musl
+cd lde/containers
+docker compose up -d
 ```
 
-The binaries will be in `target/x86_64-unknown-linux-musl/release/`.
+## License
 
-To output artifacts to a specific directory (requires nightly or `-Z unstable-options`):
-
-```bash
-cargo build --release --workspace --artifact-dir out -Z unstable-options --target x86_64-unknown-linux-musl
-```
-
-### Verifying Static Linkage
-
-Confirm the binary is statically linked:
-
-```bash
-file target/x86_64-unknown-linux-musl/release/tacon
-# Should show: "statically linked"
-
-ldd target/x86_64-unknown-linux-musl/release/tacon
-# Should show: "not a dynamic executable"
-```
+This project is licensed under the [MIT License](LICENSE).
