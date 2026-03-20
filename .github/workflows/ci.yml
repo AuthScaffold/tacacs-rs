@@ -13,100 +13,62 @@ env:
   BINARY_NAME: tacon
 
 jobs:
-  # ============================================
-  # Complete test suite
-  # ============================================
+  # ── Tier 1: Cheapest, most likely to fail ────────────────
+  docs:
+    name: Documentation Links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: nightly
+
+      - name: Check documentation links
+        env:
+          RUSTDOCFLAGS: -D warnings --check -Z unstable-options
+        run: cargo +nightly doc --workspace --no-deps --all-features
+        continue-on-error: true
+
+  proto-compat:
+    name: Protobuf Compatibility
+    uses: ./.github/workflows/reusable-proto-compat.yml
+
+  audit:
+    name: Security Audit
+    uses: ./.github/workflows/reusable-security-audit.yml
+    secrets: inherit
+
+  # ── Tier 2: Moderate cost ────────────────────────────────
   test:
     name: Test
     uses: ./.github/workflows/reusable-test.yml
     with:
       rust-matrix: '["stable", "beta"]'
       include-msrv: true
-      msrv: "1.82"
+      msrv: "1.85"
+      release: true
 
-  # ============================================
-  # Code coverage
-  # ============================================
   coverage:
     name: Code Coverage
     uses: ./.github/workflows/reusable-coverage.yml
 
-  # ============================================
-  # Minimal versions check - ensure dependencies work with minimum versions
-  # ============================================
-  minimal-versions:
-    name: Minimal Versions
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
+  clippy-nursery:
+    name: Clippy Nursery
+    uses: ./.github/workflows/reusable-clippy-nursery.yml
 
-      - name: Setup Rust nightly
-        uses: ./.github/steps/setup-rust
-        with:
-          toolchain: nightly
-          cache-key: minimal-versions
+  # ── Tier 3: Expensive, gate on tests ────────────────────
+  miri:
+    name: Miri
+    needs: [test]
+    uses: ./.github/workflows/reusable-miri.yml
 
-      - name: Install Rust stable
-        run: rustup toolchain install stable --profile minimal
+  fuzz:
+    name: Fuzz Smoke Test
+    needs: [test, miri]
+    uses: ./.github/workflows/reusable-fuzz.yml
 
-      - name: Generate minimal versions lockfile
-        run: cargo +nightly update -Z minimal-versions
-
-      - name: Build with minimal versions
-        run: cargo +stable build --workspace --all-features
-
-  # ============================================
-  # Check for unused dependencies
-  # ============================================
-  unused-deps:
-    name: Unused Dependencies
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Rust
-        uses: ./.github/steps/setup-rust
-        with:
-          toolchain: nightly
-
-      - name: Install cargo-udeps
-        run: cargo install cargo-udeps --locked
-
-      - name: Check for unused dependencies
-        run: cargo +nightly udeps --workspace --all-targets
-        continue-on-error: true  # Don't fail CI, just report
-
-  # ============================================
-  # Security Audit - Check for new CVEs on schedule
-  # Runs weekly to catch newly published vulnerabilities
-  # ============================================
-  audit:
-    name: Security Audit
-    uses: ./.github/workflows/reusable-security-audit.yml
-    secrets: inherit
-
-  # ============================================
-  # Outdated Dependencies - Flag stale dependencies
-  # ============================================
-  outdated:
-    name: Outdated Dependencies
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Rust
-        uses: ./.github/steps/setup-rust
-
-      - name: Install cargo-outdated
-        run: cargo install cargo-outdated --locked
-
-      - name: Check for outdated dependencies
-        run: cargo outdated --workspace --exit-code 1
-        continue-on-error: true  # Don't fail CI, just report
-
-  # ============================================
-  # Nightly Compatibility - Catch upcoming Rust changes
-  # ============================================
   nightly:
     name: Nightly Rust Check
     runs-on: ubuntu-latest
@@ -128,11 +90,30 @@ jobs:
         run: cargo +nightly clippy --workspace --all-features -- -D warnings
         continue-on-error: true
 
-  # ============================================
-  # Documentation Links - Ensure docs links aren't broken
-  # ============================================
-  doc-links:
-    name: Documentation Links
+  minimal-versions:
+    name: Minimal Versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust nightly
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: nightly
+          cache-key: minimal-versions
+
+      - name: Install Rust stable
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Generate minimal versions lockfile
+        run: cargo +nightly update -Z minimal-versions
+
+      - name: Build with minimal versions
+        run: cargo +stable build --workspace --all-features
+
+  # ── Tier 4: Informational dependency checks ─────────────
+  unused-deps:
+    name: Unused Dependencies
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -142,34 +123,43 @@ jobs:
         with:
           toolchain: nightly
 
-      - name: Check documentation links
-        env:
-          RUSTDOCFLAGS: -D warnings --check -Z unstable-options
-        run: cargo +nightly doc --workspace --no-deps --all-features
+      - name: Install cargo-udeps
+        run: cargo install cargo-udeps --locked
+
+      - name: Check for unused dependencies
+        run: cargo +nightly udeps --workspace --all-targets
         continue-on-error: true
 
-  # ============================================
-  # Build binaries for all platforms (outputs artifacts like release)
-  # Uses reusable build workflow with artifact upload enabled
-  # ============================================
+  outdated:
+    name: Outdated Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+
+      - name: Install cargo-outdated
+        run: cargo install cargo-outdated --locked
+
+      - name: Check for outdated dependencies
+        run: cargo outdated --workspace --exit-code 1
+        continue-on-error: true
+
+  # ── Tier 5: Artifacts, gate on tests ─────────────────────
   build-artifacts:
     name: Build Artifacts
+    needs: [test, miri]
     uses: ./.github/workflows/reusable-build.yml
     with:
       build-release: true
       upload-artifacts: true
       binary-name: tacon
 
-  # ============================================
-  # Generate Software Bill of Materials (SBOM)
-  # ============================================
   sbom:
     name: Generate SBOM
     uses: ./.github/workflows/reusable-sbom.yml
 
-  # ============================================
-  # Build Debian Package
-  # ============================================
   build-deb:
     name: Build Debian Package
     needs: [build-artifacts]
@@ -179,9 +169,6 @@ jobs:
       upload-artifacts: true
       binary-artifact-name: tacon-linux-gnu-x86_64
 
-  # ============================================
-  # Create checksums for all artifacts
-  # ============================================
   checksums:
     name: Generate Checksums
     needs: [build-artifacts, build-deb]

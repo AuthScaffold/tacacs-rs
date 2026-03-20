@@ -30,12 +30,8 @@ psk = ["tacacsrs-networking/psk"]
 clap = { version = "4.5.57", features = ["derive"] }
 clap_mangen = "0.2.25"
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
+[lints]
+workspace = true
 
 # Debian package metadata
 [package.metadata.deb]

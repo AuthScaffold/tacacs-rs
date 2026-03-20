@@ -28,8 +28,8 @@ test-log = "0.2.19"
 env_logger = "0.11.8"
 futures = "0.3"
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+[lints]
+workspace = true
 
 [[example]]
 name = "tls_psk_client"

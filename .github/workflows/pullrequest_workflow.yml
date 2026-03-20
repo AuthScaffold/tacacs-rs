@@ -15,86 +15,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ============================================
-  # Format Check - Fast fail on formatting issues
-  # ============================================
+  # ── Tier 1: Cheapest, most likely to fail ────────────────
   fmt:
     name: Rustfmt
     uses: ./.github/workflows/reusable-fmt.yml
 
-  # ============================================
-  # Clippy Lints - Catch common mistakes
-  # ============================================
   clippy:
     name: Clippy
     uses: ./.github/workflows/reusable-clippy.yml
 
-  # ============================================
-  # Tests - Run on multiple platforms
-  # ============================================
-  test:
-    name: Test
-    uses: ./.github/workflows/reusable-test.yml
-
-  # ============================================
-  # Build Artifacts - Generate all compiled assets like release
-  # Uses reusable build workflow with artifact upload enabled
-  # ============================================
-  build-artifacts:
-    name: Build Artifacts
-    needs: [fmt, clippy]
-    uses: ./.github/workflows/reusable-build.yml
-    with:
-      build-release: true
-      upload-artifacts: true
-      binary-name: tacon
-
-  # ============================================
-  # Generate Software Bill of Materials (SBOM)
-  # ============================================
-  sbom:
-    name: Generate SBOM
-    needs: [fmt, clippy]
-    uses: ./.github/workflows/reusable-sbom.yml
-
-  # ============================================
-  # Build Debian Package
-  # ============================================
-  build-deb:
-    name: Build Debian Package
-    needs: [fmt, clippy, build-artifacts]
-    uses: ./.github/workflows/reusable-deb.yml
-    with:
-      package-name: tacon
-      upload-artifacts: true
-      binary-artifact-name: tacon-linux-gnu-x86_64
-
-  # ============================================
-  # Create checksums for all artifacts
-  # ============================================
-  checksums:
-    name: Generate Checksums
-    needs: [build-artifacts, build-deb]
-    uses: ./.github/workflows/reusable-checksums.yml
-
-  # ============================================
-  # Documentation - Ensure docs build without warnings
-  # ============================================
   docs:
     name: Documentation
     uses: ./.github/workflows/reusable-docs.yml
 
-  # ============================================
-  # Code Coverage - Enforce minimum coverage threshold
-  # ============================================
+  proto-compat:
+    name: Protobuf Compatibility
+    uses: ./.github/workflows/reusable-proto-compat.yml
+    with:
+      against-ref: ${{ github.event.pull_request.base.sha }}
+
+  # ── Tier 2: Moderate cost, gate on Tier 1 ────────────────
+  test:
+    name: Test
+    needs: [fmt, clippy, docs]
+    uses: ./.github/workflows/reusable-test.yml
+    with:
+      include-msrv: true
+      msrv: "1.85"
+      release: true
+
   coverage:
     name: Code Coverage
+    needs: [fmt, clippy]
     uses: ./.github/workflows/reusable-coverage.yml
 
-  # ============================================
-  # Security Audit - Check for vulnerabilities
-  # Only runs when dependencies change
-  # ============================================
   audit:
     name: Security Audit
     uses: ./.github/workflows/reusable-security-audit.yml
@@ -102,29 +56,86 @@ jobs:
       skip-if-no-dep-changes: true
     secrets: inherit
 
-  # ============================================
-  # Final Status - Gate for branch protection
-  # Require this single job in GitHub branch protection settings
-  # ============================================
+  # ── Tier 3: Expensive, gate on tests ─────────────────────
+  clippy-nursery:
+    name: Clippy Nursery
+    needs: [clippy]
+    uses: ./.github/workflows/reusable-clippy-nursery.yml
+
+  miri:
+    name: Miri
+    needs: [test]
+    uses: ./.github/workflows/reusable-miri.yml
+
+  fuzz:
+    name: Fuzz Smoke Test
+    needs: [test, miri]
+    uses: ./.github/workflows/reusable-fuzz.yml
+
+  # ── Tier 4: Artifacts, gate on tests ────────────────────
+  build-artifacts:
+    name: Build Artifacts
+    needs: [test, miri]
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      build-release: true
+      upload-artifacts: true
+      binary-name: tacon
+
+  sbom:
+    name: Generate SBOM
+    needs: [test, miri]
+    uses: ./.github/workflows/reusable-sbom.yml
+
+  build-deb:
+    name: Build Debian Package
+    needs: [build-artifacts]
+    uses: ./.github/workflows/reusable-deb.yml
+    with:
+      package-name: tacon
+      upload-artifacts: true
+      binary-artifact-name: tacon-linux-gnu-x86_64
+
+  checksums:
+    name: Generate Checksums
+    needs: [build-artifacts, build-deb]
+    uses: ./.github/workflows/reusable-checksums.yml
+
+  # ── Gate: all required jobs must pass ───────────────────
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [fmt, clippy, test, build-artifacts, sbom, build-deb, checksums, docs, coverage, audit]
+    needs:
+      - fmt
+      - clippy
+      - docs
+      - test
+      - coverage
+      - audit
+      - build-artifacts
+      - sbom
+      - build-deb
+      - checksums
     if: always()
     steps:
       - name: Check all jobs passed
         run: |
-          if [[ "${{ needs.fmt.result }}" != "success" ]] || \
-             [[ "${{ needs.clippy.result }}" != "success" ]] || \
-             [[ "${{ needs.test.result }}" != "success" ]] || \
-             [[ "${{ needs.build-artifacts.result }}" != "success" ]] || \
-             [[ "${{ needs.sbom.result }}" != "success" ]] || \
-             [[ "${{ needs.build-deb.result }}" != "success" ]] || \
-             [[ "${{ needs.checksums.result }}" != "success" ]] || \
-             [[ "${{ needs.docs.result }}" != "success" ]] || \
-             [[ "${{ needs.coverage.result }}" != "success" ]] || \
-             [[ "${{ needs.audit.result }}" != "success" ]]; then
-            echo "One or more jobs failed"
-            exit 1
-          fi
-          echo "All jobs passed!"
+          results=(
+            "${{ needs.fmt.result }}"
+            "${{ needs.clippy.result }}"
+            "${{ needs.docs.result }}"
+            "${{ needs.test.result }}"
+            "${{ needs.coverage.result }}"
+            "${{ needs.audit.result }}"
+            "${{ needs.build-artifacts.result }}"
+            "${{ needs.sbom.result }}"
+            "${{ needs.build-deb.result }}"
+            "${{ needs.checksums.result }}"
+          )
+          for result in "${results[@]}"; do
+            if [[ "$result" != "success" ]]; then
+              echo "One or more required jobs failed"
+              exit 1
+            fi
+          done
+          echo "All required jobs passed!"

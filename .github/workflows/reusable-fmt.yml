@@ -8,11 +8,20 @@ on:
         required: false
         default: 'nightly'
         type: string
+      os-matrix:
+        description: 'JSON array of OS runners'
+        required: false
+        default: '["ubuntu-latest", "windows-latest"]'
+        type: string
 
 jobs:
   fmt:
-    name: Rustfmt
-    runs-on: ubuntu-latest
+    name: Rustfmt (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJson(inputs.os-matrix) }}
     steps:
       - uses: actions/checkout@v6
 
@@ -21,6 +30,7 @@ jobs:
         with:
           toolchain: ${{ inputs.toolchain }}
           components: rustfmt
+          cache-key: fmt-${{ matrix.os }}
 
       - name: Check formatting
         run: cargo +${{ inputs.toolchain }} fmt --all -- --check

@@ -23,6 +23,11 @@ on:
         required: false
         default: '1.75'
         type: string
+      release:
+        description: 'Run tests in release mode instead of debug'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   test:
@@ -44,4 +49,4 @@ jobs:
           cache-key: ${{ matrix.os }}-${{ matrix.rust }}
 
       - name: Run tests
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features ${{ inputs.release && '--release' || '' }}
