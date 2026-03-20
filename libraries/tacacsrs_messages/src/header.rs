@@ -77,7 +77,7 @@ impl Header {
     }
 
     #[must_use]
-    pub fn version(&self) -> u8 {
+    pub const fn version(&self) -> u8 {
         (self.major_version as u8) << 4 | (self.minor_version as u8)
     }
 }

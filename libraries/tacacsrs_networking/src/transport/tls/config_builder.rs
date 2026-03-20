@@ -62,7 +62,7 @@ impl TlsConfigurationBuilder {
 
     /// Enables or disables TLS session resumption.
     #[must_use]
-    pub fn with_resumption(mut self, enabled: bool) -> Self {
+    pub const fn with_resumption(mut self, enabled: bool) -> Self {
         self.resumption_enabled = enabled;
         self
     }
@@ -103,7 +103,7 @@ impl TlsConfigurationBuilder {
     /// This is dangerous and should only be used for testing or in controlled environments.
     /// Using this in production exposes you to man-in-the-middle attacks.
     #[must_use]
-    pub fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
+    pub const fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
         self.disable_certificate_verification = disabled;
         self
     }

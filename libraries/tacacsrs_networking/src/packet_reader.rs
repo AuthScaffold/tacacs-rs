@@ -72,7 +72,7 @@ impl PacketReader {
     /// * `obfuscation_key` - Optional key used to deobfuscate incoming packets.
     ///   If `None`, packets are assumed to be unencrypted.
     #[must_use]
-    pub fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
+    pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
         Self { obfuscation_key }
     }
 }

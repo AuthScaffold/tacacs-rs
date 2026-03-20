@@ -137,7 +137,7 @@ pub enum Command {
 impl Command {
     /// Returns the custom session ID from the command, if specified
     #[must_use]
-    pub fn session_id(&self) -> Option<u32> {
+    pub const fn session_id(&self) -> Option<u32> {
         match self {
             Self::Accounting { session_id, .. } => *session_id,
             Self::Batch { .. } | Self::Authentication { .. } | Self::Authorization { .. } => None,

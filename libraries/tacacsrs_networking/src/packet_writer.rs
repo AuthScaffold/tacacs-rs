@@ -143,7 +143,7 @@ impl PacketWriter {
     /// * `obfuscation_key` - Optional key used to obfuscate outgoing packets.
     ///   If `None`, packets are sent unencrypted.
     #[must_use]
-    pub fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
+    pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
         Self { obfuscation_key }
     }
 }

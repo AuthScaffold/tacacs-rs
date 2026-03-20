@@ -218,7 +218,7 @@ pub(crate) struct NetworkUpstreamConnector {
 
 impl NetworkUpstreamConnector {
     #[must_use]
-    pub(crate) fn new(options: UpstreamConnectionOptions) -> Self {
+    pub(crate) const fn new(options: UpstreamConnectionOptions) -> Self {
         Self { options }
     }
 }
@@ -321,7 +321,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 }
 
 /// Maps a TACACS+ protocol accounting status to the domain enum.
-fn accounting_status(status: TacacsAccountingStatus) -> AccountingResponseStatus {
+const fn accounting_status(status: TacacsAccountingStatus) -> AccountingResponseStatus {
     match status {
         TacacsAccountingStatus::TacPlusAcctStatusSuccess => AccountingResponseStatus::Success,
         TacacsAccountingStatus::TacPlusAcctStatusError => AccountingResponseStatus::Error,

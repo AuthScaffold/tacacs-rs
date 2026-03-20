@@ -34,7 +34,7 @@ impl Session {
         }
     }
 
-    pub fn session_id(&self) -> u32 {
+    pub const fn session_id(&self) -> u32 {
         self.session_id
     }
 

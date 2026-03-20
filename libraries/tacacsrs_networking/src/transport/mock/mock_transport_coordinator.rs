@@ -45,7 +45,7 @@ impl<'a> MockAccountingReplyBuilder<'a> {
     /// By default the builder uses [`TAC_PLUS_UNENCRYPTED_FLAG`](TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG).
     /// Calling this **replaces** the flags entirely.
     #[must_use]
-    pub fn with_flags(mut self, flags: TacacsFlags) -> Self {
+    pub const fn with_flags(mut self, flags: TacacsFlags) -> Self {
         self.flags = flags;
         self
     }
@@ -60,7 +60,7 @@ impl<'a> MockAccountingReplyBuilder<'a> {
 
     /// Delivers the reply after `delay` instead of immediately.
     #[must_use]
-    pub fn with_delay(mut self, delay: Duration) -> Self {
+    pub const fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = Some(delay);
         self
     }
@@ -71,7 +71,7 @@ impl<'a> MockAccountingReplyBuilder<'a> {
     /// an obfuscated reply must be pre-obfuscated to match what a real
     /// TACACS+ server would send.
     #[must_use]
-    pub fn with_obfuscation_key(mut self, key: &'a [u8]) -> Self {
+    pub const fn with_obfuscation_key(mut self, key: &'a [u8]) -> Self {
         self.obfuscation_key = Some(key);
         self
     }
@@ -222,7 +222,7 @@ impl MockTransportCoordinator {
     /// * `session` — provides the session ID for the reply.
     /// * `reply_sequence_number` — the sequence number for the reply.
     /// * `reply` — the accounting reply body.
-    pub fn accounting_reply<'a>(
+    pub const fn accounting_reply<'a>(
         &'a self,
         session: &Session,
         reply_sequence_number: u8,
@@ -247,7 +247,7 @@ impl MockTransportCoordinator {
     /// testing [`DedicatedConnection`](crate::DedicatedConnection) with a
     /// predetermined session ID.
     #[must_use]
-    pub fn accounting_reply_for_id<'a>(
+    pub const fn accounting_reply_for_id<'a>(
         &'a self,
         session_id: u32,
         reply_sequence_number: u8,

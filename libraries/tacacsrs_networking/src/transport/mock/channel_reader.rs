@@ -34,7 +34,7 @@ pub(super) struct ChannelReader {
 }
 
 impl ChannelReader {
-    pub(super) fn new(rx: mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
+    pub(super) const fn new(rx: mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
         Self {
             rx,
             pending: Vec::new(),

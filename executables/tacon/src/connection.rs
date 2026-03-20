@@ -96,7 +96,7 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
 /// - TCP connection cannot be established
 /// - TLS is requested but certificate/key are missing or invalid
 /// - TLS handshake fails
-pub(crate) async fn establish_stream(cli: &Cli) -> anyhow::Result<BoxedTransport> {
+pub async fn establish_stream(cli: &Cli) -> anyhow::Result<BoxedTransport> {
     let server_addr = cli
         .server_addr
         .as_deref()

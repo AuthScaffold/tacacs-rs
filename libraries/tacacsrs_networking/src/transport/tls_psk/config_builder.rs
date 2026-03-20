@@ -41,7 +41,7 @@ impl PskConfigurationBuilder {
     ///
     /// * `psk` - The pre-shared key identity and secret to use for authentication
     #[must_use]
-    pub fn new(psk: PskIdentity) -> Self {
+    pub const fn new(psk: PskIdentity) -> Self {
         Self {
             psk,
             server_name: None,

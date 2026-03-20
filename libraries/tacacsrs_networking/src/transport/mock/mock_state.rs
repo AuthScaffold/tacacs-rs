@@ -14,7 +14,7 @@ use tacacsrs_messages::packet::Packet;
 /// Stored in [`MockState::replies`] and consumed by the write processor when a
 /// matching request arrives.
 #[derive(Clone, Debug)]
-pub(crate) struct ReplyConfig {
+pub struct ReplyConfig {
     /// The raw serialised TACACS+ packet bytes to send back.
     pub(crate) bytes: Vec<u8>,
     /// Optional delay before delivering the reply, useful for testing timeouts.
@@ -28,7 +28,7 @@ pub(crate) struct ReplyConfig {
 /// and the coordinator (which may be called concurrently from test code) can
 /// access it without blocking the tokio runtime.
 #[derive(Debug, Default)]
-pub(crate) struct MockState {
+pub struct MockState {
     /// Pre-configured replies, keyed by `session_id → seq_no → ReplyConfig`.
     ///
     /// Entries are **removed** (consumed) when the write processor matches them
