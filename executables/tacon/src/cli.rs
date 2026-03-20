@@ -60,6 +60,13 @@ pub struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
+    /// Use a minimal dedicated connection for each request. Each request
+    /// opens and closes its own direct TCP or TLS connection to the server,
+    /// instead of using a reused or multiplexed connection. Useful for
+    /// testing or simple one-off requests.
+    #[arg(long, requires = "server_addr", conflicts_with = "service_endpoint")]
+    pub dedicated: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }

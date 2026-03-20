@@ -34,15 +34,17 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
+use tokio::time::timeout;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
-    TacacsAuthenticationService, TacacsAuthenticationType,
+    TacacsAuthenticationService, TacacsAuthenticationType, TacacsFlags,
 };
 use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
 };
 use tacacsrs_networking::SingleConnectionState;
+use tacacsrs_networking::dedicated_connection::DedicatedConnection;
 use tacacsrs_networking::helpers::tls_server_name;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
@@ -183,6 +185,26 @@ pub(crate) trait UpstreamConnector: Send + Sync {
     /// Returns an error if the TCP connection, TLS handshake, or TACACS+
     /// connection setup fails.
     async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
+
+    /// Sends a single accounting request over a dedicated one-shot connection.
+    ///
+    /// Opens a TCP connection, sends one TACACS+ packet, reads one response,
+    /// and closes the connection.  No background tasks, no session
+    /// multiplexing.  The outgoing packet includes the single-connect flag
+    /// so the server's response reveals whether it supports multiplexing.
+    async fn send_accounting_dedicated(
+        &self,
+        address: &str,
+        request: &AccountingOperation,
+    ) -> anyhow::Result<DedicatedAccountingResult>;
+}
+
+/// Result of a one-shot accounting request sent via [`DedicatedConnection`].
+pub(crate) struct DedicatedAccountingResult {
+    /// The accounting response mapped to domain types.
+    pub response: AccountingOperationResponse,
+    /// Whether the server indicated support for single-connection mode.
+    pub single_connect_supported: bool,
 }
 
 /// Production connector backed by [`tacacsrs_networking`].
@@ -209,6 +231,14 @@ impl UpstreamConnector for NetworkUpstreamConnector {
             server_address: address.to_owned(),
             connection,
         }))
+    }
+
+    async fn send_accounting_dedicated(
+        &self,
+        address: &str,
+        request: &AccountingOperation,
+    ) -> anyhow::Result<DedicatedAccountingResult> {
+        send_dedicated_accounting(address, &self.options, request).await
     }
 }
 
@@ -445,6 +475,115 @@ async fn connect_upstream(
     }
 
     Ok(connection)
+}
+
+/// Sends a single accounting request over a [`DedicatedConnection`] — one
+/// TCP connection, one packet out, one packet back, no background tasks.
+async fn send_dedicated_accounting(
+    address: &str,
+    options: &UpstreamConnectionOptions,
+    request: &AccountingOperation,
+) -> anyhow::Result<DedicatedAccountingResult> {
+    log::debug!(
+        "Dedicated accounting request to {address} (TLS: {}, timeout: {:?})",
+        options.use_tls,
+        options.connect_timeout,
+    );
+
+    let stream = tokio::time::timeout(
+        options.connect_timeout,
+        tacacsrs_networking::helpers::connect_tcp(address),
+    )
+    .await
+    .with_context(|| format!("Timed out connecting to {address}"))?
+    .with_context(|| format!("Failed to establish TCP connection to {address}"))?;
+
+    let obfuscation_key = options.obfuscation_key.as_deref().map(str::as_bytes);
+    let tacacs_request = build_accounting_request(request);
+
+    let exchange = if options.use_tls {
+        #[cfg(feature = "psk")]
+        if let (Some(psk_identity), Some(psk_key)) =
+            (options.psk_identity.as_ref(), options.psk_key.as_ref())
+        {
+            let psk = PskIdentity::new(psk_identity, psk_key.as_bytes())
+                .context("Invalid PSK credentials")?;
+            let tls_stream =
+                timeout(options.connect_timeout, PskConfigurationBuilder::new(psk).connect(stream))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("TLS PSK handshake timed out"))?
+                    .context("Failed to establish TLS PSK connection")?;
+            let mut conn = DedicatedConnection::new(tls_stream, obfuscation_key);
+            return conn
+                .send_accounting(tacacs_request, TacacsFlags::empty())
+                .await
+                .map(|ex| to_dedicated_result(address, ex));
+        }
+
+        let client_cert = options
+            .client_certificate
+            .as_ref()
+            .context("TLS requires a client certificate or PSK credentials")?;
+        let client_key = options
+            .client_key
+            .as_ref()
+            .context("TLS requires a client key or PSK credentials")?;
+
+        let tls_config = Arc::new(
+            TlsConfigurationBuilder::new()
+                .with_client_auth_cert_files(client_cert, client_key)
+                .await
+                .context("Failed to load TLS certificates")?
+                .with_certificate_verification_disabled(
+                    options.insecure_disable_certificate_verification,
+                )
+                .build()
+                .context("Failed to build TLS configuration")?,
+        );
+
+        let tls_stream = timeout(
+            options.connect_timeout,
+            tacacsrs_networking::transport::tls::connect_tls(
+                &tls_config,
+                stream,
+                tls_server_name(address),
+            ),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("TLS handshake timed out"))?
+        .context("Failed to establish TLS connection")?;
+
+        let mut conn = DedicatedConnection::new(tls_stream, obfuscation_key);
+        conn.send_accounting(tacacs_request, TacacsFlags::empty())
+            .await?
+    } else {
+        let mut conn = DedicatedConnection::new(stream, obfuscation_key);
+        conn.send_accounting(tacacs_request, TacacsFlags::empty())
+            .await?
+    };
+
+    log::debug!(
+        "Dedicated accounting response from {address}: status={:?}, single_connect={}",
+        exchange.reply.status,
+        exchange.single_connect_supported,
+    );
+
+    Ok(to_dedicated_result(address, exchange))
+}
+
+fn to_dedicated_result(
+    address: &str,
+    exchange: tacacsrs_networking::ExchangeResult,
+) -> DedicatedAccountingResult {
+    DedicatedAccountingResult {
+        response: AccountingOperationResponse {
+            server: address.to_owned(),
+            status: accounting_status(exchange.reply.status),
+            server_message: exchange.reply.server_msg,
+            data: exchange.reply.data,
+        },
+        single_connect_supported: exchange.single_connect_supported,
+    }
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ use tacacsrs_agent_client::{
 };
 use tokio::sync::{Mutex, Notify};
 
-use crate::upstream::{UpstreamConnection, UpstreamConnector};
+use crate::upstream::{DedicatedAccountingResult, UpstreamConnection, UpstreamConnector};
 use tacacsrs_networking::SingleConnectionState;
 
 // ---------------------------------------------------------------------------
@@ -134,6 +134,21 @@ impl UpstreamConnector for FakeConnector {
         self.in_flight_connects.fetch_sub(1, Ordering::Relaxed);
         result
     }
+
+    async fn send_accounting_dedicated(
+        &self,
+        address: &str,
+        request: &AccountingOperation,
+    ) -> anyhow::Result<DedicatedAccountingResult> {
+        let connection = self.connect(address).await?;
+        let response = connection.send_accounting(request).await?;
+        let supported =
+            connection.single_connection_state().await == SingleConnectionState::Supported;
+        Ok(DedicatedAccountingResult {
+            response,
+            single_connect_supported: supported,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +210,21 @@ impl UpstreamConnector for SingleSessionConnector {
             usable: AtomicBool::new(true),
         }))
     }
+
+    async fn send_accounting_dedicated(
+        &self,
+        address: &str,
+        request: &AccountingOperation,
+    ) -> anyhow::Result<DedicatedAccountingResult> {
+        let connection = self.connect(address).await?;
+        let response = connection.send_accounting(request).await?;
+        let supported =
+            connection.single_connection_state().await == SingleConnectionState::Supported;
+        Ok(DedicatedAccountingResult {
+            response,
+            single_connect_supported: supported,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +275,21 @@ pub(super) struct BlockingConnector {
 impl UpstreamConnector for BlockingConnector {
     async fn connect(&self, _address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         Ok(Arc::clone(&self.connection) as Arc<dyn UpstreamConnection>)
+    }
+
+    async fn send_accounting_dedicated(
+        &self,
+        address: &str,
+        request: &AccountingOperation,
+    ) -> anyhow::Result<DedicatedAccountingResult> {
+        let connection = self.connect(address).await?;
+        let response = connection.send_accounting(request).await?;
+        let supported =
+            connection.single_connection_state().await == SingleConnectionState::Supported;
+        Ok(DedicatedAccountingResult {
+            response,
+            single_connect_supported: supported,
+        })
     }
 }
 
@@ -309,6 +354,21 @@ impl UpstreamConnector for ExclusiveSessionConnector {
             address: self.address.clone(),
             session_claimed: AtomicBool::new(false),
         }))
+    }
+
+    async fn send_accounting_dedicated(
+        &self,
+        address: &str,
+        request: &AccountingOperation,
+    ) -> anyhow::Result<DedicatedAccountingResult> {
+        let connection = self.connect(address).await?;
+        let response = connection.send_accounting(request).await?;
+        let supported =
+            connection.single_connection_state().await == SingleConnectionState::Supported;
+        Ok(DedicatedAccountingResult {
+            response,
+            single_connect_supported: supported,
+        })
     }
 }
 

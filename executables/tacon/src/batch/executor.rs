@@ -12,11 +12,11 @@ use std::time::Instant;
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
 
 use tacacsrs_networking::session::Session;
-use tacacsrs_networking::SingleConnectionState;
+use tacacsrs_networking::{DedicatedConnection, SingleConnectionState};
 
 use crate::cli::Cli;
-use crate::commands::accounting::send_accounting_request;
-use crate::connection::{establish_connection, Connection};
+use crate::commands::accounting::{build_accounting_request, send_accounting_request};
+use crate::connection::{establish_connection, establish_stream, Connection};
 
 use super::progress::{print_load_test_summary, ProgressConfig, ProgressTracker};
 use super::types::{BatchRequest, LoadTestConfig, LoadTestResult, RequestResult};
@@ -720,6 +720,179 @@ async fn execute_batch_load_test(
     print_load_test_summary(&result);
 
     // Return empty results since load test has its own summary
+    if result.is_success() {
+        Ok(vec![])
+    } else {
+        anyhow::bail!("Load test failed: {}", result.first_failure.unwrap_or_default())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dedicated-connection batch execution
+// ---------------------------------------------------------------------------
+
+/// Executes a single batch request using a dedicated connection (no background
+/// tasks, no session multiplexing).
+async fn execute_single_request_dedicated(
+    cli: &Cli,
+    request: &BatchRequest,
+) -> Result<String, String> {
+    match request {
+        BatchRequest::Accounting(req) => {
+            let stream = establish_stream(cli)
+                .await
+                .map_err(|e| format!("Connection failed: {e}"))?;
+
+            let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
+            let mut conn = DedicatedConnection::new(stream, obfuscation_key);
+
+            let cmd_args = if req.cmd_args.is_empty() {
+                None
+            } else {
+                Some(&req.cmd_args)
+            };
+            let tacacs_request =
+                build_accounting_request(&req.user, &req.port, &req.rem_addr, &req.cmd, cmd_args);
+
+            conn.send_accounting(tacacs_request, req.custom_flags.to_tacacs_flags())
+                .await
+                .map(|result| format!("Accounting success: {:?}", result.reply))
+                .map_err(|e| format!("Accounting failed: {e}"))
+        }
+        BatchRequest::Authentication(req) => {
+            Err(format!("Authentication not yet implemented (user: {})", req.user))
+        }
+        BatchRequest::Authorization(req) => {
+            Err(format!("Authorization not yet implemented (user: {})", req.user))
+        }
+    }
+}
+
+/// Executes all batch requests using dedicated connections.
+///
+/// Each request opens and closes its own TCP/TLS transport connection with no session
+/// multiplexing and no background tasks.  Supports sequential, parallel,
+/// and load-test modes.
+pub async fn execute_batch_dedicated(
+    cli: &Cli,
+    batch: &super::types::BatchFile,
+) -> anyhow::Result<Vec<RequestResult>> {
+    if let Some(desc) = &batch.metadata.description {
+        log::info!("Executing batch (dedicated connections): {desc}");
+        println!("Batch: {desc}");
+    }
+
+    if let Some(load_config) = &batch.metadata.load_test {
+        return execute_batch_load_test_dedicated(cli, batch, load_config).await;
+    }
+
+    let request_count = batch.requests.len();
+    log::info!(
+        "Processing {request_count} requests with dedicated connections (parallel: {})",
+        batch.metadata.parallel,
+    );
+
+    if batch.metadata.parallel {
+        let futures: Vec<_> = batch
+            .requests
+            .iter()
+            .enumerate()
+            .map(|(index, request)| {
+                let cli = cli.clone();
+                async move {
+                    RequestResult {
+                        index,
+                        request_type: request.type_name(),
+                        result: execute_single_request_dedicated(&cli, request).await,
+                    }
+                }
+            })
+            .collect();
+        Ok(join_all(futures).await)
+    } else {
+        let mut results = Vec::with_capacity(request_count);
+        for (index, request) in batch.requests.iter().enumerate() {
+            log::info!("Executing request {}/{request_count}", index + 1);
+            results.push(RequestResult {
+                index,
+                request_type: request.type_name(),
+                result: execute_single_request_dedicated(cli, request).await,
+            });
+        }
+        Ok(results)
+    }
+}
+
+async fn execute_batch_load_test_dedicated(
+    cli: &Cli,
+    batch: &super::types::BatchFile,
+    load_config: &LoadTestConfig,
+) -> anyhow::Result<Vec<RequestResult>> {
+    log::info!(
+        "Load testing mode (dedicated connections): {} repetitions, max {} parallel",
+        load_config.repetitions,
+        load_config.max_parallel,
+    );
+    println!(
+        "\n=== Load Testing Mode (Dedicated Connections) ===\nRepetitions: {}\nMax parallel: {}\nTotal requests: {}",
+        load_config.repetitions,
+        load_config.max_parallel,
+        load_config.repetitions * batch.requests.len(),
+    );
+
+    let total_requests = batch.requests.len() * load_config.repetitions;
+    let start_time = Instant::now();
+    let tracker = ProgressTracker::new(ProgressConfig {
+        total_requests,
+        ..Default::default()
+    });
+
+    let all_iterations = (0..load_config.repetitions).flat_map(|rep| {
+        batch
+            .requests
+            .iter()
+            .enumerate()
+            .map(move |(idx, req)| (rep, idx, req))
+    });
+
+    let cli = cli.clone();
+    let results: Vec<bool> = stream::iter(all_iterations)
+        .map(|(rep, idx, request)| {
+            let cli = cli.clone();
+            let completed = tracker.completed.clone();
+            let failed = tracker.failed.clone();
+            let first_failure = tracker.first_failure.clone();
+
+            async move {
+                if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                    return false;
+                }
+
+                match execute_single_request_dedicated(&cli, request).await {
+                    Ok(_) => {
+                        completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        true
+                    }
+                    Err(e) => {
+                        let msg =
+                            format!("Request failed at rep {}, request {}: {e}", rep + 1, idx + 1,);
+                        if !failed.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            let mut failure = first_failure.lock().await;
+                            *failure = Some(msg);
+                        }
+                        false
+                    }
+                }
+            }
+        })
+        .buffer_unordered(load_config.max_parallel)
+        .collect()
+        .await;
+
+    let failure_msg = tracker.finish().await;
+    let result = build_load_test_result(start_time, total_requests, &results, failure_msg)?;
+    print_load_test_summary(&result);
+
     if result.is_success() {
         Ok(vec![])
     } else {

@@ -7,6 +7,7 @@
 //! - [`tls_psk`] for TLS-PSK transport support (feature-gated)
 
 pub mod abstractions;
+pub mod boxed;
 pub mod mock;
 pub mod tcp;
 pub mod tls;
@@ -14,3 +15,4 @@ pub mod tls;
 pub mod tls_psk;
 
 pub use abstractions::Transport;
+pub use boxed::BoxedTransport;
