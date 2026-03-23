@@ -355,21 +355,26 @@ impl SessionManager {
     /// # Errors
     /// Returns an error if the session is not found in the registry.
     pub async fn send_message_to_session(&self, packet: Packet) -> anyhow::Result<()> {
-        // Get a read lock on the duplex_channels dictionary and
-        // find the appropriate channel to forward the packet to.
-        let duplex_channels = self.duplex_channels.read().await;
         let session_id = packet.header().session_id;
+        let sender = {
+            let duplex_channels = self.duplex_channels.read().await;
+            duplex_channels
+                .get(&session_id)
+                .map(|entry| entry.sender.clone())
+        };
 
-        match duplex_channels.get(&session_id) {
-            Some(entry) => {
+        match sender {
+            Some(sender) => {
                 log::info!(
                     target: "tacacsrs_networking::session_manager::send_message_to_session",
                     "Found client channel for session id {session_id}, forwarding packet"
                 );
 
-                match entry.sender.send(packet).await {
+                match sender.send(packet).await {
                     Ok(()) => Ok(()),
                     Err(e) => {
+                        self.remove_session(session_id).await;
+
                         log::warn!(
                             target: "tacacsrs_networking::session_manager::send_message_to_session",
                             "Failed to send packet to client channel for session id: {session_id} due to error: {e}"
@@ -389,6 +394,10 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tacacsrs_messages::enumerations::{
+        TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
+    };
+    use tacacsrs_messages::header::Header;
 
     #[tokio::test]
     async fn test_create_channel() {
@@ -551,6 +560,76 @@ mod tests {
             let channels = session_manager.duplex_channels.read().await;
             assert!(!channels.contains_key(&custom_id));
         }
+    }
+
+    #[tokio::test]
+    async fn test_dropping_session_removes_it_from_registry() {
+        use tokio::time::{timeout, Duration};
+
+        let session_manager = Arc::new(SessionManager::new());
+        let custom_id = 66_666_666_u32;
+
+        let session = session_manager
+            .create_session_with_id(custom_id)
+            .await
+            .unwrap();
+        session_manager.set_single_connection_state(true).await;
+
+        drop(session);
+
+        timeout(Duration::from_millis(250), async {
+            loop {
+                let channels = session_manager.duplex_channels.read().await;
+                if !channels.contains_key(&custom_id) {
+                    break;
+                }
+                drop(channels);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session drop should remove the registry entry");
+
+        let session = session_manager
+            .create_session_with_id(custom_id)
+            .await
+            .unwrap();
+        assert_eq!(session.session_id(), custom_id);
+    }
+
+    #[tokio::test]
+    async fn test_send_message_to_closed_session_reaps_registry_entry() {
+        let session_manager = Arc::new(SessionManager::new());
+        let custom_id = 77_777_777_u32;
+
+        let session = session_manager
+            .create_session_with_id(custom_id)
+            .await
+            .unwrap();
+        session_manager.set_single_connection_state(true).await;
+        session.duplex_channel.receiver.write().await.close();
+
+        let packet = Packet::new(
+            Header {
+                major_version: TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                tacacs_type: TacacsType::TacPlusAccounting,
+                seq_no: 1,
+                flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                session_id: custom_id,
+                length: 0,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let result = session_manager.send_message_to_session(packet).await;
+
+        assert!(result.is_err());
+
+        let channels = session_manager.duplex_channels.read().await;
+        assert!(!channels.contains_key(&custom_id));
+
+        drop(session);
     }
 
     #[tokio::test]

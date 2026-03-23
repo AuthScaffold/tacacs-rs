@@ -1,4 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 
 use crate::duplex_channel::DuplexChannel;
@@ -10,7 +12,7 @@ pub struct Session {
     pub duplex_channel: DuplexChannel,
 
     pub current_sequence_number: RwLock<u8>,
-    pub session_complete: RwLock<bool>,
+    pub session_complete: AtomicBool,
     manager: Option<Arc<SessionManager>>,
 }
 
@@ -21,7 +23,7 @@ impl Session {
             session_id,
             duplex_channel,
             current_sequence_number: 1_u8.into(),
-            session_complete: false.into(),
+            session_complete: AtomicBool::new(false),
             manager: None,
         }
     }
@@ -35,9 +37,13 @@ impl Session {
             session_id,
             duplex_channel,
             current_sequence_number: 1_u8.into(),
-            session_complete: false.into(),
+            session_complete: AtomicBool::new(false),
             manager,
         }
+    }
+
+    fn mark_complete(&self) -> bool {
+        !self.session_complete.swap(true, Ordering::AcqRel)
     }
 
     pub const fn session_id(&self) -> u32 {
@@ -53,9 +59,9 @@ impl Session {
     }
 
     pub async fn complete(&self) {
-        let mut session_complete_lock = self.session_complete.write().await;
-        *session_complete_lock = true;
-        drop(session_complete_lock);
+        if !self.mark_complete() {
+            return;
+        }
 
         // Notify the session manager to remove this session from the registry
         if let Some(mgr) = &self.manager {
@@ -72,8 +78,35 @@ impl Session {
             return true;
         }
 
-        let session_complete_lock = self.session_complete.read().await;
-        *session_complete_lock
+        self.session_complete.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if !self.mark_complete() {
+            return;
+        }
+
+        let Some(manager) = self.manager.clone() else {
+            return;
+        };
+
+        let session_id = self.session_id;
+
+        match Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    manager.remove_session(session_id).await;
+                });
+            }
+            Err(_) => {
+                log::warn!(
+                    target: "tacacsrs_networking::session::drop",
+                    "Dropping session {session_id} without a Tokio runtime; session registry cleanup could not be scheduled"
+                );
+            }
+        }
     }
 }
 
