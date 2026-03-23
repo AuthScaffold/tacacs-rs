@@ -6,6 +6,7 @@
 
 pub mod sender;
 pub mod session;
+mod session_id;
 pub mod sessions;
 pub mod duplex_channel;
 pub mod session_manager;

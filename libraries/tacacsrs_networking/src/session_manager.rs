@@ -6,6 +6,13 @@ use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 
 use crate::duplex_channel::DuplexChannel;
 use crate::session::Session;
+use crate::session_id::{ReservedSessionId, SessionIdAllocator};
+
+#[derive(Debug)]
+pub(crate) struct ActiveSessionEntry {
+    sender: mpsc::Sender<Packet>,
+    _reservation: ReservedSessionId,
+}
 
 /// Represents the state of single connection mode negotiation with the server.
 ///
@@ -14,7 +21,6 @@ use crate::session::Session;
 /// first response, we don't know if the server supports it.
 ///
 /// ## State Transitions
-///
 /// ```text
 /// Initial ──(first session created)──> Negotiating
 ///                                           │
@@ -59,9 +65,10 @@ pub enum SingleConnectionState {
 
 #[derive(Debug)]
 pub struct SessionManager {
-    pub(crate) duplex_channels: RwLock<HashMap<u32, mpsc::Sender<Packet>>>,
+    pub(crate) duplex_channels: RwLock<HashMap<u32, ActiveSessionEntry>>,
     pub(crate) sender: tokio::sync::mpsc::Sender<Packet>,
     pub(crate) receiver: Mutex<Option<tokio::sync::mpsc::Receiver<Packet>>>,
+    session_id_allocator: Arc<SessionIdAllocator>,
 
     can_accept_new_sessions: RwLock<bool>,
 
@@ -82,6 +89,7 @@ impl SessionManager {
             duplex_channels: HashMap::new().into(),
             sender,
             receiver: Some(receiver).into(),
+            session_id_allocator: SessionIdAllocator::new(),
             can_accept_new_sessions: true.into(),
             single_connection_state: SingleConnectionState::Initial.into(),
             close_notify: Notify::new(),
@@ -93,11 +101,11 @@ impl SessionManager {
         *can_accept_lock = false;
     }
 
-    pub(crate) async fn create_channel(&self) -> anyhow::Result<(DuplexChannel, u32)> {
+    async fn create_channel(&self) -> anyhow::Result<(DuplexChannel, u32)> {
         self.create_channel_with_optional_id(None).await
     }
 
-    pub(crate) async fn create_channel_with_id(
+    async fn create_channel_with_id(
         &self,
         session_id: u32,
     ) -> anyhow::Result<(DuplexChannel, u32)> {
@@ -108,34 +116,12 @@ impl SessionManager {
         &self,
         custom_session_id: Option<u32>,
     ) -> anyhow::Result<(DuplexChannel, u32)> {
-        // First, determine the session ID and validate it before creating any channels
-        let session_id = {
-            let duplex_channels = self.duplex_channels.read().await;
-
-            if let Some(id) = custom_session_id {
-                // If a custom session ID is provided, check if it already exists and is still active
-                if let Some(existing_sender) = duplex_channels.get(&id) {
-                    if !existing_sender.is_closed() {
-                        return Err(anyhow::Error::msg(format!(
-                            "Session ID {id} is already in use"
-                        )));
-                    }
-                    // Existing session is complete (channel closed), allow reuse
-                    log::debug!(
-                        target: "tacacsrs_networking::session_manager::create_channel",
-                        "Reusing completed session ID {id}"
-                    );
-                }
-                id
-            } else {
-                // Generate new session id, regenerate if it already exists
-                let mut id = rand::random::<u32>();
-                while duplex_channels.contains_key(&id) {
-                    id = rand::random::<u32>();
-                }
-                id
-            }
+        let reserved_session_id = if let Some(id) = custom_session_id {
+            self.session_id_allocator.reserve_specific(id)?
+        } else {
+            self.session_id_allocator.reserve_generated()
         };
+        let session_id = reserved_session_id.get();
 
         // Now create the channels after validation
         let (session_sender, session_receiver) = mpsc::channel::<Packet>(32);
@@ -144,7 +130,13 @@ impl SessionManager {
         // Insert the new session
         {
             let mut duplex_channels = self.duplex_channels.write().await;
-            duplex_channels.insert(session_id, session_sender);
+            duplex_channels.insert(
+                session_id,
+                ActiveSessionEntry {
+                    sender: session_sender,
+                    _reservation: reserved_session_id,
+                },
+            );
         }
 
         Ok((duplex_channel, session_id))
@@ -363,21 +355,26 @@ impl SessionManager {
     /// # Errors
     /// Returns an error if the session is not found in the registry.
     pub async fn send_message_to_session(&self, packet: Packet) -> anyhow::Result<()> {
-        // Get a read lock on the duplex_channels dictionary and
-        // find the appropriate channel to forward the packet to.
-        let duplex_channels = self.duplex_channels.read().await;
         let session_id = packet.header().session_id;
+        let sender = {
+            let duplex_channels = self.duplex_channels.read().await;
+            duplex_channels
+                .get(&session_id)
+                .map(|entry| entry.sender.clone())
+        };
 
-        match duplex_channels.get(&session_id) {
-            Some(channel) => {
+        match sender {
+            Some(sender) => {
                 log::info!(
                     target: "tacacsrs_networking::session_manager::send_message_to_session",
                     "Found client channel for session id {session_id}, forwarding packet"
                 );
 
-                match channel.send(packet).await {
+                match sender.send(packet).await {
                     Ok(()) => Ok(()),
                     Err(e) => {
+                        self.remove_session(session_id).await;
+
                         log::warn!(
                             target: "tacacsrs_networking::session_manager::send_message_to_session",
                             "Failed to send packet to client channel for session id: {session_id} due to error: {e}"
@@ -397,6 +394,10 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tacacsrs_messages::enumerations::{
+        TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
+    };
+    use tacacsrs_messages::header::Header;
 
     #[tokio::test]
     async fn test_create_channel() {
@@ -521,8 +522,8 @@ mod tests {
         // Simulate server response enabling single connection mode
         session_manager.set_single_connection_state(true).await;
 
-        // Drop the session (simulating completion - this closes the receiver)
-        drop(session1);
+        // Mark the session complete so the manager removes it from the registry.
+        session1.complete().await;
 
         // Now creating a session with the same ID should succeed since the old one is complete
         let session2 = session_manager
@@ -559,6 +560,76 @@ mod tests {
             let channels = session_manager.duplex_channels.read().await;
             assert!(!channels.contains_key(&custom_id));
         }
+    }
+
+    #[tokio::test]
+    async fn test_dropping_session_removes_it_from_registry() {
+        use tokio::time::{timeout, Duration};
+
+        let session_manager = Arc::new(SessionManager::new());
+        let custom_id = 66_666_666_u32;
+
+        let session = session_manager
+            .create_session_with_id(custom_id)
+            .await
+            .unwrap();
+        session_manager.set_single_connection_state(true).await;
+
+        drop(session);
+
+        timeout(Duration::from_millis(250), async {
+            loop {
+                let channels = session_manager.duplex_channels.read().await;
+                if !channels.contains_key(&custom_id) {
+                    break;
+                }
+                drop(channels);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session drop should remove the registry entry");
+
+        let session = session_manager
+            .create_session_with_id(custom_id)
+            .await
+            .unwrap();
+        assert_eq!(session.session_id(), custom_id);
+    }
+
+    #[tokio::test]
+    async fn test_send_message_to_closed_session_reaps_registry_entry() {
+        let session_manager = Arc::new(SessionManager::new());
+        let custom_id = 77_777_777_u32;
+
+        let session = session_manager
+            .create_session_with_id(custom_id)
+            .await
+            .unwrap();
+        session_manager.set_single_connection_state(true).await;
+        session.duplex_channel.receiver.write().await.close();
+
+        let packet = Packet::new(
+            Header {
+                major_version: TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                tacacs_type: TacacsType::TacPlusAccounting,
+                seq_no: 1,
+                flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                session_id: custom_id,
+                length: 0,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let result = session_manager.send_message_to_session(packet).await;
+
+        assert!(result.is_err());
+
+        let channels = session_manager.duplex_channels.read().await;
+        assert!(!channels.contains_key(&custom_id));
+
+        drop(session);
     }
 
     #[tokio::test]
