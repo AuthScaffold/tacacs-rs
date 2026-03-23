@@ -10,6 +10,7 @@ tacacsrs-messages = { path = "../tacacsrs_messages" }
 async-trait = "0.1.89"
 rand = "0.10.0"
 log = "0.4.29"
+parking_lot = "0.12.5"
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "logging"] }
 rustls-pki-types = "1.14.0"
 rustls-cert-file-reader = "0.4.2"

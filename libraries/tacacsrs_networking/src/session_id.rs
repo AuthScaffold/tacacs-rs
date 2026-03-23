@@ -1,5 +1,7 @@
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 #[derive(Debug)]
 struct SessionIdAllocatorState {
@@ -10,6 +12,11 @@ struct SessionIdAllocatorState {
 ///
 /// Generated session IDs are unique while active and remain random on each
 /// reservation attempt.
+///
+/// A synchronous mutex is intentional here: allocation only touches a small
+/// in-memory `HashSet`, does not perform I/O, and never awaits while holding
+/// the lock. Even under bursty session creation, this keeps the critical
+/// section short without forcing async lock plumbing through the allocator API.
 #[derive(Debug)]
 pub(crate) struct SessionIdAllocator {
     state: Mutex<SessionIdAllocatorState>,
@@ -35,16 +42,14 @@ impl SessionIdAllocator {
     }
 
     pub(crate) fn reserve_generated(self: &Arc<Self>) -> ReservedSessionId {
-        let mut state = self.state.lock().expect("session id allocator poisoned");
+        let mut state = self.state.lock();
 
         let session_id = loop {
             let candidate = random_nonzero_session_id();
-            if !state.active_session_ids.contains(&candidate) {
+            if state.active_session_ids.insert(candidate) {
                 break candidate;
             }
         };
-
-        state.active_session_ids.insert(session_id);
 
         ReservedSessionId {
             session_id,
@@ -56,14 +61,12 @@ impl SessionIdAllocator {
         self: &Arc<Self>,
         session_id: u32,
     ) -> anyhow::Result<ReservedSessionId> {
-        let mut state = self.state.lock().expect("session id allocator poisoned");
+        let mut state = self.state.lock();
 
         anyhow::ensure!(
-            !state.active_session_ids.contains(&session_id),
+            state.active_session_ids.insert(session_id),
             "Session ID {session_id} is already in use"
         );
-
-        state.active_session_ids.insert(session_id);
 
         Ok(ReservedSessionId {
             session_id,
@@ -72,7 +75,7 @@ impl SessionIdAllocator {
     }
 
     fn release(&self, session_id: u32) {
-        let mut state = self.state.lock().expect("session id allocator poisoned");
+        let mut state = self.state.lock();
         state.active_session_ids.remove(&session_id);
     }
 }

@@ -8,6 +8,12 @@ use crate::duplex_channel::DuplexChannel;
 use crate::session::Session;
 use crate::session_id::{ReservedSessionId, SessionIdAllocator};
 
+#[derive(Debug)]
+pub(crate) struct ActiveSessionEntry {
+    sender: mpsc::Sender<Packet>,
+    _reservation: ReservedSessionId,
+}
+
 /// Represents the state of single connection mode negotiation with the server.
 ///
 /// TACACS+ servers may or may not support single connection mode. This is indicated
@@ -59,7 +65,7 @@ pub enum SingleConnectionState {
 
 #[derive(Debug)]
 pub struct SessionManager {
-    pub(crate) duplex_channels: RwLock<HashMap<u32, mpsc::Sender<Packet>>>,
+    pub(crate) duplex_channels: RwLock<HashMap<u32, ActiveSessionEntry>>,
     pub(crate) sender: tokio::sync::mpsc::Sender<Packet>,
     pub(crate) receiver: Mutex<Option<tokio::sync::mpsc::Receiver<Packet>>>,
     session_id_allocator: Arc<SessionIdAllocator>,
@@ -95,23 +101,21 @@ impl SessionManager {
         *can_accept_lock = false;
     }
 
-    pub(crate) async fn create_channel(
-        &self,
-    ) -> anyhow::Result<(DuplexChannel, ReservedSessionId)> {
+    async fn create_channel(&self) -> anyhow::Result<(DuplexChannel, u32)> {
         self.create_channel_with_optional_id(None).await
     }
 
-    pub(crate) async fn create_channel_with_id(
+    async fn create_channel_with_id(
         &self,
         session_id: u32,
-    ) -> anyhow::Result<(DuplexChannel, ReservedSessionId)> {
+    ) -> anyhow::Result<(DuplexChannel, u32)> {
         self.create_channel_with_optional_id(Some(session_id)).await
     }
 
     async fn create_channel_with_optional_id(
         &self,
         custom_session_id: Option<u32>,
-    ) -> anyhow::Result<(DuplexChannel, ReservedSessionId)> {
+    ) -> anyhow::Result<(DuplexChannel, u32)> {
         let reserved_session_id = if let Some(id) = custom_session_id {
             self.session_id_allocator.reserve_specific(id)?
         } else {
@@ -126,10 +130,16 @@ impl SessionManager {
         // Insert the new session
         {
             let mut duplex_channels = self.duplex_channels.write().await;
-            duplex_channels.insert(session_id, session_sender);
+            duplex_channels.insert(
+                session_id,
+                ActiveSessionEntry {
+                    sender: session_sender,
+                    _reservation: reserved_session_id,
+                },
+            );
         }
 
-        Ok((duplex_channel, reserved_session_id))
+        Ok((duplex_channel, session_id))
     }
 
 
@@ -276,11 +286,10 @@ impl SessionManager {
         // Atomically check if we can create sessions and begin negotiation if in Initial state
         self.try_begin_session().await?;
 
-        let (duplex_channel, reserved_session_id) = match custom_session_id {
+        let (duplex_channel, session_id) = match custom_session_id {
             Some(id) => self.create_channel_with_id(id).await?,
             None => self.create_channel().await?,
         };
-        let session_id = reserved_session_id.get();
 
         log::info!(
             target: "tacacsrs_networking::connection::create_session",
@@ -289,7 +298,7 @@ impl SessionManager {
             if custom_session_id.is_some() { " (custom)" } else { "" }
         );
 
-        Ok(Session::new_with_manager(reserved_session_id, duplex_channel, Some(Arc::clone(self))))
+        Ok(Session::new_with_manager(session_id, duplex_channel, Some(Arc::clone(self))))
     }
 
     pub async fn remove_session(&self, session_id: u32) {
@@ -352,13 +361,13 @@ impl SessionManager {
         let session_id = packet.header().session_id;
 
         match duplex_channels.get(&session_id) {
-            Some(channel) => {
+            Some(entry) => {
                 log::info!(
                     target: "tacacsrs_networking::session_manager::send_message_to_session",
                     "Found client channel for session id {session_id}, forwarding packet"
                 );
 
-                match channel.send(packet).await {
+                match entry.sender.send(packet).await {
                     Ok(()) => Ok(()),
                     Err(e) => {
                         log::warn!(
@@ -387,7 +396,7 @@ mod tests {
 
         let (_, session_id) = session_manager.create_channel().await.unwrap();
 
-        assert_ne!(session_id.get(), 0);
+        assert_ne!(session_id, 0);
     }
 
     #[tokio::test]
@@ -397,7 +406,7 @@ mod tests {
         let (_, session_id) = session_manager.create_channel().await.unwrap();
         let (_, session_id2) = session_manager.create_channel().await.unwrap();
 
-        assert_ne!(session_id.get(), session_id2.get());
+        assert_ne!(session_id, session_id2);
     }
 
     #[tokio::test]
@@ -485,7 +494,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(session_id.get(), custom_id);
+        assert_eq!(session_id, custom_id);
     }
 
     #[tokio::test]
@@ -504,8 +513,8 @@ mod tests {
         // Simulate server response enabling single connection mode
         session_manager.set_single_connection_state(true).await;
 
-        // Drop the session (simulating completion - this closes the receiver)
-        drop(session1);
+        // Mark the session complete so the manager removes it from the registry.
+        session1.complete().await;
 
         // Now creating a session with the same ID should succeed since the old one is complete
         let session2 = session_manager

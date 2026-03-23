@@ -2,14 +2,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::duplex_channel::DuplexChannel;
-use crate::session_id::ReservedSessionId;
 use crate::session_manager::SessionManager;
 
 
 pub struct Session {
     pub session_id: u32,
     pub duplex_channel: DuplexChannel,
-    _owned_session_id: Option<ReservedSessionId>,
 
     pub current_sequence_number: RwLock<u8>,
     pub session_complete: RwLock<bool>,
@@ -22,23 +20,20 @@ impl Session {
         Self {
             session_id,
             duplex_channel,
-            _owned_session_id: None,
             current_sequence_number: 1_u8.into(),
             session_complete: false.into(),
             manager: None,
         }
     }
 
-    pub(crate) fn new_with_manager(
-        owned_session_id: ReservedSessionId,
+    pub fn new_with_manager(
+        session_id: u32,
         duplex_channel: DuplexChannel,
         manager: Option<Arc<SessionManager>>,
     ) -> Self {
-        let session_id = owned_session_id.get();
         Self {
             session_id,
             duplex_channel,
-            _owned_session_id: Some(owned_session_id),
             current_sequence_number: 1_u8.into(),
             session_complete: false.into(),
             manager,
