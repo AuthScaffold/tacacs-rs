@@ -168,8 +168,7 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
     } else if cli.dedicated {
         batch::execute_batch_dedicated(cli, &batch_file).await?
     } else {
-        let connection = establish_connection(cli).await?;
-        batch::execute_batch(cli, connection, &batch_file).await?
+        batch::execute_batch(cli, &batch_file).await?
     };
 
     batch::print_results_summary(&results);

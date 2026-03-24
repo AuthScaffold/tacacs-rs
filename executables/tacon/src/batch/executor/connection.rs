@@ -8,8 +8,23 @@ use crate::cli::Cli;
 use crate::connection::{establish_connection, Connection};
 
 use super::common::{execute_single_request, load_test_iterations, run_load_test};
+use super::dedicated::{execute_requests_dedicated, probe_request_dedicated, run_dedicated_load_test};
 use super::super::progress::print_load_test_summary;
 use super::super::types::{BatchFile, BatchRequest, LoadTestConfig, LoadTestResult, RequestResult};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PostProbeExecutionMode {
+    Multiplexed,
+    Dedicated,
+}
+
+const fn execution_mode_from_probe(single_connect_supported: bool) -> PostProbeExecutionMode {
+    if single_connect_supported {
+        PostProbeExecutionMode::Multiplexed
+    } else {
+        PostProbeExecutionMode::Dedicated
+    }
+}
 
 /// Executes requests sequentially, one at a time
 ///
@@ -90,40 +105,35 @@ async fn maybe_reconnect(
 /// If not supported, remaining requests are each executed on separate connections.
 pub(super) async fn execute_parallel(
     cli: &Cli,
-    connection: Connection,
     requests: &[BatchRequest],
 ) -> anyhow::Result<Vec<RequestResult>> {
     if requests.is_empty() {
         return Ok(vec![]);
     }
 
-    let first_request = &requests[0];
-    log::info!("Executing first request to determine single connection mode support");
-
-    let first_session = connection
-        .create_session_optional_id(first_request.session_id())
-        .await
-        .context("Failed to create session for first batch request")?;
-
-    let first_result = execute_single_request(&first_session, first_request).await;
-    let mut results = vec![RequestResult {
-        index: 0,
-        request_type: first_request.type_name(),
-        result: first_result,
-    }];
+    log::info!("Executing first request via dedicated connection to determine single connection mode support");
+    let first_probe = probe_request_dedicated(cli, &requests[0], 0).await;
+    let mut results = vec![first_probe.request_result];
 
     if requests.len() == 1 {
         return Ok(results);
     }
 
     let remaining_requests = &requests[1..];
-    let single_connection_supported =
-        matches!(connection.single_connection_state().await, SingleConnectionState::Supported);
 
-    if single_connection_supported {
+    if execution_mode_from_probe(first_probe.single_connect_supported)
+        == PostProbeExecutionMode::Multiplexed
+    {
+        let connection = establish_connection(cli)
+            .await
+            .context("Failed to establish multiplexed connection after dedicated probe")?;
         results.extend(execute_parallel_single_connection(connection, remaining_requests).await?);
     } else {
-        results.extend(execute_parallel_multi_connection(cli, remaining_requests).await);
+        log::info!(
+            "Server did not confirm single connection mode via dedicated probe. Executing {} remaining requests with dedicated connections",
+            remaining_requests.len()
+        );
+        results.extend(execute_requests_dedicated(cli, remaining_requests, 1, true).await);
     }
 
     results.sort_by_key(|result| result.index);
@@ -175,71 +185,6 @@ async fn execute_parallel_single_connection(
     Ok(join_all(futures).await)
 }
 
-/// Executes requests in parallel, each with its own connection
-async fn execute_parallel_multi_connection(
-    cli: &Cli,
-    requests: &[BatchRequest],
-) -> Vec<RequestResult> {
-    log::info!(
-        "Server does not support single connection mode. Executing {} requests with separate connections",
-        requests.len()
-    );
-
-    let futures: Vec<_> = requests
-        .iter()
-        .enumerate()
-        .map(|(index, request)| {
-            let index = index + 1;
-            let cli = cli.clone();
-            async move {
-                log::info!("Establishing new connection for request {}", index + 1);
-                execute_request_with_new_connection(&cli, request, index).await
-            }
-        })
-        .collect();
-
-    join_all(futures).await
-}
-
-/// Executes a single request by establishing a new connection
-async fn execute_request_with_new_connection(
-    cli: &Cli,
-    request: &BatchRequest,
-    index: usize,
-) -> RequestResult {
-    let connection = match establish_connection(cli).await {
-        Ok(connection) => connection,
-        Err(error) => {
-            return RequestResult {
-                index,
-                request_type: request.type_name(),
-                result: Err(format!("Failed to establish connection: {error}")),
-            };
-        }
-    };
-
-    let session = match connection
-        .create_session_optional_id(request.session_id())
-        .await
-    {
-        Ok(session) => session,
-        Err(error) => {
-            return RequestResult {
-                index,
-                request_type: request.type_name(),
-                result: Err(format!("Failed to create session: {error}")),
-            };
-        }
-    };
-
-    let result = execute_single_request(&session, request).await;
-    RequestResult {
-        index,
-        request_type: request.type_name(),
-        result,
-    }
-}
-
 /// Executes a load test by repeating all requests with controlled concurrency
 ///
 /// This function runs all requests multiple times (based on `config.repetitions`)
@@ -247,13 +192,10 @@ async fn execute_request_with_new_connection(
 /// immediately on the first failure.
 pub(super) async fn execute_load_test(
     cli: &Cli,
-    connection: Connection,
     requests: &[BatchRequest],
     config: &LoadTestConfig,
 ) -> anyhow::Result<LoadTestResult> {
     let total_requests = requests.len() * config.repetitions;
-
-    probe_server_capability(&connection, requests).await?;
 
     println!("Starting load test with {total_requests} total requests...\n");
 
@@ -303,57 +245,46 @@ async fn execute_load_test_single(
 }
 
 /// Probes the server to check for single-connection support
-async fn probe_server_capability(
-    connection: &Connection,
-    requests: &[BatchRequest],
-) -> anyhow::Result<()> {
+async fn probe_server_capability(cli: &Cli, requests: &[BatchRequest]) -> bool {
     log::info!("Probing server for single-connection support...");
 
-    let probe_session = connection
-        .create_session_optional_id(None)
-        .await
-        .context("Failed to create probe session")?;
+    let Some(first_request) = requests.first() else {
+        return false;
+    };
 
-    if let Some(first_request) = requests.first() {
-        let _ = execute_single_request(&probe_session, first_request).await;
-    }
-
-    let single_connection_supported =
-        matches!(connection.single_connection_state().await, SingleConnectionState::Supported);
-
-    if single_connection_supported {
-        log::info!("Server supports single connection mode - reusing connections where possible");
+    let probe = probe_request_dedicated(cli, first_request, 0).await;
+    if execution_mode_from_probe(probe.single_connect_supported)
+        == PostProbeExecutionMode::Multiplexed
+    {
+        log::info!("Server supports single connection mode - using multiplexed connections");
+        true
     } else {
-        log::info!("Server does not support single connection mode - using separate connections");
+        log::info!("Server did not confirm single connection mode - using dedicated connections");
+        false
     }
-
-    Ok(())
 }
 
 /// Entry point for executing a batch file
 ///
 /// This function handles servers that may or may not support single connection mode.
 /// If load testing mode is enabled, this function delegates to `execute_load_test`.
-pub async fn execute_batch(
-    cli: &Cli,
-    connection: Connection,
-    batch: &BatchFile,
-) -> anyhow::Result<Vec<RequestResult>> {
+pub async fn execute_batch(cli: &Cli, batch: &BatchFile) -> anyhow::Result<Vec<RequestResult>> {
     if let Some(description) = &batch.metadata.description {
         log::info!("Executing batch: {description}");
         println!("Batch: {description}");
     }
 
     if let Some(load_config) = &batch.metadata.load_test {
-        return execute_batch_load_test(cli, connection, batch, load_config).await;
+        return execute_batch_load_test(cli, batch, load_config).await;
     }
 
     let request_count = batch.requests.len();
     log::info!("Processing {request_count} requests (parallel: {})", batch.metadata.parallel);
 
     if batch.metadata.parallel {
-        execute_parallel(cli, connection, &batch.requests).await
+        execute_parallel(cli, &batch.requests).await
     } else {
+        let connection = establish_connection(cli).await?;
         execute_sequential(cli, connection, &batch.requests).await
     }
 }
@@ -361,7 +292,6 @@ pub async fn execute_batch(
 /// Handles load test execution from a batch file
 async fn execute_batch_load_test(
     cli: &Cli,
-    connection: Connection,
     batch: &BatchFile,
     load_config: &LoadTestConfig,
 ) -> anyhow::Result<Vec<RequestResult>> {
@@ -377,12 +307,31 @@ async fn execute_batch_load_test(
         load_config.repetitions * batch.requests.len()
     );
 
-    let result = execute_load_test(cli, connection, &batch.requests, load_config).await?;
+    let result = if probe_server_capability(cli, &batch.requests).await {
+        execute_load_test(cli, &batch.requests, load_config).await?
+    } else {
+        run_dedicated_load_test(cli, &batch.requests, load_config).await
+    };
     print_load_test_summary(&result);
 
     if result.is_success() {
         Ok(vec![])
     } else {
         anyhow::bail!("Load test failed: {}", result.first_failure.unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{execution_mode_from_probe, PostProbeExecutionMode};
+
+    #[test]
+    fn test_probe_chooses_multiplexed_when_single_connect_supported() {
+        assert_eq!(execution_mode_from_probe(true), PostProbeExecutionMode::Multiplexed);
+    }
+
+    #[test]
+    fn test_probe_chooses_dedicated_when_single_connect_not_supported() {
+        assert_eq!(execution_mode_from_probe(false), PostProbeExecutionMode::Dedicated);
     }
 }
