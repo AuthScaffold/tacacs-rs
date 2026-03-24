@@ -1,8 +1,8 @@
 mod common;
-mod connection;
 mod dedicated;
+mod direct;
+mod multiplexed;
 mod service;
 
-pub use connection::execute_batch;
-pub use dedicated::execute_batch_dedicated;
+pub use direct::execute_batch;
 pub use service::execute_batch_via_service;
