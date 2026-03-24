@@ -4,7 +4,6 @@ use anyhow::Context;
 use tacacsrs_networking::{
     connection::TacacsConnection, helpers::tls_server_name, session::Session,
     traits::SessionManagementTrait, transport::tls::TlsConfigurationBuilder, BoxedTransport,
-    SingleConnectionState,
 };
 #[cfg(feature = "psk")]
 use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
@@ -48,11 +47,6 @@ impl Connection {
             Some(id) => self.create_session_with_id(id).await,
             None => self.create_session().await,
         }
-    }
-
-    /// Returns the current single connection state
-    pub async fn single_connection_state(&self) -> SingleConnectionState {
-        self.inner.single_connection_state().await
     }
 
     /// Returns true if new sessions can be created on this connection
