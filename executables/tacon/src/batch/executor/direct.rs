@@ -19,8 +19,8 @@ enum ExecutionMode {
 /// Determines the execution mode for the batch.
 ///
 /// When `--dedicated` is set, the probe is skipped and dedicated mode is used
-/// unconditionally. Otherwise a lightweight accounting record is sent via
-/// [`DedicatedConnection`] to check whether the server echoes
+/// unconditionally. Otherwise a lightweight accounting record is sent via a
+/// dedicated connection to check whether the server echoes
 /// `TAC_PLUS_SINGLE_CONNECT_FLAG`.
 async fn determine_execution_mode(cli: &Cli) -> ExecutionMode {
     if cli.dedicated {
