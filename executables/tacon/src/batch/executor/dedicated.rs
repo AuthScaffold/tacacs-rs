@@ -22,7 +22,9 @@ pub(super) async fn probe_single_connect(cli: &Cli) -> bool {
         let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
         let mut connection = DedicatedConnection::new(stream, obfuscation_key);
 
-        let args = redact_secret_args(std::env::args());
+        let args = redact_secret_args(
+            std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()),
+        );
         let request = build_accounting_request("tacon", "batch", "localhost", "tacon", Some(&args));
 
         connection
