@@ -317,12 +317,24 @@ class Field:
 
 
 class Struct:
-    __slots__ = ("name", "fields", "doc")
+    __slots__ = ("name", "fields", "doc", "choices")
 
     def __init__(self, name, doc=None):
         self.name = name
         self.fields: list[Field] = []
+        self.choices: list[ChoiceGroup] = []
         self.doc = doc
+
+
+class ChoiceGroup:
+    """Metadata about a YANG choice node flattened into a struct."""
+    __slots__ = ("yang_name", "mandatory", "cases")
+
+    def __init__(self, yang_name: str, mandatory: bool):
+        self.yang_name = yang_name
+        self.mandatory = mandatory
+        # Each case is (case_yang_name, [field_yang_names])
+        self.cases: list[tuple[str, list[str]]] = []
 
 
 class EnumVariant:
@@ -552,26 +564,46 @@ class Collector:
             rust_type = "String"
         return Field(stmt.arg, rust_type, is_vec=True, doc=_get_desc(stmt))
 
-    def _flatten_choice(self, choice_stmt, parent_prefix: str) -> list[Field]:
+    def _flatten_choice(self, choice_stmt, parent_prefix: str) -> tuple[list[Field], ChoiceGroup]:
+        """Flatten all case branches into ``Option<T>`` fields and record choice metadata."""
+        mandatory = _is_mandatory(choice_stmt)
+        choice_group = ChoiceGroup(choice_stmt.arg, mandatory)
         fields = []
+
         cases = [ch for ch in _get_children(choice_stmt) if ch.keyword == "case"]
         if not cases:
             cases = [choice_stmt]
+
         for case in cases:
+            case_field_names = []
             for child in _get_children(case):
                 if child.keyword == "choice":
-                    fields.extend(self._flatten_choice(child, parent_prefix))
+                    # Nested choice — recurse and merge
+                    nested_fields, nested_group = self._flatten_choice(child, parent_prefix)
+                    fields.extend(nested_fields)
+                    # Attach nested choice as a separate group
+                    choice_group.cases.append((
+                        f"{case.arg}/{child.arg}",
+                        [f.yang_name for f in nested_fields],
+                    ))
                 else:
                     field = self._process_node(child, parent_prefix)
                     if field is not None:
                         field.optional = True
                         fields.append(field)
-        return fields
+                        case_field_names.append(field.yang_name)
+            if case_field_names:
+                choice_group.cases.append((case.arg, case_field_names))
+
+        return fields, choice_group
 
     def _fill_children(self, stmt, rs: Struct, sname: str):
         for child in _get_children(stmt):
             if child.keyword == "choice":
-                rs.fields.extend(self._flatten_choice(child, sname))
+                choice_fields, choice_group = self._flatten_choice(child, sname)
+                rs.fields.extend(choice_fields)
+                if choice_group.cases:
+                    rs.choices.append(choice_group)
             else:
                 field = self._process_node(child, sname)
                 if field is not None:
@@ -679,6 +711,10 @@ class RustEmitter:
             self._emit_field(f, current_mod)
         w("    }\n\n")
 
+        # Emit choice group constants if this struct has flattened choices
+        if st.choices:
+            self._emit_choice_constants(st)
+
     def _emit_field(self, f: Field, current_mod: str):
         w = self.fd.write
         first = _first_line(f.doc)
@@ -706,6 +742,25 @@ class RustEmitter:
             if i >= max_lines:
                 break
             self.fd.write(f"{indent}/// {line}\n")
+
+    def _emit_choice_constants(self, st: Struct):
+        w = self.fd.write
+        w(f"    /// Choice constraints for [`{st.name}`].\n")
+        w(f"    impl {st.name} {{\n")
+        for cg in st.choices:
+            const_name = f"CHOICE_{_yang_to_snake(cg.yang_name).upper()}"
+            mandatory_str = "true" if cg.mandatory else "false"
+            w(f"        /// YANG choice `{cg.yang_name}` ")
+            w(f"({'mandatory' if cg.mandatory else 'optional'}).\n")
+            w(f"        ///\n")
+            w(f"        /// Each inner slice is one case; at most one case may have fields set.\n")
+            w(f"        pub const {const_name}: &[(&str, &[&str])] = &[\n")
+            for case_name, field_names in cg.cases:
+                fields_str = ", ".join(f'"{f}"' for f in field_names)
+                w(f'            ("{case_name}", &[{fields_str}]),\n')
+            w("        ];\n")
+            w(f"        pub const {const_name}_MANDATORY: bool = {mandatory_str};\n")
+        w("    }\n\n")
 
 
 # ---------------------------------------------------------------------------

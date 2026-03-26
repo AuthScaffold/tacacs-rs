@@ -40,6 +40,18 @@ pub mod tacacs_plus {
         pub central_keystore_reference: Option<keystore::EndEntityCertWithKeyCentralKeystoreReference>,
     }
 
+    /// Choice constraints for [`ClientIdentityCertificate`].
+    impl ClientIdentityCertificate {
+        /// YANG choice `inline-or-keystore` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_INLINE_OR_KEYSTORE: &[(&str, &[&str])] = &[
+            ("inline", &["inline-definition"]),
+            ("central-keystore", &["central-keystore-reference"]),
+        ];
+        pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
+    }
+
     /// Specifies the client identity using RPK.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
@@ -52,6 +64,18 @@ pub mod tacacs_plus {
         #[serde(rename = "central-keystore-reference")]
         #[serde(default)]
         pub central_keystore_reference: Option<String>,
+    }
+
+    /// Choice constraints for [`RawPrivateKey`].
+    impl RawPrivateKey {
+        /// YANG choice `inline-or-keystore` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_INLINE_OR_KEYSTORE: &[(&str, &[&str])] = &[
+            ("inline", &["inline-definition"]),
+            ("central-keystore", &["central-keystore-reference"]),
+        ];
+        pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
     }
 
     /// An EPSK is established or provisioned out-of-band.
@@ -84,6 +108,18 @@ pub mod tacacs_plus {
         pub target_kdf: Option<u16>,
     }
 
+    /// Choice constraints for [`Tls13Epsk`].
+    impl Tls13Epsk {
+        /// YANG choice `inline-or-keystore` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_INLINE_OR_KEYSTORE: &[(&str, &[&str])] = &[
+            ("inline", &["inline-definition"]),
+            ("central-keystore", &["central-keystore-reference"]),
+        ];
+        pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
+    }
+
     /// Identity credentials that a TLS client may present
     /// when establishing a connection to a TLS server.
     /// A list of client credentials that can be referenced
@@ -105,6 +141,19 @@ pub mod tacacs_plus {
         pub tls13_epsk: Option<Tls13Epsk>,
     }
 
+    /// Choice constraints for [`ClientCredentials`].
+    impl ClientCredentials {
+        /// YANG choice `auth-type` (optional).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_AUTH_TYPE: &[(&str, &[&str])] = &[
+            ("certificate", &["certificate"]),
+            ("raw-public-key", &["raw-private-key"]),
+            ("tls13-epsk", &["tls13-epsk"]),
+        ];
+        pub const CHOICE_AUTH_TYPE_MANDATORY: bool = false;
+    }
+
     /// A set of CA certificates used by the TLS client to
     /// authenticate TLS server certificates.
     /// A server certificate is authenticated if it has a valid
@@ -121,6 +170,18 @@ pub mod tacacs_plus {
         pub central_truststore_reference: Option<String>,
     }
 
+    /// Choice constraints for [`ServerAuthenticationCaCerts`].
+    impl ServerAuthenticationCaCerts {
+        /// YANG choice `inline-or-truststore` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_INLINE_OR_TRUSTSTORE: &[(&str, &[&str])] = &[
+            ("inline", &["inline-definition"]),
+            ("central-truststore", &["central-truststore-reference"]),
+        ];
+        pub const CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY: bool = true;
+    }
+
     /// A set of raw public keys used by a TLS client to
     /// authenticate raw public keys presented by the TLS server.
     /// A raw public key is authenticated if it is an exact match
@@ -135,6 +196,18 @@ pub mod tacacs_plus {
         #[serde(rename = "central-truststore-reference")]
         #[serde(default)]
         pub central_truststore_reference: Option<String>,
+    }
+
+    /// Choice constraints for [`ServerAuthenticationRawPublicKeys`].
+    impl ServerAuthenticationRawPublicKeys {
+        /// YANG choice `inline-or-truststore` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_INLINE_OR_TRUSTSTORE: &[(&str, &[&str])] = &[
+            ("inline", &["inline-definition"]),
+            ("central-truststore", &["central-truststore-reference"]),
+        ];
+        pub const CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY: bool = true;
     }
 
     /// Identity credentials that a TLS client may use
@@ -184,6 +257,18 @@ pub mod tacacs_plus {
         pub tls13_epsk: Option<Tls13Epsk>,
     }
 
+    /// Choice constraints for [`TlsClientClientIdentity`].
+    impl TlsClientClientIdentity {
+        /// YANG choice `ref-or-explicit` (optional).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_REF_OR_EXPLICIT: &[(&str, &[&str])] = &[
+            ("ref", &["credentials-reference"]),
+            ("explicit/auth-type", &["certificate", "raw-private-key", "tls13-epsk"]),
+        ];
+        pub const CHOICE_REF_OR_EXPLICIT_MANDATORY: bool = false;
+    }
+
     /// Specifies how a TLS client can authenticate TLS servers.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
@@ -208,6 +293,18 @@ pub mod tacacs_plus {
         #[serde(rename = "tls13-epsks")]
         #[serde(default)]
         pub tls13_epsks: Option<bool>,
+    }
+
+    /// Choice constraints for [`TlsClientServerAuthentication`].
+    impl TlsClientServerAuthentication {
+        /// YANG choice `ref-or-explicit` (optional).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_REF_OR_EXPLICIT: &[(&str, &[&str])] = &[
+            ("ref", &["credentials-reference"]),
+            ("explicit", &["ca-certs", "ee-certs", "raw-public-keys", "tls13-epsks"]),
+        ];
+        pub const CHOICE_REF_OR_EXPLICIT_MANDATORY: bool = false;
     }
 
     /// Configurable parameters for the TLS Hello message.
@@ -280,6 +377,26 @@ pub mod tacacs_plus {
         pub timeout: u16,
     }
 
+    /// Choice constraints for [`TacacsPlusServer`].
+    impl TacacsPlusServer {
+        /// YANG choice `security` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_SECURITY: &[(&str, &[&str])] = &[
+            ("tls", &["client-identity", "server-authentication", "hello-params"]),
+            ("obfuscation", &["shared-secret"]),
+        ];
+        pub const CHOICE_SECURITY_MANDATORY: bool = true;
+        /// YANG choice `source-type` (optional).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_SOURCE_TYPE: &[(&str, &[&str])] = &[
+            ("source-ip", &["source-ip"]),
+            ("source-interface", &["source-interface"]),
+        ];
+        pub const CHOICE_SOURCE_TYPE_MANDATORY: bool = false;
+    }
+
     /// Container for TACACS+ configurations and operations.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
@@ -338,6 +455,19 @@ pub mod keystore {
         pub cert_data: Option<String>,
     }
 
+    /// Choice constraints for [`EndEntityCertWithKeyInlineDefinition`].
+    impl EndEntityCertWithKeyInlineDefinition {
+        /// YANG choice `private-key-type` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_PRIVATE_KEY_TYPE: &[(&str, &[&str])] = &[
+            ("cleartext-private-key", &["cleartext-private-key"]),
+            ("hidden-private-key", &["hidden-private-key"]),
+            ("encrypted-private-key", &["encrypted-private-key"]),
+        ];
+        pub const CHOICE_PRIVATE_KEY_TYPE_MANDATORY: bool = true;
+    }
+
     /// A reference to a specific certificate associated with
     /// an asymmetric key stored in the central keystore.
     #[derive(Debug, Clone, Deserialize)]
@@ -382,6 +512,19 @@ pub mod keystore {
         pub encrypted_private_key: Option<crypto_types::PrivateKeyEncryptedPrivateKey>,
     }
 
+    /// Choice constraints for [`AsymmetricKeyInlineDefinition`].
+    impl AsymmetricKeyInlineDefinition {
+        /// YANG choice `private-key-type` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_PRIVATE_KEY_TYPE: &[(&str, &[&str])] = &[
+            ("cleartext-private-key", &["cleartext-private-key"]),
+            ("hidden-private-key", &["hidden-private-key"]),
+            ("encrypted-private-key", &["encrypted-private-key"]),
+        ];
+        pub const CHOICE_PRIVATE_KEY_TYPE_MANDATORY: bool = true;
+    }
+
     /// A container to hold the local key definition.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
@@ -402,6 +545,19 @@ pub mod keystore {
         #[serde(rename = "encrypted-symmetric-key")]
         #[serde(default)]
         pub encrypted_symmetric_key: Option<crypto_types::PrivateKeyEncryptedPrivateKey>,
+    }
+
+    /// Choice constraints for [`SymmetricKeyInlineDefinition`].
+    impl SymmetricKeyInlineDefinition {
+        /// YANG choice `key-type` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_KEY_TYPE: &[(&str, &[&str])] = &[
+            ("cleartext-symmetric-key", &["cleartext-symmetric-key"]),
+            ("hidden-symmetric-key", &["hidden-symmetric-key"]),
+            ("encrypted-symmetric-key", &["encrypted-symmetric-key"]),
+        ];
+        pub const CHOICE_KEY_TYPE_MANDATORY: bool = true;
     }
 
 }
