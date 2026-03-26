@@ -323,22 +323,54 @@ def _leaf_is_optional(stmt) -> bool:
     return True
 
 
+def _resolve_default(yang_default: str, rust_type: str) -> str | None:
+    """Convert a YANG default value string to a Rust expression string.
+    
+    Returns None if the default matches Rust's built-in Default::default()
+    (e.g., false for bool, 0 for integers), since #[serde(default)] suffices.
+    """
+    # Boolean
+    if rust_type == "bool":
+        if yang_default == "false":
+            return None  # bool::default() is false
+        return "true"
+
+    # Integer types
+    if rust_type in ("u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"):
+        if yang_default == "0":
+            return None  # integer default is 0
+        return yang_default
+
+    # Floating point
+    if rust_type == "f64":
+        return yang_default
+
+    # String-like types
+    if rust_type == "String":
+        return f'"{yang_default}".to_owned()'
+
+    # Enum types — can't generate inline, needs a Default impl or helper fn
+    return f'/* YANG default: "{yang_default}" */'
+
+
 # ---------------------------------------------------------------------------
 # Intermediate representations
 # ---------------------------------------------------------------------------
 
 class Field:
     __slots__ = ("yang_name", "rust_name", "rust_type", "optional",
-                 "is_vec", "doc")
+                 "is_vec", "doc", "default_value")
 
     def __init__(self, yang_name, rust_type, *, optional=False,
-                 is_vec=False, doc=None):
+                 is_vec=False, doc=None, default_value=None):
         self.yang_name = yang_name
         self.rust_name = _yang_to_snake(yang_name)
         self.rust_type = rust_type
         self.optional = optional
         self.is_vec = is_vec
         self.doc = doc
+        # (yang_default_str, rust_expr) or None
+        self.default_value: tuple[str, str] | None = default_value
 
     def type_string(self) -> str:
         t = self.rust_type
@@ -635,7 +667,23 @@ class Collector:
             rust_type = bf_name
 
         optional = _leaf_is_optional(stmt)
-        return Field(stmt.arg, rust_type, optional=optional, doc=_get_desc(stmt))
+
+        # Extract YANG default value
+        default_value = None
+        default_stmt = stmt.search_one("default")
+        has_yang_default = default_stmt is not None
+        if has_yang_default:
+            rust_expr = _resolve_default(default_stmt.arg, rust_type)
+            if rust_expr is not None:
+                default_value = (default_stmt.arg, rust_expr)
+            # else: YANG default matches Rust Default::default(),
+            # _leaf_is_optional already made this non-optional,
+            # but we still need #[serde(default)] — signal via empty tuple
+            else:
+                default_value = (default_stmt.arg, "")
+
+        return Field(stmt.arg, rust_type, optional=optional,
+                     doc=_get_desc(stmt), default_value=default_value)
 
     def _process_leaf_list(self, stmt, parent_prefix: str) -> Field:
         type_stmt = stmt.search_one("type")
@@ -827,19 +875,45 @@ class RustEmitter:
 
     def _emit_struct(self, st: Struct, current_mod: str):
         w = self.fd.write
+
+        # Collect any default helper functions needed for this struct's fields
+        default_fns: dict[str, tuple[str, str, str]] = {}  # field_yang_name -> (fn_name, rust_type, rust_expr)
+        bare_defaults: set[str] = set()  # fields that need #[serde(default)] only
+        for f in st.fields:
+            if f.default_value is not None:
+                _yang_default, rust_expr = f.default_value
+                if rust_expr:  # Non-empty means we need a helper function
+                    # Build a snake_case fn name from the struct and field names
+                    struct_snake = st.name[0].lower() + st.name[1:]
+                    # Simple PascalCase to snake_case conversion
+                    import re
+                    struct_snake = re.sub(r'([A-Z])', r'_\1', struct_snake).lower().lstrip('_')
+                    fn_name = f"default_{struct_snake}_{f.rust_name}"
+                    default_fns[f.yang_name] = (fn_name, f.rust_type, rust_expr)
+                else:  # Empty means Rust's Default::default() matches
+                    bare_defaults.add(f.yang_name)
+
+        # Emit default helper functions before the struct
+        for fn_name, rust_type, rust_expr in default_fns.values():
+            # Strip module prefix for local types
+            rt = rust_type.replace(f"{current_mod}::", "")
+            w(f"    fn {fn_name}() -> {rt} {{ {rust_expr} }}\n")
+        if default_fns:
+            w("\n")
+
         self._doc(st.doc, "    ")
         w("    #[derive(Debug, Clone, Deserialize)]\n")
         w('    #[serde(rename_all = "kebab-case")]\n')
         w(f"    pub struct {st.name} {{\n")
         for f in st.fields:
-            self._emit_field(f, current_mod)
+            self._emit_field(f, current_mod, default_fns, bare_defaults)
         w("    }\n\n")
 
         # Emit choice group constants if this struct has flattened choices
         if st.choices:
             self._emit_choice_constants(st)
 
-    def _emit_field(self, f: Field, current_mod: str):
+    def _emit_field(self, f: Field, current_mod: str, default_fns: dict, bare_defaults: set):
         w = self.fd.write
         first = _first_line(f.doc)
         if first:
@@ -849,6 +923,11 @@ class RustEmitter:
             w(f'        #[serde(rename = "{f.yang_name}")]\n')
 
         if f.optional or f.is_vec:
+            w("        #[serde(default)]\n")
+        elif f.yang_name in default_fns:
+            fn_name = default_fns[f.yang_name][0]
+            w(f'        #[serde(default = "{fn_name}")]\n')
+        elif f.yang_name in bare_defaults:
             w("        #[serde(default)]\n")
 
         # Resolve type reference: strip own module prefix for local types

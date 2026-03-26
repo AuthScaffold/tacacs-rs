@@ -116,6 +116,8 @@ pub mod tacacs_plus {
         pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
     }
 
+    fn default_tls13_epsk_hash() -> EpskSupportedHash { /* YANG default: "sha-256" */ }
+
     /// An EPSK is established or provisioned out-of-band.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
@@ -132,6 +134,7 @@ pub mod tacacs_plus {
         #[serde(rename = "external-identity")]
         pub external_identity: String,
         /// For externally established PSKs, the Hash algorithm must be
+        #[serde(default = "default_tls13_epsk_hash")]
         pub hash: EpskSupportedHash,
         /// The context used to determine the EPSK, if any exists. For
         #[serde(default)]
@@ -359,6 +362,8 @@ pub mod tacacs_plus {
         pub cipher_suites: Option<tls_common::HelloParamsCipherSuites>,
     }
 
+    fn default_tacacs_plus_server_timeout() -> u16 { 5 }
+
     /// List of TACACS+ servers used by the device.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
@@ -410,8 +415,10 @@ pub mod tacacs_plus {
         pub vrf_instance: Option<String>,
         /// Indicates whether the Single Connection Mode is enabled
         #[serde(rename = "single-connection")]
+        #[serde(default)]
         pub single_connection: bool,
         /// The number of seconds that the device will wait for a
+        #[serde(default = "default_tacacs_plus_server_timeout")]
         pub timeout: u16,
     }
 
