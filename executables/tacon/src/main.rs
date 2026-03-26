@@ -240,7 +240,7 @@ async fn execute_command_dedicated(cli: &Cli) -> anyhow::Result<()> {
                 .await
                 .context("Connection failed")?;
 
-            let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
+            let obfuscation_key = cli.shared_secret.as_ref().map(String::as_bytes);
             let mut conn = DedicatedConnection::new(stream, obfuscation_key);
 
             let mut custom_flags = TacacsFlags::empty();

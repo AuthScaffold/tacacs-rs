@@ -19,7 +19,7 @@ pub(super) async fn probe_single_connect(cli: &Cli) -> bool {
         let stream = establish_stream(cli)
             .await
             .context("Probe connection failed")?;
-        let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
+        let obfuscation_key = cli.shared_secret.as_ref().map(String::as_bytes);
         let mut connection = DedicatedConnection::new(stream, obfuscation_key);
 
         let args =
@@ -49,7 +49,7 @@ pub(super) async fn probe_single_connect(cli: &Cli) -> bool {
     }
 }
 
-const SECRET_FLAGS: &[&str] = &["-k", "--obfuscation-key", "--psk-key"];
+const SECRET_FLAGS: &[&str] = &["-k", "--shared-secret", "--psk-key"];
 
 /// Replaces the value following any secret flag with `***`.
 fn redact_secret_args(args: impl Iterator<Item = String>) -> Vec<String> {
@@ -87,7 +87,7 @@ async fn execute_single_request_dedicated(
                 .await
                 .map_err(|error| format!("Connection failed: {error}"))?;
 
-            let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
+            let obfuscation_key = cli.shared_secret.as_ref().map(String::as_bytes);
             let mut connection = DedicatedConnection::new(stream, obfuscation_key);
 
             let cmd_args = if req.cmd_args.is_empty() {
@@ -192,8 +192,8 @@ mod tests {
     #[test]
     fn redacts_obfuscation_key_long_flag() {
         assert_eq!(
-            redact(&["tacon", "--obfuscation-key", "s3cret", "batch", "f.json"]),
-            ["tacon", "--obfuscation-key", "***", "batch", "f.json"],
+            redact(&["tacon", "--shared-secret", "s3cret", "batch", "f.json"]),
+            ["tacon", "--shared-secret", "***", "batch", "f.json"],
         );
     }
 
@@ -213,8 +213,8 @@ mod tests {
     #[test]
     fn redacts_equals_syntax() {
         assert_eq!(
-            redact(&["tacon", "--obfuscation-key=s3cret", "--psk-key=top"]),
-            ["tacon", "--obfuscation-key=***", "--psk-key=***"],
+            redact(&["tacon", "--shared-secret=s3cret", "--psk-key=top"]),
+            ["tacon", "--shared-secret=***", "--psk-key=***"],
         );
     }
 

@@ -6,8 +6,8 @@
 //!
 //! # Configuration flow
 //!
-//! The executable (e.g. `tacacsrs_agentd`) parses CLI flags or
-//! environment variables into a [`ServiceConfig`], passes it to
+//! The executable (e.g. `tacacsrs_agentd`) parses CLI flags or a YANG JSON
+//! config file into a [`ServiceConfig`], passes it to
 //! [`TacacsClientService::new`](crate::TacacsClientService::new) for
 //! validation, and then calls
 //! [`serve`](crate::TacacsClientService::serve) to start the runtime.
@@ -15,8 +15,7 @@
 use std::time::Duration;
 
 use tacacsrs_agent_client::IpcEndpoint;
-
-use crate::upstream::UpstreamConnectionOptions;
+use tacacsrs_config::ServerConnectionConfig;
 
 /// Configuration for the long-lived TACACS+ client service process.
 ///
@@ -26,20 +25,30 @@ use crate::upstream::UpstreamConnectionOptions;
 ///
 /// # Required fields
 ///
-/// - **`server_addresses`** — at least one upstream TACACS+ server must be
+/// - **`servers`** — at least one upstream TACACS+ server must be
 ///   configured. The list order determines failover priority (index 0 is
 ///   preferred).
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// # use std::time::Duration;
-/// # use tacacsrs_agent::{ServiceConfig, UpstreamConnectionOptions};
+/// # use tacacsrs_agent::ServiceConfig;
 /// # use tacacsrs_agent_client::IpcEndpoint;
+/// # use tacacsrs_config::{ServerConnectionConfig, ServerType, ResolvedSecurity};
 /// let config = ServiceConfig {
 ///     endpoint: IpcEndpoint::default_local(),
-///     server_addresses: vec!["tacacs-primary:49".into(), "tacacs-backup:49".into()],
-///     upstream: UpstreamConnectionOptions::default(),
+///     servers: vec![ServerConnectionConfig {
+///         name: "primary".to_owned(),
+///         server_type: ServerType::ACCOUNTING,
+///         address: "tacacs-primary".to_owned(),
+///         port: 49,
+///         security: ResolvedSecurity::Obfuscation { shared_secret: None },
+///         timeout: Duration::from_secs(5),
+///         single_connection: false,
+///         domain_name: None,
+///         sni_enabled: false,
+///     }],
 ///     preferred_probe_interval: Duration::from_secs(30),
 ///     #[cfg(unix)]
 ///     socket_mode: 0o660,
@@ -54,15 +63,11 @@ pub struct ServiceConfig {
     /// developer workflows. Empty strings are rejected instead of defaulting.
     pub endpoint: IpcEndpoint,
 
-    /// Ordered upstream TACACS+ servers. Index zero is the preferred server.
+    /// Ordered upstream TACACS+ servers with per-server connection config.
     ///
-    /// The service attempts servers in order during failover and periodically
-    /// probes the preferred server (index 0) to route traffic back to it once
-    /// it recovers.
-    pub server_addresses: Vec<String>,
-
-    /// Shared options applied to each upstream TACACS+ connection.
-    pub upstream: UpstreamConnectionOptions,
+    /// Each entry carries its own security settings (TLS vs obfuscation),
+    /// timeout, and server type. Index zero is the preferred server.
+    pub servers: Vec<ServerConnectionConfig>,
 
     /// How often the preferred server should be reprobed while failed over.
     ///

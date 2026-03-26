@@ -133,14 +133,13 @@ impl TacacsClientService {
     ///
     /// Returns an error if no upstream TACACS+ servers are configured.
     pub fn new(config: ServiceConfig) -> anyhow::Result<Self> {
-        if config.server_addresses.is_empty() {
-            bail!("At least one TACACS+ server address must be configured");
+        if config.servers.is_empty() {
+            bail!("At least one TACACS+ server must be configured");
         }
 
-        let connector: Arc<dyn UpstreamConnector> =
-            Arc::new(NetworkUpstreamConnector::new(config.upstream.clone()));
+        let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector);
         let state = Arc::new(ServiceState::new(
-            config.server_addresses.clone(),
+            config.servers.clone(),
             connector,
             config.preferred_probe_interval,
         ));
@@ -153,12 +152,12 @@ impl TacacsClientService {
         config: ServiceConfig,
         connector: Arc<dyn UpstreamConnector>,
     ) -> anyhow::Result<Self> {
-        if config.server_addresses.is_empty() {
-            bail!("At least one TACACS+ server address must be configured");
+        if config.servers.is_empty() {
+            bail!("At least one TACACS+ server must be configured");
         }
 
         let state = Arc::new(ServiceState::new(
-            config.server_addresses.clone(),
+            config.servers.clone(),
             connector,
             config.preferred_probe_interval,
         ));
@@ -392,18 +391,36 @@ mod tests {
     use super::super::config::ServiceConfig;
     #[cfg(unix)]
     use super::super::test_support::{FakeConnection, FakeConnector, build_request};
-    #[cfg(unix)]
-    use crate::upstream::UpstreamConnectionOptions;
 
     #[cfg(unix)]
-    fn service_config(endpoint: IpcEndpoint, server_addresses: Vec<String>) -> ServiceConfig {
+    fn test_server(address: &str) -> tacacsrs_config::ServerConnectionConfig {
+        tacacsrs_config::ServerConnectionConfig {
+            name: address.to_owned(),
+            server_type: tacacsrs_config::ServerType::ACCOUNTING,
+            address: address.split(':').next().unwrap_or(address).to_owned(),
+            port: address
+                .split(':')
+                .nth(1)
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(49),
+            security: tacacsrs_config::ResolvedSecurity::Obfuscation {
+                shared_secret: None,
+            },
+            timeout: std::time::Duration::from_secs(5),
+            single_connection: false,
+            domain_name: None,
+            sni_enabled: false,
+        }
+    }
+
+    #[cfg(unix)]
+    fn service_config(
+        endpoint: IpcEndpoint,
+        servers: Vec<tacacsrs_config::ServerConnectionConfig>,
+    ) -> ServiceConfig {
         ServiceConfig {
             endpoint,
-            server_addresses,
-            upstream: UpstreamConnectionOptions {
-                connect_timeout: Duration::from_millis(50),
-                ..UpstreamConnectionOptions::default()
-            },
+            servers,
             preferred_probe_interval: Duration::from_millis(50),
             socket_mode: 0o660,
         }
@@ -445,7 +462,7 @@ mod tests {
         let endpoint = test_endpoint("tacacs-service-test");
         let config = service_config(
             endpoint.clone(),
-            vec![primary.address.clone(), secondary.address.clone()],
+            vec![test_server("primary:49"), test_server("secondary:49")],
         );
 
         let service = TacacsClientService::new_with_connector(config, connector).unwrap();
@@ -504,7 +521,7 @@ mod tests {
         };
 
         let existing_listener = tokio::net::UnixListener::bind(&path).unwrap();
-        let config = service_config(endpoint, vec![primary.address.clone()]);
+        let config = service_config(endpoint, vec![test_server("primary:49")]);
 
         let service = TacacsClientService::new_with_connector(config, connector).unwrap();
         let error = service.serve().await.unwrap_err();
@@ -537,7 +554,7 @@ mod tests {
         let stale_listener = tokio::net::UnixListener::bind(&path).unwrap();
         drop(stale_listener);
 
-        let config = service_config(endpoint, vec![primary.address.clone()]);
+        let config = service_config(endpoint, vec![test_server("primary:49")]);
 
         let service = TacacsClientService::new_with_connector(config, connector).unwrap();
         let listener = service.prepare_unix_listener(&path).await.unwrap();

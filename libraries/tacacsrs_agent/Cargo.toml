@@ -12,6 +12,7 @@ anyhow = { version = "1.0.100", features = ["backtrace"] }
 async-trait = "0.1.89"
 log = "0.4.29"
 tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
+tacacsrs-config = { path = "../tacacsrs_config" }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
 tacacsrs-networking = { path = "../tacacsrs_networking" }
 tokio = { version = "1.49.0", features = ["full"] }

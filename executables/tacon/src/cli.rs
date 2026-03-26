@@ -10,20 +10,28 @@ use clap::{ArgGroup, Parser, Subcommand};
 #[command(group(
     ArgGroup::new("transport_target")
         .required(true)
-        .args(["server_addr", "service_endpoint"])
+        .args(["server_addr", "service_endpoint", "config"])
 ))]
 pub struct Cli {
     /// IP address and port of the TACACS+ server (e.g., "192.168.1.1:49")
     #[arg(short, long)]
     pub server_addr: Option<String>,
 
+    /// Path to a YANG JSON configuration file (ietf-system-tacacs-plus)
+    #[arg(long, value_name = "FILE", conflicts_with_all = [
+        "service_endpoint", "shared_secret", "use_tls",
+        "client_certificate", "client_key",
+        "insecure_disable_certificate_verification",
+    ])]
+    pub config: Option<std::path::PathBuf>,
+
     /// IPC endpoint for the central TACACS+ client service
     #[arg(long, value_name = "PATH_OR_ADDR")]
     pub service_endpoint: Option<String>,
 
-    /// Obfuscation key for encrypting TACACS+ messages
+    /// Shared secret for TACACS+ message obfuscation
     #[arg(short = 'k', long, conflicts_with = "service_endpoint")]
-    pub obfuscation_key: Option<String>,
+    pub shared_secret: Option<String>,
 
     /// Use TLS for the connection
     #[arg(long, conflicts_with = "service_endpoint")]

@@ -65,7 +65,7 @@ impl Connection {
 /// - TLS is requested but certificate/key are missing or invalid
 /// - TLS handshake fails
 pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
-    let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
+    let obfuscation_key = cli.shared_secret.as_ref().map(String::as_bytes);
     let stream = establish_stream(cli).await?;
 
     let connection = Arc::new(TacacsConnection::new(obfuscation_key));
