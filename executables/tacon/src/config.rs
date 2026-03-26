@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use tacacsrs_config::{ResolvedSecurity, ServerConnectionConfig, ServerType};
+use tacacsrs_config::{ResolvedSecurity, ServerConnectionConfig, TacacsPlusServerType};
 
 use crate::cli::Cli;
 
@@ -25,7 +25,7 @@ pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<ServerConnectionConfi
 
     Ok(ServerConnectionConfig {
         name: "cli".to_owned(),
-        server_type: ServerType::all(),
+        server_type: TacacsPlusServerType::all(),
         address: host,
         port,
         security,

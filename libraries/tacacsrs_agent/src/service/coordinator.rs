@@ -396,7 +396,7 @@ mod tests {
     fn test_server(address: &str) -> tacacsrs_config::ServerConnectionConfig {
         tacacsrs_config::ServerConnectionConfig {
             name: address.to_owned(),
-            server_type: tacacsrs_config::ServerType::ACCOUNTING,
+            server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
             address: address.split(':').next().unwrap_or(address).to_owned(),
             port: address
                 .split(':')

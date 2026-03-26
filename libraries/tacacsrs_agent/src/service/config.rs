@@ -35,12 +35,12 @@ use tacacsrs_config::ServerConnectionConfig;
 /// # use std::time::Duration;
 /// # use tacacsrs_agent::ServiceConfig;
 /// # use tacacsrs_agent_client::IpcEndpoint;
-/// # use tacacsrs_config::{ServerConnectionConfig, ServerType, ResolvedSecurity};
+/// # use tacacsrs_config::{ServerConnectionConfig, TacacsPlusServerType, ResolvedSecurity};
 /// let config = ServiceConfig {
 ///     endpoint: IpcEndpoint::default_local(),
 ///     servers: vec![ServerConnectionConfig {
 ///         name: "primary".to_owned(),
-///         server_type: ServerType::ACCOUNTING,
+///         server_type: TacacsPlusServerType::ACCOUNTING,
 ///         address: "tacacs-primary".to_owned(),
 ///         port: 49,
 ///         security: ResolvedSecurity::Obfuscation { shared_secret: None },

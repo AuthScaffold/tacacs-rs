@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+use serde::Deserialize;
+
 /// Types from `ietf-system-tacacs-plus`.
 pub mod tacacs_plus {
     use serde::Deserialize;
@@ -720,3 +722,11 @@ pub mod tls_common {
 
 }
 
+/// Root wrapper for RFC 7951 JSON encoding.
+///
+/// The JSON document root key is `ietf-system-tacacs-plus:tacacs-plus`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct YangConfigRoot {
+    #[serde(rename = "ietf-system-tacacs-plus:tacacs-plus")]
+    pub tacacs_plus: tacacs_plus::TacacsPlus,
+}

@@ -6,7 +6,7 @@ use anyhow::Context;
 use clap::{ArgGroup, Parser};
 use tacacsrs_agent::{ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_config::{ResolvedSecurity, ServerConnectionConfig, ServerType};
+use tacacsrs_config::{ResolvedSecurity, ServerConnectionConfig, TacacsPlusServerType};
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
@@ -192,7 +192,7 @@ fn server_from_address(
 
     ServerConnectionConfig {
         name: format!("server-{index}"),
-        server_type: ServerType::all(),
+        server_type: TacacsPlusServerType::all(),
         address: host,
         port,
         security,

@@ -775,12 +775,45 @@ class RustEmitter:
         w = self.fd.write
         w("// Auto-generated from YANG modules by yang2rust.py — DO NOT EDIT\n\n")
         w("#![allow(dead_code)]\n\n")
+        w("use serde::Deserialize;\n\n")
 
         # Emit each module
+        top_module = None
         for mod in self.c.modules.values():
             if not mod.structs and not mod.enums and not mod.typedefs and not mod.bitflags:
                 continue
             self._emit_module(mod)
+            # The first module with a TacacsPlus-like top-level struct is the "top"
+            if top_module is None and any(
+                s.name in ("TacacsPlus", "TacacsPlusConfig")
+                for s in mod.structs.values()
+            ):
+                top_module = mod
+
+        # Emit root wrapper for RFC 7951 JSON encoding
+        if top_module is not None:
+            yang_name = top_module.yang_name
+            rust_mod = top_module.rust_name
+            # Find the top-level container name
+            for s in top_module.structs.values():
+                if s.name in ("TacacsPlus", "TacacsPlusConfig"):
+                    self._emit_root_wrapper(yang_name, rust_mod, s.name)
+                    break
+
+    def _emit_root_wrapper(self, yang_module: str, rust_mod: str, struct_name: str):
+        w = self.fd.write
+        # The YANG augmentation key: module-name:container-name
+        # For ietf-system-tacacs-plus, the container is "tacacs-plus"
+        json_key = f"{yang_module}:tacacs-plus"
+
+        w(f"/// Root wrapper for RFC 7951 JSON encoding.\n")
+        w(f"///\n")
+        w(f"/// The JSON document root key is `{json_key}`.\n")
+        w(f"#[derive(Debug, Clone, Deserialize)]\n")
+        w(f"pub struct YangConfigRoot {{\n")
+        w(f'    #[serde(rename = "{json_key}")]\n')
+        w(f"    pub tacacs_plus: {rust_mod}::{struct_name},\n")
+        w(f"}}\n")
 
     def _emit_module(self, mod: ModuleTypes):
         w = self.fd.write
