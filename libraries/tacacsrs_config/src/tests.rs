@@ -76,7 +76,14 @@ fn parse_tls_config() {
                     "tls": {
                         "server-authentication": {
                             "ca-certs": {
-                                "cert-files": ["/etc/ssl/ca.pem"]
+                                "inline-definition": {
+                                    "certificate": [
+                                        {
+                                            "name": "ca1",
+                                            "cert-data": "MIIB..."
+                                        }
+                                    ]
+                                }
                             }
                         }
                     }
@@ -98,6 +105,11 @@ fn parse_tls_config() {
             assert!(tls.client_identity.is_none());
             let sa = tls.server_authentication.inline.as_ref().unwrap();
             assert!(sa.ca_certs.is_some());
+            let ca = sa.ca_certs.as_ref().unwrap();
+            let certs = &ca.inline_definition.as_ref().unwrap().certificate;
+            assert_eq!(certs.len(), 1);
+            assert_eq!(certs[0].name, "ca1");
+            assert_eq!(certs[0].cert_data, "MIIB...");
         }
         crate::Security::Obfuscation(_) => panic!("expected TLS security"),
     }
@@ -243,8 +255,10 @@ fn credential_reference_resolution() {
                 {
                     "id": "corp-cert",
                     "certificate": {
-                        "cert-file": "/etc/ssl/client.pem",
-                        "key-file": "/etc/ssl/client.key"
+                        "inline-definition": {
+                            "cert-data": "MIIB...",
+                            "cleartext-private-key": "MIIEv..."
+                        }
                     }
                 }
             ],
@@ -252,7 +266,11 @@ fn credential_reference_resolution() {
                 {
                     "id": "corp-ca",
                     "ca-certs": {
-                        "cert-files": ["/etc/ssl/ca-bundle.pem"]
+                        "inline-definition": {
+                            "certificate": [
+                                {"name": "ca1", "cert-data": "MIIB..."}
+                            ]
+                        }
                     }
                 }
             ],
@@ -281,7 +299,7 @@ fn credential_reference_resolution() {
         crate::Security::Tls(tls) => {
             let ci = tls.client_identity.as_ref().unwrap();
             // Reference should be resolved — inline value populated.
-            assert!(ci.inline.is_some());
+            assert!(ci.auth_type.is_some());
             assert!(ci.credentials_reference.is_none());
 
             // Server auth reference should be resolved.

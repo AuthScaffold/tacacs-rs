@@ -52,12 +52,12 @@ pub enum ResolvedSecurity {
     },
     /// TLS-secured connection with X.509 certificate authentication.
     Tls {
-        /// Path to the client certificate file for mTLS.
-        client_certificate: Option<String>,
-        /// Path to the client private key file for mTLS.
-        client_key: Option<String>,
-        /// Paths to CA certificate files for server verification.
-        ca_cert_files: Vec<String>,
+        /// PEM-encoded client certificate chain (None = no client auth).
+        client_cert_pem: Option<String>,
+        /// PEM-encoded client private key (None = no client auth).
+        client_key_pem: Option<String>,
+        /// PEM-encoded CA certificates for server verification.
+        ca_certs_pem: Vec<String>,
         /// Disable certificate verification (development only).
         insecure_disable_certificate_verification: bool,
     },
@@ -111,18 +111,31 @@ fn resolve_tls_security(
     tls: &crate::tls::TlsClientConfig,
     server_name: &str,
 ) -> anyhow::Result<ResolvedSecurity> {
-    let (client_certificate, client_key) = if let Some(ref ci) = tls.client_identity {
-        match &ci.inline {
-            Some(crate::tls::ClientIdentity::Certificate(cert)) => {
-                (cert.cert_file.clone(), cert.key_file.clone())
+    let (client_cert_pem, client_key_pem) = if let Some(ref ci) = tls.client_identity {
+        match &ci.auth_type {
+            Some(crate::tls::ClientAuthType::Certificate(cert)) => {
+                let cert_pem = cert
+                    .inline_definition
+                    .as_ref()
+                    .and_then(|d| d.cert_data.clone());
+                let key_pem = cert
+                    .inline_definition
+                    .as_ref()
+                    .and_then(|d| d.cleartext_private_key.clone());
+                (cert_pem, key_pem)
             }
-            Some(crate::tls::ClientIdentity::Tls13Epsk(epsk)) => {
+            Some(crate::tls::ClientAuthType::Tls13Epsk(epsk)) => {
+                let key = epsk
+                    .inline_definition
+                    .as_ref()
+                    .and_then(|d| d.cleartext_symmetric_key.clone())
+                    .unwrap_or_default();
                 return Ok(ResolvedSecurity::Psk {
                     identity: epsk.external_identity.clone(),
-                    key: epsk.key.clone().unwrap_or_default(),
+                    key,
                 });
             }
-            Some(crate::tls::ClientIdentity::RawPublicKey(_)) => {
+            Some(crate::tls::ClientAuthType::RawPublicKey(_)) => {
                 anyhow::bail!(
                     "server '{server_name}': raw public key client identity is not yet supported",
                 );
@@ -133,19 +146,24 @@ fn resolve_tls_security(
         (None, None)
     };
 
-    let ca_cert_files = tls
+    let ca_certs_pem = tls
         .server_authentication
         .inline
         .as_ref()
         .and_then(|sa| sa.ca_certs.as_ref())
-        .and_then(|ca| ca.cert_files.as_ref())
-        .cloned()
+        .and_then(|bag| bag.inline_definition.as_ref())
+        .map(|def| {
+            def.certificate
+                .iter()
+                .map(|e| e.cert_data.clone())
+                .collect()
+        })
         .unwrap_or_default();
 
     Ok(ResolvedSecurity::Tls {
-        client_certificate,
-        client_key,
-        ca_cert_files,
+        client_cert_pem,
+        client_key_pem,
+        ca_certs_pem,
         insecure_disable_certificate_verification: false,
     })
 }

@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use rustls_cert_file_reader::{FileReader, Format, ReadCerts, ReadKey};
-use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tokio_rustls::rustls;
 
 use super::danger::NoCertificateVerification;
@@ -93,6 +93,43 @@ impl TlsConfigurationBuilder {
 
         self.certificate_chain = cert_chain.into();
         self.private_key = key_der.into();
+        Ok(self)
+    }
+
+    /// Loads client authentication certificates and private key from PEM strings.
+    ///
+    /// This is the in-memory equivalent of [`with_client_auth_cert_files`](Self::with_client_auth_cert_files)
+    /// — useful when certificate/key data comes from a YANG configuration file
+    /// rather than the filesystem.
+    ///
+    /// # Arguments
+    ///
+    /// * `cert_pem` - PEM-encoded certificate chain
+    /// * `key_pem` - PEM-encoded private key
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the PEM data cannot be parsed as valid certificates
+    /// or a private key.
+    pub fn with_client_auth_cert_pem(
+        mut self,
+        cert_pem: &str,
+        key_pem: &str,
+    ) -> anyhow::Result<Self> {
+        let cert_chain: Vec<CertificateDer<'static>> =
+            CertificateDer::pem_slice_iter(cert_pem.as_bytes())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("failed to parse certificate PEM: {e}"))?;
+
+        if cert_chain.is_empty() {
+            anyhow::bail!("no certificates found in PEM data");
+        }
+
+        let key_der = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
+            .map_err(|e| anyhow::anyhow!("failed to parse private key PEM: {e}"))?;
+
+        self.certificate_chain = Some(cert_chain);
+        self.private_key = Some(key_der);
         Ok(self)
     }
 

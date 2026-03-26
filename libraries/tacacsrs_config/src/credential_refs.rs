@@ -1,47 +1,24 @@
 use serde::Deserialize;
 
 use crate::server::{Security, ServerEntry, TacacsPlusConfig};
-use crate::tls::{ClientIdentity, ServerAuthentication};
+use crate::tls::{ClientAuthType, ServerAuthentication};
 
-/// A reusable client credentials bundle.
-///
-/// Maps to the YANG `list client-credentials` keyed by `id`.
-/// These can be referenced by server entries via `credentials-reference`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ClientCredentials {
-    /// Unique identifier for this credential bundle.
     pub id: String,
-
-    /// The client identity contained in this bundle.
     #[serde(flatten)]
-    pub identity: Option<ClientIdentity>,
+    pub auth_type: Option<ClientAuthType>,
 }
 
-/// A reusable server credentials bundle.
-///
-/// Maps to the YANG `list server-credentials` keyed by `id`.
-/// These can be referenced by server entries via `credentials-reference`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ServerCredentials {
-    /// Unique identifier for this credential bundle.
     pub id: String,
-
-    /// The server authentication config contained in this bundle.
     #[serde(flatten)]
     pub authentication: Option<ServerAuthentication>,
 }
 
-/// Resolve credential references in server entries to inline values.
-///
-/// For each server using TLS with a `credentials-reference` in its
-/// client-identity or server-authentication, look up the referenced
-/// bundle from the top-level lists and copy the concrete values inline.
-///
-/// # Errors
-///
-/// Returns an error if a referenced credential ID does not exist.
 pub fn resolve_credential_references(config: &mut TacacsPlusConfig) -> anyhow::Result<()> {
     let client_creds: std::collections::HashMap<&str, &ClientCredentials> = config
         .client_credentials
@@ -81,7 +58,7 @@ fn resolve_server_credentials(
                     cref,
                 )
             })?;
-            ci.inline = bundle.identity.clone();
+            ci.auth_type.clone_from(&bundle.auth_type);
             ci.credentials_reference = None;
         }
     }

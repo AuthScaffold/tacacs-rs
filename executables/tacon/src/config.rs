@@ -21,7 +21,7 @@ pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<ServerConnectionConfi
         None => (server_addr.to_owned(), 49),
     };
 
-    let security = resolve_security_from_cli(cli);
+    let security = resolve_security_from_cli(cli)?;
 
     Ok(ServerConnectionConfig {
         name: "cli".to_owned(),
@@ -36,29 +36,46 @@ pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<ServerConnectionConfi
     })
 }
 
-fn resolve_security_from_cli(cli: &Cli) -> ResolvedSecurity {
+fn resolve_security_from_cli(cli: &Cli) -> anyhow::Result<ResolvedSecurity> {
     if cli.use_tls {
         #[cfg(feature = "psk")]
         if let (Some(psk_identity), Some(psk_key)) =
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
         {
-            return ResolvedSecurity::Psk {
+            return Ok(ResolvedSecurity::Psk {
                 identity: psk_identity.clone(),
                 key: psk_key.clone(),
-            };
+            });
         }
 
-        ResolvedSecurity::Tls {
-            client_certificate: cli.client_certificate.clone(),
-            client_key: cli.client_key.clone(),
-            ca_cert_files: Vec::new(),
+        let client_cert_pem = cli
+            .client_certificate
+            .as_ref()
+            .map(|path| {
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("Failed to read client certificate: {path}"))
+            })
+            .transpose()?;
+        let client_key_pem = cli
+            .client_key
+            .as_ref()
+            .map(|path| {
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("Failed to read client key: {path}"))
+            })
+            .transpose()?;
+
+        Ok(ResolvedSecurity::Tls {
+            client_cert_pem,
+            client_key_pem,
+            ca_certs_pem: Vec::new(),
             insecure_disable_certificate_verification: cli
                 .insecure_disable_certificate_verification,
-        }
+        })
     } else {
-        ResolvedSecurity::Obfuscation {
+        Ok(ResolvedSecurity::Obfuscation {
             shared_secret: cli.shared_secret.clone(),
-        }
+        })
     }
 }
 

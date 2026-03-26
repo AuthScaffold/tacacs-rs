@@ -114,23 +114,20 @@ pub async fn establish_stream(server: &ServerConnectionConfig) -> anyhow::Result
         }
 
         ResolvedSecurity::Tls {
-            client_certificate,
-            client_key,
-            ca_cert_files: _,
+            client_cert_pem,
+            client_key_pem,
+            ca_certs_pem: _,
             insecure_disable_certificate_verification,
         } => {
-            let client_cert = client_certificate
-                .as_ref()
-                .context("TLS requires a client certificate or PSK credentials")?;
-            let key = client_key
-                .as_ref()
-                .context("TLS requires a client key or PSK credentials")?;
+            let mut builder = TlsConfigurationBuilder::new();
+            if let (Some(cert), Some(key)) = (client_cert_pem, client_key_pem) {
+                builder = builder
+                    .with_client_auth_cert_pem(cert, key)
+                    .context("Failed to load TLS certificates")?;
+            }
 
             let tls_config = Arc::new(
-                TlsConfigurationBuilder::new()
-                    .with_client_auth_cert_files(client_cert, key)
-                    .await
-                    .context("Failed to load TLS certificates")?
+                builder
                     .with_certificate_verification_disabled(
                         *insecure_disable_certificate_verification,
                     )

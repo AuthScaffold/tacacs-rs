@@ -10,7 +10,13 @@ pub use credential_refs::{ClientCredentials, ServerCredentials};
 pub use mapping::{to_connection_configs, ResolvedSecurity, ServerConnectionConfig};
 pub use server::{Security, ServerEntry, ServerType, SourceType, TacacsPlusConfig};
 pub use statistics::ServerStatistics;
-pub use tls::{CertificateIdentity, ClientIdentity, HelloParams, ServerAuthentication, TlsClientConfig};
+pub use tls::{
+    AsymmetricKeyInline, CertificateBag, CertificateBagEntry, CertificateBagInline,
+    CertificateClientIdentity, CipherSuites, ClientAuthType, ClientIdentityWithRef, HelloParams,
+    PublicKeyBag, PublicKeyBagInline, PublicKeyEntry, RawPublicKeyClientIdentity,
+    ServerAuthentication, ServerAuthenticationWithRef, SymmetricKeyInline, Tls13EpskClientIdentity,
+    TlsClientConfig, TlsVersions,
+};
 pub use validation::validate_config;
 
 use serde::Deserialize;

@@ -115,7 +115,7 @@ fn init_logger(verbose: u8) {
 }
 
 /// Build server list from CLI flags (legacy path, without a config file).
-fn servers_from_cli(cli: &Cli) -> Vec<ServerConnectionConfig> {
+fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ServerConnectionConfig>> {
     let timeout = Duration::from_secs(cli.connect_timeout_seconds);
 
     let security = if cli.use_tls {
@@ -123,7 +123,7 @@ fn servers_from_cli(cli: &Cli) -> Vec<ServerConnectionConfig> {
         if let (Some(psk_identity), Some(psk_key)) =
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
         {
-            return cli
+            return Ok(cli
                 .server_addresses
                 .iter()
                 .enumerate()
@@ -138,13 +138,30 @@ fn servers_from_cli(cli: &Cli) -> Vec<ServerConnectionConfig> {
                         },
                     )
                 })
-                .collect();
+                .collect());
         }
 
+        let client_cert_pem = cli
+            .client_certificate
+            .as_ref()
+            .map(|path| {
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("Failed to read client certificate: {path}"))
+            })
+            .transpose()?;
+        let client_key_pem = cli
+            .client_key
+            .as_ref()
+            .map(|path| {
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("Failed to read client key: {path}"))
+            })
+            .transpose()?;
+
         ResolvedSecurity::Tls {
-            client_certificate: cli.client_certificate.clone(),
-            client_key: cli.client_key.clone(),
-            ca_cert_files: Vec::new(),
+            client_cert_pem,
+            client_key_pem,
+            ca_certs_pem: Vec::new(),
             insecure_disable_certificate_verification: cli
                 .insecure_disable_certificate_verification,
         }
@@ -154,11 +171,12 @@ fn servers_from_cli(cli: &Cli) -> Vec<ServerConnectionConfig> {
         }
     };
 
-    cli.server_addresses
+    Ok(cli
+        .server_addresses
         .iter()
         .enumerate()
         .map(|(i, addr)| server_from_address(addr, i, timeout, security.clone()))
-        .collect()
+        .collect())
 }
 
 fn server_from_address(
@@ -216,7 +234,7 @@ async fn main() -> anyhow::Result<()> {
         tacacsrs_config::to_connection_configs(&yang_config)
             .context("Failed to map YANG config to connection parameters")?
     } else {
-        servers_from_cli(&cli)
+        servers_from_cli(&cli)?
     };
 
     log::info!(

@@ -331,28 +331,27 @@ async fn connect_upstream(
             Ok(connection)
         }
         ResolvedSecurity::Tls {
-            client_certificate,
-            client_key,
-            ca_cert_files: _,
+            client_cert_pem,
+            client_key_pem,
+            ca_certs_pem: _,
             insecure_disable_certificate_verification,
         } => {
             log::debug!("Negotiating mTLS handshake with {address}");
 
             let connection = Arc::new(TacacsConnection::new(None));
 
-            let cert = client_certificate
-                .as_ref()
-                .context("TLS requires a client certificate")?;
-            let key = client_key.as_ref().context("TLS requires a client key")?;
-
-            let tls_config = Arc::new(
-                TlsConfigurationBuilder::new()
-                    .with_client_auth_cert_files(cert, key)
-                    .await
+            let mut builder = TlsConfigurationBuilder::new();
+            if let (Some(cert), Some(key)) = (client_cert_pem, client_key_pem) {
+                builder = builder
+                    .with_client_auth_cert_pem(cert, key)
                     .inspect_err(|e| {
                         log::warn!("Failed to load TLS certificates for {address}: {e:#}");
                     })
-                    .context("Failed to load TLS certificates")?
+                    .context("Failed to load TLS certificates")?;
+            }
+
+            let tls_config = Arc::new(
+                builder
                     .with_certificate_verification_disabled(
                         *insecure_disable_certificate_verification,
                     )
@@ -444,21 +443,20 @@ async fn send_dedicated_accounting(
                 .await?
         }
         ResolvedSecurity::Tls {
-            client_certificate,
-            client_key,
-            ca_cert_files: _,
+            client_cert_pem,
+            client_key_pem,
+            ca_certs_pem: _,
             insecure_disable_certificate_verification,
         } => {
-            let cert = client_certificate
-                .as_ref()
-                .context("TLS requires a client certificate")?;
-            let key = client_key.as_ref().context("TLS requires a client key")?;
+            let mut builder = TlsConfigurationBuilder::new();
+            if let (Some(cert), Some(key)) = (client_cert_pem, client_key_pem) {
+                builder = builder
+                    .with_client_auth_cert_pem(cert, key)
+                    .context("Failed to load TLS certificates")?;
+            }
 
             let tls_config = Arc::new(
-                TlsConfigurationBuilder::new()
-                    .with_client_auth_cert_files(cert, key)
-                    .await
-                    .context("Failed to load TLS certificates")?
+                builder
                     .with_certificate_verification_disabled(
                         *insecure_disable_certificate_verification,
                     )
