@@ -9,7 +9,6 @@ pub mod tacacs_plus {
     use super::tls_common;
     use super::truststore;
 
-    pub type TacacsPlusServerType = String;
     pub type ClientCredentialsRef = String;
     pub type ServerCredentialsRef = String;
 
@@ -24,6 +23,45 @@ pub mod tacacs_plus {
         /// The SHA-384 hash.
         #[serde(rename = "sha-384")]
         Sha384,
+    }
+
+    /// The type can be set to authentication, authorization,
+    /// accounting, or any combination of the three types.
+    bitflags::bitflags! {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct TacacsPlusServerType: u32 {
+            /// Indicates that the TACACS+ server is providing
+            const AUTHENTICATION = 1 << 0;
+            /// Indicates that the TACACS+ server is providing
+            const AUTHORIZATION = 1 << 1;
+            /// Indicates that the TACACS+ server is providing accounting
+            const ACCOUNTING = 1 << 2;
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for TacacsPlusServerType {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = String::deserialize(deserializer)?;
+            let mut bits = Self::empty();
+            for token in s.split_whitespace() {
+                match token {
+                    "authentication" => bits |= Self::AUTHENTICATION,
+                    "authorization" => bits |= Self::AUTHORIZATION,
+                    "accounting" => bits |= Self::ACCOUNTING,
+                    other => return Err(serde::de::Error::unknown_variant(
+                        other,
+                        &["authentication", "authorization", "accounting"],
+                    )),
+                }
+            }
+            if bits.is_empty() {
+                return Err(serde::de::Error::custom("at least one bit must be set"));
+            }
+            Ok(bits)
+        }
     }
 
     /// Specifies the client identity using a certificate.
@@ -329,7 +367,7 @@ pub mod tacacs_plus {
         pub name: String,
         /// Server type: authentication/authorization/accounting and
         #[serde(rename = "server-type")]
-        pub server_type: String,
+        pub server_type: TacacsPlusServerType,
         /// Provides a domain name of the TACACS+ server.
         #[serde(rename = "domain-name")]
         #[serde(default)]

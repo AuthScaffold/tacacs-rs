@@ -40,7 +40,6 @@ _YANG_TO_RUST = {
     "binary": "String",
     "identityref": "String",
     "union": "String",
-    "bits": "String",
     "decimal64": "f64",
     "instance-identifier": "String",
     # common derived types from ietf-yang-types / ietf-inet-types
@@ -61,6 +60,7 @@ _YANG_TO_RUST = {
 }
 
 _ENUM_SENTINEL = "__ENUM__"
+_BITS_SENTINEL = "__BITS__"
 
 _RUST_KEYWORDS = frozenset({
     "as", "break", "const", "continue", "crate", "else", "enum", "extern",
@@ -153,6 +153,9 @@ def _resolve_type(type_stmt) -> str:
     if type_name == "enumeration":
         return _ENUM_SENTINEL
 
+    if type_name == "bits":
+        return _BITS_SENTINEL
+
     if type_name in _YANG_TO_RUST:
         return _YANG_TO_RUST[type_name]
 
@@ -185,6 +188,36 @@ def _find_enum_stmts(type_stmt):
         if td_type is not None:
             return _find_enum_stmts(td_type)
     return []
+
+
+def _find_bits_stmts(type_stmt):
+    """Find ``bit`` sub-statements, following the typedef chain if needed."""
+    if type_stmt is None:
+        return []
+    bits = type_stmt.search("bit")
+    if bits:
+        return bits
+    if hasattr(type_stmt, "i_typedef") and type_stmt.i_typedef is not None:
+        td_type = type_stmt.i_typedef.search_one("type")
+        if td_type is not None:
+            return _find_bits_stmts(td_type)
+    return []
+
+
+def _find_bits_typedef_name(type_stmt) -> str | None:
+    """If a type resolves to a bits type through a named typedef, return
+    the typedef name (PascalCase).  Otherwise return None."""
+    if type_stmt is None:
+        return None
+    if type_stmt.arg == "bits":
+        return None
+    if hasattr(type_stmt, "i_typedef") and type_stmt.i_typedef is not None:
+        td_type = type_stmt.i_typedef.search_one("type")
+        if td_type is not None and td_type.arg == "bits":
+            return _yang_to_pascal(type_stmt.i_typedef.arg)
+        if td_type is not None:
+            return _find_bits_typedef_name(td_type)
+    return None
 
 
 def _find_enum_typedef_name(type_stmt) -> str | None:
@@ -355,6 +388,25 @@ class Enum:
         self.doc = doc
 
 
+class BitflagsBit:
+    __slots__ = ("yang_name", "rust_name", "position", "doc")
+
+    def __init__(self, yang_name, position, doc=None):
+        self.yang_name = yang_name
+        self.rust_name = yang_name.upper().replace("-", "_")
+        self.position = position
+        self.doc = doc
+
+
+class Bitflags:
+    __slots__ = ("name", "bits", "doc")
+
+    def __init__(self, name, doc=None):
+        self.name = name
+        self.bits: list[BitflagsBit] = []
+        self.doc = doc
+
+
 class ModuleTypes:
     """Collected types for one YANG module."""
 
@@ -363,6 +415,7 @@ class ModuleTypes:
         self.rust_name = rust_name
         self.structs: OrderedDict[str, Struct] = OrderedDict()
         self.enums: OrderedDict[str, Enum] = OrderedDict()
+        self.bitflags: OrderedDict[str, Bitflags] = OrderedDict()
         self.typedefs: OrderedDict[str, str] = OrderedDict()
         self._used: set[str] = set()
 
@@ -409,6 +462,8 @@ class Collector:
             mod = self._get_mod(module.arg)
             if rust_type == _ENUM_SENTINEL:
                 self._collect_enum_typedef(td, mod)
+            elif rust_type == _BITS_SENTINEL:
+                self._collect_bits_typedef(td, mod)
             else:
                 mod.typedefs[td_pascal] = rust_type
 
@@ -429,6 +484,17 @@ class Collector:
             rust_enum.variants.append(EnumVariant(e.arg, _get_desc(e)))
         if rust_enum.variants:
             mod.enums[enum_name] = rust_enum
+
+    def _collect_bits_typedef(self, td, mod: ModuleTypes):
+        td_type = td.search_one("type")
+        bf_name = _yang_to_pascal(td.arg)
+        bf = Bitflags(bf_name, _get_desc(td))
+        for i, bit_stmt in enumerate(td_type.search("bit")):
+            pos_stmt = bit_stmt.search_one("position")
+            pos = int(pos_stmt.arg) if pos_stmt else i
+            bf.bits.append(BitflagsBit(bit_stmt.arg, pos, _get_desc(bit_stmt)))
+        if bf.bits:
+            mod.bitflags[bf_name] = bf
 
     # -- naming within a module ---
 
@@ -554,6 +620,20 @@ class Collector:
                 mod.enums[enum_name] = rust_enum
                 rust_type = enum_name
 
+        if rust_type == _BITS_SENTINEL:
+            mod = self._mod_for_stmt(stmt)
+            td_name = _find_bits_typedef_name(type_stmt)
+            bf_name = td_name or _yang_to_pascal(stmt.arg)
+            if bf_name not in mod.bitflags:
+                bf_name = mod.unique_name(bf_name)
+                bf = Bitflags(bf_name, _get_desc(stmt))
+                for i, bit_stmt in enumerate(_find_bits_stmts(type_stmt)):
+                    pos_stmt = bit_stmt.search_one("position")
+                    pos = int(pos_stmt.arg) if pos_stmt else i
+                    bf.bits.append(BitflagsBit(bit_stmt.arg, pos, _get_desc(bit_stmt)))
+                mod.bitflags[bf_name] = bf
+            rust_type = bf_name
+
         optional = _leaf_is_optional(stmt)
         return Field(stmt.arg, rust_type, optional=optional, doc=_get_desc(stmt))
 
@@ -650,7 +730,7 @@ class RustEmitter:
 
         # Emit each module
         for mod in self.c.modules.values():
-            if not mod.structs and not mod.enums and not mod.typedefs:
+            if not mod.structs and not mod.enums and not mod.typedefs and not mod.bitflags:
                 continue
             self._emit_module(mod)
 
@@ -683,6 +763,10 @@ class RustEmitter:
         for enum in mod.enums.values():
             self._emit_enum(enum)
 
+        # Bitflags
+        for bf in mod.bitflags.values():
+            self._emit_bitflags(bf)
+
         # Structs
         for st in mod.structs.values():
             self._emit_struct(st, mod.rust_name)
@@ -700,6 +784,46 @@ class RustEmitter:
                 w(f'        #[serde(rename = "{v.yang_name}")]\n')
             w(f"        {v.rust_name},\n")
         w("    }\n\n")
+
+    def _emit_bitflags(self, bf: Bitflags):
+        w = self.fd.write
+        self._doc(bf.doc, "    ")
+        w(f"    bitflags::bitflags! {{\n")
+        w(f"        #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n")
+        w(f"        pub struct {bf.name}: u32 {{\n")
+        for bit in bf.bits:
+            if bit.doc:
+                first = _first_line(bit.doc)
+                if first:
+                    w(f"            /// {first}\n")
+            w(f"            const {bit.rust_name} = 1 << {bit.position};\n")
+        w("        }\n")
+        w("    }\n\n")
+        # Custom Deserialize impl for space-separated string (RFC 7951 §6.7)
+        w(f"    impl<'de> serde::Deserialize<'de> for {bf.name} {{\n")
+        w(f"        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\n")
+        w(f"        where\n")
+        w(f"            D: serde::Deserializer<'de>,\n")
+        w(f"        {{\n")
+        w(f"            let s = String::deserialize(deserializer)?;\n")
+        w(f"            let mut bits = Self::empty();\n")
+        w(f"            for token in s.split_whitespace() {{\n")
+        w(f"                match token {{\n")
+        for bit in bf.bits:
+            w(f'                    "{bit.yang_name}" => bits |= Self::{bit.rust_name},\n')
+        w(f"                    other => return Err(serde::de::Error::unknown_variant(\n")
+        w(f"                        other,\n")
+        names_str = ", ".join(f'"{b.yang_name}"' for b in bf.bits)
+        w(f"                        &[{names_str}],\n")
+        w(f"                    )),\n")
+        w(f"                }}\n")
+        w(f"            }}\n")
+        w(f"            if bits.is_empty() {{\n")
+        w(f'                return Err(serde::de::Error::custom("at least one bit must be set"));\n')
+        w(f"            }}\n")
+        w(f"            Ok(bits)\n")
+        w(f"        }}\n")
+        w(f"    }}\n\n")
 
     def _emit_struct(self, st: Struct, current_mod: str):
         w = self.fd.write
