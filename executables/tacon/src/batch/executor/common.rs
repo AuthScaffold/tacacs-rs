@@ -8,17 +8,12 @@ use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
 
 use tacacsrs_networking::session::Session;
 
-use crate::cli::Cli;
 use crate::commands::accounting::send_accounting_request;
 
 use super::super::progress::{ProgressConfig, ProgressTracker};
 use super::super::types::{AccountingRequest, BatchRequest, LoadTestResult};
 
-pub(super) fn service_client(cli: &Cli) -> anyhow::Result<ServiceClient> {
-    let endpoint = cli
-        .service_endpoint
-        .as_deref()
-        .context("Service endpoint is required for service mode")?;
+pub(super) fn service_client(endpoint: &str) -> anyhow::Result<ServiceClient> {
     let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
     Ok(ServiceClient::new(endpoint))
 }

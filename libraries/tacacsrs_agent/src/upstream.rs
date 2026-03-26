@@ -350,7 +350,7 @@ async fn connect_upstream(
                     .with_client_auth_cert_files(cert, key)
                     .await
                     .inspect_err(|e| {
-                        log::warn!("Failed to load TLS certificates for {address}: {e:#}")
+                        log::warn!("Failed to load TLS certificates for {address}: {e:#}");
                     })
                     .context("Failed to load TLS certificates")?
                     .with_certificate_verification_disabled(

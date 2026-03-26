@@ -1,9 +1,9 @@
 use anyhow::Context;
 use futures::future::join_all;
 
+use tacacsrs_config::ServerConnectionConfig;
 use tacacsrs_networking::session::Session;
 
-use crate::cli::Cli;
 use crate::connection::{establish_connection, Connection};
 
 use super::common::{execute_single_request, load_test_iterations, run_load_test};
@@ -88,7 +88,7 @@ pub(super) async fn execute_parallel_multiplexed(
 /// Each iteration opens a new multiplexed connection, creates a session, and
 /// sends the request. The test stops immediately on the first failure.
 pub(super) async fn execute_load_test_multiplexed(
-    cli: &Cli,
+    server: &ServerConnectionConfig,
     requests: &[BatchRequest],
     config: &LoadTestConfig,
 ) -> anyhow::Result<LoadTestResult> {
@@ -96,14 +96,14 @@ pub(super) async fn execute_load_test_multiplexed(
 
     println!("Starting load test with {total_requests} total requests...\n");
 
-    let cli = cli.clone();
+    let server = server.clone();
     Ok(run_load_test(
         total_requests,
         load_test_iterations(requests, config.repetitions),
         config.max_parallel,
         move |rep, idx, request| {
-            let cli = cli.clone();
-            async move { execute_load_test_single(&cli, request, rep, idx).await }
+            let server = server.clone();
+            async move { execute_load_test_single(&server, request, rep, idx).await }
         },
     )
     .await)
@@ -111,12 +111,12 @@ pub(super) async fn execute_load_test_multiplexed(
 
 /// Executes a single load test iteration on a new multiplexed connection
 async fn execute_load_test_single(
-    cli: &Cli,
+    server: &ServerConnectionConfig,
     request: &BatchRequest,
     rep: usize,
     idx: usize,
 ) -> Result<(), String> {
-    let connection = establish_connection(cli).await.map_err(|error| {
+    let connection = establish_connection(server).await.map_err(|error| {
         format!("Connection failed at rep {}, request {}: {}", rep + 1, idx + 1, error)
     })?;
 

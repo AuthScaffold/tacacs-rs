@@ -3,8 +3,6 @@ use std::sync::Arc;
 
 use tacacsrs_agent_client::ServiceClient;
 
-use crate::cli::Cli;
-
 use super::common::{
     load_test_iterations, run_load_test, service_client, to_service_accounting_request,
     validate_service_mode_request,
@@ -36,10 +34,10 @@ async fn execute_single_request_via_service(
 }
 
 pub async fn execute_batch_via_service(
-    cli: &Cli,
+    endpoint: &str,
     batch: &BatchFile,
 ) -> anyhow::Result<Vec<RequestResult>> {
-    let client = service_client(cli)?;
+    let client = service_client(endpoint)?;
 
     if let Some(description) = &batch.metadata.description {
         log::info!("Executing batch: {description}");
@@ -47,7 +45,7 @@ pub async fn execute_batch_via_service(
     }
 
     if let Some(load_config) = &batch.metadata.load_test {
-        return execute_batch_load_test_via_service(cli, batch, load_config).await;
+        return execute_batch_load_test_via_service(endpoint, batch, load_config).await;
     }
 
     let request_count = batch.requests.len();
@@ -89,11 +87,11 @@ pub async fn execute_batch_via_service(
 }
 
 async fn execute_batch_load_test_via_service(
-    cli: &Cli,
+    endpoint: &str,
     batch: &BatchFile,
     load_config: &LoadTestConfig,
 ) -> anyhow::Result<Vec<RequestResult>> {
-    let client = Arc::new(service_client(cli)?);
+    let client = Arc::new(service_client(endpoint)?);
 
     log::info!(
         "Service load testing mode enabled: {} repetitions, max {} parallel",

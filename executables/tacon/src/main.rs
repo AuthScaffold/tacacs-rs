@@ -1,6 +1,7 @@
 mod batch;
 mod cli;
 mod commands;
+mod config;
 mod connection;
 
 use std::path::Path;
@@ -9,6 +10,7 @@ use std::str::FromStr;
 use anyhow::{bail, Context};
 use clap::Parser;
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
+use tacacsrs_config::ServerConnectionConfig;
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::DedicatedConnection;
@@ -101,11 +103,7 @@ fn ensure_service_mode_accounting_supported(
     Ok(())
 }
 
-async fn execute_command_via_service(cli: &Cli, command: &Command) -> anyhow::Result<()> {
-    let endpoint = cli
-        .service_endpoint
-        .as_deref()
-        .context("Service endpoint is required for service mode")?;
+async fn execute_command_via_service(endpoint: &str, command: &Command) -> anyhow::Result<()> {
     let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
     let client = ServiceClient::new(endpoint);
 
@@ -163,10 +161,11 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
         batch_file.metadata.parallel
     );
 
-    let results = if cli.service_endpoint.is_some() {
-        batch::execute_batch_via_service(cli, &batch_file).await?
+    let results = if let Some(ref endpoint) = cli.service_endpoint {
+        batch::execute_batch_via_service(endpoint, &batch_file).await?
     } else {
-        batch::execute_batch(cli, &batch_file).await?
+        let server_config = config::resolve_server_config(cli)?;
+        batch::execute_batch(&server_config, cli.dedicated, &batch_file).await?
     };
 
     batch::print_results_summary(&results);
@@ -197,17 +196,19 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return run_batch_mode(&cli, Path::new(file)).await;
     }
 
-    if cli.service_endpoint.is_some() {
-        return execute_command_via_service(&cli, &cli.command).await;
+    if let Some(ref endpoint) = cli.service_endpoint {
+        return execute_command_via_service(endpoint, &cli.command).await;
     }
+
+    let server_config = config::resolve_server_config(&cli)?;
 
     // Dedicated connection mode: minimal one-shot connection (TCP or TLS) per
     // request, no background tasks, no session multiplexing.
     if cli.dedicated {
-        return execute_command_dedicated(&cli).await;
+        return execute_command_dedicated(&server_config, &cli.command).await;
     }
 
-    let connection = establish_connection(&cli).await?;
+    let connection = establish_connection(&server_config).await?;
 
     let custom_session_id = cli.command.session_id();
     let session = connection
@@ -224,10 +225,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
 /// Executes the command using a dedicated connection — a minimal one-shot
 /// TCP connection with no background tasks or session multiplexing.
-async fn execute_command_dedicated(cli: &Cli) -> anyhow::Result<()> {
+async fn execute_command_dedicated(
+    server: &ServerConnectionConfig,
+    command: &Command,
+) -> anyhow::Result<()> {
     log::info!("Running in dedicated connection mode");
 
-    match &cli.command {
+    match command {
         Command::Accounting {
             args,
             cmd,
@@ -236,12 +240,12 @@ async fn execute_command_dedicated(cli: &Cli) -> anyhow::Result<()> {
             custom_flag_2,
             session_id: _,
         } => {
-            let stream = connection::establish_stream(cli)
+            let stream = connection::establish_stream(server)
                 .await
                 .context("Connection failed")?;
 
-            let obfuscation_key = cli.shared_secret.as_ref().map(String::as_bytes);
-            let mut conn = DedicatedConnection::new(stream, obfuscation_key);
+            let obfuscation_key = connection::obfuscation_key_bytes(&server.security);
+            let mut conn = DedicatedConnection::new(stream, obfuscation_key.as_deref());
 
             let mut custom_flags = TacacsFlags::empty();
             if *custom_flag_1 {

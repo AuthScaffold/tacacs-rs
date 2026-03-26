@@ -1,6 +1,7 @@
 use anyhow::Context;
 
-use crate::cli::Cli;
+use tacacsrs_config::ServerConnectionConfig;
+
 use crate::connection::establish_connection;
 
 use super::dedicated::{execute_requests_dedicated, probe_single_connect, run_dedicated_load_test};
@@ -18,18 +19,21 @@ enum ExecutionMode {
 
 /// Determines the execution mode for the batch.
 ///
-/// When `--dedicated` is set, the probe is skipped and dedicated mode is used
+/// When `dedicated` is `true`, the probe is skipped and dedicated mode is used
 /// unconditionally. Otherwise a lightweight accounting record is sent via a
 /// dedicated connection to check whether the server echoes
 /// `TAC_PLUS_SINGLE_CONNECT_FLAG`.
-async fn determine_execution_mode(cli: &Cli) -> ExecutionMode {
-    if cli.dedicated {
+async fn determine_execution_mode(
+    server: &ServerConnectionConfig,
+    dedicated: bool,
+) -> ExecutionMode {
+    if dedicated {
         log::info!("Dedicated mode forced by CLI flag — skipping single-connection probe");
         return ExecutionMode::Dedicated;
     }
 
     log::info!("Probing server for single-connection support via dedicated connection");
-    if probe_single_connect(cli).await {
+    if probe_single_connect(server).await {
         ExecutionMode::Multiplexed
     } else {
         ExecutionMode::Dedicated
@@ -38,10 +42,14 @@ async fn determine_execution_mode(cli: &Cli) -> ExecutionMode {
 
 /// Entry point for executing a batch file over a direct server connection.
 ///
-/// Unless `--dedicated` is set, a lightweight probe is sent first to detect
+/// Unless `dedicated` is `true`, a lightweight probe is sent first to detect
 /// single-connection support. The result decides whether batch requests use
 /// multiplexed or dedicated connections.
-pub async fn execute_batch(cli: &Cli, batch: &BatchFile) -> anyhow::Result<Vec<RequestResult>> {
+pub async fn execute_batch(
+    server: &ServerConnectionConfig,
+    dedicated: bool,
+    batch: &BatchFile,
+) -> anyhow::Result<Vec<RequestResult>> {
     if let Some(description) = &batch.metadata.description {
         log::info!("Executing batch: {description}");
         println!("Batch: {description}");
@@ -51,10 +59,10 @@ pub async fn execute_batch(cli: &Cli, batch: &BatchFile) -> anyhow::Result<Vec<R
         return Ok(vec![]);
     }
 
-    let execution_mode = determine_execution_mode(cli).await;
+    let execution_mode = determine_execution_mode(server, dedicated).await;
 
     if let Some(load_config) = &batch.metadata.load_test {
-        return execute_batch_load_test(cli, batch, load_config, execution_mode).await;
+        return execute_batch_load_test(server, batch, load_config, execution_mode).await;
     }
 
     let request_count = batch.requests.len();
@@ -62,7 +70,7 @@ pub async fn execute_batch(cli: &Cli, batch: &BatchFile) -> anyhow::Result<Vec<R
 
     let results = match execution_mode {
         ExecutionMode::Multiplexed => {
-            let connection = establish_connection(cli)
+            let connection = establish_connection(server)
                 .await
                 .context("Failed to establish multiplexed connection after probe")?;
 
@@ -77,7 +85,7 @@ pub async fn execute_batch(cli: &Cli, batch: &BatchFile) -> anyhow::Result<Vec<R
                 "Executing {request_count} requests with dedicated connections (parallel: {})",
                 batch.metadata.parallel,
             );
-            execute_requests_dedicated(cli, &batch.requests, batch.metadata.parallel).await
+            execute_requests_dedicated(server, &batch.requests, batch.metadata.parallel).await
         }
     };
 
@@ -88,7 +96,7 @@ pub async fn execute_batch(cli: &Cli, batch: &BatchFile) -> anyhow::Result<Vec<R
 ///
 /// The execution mode has already been determined by `determine_execution_mode`.
 async fn execute_batch_load_test(
-    cli: &Cli,
+    server: &ServerConnectionConfig,
     batch: &BatchFile,
     load_config: &LoadTestConfig,
     execution_mode: ExecutionMode,
@@ -111,10 +119,10 @@ async fn execute_batch_load_test(
 
     let result = match execution_mode {
         ExecutionMode::Multiplexed => {
-            execute_load_test_multiplexed(cli, &batch.requests, load_config).await?
+            execute_load_test_multiplexed(server, &batch.requests, load_config).await?
         }
         ExecutionMode::Dedicated => {
-            run_dedicated_load_test(cli, &batch.requests, load_config).await
+            run_dedicated_load_test(server, &batch.requests, load_config).await
         }
     };
     print_load_test_summary(&result);
