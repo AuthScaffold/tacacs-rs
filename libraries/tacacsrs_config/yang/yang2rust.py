@@ -234,6 +234,49 @@ def _source_module(stmt) -> str | None:
     return None
 
 
+# Map from YANG grouping name to a short, clean PascalCase prefix.
+# The grouping names are verbose (e.g. "inline-or-keystore-end-entity-cert-
+# with-key-grouping"), so we map them to concise prefixes.
+_GROUPING_PREFIX_MAP = {
+    # ietf-keystore groupings
+    "inline-or-keystore-end-entity-cert-with-key-grouping": "EndEntityCertWithKey",
+    "inline-or-keystore-asymmetric-key-grouping": "AsymmetricKey",
+    "inline-or-keystore-symmetric-key-grouping": "SymmetricKey",
+    # ietf-truststore groupings
+    "inline-or-truststore-certs-grouping": "Certs",
+    "inline-or-truststore-public-keys-grouping": "PublicKeys",
+    # ietf-crypto-types groupings
+    "private-key-grouping": "PrivateKey",
+    "symmetric-key-grouping": "SymmetricKey",
+    "encrypted-value-grouping": "EncryptedValue",
+    # ietf-tls-common groupings
+    "hello-params-grouping": "HelloParams",
+    # ietf-tls-client groupings
+    "tls-client-grouping": "TlsClient",
+}
+
+
+def _grouping_prefix(stmt) -> str:
+    """Derive a PascalCase prefix from the nearest YANG grouping name.
+    
+    Returns an empty string if no grouping context is available.
+    """
+    if not hasattr(stmt, "i_uses") or not stmt.i_uses:
+        return ""
+    # The last uses statement in the chain is the nearest grouping.
+    last_uses = stmt.i_uses[-1]
+    grp_name = last_uses.arg
+    # Strip module prefix (e.g. "ks:inline-or-keystore-..." -> "inline-or-...")
+    if ":" in grp_name:
+        grp_name = grp_name.split(":", 1)[1]
+    # Check our curated mapping first
+    if grp_name in _GROUPING_PREFIX_MAP:
+        return _GROUPING_PREFIX_MAP[grp_name]
+    # Fallback: convert the grouping name directly, stripping "-grouping"
+    clean = grp_name.removesuffix("-grouping")
+    return _yang_to_pascal(clean)
+
+
 def _leaf_is_optional(stmt) -> bool:
     if _is_mandatory(stmt):
         return False
@@ -383,6 +426,10 @@ class Collector:
         Uses structural fingerprinting to deduplicate: if a node from the
         same YANG module has the same children structure as one we've already
         emitted, reuse the existing struct name instead of creating a new one.
+        
+        Names are derived from the YANG **grouping name** when available,
+        producing names like ``keystore::AsymmetricKeyInlineDefinition``
+        instead of ``keystore::ClientCredentialsCertificateInlineDefinition``.
         """
         mod = self._mod_for_stmt(stmt)
         fp = self._fingerprint(stmt)
@@ -396,8 +443,15 @@ class Collector:
 
         pascal = _yang_to_pascal(stmt.arg)
 
-        # Prefix with parent name when the name is generic / would collide.
-        if parent_prefix and (pascal in mod._used or pascal in _GENERIC):
+        # Derive a context prefix from the nearest YANG grouping name
+        # instead of the usage-site parent. This produces meaningful names
+        # like ``AsymmetricKeyInlineDefinition`` instead of
+        # ``ClientCredentialsCertificateInlineDefinition``.
+        grp_prefix = _grouping_prefix(stmt)
+
+        if grp_prefix and (pascal in mod._used or pascal in _GENERIC):
+            pascal = f"{grp_prefix}{pascal}"
+        elif parent_prefix and (pascal in mod._used or pascal in _GENERIC):
             pascal = f"{parent_prefix}{pascal}"
 
         name = mod.unique_name(pascal)

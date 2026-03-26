@@ -29,15 +29,15 @@ pub mod tacacs_plus {
     /// Specifies the client identity using a certificate.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct ClientCredentialsCertificate {
+    pub struct ClientIdentityCertificate {
         /// A container to hold the local key definition.
         #[serde(rename = "inline-definition")]
         #[serde(default)]
-        pub inline_definition: Option<keystore::ClientCredentialsCertificateInlineDefinition>,
+        pub inline_definition: Option<keystore::EndEntityCertWithKeyInlineDefinition>,
         /// A reference to a specific certificate associated with
         #[serde(rename = "central-keystore-reference")]
         #[serde(default)]
-        pub central_keystore_reference: Option<keystore::ClientCredentialsCertificateCentralKeystoreReference>,
+        pub central_keystore_reference: Option<keystore::EndEntityCertWithKeyCentralKeystoreReference>,
     }
 
     /// Specifies the client identity using RPK.
@@ -47,7 +47,7 @@ pub mod tacacs_plus {
         /// A container to hold the local key definition.
         #[serde(rename = "inline-definition")]
         #[serde(default)]
-        pub inline_definition: Option<keystore::RawPrivateKeyInlineDefinition>,
+        pub inline_definition: Option<keystore::AsymmetricKeyInlineDefinition>,
         /// A reference to an asymmetric key that exists in
         #[serde(rename = "central-keystore-reference")]
         #[serde(default)]
@@ -61,7 +61,7 @@ pub mod tacacs_plus {
         /// A container to hold the local key definition.
         #[serde(rename = "inline-definition")]
         #[serde(default)]
-        pub inline_definition: Option<keystore::Tls13EpskInlineDefinition>,
+        pub inline_definition: Option<keystore::SymmetricKeyInlineDefinition>,
         /// A reference to a symmetric key that exists in
         #[serde(rename = "central-keystore-reference")]
         #[serde(default)]
@@ -94,7 +94,7 @@ pub mod tacacs_plus {
         pub id: String,
         /// Specifies the client identity using a certificate.
         #[serde(default)]
-        pub certificate: Option<ClientCredentialsCertificate>,
+        pub certificate: Option<ClientIdentityCertificate>,
         /// Specifies the client identity using RPK.
         #[serde(rename = "raw-private-key")]
         #[serde(default)]
@@ -110,11 +110,11 @@ pub mod tacacs_plus {
     /// A server certificate is authenticated if it has a valid
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct ServerCredentialsCaCerts {
+    pub struct ServerAuthenticationCaCerts {
         /// A container for locally configured trust anchor
         #[serde(rename = "inline-definition")]
         #[serde(default)]
-        pub inline_definition: Option<truststore::ServerCredentialsCaCertsInlineDefinition>,
+        pub inline_definition: Option<truststore::CertsInlineDefinition>,
         /// A reference to a certificate bag that exists in the
         #[serde(rename = "central-truststore-reference")]
         #[serde(default)]
@@ -126,11 +126,11 @@ pub mod tacacs_plus {
     /// A raw public key is authenticated if it is an exact match
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct ServerCredentialsRawPublicKeys {
+    pub struct ServerAuthenticationRawPublicKeys {
         /// A container to hold local public key definitions.
         #[serde(rename = "inline-definition")]
         #[serde(default)]
-        pub inline_definition: Option<truststore::ServerCredentialsRawPublicKeysInlineDefinition>,
+        pub inline_definition: Option<truststore::PublicKeysInlineDefinition>,
         /// A reference to a bag of public keys that exists
         #[serde(rename = "central-truststore-reference")]
         #[serde(default)]
@@ -147,15 +147,15 @@ pub mod tacacs_plus {
         /// A set of CA certificates used by the TLS client to
         #[serde(rename = "ca-certs")]
         #[serde(default)]
-        pub ca_certs: Option<ServerCredentialsCaCerts>,
+        pub ca_certs: Option<ServerAuthenticationCaCerts>,
         /// A set of server certificates (i.e., end entity certificates)
         #[serde(rename = "ee-certs")]
         #[serde(default)]
-        pub ee_certs: Option<ServerCredentialsCaCerts>,
+        pub ee_certs: Option<ServerAuthenticationCaCerts>,
         /// A set of raw public keys used by a TLS client to
         #[serde(rename = "raw-public-keys")]
         #[serde(default)]
-        pub raw_public_keys: Option<ServerCredentialsRawPublicKeys>,
+        pub raw_public_keys: Option<ServerAuthenticationRawPublicKeys>,
         /// Indicates that a TLS client can authenticate TLS servers
         #[serde(rename = "tls13-epsks")]
         #[serde(default)]
@@ -166,14 +166,14 @@ pub mod tacacs_plus {
     /// establishing a connection to a TLS server.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct TacacsPlusServerClientIdentity {
+    pub struct TlsClientClientIdentity {
         /// Specifies the client credentials reference.
         #[serde(rename = "credentials-reference")]
         #[serde(default)]
         pub credentials_reference: Option<String>,
         /// Specifies the client identity using a certificate.
         #[serde(default)]
-        pub certificate: Option<ClientCredentialsCertificate>,
+        pub certificate: Option<ClientIdentityCertificate>,
         /// Specifies the client identity using RPK.
         #[serde(rename = "raw-private-key")]
         #[serde(default)]
@@ -187,7 +187,7 @@ pub mod tacacs_plus {
     /// Specifies how a TLS client can authenticate TLS servers.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct TacacsPlusServerServerAuthentication {
+    pub struct TlsClientServerAuthentication {
         /// Specifies the server credentials reference.
         #[serde(rename = "credentials-reference")]
         #[serde(default)]
@@ -195,15 +195,15 @@ pub mod tacacs_plus {
         /// A set of CA certificates used by the TLS client to
         #[serde(rename = "ca-certs")]
         #[serde(default)]
-        pub ca_certs: Option<ServerCredentialsCaCerts>,
+        pub ca_certs: Option<ServerAuthenticationCaCerts>,
         /// A set of server certificates (i.e., end entity certificates)
         #[serde(rename = "ee-certs")]
         #[serde(default)]
-        pub ee_certs: Option<ServerCredentialsCaCerts>,
+        pub ee_certs: Option<ServerAuthenticationCaCerts>,
         /// A set of raw public keys used by a TLS client to
         #[serde(rename = "raw-public-keys")]
         #[serde(default)]
-        pub raw_public_keys: Option<ServerCredentialsRawPublicKeys>,
+        pub raw_public_keys: Option<ServerAuthenticationRawPublicKeys>,
         /// Indicates that a TLS client can authenticate TLS servers
         #[serde(rename = "tls13-epsks")]
         #[serde(default)]
@@ -213,15 +213,15 @@ pub mod tacacs_plus {
     /// Configurable parameters for the TLS Hello message.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct TacacsPlusServerHelloParams {
+    pub struct TlsClientHelloParams {
         /// Parameters limiting which TLS versions, amongst
         #[serde(rename = "tls-versions")]
         #[serde(default)]
-        pub tls_versions: Option<tls_common::TacacsPlusServerHelloParamsTlsVersions>,
+        pub tls_versions: Option<tls_common::HelloParamsTlsVersions>,
         /// Parameters regarding cipher suites.
         #[serde(rename = "cipher-suites")]
         #[serde(default)]
-        pub cipher_suites: Option<tls_common::TacacsPlusServerHelloParamsCipherSuites>,
+        pub cipher_suites: Option<tls_common::HelloParamsCipherSuites>,
     }
 
     /// List of TACACS+ servers used by the device.
@@ -248,15 +248,15 @@ pub mod tacacs_plus {
         /// Identity credentials that a TLS client may present when
         #[serde(rename = "client-identity")]
         #[serde(default)]
-        pub client_identity: Option<TacacsPlusServerClientIdentity>,
+        pub client_identity: Option<TlsClientClientIdentity>,
         /// Specifies how a TLS client can authenticate TLS servers.
         #[serde(rename = "server-authentication")]
         #[serde(default)]
-        pub server_authentication: Option<TacacsPlusServerServerAuthentication>,
+        pub server_authentication: Option<TlsClientServerAuthentication>,
         /// Configurable parameters for the TLS Hello message.
         #[serde(rename = "hello-params")]
         #[serde(default)]
-        pub hello_params: Option<TacacsPlusServerHelloParams>,
+        pub hello_params: Option<TlsClientHelloParams>,
         /// The shared secret, which is known to both the
         #[serde(rename = "shared-secret")]
         #[serde(default)]
@@ -307,7 +307,7 @@ pub mod keystore {
     /// A container to hold the local key definition.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct ClientCredentialsCertificateInlineDefinition {
+    pub struct EndEntityCertWithKeyInlineDefinition {
         /// Identifies the public key's format.  Implementations SHOULD
         #[serde(rename = "public-key-format")]
         #[serde(default)]
@@ -331,7 +331,7 @@ pub mod keystore {
         /// A container for the encrypted asymmetric private key
         #[serde(rename = "encrypted-private-key")]
         #[serde(default)]
-        pub encrypted_private_key: Option<crypto_types::ClientCredentialsCertificateInlineDefinitionEncryptedPrivateKey>,
+        pub encrypted_private_key: Option<crypto_types::PrivateKeyEncryptedPrivateKey>,
         /// The binary certificate data for this certificate.
         #[serde(rename = "cert-data")]
         #[serde(default)]
@@ -342,7 +342,7 @@ pub mod keystore {
     /// an asymmetric key stored in the central keystore.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct ClientCredentialsCertificateCentralKeystoreReference {
+    pub struct EndEntityCertWithKeyCentralKeystoreReference {
         /// A reference to an asymmetric key in the keystore.
         #[serde(rename = "asymmetric-key")]
         #[serde(default)]
@@ -355,7 +355,7 @@ pub mod keystore {
     /// A container to hold the local key definition.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct RawPrivateKeyInlineDefinition {
+    pub struct AsymmetricKeyInlineDefinition {
         /// Identifies the public key's format.  Implementations SHOULD
         #[serde(rename = "public-key-format")]
         #[serde(default)]
@@ -379,13 +379,13 @@ pub mod keystore {
         /// A container for the encrypted asymmetric private key
         #[serde(rename = "encrypted-private-key")]
         #[serde(default)]
-        pub encrypted_private_key: Option<crypto_types::ClientCredentialsCertificateInlineDefinitionEncryptedPrivateKey>,
+        pub encrypted_private_key: Option<crypto_types::PrivateKeyEncryptedPrivateKey>,
     }
 
     /// A container to hold the local key definition.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct Tls13EpskInlineDefinition {
+    pub struct SymmetricKeyInlineDefinition {
         /// Identifies the symmetric key's format.  Implementations
         #[serde(rename = "key-format")]
         #[serde(default)]
@@ -401,7 +401,7 @@ pub mod keystore {
         /// A container for the encrypted symmetric key value.
         #[serde(rename = "encrypted-symmetric-key")]
         #[serde(default)]
-        pub encrypted_symmetric_key: Option<crypto_types::ClientCredentialsCertificateInlineDefinitionEncryptedPrivateKey>,
+        pub encrypted_symmetric_key: Option<crypto_types::PrivateKeyEncryptedPrivateKey>,
     }
 
 }
@@ -415,7 +415,7 @@ pub mod crypto_types {
     /// key MUST be a symmetric key or an asymmetric key.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct ClientCredentialsCertificateInlineDefinitionEncryptedPrivateKeyEncryptedBy {
+    pub struct EncryptedValueEncryptedBy {
     }
 
     /// A container for the encrypted asymmetric private key
@@ -423,11 +423,11 @@ pub mod crypto_types {
     /// node is via the 'private-key-format' node
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct ClientCredentialsCertificateInlineDefinitionEncryptedPrivateKey {
+    pub struct PrivateKeyEncryptedPrivateKey {
         /// An empty container enabling a reference to the key that
         #[serde(rename = "encrypted-by")]
         #[serde(default)]
-        pub encrypted_by: Option<ClientCredentialsCertificateInlineDefinitionEncryptedPrivateKeyEncryptedBy>,
+        pub encrypted_by: Option<EncryptedValueEncryptedBy>,
         /// Identifies the format of the 'encrypted-value' leaf.
         #[serde(rename = "encrypted-value-format")]
         pub encrypted_value_format: String,
@@ -445,7 +445,7 @@ pub mod truststore {
     /// A trust anchor certificate or chain of certificates.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct ServerCredentialsCaCertsInlineDefinitionCertificate {
+    pub struct CertsCertificate {
         /// An arbitrary name for this certificate.
         pub name: String,
         /// The binary certificate data for this certificate.
@@ -457,16 +457,16 @@ pub mod truststore {
     /// certificates.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct ServerCredentialsCaCertsInlineDefinition {
+    pub struct CertsInlineDefinition {
         /// A trust anchor certificate or chain of certificates.
         #[serde(default)]
-        pub certificate: Vec<ServerCredentialsCaCertsInlineDefinitionCertificate>,
+        pub certificate: Vec<CertsCertificate>,
     }
 
     /// A public key definition.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct ServerCredentialsRawPublicKeysInlineDefinitionPublicKey {
+    pub struct PublicKeysPublicKey {
         /// An arbitrary name for this public key.
         pub name: String,
         /// Identifies the public key's format.  Implementations SHOULD
@@ -480,11 +480,11 @@ pub mod truststore {
     /// A container to hold local public key definitions.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct ServerCredentialsRawPublicKeysInlineDefinition {
+    pub struct PublicKeysInlineDefinition {
         /// A public key definition.
         #[serde(rename = "public-key")]
         #[serde(default)]
-        pub public_key: Vec<ServerCredentialsRawPublicKeysInlineDefinitionPublicKey>,
+        pub public_key: Vec<PublicKeysPublicKey>,
     }
 
 }
@@ -498,7 +498,7 @@ pub mod tls_common {
     /// the TLS handshake.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct TacacsPlusServerHelloParamsTlsVersions {
+    pub struct HelloParamsTlsVersions {
         /// If not specified, then there is no configured
         #[serde(default)]
         pub min: Option<String>,
@@ -510,7 +510,7 @@ pub mod tls_common {
     /// Parameters regarding cipher suites.
     #[derive(Debug, Clone, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct TacacsPlusServerHelloParamsCipherSuites {
+    pub struct HelloParamsCipherSuites {
         /// Acceptable cipher suites in order of descending
         #[serde(rename = "cipher-suite")]
         #[serde(default)]
