@@ -1,19 +1,14 @@
 use std::time::Duration;
 
-use crate::server::{Security, ServerType, TacacsPlusConfig};
+use crate::generated::tacacs_plus::{TacacsPlus, TacacsPlusServer, TacacsPlusServerType};
 
 /// Resolved per-server connection parameters ready for the runtime.
-///
-/// Produced from a YANG [`ServerEntry`](crate::ServerEntry) after credential
-/// reference resolution and validation. All file paths, credential bundles,
-/// and defaults have been applied — the runtime can use this directly to
-/// establish connections without further config lookups.
 #[derive(Debug, Clone)]
 pub struct ServerConnectionConfig {
     /// Unique configuration name for this server.
     pub name: String,
     /// What AAA operations this server handles.
-    pub server_type: ServerType,
+    pub server_type: TacacsPlusServerType,
     /// IP address or hostname of the TACACS+ server.
     pub address: String,
     /// Port number of the TACACS+ server.
@@ -39,13 +34,9 @@ impl ServerConnectionConfig {
 }
 
 /// Resolved security mechanism for an upstream connection.
-///
-/// This is the runtime-ready representation of the YANG `choice security`
-/// node, with all credential references resolved to concrete values.
 #[derive(Debug, Clone)]
 pub enum ResolvedSecurity {
-    /// Legacy TACACS+ obfuscation (RFC 8907). The shared secret is used as
-    /// the MD5 XOR pad key.
+    /// Legacy TACACS+ obfuscation (RFC 8907).
     Obfuscation {
         /// The shared secret key. If `None`, no obfuscation is applied.
         shared_secret: Option<String>,
@@ -70,28 +61,17 @@ pub enum ResolvedSecurity {
     },
 }
 
-/// Convert a validated [`TacacsPlusConfig`] into a list of runtime
-/// connection configurations, preserving the YANG-defined server order
-/// (which determines failover priority).
+/// Convert a validated config into a list of runtime connection configurations.
 ///
 /// # Errors
 ///
-/// Returns an error if any server entry cannot be mapped to runtime
-/// parameters (e.g., unsupported TLS identity type).
-pub fn to_connection_configs(
-    config: &TacacsPlusConfig,
-) -> anyhow::Result<Vec<ServerConnectionConfig>> {
+/// Returns an error if any server entry cannot be mapped to runtime parameters.
+pub fn to_connection_configs(config: &TacacsPlus) -> anyhow::Result<Vec<ServerConnectionConfig>> {
     config
         .server
         .iter()
         .map(|entry| {
-            let security = match &entry.security {
-                Security::Obfuscation(secret) => ResolvedSecurity::Obfuscation {
-                    shared_secret: Some(secret.clone()),
-                },
-                Security::Tls(tls) => resolve_tls_security(tls, &entry.name)?,
-            };
-
+            let security = resolve_security(entry);
             Ok(ServerConnectionConfig {
                 name: entry.name.clone(),
                 server_type: entry.server_type,
@@ -107,63 +87,67 @@ pub fn to_connection_configs(
         .collect()
 }
 
-fn resolve_tls_security(
-    tls: &crate::tls::TlsClientConfig,
-    server_name: &str,
-) -> anyhow::Result<ResolvedSecurity> {
-    let (client_cert_pem, client_key_pem) = if let Some(ref ci) = tls.client_identity {
-        match &ci.auth_type {
-            Some(crate::tls::ClientAuthType::Certificate(cert)) => {
-                let cert_pem = cert
-                    .inline_definition
-                    .as_ref()
-                    .and_then(|d| d.cert_data.clone());
-                let key_pem = cert
-                    .inline_definition
-                    .as_ref()
-                    .and_then(|d| d.cleartext_private_key.clone());
-                (cert_pem, key_pem)
-            }
-            Some(crate::tls::ClientAuthType::Tls13Epsk(epsk)) => {
+fn resolve_security(server: &TacacsPlusServer) -> ResolvedSecurity {
+    let has_tls = server.client_identity.is_some()
+        || server.server_authentication.is_some()
+        || server.hello_params.is_some();
+
+    if has_tls {
+        let (client_cert_pem, client_key_pem) = if let Some(ref ci) = server.client_identity {
+            if let Some(ref cert) = ci.certificate {
+                if let Some(ref inline) = cert.inline_definition {
+                    (inline.cert_data.clone(), inline.cleartext_private_key.clone())
+                } else {
+                    (None, None)
+                }
+            } else if let Some(ref epsk) = ci.tls13_epsk {
                 let key = epsk
                     .inline_definition
                     .as_ref()
                     .and_then(|d| d.cleartext_symmetric_key.clone())
                     .unwrap_or_default();
-                return Ok(ResolvedSecurity::Psk {
+                return ResolvedSecurity::Psk {
                     identity: epsk.external_identity.clone(),
                     key,
-                });
+                };
+            } else {
+                (None, None)
             }
-            Some(crate::tls::ClientAuthType::RawPublicKey(_)) => {
-                anyhow::bail!(
-                    "server '{server_name}': raw public key client identity is not yet supported",
-                );
+        } else {
+            (None, None)
+        };
+
+        let ca_certs_pem = if let Some(ref sa) = server.server_authentication {
+            if let Some(ref ca) = sa.ca_certs {
+                if let Some(ref inline) = ca.inline_definition {
+                    inline
+                        .certificate
+                        .iter()
+                        .map(|c| c.cert_data.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
             }
-            None => (None, None),
+        } else {
+            Vec::new()
+        };
+
+        ResolvedSecurity::Tls {
+            client_cert_pem,
+            client_key_pem,
+            ca_certs_pem,
+            insecure_disable_certificate_verification: false,
+        }
+    } else if let Some(ref secret) = server.shared_secret {
+        ResolvedSecurity::Obfuscation {
+            shared_secret: Some(secret.clone()),
         }
     } else {
-        (None, None)
-    };
-
-    let ca_certs_pem = tls
-        .server_authentication
-        .inline
-        .as_ref()
-        .and_then(|sa| sa.ca_certs.as_ref())
-        .and_then(|bag| bag.inline_definition.as_ref())
-        .map(|def| {
-            def.certificate
-                .iter()
-                .map(|e| e.cert_data.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Ok(ResolvedSecurity::Tls {
-        client_cert_pem,
-        client_key_pem,
-        ca_certs_pem,
-        insecure_disable_certificate_verification: false,
-    })
+        ResolvedSecurity::Obfuscation {
+            shared_secret: None,
+        }
+    }
 }

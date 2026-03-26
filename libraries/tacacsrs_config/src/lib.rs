@@ -1,35 +1,23 @@
+pub mod generated;
 mod credential_refs;
 mod mapping;
-mod server;
-mod serde_helpers;
 mod statistics;
-mod tls;
 mod validation;
 
-pub use credential_refs::{ClientCredentials, ServerCredentials};
-pub use mapping::{to_connection_configs, ResolvedSecurity, ServerConnectionConfig};
-pub use server::{Security, ServerEntry, ServerType, SourceType, TacacsPlusConfig};
-pub use statistics::ServerStatistics;
-pub use tls::{
-    AsymmetricKeyInline, CertificateBag, CertificateBagEntry, CertificateBagInline,
-    CertificateClientIdentity, CipherSuites, ClientAuthType, ClientIdentityWithRef, HelloParams,
-    PublicKeyBag, PublicKeyBagInline, PublicKeyEntry, RawPublicKeyClientIdentity,
-    ServerAuthentication, ServerAuthenticationWithRef, SymmetricKeyInline, Tls13EpskClientIdentity,
-    TlsClientConfig, TlsVersions,
+// Re-export key types from generated module for convenience
+pub use generated::tacacs_plus::{
+    ClientCredentials, ClientIdentityCertificate, EpskSupportedHash, RawPrivateKey,
+    ServerAuthenticationCaCerts, ServerAuthenticationRawPublicKeys, ServerCredentials, TacacsPlus,
+    TacacsPlusServer, TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity,
+    TlsClientHelloParams, TlsClientServerAuthentication,
 };
+pub use generated::truststore;
+pub use generated::{crypto_types, keystore, tls_common, YangConfigRoot};
+
+pub use credential_refs::resolve_credential_references;
+pub use mapping::{to_connection_configs, ResolvedSecurity, ServerConnectionConfig};
+pub use statistics::ServerStatistics;
 pub use validation::validate_config;
-
-use serde::Deserialize;
-
-/// Top-level wrapper matching the YANG JSON encoding root key.
-///
-/// The RFC 7951 JSON encoding uses the module-prefixed key
-/// `ietf-system-tacacs-plus:tacacs-plus` at the document root.
-#[derive(Debug, Clone, Deserialize)]
-pub struct YangConfigRoot {
-    #[serde(rename = "ietf-system-tacacs-plus:tacacs-plus")]
-    pub tacacs_plus: TacacsPlusConfig,
-}
 
 /// Parse a YANG JSON configuration string into a validated config.
 ///
@@ -37,7 +25,7 @@ pub struct YangConfigRoot {
 ///
 /// Returns an error if the JSON is malformed, doesn't match the expected
 /// YANG schema structure, or fails validation constraints.
-pub fn parse_yang_json(json: &str) -> anyhow::Result<TacacsPlusConfig> {
+pub fn parse_yang_json(json: &str) -> anyhow::Result<TacacsPlus> {
     let root: YangConfigRoot =
         serde_json::from_str(json).map_err(|e| anyhow::anyhow!("failed to parse config: {e}"))?;
 
@@ -54,7 +42,7 @@ pub fn parse_yang_json(json: &str) -> anyhow::Result<TacacsPlusConfig> {
 ///
 /// Returns an error if the file cannot be read, the JSON is malformed,
 /// or validation fails.
-pub fn parse_yang_json_file(path: &std::path::Path) -> anyhow::Result<TacacsPlusConfig> {
+pub fn parse_yang_json_file(path: &std::path::Path) -> anyhow::Result<TacacsPlus> {
     let contents = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("failed to read config file {}: {e}", path.display()))?;
     parse_yang_json(&contents)

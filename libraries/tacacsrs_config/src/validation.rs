@@ -1,24 +1,17 @@
 use std::collections::HashSet;
 
-use crate::server::{Security, TacacsPlusConfig};
+use crate::generated::tacacs_plus::TacacsPlus;
 
 /// Validate a parsed TACACS+ configuration against YANG model constraints.
-///
-/// Checks:
-/// - Server list is non-empty
-/// - Each server's `address` + `port` pair is unique (YANG `unique` constraint)
-/// - `sni-enabled` requires `domain-name` to be set
-/// - TLS version constraints are >= 1.3 when specified
 ///
 /// # Errors
 ///
 /// Returns an error describing the first constraint violation found.
-pub fn validate_config(config: &TacacsPlusConfig) -> anyhow::Result<()> {
+pub fn validate_config(config: &TacacsPlus) -> anyhow::Result<()> {
     if config.server.is_empty() {
         anyhow::bail!("server list must contain at least one entry");
     }
 
-    // YANG: unique "address port"
     let mut seen_endpoints = HashSet::new();
     for server in &config.server {
         let key = (server.address.clone(), server.port);
@@ -26,20 +19,33 @@ pub fn validate_config(config: &TacacsPlusConfig) -> anyhow::Result<()> {
             anyhow::bail!("duplicate server address+port: {}:{}", server.address, server.port,);
         }
 
-        // YANG: sni-enabled must have ../domain-name
         if server.sni_enabled == Some(true) && server.domain_name.is_none() {
             anyhow::bail!("server '{}': sni-enabled requires domain-name to be set", server.name,);
         }
 
-        // Validate TLS-specific constraints.
-        if let Security::Tls(ref tls) = server.security {
-            if let Some(ref hello) = tls.hello_params {
-                validate_tls_versions(hello, &server.name)?;
-            }
+        // Validate choice: security is mandatory — either TLS fields or shared-secret must be set
+        let has_tls = server.client_identity.is_some()
+            || server.server_authentication.is_some()
+            || server.hello_params.is_some();
+        let has_obfuscation = server.shared_secret.is_some();
+        if !has_tls && !has_obfuscation {
+            anyhow::bail!(
+                "server '{}': security choice is mandatory — set TLS fields or shared-secret",
+                server.name,
+            );
+        }
+        if has_tls && has_obfuscation {
+            anyhow::bail!(
+                "server '{}': cannot use both TLS and shared-secret obfuscation",
+                server.name,
+            );
+        }
+
+        if let Some(ref hp) = server.hello_params {
+            validate_tls_versions(hp, &server.name)?;
         }
     }
 
-    // Validate unique credential IDs.
     validate_unique_ids(
         config.client_credentials.iter().map(|c| c.id.as_str()),
         "client-credentials",
@@ -52,8 +58,11 @@ pub fn validate_config(config: &TacacsPlusConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_tls_versions(hello: &crate::tls::HelloParams, server_name: &str) -> anyhow::Result<()> {
-    if let Some(ref versions) = hello.tls_versions {
+fn validate_tls_versions(
+    hp: &crate::generated::tacacs_plus::TlsClientHelloParams,
+    server_name: &str,
+) -> anyhow::Result<()> {
+    if let Some(ref versions) = hp.tls_versions {
         if let Some(ref min) = versions.min {
             if is_below_tls13(min) {
                 anyhow::bail!(

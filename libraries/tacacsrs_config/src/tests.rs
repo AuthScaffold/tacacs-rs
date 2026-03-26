@@ -1,4 +1,4 @@
-use crate::{parse_yang_json, ServerType};
+use crate::{parse_yang_json, TacacsPlusServerType};
 
 #[test]
 fn parse_minimal_obfuscation_config() {
@@ -23,18 +23,14 @@ fn parse_minimal_obfuscation_config() {
 
     let s = &config.server[0];
     assert_eq!(s.name, "tac_plus1");
-    assert_eq!(s.server_type, ServerType::AUTHENTICATION);
+    assert_eq!(s.server_type, TacacsPlusServerType::AUTHENTICATION);
     assert_eq!(s.address, "192.0.2.2");
     assert_eq!(s.port, 49);
     assert_eq!(s.timeout, 10);
     assert!(!s.single_connection);
-
-    match &s.security {
-        crate::Security::Obfuscation(secret) => {
-            assert_eq!(secret, "QaEfThUkO198010075460923+h3TbE8n");
-        }
-        crate::Security::Tls(_) => panic!("expected obfuscation security"),
-    }
+    assert_eq!(s.shared_secret.as_deref(), Some("QaEfThUkO198010075460923+h3TbE8n"));
+    assert!(s.client_identity.is_none());
+    assert!(s.server_authentication.is_none());
 }
 
 #[test]
@@ -55,9 +51,9 @@ fn parse_multi_type_server() {
 
     let config = parse_yang_json(json).unwrap();
     let st = config.server[0].server_type;
-    assert!(st.contains(ServerType::AUTHENTICATION));
-    assert!(st.contains(ServerType::AUTHORIZATION));
-    assert!(st.contains(ServerType::ACCOUNTING));
+    assert!(st.contains(TacacsPlusServerType::AUTHENTICATION));
+    assert!(st.contains(TacacsPlusServerType::AUTHORIZATION));
+    assert!(st.contains(TacacsPlusServerType::ACCOUNTING));
 }
 
 #[test]
@@ -73,17 +69,15 @@ fn parse_tls_config() {
                     "domain-name": "tacacs.example.com",
                     "sni-enabled": true,
                     "single-connection": true,
-                    "tls": {
-                        "server-authentication": {
-                            "ca-certs": {
-                                "inline-definition": {
-                                    "certificate": [
-                                        {
-                                            "name": "ca1",
-                                            "cert-data": "MIIB..."
-                                        }
-                                    ]
-                                }
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {
+                                        "name": "ca1",
+                                        "cert-data": "MIIB..."
+                                    }
+                                ]
                             }
                         }
                     }
@@ -94,25 +88,19 @@ fn parse_tls_config() {
 
     let config = parse_yang_json(json).unwrap();
     let s = &config.server[0];
-    assert_eq!(s.server_type, ServerType::ACCOUNTING);
+    assert_eq!(s.server_type, TacacsPlusServerType::ACCOUNTING);
     assert_eq!(s.domain_name.as_deref(), Some("tacacs.example.com"));
     assert_eq!(s.sni_enabled, Some(true));
     assert!(s.single_connection);
     assert_eq!(s.timeout, 5); // default
 
-    match &s.security {
-        crate::Security::Tls(tls) => {
-            assert!(tls.client_identity.is_none());
-            let sa = tls.server_authentication.inline.as_ref().unwrap();
-            assert!(sa.ca_certs.is_some());
-            let ca = sa.ca_certs.as_ref().unwrap();
-            let certs = &ca.inline_definition.as_ref().unwrap().certificate;
-            assert_eq!(certs.len(), 1);
-            assert_eq!(certs[0].name, "ca1");
-            assert_eq!(certs[0].cert_data, "MIIB...");
-        }
-        crate::Security::Obfuscation(_) => panic!("expected TLS security"),
-    }
+    assert!(s.client_identity.is_none());
+    let sa = s.server_authentication.as_ref().unwrap();
+    let ca = sa.ca_certs.as_ref().unwrap();
+    let certs = &ca.inline_definition.as_ref().unwrap().certificate;
+    assert_eq!(certs.len(), 1);
+    assert_eq!(certs[0].name, "ca1");
+    assert_eq!(certs[0].cert_data, "MIIB...");
 }
 
 #[test]
@@ -204,7 +192,7 @@ fn reject_empty_server_list() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("at least one entry"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("at least one entry"), "unexpected error: {err}");
 }
 
 #[test]
@@ -224,7 +212,7 @@ fn reject_invalid_server_type() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("unknown variant"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("unknown variant"), "unexpected error: {err}");
 }
 
 #[test]
@@ -280,13 +268,11 @@ fn credential_reference_resolution() {
                     "server-type": "accounting",
                     "address": "10.0.0.1",
                     "port": 4949,
-                    "tls": {
-                        "client-identity": {
-                            "credentials-reference": "corp-cert"
-                        },
-                        "server-authentication": {
-                            "credentials-reference": "corp-ca"
-                        }
+                    "client-identity": {
+                        "credentials-reference": "corp-cert"
+                    },
+                    "server-authentication": {
+                        "credentials-reference": "corp-ca"
                     }
                 }
             ]
@@ -295,19 +281,16 @@ fn credential_reference_resolution() {
 
     let config = parse_yang_json(json).unwrap();
     let s = &config.server[0];
-    match &s.security {
-        crate::Security::Tls(tls) => {
-            let ci = tls.client_identity.as_ref().unwrap();
-            // Reference should be resolved — inline value populated.
-            assert!(ci.auth_type.is_some());
-            assert!(ci.credentials_reference.is_none());
 
-            // Server auth reference should be resolved.
-            assert!(tls.server_authentication.inline.is_some());
-            assert!(tls.server_authentication.credentials_reference.is_none());
-        }
-        crate::Security::Obfuscation(_) => panic!("expected TLS security"),
-    }
+    let ci = s.client_identity.as_ref().unwrap();
+    // Reference should be resolved — inline value populated.
+    assert!(ci.certificate.is_some());
+    assert!(ci.credentials_reference.is_none());
+
+    // Server auth reference should be resolved.
+    let sa = s.server_authentication.as_ref().unwrap();
+    assert!(sa.ca_certs.is_some());
+    assert!(sa.credentials_reference.is_none());
 }
 
 #[test]
@@ -320,9 +303,53 @@ fn reject_missing_credential_reference() {
                     "server-type": "accounting",
                     "address": "10.0.0.1",
                     "port": 4949,
-                    "tls": {
-                        "server-authentication": {
-                            "credentials-reference": "nonexistent"
+                    "server-authentication": {
+                        "credentials-reference": "nonexistent"
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).unwrap_err();
+    assert!(err.to_string().contains("not found"), "unexpected error: {err}");
+}
+
+#[test]
+fn reject_no_security() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bare",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).unwrap_err();
+    assert!(err.to_string().contains("security choice is mandatory"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_tls_and_obfuscation() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "conflict",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "shared-secret": "key",
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [{"name": "ca1", "cert-data": "MIIB..."}]
+                            }
                         }
                     }
                 }
@@ -331,5 +358,9 @@ fn reject_missing_credential_reference() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("not found"), "unexpected error: {err}",);
+    assert!(
+        err.to_string()
+            .contains("cannot use both TLS and shared-secret"),
+        "unexpected error: {err}",
+    );
 }

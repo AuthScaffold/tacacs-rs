@@ -1,32 +1,22 @@
-use serde::Deserialize;
+use std::collections::HashMap;
 
-use crate::server::{Security, ServerEntry, TacacsPlusConfig};
-use crate::tls::{ClientAuthType, ServerAuthentication};
+use crate::generated::tacacs_plus::{
+    ClientCredentials, ServerCredentials, TacacsPlus, TacacsPlusServer,
+};
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct ClientCredentials {
-    pub id: String,
-    #[serde(flatten)]
-    pub auth_type: Option<ClientAuthType>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct ServerCredentials {
-    pub id: String,
-    #[serde(flatten)]
-    pub authentication: Option<ServerAuthentication>,
-}
-
-pub fn resolve_credential_references(config: &mut TacacsPlusConfig) -> anyhow::Result<()> {
-    let client_creds: std::collections::HashMap<&str, &ClientCredentials> = config
+/// Resolve credential references in server entries to inline values.
+///
+/// # Errors
+///
+/// Returns an error if a referenced credential ID is not found.
+pub fn resolve_credential_references(config: &mut TacacsPlus) -> anyhow::Result<()> {
+    let client_creds: HashMap<&str, &ClientCredentials> = config
         .client_credentials
         .iter()
         .map(|c| (c.id.as_str(), c))
         .collect();
 
-    let server_creds: std::collections::HashMap<&str, &ServerCredentials> = config
+    let server_creds: HashMap<&str, &ServerCredentials> = config
         .server_credentials
         .iter()
         .map(|c| (c.id.as_str(), c))
@@ -40,16 +30,12 @@ pub fn resolve_credential_references(config: &mut TacacsPlusConfig) -> anyhow::R
 }
 
 fn resolve_server_credentials(
-    server: &mut ServerEntry,
-    client_creds: &std::collections::HashMap<&str, &ClientCredentials>,
-    server_creds: &std::collections::HashMap<&str, &ServerCredentials>,
+    server: &mut TacacsPlusServer,
+    client_creds: &HashMap<&str, &ClientCredentials>,
+    server_creds: &HashMap<&str, &ServerCredentials>,
 ) -> anyhow::Result<()> {
-    let Security::Tls(ref mut tls) = server.security else {
-        return Ok(());
-    };
-
-    // Resolve client identity reference.
-    if let Some(ref mut ci) = tls.client_identity {
+    // Resolve client identity reference
+    if let Some(ref mut ci) = server.client_identity {
         if let Some(ref cref) = ci.credentials_reference {
             let bundle = client_creds.get(cref.as_str()).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -58,24 +44,29 @@ fn resolve_server_credentials(
                     cref,
                 )
             })?;
-            ci.auth_type.clone_from(&bundle.auth_type);
+            ci.certificate.clone_from(&bundle.certificate);
+            ci.raw_private_key.clone_from(&bundle.raw_private_key);
+            ci.tls13_epsk.clone_from(&bundle.tls13_epsk);
             ci.credentials_reference = None;
         }
     }
 
-    // Resolve server authentication reference.
-    if let Some(ref cref) = tls.server_authentication.credentials_reference {
-        let bundle = server_creds.get(cref.as_str()).ok_or_else(|| {
-            anyhow::anyhow!(
-                "server '{}': server-credentials reference '{}' not found",
-                server.name,
-                cref,
-            )
-        })?;
-        tls.server_authentication
-            .inline
-            .clone_from(&bundle.authentication);
-        tls.server_authentication.credentials_reference = None;
+    // Resolve server authentication reference
+    if let Some(ref mut sa) = server.server_authentication {
+        if let Some(ref cref) = sa.credentials_reference {
+            let bundle = server_creds.get(cref.as_str()).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "server '{}': server-credentials reference '{}' not found",
+                    server.name,
+                    cref,
+                )
+            })?;
+            sa.ca_certs.clone_from(&bundle.ca_certs);
+            sa.ee_certs.clone_from(&bundle.ee_certs);
+            sa.raw_public_keys.clone_from(&bundle.raw_public_keys);
+            sa.tls13_epsks = bundle.tls13_epsks;
+            sa.credentials_reference = None;
+        }
     }
 
     Ok(())
