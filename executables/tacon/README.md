@@ -38,7 +38,8 @@ tacon --server-addr <HOST:PORT> [OPTIONS] <COMMAND>
 | Option | Description |
 |--------|-------------|
 | `-s, --server-addr <ADDR>` | TACACS+ server address and port (e.g., `192.168.1.1:49`) |
-| `-k, --obfuscation-key <KEY>` | Shared secret for TACACS+ packet obfuscation |
+| `--config <FILE>` | Load direct connection settings from a YANG JSON config file |
+| `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
 | `--use-tls` | Enable TLS 1.3 for the connection |
 | `--client-certificate <FILE>` | Path to client certificate for TLS authentication |
 | `--client-key <FILE>` | Path to client private key for TLS authentication |
@@ -106,11 +107,22 @@ tacon -s 192.168.1.1:49 -k "secret" batch requests.json
 ```bash
 tacon \
     --server-addr tacacsserver.local:49 \
-    --obfuscation-key "tac_plus_key" \
+    --shared-secret "tac_plus_key" \
     --user testuser \
     --port tty1 \
     --rem-addr 192.168.1.100 \
     -vvv \
+    accounting "show version"
+```
+
+#### Loading a YANG JSON config
+
+```bash
+tacon \
+    --config ./tacacs.json \
+    --user testuser \
+    --port tty1 \
+    --rem-addr 192.168.1.100 \
     accounting "show version"
 ```
 

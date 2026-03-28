@@ -151,3 +151,97 @@ fn resolve_security(server: &TacacsPlusServer) -> ResolvedSecurity {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_security, ResolvedSecurity};
+    use crate::parse_yang_json;
+
+    #[test]
+    fn resolve_security_extracts_tls_certificate_and_ca_material() {
+        let config = parse_yang_json(
+            r#"{
+                "ietf-system-tacacs-plus:tacacs-plus": {
+                    "server": [
+                        {
+                            "name": "tls-server",
+                            "server-type": "accounting",
+                            "address": "10.0.0.1",
+                            "port": 49,
+                            "client-identity": {
+                                "certificate": {
+                                    "inline-definition": {
+                                        "cert-data": "CLIENT_CERT",
+                                        "cleartext-private-key": "CLIENT_KEY"
+                                    }
+                                }
+                            },
+                            "server-authentication": {
+                                "ca-certs": {
+                                    "inline-definition": {
+                                        "certificate": [
+                                            { "name": "ca1", "cert-data": "CA_CERT_1" },
+                                            { "name": "ca2", "cert-data": "CA_CERT_2" }
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            }"#,
+        )
+        .expect("config should parse");
+
+        match resolve_security(&config.server[0]) {
+            ResolvedSecurity::Tls {
+                client_cert_pem,
+                client_key_pem,
+                ca_certs_pem,
+                insecure_disable_certificate_verification,
+            } => {
+                assert_eq!(client_cert_pem.as_deref(), Some("CLIENT_CERT"));
+                assert_eq!(client_key_pem.as_deref(), Some("CLIENT_KEY"));
+                assert_eq!(ca_certs_pem, vec!["CA_CERT_1".to_owned(), "CA_CERT_2".to_owned()]);
+                assert!(!insecure_disable_certificate_verification);
+            }
+            other => panic!("expected TLS security, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn resolve_security_maps_tls13_epsk_to_psk() {
+        let config = parse_yang_json(
+            r#"{
+                "ietf-system-tacacs-plus:tacacs-plus": {
+                    "server": [
+                        {
+                            "name": "epsk-server",
+                            "server-type": "accounting",
+                            "address": "10.0.0.2",
+                            "port": 49,
+                            "client-identity": {
+                                "tls13-epsk": {
+                                    "inline-definition": {
+                                        "cleartext-symmetric-key": "topsecret"
+                                    },
+                                    "external-identity": "client@example.com"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }"#,
+        )
+        .expect("config should parse");
+
+        match resolve_security(&config.server[0]) {
+            ResolvedSecurity::Psk { identity, key } => {
+                assert_eq!(identity, "client@example.com");
+                assert_eq!(key, "topsecret");
+            }
+            other => panic!("expected PSK security, got {other:?}"),
+        }
+    }
+}

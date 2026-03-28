@@ -1,4 +1,4 @@
-use crate::{parse_yang_json, TacacsPlusServerType};
+use crate::{parse_yang_json, YangConfigRoot, TacacsPlusServerType};
 
 #[test]
 fn parse_minimal_obfuscation_config() {
@@ -69,6 +69,14 @@ fn parse_tls_config() {
                     "domain-name": "tacacs.example.com",
                     "sni-enabled": true,
                     "single-connection": true,
+                    "client-identity": {
+                        "certificate": {
+                            "inline-definition": {
+                                "cert-data": "MIIB-client",
+                                "cleartext-private-key": "MIIEv-client"
+                            }
+                        }
+                    },
                     "server-authentication": {
                         "ca-certs": {
                             "inline-definition": {
@@ -94,7 +102,19 @@ fn parse_tls_config() {
     assert!(s.single_connection);
     assert_eq!(s.timeout, 5); // default
 
-    assert!(s.client_identity.is_none());
+    let client_identity = s.client_identity.as_ref().unwrap();
+    assert_eq!(
+        client_identity
+            .certificate
+            .as_ref()
+            .unwrap()
+            .inline_definition
+            .as_ref()
+            .unwrap()
+            .cert_data
+            .as_deref(),
+        Some("MIIB-client"),
+    );
     let sa = s.server_authentication.as_ref().unwrap();
     let ca = sa.ca_certs.as_ref().unwrap();
     let certs = &ca.inline_definition.as_ref().unwrap().certificate;
@@ -363,4 +383,112 @@ fn reject_tls_and_obfuscation() {
             .contains("cannot use both TLS and shared-secret"),
         "unexpected error: {err}",
     );
+}
+
+#[test]
+fn reject_missing_inline_or_keystore_choice() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bad-cert-choice",
+                    "server-type": "accounting",
+                    "address": "10.0.0.5",
+                    "port": 49,
+                    "client-identity": {
+                        "certificate": {}
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("client-identity/certificate requires one of [inline, central-keystore]"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn reject_missing_inline_or_truststore_choice() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bad-ca-choice",
+                    "server-type": "accounting",
+                    "address": "10.0.0.6",
+                    "port": 49,
+                    "server-authentication": {
+                        "ca-certs": {}
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "server-authentication/ca-certs requires one of [inline, central-truststore]"
+        ),
+        "unexpected error: {err}",
+    );
+}
+
+#[cfg(not(feature = "psk"))]
+#[test]
+fn reject_tls13_epsk_without_psk_feature() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "epsk-server",
+                    "server-type": "accounting",
+                    "address": "10.0.0.7",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "cleartext-symmetric-key": "topsecret"
+                            },
+                            "external-identity": "client@example.com"
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("TLS 1.3 PSK requires the 'psk' feature flag"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn yang_types_support_round_trip_serialization() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "roundtrip",
+                    "server-type": "authentication authorization accounting",
+                    "address": "192.0.2.2",
+                    "port": 49,
+                    "shared-secret": "secret123"
+                }
+            ]
+        }
+    }"#;
+
+    let root: YangConfigRoot = serde_json::from_str(json).expect("root should deserialize");
+    let serialized = serde_json::to_string(&root).expect("root should serialize");
+
+    assert!(serialized.contains("\"ietf-system-tacacs-plus:tacacs-plus\""));
+    assert!(serialized.contains("\"server-type\":\"authentication authorization accounting\""));
 }

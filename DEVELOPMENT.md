@@ -8,6 +8,7 @@ This document covers development workflows, CI/CD, and release processes for tac
 - [Development Setup](#development-setup)
 - [Running Tests](#running-tests)
 - [Code Quality](#code-quality)
+- [YANG Code Generation](#yang-code-generation)
 - [CI/CD Overview](#cicd-overview)
 - [Releasing](#releasing)
 
@@ -199,6 +200,50 @@ cargo outdated --workspace
 # Security audit
 cargo audit
 ```
+
+## YANG Code Generation
+
+The `libraries/tacacsrs_config` crate contains generated Rust types that mirror the expanded `ietf-system-tacacs-plus` YANG tree.
+
+### Prerequisites
+
+Install `pyang` before regenerating the checked-in artifacts:
+
+```bash
+python -m pip install pyang
+```
+
+### Regenerate the expanded tree reference
+
+From the repository root:
+
+```bash
+cd libraries/tacacsrs_config/yang
+python expand_yang_tree.py > expanded-tree.txt
+```
+
+This refreshes `expanded-tree.txt`, the checked-in reference used to inspect the fully expanded YANG data tree after all `uses` statements are resolved.
+
+### Regenerate Rust types
+
+From the same directory:
+
+```bash
+cd libraries/tacacsrs_config/yang
+pyang \
+  -f rust \
+  --plugindir . \
+  ietf-system-tacacs-plus.yang \
+  ietf-keystore.yang \
+  ietf-truststore.yang \
+  ietf-crypto-types.yang \
+  ietf-tls-common.yang \
+  > generated_types.rs
+
+cp generated_types.rs ../src/generated.rs
+```
+
+After regenerating, run the workspace formatting, clippy, build, and test commands before committing to ensure the emitted code still matches repository expectations.
 
 ## CI/CD Overview
 

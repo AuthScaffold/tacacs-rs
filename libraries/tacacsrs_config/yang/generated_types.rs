@@ -1,12 +1,12 @@
-// Auto-generated from YANG modules by yang2rust.py ù DO NOT EDIT
+// Auto-generated from YANG modules by yang2rust.py — DO NOT EDIT
 
 #![allow(dead_code)]
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Types from `ietf-system-tacacs-plus`.
 pub mod tacacs_plus {
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use super::keystore;
     use super::tls_common;
     use super::truststore;
@@ -17,7 +17,7 @@ pub mod tacacs_plus {
     /// For externally established PSKs, the Hash algorithm must be
     /// set when the PSK is established or default to SHA-256 if no
     /// such algorithm is defined.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     pub enum EpskSupportedHash {
         /// The SHA-256 hash.
         #[serde(rename = "sha-256")]
@@ -66,8 +66,26 @@ pub mod tacacs_plus {
         }
     }
 
+    impl serde::Serialize for TacacsPlusServerType {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            let tokens = [
+                (Self::AUTHENTICATION, "authentication"),
+                (Self::AUTHORIZATION, "authorization"),
+                (Self::ACCOUNTING, "accounting"),
+            ]
+            .into_iter()
+            .filter_map(|(flag, name)| self.contains(flag).then_some(name))
+            .collect::<Vec<_>>()
+            .join(" ");
+            serializer.serialize_str(&tokens)
+        }
+    }
+
     /// Specifies the client identity using a certificate.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct ClientIdentityCertificate {
         /// A container to hold the local key definition.
@@ -93,7 +111,7 @@ pub mod tacacs_plus {
     }
 
     /// Specifies the client identity using RPK.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct RawPrivateKey {
         /// A container to hold the local key definition.
@@ -121,7 +139,7 @@ pub mod tacacs_plus {
     fn default_tls13_epsk_hash() -> EpskSupportedHash { /* YANG default: "sha-256" */ }
 
     /// An EPSK is established or provisioned out-of-band.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct Tls13Epsk {
         /// A container to hold the local key definition.
@@ -166,7 +184,7 @@ pub mod tacacs_plus {
     /// Identity credentials that a TLS client may present
     /// when establishing a connection to a TLS server.
     /// A list of client credentials that can be referenced
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct ClientCredentials {
         /// An identifier that uniquely identifies a client
@@ -200,7 +218,7 @@ pub mod tacacs_plus {
     /// A set of CA certificates used by the TLS client to
     /// authenticate TLS server certificates.
     /// A server certificate is authenticated if it has a valid
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct ServerAuthenticationCaCerts {
         /// A container for locally configured trust anchor
@@ -228,7 +246,7 @@ pub mod tacacs_plus {
     /// A set of raw public keys used by a TLS client to
     /// authenticate raw public keys presented by the TLS server.
     /// A raw public key is authenticated if it is an exact match
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct ServerAuthenticationRawPublicKeys {
         /// A container to hold local public key definitions.
@@ -255,7 +273,7 @@ pub mod tacacs_plus {
 
     /// Identity credentials that a TLS client may use
     /// to authenticate a TLS server.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct ServerCredentials {
         /// An identifier that uniquely identify server
@@ -280,7 +298,7 @@ pub mod tacacs_plus {
 
     /// Identity credentials that a TLS client may present when
     /// establishing a connection to a TLS server.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct TlsClientClientIdentity {
         /// Specifies the client credentials reference.
@@ -313,7 +331,7 @@ pub mod tacacs_plus {
     }
 
     /// Specifies how a TLS client can authenticate TLS servers.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct TlsClientServerAuthentication {
         /// Specifies the server credentials reference.
@@ -351,7 +369,7 @@ pub mod tacacs_plus {
     }
 
     /// Configurable parameters for the TLS Hello message.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct TlsClientHelloParams {
         /// Parameters limiting which TLS versions, amongst
@@ -367,7 +385,7 @@ pub mod tacacs_plus {
     fn default_tacacs_plus_server_timeout() -> u16 { 5 }
 
     /// List of TACACS+ servers used by the device.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct TacacsPlusServer {
         /// A name that is used to uniquely identify a TACACS+
@@ -445,7 +463,7 @@ pub mod tacacs_plus {
     }
 
     /// Container for TACACS+ configurations and operations.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct TacacsPlus {
         /// Identity credentials that a TLS client may present
@@ -465,11 +483,11 @@ pub mod tacacs_plus {
 
 /// Types from `ietf-keystore`.
 pub mod keystore {
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use super::crypto_types;
 
     /// A container to hold the local key definition.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct EndEntityCertWithKeyInlineDefinition {
         /// Identifies the public key's format.  Implementations SHOULD
@@ -517,7 +535,7 @@ pub mod keystore {
 
     /// A reference to a specific certificate associated with
     /// an asymmetric key stored in the central keystore.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct EndEntityCertWithKeyCentralKeystoreReference {
         /// A reference to an asymmetric key in the keystore.
@@ -530,7 +548,7 @@ pub mod keystore {
     }
 
     /// A container to hold the local key definition.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct AsymmetricKeyInlineDefinition {
         /// Identifies the public key's format.  Implementations SHOULD
@@ -573,7 +591,7 @@ pub mod keystore {
     }
 
     /// A container to hold the local key definition.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct SymmetricKeyInlineDefinition {
         /// Identifies the symmetric key's format.  Implementations
@@ -611,12 +629,12 @@ pub mod keystore {
 
 /// Types from `ietf-crypto-types`.
 pub mod crypto_types {
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
 
     /// An empty container enabling a reference to the key that
     /// encrypted the value to be augmented in.  The referenced
     /// key MUST be a symmetric key or an asymmetric key.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct EncryptedValueEncryptedBy {
     }
@@ -624,7 +642,7 @@ pub mod crypto_types {
     /// A container for the encrypted asymmetric private key
     /// value.  The interpretation of the 'encrypted-value'
     /// node is via the 'private-key-format' node
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct PrivateKeyEncryptedPrivateKey {
         /// An empty container enabling a reference to the key that
@@ -643,10 +661,10 @@ pub mod crypto_types {
 
 /// Types from `ietf-truststore`.
 pub mod truststore {
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
 
     /// A trust anchor certificate or chain of certificates.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct CertsCertificate {
         /// An arbitrary name for this certificate.
@@ -658,7 +676,7 @@ pub mod truststore {
 
     /// A container for locally configured trust anchor
     /// certificates.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct CertsInlineDefinition {
         /// A trust anchor certificate or chain of certificates.
@@ -667,7 +685,7 @@ pub mod truststore {
     }
 
     /// A public key definition.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct PublicKeysPublicKey {
         /// An arbitrary name for this public key.
@@ -681,7 +699,7 @@ pub mod truststore {
     }
 
     /// A container to hold local public key definitions.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct PublicKeysInlineDefinition {
         /// A public key definition.
@@ -694,12 +712,12 @@ pub mod truststore {
 
 /// Types from `ietf-tls-common`.
 pub mod tls_common {
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
 
     /// Parameters limiting which TLS versions, amongst
     /// those enabled by 'features', are presented during
     /// the TLS handshake.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct HelloParamsTlsVersions {
         /// If not specified, then there is no configured
@@ -711,7 +729,7 @@ pub mod tls_common {
     }
 
     /// Parameters regarding cipher suites.
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct HelloParamsCipherSuites {
         /// Acceptable cipher suites in order of descending
@@ -725,7 +743,7 @@ pub mod tls_common {
 /// Root wrapper for RFC 7951 JSON encoding.
 ///
 /// The JSON document root key is `ietf-system-tacacs-plus:tacacs-plus`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YangConfigRoot {
     #[serde(rename = "ietf-system-tacacs-plus:tacacs-plus")]
     pub tacacs_plus: tacacs_plus::TacacsPlus,

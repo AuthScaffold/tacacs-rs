@@ -32,7 +32,7 @@ tacacsrs-agentd \
     --server-addr tacacs1.example.com:49 \
     --server-addr tacacs2.example.com:49 \
     --listen-endpoint /run/tacacs.sock \
-    --obfuscation-key "shared_secret"
+    --shared-secret "shared_secret"
 ```
 
 Then from any client on the same host:
@@ -50,6 +50,7 @@ tacon --service-endpoint /run/tacacs.sock \
 | Flag | Description |
 |------|-------------|
 | `--server-addr <ADDR>` | TACACS+ server address (repeatable, ordered by preference). First entry is the preferred server. |
+| `--config <FILE>` | Load upstream server definitions from a YANG JSON config file |
 
 ### IPC Listener
 
@@ -62,7 +63,7 @@ tacon --service-endpoint /run/tacacs.sock \
 
 | Flag | Description |
 |------|-------------|
-| `-k, --obfuscation-key <KEY>` | Shared secret for TACACS+ packet obfuscation |
+| `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
 | `--use-tls` | Enable TLS 1.3 for upstream connections |
 | `--client-certificate <FILE>` | Client TLS certificate (requires `--client-key`) |
 | `--client-key <FILE>` | Client TLS private key (requires `--client-certificate`) |
@@ -157,7 +158,7 @@ ExecStart=/usr/local/bin/tacacsrs-agentd \
     --server-addr tacacs2.example.com:49 \
     --listen-endpoint /run/tacacs.sock \
     --socket-mode 660 \
-    --obfuscation-key "shared_secret" \
+    --shared-secret "shared_secret" \
     --preferred-probe-interval-seconds 30
 Restart=on-failure
 RestartSec=5
@@ -187,10 +188,20 @@ tacacsrs-agentd \
     --server-addr primary.dc2.example.com:49 \
     --connect-timeout-seconds 3 \
     --preferred-probe-interval-seconds 15 \
-    --obfuscation-key "shared_secret" \
+    --shared-secret "shared_secret" \
     --listen-endpoint /run/tacacs.sock \
     -vv
 ```
+
+### Loading a YANG JSON config
+
+```bash
+tacacsrs-agentd \
+    --config /etc/tacacs/tacacs.json \
+    --listen-endpoint /run/tacacs.sock
+```
+
+When `--config` is used, upstream server definitions are loaded from the `ietf-system-tacacs-plus` RFC 7951 JSON document instead of repeated `--server-addr` flags.
 
 ## Connection Reuse
 

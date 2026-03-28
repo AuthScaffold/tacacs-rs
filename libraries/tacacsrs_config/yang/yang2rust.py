@@ -775,7 +775,7 @@ class RustEmitter:
         w = self.fd.write
         w("// Auto-generated from YANG modules by yang2rust.py — DO NOT EDIT\n\n")
         w("#![allow(dead_code)]\n\n")
-        w("use serde::Deserialize;\n\n")
+        w("use serde::{Deserialize, Serialize};\n\n")
 
         # Emit each module
         top_module = None
@@ -809,7 +809,7 @@ class RustEmitter:
         w(f"/// Root wrapper for RFC 7951 JSON encoding.\n")
         w(f"///\n")
         w(f"/// The JSON document root key is `{json_key}`.\n")
-        w(f"#[derive(Debug, Clone, Deserialize)]\n")
+        w(f"#[derive(Debug, Clone, Serialize, Deserialize)]\n")
         w(f"pub struct YangConfigRoot {{\n")
         w(f'    #[serde(rename = "{json_key}")]\n')
         w(f"    pub tacacs_plus: {rust_mod}::{struct_name},\n")
@@ -820,7 +820,7 @@ class RustEmitter:
 
         w(f"/// Types from `{mod.yang_name}`.\n")
         w(f"pub mod {mod.rust_name} {{\n")
-        w("    use serde::Deserialize;\n")
+        w("    use serde::{Deserialize, Serialize};\n")
 
         # Compute which other modules we need to import
         imports = set()
@@ -857,7 +857,7 @@ class RustEmitter:
     def _emit_enum(self, enum: Enum):
         w = self.fd.write
         self._doc(enum.doc, "    ")
-        w("    #[derive(Debug, Clone, Deserialize)]\n")
+        w("    #[derive(Debug, Clone, Serialize, Deserialize)]\n")
         w(f"    pub enum {enum.name} {{\n")
         for v in enum.variants:
             self._doc(v.doc, "        ", max_lines=1)
@@ -905,6 +905,24 @@ class RustEmitter:
         w(f"            Ok(bits)\n")
         w(f"        }}\n")
         w(f"    }}\n\n")
+        w(f"    impl serde::Serialize for {bf.name} {{\n")
+        w(f"        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>\n")
+        w(f"        where\n")
+        w(f"            S: serde::Serializer,\n")
+        w(f"        {{\n")
+        w(f"            let tokens = [\n")
+        for bit in bf.bits:
+            w(
+                f'                (Self::{bit.rust_name}, "{bit.yang_name}"),\n'
+            )
+        w(f"            ]\n")
+        w(f"            .into_iter()\n")
+        w(f"            .filter_map(|(flag, name)| self.contains(flag).then_some(name))\n")
+        w(f"            .collect::<Vec<_>>()\n")
+        w(f'            .join(" ");\n')
+        w(f"            serializer.serialize_str(&tokens)\n")
+        w(f"        }}\n")
+        w(f"    }}\n\n")
 
     def _emit_struct(self, st: Struct, current_mod: str):
         w = self.fd.write
@@ -935,7 +953,7 @@ class RustEmitter:
             w("\n")
 
         self._doc(st.doc, "    ")
-        w("    #[derive(Debug, Clone, Deserialize)]\n")
+        w("    #[derive(Debug, Clone, Serialize, Deserialize)]\n")
         w('    #[serde(rename_all = "kebab-case")]\n')
         w(f"    pub struct {st.name} {{\n")
         for f in st.fields:

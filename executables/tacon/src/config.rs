@@ -107,3 +107,62 @@ pub fn resolve_server_config(cli: &Cli) -> anyhow::Result<ServerConnectionConfig
         server_config_from_cli(cli)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::server_config_from_file;
+    use tacacsrs_config::ResolvedSecurity;
+
+    fn write_temp_config(contents: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("tacon-config-test-{unique}.json"));
+        fs::write(&path, contents).expect("temp config should be written");
+        path
+    }
+
+    #[test]
+    fn server_config_from_file_loads_first_server() {
+        let path = write_temp_config(
+            r#"{
+                "ietf-system-tacacs-plus:tacacs-plus": {
+                    "server": [
+                        {
+                            "name": "primary",
+                            "server-type": "accounting",
+                            "address": "192.0.2.10",
+                            "port": 49,
+                            "shared-secret": "secret1"
+                        },
+                        {
+                            "name": "secondary",
+                            "server-type": "accounting",
+                            "address": "192.0.2.11",
+                            "port": 49,
+                            "shared-secret": "secret2"
+                        }
+                    ]
+                }
+            }"#,
+        );
+
+        let config = server_config_from_file(&path).expect("config file should load");
+        fs::remove_file(&path).ok();
+
+        assert_eq!(config.name, "primary");
+        assert_eq!(config.address, "192.0.2.10");
+        assert_eq!(config.port, 49);
+        match config.security {
+            ResolvedSecurity::Obfuscation { shared_secret } => {
+                assert_eq!(shared_secret.as_deref(), Some("secret1"));
+            }
+            other => panic!("expected obfuscation security, got {other:?}"),
+        }
+    }
+}

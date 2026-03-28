@@ -203,6 +203,13 @@ fn server_from_address(
     }
 }
 
+fn servers_from_config(path: &std::path::Path) -> anyhow::Result<Vec<ServerConnectionConfig>> {
+    let yang_config = tacacsrs_config::parse_yang_json_file(path)
+        .with_context(|| format!("Failed to load config from {}", path.display()))?;
+    tacacsrs_config::to_connection_configs(&yang_config)
+        .context("Failed to map YANG config to connection parameters")
+}
+
 /// Starts the central TACACS+ client service process.
 ///
 /// The service listens on the configured local IPC endpoint, maintains
@@ -229,10 +236,7 @@ async fn main() -> anyhow::Result<()> {
 
     let servers = if let Some(ref config_path) = cli.config {
         log::info!("Loading YANG JSON configuration from {}", config_path.display());
-        let yang_config = tacacsrs_config::parse_yang_json_file(config_path)
-            .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
-        tacacsrs_config::to_connection_configs(&yang_config)
-            .context("Failed to map YANG config to connection parameters")?
+        servers_from_config(config_path)?
     } else {
         servers_from_cli(&cli)?
     };
@@ -266,4 +270,63 @@ async fn main() -> anyhow::Result<()> {
     .context("Failed to build TACACS+ client service configuration")?;
 
     service.serve().await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::servers_from_config;
+    use tacacsrs_config::ResolvedSecurity;
+
+    fn write_temp_config(contents: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("agentd-config-test-{unique}.json"));
+        fs::write(&path, contents).expect("temp config should be written");
+        path
+    }
+
+    #[test]
+    fn servers_from_config_loads_all_servers() {
+        let path = write_temp_config(
+            r#"{
+                "ietf-system-tacacs-plus:tacacs-plus": {
+                    "server": [
+                        {
+                            "name": "primary",
+                            "server-type": "accounting",
+                            "address": "192.0.2.20",
+                            "port": 49,
+                            "shared-secret": "secret1"
+                        },
+                        {
+                            "name": "secondary",
+                            "server-type": "accounting",
+                            "address": "192.0.2.21",
+                            "port": 49,
+                            "shared-secret": "secret2"
+                        }
+                    ]
+                }
+            }"#,
+        );
+
+        let servers = servers_from_config(&path).expect("config file should load");
+        fs::remove_file(&path).ok();
+
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].name, "primary");
+        assert_eq!(servers[1].name, "secondary");
+        match &servers[0].security {
+            ResolvedSecurity::Obfuscation { shared_secret } => {
+                assert_eq!(shared_secret.as_deref(), Some("secret1"));
+            }
+            other => panic!("expected obfuscation security, got {other:?}"),
+        }
+    }
 }

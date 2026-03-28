@@ -186,3 +186,63 @@ impl TlsConfigurationBuilder {
         Ok(config)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::TlsConfigurationBuilder;
+
+    fn sample_path(file_name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("samples")
+            .join(file_name)
+    }
+
+    #[test]
+    fn with_client_auth_cert_pem_accepts_valid_pem() {
+        let cert_pem = fs::read_to_string(sample_path("client.crt")).expect("sample cert exists");
+        let key_pem = fs::read_to_string(sample_path("client.key")).expect("sample key exists");
+
+        let config = TlsConfigurationBuilder::new()
+            .with_client_auth_cert_pem(&cert_pem, &key_pem)
+            .and_then(TlsConfigurationBuilder::build);
+
+        assert!(config.is_ok(), "unexpected error: {config:?}");
+    }
+
+    #[test]
+    fn with_client_auth_cert_pem_rejects_invalid_pem() {
+        let invalid_cert_pem =
+            "-----BEGIN CERTIFICATE-----\nnot-base64\n-----END CERTIFICATE-----\n";
+        let invalid_key_pem =
+            "-----BEGIN PRIVATE KEY-----\nnot-base64\n-----END PRIVATE KEY-----\n";
+        let err = TlsConfigurationBuilder::new()
+            .with_client_auth_cert_pem(invalid_cert_pem, invalid_key_pem)
+            .err()
+            .expect("invalid PEM should fail");
+
+        assert!(
+            err.to_string().contains("failed to parse certificate PEM"),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn with_client_auth_cert_pem_rejects_empty_certificate_pem() {
+        let key_pem = fs::read_to_string(sample_path("client.key")).expect("sample key exists");
+
+        let err = TlsConfigurationBuilder::new()
+            .with_client_auth_cert_pem("", &key_pem)
+            .err()
+            .expect("empty PEM should fail");
+
+        assert!(
+            err.to_string()
+                .contains("no certificates found in PEM data"),
+            "unexpected error: {err}",
+        );
+    }
+}
