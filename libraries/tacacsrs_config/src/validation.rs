@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
 use crate::generated::tacacs_plus::{
-    ClientIdentityCertificate, RawPrivateKey, ServerAuthenticationCaCerts,
-    ServerAuthenticationRawPublicKeys, TacacsPlus, Tls13Epsk,
+    ClientCredentials, ClientIdentityCertificate, RawPrivateKey, ServerAuthenticationCaCerts,
+    ServerAuthenticationRawPublicKeys, TacacsPlus, TacacsPlusServer, Tls13Epsk,
+    TlsClientClientIdentity, TlsClientServerAuthentication,
 };
 
 /// Validate a parsed TACACS+ configuration against YANG model constraints.
@@ -28,6 +29,10 @@ pub fn validate_config(config: &TacacsPlus) -> anyhow::Result<()> {
         config.server_credentials.iter().map(|c| c.id.as_str()),
         "server-credentials",
     )?;
+
+    for credentials in &config.client_credentials {
+        validate_client_credentials(credentials)?;
+    }
 
     validate_credential_references(config)?;
 
@@ -82,6 +87,14 @@ fn validate_server(
     server: &crate::generated::tacacs_plus::TacacsPlusServer,
     seen_endpoints: &mut HashSet<(String, u16)>,
 ) -> anyhow::Result<()> {
+    validate_choice(
+        &server.name,
+        "source-type",
+        TacacsPlusServer::CHOICE_SOURCE_TYPE,
+        TacacsPlusServer::CHOICE_SOURCE_TYPE_MANDATORY,
+        &[server.source_ip.is_some(), server.source_interface.is_some()],
+    )?;
+
     let key = (server.address.clone(), server.port);
     if !seen_endpoints.insert(key) {
         anyhow::bail!("duplicate server address+port: {}:{}", server.address, server.port,);
@@ -109,19 +122,13 @@ fn validate_security_choice(
         || server.server_authentication.is_some()
         || server.hello_params.is_some();
     let has_obfuscation = server.shared_secret.is_some();
-    if !has_tls && !has_obfuscation {
-        anyhow::bail!(
-            "server '{}': security choice is mandatory — set TLS fields or shared-secret",
-            server.name,
-        );
-    }
-    if has_tls && has_obfuscation {
-        anyhow::bail!(
-            "server '{}': cannot use both TLS and shared-secret obfuscation",
-            server.name,
-        );
-    }
-    Ok(())
+    validate_choice(
+        &server.name,
+        "security",
+        TacacsPlusServer::CHOICE_SECURITY,
+        TacacsPlusServer::CHOICE_SECURITY_MANDATORY,
+        &[has_tls, has_obfuscation],
+    )
 }
 
 fn validate_client_identity(
@@ -131,8 +138,21 @@ fn validate_client_identity(
         return Ok(());
     };
 
+    validate_choice(
+        &server.name,
+        "client-identity",
+        TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT,
+        TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_MANDATORY,
+        &[
+            client_identity.credentials_reference.is_some(),
+            client_identity.certificate.is_some()
+                || client_identity.raw_private_key.is_some()
+                || client_identity.tls13_epsk.is_some(),
+        ],
+    )?;
+
     if let Some(ref certificate) = client_identity.certificate {
-        validate_mandatory_choice(
+        validate_choice(
             &server.name,
             "client-identity/certificate",
             ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
@@ -145,7 +165,7 @@ fn validate_client_identity(
     }
 
     if let Some(ref raw_private_key) = client_identity.raw_private_key {
-        validate_mandatory_choice(
+        validate_choice(
             &server.name,
             "client-identity/raw-private-key",
             RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE,
@@ -158,7 +178,7 @@ fn validate_client_identity(
     }
 
     if let Some(ref tls13_epsk) = client_identity.tls13_epsk {
-        validate_mandatory_choice(
+        validate_choice(
             &server.name,
             "client-identity/tls13-epsk",
             Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
@@ -183,8 +203,22 @@ fn validate_server_authentication(
         return Ok(());
     };
 
+    validate_choice(
+        &server.name,
+        "server-authentication",
+        TlsClientServerAuthentication::CHOICE_REF_OR_EXPLICIT,
+        TlsClientServerAuthentication::CHOICE_REF_OR_EXPLICIT_MANDATORY,
+        &[
+            server_authentication.credentials_reference.is_some(),
+            server_authentication.ca_certs.is_some()
+                || server_authentication.ee_certs.is_some()
+                || server_authentication.raw_public_keys.is_some()
+                || server_authentication.tls13_epsks.is_some(),
+        ],
+    )?;
+
     if let Some(ref ca_certs) = server_authentication.ca_certs {
-        validate_mandatory_choice(
+        validate_choice(
             &server.name,
             "server-authentication/ca-certs",
             ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
@@ -197,7 +231,7 @@ fn validate_server_authentication(
     }
 
     if let Some(ref raw_public_keys) = server_authentication.raw_public_keys {
-        validate_mandatory_choice(
+        validate_choice(
             &server.name,
             "server-authentication/raw-public-keys",
             ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE,
@@ -252,7 +286,68 @@ fn validate_unique_ids<'a>(
     Ok(())
 }
 
-fn validate_mandatory_choice(
+fn validate_client_credentials(credentials: &ClientCredentials) -> anyhow::Result<()> {
+    validate_choice(
+        &credentials.id,
+        "client-credentials/auth-type",
+        ClientCredentials::CHOICE_AUTH_TYPE,
+        ClientCredentials::CHOICE_AUTH_TYPE_MANDATORY,
+        &[
+            credentials.certificate.is_some(),
+            credentials.raw_private_key.is_some(),
+            credentials.tls13_epsk.is_some(),
+        ],
+    )?;
+
+    if let Some(ref certificate) = credentials.certificate {
+        validate_choice(
+            &credentials.id,
+            "client-credentials/certificate",
+            ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
+            ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
+            &[
+                certificate.inline_definition.is_some(),
+                certificate.central_keystore_reference.is_some(),
+            ],
+        )?;
+    }
+
+    if let Some(ref raw_private_key) = credentials.raw_private_key {
+        validate_choice(
+            &credentials.id,
+            "client-credentials/raw-private-key",
+            RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE,
+            RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
+            &[
+                raw_private_key.inline_definition.is_some(),
+                raw_private_key.central_keystore_reference.is_some(),
+            ],
+        )?;
+    }
+
+    if let Some(ref tls13_epsk) = credentials.tls13_epsk {
+        validate_choice(
+            &credentials.id,
+            "client-credentials/tls13-epsk",
+            Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
+            Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
+            &[
+                tls13_epsk.inline_definition.is_some(),
+                tls13_epsk.central_keystore_reference.is_some(),
+            ],
+        )?;
+
+        #[cfg(not(feature = "psk"))]
+        anyhow::bail!(
+            "client-credentials '{}': TLS 1.3 PSK requires the 'psk' feature flag",
+            credentials.id,
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_choice(
     server_name: &str,
     field_path: &str,
     choice_cases: &[(&str, &[&str])],

@@ -23,6 +23,12 @@
 .PARAMETER AllFeatures
     Activate all available features.
 
+.PARAMETER Branch
+    Enable branch coverage instrumentation. Adds a Branch % column to the
+    per-file table and includes branch/MC/DC totals in the summary line.
+    When combined with -Lcov, automatically prints every source location
+    with an uncovered branch (reads BRDA:line,block,branch,0 records).
+
 .EXAMPLE
     # Workspace-wide coverage summary
     .\lde\run-coverage.ps1
@@ -38,6 +44,10 @@
 .EXAMPLE
     # All features enabled
     .\lde\run-coverage.ps1 -Package tacacsrs-config -AllFeatures -Html
+
+.EXAMPLE
+    # Branch coverage with automatic missed-branch analysis
+    .\lde\run-coverage.ps1 -Package tacacsrs-config -AllFeatures -Branch -Lcov
 #>
 [CmdletBinding()]
 param(
@@ -51,7 +61,9 @@ param(
     [ValidateRange(0, 100)]
     [int]$FailUnderLines = 0,
 
-    [switch]$AllFeatures
+    [switch]$AllFeatures,
+
+    [switch]$Branch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -105,15 +117,24 @@ try {
         $testOnlyArgs += '--all-features'
     }
 
+    # Branch instrumentation applies to both the test run and all report
+    # subcommands — the report subcommand must also receive --branch to emit
+    # the branch columns from the collected profdata.
+    $branchArgs = @()
+    if ($Branch) {
+        $branchArgs += '--branch'
+        Write-Host 'Branch coverage enabled' -ForegroundColor DarkGray
+    }
+
     # --- phase 1: run tests and collect coverage (no report yet) ---
     Write-Host "`nBuilding and running tests with instrumentation..." -ForegroundColor Yellow
-    $testArgs = @('llvm-cov', '--no-report') + $scopeArgs + $testOnlyArgs
+    $testArgs = @('llvm-cov', '--no-report') + $scopeArgs + $testOnlyArgs + $branchArgs
     & cargo @testArgs
     if ($LASTEXITCODE -ne 0) { throw 'Test execution failed.' }
 
     # --- phase 2: JSON summary parsed into a PowerShell table ---
     Write-Host "`n--- Coverage Summary ---" -ForegroundColor Green
-    $jsonArgs = @('llvm-cov', 'report', '--json') + $scopeArgs
+    $jsonArgs = @('llvm-cov', 'report', '--json') + $scopeArgs + $branchArgs
     $rawJson = & cargo @jsonArgs 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Coverage report generation failed.' }
 
@@ -128,24 +149,29 @@ try {
         }
         $s = $file.summary
         [PSCustomObject]@{
-            File      = $rel
-            'Lines %' = '{0:N1}' -f $s.lines.percent
-            Lines     = "$($s.lines.covered)/$($s.lines.count)"
-            'Funcs %' = '{0:N1}' -f $s.functions.percent
-            Funcs     = "$($s.functions.covered)/$($s.functions.count)"
-            'Rgns %'  = '{0:N1}' -f $s.regions.percent
-            Regions   = "$($s.regions.covered)/$($s.regions.count)"
+            File       = $rel
+            'Lines %'  = '{0:N1}' -f $s.lines.percent
+            Lines      = "$($s.lines.covered)/$($s.lines.count)"
+            'Funcs %'  = '{0:N1}' -f $s.functions.percent
+            Funcs      = "$($s.functions.covered)/$($s.functions.count)"
+            'Rgns %'   = '{0:N1}' -f $s.regions.percent
+            Regions    = "$($s.regions.covered)/$($s.regions.count)"
+            'Branch %' = if ($s.branches.count -gt 0) { '{0:N1}' -f $s.branches.percent } else { '-' }
+            Branches   = if ($s.branches.count -gt 0) { "$($s.branches.covered)/$($s.branches.count)" } else { '-' }
         }
     }
 
     $rows | Sort-Object 'Lines %' | Format-Table -AutoSize | Out-String | Write-Host
 
-    # Totals
+    # Totals — branch and MC/DC are shown when present in the report data.
     $t = $data.totals
-    Write-Host ('  TOTAL  Lines: {0:N1}% ({1}/{2})  Functions: {3:N1}% ({4}/{5})  Regions: {6:N1}% ({7}/{8})' -f `
+    $branchSummary = if ($t.branches.count -gt 0) { '  Branches: {0:N1}% ({1}/{2})' -f $t.branches.percent, $t.branches.covered, $t.branches.count } else { '' }
+    $mcdcSummary   = if ($t.mcdc.count   -gt 0) { '  MC/DC: {0:N1}% ({1}/{2})'      -f $t.mcdc.percent,   $t.mcdc.covered,   $t.mcdc.count   } else { '' }
+    Write-Host ('  TOTAL  Lines: {0:N1}% ({1}/{2})  Functions: {3:N1}% ({4}/{5})  Regions: {6:N1}% ({7}/{8}){9}{10}' -f `
         $t.lines.percent, $t.lines.covered, $t.lines.count,
         $t.functions.percent, $t.functions.covered, $t.functions.count,
-        $t.regions.percent, $t.regions.covered, $t.regions.count
+        $t.regions.percent, $t.regions.covered, $t.regions.count,
+        $branchSummary, $mcdcSummary
     ) -ForegroundColor Cyan
 
     $summaryExit = 0
@@ -156,7 +182,7 @@ try {
     # --- phase 3: optional HTML report ---
     if ($Html) {
         Write-Host "`nGenerating HTML coverage report..." -ForegroundColor Yellow
-        $htmlArgs = @('llvm-cov', 'report', '--html', '--open') + $scopeArgs
+        $htmlArgs = @('llvm-cov', 'report', '--html', '--open') + $scopeArgs + $branchArgs
         & cargo @htmlArgs
         if ($LASTEXITCODE -ne 0) { Write-Warning 'HTML report generation failed.' }
     }
@@ -168,13 +194,39 @@ try {
         $lcovPath = Join-Path $lcovDir 'lcov.info'
 
         Write-Host "`nExporting LCOV profile to $lcovPath ..." -ForegroundColor Yellow
-        $lcovArgs = @('llvm-cov', 'report', '--lcov', '--output-path', $lcovPath) + $scopeArgs
+        $lcovArgs = @('llvm-cov', 'report', '--lcov', '--output-path', $lcovPath) + $scopeArgs + $branchArgs
         & cargo @lcovArgs
         if ($LASTEXITCODE -ne 0) {
             Write-Warning 'LCOV export failed.'
         }
         else {
             Write-Host "LCOV profile written to $lcovPath" -ForegroundColor Green
+
+            # When -Branch is active, parse BRDA records and surface every
+            # uncovered branch (hit count 0) alongside its source file and line.
+            # LCOV format: BRDA:line,block,branch,hit_count
+            if ($Branch) {
+                $currentSF = ''
+                $missed = [System.Collections.Generic.List[string]]::new()
+                foreach ($lcovLine in (Get-Content $lcovPath)) {
+                    if ($lcovLine -match '^SF:(.+)$') {
+                        $currentSF = $Matches[1]
+                        if ($currentSF.StartsWith($repoRoot.Path, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $currentSF = $currentSF.Substring($repoRoot.Path.Length).TrimStart('\', '/')
+                        }
+                    }
+                    elseif ($lcovLine -match '^BRDA:(\d+),\d+,\d+,0$') {
+                        $missed.Add("  $currentSF : line $($Matches[1])")
+                    }
+                }
+                if ($missed.Count -gt 0) {
+                    Write-Host "`nUncovered branches:" -ForegroundColor Yellow
+                    $missed | Select-Object -Unique | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+                }
+                else {
+                    Write-Host "`nAll branches covered." -ForegroundColor Green
+                }
+            }
         }
     }
 

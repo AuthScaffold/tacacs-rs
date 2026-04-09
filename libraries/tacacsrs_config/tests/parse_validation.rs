@@ -373,7 +373,10 @@ fn reject_no_security() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("security choice is mandatory"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("security requires one of [tls, obfuscation]"),
+        "unexpected error: {err}",
+    );
 }
 
 #[test]
@@ -401,7 +404,8 @@ fn reject_tls_and_obfuscation() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert!(
-        err.to_string().contains("cannot use both TLS and shared-secret"),
+        err.to_string()
+            .contains("security allows only one of [tls, obfuscation]"),
         "unexpected error: {err}",
     );
 }
@@ -863,6 +867,332 @@ fn reject_raw_public_keys_with_multiple_choices() {
 }
 
 #[test]
+fn reject_source_ip_and_source_interface_together() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bad-source-choice",
+                    "server-type": "accounting",
+                    "address": "10.0.0.60",
+                    "port": 49,
+                    "shared-secret": "secret",
+                    "source-ip": "192.0.2.10",
+                    "source-interface": "Ethernet0"
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("source-type allows only one of [source-ip, source-interface]"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn reject_client_identity_reference_and_explicit_together() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "corp-cert",
+                    "certificate": {
+                        "inline-definition": {
+                            "cert-data": "CERT",
+                            "cleartext-private-key": "KEY"
+                        }
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "bad-ref-explicit",
+                    "server-type": "accounting",
+                    "address": "10.0.0.61",
+                    "port": 49,
+                    "client-identity": {
+                        "credentials-reference": "corp-cert",
+                        "certificate": {
+                            "inline-definition": {
+                                "cert-data": "CERT",
+                                "cleartext-private-key": "KEY"
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("client-identity allows only one of [ref, explicit/auth-type]"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn reject_server_auth_reference_and_explicit_together() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server-credentials": [
+                {
+                    "id": "corp-ca",
+                    "ca-certs": {
+                        "inline-definition": {
+                            "certificate": [
+                                {"name": "ca1", "cert-data": "CA_CERT_1"}
+                            ]
+                        }
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "bad-sa-ref-explicit",
+                    "server-type": "accounting",
+                    "address": "10.0.0.62",
+                    "port": 49,
+                    "client-identity": {
+                        "certificate": {
+                            "inline-definition": {
+                                "cert-data": "CERT"
+                            }
+                        }
+                    },
+                    "server-authentication": {
+                        "credentials-reference": "corp-ca",
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "CA_CERT_1"}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("server-authentication allows only one of [ref, explicit]"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn accept_server_authentication_with_ee_certs_only() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "ee-only",
+                    "server-type": "accounting",
+                    "address": "10.0.0.64",
+                    "port": 49,
+                    "server-authentication": {
+                        "ee-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ee1", "cert-data": "EE_CERT"}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let config = parse_yang_json(json).expect("ee-certs explicit mode should be accepted");
+    assert_eq!(config.server.len(), 1);
+    assert_eq!(config.server[0].name, "ee-only");
+}
+
+#[test]
+fn reject_client_credentials_with_multiple_auth_types() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "dup-auth-type",
+                    "certificate": {
+                        "inline-definition": {
+                            "cert-data": "CERT",
+                            "cleartext-private-key": "KEY"
+                        }
+                    },
+                    "raw-private-key": {
+                        "inline-definition": {
+                            "cleartext-private-key": "KEY2"
+                        }
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "s1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.63",
+                    "port": 49,
+                    "shared-secret": "secret"
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("client-credentials/auth-type allows only one of [certificate, raw-public-key, tls13-epsk]"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn accept_client_credentials_with_certificate_auth_type() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "cert-only",
+                    "certificate": {
+                        "inline-definition": {
+                            "cert-data": "CERT",
+                            "cleartext-private-key": "KEY"
+                        }
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "s1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.65",
+                    "port": 49,
+                    "shared-secret": "secret"
+                }
+            ]
+        }
+    }"#;
+
+    let config = parse_yang_json(json).expect("certificate auth-type should be accepted");
+    assert_eq!(config.client_credentials.len(), 1);
+    assert_eq!(config.client_credentials[0].id, "cert-only");
+}
+
+#[test]
+fn accept_client_credentials_with_raw_private_key_auth_type() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "rpk-only",
+                    "raw-private-key": {
+                        "inline-definition": {
+                            "cleartext-private-key": "KEY"
+                        }
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "s1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.66",
+                    "port": 49,
+                    "shared-secret": "secret"
+                }
+            ]
+        }
+    }"#;
+
+    let config = parse_yang_json(json).expect("raw-private-key auth-type should be accepted");
+    assert_eq!(config.client_credentials.len(), 1);
+    assert_eq!(config.client_credentials[0].id, "rpk-only");
+}
+
+#[test]
+fn accept_client_credentials_with_tls13_epsk_auth_type() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "epsk-only",
+                    "tls13-epsk": {
+                        "inline-definition": {
+                            "cleartext-symmetric-key": "topsecret"
+                        },
+                        "external-identity": "client@example.com"
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "s1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.67",
+                    "port": 49,
+                    "shared-secret": "secret"
+                }
+            ]
+        }
+    }"#;
+
+    let config = parse_yang_json(json).expect("tls13-epsk auth-type should be accepted with psk");
+    assert_eq!(config.client_credentials.len(), 1);
+    assert_eq!(config.client_credentials[0].id, "epsk-only");
+}
+
+#[test]
+fn validation_references_all_tacacs_plus_choice_mandatory_constants() {
+    let generated = include_str!("../src/generated.rs");
+    let validation = include_str!("../src/validation.rs");
+
+    let tacacs_plus_start = generated
+        .find("pub mod tacacs_plus {")
+        .expect("generated.rs should contain tacacs_plus module");
+    let keystore_start = generated
+        .find("/// Types from `ietf-keystore`.")
+        .expect("generated.rs should contain keystore module marker");
+    let tacacs_plus_block = &generated[tacacs_plus_start..keystore_start];
+
+    let constants: Vec<String> = tacacs_plus_block
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("pub const CHOICE_") && trimmed.contains("_MANDATORY") {
+                trimmed
+                    .split_whitespace()
+                    .nth(2)
+                    .map(|name| name.trim_end_matches(':').to_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut missing = Vec::new();
+    for constant in constants {
+        if !validation.contains(&constant) {
+            missing.push(constant);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "validation.rs does not reference generated choice mandatory constants: {missing:?}",
+    );
+}
+
+#[test]
 fn reject_tls_version_min_below_13() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
@@ -957,6 +1287,28 @@ fn accept_tls_versions_at_or_above_13() {
     assert_eq!(config.server[0].name, "tls-bounds-ok");
 }
 
+#[test]
+fn accept_tls_hello_params_without_tls_versions() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "tls-empty-hello",
+                    "server-type": "accounting",
+                    "address": "10.0.0.33",
+                    "port": 49,
+                    "hello-params": {}
+                }
+            ]
+        }
+    }"#;
+
+    let config = parse_yang_json(json).expect("empty hello-params should be accepted");
+    assert_eq!(config.server.len(), 1);
+    assert_eq!(config.server[0].name, "tls-empty-hello");
+    assert!(config.server[0].hello_params.is_some());
+}
+
 #[cfg(feature = "psk")]
 #[test]
 fn accept_tls13_epsk_when_psk_feature_enabled() {
@@ -984,6 +1336,39 @@ fn accept_tls13_epsk_when_psk_feature_enabled() {
     let config = parse_yang_json(json).expect("tls13-epsk should parse with psk feature");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "epsk-ok");
+}
+
+#[cfg(feature = "psk")]
+#[test]
+fn reject_tls13_epsk_with_multiple_choice_sources() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "epsk-bad-choice",
+                    "server-type": "accounting",
+                    "address": "10.0.0.34",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "cleartext-symmetric-key": "topsecret"
+                            },
+                            "central-keystore-reference": "keyref",
+                            "external-identity": "client@example.com"
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).expect_err("tls13-epsk with multiple choices must fail");
+    assert!(
+        err.to_string()
+            .contains("client-identity/tls13-epsk allows only one of [inline, central-keystore]"),
+        "unexpected error: {err}",
+    );
 }
 
 struct DummyResolver;

@@ -1,4 +1,4 @@
-use tacacsrs_config::{parse_yang_json, to_connection_configs, ResolvedSecurity};
+use tacacsrs_config::{parse_yang_json, pipeline, to_connection_configs, ResolvedSecurity};
 
 #[test]
 fn to_connection_configs_maps_inline_tls_material() {
@@ -311,4 +311,73 @@ fn socket_address_returns_address_and_port() {
 
     let servers = to_connection_configs(&config).expect("mapping should succeed");
     assert_eq!(servers[0].socket_address(), "192.0.2.10:4049");
+}
+
+#[test]
+fn to_connection_configs_maps_tls_server_auth_only_no_client_identity() {
+    // server_authentication is Some, client_identity is None — exercises the
+    // decisive `|| server_authentication.is_some()` arm in resolve_security.
+    let config = parse_yang_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [
+                    {
+                        "name": "sa_only",
+                        "server-type": "accounting",
+                        "address": "10.0.0.50",
+                        "port": 49,
+                        "server-authentication": {
+                            "ca-certs": {
+                                "inline-definition": {
+                                    "certificate": [
+                                        {"name": "ca1", "cert-data": "CA_CERT"}
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        }"#,
+    )
+    .expect("config should parse");
+
+    let servers = to_connection_configs(&config).expect("mapping should succeed");
+    assert_eq!(servers.len(), 1);
+
+    assert!(matches!(&servers[0].security, ResolvedSecurity::Tls { .. }));
+    if let ResolvedSecurity::Tls { client_cert_pem, client_key_pem, ca_certs_pem, .. } =
+        &servers[0].security
+    {
+        assert!(client_cert_pem.is_none());
+        assert!(client_key_pem.is_none());
+        assert_eq!(ca_certs_pem, &vec!["CA_CERT".to_owned()]);
+    }
+}
+
+#[test]
+fn to_connection_configs_maps_none_obfuscation_for_unvalidated_server_without_security() {
+    let root = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [
+                    {
+                        "name": "bare",
+                        "server-type": "accounting",
+                        "address": "10.0.0.30",
+                        "port": 49
+                    }
+                ]
+            }
+        }"#,
+    )
+    .expect("root should parse without validation");
+
+    let servers = to_connection_configs(&root.tacacs_plus).expect("mapping should succeed");
+    assert_eq!(servers.len(), 1);
+
+    assert!(matches!(&servers[0].security, ResolvedSecurity::Obfuscation { .. }));
+    if let ResolvedSecurity::Obfuscation { shared_secret } = &servers[0].security {
+        assert!(shared_secret.is_none());
+    }
 }
