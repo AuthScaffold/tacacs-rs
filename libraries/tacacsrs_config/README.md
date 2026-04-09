@@ -21,7 +21,7 @@ let servers = to_connection_configs(&config)?;
 
 The primary entry points are:
 
-- `parse_yang_json(&str)` — parse, resolve credential references, and validate a JSON string
+- `parse_yang_json(&str)` — parse and validate a JSON string without mutating credential references
 - `parse_yang_json_file(&Path)` — file-based wrapper around `parse_yang_json`
 - `to_connection_configs(&TacacsPlus)` — map validated YANG data into runtime connection configs
 
@@ -32,14 +32,14 @@ This crate implements a three-layer design to support both round-tripping (for c
 ### 1) Raw YANG (non-destructive)
 
 ```rust
-use tacacsrs_config::parse_raw_yang_json;
+use tacacsrs_config::pipeline;
 
-let raw_config = parse_raw_yang_json(json_str)?;
+let raw_config = pipeline::parse_root_json(json_str)?;
 // raw_config is unchanged; credential references are still present as-is
 // Safe for round-tripping, logging, and reporting
 ```
 
-Use this when you need the config exactly as submitted for round-tripping, reporting, or further custom processing.
+Use this when you need the root YANG model exactly as submitted for round-tripping, reporting, or further custom processing.
 
 ### 2) Credential resolvers (pluggable)
 
@@ -75,21 +75,21 @@ Resolve credentials **only when accessing a specific server**, not for the entir
 This avoids materializing all secrets at once, reducing the risk of accidental leaks:
 
 ```rust
-use tacacsrs_config::{parse_raw_yang_json, get_resolved_server, validate_credential_references};
+use tacacsrs_config::{get_resolved_server, parse_yang_json, validate_credential_references};
 
-let raw = parse_raw_yang_json(json_str)?;
+let config = parse_yang_json(json_str)?;
 let resolvers: Vec<Box<dyn CredentialResolver>> = vec![
     // Add your resolvers here
 ];
 
 // Validate all credential references upfront (optional but recommended)
-validate_credential_references(&raw, &resolvers)?;
+validate_credential_references(&config, &resolvers)?;
 
 // Resolve credentials only for the server being used
-let resolved_server = get_resolved_server(&raw, "primary", &resolvers)?;
+let resolved_server = get_resolved_server(&config, "primary", &resolvers)?;
 ```
 
-The raw config remains unmodified and safe for round-tripping. Secrets are materialized only on demand. Validation happens once at startup, catching missing credentials early rather than at runtime.
+The parsed config remains unmodified and safe for round-tripping. Secrets are materialized only on demand. Structural validation happens during parsing; resolver-based validation can be run separately to catch missing external credentials early rather than at runtime.
 
 ### Module-oriented API (recommended for most users)
 
@@ -99,14 +99,13 @@ This crate also exposes grouped modules so callers can choose APIs by intent:
 - `pipeline` — step-by-step processing
 - `runtime` — runtime projection
 - `stats` — runtime stats types
-- `convenience` — one-call parse helpers (destructive credential resolution)
 
 For simple end-to-end usage with in-config credential bundles:
 
 ```rust
-use tacacsrs_config::{convenience, runtime};
+use tacacsrs_config::{parse_yang_json_file, runtime};
 
-let config = convenience::parse_yang_json_file(std::path::Path::new("tacacs.json"))?;
+let config = parse_yang_json_file(std::path::Path::new("tacacs.json"))?;
 let servers = runtime::to_connection_configs(&config)?;
 ```
 
@@ -116,8 +115,8 @@ The existing flat root exports remain available for compatibility.
 
 The crate includes runnable examples under `examples/`:
 
-- `quick_start.rs` — parse + validate + map to runtime using convenience modules
-- `quick_start_credential_refs.rs` — minimal end-to-end example showing that credential references are resolved during parsing
+- `quick_start.rs` — parse + validate + map to runtime using the root exports plus `runtime`
+- `quick_start_credential_refs.rs` — minimal end-to-end example showing separate resolver validation and on-demand server resolution
 - `pipeline_flow.rs` — explicit step-by-step parse/resolve/validate pipeline
 - `model_access.rs` — direct access to generated model types and flags
 - `credential_references.rs` — resolve credential references into inline material
@@ -147,7 +146,7 @@ These are the recommended entry points for application code:
 - `parse_yang_json_file(&Path) -> anyhow::Result<TacacsPlus>`
 - `to_connection_configs(&TacacsPlus) -> anyhow::Result<Vec<ServerConnectionConfig>>`
 
-`parse_yang_json()` performs deserialization and validation of YAML schema constraints (server presence, unique addresses, SNI requirements, etc.). The config is returned **without mutations**—credential references remain intact for round-tripping.
+`parse_yang_json()` performs deserialization and validation of YANG-derived JSON constraints (server presence, unique addresses, SNI requirements, choice constraints, etc.). The config is returned **without mutations**—credential references remain intact for round-tripping.
 
 To resolve credentials and materialize them for runtime use, use the pluggable resolver API:
 1. Create resolvers implementing [`CredentialResolver`]
@@ -161,6 +160,7 @@ This design separates parsing/validation from credential retrieval and enables r
 For advanced use cases, these lower-level functions are available:
 
 - `pipeline::parse_root_json()` - Parse JSON into raw generated types without validation
+- `pipeline::parse_root_json_file()` - File-based raw parse into the generated root type without validation
 - `generated` module - Full generated type graph for schema-aware integrations
 
 ### 3) Runtime mapping types
@@ -169,9 +169,13 @@ The runtime-facing mapping layer is public:
 
 - `ServerConnectionConfig`
 - `ResolvedSecurity`
-- `ServerStatistics`
 
 `ServerConnectionConfig` represents normalized per-server connection settings consumed by runtime networking/client code.
+
+Runtime statistics are exposed separately via:
+
+- `ServerStatistics`
+- `stats` module
 
 ### 4) Generated YANG model (advanced use)
 
@@ -224,6 +228,8 @@ The generated Rust types come from the checked-in YANG tooling under `yang/`:
 - `yang/yang2rust.py` — custom `pyang` plugin that emits Rust structs/enums/bitflags
 - `yang/expand_yang_tree.py` — helper used to refresh the fully expanded tree reference
 - `yang/generated_types.rs` — checked-in generator output copied into `src/generated.rs`
+
+Today, the Rust type graph is generated, but the higher-level validation logic in `src/validation.rs` is still maintained manually. That split is intentional for now: the current YANG-derived constraints are manageable in handwritten Rust, and keeping them explicit has made it easier to refine behavior during development. If the YANG model evolves substantially or the amount of schema-derived validation grows, generating some or all of that validation code from the same YANG metadata would be a reasonable next step.
 
 To regenerate after YANG module updates:
 

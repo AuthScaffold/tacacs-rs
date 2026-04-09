@@ -72,6 +72,14 @@ tacacsrs-networking ──► tacacsrs-messages
 
 The `psk` feature enables TLS 1.3 Pre-Shared Key support via OpenSSL. Without it, the default build uses rustls (pure Rust) and requires no external dependencies. The feature propagates through the crate graph: `tacon` → `tacacsrs-networking` → OpenSSL.
 
+### API Stability Policy
+
+All crates in this workspace are internal-only and are not published to crates.io.
+
+- We make no public API stability guarantees.
+- Breaking API changes are acceptable when they improve correctness, maintainability, or alignment with upstream specs (including YANG model evolution).
+- AI coding agents may introduce breaking API changes when appropriate for the change being implemented.
+
 ## Conventions
 
 ### Design Principles

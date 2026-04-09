@@ -1149,7 +1149,7 @@ fn accept_client_credentials_with_tls13_epsk_auth_type() {
 }
 
 #[test]
-fn validation_references_all_tacacs_plus_choice_mandatory_constants() {
+fn validation_maps_all_tacacs_plus_choice_mandatory_constants_to_expected_validators() {
     let generated = include_str!("../src/generated.rs");
     let validation = include_str!("../src/validation.rs");
 
@@ -1160,33 +1160,236 @@ fn validation_references_all_tacacs_plus_choice_mandatory_constants() {
         .find("/// Types from `ietf-keystore`.")
         .expect("generated.rs should contain keystore module marker");
     let tacacs_plus_block = &generated[tacacs_plus_start..keystore_start];
+    let generated_constants = generated_tacacs_plus_choice_mandatory_constants(tacacs_plus_block);
+    let expected_mappings = expected_choice_mandatory_mappings();
 
-    let constants: Vec<String> = tacacs_plus_block
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("pub const CHOICE_") && trimmed.contains("_MANDATORY") {
-                trimmed
-                    .split_whitespace()
-                    .nth(2)
-                    .map(|name| name.trim_end_matches(':').to_owned())
-            } else {
-                None
-            }
-        })
+    let expected_constants: std::collections::BTreeSet<&str> = expected_mappings
+        .iter()
+        .map(|(qualified_name, _)| *qualified_name)
         .collect();
 
-    let mut missing = Vec::new();
-    for constant in constants {
-        if !validation.contains(&constant) {
-            missing.push(constant);
+    let generated_constant_refs: std::collections::BTreeSet<&str> =
+        generated_constants.iter().map(String::as_str).collect();
+
+    assert_eq!(
+        generated_constant_refs, expected_constants,
+        "generated choice mandatory constants changed; update this validator mapping test",
+    );
+
+    let normalized_validation = normalize_whitespace(validation);
+    for (qualified_name, snippets) in expected_mappings {
+        for snippet in snippets {
+            let normalized_snippet = normalize_whitespace(snippet);
+            assert!(
+                normalized_validation.contains(&normalized_snippet),
+                "validation.rs does not map {qualified_name} to expected validate_choice call: {snippet}",
+            );
         }
     }
+}
 
-    assert!(
-        missing.is_empty(),
-        "validation.rs does not reference generated choice mandatory constants: {missing:?}",
-    );
+fn generated_tacacs_plus_choice_mandatory_constants(
+    tacacs_plus_block: &str,
+) -> std::collections::BTreeSet<String> {
+    let generated_lines: Vec<&str> = tacacs_plus_block.lines().collect();
+
+    generated_lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("pub const CHOICE_") || !trimmed.contains("_MANDATORY") {
+                return None;
+            }
+
+            let constant_name = trimmed
+                .split_whitespace()
+                .nth(2)
+                .map(|name| name.trim_end_matches(':').to_owned())?;
+            let owner = generated_lines[..index]
+                .iter()
+                .rev()
+                .find_map(|candidate| {
+                    candidate
+                        .trim()
+                        .strip_prefix("impl ")
+                        .and_then(|value| value.strip_suffix(" {"))
+                })
+                .expect("choice constant should be declared inside an impl block");
+
+            Some(format!("{owner}::{constant_name}"))
+        })
+        .collect()
+}
+
+fn expected_choice_mandatory_mappings() -> Vec<(&'static str, &'static [&'static str])> {
+    let mut mappings = Vec::new();
+    mappings.extend(expected_server_choice_mappings());
+    mappings.extend(expected_client_identity_choice_mappings());
+    mappings.extend(expected_server_auth_choice_mappings());
+    mappings.extend(expected_client_credentials_choice_mappings());
+    mappings
+}
+
+fn expected_server_choice_mappings() -> [(&'static str, &'static [&'static str]); 2] {
+    [
+        (
+            "TacacsPlusServer::CHOICE_SECURITY_MANDATORY",
+            &[
+                r#"
+                validate_choice(
+                    &server.name,
+                    "security",
+                    TacacsPlusServer::CHOICE_SECURITY,
+                    TacacsPlusServer::CHOICE_SECURITY_MANDATORY,
+                "#,
+            ],
+        ),
+        (
+            "TacacsPlusServer::CHOICE_SOURCE_TYPE_MANDATORY",
+            &[
+                r#"
+                validate_choice(
+                    &server.name,
+                    "source-type",
+                    TacacsPlusServer::CHOICE_SOURCE_TYPE,
+                    TacacsPlusServer::CHOICE_SOURCE_TYPE_MANDATORY,
+                "#,
+            ],
+        ),
+    ]
+}
+
+fn expected_client_identity_choice_mappings() -> [(&'static str, &'static [&'static str]); 4] {
+    [
+        (
+            "TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_MANDATORY",
+            &[
+                r#"
+                validate_choice(
+                    &server.name,
+                    "client-identity",
+                    TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT,
+                    TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_MANDATORY,
+                "#,
+            ],
+        ),
+        (
+            "ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY",
+            &[
+                r#"
+                validate_choice(
+                    &server.name,
+                    "client-identity/certificate",
+                    ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
+                    ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
+                "#,
+                r#"
+                validate_choice(
+                    &credentials.id,
+                    "client-credentials/certificate",
+                    ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
+                    ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
+                "#,
+            ],
+        ),
+        (
+            "RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE_MANDATORY",
+            &[
+                r#"
+                validate_choice(
+                    &server.name,
+                    "client-identity/raw-private-key",
+                    RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE,
+                    RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
+                "#,
+                r#"
+                validate_choice(
+                    &credentials.id,
+                    "client-credentials/raw-private-key",
+                    RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE,
+                    RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
+                "#,
+            ],
+        ),
+        (
+            "Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY",
+            &[
+                r#"
+                validate_choice(
+                    &server.name,
+                    "client-identity/tls13-epsk",
+                    Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
+                    Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
+                "#,
+                r#"
+                validate_choice(
+                    &credentials.id,
+                    "client-credentials/tls13-epsk",
+                    Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
+                    Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
+                "#,
+            ],
+        ),
+    ]
+}
+
+fn expected_server_auth_choice_mappings() -> [(&'static str, &'static [&'static str]); 3] {
+    [
+        (
+            "TlsClientServerAuthentication::CHOICE_REF_OR_EXPLICIT_MANDATORY",
+            &[
+                r#"
+                validate_choice(
+                    &server.name,
+                    "server-authentication",
+                    TlsClientServerAuthentication::CHOICE_REF_OR_EXPLICIT,
+                    TlsClientServerAuthentication::CHOICE_REF_OR_EXPLICIT_MANDATORY,
+                "#,
+            ],
+        ),
+        (
+            "ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY",
+            &[
+                r#"
+                validate_choice(
+                    &server.name,
+                    "server-authentication/ca-certs",
+                    ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
+                    ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
+                "#,
+            ],
+        ),
+        (
+            "ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY",
+            &[
+                r#"
+                validate_choice(
+                    &server.name,
+                    "server-authentication/raw-public-keys",
+                    ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE,
+                    ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
+                "#,
+            ],
+        ),
+    ]
+}
+
+fn expected_client_credentials_choice_mappings() -> [(&'static str, &'static [&'static str]); 1] {
+    [(
+        "ClientCredentials::CHOICE_AUTH_TYPE_MANDATORY",
+        &[r#"
+                validate_choice(
+                    &credentials.id,
+                    "client-credentials/auth-type",
+                    ClientCredentials::CHOICE_AUTH_TYPE,
+                    ClientCredentials::CHOICE_AUTH_TYPE_MANDATORY,
+                "#],
+    )]
+}
+
+fn normalize_whitespace(input: &str) -> String {
+    input.split_whitespace().collect()
 }
 
 #[test]
