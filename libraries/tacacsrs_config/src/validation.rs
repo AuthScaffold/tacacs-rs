@@ -29,6 +29,52 @@ pub fn validate_config(config: &TacacsPlus) -> anyhow::Result<()> {
         "server-credentials",
     )?;
 
+    validate_credential_references(config)?;
+
+    Ok(())
+}
+
+fn validate_credential_references(config: &TacacsPlus) -> anyhow::Result<()> {
+    let client_cred_ids: HashSet<&str> = config
+        .client_credentials
+        .iter()
+        .map(|c| c.id.as_str())
+        .collect();
+
+    let server_cred_ids: HashSet<&str> = config
+        .server_credentials
+        .iter()
+        .map(|c| c.id.as_str())
+        .collect();
+
+    for server in &config.server {
+        // Validate client identity credential reference
+        if let Some(ref ci) = server.client_identity {
+            if let Some(ref cref) = ci.credentials_reference {
+                if !client_cred_ids.contains(cref.as_str()) {
+                    anyhow::bail!(
+                        "server '{}': client-credentials reference '{}' not found",
+                        server.name,
+                        cref,
+                    );
+                }
+            }
+        }
+
+        // Validate server authentication credential reference
+        if let Some(ref sa) = server.server_authentication {
+            if let Some(ref cref) = sa.credentials_reference {
+                if !server_cred_ids.contains(cref.as_str()) {
+                    anyhow::bail!(
+                        "server '{}': server-credentials reference '{}' not found",
+                        server.name,
+                        cref,
+                    );
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
