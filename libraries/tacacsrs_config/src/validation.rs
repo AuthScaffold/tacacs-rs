@@ -188,9 +188,6 @@ fn validate_client_identity(
                 tls13_epsk.central_keystore_reference.is_some(),
             ],
         )?;
-
-        #[cfg(not(feature = "psk"))]
-        anyhow::bail!("server '{}': TLS 1.3 PSK requires the 'psk' feature flag", server.name,);
     }
 
     Ok(())
@@ -336,12 +333,6 @@ fn validate_client_credentials(credentials: &ClientCredentials) -> anyhow::Resul
                 tls13_epsk.central_keystore_reference.is_some(),
             ],
         )?;
-
-        #[cfg(not(feature = "psk"))]
-        anyhow::bail!(
-            "client-credentials '{}': TLS 1.3 PSK requires the 'psk' feature flag",
-            credentials.id,
-        );
     }
 
     Ok(())

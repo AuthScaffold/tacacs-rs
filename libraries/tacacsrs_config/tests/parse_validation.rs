@@ -462,9 +462,8 @@ fn reject_missing_inline_or_truststore_choice() {
     );
 }
 
-#[cfg(not(feature = "psk"))]
 #[test]
-fn reject_tls13_epsk_without_psk_feature() {
+fn accept_tls13_epsk_config_without_runtime_psk_support() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
             "server": [
@@ -486,11 +485,9 @@ fn reject_tls13_epsk_without_psk_feature() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string().contains("TLS 1.3 PSK requires the 'psk' feature flag"),
-        "unexpected error: {err}",
-    );
+    let config = parse_yang_json(json).expect("tls13-epsk config should parse without runtime PSK support");
+    assert_eq!(config.server.len(), 1);
+    assert_eq!(config.server[0].name, "epsk-server");
 }
 
 #[test]
@@ -1309,9 +1306,8 @@ fn accept_tls_hello_params_without_tls_versions() {
     assert!(config.server[0].hello_params.is_some());
 }
 
-#[cfg(feature = "psk")]
 #[test]
-fn accept_tls13_epsk_when_psk_feature_enabled() {
+fn accept_tls13_epsk_when_present() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
             "server": [
@@ -1333,12 +1329,11 @@ fn accept_tls13_epsk_when_psk_feature_enabled() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("tls13-epsk should parse with psk feature");
+    let config = parse_yang_json(json).expect("tls13-epsk should parse");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "epsk-ok");
 }
 
-#[cfg(feature = "psk")]
 #[test]
 fn reject_tls13_epsk_with_multiple_choice_sources() {
     let json = r#"{

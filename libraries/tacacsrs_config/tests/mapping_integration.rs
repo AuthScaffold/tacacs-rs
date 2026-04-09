@@ -62,7 +62,6 @@ fn to_connection_configs_maps_inline_tls_material() {
     }
 }
 
-#[cfg(feature = "psk")]
 #[test]
 fn to_connection_configs_maps_tls13_epsk_to_psk() {
     let config = parse_yang_json(
