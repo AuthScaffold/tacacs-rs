@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{
+use tacacsrs_config::{
     get_resolved_server, parse_yang_json, parse_yang_json_file, pipeline,
     validate_credential_references, CredentialRefType, CredentialResolver, YangConfigRoot,
     TacacsPlusServerType,
@@ -122,7 +122,7 @@ fn parse_tls_config() {
     assert_eq!(s.domain_name.as_deref(), Some("tacacs.example.com"));
     assert_eq!(s.sni_enabled, Some(true));
     assert!(s.single_connection);
-    assert_eq!(s.timeout, 5); // default
+    assert_eq!(s.timeout, 5);
 
     let client_identity = s.client_identity.as_ref().unwrap();
     assert_eq!(
@@ -198,7 +198,7 @@ fn reject_duplicate_address_port() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("duplicate server address+port"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("duplicate server address+port"), "unexpected error: {err}");
 }
 
 #[test]
@@ -325,23 +325,18 @@ fn credential_references_preserved_for_roundtrip() {
     let s = &config.server[0];
 
     let ci = s.client_identity.as_ref().unwrap();
-    // References are preserved (NOT cleared) for round-tripping
     assert!(ci.credentials_reference.is_some());
     assert_eq!(ci.credentials_reference.as_deref(), Some("corp-cert"));
-    // Inline material is NOT populated during parsing
     assert!(ci.certificate.is_none());
 
-    // Server auth reference is also preserved
     let sa = s.server_authentication.as_ref().unwrap();
     assert!(sa.credentials_reference.is_some());
     assert_eq!(sa.credentials_reference.as_deref(), Some("corp-ca"));
-    // Inline material is NOT populated during parsing
     assert!(sa.ca_certs.is_none());
 }
 
 #[test]
 fn reject_missing_credential_reference() {
-    // A server cannot reference a credential ID that doesn't exist in the config.
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
             "server": [
@@ -359,10 +354,7 @@ fn reject_missing_credential_reference() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string().contains("nonexistent"),
-        "unexpected error: {err}",
-    );
+    assert!(err.to_string().contains("nonexistent"), "unexpected error: {err}");
 }
 
 #[test]
@@ -381,7 +373,7 @@ fn reject_no_security() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("security choice is mandatory"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("security choice is mandatory"), "unexpected error: {err}");
 }
 
 #[test]
@@ -409,8 +401,7 @@ fn reject_tls_and_obfuscation() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert!(
-        err.to_string()
-            .contains("cannot use both TLS and shared-secret"),
+        err.to_string().contains("cannot use both TLS and shared-secret"),
         "unexpected error: {err}",
     );
 }
@@ -435,8 +426,7 @@ fn reject_missing_inline_or_keystore_choice() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert!(
-        err.to_string()
-            .contains("client-identity/certificate requires one of [inline, central-keystore]"),
+        err.to_string().contains("client-identity/certificate requires one of [inline, central-keystore]"),
         "unexpected error: {err}",
     );
 }
@@ -494,8 +484,7 @@ fn reject_tls13_epsk_without_psk_feature() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert!(
-        err.to_string()
-            .contains("TLS 1.3 PSK requires the 'psk' feature flag"),
+        err.to_string().contains("TLS 1.3 PSK requires the 'psk' feature flag"),
         "unexpected error: {err}",
     );
 }

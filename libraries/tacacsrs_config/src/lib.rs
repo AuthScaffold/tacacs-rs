@@ -141,6 +141,3 @@ pub fn parse_yang_json_file(path: &std::path::Path) -> anyhow::Result<TacacsPlus
 
     Ok(config)
 }
-
-#[cfg(test)]
-mod tests;
