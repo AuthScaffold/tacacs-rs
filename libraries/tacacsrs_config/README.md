@@ -25,6 +25,65 @@ The primary entry points are:
 - `parse_yang_json_file(&Path)` — file-based wrapper around `parse_yang_json`
 - `to_connection_configs(&TacacsPlus)` — map validated YANG data into runtime connection configs
 
+## Public API surface
+
+This crate intentionally exposes both:
+
+- a high-level, opinionated parsing pipeline for most callers
+- the full generated YANG model and lower-level helpers for advanced integrations
+
+### 1) High-level parse + validate workflow
+
+These are the recommended entry points for application code:
+
+- `parse_yang_json(&str) -> anyhow::Result<TacacsPlus>`
+- `parse_yang_json_file(&Path) -> anyhow::Result<TacacsPlus>`
+- `to_connection_configs(&TacacsPlus) -> anyhow::Result<Vec<ServerConnectionConfig>>`
+
+`parse_yang_json*` performs deserialization, credential-reference resolution, and constraint validation before returning a `TacacsPlus` value.
+
+### 2) Validation and reference-resolution helpers
+
+For callers that need custom parse flows, these lower-level functions are also public:
+
+- `resolve_credential_references(&mut TacacsPlus) -> anyhow::Result<()>`
+- `validate_config(&TacacsPlus) -> anyhow::Result<()>`
+
+### 3) Runtime mapping types
+
+The runtime-facing mapping layer is public:
+
+- `ServerConnectionConfig`
+- `ResolvedSecurity`
+- `ServerStatistics`
+
+`ServerConnectionConfig` represents normalized per-server connection settings consumed by runtime networking/client code.
+
+### 4) Generated YANG model (advanced use)
+
+The generated model is intentionally public for schema-aware or tooling-heavy integrations:
+
+- `generated` module (full generated type graph)
+- Re-exported submodules: `keystore`, `truststore`, `crypto_types`, `tls_common`
+- Re-exported root: `YangConfigRoot`
+- Re-exported common TACACS+ model types, including:
+  - `TacacsPlus`
+  - `TacacsPlusServer`
+  - `TacacsPlusServerType`
+  - `ClientCredentials`
+  - `ServerCredentials`
+  - `TlsClientClientIdentity`
+  - `TlsClientServerAuthentication`
+  - `TlsClientHelloParams`
+  - `ClientIdentityCertificate`
+  - `RawPrivateKey`
+  - `Tls13Epsk`
+  - `ServerAuthenticationCaCerts`
+  - `ServerAuthenticationRawPublicKeys`
+  - `EpskSupportedHash`
+
+This split lets simple consumers use the high-level API, while advanced consumers can work directly with generated YANG-aligned types.
+
 ## Example config
 
 ```json
