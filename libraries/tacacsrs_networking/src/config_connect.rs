@@ -111,70 +111,40 @@ pub async fn establish_stream(
         }
     }
 
-    // --- Certificate-based TLS ---
-    if server.is_tls() {
-        // Reject raw-private-key client auth until supported
-        if let Some(ref ci) = server.client_identity {
-            if ci.raw_private_key.is_some() {
-                anyhow::bail!("raw public key (RPK) client authentication is not yet supported");
-            }
-        }
+    // --- TLS-RPK (must be checked before general TLS, after PSK) ---
+    #[cfg(feature = "rpk")]
+    if let Some(ref ci) = server.client_identity {
+        if let Some(ref rpk) = ci.raw_private_key {
+            if let Some(ref inline) = rpk.inline_definition {
+                if let Some(ref cleartext_key) = inline.cleartext_private_key {
+                    let tls_stream = establish_rpk_stream(
+                        server,
+                        &address,
+                        inline.private_key_format.as_deref(),
+                        cleartext_key,
+                        tcp_stream,
+                    )
+                    .await?;
 
-        let sni_name = derive_sni_name(server, &address);
-        log::debug!("Negotiating TLS handshake with {address} (SNI: {sni_name})");
-
-        let mut builder = TlsConfigurationBuilder::new();
-
-        // Load custom CA certificates into the root store
-        if let Some(ref root_store) = build_root_cert_store(server)? {
-            builder = builder.with_root_certificates(root_store.clone());
-        }
-
-        // Load client certificate if present
-        if let Some(ref ci) = server.client_identity {
-            if let Some(ref cert) = ci.certificate {
-                if let Some(ref inline) = cert.inline_definition {
-                    if let (Some(cert_data), Some(key_data)) =
-                        (&inline.cert_data, &inline.cleartext_private_key)
-                    {
-                        let certs = parse_certificate_data(cert_data)
-                            .inspect_err(|e| {
-                                log::warn!("Failed to parse TLS certificate for {address}: {e:#}");
-                            })
-                            .context("Failed to parse TLS certificate")?;
-
-                        let key =
-                            parse_private_key_data(key_data, inline.private_key_format.as_deref())
-                                .inspect_err(|e| {
-                                    log::warn!(
-                                        "Failed to parse TLS private key for {address}: {e:#}"
-                                    );
-                                })
-                                .context("Failed to parse TLS private key")?;
-
-                        builder = builder.with_client_auth_der(certs, key);
-                    }
+                    return Ok(BoxedTransport::new(tls_stream));
                 }
             }
         }
+    }
 
-        if options.disable_certificate_verification {
-            builder = builder.with_certificate_verification_disabled(true);
+    // --- Certificate-based TLS ---
+    if server.is_tls() {
+        // Reject raw-private-key client auth when the `rpk` feature is not enabled
+        #[cfg(not(feature = "rpk"))]
+        if let Some(ref ci) = server.client_identity {
+            if ci.raw_private_key.is_some() {
+                anyhow::bail!(
+                    "raw public key (RPK) client authentication requires the 'rpk' feature"
+                );
+            }
         }
 
-        let tls_config = Arc::new(
-            builder
-                .build()
-                .inspect_err(|e| log::warn!("Failed to build TLS config for {address}: {e:#}"))
-                .context("Failed to build TLS configuration")?,
-        );
-
-        let tls_stream = crate::transport::tls::connect_tls(&tls_config, tcp_stream, sni_name)
-            .await
-            .inspect_err(|e| log::warn!("TLS handshake with {address} failed: {e:#}"))
-            .context("Failed to establish TLS connection")?;
-
-        log::debug!("TLS connection to {address} ready");
+        let tls_stream = establish_cert_tls_stream(server, &address, options, tcp_stream).await?;
         Ok(BoxedTransport::new(tls_stream))
     } else {
         // Plain TCP (obfuscation mode)
@@ -185,6 +155,140 @@ pub async fn establish_stream(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Establishes a certificate-based TLS connection.
+async fn establish_cert_tls_stream(
+    server: &ResolvedServer,
+    address: &str,
+    options: &ConnectOptions,
+    tcp_stream: tokio::net::TcpStream,
+) -> Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>> {
+    let sni_name = derive_sni_name(server, address);
+    log::debug!("Negotiating TLS handshake with {address} (SNI: {sni_name})");
+
+    let mut builder = TlsConfigurationBuilder::new();
+
+    // Load custom CA certificates into the root store
+    if let Some(ref root_store) = build_root_cert_store(server)? {
+        builder = builder.with_root_certificates(root_store.clone());
+    }
+
+    // Load client certificate if present
+    if let Some(ref ci) = server.client_identity {
+        if let Some(ref cert) = ci.certificate {
+            if let Some(ref inline) = cert.inline_definition {
+                if let (Some(cert_data), Some(key_data)) =
+                    (&inline.cert_data, &inline.cleartext_private_key)
+                {
+                    let certs = parse_certificate_data(cert_data)
+                        .inspect_err(|e| {
+                            log::warn!("Failed to parse TLS certificate for {address}: {e:#}");
+                        })
+                        .context("Failed to parse TLS certificate")?;
+
+                    let key =
+                        parse_private_key_data(key_data, inline.private_key_format.as_deref())
+                            .inspect_err(|e| {
+                                log::warn!("Failed to parse TLS private key for {address}: {e:#}");
+                            })
+                            .context("Failed to parse TLS private key")?;
+
+                    builder = builder.with_client_auth_der(certs, key);
+                }
+            }
+        }
+    }
+
+    if options.disable_certificate_verification {
+        builder = builder.with_certificate_verification_disabled(true);
+    }
+
+    let tls_config = Arc::new(
+        builder
+            .build()
+            .inspect_err(|e| log::warn!("Failed to build TLS config for {address}: {e:#}"))
+            .context("Failed to build TLS configuration")?,
+    );
+
+    let tls_stream = crate::transport::tls::connect_tls(&tls_config, tcp_stream, sni_name)
+        .await
+        .inspect_err(|e| log::warn!("TLS handshake with {address} failed: {e:#}"))
+        .context("Failed to establish TLS connection")?;
+
+    log::debug!("TLS connection to {address} ready");
+    Ok(tls_stream)
+}
+
+/// Establishes a TLS-RPK connection using the raw key material from the
+/// YANG configuration.
+#[cfg(feature = "rpk")]
+async fn establish_rpk_stream(
+    server: &ResolvedServer,
+    address: &str,
+    private_key_format: Option<&str>,
+    cleartext_key: &str,
+    tcp_stream: tokio::net::TcpStream,
+) -> Result<tokio_openssl::SslStream<tokio::net::TcpStream>> {
+    log::debug!("Setting up TLS-RPK connection to {address}");
+
+    let key_format = match private_key_format {
+        Some(fmt) => {
+            let f = PrivateKeyFormat::from_rfc7951_str(fmt)
+                .ok_or_else(|| anyhow::anyhow!("unsupported private-key-format '{fmt}'"))?;
+            match f {
+                PrivateKeyFormat::RsaPrivateKeyFormat => {
+                    crate::transport::tls_rpk::KeyFormat::Pkcs1
+                }
+                PrivateKeyFormat::EcPrivateKeyFormat => crate::transport::tls_rpk::KeyFormat::Sec1,
+                PrivateKeyFormat::OneAsymmetricKeyFormat => {
+                    crate::transport::tls_rpk::KeyFormat::Pkcs8
+                }
+            }
+        }
+        None => crate::transport::tls_rpk::KeyFormat::Pkcs8,
+    };
+
+    let private_key_der = BASE64
+        .decode(cleartext_key.trim())
+        .context("failed to base64-decode RPK private key")?;
+
+    let mut identity = crate::transport::tls_rpk::RpkIdentity::new(private_key_der, key_format)
+        .context("Invalid RPK credentials")?;
+
+    // Collect pinned server public keys for verification
+    if let Some(ref sa) = server.server_authentication {
+        if let Some(ref raw_pub_keys) = sa.raw_public_keys {
+            if let Some(ref inline_def) = raw_pub_keys.inline_definition {
+                let mut pinned = Vec::new();
+                for pk in &inline_def.public_key {
+                    let spki_der = BASE64.decode(pk.public_key.trim()).with_context(|| {
+                        format!("failed to base64-decode pinned server key '{}'", pk.name,)
+                    })?;
+                    pinned.push(crate::transport::tls_rpk::PinnedPublicKey {
+                        name: pk.name.clone(),
+                        spki_der,
+                    });
+                }
+                identity = identity.with_pinned_server_keys(pinned);
+            }
+        }
+    }
+
+    let sni_name = derive_sni_name(server, address);
+    let mut builder = crate::transport::tls_rpk::RpkConfigurationBuilder::new(identity);
+    if server.sni_enabled() {
+        builder = builder.with_server_name(sni_name);
+    }
+
+    let tls_stream = builder
+        .connect(tcp_stream)
+        .await
+        .inspect_err(|e| log::warn!("TLS-RPK handshake with {address} failed: {e:#}"))
+        .context("Failed to establish TLS RPK connection")?;
+
+    log::debug!("TLS-RPK connection to {address} ready");
+    Ok(tls_stream)
+}
 
 /// Derives the TLS server name (for SNI and verification) from the server
 /// configuration. When `sni-enabled` is true and `domain-name` is set, the

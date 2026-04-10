@@ -29,7 +29,14 @@ fn main() -> anyhow::Result<()> {
         println!("  │  endpoint: {}", server.socket_address());
         println!("  │  single_connection: {}", server.single_connection);
         println!("  │  timeout: {:?}", server.timeout_duration());
-        println!("  │  transport: {}", if server.is_tls() { "TLS" } else { "obfuscation" });
+        println!(
+            "  │  transport: {}",
+            if server.is_tls() {
+                "TLS"
+            } else {
+                "obfuscation"
+            }
+        );
         println!("  └─");
     }
 

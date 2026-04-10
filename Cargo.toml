@@ -18,7 +18,7 @@ license = "MIT"
 repository = "https://github.com/AuthScaffold/tacacs-rs"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
 [workspace.lints.clippy]

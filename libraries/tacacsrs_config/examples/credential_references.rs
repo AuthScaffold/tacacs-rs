@@ -80,10 +80,7 @@ fn main() -> anyhow::Result<()> {
         .expect("expected an accounting server");
 
     assert_eq!(accounting.name, "acct-obf-primary");
-    assert_eq!(
-        accounting.obfuscation_key(),
-        Some(b"accounting-shared-secret".to_vec())
-    );
+    assert_eq!(accounting.obfuscation_key(), Some(b"accounting-shared-secret".to_vec()));
 
     // Raw model serialization keeps full values for round-trip fidelity.
     let raw_json = serde_json::to_string_pretty(&config)?;
@@ -146,7 +143,9 @@ fn main() -> anyhow::Result<()> {
         "    '{}' still carries its symbolic credentials-reference — not mutated by resolution",
         raw.name
     );
-    println!("\n✨ Done — resolved variants hold live secret material and are ready for direct use");
+    println!(
+        "\n✨ Done — resolved variants hold live secret material and are ready for direct use"
+    );
 
     Ok(())
 }

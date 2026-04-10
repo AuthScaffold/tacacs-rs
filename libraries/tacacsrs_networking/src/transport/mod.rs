@@ -13,6 +13,8 @@ pub mod tcp;
 pub mod tls;
 #[cfg(feature = "psk")]
 pub mod tls_psk;
+#[cfg(feature = "rpk")]
+pub mod tls_rpk;
 
 pub use abstractions::Transport;
 pub use boxed::BoxedTransport;

@@ -32,3 +32,5 @@ pub use transport::mock::MockTransport;
 pub use transport::tls;
 #[cfg(feature = "psk")]
 pub use transport::tls_psk;
+#[cfg(feature = "rpk")]
+pub use transport::tls_rpk;
