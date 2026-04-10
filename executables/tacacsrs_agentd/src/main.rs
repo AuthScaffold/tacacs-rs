@@ -115,7 +115,6 @@ fn init_logger(verbose: u8) {
 }
 
 /// Build server list from CLI flags (legacy path, without a config file).
-#[allow(clippy::too_many_lines)]
 fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
     let timeout = u16::try_from(cli.connect_timeout_seconds).unwrap_or(u16::MAX);
 
@@ -156,59 +155,7 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
                 .collect());
         }
 
-        let client_cert_pem = cli
-            .client_certificate
-            .as_ref()
-            .map(|path| {
-                std::fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read client certificate: {path}"))
-            })
-            .transpose()?;
-        let client_key_pem = cli
-            .client_key
-            .as_ref()
-            .map(|path| {
-                std::fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read client key: {path}"))
-            })
-            .transpose()?;
-
-        Ok(cli
-            .server_addresses
-            .iter()
-            .enumerate()
-            .map(|(i, addr)| {
-                let mut server = base_server_from_address(addr, i, timeout);
-                if client_cert_pem.is_some() || client_key_pem.is_some() {
-                    server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
-                        credentials_reference: None,
-                        certificate: Some(tacacsrs_config::ClientIdentityCertificate {
-                            inline_definition: Some(
-                                tacacsrs_config::keystore::EndEntityCertWithKeyInlineDefinition {
-                                    public_key_format: None,
-                                    public_key: None,
-                                    private_key_format: None,
-                                    cleartext_private_key: client_key_pem.clone(),
-                                    hidden_private_key: None,
-                                    encrypted_private_key: None,
-                                    cert_data: client_cert_pem.clone(),
-                                },
-                            ),
-                            central_keystore_reference: None,
-                        }),
-                        raw_private_key: None,
-                        tls13_epsk: None,
-                    });
-                } else {
-                    // TLS without client certs
-                    server.hello_params = Some(tacacsrs_config::TlsClientHelloParams {
-                        tls_versions: None,
-                        cipher_suites: None,
-                    });
-                }
-                ResolvedServer::from_raw(server)
-            })
-            .collect())
+        tls_cert_servers_from_cli(cli, timeout)
     } else {
         Ok(cli
             .server_addresses
@@ -221,6 +168,63 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
             })
             .collect())
     }
+}
+
+/// Build TLS certificate-based server entries from CLI flags.
+fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<ResolvedServer>> {
+    let client_cert_pem = cli
+        .client_certificate
+        .as_ref()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read client certificate: {path}"))
+        })
+        .transpose()?;
+    let client_key_pem = cli
+        .client_key
+        .as_ref()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read client key: {path}"))
+        })
+        .transpose()?;
+
+    Ok(cli
+        .server_addresses
+        .iter()
+        .enumerate()
+        .map(|(i, addr)| {
+            let mut server = base_server_from_address(addr, i, timeout);
+            if client_cert_pem.is_some() || client_key_pem.is_some() {
+                server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
+                    credentials_reference: None,
+                    certificate: Some(tacacsrs_config::ClientIdentityCertificate {
+                        inline_definition: Some(
+                            tacacsrs_config::keystore::EndEntityCertWithKeyInlineDefinition {
+                                public_key_format: None,
+                                public_key: None,
+                                private_key_format: None,
+                                cleartext_private_key: client_key_pem.clone(),
+                                hidden_private_key: None,
+                                encrypted_private_key: None,
+                                cert_data: client_cert_pem.clone(),
+                            },
+                        ),
+                        central_keystore_reference: None,
+                    }),
+                    raw_private_key: None,
+                    tls13_epsk: None,
+                });
+            } else {
+                // TLS without client certs
+                server.hello_params = Some(tacacsrs_config::TlsClientHelloParams {
+                    tls_versions: None,
+                    cipher_suites: None,
+                });
+            }
+            ResolvedServer::from_raw(server)
+        })
+        .collect())
 }
 
 fn base_server_from_address(addr: &str, index: usize, timeout: u16) -> TacacsPlusServer {
@@ -303,6 +307,7 @@ async fn main() -> anyhow::Result<()> {
         preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
         #[cfg(unix)]
         socket_mode: parse_socket_mode(&cli.socket_mode)?,
+        disable_certificate_verification: cli.insecure_disable_certificate_verification,
     })
     .context("Failed to build TACACS+ client service configuration")?;
 

@@ -137,7 +137,9 @@ impl TacacsClientService {
             bail!("At least one TACACS+ server must be configured");
         }
 
-        let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector);
+        let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector {
+            disable_certificate_verification: config.disable_certificate_verification,
+        });
         let state = Arc::new(ServiceState::new(
             config.servers.clone(),
             connector,
@@ -427,6 +429,7 @@ mod tests {
             servers,
             preferred_probe_interval: Duration::from_millis(50),
             socket_mode: 0o660,
+            disable_certificate_verification: false,
         }
     }
 

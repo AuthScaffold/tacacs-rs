@@ -628,8 +628,10 @@ fn resolve_certificate_central_keystore_reference() {
     .unwrap()
     .tacacs_plus;
 
-    let resolver =
-        TestResolver::new(vec![("my-key", CredentialRefType::Keystore, "RESOLVED_KEY_PEM")]);
+    let resolver = TestResolver::new(vec![
+        ("my-key", CredentialRefType::Keystore, "RESOLVED_KEY_PEM"),
+        ("my-cert", CredentialRefType::Keystore, "RESOLVED_CERT_PEM"),
+    ]);
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let ci = servers[0].client_identity.as_ref().unwrap();
@@ -637,7 +639,7 @@ fn resolve_certificate_central_keystore_reference() {
     assert!(cert.central_keystore_reference.is_none(), "keystore ref should be cleared");
     let inline = cert.inline_definition.as_ref().unwrap();
     assert_eq!(inline.cleartext_private_key.as_deref(), Some("RESOLVED_KEY_PEM"));
-    assert_eq!(inline.cert_data.as_deref(), Some("my-cert"));
+    assert_eq!(inline.cert_data.as_deref(), Some("RESOLVED_CERT_PEM"));
 }
 
 #[test]

@@ -54,4 +54,11 @@ pub struct ServiceConfig {
     ///
     /// Typical values: `0o660` (owner + group) or `0o666` (world-accessible).
     pub socket_mode: u32,
+
+    /// Dangerously disable TLS certificate verification for upstream connections.
+    ///
+    /// This is intended for development and testing only. In production,
+    /// certificate verification should always be enabled.
+    #[doc(hidden)]
+    pub disable_certificate_verification: bool,
 }

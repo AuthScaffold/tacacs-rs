@@ -57,8 +57,6 @@ Define custom resolvers to handle your credential sources:
 
 ```rust
 pub enum CredentialRefType {
-    ClientCredential,
-    ServerCredential,
     Keystore,
     Truststore,
 }
@@ -329,7 +327,7 @@ The generated Rust types come from the checked-in YANG tooling under `yang/`:
 
 - `yang/yang2rust.py` — custom `pyang` plugin that emits Rust structs/enums/bitflags and identity set enums from YANG `identityref` leaves
 - `yang/expand_yang_tree.py` — helper used to refresh the fully expanded tree reference
-- `yang/generated_types.rs` — checked-in generator output copied into `src/generated.rs`
+- `yang/generated_types.rs` — generator output, produced on demand and copied into `src/generated.rs`
 - `yang/plugins/yang2rust.py` — copy of the plugin used by `--plugindir` (avoids loading `expand_yang_tree.py` from the same directory)
 
 The generator automatically resolves `identityref` base identities and walks loaded modules to collect derived identities, emitting companion Rust enums with `ALL`, `ALLOWED_VALUES`, `as_rfc7951_str()`, `from_rfc7951_str()`, and `is_valid()` helpers. Existing `String` field types are preserved for serde compatibility (hybrid approach).

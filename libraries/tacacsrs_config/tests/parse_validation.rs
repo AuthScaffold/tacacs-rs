@@ -1566,11 +1566,13 @@ impl CredentialResolver for DummyResolver {
 }
 
 #[test]
-fn credential_resolver_default_validate_calls_resolve() {
+fn credential_resolver_default_validate_rejects_none() {
     let resolver = DummyResolver;
-    resolver
+    let err = resolver
         .validate("some-key", CredentialRefType::Keystore)
-        .expect("default validate should succeed when resolver returns None");
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("did not resolve"), "expected rejection for unresolved ref, got: {msg}",);
 }
 
 // ---------------------------------------------------------------------------

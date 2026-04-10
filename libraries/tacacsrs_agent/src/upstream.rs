@@ -126,7 +126,10 @@ pub(crate) struct DedicatedAccountingResult {
 /// Extracts per-server connection parameters from the provided
 /// [`ResolvedServer`] at each connection attempt.
 #[derive(Debug, Clone)]
-pub(crate) struct NetworkUpstreamConnector;
+pub(crate) struct NetworkUpstreamConnector {
+    /// Dangerously disable TLS certificate verification for upstream connections.
+    pub disable_certificate_verification: bool,
+}
 
 #[async_trait]
 impl UpstreamConnector for NetworkUpstreamConnector {
@@ -135,7 +138,7 @@ impl UpstreamConnector for NetworkUpstreamConnector {
         server: &ResolvedServer,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         let address = server.socket_address();
-        let connection = connect_upstream(server).await?;
+        let connection = connect_upstream(server, self.disable_certificate_verification).await?;
         Ok(Arc::new(TacacsUpstreamConnection {
             server_address: address,
             connection,
@@ -147,7 +150,7 @@ impl UpstreamConnector for NetworkUpstreamConnector {
         server: &ResolvedServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
-        send_dedicated_accounting(server, request).await
+        send_dedicated_accounting(server, self.disable_certificate_verification, request).await
     }
 }
 
@@ -277,7 +280,10 @@ fn build_accounting_args(command: &str, command_arguments: &[String]) -> Vec<Str
 ///
 /// Returns an error if TCP connection times out, TLS negotiation fails, or
 /// the TACACS+ connection handler cannot start.
-async fn connect_upstream(server: &ResolvedServer) -> anyhow::Result<Arc<TacacsConnection>> {
+async fn connect_upstream(
+    server: &ResolvedServer,
+    disable_certificate_verification: bool,
+) -> anyhow::Result<Arc<TacacsConnection>> {
     let address = server.socket_address();
     let timeout_duration = server.timeout_duration();
 
@@ -291,7 +297,7 @@ async fn connect_upstream(server: &ResolvedServer) -> anyhow::Result<Arc<TacacsC
     );
 
     let options = ConnectOptions {
-        disable_certificate_verification: false,
+        disable_certificate_verification,
         timeout: Some(timeout_duration),
     };
 
@@ -302,38 +308,38 @@ async fn connect_upstream(server: &ResolvedServer) -> anyhow::Result<Arc<TacacsC
             format!("Failed to connect to {address}")
         })?;
 
-    let obfuscation_key = server.obfuscation_key();
+    let obfuscation_key = if server.is_tls() {
+        None
+    } else {
+        server.obfuscation_key()
+    };
     let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
 
-    if server.is_tls() {
-        // TLS connections do not use obfuscation
-        let connection = Arc::new(TacacsConnection::new(None));
-        connection
-            .run(stream)
-            .await
-            .inspect_err(|e| {
-                log::warn!("TLS connection handler start for {address} failed: {e:#}");
-            })
-            .context("Failed to start TLS connection handler")?;
-        log::debug!("TLS connection to {address} ready");
-        Ok(connection)
-    } else {
-        connection
-            .run(stream)
-            .await
-            .inspect_err(|e| {
-                log::warn!("TCP connection handler start for {address} failed: {e:#}");
-            })
-            .context("Failed to start TCP connection handler")?;
-        log::debug!("TCP connection to {address} ready");
-        Ok(connection)
-    }
+    connection
+        .run(stream)
+        .await
+        .inspect_err(|e| {
+            log::warn!("Connection handler start for {address} failed: {e:#}");
+        })
+        .context("Failed to start connection handler")?;
+
+    log::debug!(
+        "{} connection to {address} ready",
+        if server.is_tls() {
+            "TLS"
+        } else {
+            "TCP"
+        },
+    );
+
+    Ok(connection)
 }
 
 /// Sends a single accounting request over a [`DedicatedConnection`] — one
 /// TCP connection, one packet out, one packet back, no background tasks.
 async fn send_dedicated_accounting(
     server: &ResolvedServer,
+    disable_certificate_verification: bool,
     request: &AccountingOperation,
 ) -> anyhow::Result<DedicatedAccountingResult> {
     let address = server.socket_address();
@@ -349,7 +355,7 @@ async fn send_dedicated_accounting(
     );
 
     let options = ConnectOptions {
-        disable_certificate_verification: false,
+        disable_certificate_verification,
         timeout: Some(timeout_duration),
     };
 

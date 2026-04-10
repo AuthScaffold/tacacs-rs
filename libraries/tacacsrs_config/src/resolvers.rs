@@ -76,7 +76,9 @@ pub trait CredentialResolver: Send + Sync {
     ///
     /// Returns an error if the credential is invalid or cannot be resolved.
     fn validate(&self, key: &str, ref_type: CredentialRefType) -> Result<()> {
-        let _ = self.resolve(key, ref_type)?;
+        self.resolve(key, ref_type)?.ok_or_else(|| {
+            anyhow::anyhow!("credential resolver did not resolve {ref_type:?} reference '{key}'")
+        })?;
         Ok(())
     }
 }
@@ -115,9 +117,16 @@ impl ResolvedServer {
     }
 
     /// Returns the `address:port` socket address string.
+    ///
+    /// IPv6 addresses are wrapped in brackets to produce a valid socket
+    /// address (e.g. `[2001:db8::1]:49`).
     #[must_use]
     pub fn socket_address(&self) -> String {
-        format!("{}:{}", self.0.address, self.0.port)
+        if self.0.address.contains(':') {
+            format!("[{}]:{}", self.0.address, self.0.port)
+        } else {
+            format!("{}:{}", self.0.address, self.0.port)
+        }
     }
 
     /// Returns the connection timeout as a [`Duration`].
@@ -405,14 +414,31 @@ fn resolve_certificate_keystore_ref(
 ) -> Result<()> {
     if let Some(ref ks_ref) = cert.central_keystore_reference {
         let key = ks_ref.asymmetric_key.as_deref().unwrap_or_default();
-        let material = resolver
+        let key_material = resolver
             .resolve(key, CredentialRefType::Keystore)
-            .context("failed to resolve central-keystore-reference for certificate")?
+            .context("failed to resolve central-keystore-reference for certificate private key")?
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "credential resolver did not resolve keystore reference '{key}' for certificate"
+                    "credential resolver did not resolve keystore reference '{key}' for certificate private key"
                 )
             })?;
+
+        // Resolve the certificate reference if present
+        let cert_data = if let Some(ref cert_ref) = ks_ref.certificate {
+            let material = resolver
+                .resolve(cert_ref, CredentialRefType::Keystore)
+                .with_context(|| {
+                    format!("failed to resolve central-keystore-reference for certificate '{cert_ref}'")
+                })?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "credential resolver did not resolve keystore reference '{cert_ref}' for certificate"
+                    )
+                })?;
+            Some(material)
+        } else {
+            None
+        };
 
         // Store the resolved material as PEM in the inline definition
         cert.inline_definition =
@@ -420,10 +446,10 @@ fn resolve_certificate_keystore_ref(
                 public_key_format: None,
                 public_key: None,
                 private_key_format: None,
-                cleartext_private_key: Some(material),
+                cleartext_private_key: Some(key_material),
                 hidden_private_key: None,
                 encrypted_private_key: None,
-                cert_data: ks_ref.certificate.clone(),
+                cert_data,
             });
         cert.central_keystore_reference = None;
     }
@@ -548,8 +574,15 @@ fn validate_client_identity_external_refs(
             let key = ks_ref.asymmetric_key.as_deref().unwrap_or_default();
             if let Err(e) = resolver.validate(key, CredentialRefType::Keystore) {
                 errors.push(format!(
-                    "server '{server_name}': certificate central-keystore-reference: {e}",
+                    "server '{server_name}': certificate central-keystore-reference (asymmetric-key): {e}",
                 ));
+            }
+            if let Some(ref cert_ref) = ks_ref.certificate {
+                if let Err(e) = resolver.validate(cert_ref, CredentialRefType::Keystore) {
+                    errors.push(format!(
+                        "server '{server_name}': certificate central-keystore-reference (certificate): {e}",
+                    ));
+                }
             }
         }
     }

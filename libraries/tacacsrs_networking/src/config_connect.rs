@@ -60,6 +60,14 @@ pub async fn establish_stream(
 ) -> Result<BoxedTransport> {
     let address = server.socket_address();
 
+    // Reject unsupported client identity types before opening a connection
+    #[cfg(not(feature = "rpk"))]
+    if let Some(ref ci) = server.client_identity {
+        if ci.raw_private_key.is_some() {
+            anyhow::bail!("raw public key (RPK) client authentication requires the 'rpk' feature");
+        }
+    }
+
     let security_label = if server.is_tls() {
         "tls"
     } else {
@@ -134,16 +142,6 @@ pub async fn establish_stream(
 
     // --- Certificate-based TLS ---
     if server.is_tls() {
-        // Reject raw-private-key client auth when the `rpk` feature is not enabled
-        #[cfg(not(feature = "rpk"))]
-        if let Some(ref ci) = server.client_identity {
-            if ci.raw_private_key.is_some() {
-                anyhow::bail!(
-                    "raw public key (RPK) client authentication requires the 'rpk' feature"
-                );
-            }
-        }
-
         let tls_stream = establish_cert_tls_stream(server, &address, options, tcp_stream).await?;
         Ok(BoxedTransport::new(tls_stream))
     } else {
