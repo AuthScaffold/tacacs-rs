@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 bitflags = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -25,6 +25,10 @@ def pyang_plugin_init():
 # YANG type -> Rust type mapping
 # ---------------------------------------------------------------------------
 
+_ENUM_SENTINEL = "__ENUM__"
+_BITS_SENTINEL = "__BITS__"
+_IDENTITYREF_SENTINEL = "__IDENTITYREF__"
+
 _YANG_TO_RUST = {
     "string": "String",
     "boolean": "bool",
@@ -38,7 +42,7 @@ _YANG_TO_RUST = {
     "int32": "i32",
     "int64": "i64",
     "binary": "String",
-    "identityref": "String",
+    "identityref": _IDENTITYREF_SENTINEL,
     "union": "String",
     "decimal64": "f64",
     "instance-identifier": "String",
@@ -58,9 +62,6 @@ _YANG_TO_RUST = {
     "uri": "String",
     "interface-ref": "String",
 }
-
-_ENUM_SENTINEL = "__ENUM__"
-_BITS_SENTINEL = "__BITS__"
 
 _RUST_KEYWORDS = frozenset({
     "as", "break", "const", "continue", "crate", "else", "enum", "extern",
@@ -439,6 +440,36 @@ class Bitflags:
         self.doc = doc
 
 
+class IdentityValue:
+    """One concrete identity derived from a base."""
+    __slots__ = ("yang_name", "rust_name", "module_name", "features", "doc")
+
+    def __init__(self, yang_name: str, module_name: str,
+                 features: list[str] | None = None, doc: str | None = None):
+        self.yang_name = yang_name
+        self.rust_name = _yang_to_pascal(yang_name)
+        self.module_name = module_name
+        self.features = features or []
+        self.doc = doc
+
+    def rfc7951_name(self) -> str:
+        """Return the module-qualified RFC 7951 JSON string."""
+        return f"{self.module_name}:{self.yang_name}"
+
+
+class IdentitySet:
+    """A set of concrete identities derived from a YANG base identity."""
+    __slots__ = ("name", "base_name", "base_module", "values", "doc")
+
+    def __init__(self, name: str, base_name: str, base_module: str,
+                 doc: str | None = None):
+        self.name = name
+        self.base_name = base_name
+        self.base_module = base_module
+        self.values: list[IdentityValue] = []
+        self.doc = doc
+
+
 class ModuleTypes:
     """Collected types for one YANG module."""
 
@@ -448,6 +479,7 @@ class ModuleTypes:
         self.structs: OrderedDict[str, Struct] = OrderedDict()
         self.enums: OrderedDict[str, Enum] = OrderedDict()
         self.bitflags: OrderedDict[str, Bitflags] = OrderedDict()
+        self.identity_sets: OrderedDict[str, IdentitySet] = OrderedDict()
         self.typedefs: OrderedDict[str, str] = OrderedDict()
         self._used: set[str] = set()
 
@@ -462,14 +494,70 @@ class ModuleTypes:
 
 
 # ---------------------------------------------------------------------------
+# Identity resolution helpers
+# ---------------------------------------------------------------------------
+
+def _find_derived_identities(base_identity, ctx) -> list[dict]:
+    """Find all identities across loaded modules that derive from *base_identity*.
+
+    Returns a list of dicts with keys: name, module, features, doc.
+    *base_identity* is a pyang identity statement object (from i_identity).
+    """
+    from pyang.types import is_derived_from
+
+    derived = []
+    for modname, mod_stmt in _iter_all_modules(ctx):
+        for ident_name, ident_stmt in getattr(mod_stmt, "i_identities", {}).items():
+            if is_derived_from(ident_stmt, base_identity):
+                features = [f.arg for f in ident_stmt.search("if-feature")]
+                derived.append({
+                    "name": ident_name,
+                    "module": modname,
+                    "features": features,
+                    "doc": _get_desc(ident_stmt),
+                })
+    return derived
+
+
+def _iter_all_modules(ctx):
+    """Yield (module_name, module_stmt) for every module/submodule loaded in ctx."""
+    seen = set()
+    for key, mod_list in ctx.modules.items():
+        # ctx.modules is dict: (name, revision) -> module_stmt  (pyang >= 2.x)
+        # but may vary — handle both single and list forms
+        if isinstance(mod_list, list):
+            for m in mod_list:
+                if m.arg not in seen:
+                    seen.add(m.arg)
+                    yield m.arg, m
+        else:
+            m = mod_list
+            if m.arg not in seen:
+                seen.add(m.arg)
+                yield m.arg, m
+
+
+def _resolve_identityref_base(type_stmt):
+    """Return the resolved base identity statement for an identityref type.
+
+    Returns None if the base cannot be resolved.
+    """
+    base = type_stmt.search_one("base")
+    if base is None:
+        return None
+    return getattr(base, "i_identity", None)
+
+
+# ---------------------------------------------------------------------------
 # Collector — walks the resolved YANG data tree, groups by source module
 # ---------------------------------------------------------------------------
 
 class Collector:
-    def __init__(self):
+    def __init__(self, ctx=None):
         self.modules: OrderedDict[str, ModuleTypes] = OrderedDict()
         # Fingerprint -> (module_name, struct_name) for deduplication
         self._fingerprints: dict[str, tuple[str, str]] = {}
+        self._ctx = ctx
 
     def _get_mod(self, yang_mod_name: str) -> ModuleTypes:
         if yang_mod_name not in self.modules:
@@ -666,6 +754,31 @@ class Collector:
                 mod.bitflags[bf_name] = bf
             rust_type = bf_name
 
+        if rust_type == _IDENTITYREF_SENTINEL:
+            # Try to resolve the base identity and collect derived identities
+            base_ident = _resolve_identityref_base(type_stmt)
+            if base_ident is not None and self._ctx is not None:
+                base_mod = _source_module(base_ident) or "unknown"
+                # Use the base identity name as the identity set name
+                set_name = _yang_to_pascal(base_ident.arg)
+                # Place identity sets in the module that defines the base
+                target_mod = self._get_mod(base_mod) if base_mod not in _SKIP_MODULES else self._mod_for_stmt(stmt)
+                if set_name not in target_mod.identity_sets:
+                    derived = _find_derived_identities(base_ident, self._ctx)
+                    if derived:
+                        iset = IdentitySet(
+                            set_name, base_ident.arg, base_mod,
+                            _get_desc(base_ident),
+                        )
+                        for d in derived:
+                            iset.values.append(IdentityValue(
+                                d["name"], d["module"],
+                                d["features"], d["doc"],
+                            ))
+                        target_mod.identity_sets[set_name] = iset
+            # Keep String for the field type (hybrid approach)
+            rust_type = "String"
+
         optional = _leaf_is_optional(stmt)
 
         # Extract YANG default value
@@ -780,7 +893,7 @@ class RustEmitter:
         # Emit each module
         top_module = None
         for mod in self.c.modules.values():
-            if not mod.structs and not mod.enums and not mod.typedefs and not mod.bitflags:
+            if not mod.structs and not mod.enums and not mod.typedefs and not mod.bitflags and not mod.identity_sets:
                 continue
             self._emit_module(mod)
             # The first module with a TacacsPlus-like top-level struct is the "top"
@@ -848,6 +961,10 @@ class RustEmitter:
         for bf in mod.bitflags.values():
             self._emit_bitflags(bf)
 
+        # Identity sets
+        for iset in mod.identity_sets.values():
+            self._emit_identity_set(iset)
+
         # Structs
         for st in mod.structs.values():
             self._emit_struct(st, mod.rust_name)
@@ -868,8 +985,8 @@ class RustEmitter:
 
     def _emit_bitflags(self, bf: Bitflags):
         w = self.fd.write
-        self._doc(bf.doc, "    ")
         w(f"    bitflags::bitflags! {{\n")
+        self._doc(bf.doc, "        ")
         w(f"        #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n")
         w(f"        pub struct {bf.name}: u32 {{\n")
         for bit in bf.bits:
@@ -923,6 +1040,73 @@ class RustEmitter:
         w(f"            serializer.serialize_str(&tokens)\n")
         w(f"        }}\n")
         w(f"    }}\n\n")
+
+    def _emit_identity_set(self, iset: IdentitySet):
+        """Emit an identity set as a Rust enum with serde support and helper methods."""
+        w = self.fd.write
+
+        w(f"    /// Valid identities derived from `{iset.base_module}:{iset.base_name}`.\n")
+        if iset.doc:
+            for line in _doc_lines(iset.doc, max_lines=2):
+                w(f"    /// {line}\n")
+        w("    #[derive(Debug, Clone, PartialEq, Eq)]\n")
+        w(f"    #[allow(clippy::doc_markdown)]\n")
+        w(f"    pub enum {iset.name} {{\n")
+        for val in iset.values:
+            first = _first_line(val.doc)
+            if first:
+                w(f"        /// {first}\n")
+            if val.features:
+                w(f"        /// Requires YANG features: {', '.join(val.features)}\n")
+            w(f"        {val.rust_name},\n")
+        w("    }\n\n")
+
+        # impl with as_str, from_rfc7951, ALL, and ALLOWED_VALUES
+        w(f"    impl {iset.name} {{\n")
+
+        # ALL constant
+        w(f"        /// All valid identities for this base.\n")
+        w(f"        pub const ALL: &[Self] = &[\n")
+        for val in iset.values:
+            w(f"            Self::{val.rust_name},\n")
+        w("        ];\n\n")
+
+        # ALLOWED_VALUES — RFC 7951 JSON strings
+        w(f"        /// RFC 7951 JSON string values accepted for this identity.\n")
+        w(f"        pub const ALLOWED_VALUES: &[&str] = &[\n")
+        for val in iset.values:
+            w(f'            "{val.rfc7951_name()}",\n')
+        w("        ];\n\n")
+
+        # as_rfc7951_str
+        w(f"        /// Returns the RFC 7951 module-qualified JSON string.\n")
+        w(f"        #[must_use]\n")
+        w(f"        pub fn as_rfc7951_str(&self) -> &'static str {{\n")
+        w(f"            match self {{\n")
+        for val in iset.values:
+            w(f'                Self::{val.rust_name} => "{val.rfc7951_name()}",\n')
+        w("            }\n")
+        w("        }\n\n")
+
+        # from_rfc7951_str
+        w(f"        /// Parses an RFC 7951 module-qualified string into this identity.\n")
+        w(f"        #[must_use]\n")
+        w(f"        pub fn from_rfc7951_str(s: &str) -> Option<Self> {{\n")
+        w(f"            match s {{\n")
+        for val in iset.values:
+            w(f'                "{val.rfc7951_name()}" => Some(Self::{val.rust_name}),\n')
+        w("                _ => None,\n")
+        w("            }\n")
+        w("        }\n\n")
+
+        # is_valid
+        w(f"        /// Checks whether the given string is a valid RFC 7951 value for this identity.\n")
+        w(f"        #[must_use]\n")
+        w(f"        pub fn is_valid(s: &str) -> bool {{\n")
+        w(f"            Self::from_rfc7951_str(s).is_some()\n")
+        w(f"        }}\n")
+
+        w("    }\n\n")
 
     def _emit_struct(self, st: Struct, current_mod: str):
         w = self.fd.write
@@ -1034,7 +1218,7 @@ class YangToRustPlugin(plugin.PyangPlugin):
         ctx.implicit_errors = False
 
     def emit(self, ctx, modules, fd):
-        collector = Collector()
+        collector = Collector(ctx)
         for module in modules:
             collector.collect_module(module)
         RustEmitter(fd, collector).emit()

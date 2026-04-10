@@ -14,6 +14,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tacacsrs_config::ResolvedServer;
+use tacacsrs_config::crypto_types::PrivateKeyFormat;
 use tokio_rustls::rustls;
 
 use crate::BoxedTransport;
@@ -136,12 +137,22 @@ pub async fn establish_stream(
                     if let (Some(cert_data), Some(key_data)) =
                         (&inline.cert_data, &inline.cleartext_private_key)
                     {
-                        builder = builder
-                            .with_client_auth_cert_pem(cert_data, key_data)
+                        let certs = parse_certificate_data(cert_data)
                             .inspect_err(|e| {
-                                log::warn!("Failed to load TLS certificates for {address}: {e:#}");
+                                log::warn!("Failed to parse TLS certificate for {address}: {e:#}");
                             })
-                            .context("Failed to load TLS certificates")?;
+                            .context("Failed to parse TLS certificate")?;
+
+                        let key =
+                            parse_private_key_data(key_data, inline.private_key_format.as_deref())
+                                .inspect_err(|e| {
+                                    log::warn!(
+                                        "Failed to parse TLS private key for {address}: {e:#}"
+                                    );
+                                })
+                                .context("Failed to parse TLS private key")?;
+
+                        builder = builder.with_client_auth_der(certs, key);
                     }
                 }
             }
@@ -260,11 +271,42 @@ fn parse_certificate_data(data: &str) -> Result<Vec<CertificateDer<'static>>> {
     }
 }
 
-/// Parses private key data that may be either PEM or base64-encoded DER.
-#[allow(dead_code)]
-fn parse_private_key_data(data: &str) -> Result<PrivateKeyDer<'static>> {
+/// Parses private key data using the YANG `private-key-format` identity when
+/// available.  Falls back to PEM auto-detection when no format is specified.
+///
+/// Format mapping (RFC 9640 / `ietf-crypto-types`):
+/// - `rsa-private-key-format`  → PKCS#1 `RSAPrivateKey` DER
+/// - `ec-private-key-format`   → SEC1 `ECPrivateKey` DER
+/// - `one-asymmetric-key-format` → PKCS#8 `OneAsymmetricKey` DER
+fn parse_private_key_data(
+    data: &str,
+    private_key_format: Option<&str>,
+) -> Result<PrivateKeyDer<'static>> {
     let trimmed = data.trim();
 
+    // When a format is specified, base64-decode and wrap in the correct variant.
+    if let Some(fmt) = private_key_format {
+        let format = PrivateKeyFormat::from_rfc7951_str(fmt)
+            .ok_or_else(|| anyhow::anyhow!("unsupported private-key-format '{fmt}'"))?;
+
+        let der_bytes = BASE64
+            .decode(trimmed)
+            .context("failed to base64-decode private key data")?;
+
+        return match format {
+            PrivateKeyFormat::RsaPrivateKeyFormat => {
+                Ok(PrivateKeyDer::Pkcs1(rustls_pki_types::PrivatePkcs1KeyDer::from(der_bytes)))
+            }
+            PrivateKeyFormat::EcPrivateKeyFormat => {
+                Ok(PrivateKeyDer::Sec1(rustls_pki_types::PrivateSec1KeyDer::from(der_bytes)))
+            }
+            PrivateKeyFormat::OneAsymmetricKeyFormat => {
+                Ok(PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(der_bytes)))
+            }
+        };
+    }
+
+    // No format specified — try PEM auto-detection, then fall back to PKCS#8.
     if trimmed.starts_with("-----BEGIN") {
         PrivateKeyDer::from_pem_slice(trimmed.as_bytes())
             .map_err(|e| anyhow::anyhow!("failed to parse private key PEM: {e}"))
@@ -272,7 +314,6 @@ fn parse_private_key_data(data: &str) -> Result<PrivateKeyDer<'static>> {
         let der_bytes = BASE64
             .decode(trimmed)
             .context("failed to base64-decode private key data")?;
-        // Try PKCS#8 first, then fall back to PKCS#1
         Ok(PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(der_bytes)))
     }
 }

@@ -21,8 +21,8 @@ fn resolve_servers_maps_inline_tls_material() {
                         "client-identity": {
                             "certificate": {
                                 "inline-definition": {
-                                    "cert-data": "CLIENT_CERT_PEM",
-                                    "cleartext-private-key": "CLIENT_KEY_PEM"
+                                    "cert-data": "Y2xpZW50LWNlcnQ=",
+                                    "cleartext-private-key": "Y2xpZW50LWtleQ=="
                                 }
                             }
                         },
@@ -30,8 +30,8 @@ fn resolve_servers_maps_inline_tls_material() {
                             "ca-certs": {
                                 "inline-definition": {
                                     "certificate": [
-                                        {"name": "ca1", "cert-data": "CA_CERT_1"},
-                                        {"name": "ca2", "cert-data": "CA_CERT_2"}
+                                        {"name": "ca1", "cert-data": "Y2EtY2VydC0x"},
+                                        {"name": "ca2", "cert-data": "Y2EtY2VydC0y"}
                                     ]
                                 }
                             }
@@ -63,8 +63,8 @@ fn resolve_servers_maps_inline_tls_material() {
         .inline_definition
         .as_ref()
         .expect("inline should be set");
-    assert_eq!(inline.cert_data.as_deref(), Some("CLIENT_CERT_PEM"));
-    assert_eq!(inline.cleartext_private_key.as_deref(), Some("CLIENT_KEY_PEM"));
+    assert_eq!(inline.cert_data.as_deref(), Some("Y2xpZW50LWNlcnQ="));
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some("Y2xpZW50LWtleQ=="));
 
     // CA certs should be preserved inline
     let sa = server
@@ -77,8 +77,8 @@ fn resolve_servers_maps_inline_tls_material() {
         .as_ref()
         .expect("ca inline should be set");
     assert_eq!(ca_inline.certificate.len(), 2);
-    assert_eq!(ca_inline.certificate[0].cert_data, "CA_CERT_1");
-    assert_eq!(ca_inline.certificate[1].cert_data, "CA_CERT_2");
+    assert_eq!(ca_inline.certificate[0].cert_data, "Y2EtY2VydC0x");
+    assert_eq!(ca_inline.certificate[1].cert_data, "Y2EtY2VydC0y");
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn resolve_servers_maps_tls13_epsk() {
                         "client-identity": {
                             "tls13-epsk": {
                                 "inline-definition": {
-                                    "cleartext-symmetric-key": "topsecret"
+                                    "cleartext-symmetric-key": "dG9wc2VjcmV0"
                                 },
                                 "external-identity": "client@example.com"
                             }
@@ -122,7 +122,7 @@ fn resolve_servers_maps_tls13_epsk() {
         epsk.inline_definition
             .as_ref()
             .and_then(|d| d.cleartext_symmetric_key.as_deref()),
-        Some("topsecret"),
+        Some("dG9wc2VjcmV0"),
     );
 }
 
@@ -136,8 +136,8 @@ fn resolve_servers_resolves_credential_references() {
                         "id": "corp-cert",
                         "certificate": {
                             "inline-definition": {
-                                "cert-data": "MIIB...",
-                                "cleartext-private-key": "MIIEv..."
+                                "cert-data": "dGVzdC1jZXJ0",
+                                "cleartext-private-key": "dGVzdC1rZXk="
                             }
                         }
                     }
@@ -148,7 +148,7 @@ fn resolve_servers_resolves_credential_references() {
                         "ca-certs": {
                             "inline-definition": {
                                 "certificate": [
-                                    {"name": "ca1", "cert-data": "MIIB..."}
+                                    {"name": "ca1", "cert-data": "dGVzdC1jZXJ0"}
                                 ]
                             }
                         }
@@ -195,8 +195,8 @@ fn resolve_servers_resolves_credential_references() {
         .inline_definition
         .as_ref()
         .expect("inline should be set");
-    assert_eq!(inline.cert_data.as_deref(), Some("MIIB..."));
-    assert_eq!(inline.cleartext_private_key.as_deref(), Some("MIIEv..."));
+    assert_eq!(inline.cert_data.as_deref(), Some("dGVzdC1jZXJ0"));
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some("dGVzdC1rZXk="));
 
     // Server authentication should have been resolved from the bundle
     let sa = server
@@ -213,7 +213,7 @@ fn resolve_servers_resolves_credential_references() {
         .as_ref()
         .expect("ca inline should be set");
     assert_eq!(ca_inline.certificate.len(), 1);
-    assert_eq!(ca_inline.certificate[0].cert_data, "MIIB...");
+    assert_eq!(ca_inline.certificate[0].cert_data, "dGVzdC1jZXJ0");
 }
 
 #[test]
@@ -315,7 +315,7 @@ fn resolve_servers_maps_tls_server_auth_only() {
                             "ca-certs": {
                                 "inline-definition": {
                                     "certificate": [
-                                        {"name": "ca1", "cert-data": "CA_CERT"}
+                                        {"name": "ca1", "cert-data": "Y2EtY2VydA=="}
                                     ]
                                 }
                             }
@@ -339,7 +339,7 @@ fn resolve_servers_maps_tls_server_auth_only() {
     let ca = sa.ca_certs.as_ref().expect("ca_certs");
     let inline = ca.inline_definition.as_ref().expect("inline");
     assert_eq!(inline.certificate.len(), 1);
-    assert_eq!(inline.certificate[0].cert_data, "CA_CERT");
+    assert_eq!(inline.certificate[0].cert_data, "Y2EtY2VydA==");
 }
 
 #[test]
@@ -483,8 +483,8 @@ fn resolved_server_sni_enabled_returns_true_when_set() {
                     "client-identity": {
                         "certificate": {
                             "inline-definition": {
-                                "cert-data": "CERT",
-                                "cleartext-private-key": "KEY"
+                                "cert-data": "Y2VydA==",
+                                "cleartext-private-key": "a2V5"
                             }
                         }
                     }
@@ -512,15 +512,15 @@ fn resolved_server_debug_redacts_secrets() {
                     "client-identity": {
                         "certificate": {
                             "inline-definition": {
-                                "cert-data": "PRIVATE_CERT",
-                                "cleartext-private-key": "PRIVATE_KEY"
+                                "cert-data": "cHJpdmF0ZS1jZXJ0",
+                                "cleartext-private-key": "cHJpdmF0ZS1rZXk="
                             }
                         }
                     },
                     "server-authentication": {
                         "ca-certs": {
                             "inline-definition": {
-                                "certificate": [{"name": "ca1", "cert-data": "CA"}]
+                                "certificate": [{"name": "ca1", "cert-data": "Y2E="}]
                             }
                         }
                     }
@@ -535,8 +535,8 @@ fn resolved_server_debug_redacts_secrets() {
     let debug_output = format!("{:?}", servers[0]);
     assert!(debug_output.contains("debug_test"));
     assert!(debug_output.contains("<redacted>"));
-    assert!(!debug_output.contains("PRIVATE_KEY"));
-    assert!(!debug_output.contains("PRIVATE_CERT"));
+    assert!(!debug_output.contains("cHJpdmF0ZS1rZXk="));
+    assert!(!debug_output.contains("cHJpdmF0ZS1jZXJ0"));
 }
 
 #[test]

@@ -5,25 +5,29 @@
 ## What this crate contains
 
 - Generated Rust types in `src/generated.rs` that mirror the expanded YANG tree
-- Validation logic for YANG-specific constraints that must hold after deserialization
+- Generated identity set enums for YANG `identityref` leaves (key format types)
+- Validation logic for YANG-specific constraints, key format identities, and inline key material
 - Credential-reference resolution helpers
-- Mapping from parsed YANG config into runtime `ServerConnectionConfig` values
+- On-demand per-server credential resolution via `ResolvedServer`
 
 ## Parsing API
 
 ```rust
-use tacacsrs_config::{parse_yang_json, parse_yang_json_file, to_connection_configs};
+use tacacsrs_config::{parse_yang_json, resolve_servers};
 
-let config = parse_yang_json_file(std::path::Path::new("tacacs.json"))?;
-let servers = to_connection_configs(&config)?;
-# anyhow::Ok::<(), anyhow::Error>(())
+let config = parse_yang_json(json_str, None)?;
+let servers = resolve_servers(&config, None)?;
+# anyhow::Ok::<()>(())
 ```
 
 The primary entry points are:
 
-- `parse_yang_json(&str)` — parse and validate a JSON string without mutating credential references
-- `parse_yang_json_file(&Path)` — file-based wrapper around `parse_yang_json`
-- `to_connection_configs(&TacacsPlus)` — map validated YANG data into runtime connection configs
+- `parse_yang_json(&str, Option<&dyn CredentialResolver>)` — parse and validate a JSON string without mutating credential references
+- `parse_yang_json_file(&Path, Option<&dyn CredentialResolver>)` — file-based wrapper around `parse_yang_json`
+- `resolve_servers(&TacacsPlus, Option<&dyn CredentialResolver>)` — resolve credential references and return `ResolvedServer` values
+- `resolve_server(&TacacsPlus, &str, Option<&dyn CredentialResolver>)` — resolve a single server by name
+
+The `resolver` parameter is `None` when only in-config credential bundles are used. Pass a `CredentialResolver` implementation when external keystore/truststore references need resolution.
 
 ## Multi-layer design
 
@@ -61,7 +65,6 @@ pub enum CredentialRefType {
 
 pub trait CredentialResolver: Send + Sync {
     /// Resolve a credential reference to inline material
-    /// Implementations specialize by CredentialRefType to know which refs to handle
     fn resolve(&self, key: &str, ref_type: CredentialRefType) -> anyhow::Result<Option<String>>;
 
     /// Validate that a credential reference is resolvable (optional)
@@ -75,18 +78,15 @@ Resolve credentials **only when accessing a specific server**, not for the entir
 This avoids materializing all secrets at once, reducing the risk of accidental leaks:
 
 ```rust
-use tacacsrs_config::{get_resolved_server, parse_yang_json, validate_credential_references};
+use tacacsrs_config::{parse_yang_json, resolve_server, validate_credential_references};
 
-let config = parse_yang_json(json_str)?;
-let resolvers: Vec<Box<dyn CredentialResolver>> = vec![
-    // Add your resolvers here
-];
+let config = parse_yang_json(json_str, None)?;
 
 // Validate all credential references upfront (optional but recommended)
-validate_credential_references(&config, &resolvers)?;
+validate_credential_references(&config, None)?;
 
 // Resolve credentials only for the server being used
-let resolved_server = get_resolved_server(&config, "primary", &resolvers)?;
+let resolved = resolve_server(&config, "primary", None)?;
 ```
 
 The parsed config remains unmodified and safe for round-tripping. Secrets are materialized only on demand. Structural validation happens during parsing; resolver-based validation can be run separately to catch missing external credentials early rather than at runtime.
@@ -97,16 +97,16 @@ This crate also exposes grouped modules so callers can choose APIs by intent:
 
 - `model` — YANG-generated types and namespaces
 - `pipeline` — step-by-step processing
-- `runtime` — runtime projection
+- `runtime` — runtime projection (`resolve_server`, `resolve_servers`, `ResolvedServer`)
 - `stats` — runtime stats types
 
 For simple end-to-end usage with in-config credential bundles:
 
 ```rust
-use tacacsrs_config::{parse_yang_json_file, runtime};
+use tacacsrs_config::{parse_yang_json, runtime};
 
-let config = parse_yang_json_file(std::path::Path::new("tacacs.json"))?;
-let servers = runtime::to_connection_configs(&config)?;
+let config = parse_yang_json(json_str, None)?;
+let servers = runtime::resolve_servers(&config, None)?;
 ```
 
 The existing flat root exports remain available for compatibility.
@@ -115,7 +115,7 @@ The existing flat root exports remain available for compatibility.
 
 The crate includes runnable examples under `examples/`:
 
-- `quick_start.rs` — parse + validate + map to runtime using the root exports plus `runtime`
+- `quick_start.rs` — parse + validate + resolve using the root exports plus `runtime`
 - `quick_start_credential_refs.rs` — minimal end-to-end example showing separate resolver validation and on-demand server resolution
 - `pipeline_flow.rs` — explicit step-by-step parse/resolve/validate pipeline
 - `model_access.rs` — direct access to generated model types and flags
@@ -138,20 +138,33 @@ This crate intentionally exposes both:
 - a high-level, opinionated parsing pipeline for most callers
 - the full generated YANG model and lower-level helpers for advanced integrations
 
-### 1) High-level parse + validate workflow
+### 1) High-level parse + validate + resolve workflow
 
 These are the recommended entry points for application code:
 
-- `parse_yang_json(&str) -> anyhow::Result<TacacsPlus>`
-- `parse_yang_json_file(&Path) -> anyhow::Result<TacacsPlus>`
-- `to_connection_configs(&TacacsPlus) -> anyhow::Result<Vec<ServerConnectionConfig>>`
+- `parse_yang_json(&str, Option<&dyn CredentialResolver>) -> anyhow::Result<TacacsPlus>`
+- `parse_yang_json_file(&Path, Option<&dyn CredentialResolver>) -> anyhow::Result<TacacsPlus>`
+- `resolve_servers(&TacacsPlus, Option<&dyn CredentialResolver>) -> anyhow::Result<Vec<ResolvedServer>>`
+- `resolve_server(&TacacsPlus, &str, Option<&dyn CredentialResolver>) -> anyhow::Result<ResolvedServer>`
 
-`parse_yang_json()` performs deserialization and validation of YANG-derived JSON constraints (server presence, unique addresses, SNI requirements, choice constraints, etc.). The config is returned **without mutations**—credential references remain intact for round-tripping.
+`parse_yang_json()` performs deserialization and validation of YANG-derived JSON constraints (server presence, unique addresses, SNI requirements, choice constraints, key format identities, inline key material encoding, etc.). The config is returned **without mutations**—credential references remain intact for round-tripping.
+
+Validation checks include:
+
+- At least one server is configured
+- Server addresses and ports are unique
+- SNI-enabled servers have domain names
+- Security choice constraints (TLS vs obfuscation, not both)
+- YANG choice constraints across all credential subtrees
+- Key format identity values (`private-key-format`, `public-key-format`, `key-format`) are valid RFC 7951 identityref strings
+- Inline key material (`cleartext-private-key`, `public-key`, `cert-data`, `cleartext-symmetric-key`) is valid base64 or PEM
+- Credential references have matching definitions in the same config
+- External credential references are resolvable (when a resolver is provided)
 
 To resolve credentials and materialize them for runtime use, use the pluggable resolver API:
-1. Create resolvers implementing [`CredentialResolver`]
-2. Call [`validate_credential_references()`] to validate all references can be resolved
-3. Call [`get_resolved_server()`] for on-demand per-server resolution
+1. Create resolvers implementing `CredentialResolver`
+2. Call `validate_credential_references()` to validate all references can be resolved
+3. Call `resolve_server()` or `resolve_servers()` for on-demand resolution
 
 This design separates parsing/validation from credential retrieval and enables round-trip safety.
 
@@ -163,14 +176,13 @@ For advanced use cases, these lower-level functions are available:
 - `pipeline::parse_root_json_file()` - File-based raw parse into the generated root type without validation
 - `generated` module - Full generated type graph for schema-aware integrations
 
-### 3) Runtime mapping types
+### 3) Runtime types
 
-The runtime-facing mapping layer is public:
+The runtime-facing types are public:
 
-- `ServerConnectionConfig`
-- `ResolvedSecurity`
+- `ResolvedServer` — a validated, credential-resolved server ready for connection
 
-`ServerConnectionConfig` represents normalized per-server connection settings consumed by runtime networking/client code.
+`ResolvedServer` wraps `TacacsPlusServer` with `Deref` access to the full YANG model and adds convenience methods (`socket_address()`, `timeout_duration()`, `obfuscation_key()`, `is_tls()`, `sni_enabled()`). Debug output redacts secrets.
 
 Runtime statistics are exposed separately via:
 
@@ -200,7 +212,97 @@ The generated model is intentionally public for schema-aware or tooling-heavy in
   - `ServerAuthenticationRawPublicKeys`
   - `EpskSupportedHash`
 
-This split lets simple consumers use the high-level API, while advanced consumers can work directly with generated YANG-aligned types.
+### 5) Generated identity set types
+
+The `crypto_types` module includes generated enums for YANG `identityref` leaves. Each enum provides:
+
+- `ALL` — list of all valid identities
+- `ALLOWED_VALUES` — RFC 7951 JSON string values
+- `as_rfc7951_str()` — convert enum to the canonical JSON string
+- `from_rfc7951_str(&str)` — parse an RFC 7951 string into the enum
+- `is_valid(&str)` — check if a string is a valid identity value
+
+Available identity sets:
+
+- `crypto_types::PrivateKeyFormat` — `rsa-private-key-format`, `ec-private-key-format`, `one-asymmetric-key-format`
+- `crypto_types::PublicKeyFormat` — `ssh-public-key-format`, `subject-public-key-info-format`
+- `crypto_types::SymmetricKeyFormat` — `octet-string-key-format`, `one-symmetric-key-format`
+- `crypto_types::EncryptedValueFormat` — `cms-encrypted-data-format`, `cms-enveloped-data-format`
+
+These are generated automatically from the YANG identity hierarchy by `yang2rust.py`. The existing struct fields remain `String`/`Option<String>` for serde compatibility; the enums are additive companion types for validation and programmatic use.
+
+## Inline key format identities
+
+When configuring TLS with inline key material, several fields indicate the encoding format of the key data. These are YANG `identityref` leaves whose values come from the `ietf-crypto-types` module (RFC 9640). Values in RFC 7951 JSON are module-qualified strings.
+
+### `private-key-format`
+
+Used in `EndEntityCertWithKeyInlineDefinition` and `AsymmetricKeyInlineDefinition` (the inline definitions for certificate and raw-private-key client identities). Indicates how the private key binary is encoded.
+
+| JSON value | Meaning |
+|---|---|
+| `ietf-crypto-types:rsa-private-key-format` | RSAPrivateKey (RFC 8017), DER-encoded |
+| `ietf-crypto-types:ec-private-key-format` | ECPrivateKey (RFC 5915), DER-encoded |
+| `ietf-crypto-types:one-asymmetric-key-format` | CMS OneAsymmetricKey (RFC 5958), DER-encoded *(feature-gated)* |
+
+### `public-key-format`
+
+Used alongside `private-key-format` in the same inline definitions and in `PublicKeysPublicKey` (raw public keys for server authentication). Indicates how the public key binary is encoded.
+
+| JSON value | Meaning |
+|---|---|
+| `ietf-crypto-types:subject-public-key-info-format` | SubjectPublicKeyInfo (RFC 5280), DER-encoded |
+| `ietf-crypto-types:ssh-public-key-format` | SSH public key (RFC 4253 §6.6) |
+
+The TACACS+ YANG model constrains `public-key-format` to `subject-public-key-info-format` for TLS client identity and server authentication paths.
+
+### `key-format`
+
+Used in `SymmetricKeyInlineDefinition` (the inline definition for TLS 1.3 external PSKs). Indicates how the symmetric key binary is encoded.
+
+| JSON value | Meaning |
+|---|---|
+| `ietf-crypto-types:octet-string-key-format` | Raw octet string, length must match the algorithm's block size |
+| `ietf-crypto-types:one-symmetric-key-format` | CMS OneSymmetricKey (RFC 6031), DER-encoded *(feature-gated)* |
+
+### Example: TLS with inline certificate
+
+```json
+{
+  "ietf-system-tacacs-plus:tacacs-plus": {
+    "server": [
+      {
+        "name": "tls-inline",
+        "server-type": "authentication",
+        "address": "192.0.2.1",
+        "port": 49,
+        "domain-name": "tacacs.example.com",
+        "sni-enabled": true,
+        "client-identity": {
+          "certificate": {
+            "inline-definition": {
+              "public-key-format": "ietf-crypto-types:subject-public-key-info-format",
+              "public-key": "BASE64VALUE=",
+              "private-key-format": "ietf-crypto-types:rsa-private-key-format",
+              "cleartext-private-key": "BASE64VALUE=",
+              "cert-data": "BASE64VALUE="
+            }
+          }
+        },
+        "server-authentication": {
+          "ca-certs": {
+            "inline-definition": {
+              "certificate": [
+                {"name": "CA-1", "cert-data": "BASE64VALUE="}
+              ]
+            }
+          }
+        }
+      }
+    ]
+  }
+}
+```
 
 ## Example config
 
@@ -225,11 +327,14 @@ This split lets simple consumers use the high-level API, while advanced consumer
 
 The generated Rust types come from the checked-in YANG tooling under `yang/`:
 
-- `yang/yang2rust.py` — custom `pyang` plugin that emits Rust structs/enums/bitflags
+- `yang/yang2rust.py` — custom `pyang` plugin that emits Rust structs/enums/bitflags and identity set enums from YANG `identityref` leaves
 - `yang/expand_yang_tree.py` — helper used to refresh the fully expanded tree reference
 - `yang/generated_types.rs` — checked-in generator output copied into `src/generated.rs`
+- `yang/plugins/yang2rust.py` — copy of the plugin used by `--plugindir` (avoids loading `expand_yang_tree.py` from the same directory)
 
-Today, the Rust type graph is generated, but the higher-level validation logic in `src/validation.rs` is still maintained manually. That split is intentional for now: the current YANG-derived constraints are manageable in handwritten Rust, and keeping them explicit has made it easier to refine behavior during development. If the YANG model evolves substantially or the amount of schema-derived validation grows, generating some or all of that validation code from the same YANG metadata would be a reasonable next step.
+The generator automatically resolves `identityref` base identities and walks loaded modules to collect derived identities, emitting companion Rust enums with `ALL`, `ALLOWED_VALUES`, `as_rfc7951_str()`, `from_rfc7951_str()`, and `is_valid()` helpers. Existing `String` field types are preserved for serde compatibility (hybrid approach).
+
+Today, the Rust type graph and identity set enums are generated, but the higher-level validation logic in `src/validation.rs` is still maintained manually. The validation code uses the generated `ALLOWED_VALUES` constants for key format checking. That split is intentional for now: the YANG-derived constraints are manageable in handwritten Rust, and keeping them explicit has made it easier to refine behavior during development.
 
 To regenerate after YANG module updates:
 
@@ -237,16 +342,21 @@ To regenerate after YANG module updates:
 python -m pip install pyang
 cd libraries/tacacsrs_config/yang
 python expand_yang_tree.py > expanded-tree.txt
+cp yang2rust.py plugins/yang2rust.py
 pyang \
   -f rust \
-  --plugindir . \
-  ietf-system-tacacs-plus.yang \
-  ietf-keystore.yang \
-  ietf-truststore.yang \
-  ietf-crypto-types.yang \
-  ietf-tls-common.yang \
-  > generated_types.rs
+  --plugindir plugins \
+  -p .yang-cache/yang-models/standard/ietf/RFC \
+  -p .yang-cache/secure-tacacs-yang/yang \
+  .yang-cache/secure-tacacs-yang/yang/ietf-system-tacacs-plus.yang \
+  .yang-cache/yang-models/standard/ietf/RFC/ietf-keystore@2024-10-10.yang \
+  .yang-cache/yang-models/standard/ietf/RFC/ietf-truststore@2024-10-10.yang \
+  .yang-cache/yang-models/standard/ietf/RFC/ietf-crypto-types@2024-10-10.yang \
+  .yang-cache/yang-models/standard/ietf/RFC/ietf-tls-common@2024-10-10.yang \
+  -o generated_types.rs
 cp generated_types.rs ../src/generated.rs
 ```
+
+The `default_tls13_epsk_hash()` function in `generated.rs` requires a manual fixup after regeneration — the generator emits a placeholder comment for enum defaults. Replace the generated body with `EpskSupportedHash::Sha256`.
 
 Run the normal workspace formatting, clippy, build, and test commands after regeneration.

@@ -1,5 +1,9 @@
 use std::collections::HashSet;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+
+use crate::generated::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
 use crate::generated::tacacs_plus::{
     ClientCredentials, ClientIdentityCertificate, RawPrivateKey, ServerAuthenticationCaCerts,
     ServerAuthenticationRawPublicKeys, TacacsPlus, TacacsPlusServer, Tls13Epsk,
@@ -45,6 +49,8 @@ pub fn validate_config(
     }
 
     crate::resolvers::validate_credential_references(config, resolver)?;
+
+    validate_key_formats(config)?;
 
     Ok(())
 }
@@ -349,4 +355,252 @@ fn choice_case_names(choice_cases: &[(&str, &[&str])]) -> String {
         .map(|(case_name, _)| *case_name)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+// ---------------------------------------------------------------------------
+// Identityref key-format validation
+// ---------------------------------------------------------------------------
+
+fn validate_identityref(
+    context: &str,
+    field_name: &str,
+    value: &str,
+    allowed: &[&str],
+) -> anyhow::Result<()> {
+    if !allowed.contains(&value) {
+        anyhow::bail!(
+            "{context}: invalid {field_name} '{value}', expected one of [{}]",
+            allowed.join(", "),
+        );
+    }
+    Ok(())
+}
+
+/// Validate key format identityrefs in all inline definitions across the config.
+pub(crate) fn validate_key_formats(config: &TacacsPlus) -> anyhow::Result<()> {
+    for server in &config.server {
+        let ctx = format!("server '{}'", server.name);
+
+        if let Some(ref ci) = server.client_identity {
+            validate_client_identity_key_formats(ci, &ctx)?;
+        }
+        if let Some(ref sa) = server.server_authentication {
+            validate_server_auth_key_formats(sa, &ctx)?;
+        }
+    }
+
+    for cred in &config.client_credentials {
+        let ctx = format!("client-credentials '{}'", cred.id);
+        validate_client_credential_key_formats(cred, &ctx)?;
+    }
+
+    Ok(())
+}
+
+fn validate_asymmetric_key_formats(
+    public_key_format: Option<&str>,
+    private_key_format: Option<&str>,
+    context: &str,
+) -> anyhow::Result<()> {
+    if let Some(pkf) = public_key_format {
+        validate_identityref(context, "public-key-format", pkf, PublicKeyFormat::ALLOWED_VALUES)?;
+    }
+    if let Some(pkf) = private_key_format {
+        validate_identityref(context, "private-key-format", pkf, PrivateKeyFormat::ALLOWED_VALUES)?;
+    }
+    Ok(())
+}
+
+fn validate_client_identity_key_formats(
+    ci: &TlsClientClientIdentity,
+    context: &str,
+) -> anyhow::Result<()> {
+    if let Some(ref cert) = ci.certificate {
+        if let Some(ref inline) = cert.inline_definition {
+            let path = format!("{context}/client-identity/certificate");
+            validate_asymmetric_key_formats(
+                inline.public_key_format.as_deref(),
+                inline.private_key_format.as_deref(),
+                &path,
+            )?;
+            validate_inline_asymmetric_key_material(
+                inline.public_key.as_deref(),
+                inline.cleartext_private_key.as_deref(),
+                inline.cert_data.as_deref(),
+                &path,
+            )?;
+        }
+    }
+    if let Some(ref rpk) = ci.raw_private_key {
+        if let Some(ref inline) = rpk.inline_definition {
+            let path = format!("{context}/client-identity/raw-private-key");
+            validate_asymmetric_key_formats(
+                inline.public_key_format.as_deref(),
+                inline.private_key_format.as_deref(),
+                &path,
+            )?;
+            validate_inline_asymmetric_key_material(
+                inline.public_key.as_deref(),
+                inline.cleartext_private_key.as_deref(),
+                None, // no cert-data in asymmetric key definition
+                &path,
+            )?;
+        }
+    }
+    if let Some(ref epsk) = ci.tls13_epsk {
+        if let Some(ref inline) = epsk.inline_definition {
+            let path = format!("{context}/client-identity/tls13-epsk");
+            if let Some(ref kf) = inline.key_format {
+                validate_identityref(&path, "key-format", kf, SymmetricKeyFormat::ALLOWED_VALUES)?;
+            }
+            if let Some(ref key) = inline.cleartext_symmetric_key {
+                validate_binary_data(key, &path, "cleartext-symmetric-key")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_server_auth_key_formats(
+    sa: &TlsClientServerAuthentication,
+    context: &str,
+) -> anyhow::Result<()> {
+    if let Some(ref rpk) = sa.raw_public_keys {
+        if let Some(ref inline) = rpk.inline_definition {
+            for pk in &inline.public_key {
+                let path = format!("{context}/server-authentication/raw-public-keys");
+                validate_identityref(
+                    &path,
+                    "public-key-format",
+                    &pk.public_key_format,
+                    PublicKeyFormat::ALLOWED_VALUES,
+                )?;
+                validate_binary_data(&pk.public_key, &path, "public-key")?;
+            }
+        }
+    }
+    // Validate inline CA and EE certificate data
+    if let Some(ref ca) = sa.ca_certs {
+        if let Some(ref inline) = ca.inline_definition {
+            for cert_entry in &inline.certificate {
+                validate_binary_data(
+                    &cert_entry.cert_data,
+                    &format!("{context}/server-authentication/ca-certs"),
+                    &format!("certificate '{}'", cert_entry.name),
+                )?;
+            }
+        }
+    }
+    if let Some(ref ee) = sa.ee_certs {
+        if let Some(ref inline) = ee.inline_definition {
+            for cert_entry in &inline.certificate {
+                validate_binary_data(
+                    &cert_entry.cert_data,
+                    &format!("{context}/server-authentication/ee-certs"),
+                    &format!("certificate '{}'", cert_entry.name),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_client_credential_key_formats(
+    cred: &ClientCredentials,
+    context: &str,
+) -> anyhow::Result<()> {
+    if let Some(ref cert) = cred.certificate {
+        if let Some(ref inline) = cert.inline_definition {
+            let path = format!("{context}/certificate");
+            validate_asymmetric_key_formats(
+                inline.public_key_format.as_deref(),
+                inline.private_key_format.as_deref(),
+                &path,
+            )?;
+            validate_inline_asymmetric_key_material(
+                inline.public_key.as_deref(),
+                inline.cleartext_private_key.as_deref(),
+                inline.cert_data.as_deref(),
+                &path,
+            )?;
+        }
+    }
+    if let Some(ref rpk) = cred.raw_private_key {
+        if let Some(ref inline) = rpk.inline_definition {
+            let path = format!("{context}/raw-private-key");
+            validate_asymmetric_key_formats(
+                inline.public_key_format.as_deref(),
+                inline.private_key_format.as_deref(),
+                &path,
+            )?;
+            validate_inline_asymmetric_key_material(
+                inline.public_key.as_deref(),
+                inline.cleartext_private_key.as_deref(),
+                None,
+                &path,
+            )?;
+        }
+    }
+    if let Some(ref epsk) = cred.tls13_epsk {
+        if let Some(ref inline) = epsk.inline_definition {
+            let path = format!("{context}/tls13-epsk");
+            if let Some(ref kf) = inline.key_format {
+                validate_identityref(&path, "key-format", kf, SymmetricKeyFormat::ALLOWED_VALUES)?;
+            }
+            if let Some(ref key) = inline.cleartext_symmetric_key {
+                validate_binary_data(key, &path, "cleartext-symmetric-key")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Inline key material validation
+// ---------------------------------------------------------------------------
+
+/// Validates that a YANG `binary` field contains decodable data.
+///
+/// YANG binary values are either base64-encoded DER or PEM with BEGIN/END
+/// markers. This accepts both forms and rejects data that cannot be decoded.
+fn validate_binary_data(data: &str, context: &str, field: &str) -> anyhow::Result<()> {
+    let trimmed = data.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("{context}: {field} must not be empty");
+    }
+
+    // PEM data is valid if it has proper markers — the base64 payload inside
+    // is decoded by PEM parsers, not by us.
+    if trimmed.starts_with("-----BEGIN") {
+        if !trimmed.contains("-----END") {
+            anyhow::bail!("{context}: {field} contains a PEM BEGIN marker but no END marker");
+        }
+        return Ok(());
+    }
+
+    // Raw base64 — validate it decodes.
+    BASE64
+        .decode(trimmed)
+        .map_err(|e| anyhow::anyhow!("{context}: {field} contains invalid base64: {e}"))?;
+    Ok(())
+}
+
+/// Validates that inline asymmetric key material fields (public-key,
+/// cleartext-private-key, cert-data) contain decodable data when present.
+fn validate_inline_asymmetric_key_material(
+    public_key: Option<&str>,
+    cleartext_private_key: Option<&str>,
+    cert_data: Option<&str>,
+    context: &str,
+) -> anyhow::Result<()> {
+    if let Some(pk) = public_key {
+        validate_binary_data(pk, context, "public-key")?;
+    }
+    if let Some(key) = cleartext_private_key {
+        validate_binary_data(key, context, "cleartext-private-key")?;
+    }
+    if let Some(cert) = cert_data {
+        validate_binary_data(cert, context, "cert-data")?;
+    }
+    Ok(())
 }

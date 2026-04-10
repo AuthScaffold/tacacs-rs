@@ -133,6 +133,23 @@ impl TlsConfigurationBuilder {
         Ok(self)
     }
 
+    /// Sets client authentication from pre-parsed DER certificate chain and
+    /// private key.
+    ///
+    /// This is the preferred path when the YANG `private-key-format` identity
+    /// is known, since the caller can decode and wrap the DER bytes into the
+    /// correct [`PrivateKeyDer`] variant directly.
+    #[must_use]
+    pub fn with_client_auth_der(
+        mut self,
+        cert_chain: Vec<CertificateDer<'static>>,
+        key_der: PrivateKeyDer<'static>,
+    ) -> Self {
+        self.certificate_chain = Some(cert_chain);
+        self.private_key = Some(key_der);
+        self
+    }
+
     /// Disables certificate verification.
     ///
     /// # Warning

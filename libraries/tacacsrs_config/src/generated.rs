@@ -492,6 +492,9 @@ pub mod keystore {
     use serde::{Deserialize, Serialize};
     use super::crypto_types;
 
+    pub type CentralSymmetricKeyRef = String;
+    pub type CentralAsymmetricKeyRef = String;
+
     /// A container to hold the local key definition.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
@@ -630,11 +633,379 @@ pub mod keystore {
         ];
         pub const CHOICE_KEY_TYPE_MANDATORY: bool = true;
     }
+
+    /// An asymmetric key.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct AsymmetricKey {
+        /// An arbitrary name for the asymmetric key.
+        pub name: String,
+        /// Identifies the public key's format.  Implementations SHOULD
+        #[serde(rename = "public-key-format")]
+        #[serde(default)]
+        pub public_key_format: Option<String>,
+        /// The binary value of the public key.  The interpretation
+        #[serde(rename = "public-key")]
+        #[serde(default)]
+        pub public_key: Option<String>,
+        /// Identifies the private key's format.  Implementations SHOULD
+        #[serde(rename = "private-key-format")]
+        #[serde(default)]
+        pub private_key_format: Option<String>,
+        /// The value of the binary key.  The key's value is
+        #[serde(rename = "cleartext-private-key")]
+        #[serde(default)]
+        pub cleartext_private_key: Option<String>,
+        /// A hidden key.  It is of type 'empty' as its value is
+        #[serde(rename = "hidden-private-key")]
+        #[serde(default)]
+        pub hidden_private_key: Option<bool>,
+        /// A container for the encrypted asymmetric private key
+        #[serde(rename = "encrypted-private-key")]
+        #[serde(default)]
+        pub encrypted_private_key: Option<crypto_types::PrivateKeyEncryptedPrivateKey2>,
+        /// Certificates associated with this asymmetric key.
+        #[serde(default)]
+        pub certificates: Option<crypto_types::Certificates>,
+    }
+
+    /// Choice constraints for [`AsymmetricKey`].
+    impl AsymmetricKey {
+        /// YANG choice `private-key-type` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_PRIVATE_KEY_TYPE: &[(&str, &[&str])] = &[
+            ("cleartext-private-key", &["cleartext-private-key"]),
+            ("hidden-private-key", &["hidden-private-key"]),
+            ("encrypted-private-key", &["encrypted-private-key"]),
+        ];
+        pub const CHOICE_PRIVATE_KEY_TYPE_MANDATORY: bool = true;
+    }
+
+    /// A list of asymmetric keys.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct AsymmetricKeys {
+        /// An asymmetric key.
+        #[serde(rename = "asymmetric-key")]
+        #[serde(default)]
+        pub asymmetric_key: Vec<AsymmetricKey>,
+    }
+
+    /// A symmetric key.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct SymmetricKey {
+        /// An arbitrary name for the symmetric key.
+        pub name: String,
+        /// Identifies the symmetric key's format.  Implementations
+        #[serde(rename = "key-format")]
+        #[serde(default)]
+        pub key_format: Option<String>,
+        /// The binary value of the key.  The interpretation of
+        #[serde(rename = "cleartext-symmetric-key")]
+        #[serde(default)]
+        pub cleartext_symmetric_key: Option<String>,
+        /// A hidden key is not exportable and not extractable;
+        #[serde(rename = "hidden-symmetric-key")]
+        #[serde(default)]
+        pub hidden_symmetric_key: Option<bool>,
+        /// A container for the encrypted symmetric key value.
+        #[serde(rename = "encrypted-symmetric-key")]
+        #[serde(default)]
+        pub encrypted_symmetric_key: Option<crypto_types::PrivateKeyEncryptedPrivateKey2>,
+    }
+
+    /// Choice constraints for [`SymmetricKey`].
+    impl SymmetricKey {
+        /// YANG choice `key-type` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_KEY_TYPE: &[(&str, &[&str])] = &[
+            ("cleartext-symmetric-key", &["cleartext-symmetric-key"]),
+            ("hidden-symmetric-key", &["hidden-symmetric-key"]),
+            ("encrypted-symmetric-key", &["encrypted-symmetric-key"]),
+        ];
+        pub const CHOICE_KEY_TYPE_MANDATORY: bool = true;
+    }
+
+    /// A list of symmetric keys.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct SymmetricKeys {
+        /// A symmetric key.
+        #[serde(rename = "symmetric-key")]
+        #[serde(default)]
+        pub symmetric_key: Vec<SymmetricKey>,
+    }
+
+    /// A central keystore containing a list of symmetric keys and
+    /// a list of asymmetric keys.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct Keystore {
+        /// A list of asymmetric keys.
+        #[serde(rename = "asymmetric-keys")]
+        #[serde(default)]
+        pub asymmetric_keys: Option<AsymmetricKeys>,
+        /// A list of symmetric keys.
+        #[serde(rename = "symmetric-keys")]
+        #[serde(default)]
+        pub symmetric_keys: Option<SymmetricKeys>,
+    }
 }
 
 /// Types from `ietf-crypto-types`.
 pub mod crypto_types {
     use serde::{Deserialize, Serialize};
+
+    pub type CsrInfo = String;
+    pub type P10Csr = String;
+    pub type X509 = String;
+    pub type Crl = String;
+    pub type OscpRequest = String;
+    pub type OscpResponse = String;
+    pub type Cms = String;
+    pub type DataContentCms = String;
+    pub type SignedDataCms = String;
+    pub type EnvelopedDataCms = String;
+    pub type DigestedDataCms = String;
+    pub type EncryptedDataCms = String;
+    pub type AuthenticatedDataCms = String;
+    pub type TrustAnchorCertX509 = String;
+    pub type EndEntityCertX509 = String;
+    pub type TrustAnchorCertCms = String;
+    pub type EndEntityCertCms = String;
+
+    /// Valid identities derived from `ietf-crypto-types:public-key-format`.
+    /// Base key-format identity for public keys.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[allow(clippy::doc_markdown)]
+    pub enum PublicKeyFormat {
+        /// Indicates that the public key value is a Secure Shell (SSH)
+        SshPublicKeyFormat,
+        /// Indicates that the public key value is a SubjectPublicKeyInfo
+        SubjectPublicKeyInfoFormat,
+    }
+
+    impl PublicKeyFormat {
+        /// All valid identities for this base.
+        pub const ALL: &[Self] = &[Self::SshPublicKeyFormat, Self::SubjectPublicKeyInfoFormat];
+
+        /// RFC 7951 JSON string values accepted for this identity.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "ietf-crypto-types:ssh-public-key-format",
+            "ietf-crypto-types:subject-public-key-info-format",
+        ];
+
+        /// Returns the RFC 7951 module-qualified JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::SshPublicKeyFormat => "ietf-crypto-types:ssh-public-key-format",
+                Self::SubjectPublicKeyInfoFormat => {
+                    "ietf-crypto-types:subject-public-key-info-format"
+                }
+            }
+        }
+
+        /// Parses an RFC 7951 module-qualified string into this identity.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "ietf-crypto-types:ssh-public-key-format" => Some(Self::SshPublicKeyFormat),
+                "ietf-crypto-types:subject-public-key-info-format" => {
+                    Some(Self::SubjectPublicKeyInfoFormat)
+                }
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value for this identity.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    /// Valid identities derived from `ietf-crypto-types:private-key-format`.
+    /// Base key-format identity for private keys.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[allow(clippy::doc_markdown)]
+    pub enum PrivateKeyFormat {
+        /// Indicates that the private key value is encoded as
+        RsaPrivateKeyFormat,
+        /// Indicates that the private key value is encoded as
+        EcPrivateKeyFormat,
+        /// Indicates that the private key value is a
+        /// Requires YANG features: one-asymmetric-key-format
+        OneAsymmetricKeyFormat,
+    }
+
+    impl PrivateKeyFormat {
+        /// All valid identities for this base.
+        pub const ALL: &[Self] = &[
+            Self::RsaPrivateKeyFormat,
+            Self::EcPrivateKeyFormat,
+            Self::OneAsymmetricKeyFormat,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this identity.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "ietf-crypto-types:rsa-private-key-format",
+            "ietf-crypto-types:ec-private-key-format",
+            "ietf-crypto-types:one-asymmetric-key-format",
+        ];
+
+        /// Returns the RFC 7951 module-qualified JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::RsaPrivateKeyFormat => "ietf-crypto-types:rsa-private-key-format",
+                Self::EcPrivateKeyFormat => "ietf-crypto-types:ec-private-key-format",
+                Self::OneAsymmetricKeyFormat => "ietf-crypto-types:one-asymmetric-key-format",
+            }
+        }
+
+        /// Parses an RFC 7951 module-qualified string into this identity.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "ietf-crypto-types:rsa-private-key-format" => Some(Self::RsaPrivateKeyFormat),
+                "ietf-crypto-types:ec-private-key-format" => Some(Self::EcPrivateKeyFormat),
+                "ietf-crypto-types:one-asymmetric-key-format" => Some(Self::OneAsymmetricKeyFormat),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value for this identity.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    /// Valid identities derived from `ietf-crypto-types:encrypted-value-format`.
+    /// Base format identity for encrypted values.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[allow(clippy::doc_markdown)]
+    pub enum EncryptedValueFormat {
+        /// Base format identity for symmetrically encrypted
+        /// Requires YANG features: symmetrically-encrypted-value-format
+        SymmetricallyEncryptedValueFormat,
+        /// Base format identity for asymmetrically encrypted
+        /// Requires YANG features: asymmetrically-encrypted-value-format
+        AsymmetricallyEncryptedValueFormat,
+        /// Indicates that the encrypted value conforms to
+        /// Requires YANG features: cms-encrypted-data-format
+        CmsEncryptedDataFormat,
+        /// Indicates that the encrypted value conforms to the
+        /// Requires YANG features: cms-enveloped-data-format
+        CmsEnvelopedDataFormat,
+    }
+
+    impl EncryptedValueFormat {
+        /// All valid identities for this base.
+        pub const ALL: &[Self] = &[
+            Self::SymmetricallyEncryptedValueFormat,
+            Self::AsymmetricallyEncryptedValueFormat,
+            Self::CmsEncryptedDataFormat,
+            Self::CmsEnvelopedDataFormat,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this identity.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "ietf-crypto-types:symmetrically-encrypted-value-format",
+            "ietf-crypto-types:asymmetrically-encrypted-value-format",
+            "ietf-crypto-types:cms-encrypted-data-format",
+            "ietf-crypto-types:cms-enveloped-data-format",
+        ];
+
+        /// Returns the RFC 7951 module-qualified JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::SymmetricallyEncryptedValueFormat => {
+                    "ietf-crypto-types:symmetrically-encrypted-value-format"
+                }
+                Self::AsymmetricallyEncryptedValueFormat => {
+                    "ietf-crypto-types:asymmetrically-encrypted-value-format"
+                }
+                Self::CmsEncryptedDataFormat => "ietf-crypto-types:cms-encrypted-data-format",
+                Self::CmsEnvelopedDataFormat => "ietf-crypto-types:cms-enveloped-data-format",
+            }
+        }
+
+        /// Parses an RFC 7951 module-qualified string into this identity.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "ietf-crypto-types:symmetrically-encrypted-value-format" => {
+                    Some(Self::SymmetricallyEncryptedValueFormat)
+                }
+                "ietf-crypto-types:asymmetrically-encrypted-value-format" => {
+                    Some(Self::AsymmetricallyEncryptedValueFormat)
+                }
+                "ietf-crypto-types:cms-encrypted-data-format" => Some(Self::CmsEncryptedDataFormat),
+                "ietf-crypto-types:cms-enveloped-data-format" => Some(Self::CmsEnvelopedDataFormat),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value for this identity.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    /// Valid identities derived from `ietf-crypto-types:symmetric-key-format`.
+    /// Base key-format identity for symmetric keys.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[allow(clippy::doc_markdown)]
+    pub enum SymmetricKeyFormat {
+        /// Indicates that the key is encoded as a raw octet string.
+        OctetStringKeyFormat,
+        /// Indicates that the private key value is a CMS
+        /// Requires YANG features: one-symmetric-key-format
+        OneSymmetricKeyFormat,
+    }
+
+    impl SymmetricKeyFormat {
+        /// All valid identities for this base.
+        pub const ALL: &[Self] = &[Self::OctetStringKeyFormat, Self::OneSymmetricKeyFormat];
+
+        /// RFC 7951 JSON string values accepted for this identity.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "ietf-crypto-types:octet-string-key-format",
+            "ietf-crypto-types:one-symmetric-key-format",
+        ];
+
+        /// Returns the RFC 7951 module-qualified JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::OctetStringKeyFormat => "ietf-crypto-types:octet-string-key-format",
+                Self::OneSymmetricKeyFormat => "ietf-crypto-types:one-symmetric-key-format",
+            }
+        }
+
+        /// Parses an RFC 7951 module-qualified string into this identity.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "ietf-crypto-types:octet-string-key-format" => Some(Self::OctetStringKeyFormat),
+                "ietf-crypto-types:one-symmetric-key-format" => Some(Self::OneSymmetricKeyFormat),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value for this identity.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
 
     /// An empty container enabling a reference to the key that
     /// encrypted the value to be augmented in.  The referenced
@@ -660,11 +1031,82 @@ pub mod crypto_types {
         #[serde(rename = "encrypted-value")]
         pub encrypted_value: String,
     }
+
+    /// An empty container enabling a reference to the key that
+    /// encrypted the value to be augmented in.  The referenced
+    /// key MUST be a symmetric key or an asymmetric key.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct EncryptedValueEncryptedBy2 {
+        /// Identifies the symmetric key used to encrypt the
+        #[serde(rename = "symmetric-key-ref")]
+        #[serde(default)]
+        pub symmetric_key_ref: Option<String>,
+        /// Identifies the asymmetric key whose public key
+        #[serde(rename = "asymmetric-key-ref")]
+        #[serde(default)]
+        pub asymmetric_key_ref: Option<String>,
+    }
+
+    /// Choice constraints for [`EncryptedValueEncryptedBy2`].
+    impl EncryptedValueEncryptedBy2 {
+        /// YANG choice `encrypted-by` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_ENCRYPTED_BY: &[(&str, &[&str])] = &[
+            ("central-symmetric-key-ref", &["symmetric-key-ref"]),
+            ("central-asymmetric-key-ref", &["asymmetric-key-ref"]),
+        ];
+        pub const CHOICE_ENCRYPTED_BY_MANDATORY: bool = true;
+    }
+
+    /// A container for the encrypted asymmetric private key
+    /// value.  The interpretation of the 'encrypted-value'
+    /// node is via the 'private-key-format' node
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct PrivateKeyEncryptedPrivateKey2 {
+        /// An empty container enabling a reference to the key that
+        #[serde(rename = "encrypted-by")]
+        #[serde(default)]
+        pub encrypted_by: Option<EncryptedValueEncryptedBy2>,
+        /// Identifies the format of the 'encrypted-value' leaf.
+        #[serde(rename = "encrypted-value-format")]
+        pub encrypted_value_format: String,
+        /// The value, encrypted using the referenced symmetric
+        #[serde(rename = "encrypted-value")]
+        pub encrypted_value: String,
+    }
+
+    /// A certificate for this asymmetric key.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct AsymmetricKeyPairWithCertsCertificate {
+        /// An arbitrary name for the certificate.
+        pub name: String,
+        /// The binary certificate data for this certificate.
+        #[serde(rename = "cert-data")]
+        pub cert_data: String,
+    }
+
+    /// Certificates associated with this asymmetric key.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct Certificates {
+        /// A certificate for this asymmetric key.
+        #[serde(default)]
+        pub certificate: Vec<AsymmetricKeyPairWithCertsCertificate>,
+    }
 }
 
 /// Types from `ietf-truststore`.
 pub mod truststore {
     use serde::{Deserialize, Serialize};
+
+    pub type CentralCertificateBagRef = String;
+    pub type CentralCertificateRef = String;
+    pub type CentralPublicKeyBagRef = String;
+    pub type CentralPublicKeyRef = String;
 
     /// A trust anchor certificate or chain of certificates.
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -710,11 +1152,138 @@ pub mod truststore {
         #[serde(default)]
         pub public_key: Vec<PublicKeysPublicKey>,
     }
+
+    /// A bag of certificates.  Each bag of certificates should
+    /// be for a specific purpose.  For instance, one bag could
+    /// be used to authenticate a specific set of servers, while
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct CertificateBag {
+        /// An arbitrary name for this bag of certificates.
+        pub name: String,
+        /// A description for this bag of certificates.  The
+        #[serde(default)]
+        pub description: Option<String>,
+        /// A trust anchor certificate or chain of certificates.
+        #[serde(default)]
+        pub certificate: Vec<CertsCertificate>,
+    }
+
+    /// A collection of certificate bags.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct CertificateBags {
+        /// A bag of certificates.  Each bag of certificates should
+        #[serde(rename = "certificate-bag")]
+        #[serde(default)]
+        pub certificate_bag: Vec<CertificateBag>,
+    }
+
+    /// A bag of public keys.  Each bag of keys SHOULD be for
+    /// a specific purpose.  For instance, one bag could be used
+    /// to authenticate a specific set of servers, while another
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct PublicKeyBag {
+        /// An arbitrary name for this bag of public keys.
+        pub name: String,
+        /// A description for this bag of public keys.  The
+        #[serde(default)]
+        pub description: Option<String>,
+        /// A public key.
+        #[serde(rename = "public-key")]
+        #[serde(default)]
+        pub public_key: Vec<PublicKeysPublicKey>,
+    }
+
+    /// A collection of public key bags.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct PublicKeyBags {
+        /// A bag of public keys.  Each bag of keys SHOULD be for
+        #[serde(rename = "public-key-bag")]
+        #[serde(default)]
+        pub public_key_bag: Vec<PublicKeyBag>,
+    }
+
+    /// The truststore contains bags of certificates and
+    /// public keys.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct Truststore {
+        /// A collection of certificate bags.
+        #[serde(rename = "certificate-bags")]
+        #[serde(default)]
+        pub certificate_bags: Option<CertificateBags>,
+        /// A collection of public key bags.
+        #[serde(rename = "public-key-bags")]
+        #[serde(default)]
+        pub public_key_bags: Option<PublicKeyBags>,
+    }
 }
 
 /// Types from `ietf-tls-common`.
 pub mod tls_common {
     use serde::{Deserialize, Serialize};
+
+    /// As per Section 4.2.11 of RFC 8446, the hash algorithm
+    /// supported by an instance of an External Pre-Shared
+    /// Key (EPSK).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub enum EpskSupportedHash {
+        /// The SHA-256 hash.
+        #[serde(rename = "sha-256")]
+        Sha256,
+        /// The SHA-384 hash.
+        #[serde(rename = "sha-384")]
+        Sha384,
+    }
+
+    /// Valid identities derived from `ietf-tls-common:tls-version-base`.
+    /// Base identity used to identify TLS protocol versions.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[allow(clippy::doc_markdown)]
+    pub enum TlsVersionBase {
+        /// TLS Protocol Version 1.2.
+        /// Requires YANG features: tls12
+        Tls12,
+        /// TLS Protocol Version 1.3.
+        /// Requires YANG features: tls13
+        Tls13,
+    }
+
+    impl TlsVersionBase {
+        /// All valid identities for this base.
+        pub const ALL: &[Self] = &[Self::Tls12, Self::Tls13];
+
+        /// RFC 7951 JSON string values accepted for this identity.
+        pub const ALLOWED_VALUES: &[&str] = &["ietf-tls-common:tls12", "ietf-tls-common:tls13"];
+
+        /// Returns the RFC 7951 module-qualified JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::Tls12 => "ietf-tls-common:tls12",
+                Self::Tls13 => "ietf-tls-common:tls13",
+            }
+        }
+
+        /// Parses an RFC 7951 module-qualified string into this identity.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "ietf-tls-common:tls12" => Some(Self::Tls12),
+                "ietf-tls-common:tls13" => Some(Self::Tls13),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value for this identity.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
 
     /// Parameters limiting which TLS versions, amongst
     /// those enabled by 'features', are presented during

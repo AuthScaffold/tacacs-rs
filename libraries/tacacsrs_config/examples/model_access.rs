@@ -19,14 +19,19 @@ fn main() -> anyhow::Result<()> {
     let config = parse_yang_json(json, None)?;
     let server = &config.server[0];
 
-    println!("name={} address={} port={}", server.name, server.address, server.port);
+    println!("📄 Raw model access example");
+    println!("  ┌─ server: '{}'", server.name);
+    println!("  │  address: {}:{}", server.address, server.port);
 
     if server
         .server_type
         .contains(model::TacacsPlusServerType::AUTHORIZATION)
     {
-        println!("server-type includes authorization");
+        println!("  │  server-type includes authorization");
     }
+
+    println!("  │  shared-secret configured: {}", server.shared_secret.is_some());
+    println!("  └─");
 
     Ok(())
 }

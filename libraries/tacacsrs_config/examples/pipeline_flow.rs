@@ -14,8 +14,8 @@ fn main() -> anyhow::Result<()> {
                     "client-identity": {
                         "certificate": {
                             "inline-definition": {
-                                "cert-data": "CLIENT_CERT_PEM",
-                                "cleartext-private-key": "CLIENT_KEY_PEM"
+                                "cert-data": "dGVzdC1jZXJ0",
+                                "cleartext-private-key": "dGVzdC1rZXk="
                             }
                         }
                     },
@@ -23,7 +23,7 @@ fn main() -> anyhow::Result<()> {
                         "ca-certs": {
                             "inline-definition": {
                                 "certificate": [
-                                    { "name": "ca-main", "cert-data": "CA_CERT_PEM" }
+                                    { "name": "ca-main", "cert-data": "dGVzdC1jZXJ0" }
                                 ]
                             }
                         }
@@ -35,19 +35,23 @@ fn main() -> anyhow::Result<()> {
 
     // Step 1: Parse YANG config (non-destructive - preserves original for round-tripping)
     let config = parse_yang_json(json, None)?;
+    println!("🧪 Pipeline flow example");
+    println!("1. Parsed YANG JSON into the raw model\n");
 
     // Step 2: Access raw YANG model structure
     let server = &config.server[0];
-    println!("Server name: {}", server.name);
-    println!("Address: {}:{}", server.address, server.port);
-    println!("Has client-identity: {}", server.client_identity.is_some());
-    println!("Has server-authentication: {}", server.server_authentication.is_some());
+    println!("2. Inspected the raw server entry:");
+    println!("   ├─ name: {}", server.name);
+    println!("   ├─ address: {}:{}", server.address, server.port);
+    println!("   ├─ has client-identity: {}", server.client_identity.is_some());
+    println!("   └─ has server-authentication: {}", server.server_authentication.is_some());
 
     // Step 3: For production code:
     // 1. Create resolvers implementing CredentialResolver trait
-    // 2. Call validate_credential_references(&config, &resolvers)?
-    // 3. Call get_resolved_server(&config, server_name, &resolvers)? for on-demand resolution
+    // 2. Call validate_credential_references(&config, Some(&resolver))?
+    // 3. Call resolve_server(&config, server_name, Some(&resolver))? for on-demand resolution
     // This avoids destructive modifications and supports round-tripping
+    println!("\n3. Production flow: validate references, then resolve on demand when connecting");
 
     Ok(())
 }

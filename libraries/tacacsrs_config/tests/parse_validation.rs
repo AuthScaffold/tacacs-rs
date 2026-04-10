@@ -94,8 +94,8 @@ fn parse_tls_config() {
                     "client-identity": {
                         "certificate": {
                             "inline-definition": {
-                                "cert-data": "MIIB-client",
-                                "cleartext-private-key": "MIIEv-client"
+                                "cert-data": "dGVzdC1jZXJ0",
+                                "cleartext-private-key": "dGVzdC1rZXk="
                             }
                         }
                     },
@@ -105,7 +105,7 @@ fn parse_tls_config() {
                                 "certificate": [
                                     {
                                         "name": "ca1",
-                                        "cert-data": "MIIB..."
+                                        "cert-data": "dGVzdC1jZXJ0"
                                     }
                                 ]
                             }
@@ -135,14 +135,14 @@ fn parse_tls_config() {
             .unwrap()
             .cert_data
             .as_deref(),
-        Some("MIIB-client"),
+        Some("dGVzdC1jZXJ0"),
     );
     let sa = s.server_authentication.as_ref().unwrap();
     let ca = sa.ca_certs.as_ref().unwrap();
     let certs = &ca.inline_definition.as_ref().unwrap().certificate;
     assert_eq!(certs.len(), 1);
     assert_eq!(certs[0].name, "ca1");
-    assert_eq!(certs[0].cert_data, "MIIB...");
+    assert_eq!(certs[0].cert_data, "dGVzdC1jZXJ0");
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn reject_sni_without_domain_name() {
                     "address": "10.0.0.1",
                     "port": 49,
                     "sni-enabled": true,
-                    "shared-secret": "key"
+                    "shared-secret": "a2V5"
                 }
             ]
         }
@@ -247,7 +247,7 @@ fn reject_invalid_server_type() {
                     "server-type": "invalid_type",
                     "address": "10.0.0.1",
                     "port": 49,
-                    "shared-secret": "key"
+                    "shared-secret": "a2V5"
                 }
             ]
         }
@@ -267,7 +267,7 @@ fn default_timeout_applied() {
                     "server-type": "accounting",
                     "address": "10.0.0.1",
                     "port": 49,
-                    "shared-secret": "key"
+                    "shared-secret": "a2V5"
                 }
             ]
         }
@@ -286,8 +286,8 @@ fn credential_references_preserved_for_roundtrip() {
                     "id": "corp-cert",
                     "certificate": {
                         "inline-definition": {
-                            "cert-data": "MIIB...",
-                            "cleartext-private-key": "MIIEv..."
+                            "cert-data": "dGVzdC1jZXJ0",
+                            "cleartext-private-key": "dGVzdC1rZXk="
                         }
                     }
                 }
@@ -298,7 +298,7 @@ fn credential_references_preserved_for_roundtrip() {
                     "ca-certs": {
                         "inline-definition": {
                             "certificate": [
-                                {"name": "ca1", "cert-data": "MIIB..."}
+                                {"name": "ca1", "cert-data": "dGVzdC1jZXJ0"}
                             ]
                         }
                     }
@@ -390,11 +390,11 @@ fn reject_tls_and_obfuscation() {
                     "server-type": "accounting",
                     "address": "10.0.0.1",
                     "port": 49,
-                    "shared-secret": "key",
+                    "shared-secret": "a2V5",
                     "server-authentication": {
                         "ca-certs": {
                             "inline-definition": {
-                                "certificate": [{"name": "ca1", "cert-data": "MIIB..."}]
+                                "certificate": [{"name": "ca1", "cert-data": "dGVzdC1jZXJ0"}]
                             }
                         }
                     }
@@ -477,7 +477,7 @@ fn accept_tls13_epsk_config_without_runtime_psk_support() {
                     "client-identity": {
                         "tls13-epsk": {
                             "inline-definition": {
-                                "cleartext-symmetric-key": "topsecret"
+                                "cleartext-symmetric-key": "dG9wc2VjcmV0"
                             },
                             "external-identity": "client@example.com"
                         }
@@ -780,7 +780,7 @@ fn reject_raw_private_key_with_multiple_choices() {
                     "client-identity": {
                         "raw-private-key": {
                             "inline-definition": {
-                                "cleartext-private-key": "KEY"
+                                "cleartext-private-key": "a2V5"
                             },
                             "central-keystore-reference": "keyref"
                         }
@@ -893,8 +893,8 @@ fn reject_client_identity_reference_and_explicit_together() {
                     "id": "corp-cert",
                     "certificate": {
                         "inline-definition": {
-                            "cert-data": "CERT",
-                            "cleartext-private-key": "KEY"
+                            "cert-data": "Y2VydA==",
+                            "cleartext-private-key": "a2V5"
                         }
                     }
                 }
@@ -909,8 +909,8 @@ fn reject_client_identity_reference_and_explicit_together() {
                         "credentials-reference": "corp-cert",
                         "certificate": {
                             "inline-definition": {
-                                "cert-data": "CERT",
-                                "cleartext-private-key": "KEY"
+                                "cert-data": "Y2VydA==",
+                                "cleartext-private-key": "a2V5"
                             }
                         }
                     }
@@ -952,7 +952,7 @@ fn reject_server_auth_reference_and_explicit_together() {
                     "client-identity": {
                         "certificate": {
                             "inline-definition": {
-                                "cert-data": "CERT"
+                                "cert-data": "Y2VydA=="
                             }
                         }
                     },
@@ -993,7 +993,7 @@ fn accept_server_authentication_with_ee_certs_only() {
                         "ee-certs": {
                             "inline-definition": {
                                 "certificate": [
-                                    {"name": "ee1", "cert-data": "EE_CERT"}
+                                    {"name": "ee1", "cert-data": "ZWUtY2VydA=="}
                                 ]
                             }
                         }
@@ -1017,8 +1017,8 @@ fn reject_client_credentials_with_multiple_auth_types() {
                     "id": "dup-auth-type",
                     "certificate": {
                         "inline-definition": {
-                            "cert-data": "CERT",
-                            "cleartext-private-key": "KEY"
+                            "cert-data": "Y2VydA==",
+                            "cleartext-private-key": "a2V5"
                         }
                     },
                     "raw-private-key": {
@@ -1057,8 +1057,8 @@ fn accept_client_credentials_with_certificate_auth_type() {
                     "id": "cert-only",
                     "certificate": {
                         "inline-definition": {
-                            "cert-data": "CERT",
-                            "cleartext-private-key": "KEY"
+                            "cert-data": "Y2VydA==",
+                            "cleartext-private-key": "a2V5"
                         }
                     }
                 }
@@ -1089,7 +1089,7 @@ fn accept_client_credentials_with_raw_private_key_auth_type() {
                     "id": "rpk-only",
                     "raw-private-key": {
                         "inline-definition": {
-                            "cleartext-private-key": "KEY"
+                            "cleartext-private-key": "a2V5"
                         }
                     }
                 }
@@ -1120,7 +1120,7 @@ fn accept_client_credentials_with_tls13_epsk_auth_type() {
                     "id": "epsk-only",
                     "tls13-epsk": {
                         "inline-definition": {
-                            "cleartext-symmetric-key": "topsecret"
+                            "cleartext-symmetric-key": "dG9wc2VjcmV0"
                         },
                         "external-identity": "client@example.com"
                     }
@@ -1389,7 +1389,7 @@ fn reject_tls_version_min_below_13() {
                     "client-identity": {
                         "certificate": {
                             "inline-definition": {
-                                "cert-data": "CERT"
+                                "cert-data": "Y2VydA=="
                             }
                         }
                     },
@@ -1422,7 +1422,7 @@ fn reject_tls_version_max_below_13() {
                     "client-identity": {
                         "certificate": {
                             "inline-definition": {
-                                "cert-data": "CERT"
+                                "cert-data": "Y2VydA=="
                             }
                         }
                     },
@@ -1455,7 +1455,7 @@ fn accept_tls_versions_at_or_above_13() {
                     "client-identity": {
                         "certificate": {
                             "inline-definition": {
-                                "cert-data": "CERT"
+                                "cert-data": "Y2VydA=="
                             }
                         }
                     },
@@ -1510,7 +1510,7 @@ fn accept_tls13_epsk_when_present() {
                     "client-identity": {
                         "tls13-epsk": {
                             "inline-definition": {
-                                "cleartext-symmetric-key": "topsecret"
+                                "cleartext-symmetric-key": "dG9wc2VjcmV0"
                             },
                             "external-identity": "client@example.com"
                         }
@@ -1538,7 +1538,7 @@ fn reject_tls13_epsk_with_multiple_choice_sources() {
                     "client-identity": {
                         "tls13-epsk": {
                             "inline-definition": {
-                                "cleartext-symmetric-key": "topsecret"
+                                "cleartext-symmetric-key": "dG9wc2VjcmV0"
                             },
                             "central-keystore-reference": "keyref",
                             "external-identity": "client@example.com"
@@ -1571,4 +1571,441 @@ fn credential_resolver_default_validate_calls_resolve() {
     resolver
         .validate("some-key", CredentialRefType::Keystore)
         .expect("default validate should succeed when resolver returns None");
+}
+
+// ---------------------------------------------------------------------------
+// Key-format identityref validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn accept_valid_private_key_format() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "tls1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "domain-name": "tacacs.example.com",
+                    "sni-enabled": true,
+                    "client-identity": {
+                        "certificate": {
+                            "inline-definition": {
+                                "public-key-format": "ietf-crypto-types:subject-public-key-info-format",
+                                "public-key": "dGVzdA==",
+                                "private-key-format": "ietf-crypto-types:rsa-private-key-format",
+                                "cleartext-private-key": "dGVzdA==",
+                                "cert-data": "dGVzdA=="
+                            }
+                        }
+                    },
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "dGVzdC1jZXJ0"}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    parse_yang_json(json, None).expect("valid key formats should be accepted");
+}
+
+#[test]
+fn reject_invalid_private_key_format() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "tls1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "domain-name": "tacacs.example.com",
+                    "sni-enabled": true,
+                    "client-identity": {
+                        "certificate": {
+                            "inline-definition": {
+                                "private-key-format": "bogus-format",
+                                "cleartext-private-key": "dGVzdA==",
+                                "cert-data": "dGVzdA=="
+                            }
+                        }
+                    },
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "dGVzdC1jZXJ0"}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("invalid private-key-format 'bogus-format'"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn reject_invalid_public_key_format() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "tls1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "domain-name": "tacacs.example.com",
+                    "sni-enabled": true,
+                    "client-identity": {
+                        "certificate": {
+                            "inline-definition": {
+                                "public-key-format": "not-a-real-format",
+                                "public-key": "dGVzdA==",
+                                "private-key-format": "ietf-crypto-types:rsa-private-key-format",
+                                "cleartext-private-key": "dGVzdA==",
+                                "cert-data": "dGVzdA=="
+                            }
+                        }
+                    },
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "dGVzdC1jZXJ0"}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("invalid public-key-format"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_invalid_symmetric_key_format() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "epsk-cred",
+                    "tls13-epsk": {
+                        "inline-definition": {
+                            "key-format": "bad-format",
+                            "cleartext-symmetric-key": "dGVzdA=="
+                        },
+                        "external-identity": "test-id",
+                        "hash": "sha-256"
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "s1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "credentials-reference": "epsk-cred"
+                    },
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "dGVzdC1jZXJ0"}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("invalid key-format 'bad-format'"), "unexpected error: {err}",);
+}
+
+#[test]
+fn accept_valid_symmetric_key_format() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "epsk-cred",
+                    "tls13-epsk": {
+                        "inline-definition": {
+                            "key-format": "ietf-crypto-types:octet-string-key-format",
+                            "cleartext-symmetric-key": "dGVzdA=="
+                        },
+                        "external-identity": "test-id",
+                        "hash": "sha-256"
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "s1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "credentials-reference": "epsk-cred"
+                    },
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "dGVzdC1jZXJ0"}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    parse_yang_json(json, None).expect("valid symmetric key format should be accepted");
+}
+
+// ---------------------------------------------------------------------------
+// Inline key material validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reject_invalid_base64_in_private_key() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bad-key",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "certificate": {
+                            "inline-definition": {
+                                "cleartext-private-key": "not valid base64!!!",
+                                "cert-data": "dGVzdA=="
+                            }
+                        }
+                    },
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "dGVzdA=="}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("cleartext-private-key contains invalid base64"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn reject_invalid_base64_in_cert_data() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bad-cert",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "!!!not-base64!!!"}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("certificate 'ca1' contains invalid base64"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn reject_empty_private_key() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "empty-key",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "certificate": {
+                            "inline-definition": {
+                                "cleartext-private-key": "",
+                                "cert-data": "dGVzdA=="
+                            }
+                        }
+                    },
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "dGVzdA=="}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("cleartext-private-key must not be empty"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn accept_pem_certificate_data() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "pem-server",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "-----BEGIN CERTIFICATE-----\ndGVzdA==\n-----END CERTIFICATE-----"}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    parse_yang_json(json, None).expect("PEM certificate data should be accepted");
+}
+
+#[test]
+fn reject_pem_without_end_marker() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bad-pem",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "-----BEGIN CERTIFICATE-----\ndGVzdA=="}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("PEM BEGIN marker but no END marker"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn reject_invalid_base64_in_symmetric_key() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "bad-epsk",
+                    "tls13-epsk": {
+                        "inline-definition": {
+                            "cleartext-symmetric-key": "not!!!valid!!!base64"
+                        },
+                        "external-identity": "test-id",
+                        "hash": "sha-256"
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "s1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "credentials-reference": "bad-epsk"
+                    },
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ca1", "cert-data": "dGVzdA=="}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("cleartext-symmetric-key contains invalid base64"),
+        "unexpected error: {err}",
+    );
 }

@@ -8,8 +8,8 @@ fn main() -> anyhow::Result<()> {
                     "id": "client-bundle-1",
                     "certificate": {
                         "inline-definition": {
-                            "cert-data": "CLIENT_CERT_PEM",
-                            "cleartext-private-key": "CLIENT_KEY_PEM"
+                            "cert-data": "dGVzdC1jZXJ0",
+                            "cleartext-private-key": "dGVzdC1rZXk="
                         }
                     }
                 }
@@ -20,7 +20,7 @@ fn main() -> anyhow::Result<()> {
                     "ca-certs": {
                         "inline-definition": {
                             "certificate": [
-                                { "name": "ca-main", "cert-data": "CA_CERT_PEM" }
+                                { "name": "ca-main", "cert-data": "dGVzdC1jZXJ0" }
                             ]
                         }
                     }
@@ -47,16 +47,36 @@ fn main() -> anyhow::Result<()> {
 
     // Parse raw config without destructively resolving references
     let config = parse_yang_json(json, None)?;
+    println!("📄 Parsed config with reusable client/server credential bundles");
 
     // Validate all credential references upfront (None = no external resolver needed)
     validate_credential_references(&config, None)?;
+    println!("✅ Bundle references are valid\n");
 
     // Resolve a specific server — bundle references are materialized inline
     let resolved = resolve_server(&config, "primary", None)?;
 
-    println!("Server '{}' resolved successfully", resolved.name);
-    println!("  endpoint: {}", resolved.socket_address());
-    println!("  is_tls: {}", resolved.is_tls());
+    let client_identity = resolved
+        .client_identity
+        .as_ref()
+        .expect("resolved server should have client identity");
+    let cert = client_identity
+        .certificate
+        .as_ref()
+        .expect("certificate should be materialized from bundle");
+    let inline = cert
+        .inline_definition
+        .as_ref()
+        .expect("certificate inline definition should be present");
+
+    assert_eq!(inline.cert_data.as_deref(), Some("dGVzdC1jZXJ0"));
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some("dGVzdC1rZXk="));
+
+    println!("🔐 Resolved server '{}'", resolved.name);
+    println!("  ├─ endpoint: {}", resolved.socket_address());
+    println!("  ├─ is_tls: {}", resolved.is_tls());
+    println!("  ├─ bundle reference cleared: {}", client_identity.credentials_reference.is_none());
+    println!("  └─ inline certificate + private key are now present on the resolved value");
 
     Ok(())
 }
