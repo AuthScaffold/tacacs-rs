@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use tacacsrs_config::{
     resolve_server, parse_yang_json, parse_yang_json_file, pipeline,
-    validate_credential_references, CredentialRefType, CredentialResolver, YangConfigRoot,
-    TacacsPlusServerType,
+    validate_credential_references, YangConfigRoot, TacacsPlusServerType,
 };
 
 fn write_temp_json_file(json: &str) -> PathBuf {
@@ -1555,24 +1554,6 @@ fn reject_tls13_epsk_with_multiple_choice_sources() {
             .contains("client-identity/tls13-epsk allows only one of [inline, central-keystore]"),
         "unexpected error: {err}",
     );
-}
-
-struct DummyResolver;
-
-impl CredentialResolver for DummyResolver {
-    fn resolve(&self, _key: &str, _ref_type: CredentialRefType) -> anyhow::Result<Option<String>> {
-        Ok(None)
-    }
-}
-
-#[test]
-fn credential_resolver_default_validate_rejects_none() {
-    let resolver = DummyResolver;
-    let err = resolver
-        .validate("some-key", CredentialRefType::Keystore)
-        .unwrap_err();
-    let msg = err.to_string();
-    assert!(msg.contains("did not resolve"), "expected rejection for unresolved ref, got: {msg}",);
 }
 
 // ---------------------------------------------------------------------------

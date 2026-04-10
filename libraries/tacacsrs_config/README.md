@@ -56,17 +56,61 @@ Credential references in YANG can point to:
 Define custom resolvers to handle your credential sources:
 
 ```rust
-pub enum CredentialRefType {
-    Keystore,
-    Truststore,
+pub struct X509CertificateMaterial {
+    pub cert_data: String,
+    pub key_material: AsymmetricKeyMaterial,
+}
+
+pub struct CertificateEntry {
+    pub name: String,
+    pub cert_data: String,
+}
+
+pub struct AsymmetricKeyMaterial {
+    pub cleartext_private_key: String,
+    pub public_key: Option<String>,
+    pub private_key_format: Option<PrivateKeyFormat>,
+    pub public_key_format: Option<PublicKeyFormat>,
+}
+
+pub struct SymmetricKeyMaterial {
+    pub cleartext_symmetric_key: String,
+    pub key_format: Option<SymmetricKeyFormat>,
+}
+
+pub struct TruststorePublicKeyMaterial {
+    pub name: String,
+    pub public_key: String,
+    pub public_key_format: PublicKeyFormat,
 }
 
 pub trait CredentialResolver: Send + Sync {
-    /// Resolve a credential reference to inline material
-    fn resolve(&self, key: &str, ref_type: CredentialRefType) -> anyhow::Result<Option<String>>;
+    // --- Keystore resolution ---
 
-    /// Validate that a credential reference is resolvable (optional)
-    fn validate(&self, key: &str, ref_type: CredentialRefType) -> anyhow::Result<()>;
+    /// Resolve an end-entity certificate + key pair from the keystore
+    fn resolve_keystore_certificate(&self, key: &str) -> Result<Option<X509CertificateMaterial>>;
+
+    /// Resolve an asymmetric key entry (for RPK client identity)
+    fn resolve_asymmetric_key(&self, key: &str) -> Result<Option<AsymmetricKeyMaterial>>;
+
+    /// Resolve a symmetric key entry (for TLS 1.3 EPSK)
+    fn resolve_symmetric_key(&self, key: &str) -> Result<Option<SymmetricKeyMaterial>>;
+
+    // --- Truststore resolution ---
+
+    /// Resolve a certificate bag (one or more CA/EE certs)
+    fn resolve_certificate_bag(&self, key: &str) -> Result<Option<Vec<CertificateEntry>>>;
+
+    /// Resolve a public key bag (one or more pinned server public keys)
+    fn resolve_public_key_bag(&self, key: &str) -> Result<Option<Vec<TruststorePublicKeyMaterial>>>;
+
+    // --- Validation (check key existence without materializing) ---
+
+    fn validate_keystore_certificate(&self, key: &str) -> Result<()>;
+    fn validate_asymmetric_key(&self, key: &str) -> Result<()>;
+    fn validate_symmetric_key(&self, key: &str) -> Result<()>;
+    fn validate_certificate_bag(&self, key: &str) -> Result<()>;
+    fn validate_public_key_bag(&self, key: &str) -> Result<()>;
 }
 ```
 

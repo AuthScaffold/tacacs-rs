@@ -5,8 +5,9 @@ mod statistics;
 mod validation;
 
 pub use resolvers::{
-    CredentialRefType, CredentialResolver, ResolvedServer, resolve_server, resolve_servers,
-    validate_credential_references,
+    AsymmetricKeyMaterial, CertificateEntry, CredentialResolver, ResolvedServer,
+    SymmetricKeyMaterial, TruststorePublicKeyMaterial, X509CertificateMaterial, resolve_server,
+    resolve_servers, validate_credential_references,
 };
 
 // Re-export key types from generated module for convenience

@@ -3,9 +3,11 @@ use std::time::Duration;
 use anyhow::Result;
 
 use tacacsrs_config::{
-    parse_yang_json, pipeline, resolve_servers, validate_credential_references, CredentialRefType,
-    CredentialResolver, ResolvedServer, TacacsPlusServer,
+    parse_yang_json, pipeline, resolve_servers, validate_credential_references,
+    AsymmetricKeyMaterial, CertificateEntry, CredentialResolver, ResolvedServer,
+    SymmetricKeyMaterial, TacacsPlusServer, TruststorePublicKeyMaterial, X509CertificateMaterial,
 };
+use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
 
 #[test]
 fn resolve_servers_maps_inline_tls_material() {
@@ -570,27 +572,123 @@ fn resolved_server_debug_redacts_shared_secret() {
 
 /// Test resolver that returns fixed material keyed by reference name.
 struct TestResolver {
-    entries: Vec<(String, CredentialRefType, String)>,
+    keystore_certs: Vec<(String, X509CertificateMaterial)>,
+    certificate_bags: Vec<(String, Vec<CertificateEntry>)>,
+    asymmetric_keys: Vec<(String, AsymmetricKeyMaterial)>,
+    symmetric_keys: Vec<(String, SymmetricKeyMaterial)>,
 }
 
 impl TestResolver {
-    fn new(entries: Vec<(&str, CredentialRefType, &str)>) -> Self {
+    fn new() -> Self {
         Self {
-            entries: entries
-                .into_iter()
-                .map(|(k, t, v)| (k.to_owned(), t, v.to_owned()))
-                .collect(),
+            keystore_certs: Vec::new(),
+            certificate_bags: Vec::new(),
+            asymmetric_keys: Vec::new(),
+            symmetric_keys: Vec::new(),
         }
+    }
+
+    fn with_keystore_certificate(mut self, key: &str, material: X509CertificateMaterial) -> Self {
+        self.keystore_certs.push((key.to_owned(), material));
+        self
+    }
+
+    fn with_certificate_bag(mut self, key: &str, entries: Vec<CertificateEntry>) -> Self {
+        self.certificate_bags.push((key.to_owned(), entries));
+        self
+    }
+
+    fn with_asymmetric_key(mut self, key: &str, material: AsymmetricKeyMaterial) -> Self {
+        self.asymmetric_keys.push((key.to_owned(), material));
+        self
+    }
+
+    fn with_symmetric_key(mut self, key: &str, material: SymmetricKeyMaterial) -> Self {
+        self.symmetric_keys.push((key.to_owned(), material));
+        self
     }
 }
 
 impl CredentialResolver for TestResolver {
-    fn resolve(&self, key: &str, ref_type: CredentialRefType) -> Result<Option<String>> {
+    fn resolve_keystore_certificate(&self, key: &str) -> Result<Option<X509CertificateMaterial>> {
         Ok(self
-            .entries
+            .keystore_certs
             .iter()
-            .find(|(k, t, _)| k == key && *t == ref_type)
-            .map(|(_, _, v)| v.clone()))
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone()))
+    }
+
+    fn resolve_certificate_bag(&self, key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+        Ok(self
+            .certificate_bags
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone()))
+    }
+
+    fn resolve_asymmetric_key(&self, key: &str) -> Result<Option<AsymmetricKeyMaterial>> {
+        Ok(self
+            .asymmetric_keys
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone()))
+    }
+
+    fn resolve_symmetric_key(&self, key: &str) -> Result<Option<SymmetricKeyMaterial>> {
+        Ok(self
+            .symmetric_keys
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone()))
+    }
+
+    fn resolve_public_key_bag(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<TruststorePublicKeyMaterial>>> {
+        // Fall back: use certificate bag name/data as public key entries
+        let bag = self.resolve_certificate_bag(key)?;
+        Ok(bag.map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| TruststorePublicKeyMaterial {
+                    name: entry.name,
+                    public_key: entry.cert_data,
+                    public_key_format: PublicKeyFormat::SubjectPublicKeyInfoFormat,
+                })
+                .collect()
+        }))
+    }
+
+    fn validate_keystore_certificate(&self, key: &str) -> Result<()> {
+        self.resolve_keystore_certificate(key)?.ok_or_else(|| {
+            anyhow::anyhow!("test resolver has no keystore certificate for '{key}'")
+        })?;
+        Ok(())
+    }
+
+    fn validate_asymmetric_key(&self, key: &str) -> Result<()> {
+        self.resolve_asymmetric_key(key)?
+            .ok_or_else(|| anyhow::anyhow!("test resolver has no asymmetric key for '{key}'"))?;
+        Ok(())
+    }
+
+    fn validate_symmetric_key(&self, key: &str) -> Result<()> {
+        self.resolve_symmetric_key(key)?
+            .ok_or_else(|| anyhow::anyhow!("test resolver has no symmetric key for '{key}'"))?;
+        Ok(())
+    }
+
+    fn validate_certificate_bag(&self, key: &str) -> Result<()> {
+        self.resolve_certificate_bag(key)?
+            .ok_or_else(|| anyhow::anyhow!("test resolver has no certificate bag for '{key}'"))?;
+        Ok(())
+    }
+
+    fn validate_public_key_bag(&self, key: &str) -> Result<()> {
+        self.resolve_public_key_bag(key)?
+            .ok_or_else(|| anyhow::anyhow!("test resolver has no public key bag for '{key}'"))?;
+        Ok(())
     }
 }
 
@@ -598,7 +696,46 @@ impl CredentialResolver for TestResolver {
 struct FailingResolver;
 
 impl CredentialResolver for FailingResolver {
-    fn resolve(&self, key: &str, _ref_type: CredentialRefType) -> Result<Option<String>> {
+    fn resolve_keystore_certificate(&self, key: &str) -> Result<Option<X509CertificateMaterial>> {
+        Err(anyhow::anyhow!("resolution failed for '{key}'"))
+    }
+
+    fn resolve_certificate_bag(&self, key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+        Err(anyhow::anyhow!("resolution failed for '{key}'"))
+    }
+
+    fn resolve_asymmetric_key(&self, key: &str) -> Result<Option<AsymmetricKeyMaterial>> {
+        Err(anyhow::anyhow!("resolution failed for '{key}'"))
+    }
+
+    fn resolve_symmetric_key(&self, key: &str) -> Result<Option<SymmetricKeyMaterial>> {
+        Err(anyhow::anyhow!("resolution failed for '{key}'"))
+    }
+
+    fn resolve_public_key_bag(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<TruststorePublicKeyMaterial>>> {
+        Err(anyhow::anyhow!("resolution failed for '{key}'"))
+    }
+
+    fn validate_keystore_certificate(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!("resolution failed for '{key}'"))
+    }
+
+    fn validate_asymmetric_key(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!("resolution failed for '{key}'"))
+    }
+
+    fn validate_symmetric_key(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!("resolution failed for '{key}'"))
+    }
+
+    fn validate_certificate_bag(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!("resolution failed for '{key}'"))
+    }
+
+    fn validate_public_key_bag(&self, key: &str) -> Result<()> {
         Err(anyhow::anyhow!("resolution failed for '{key}'"))
     }
 }
@@ -628,10 +765,18 @@ fn resolve_certificate_central_keystore_reference() {
     .unwrap()
     .tacacs_plus;
 
-    let resolver = TestResolver::new(vec![
-        ("my-key", CredentialRefType::Keystore, "RESOLVED_KEY_PEM"),
-        ("my-cert", CredentialRefType::Keystore, "RESOLVED_CERT_PEM"),
-    ]);
+    let resolver = TestResolver::new().with_keystore_certificate(
+        "my-cert",
+        X509CertificateMaterial {
+            cert_data: "RESOLVED_CERT_PEM".to_owned(),
+            key_material: AsymmetricKeyMaterial {
+                cleartext_private_key: "RESOLVED_KEY_PEM".to_owned(),
+                public_key: None,
+                private_key_format: None,
+                public_key_format: None,
+            },
+        },
+    );
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let ci = servers[0].client_identity.as_ref().unwrap();
@@ -664,15 +809,31 @@ fn resolve_raw_private_key_central_keystore_reference() {
     .unwrap()
     .tacacs_plus;
 
-    let resolver =
-        TestResolver::new(vec![("rpk-ref", CredentialRefType::Keystore, "RPK_MATERIAL")]);
+    let resolver = TestResolver::new().with_asymmetric_key(
+        "rpk-ref",
+        AsymmetricKeyMaterial {
+            cleartext_private_key: "RPK_PRIVATE_KEY".to_owned(),
+            public_key: Some("RPK_PUBLIC_KEY".to_owned()),
+            private_key_format: Some(PrivateKeyFormat::OneAsymmetricKeyFormat),
+            public_key_format: Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),
+        },
+    );
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let ci = servers[0].client_identity.as_ref().unwrap();
     let rpk = ci.raw_private_key.as_ref().unwrap();
     assert!(rpk.central_keystore_reference.is_none());
     let inline = rpk.inline_definition.as_ref().unwrap();
-    assert_eq!(inline.cleartext_private_key.as_deref(), Some("RPK_MATERIAL"));
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some("RPK_PRIVATE_KEY"));
+    assert_eq!(inline.public_key.as_deref(), Some("RPK_PUBLIC_KEY"));
+    assert_eq!(
+        inline.private_key_format.as_deref(),
+        Some("ietf-crypto-types:one-asymmetric-key-format")
+    );
+    assert_eq!(
+        inline.public_key_format.as_deref(),
+        Some("ietf-crypto-types:subject-public-key-info-format")
+    );
 }
 
 #[test]
@@ -698,8 +859,13 @@ fn resolve_tls13_epsk_central_keystore_reference() {
     .unwrap()
     .tacacs_plus;
 
-    let resolver =
-        TestResolver::new(vec![("epsk-ref", CredentialRefType::Keystore, "EPSK_SECRET")]);
+    let resolver = TestResolver::new().with_symmetric_key(
+        "epsk-ref",
+        SymmetricKeyMaterial {
+            cleartext_symmetric_key: "EPSK_SECRET".to_owned(),
+            key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
+        },
+    );
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let ci = servers[0].client_identity.as_ref().unwrap();
@@ -707,6 +873,7 @@ fn resolve_tls13_epsk_central_keystore_reference() {
     assert!(epsk.central_keystore_reference.is_none());
     let inline = epsk.inline_definition.as_ref().unwrap();
     assert_eq!(inline.cleartext_symmetric_key.as_deref(), Some("EPSK_SECRET"));
+    assert_eq!(inline.key_format.as_deref(), Some("ietf-crypto-types:octet-string-key-format"));
 }
 
 #[test]
@@ -731,8 +898,13 @@ fn resolve_ca_certs_central_truststore_reference() {
     .unwrap()
     .tacacs_plus;
 
-    let resolver =
-        TestResolver::new(vec![("ca-ref", CredentialRefType::Truststore, "CA_CERT_PEM")]);
+    let resolver = TestResolver::new().with_certificate_bag(
+        "ca-ref",
+        vec![CertificateEntry {
+            name: "ca-ref".to_owned(),
+            cert_data: "CA_CERT_PEM".to_owned(),
+        }],
+    );
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let sa = servers[0].server_authentication.as_ref().unwrap();
@@ -766,8 +938,13 @@ fn resolve_ee_certs_central_truststore_reference() {
     .unwrap()
     .tacacs_plus;
 
-    let resolver =
-        TestResolver::new(vec![("ee-ref", CredentialRefType::Truststore, "EE_CERT_PEM")]);
+    let resolver = TestResolver::new().with_certificate_bag(
+        "ee-ref",
+        vec![CertificateEntry {
+            name: "ee-ref".to_owned(),
+            cert_data: "EE_CERT_PEM".to_owned(),
+        }],
+    );
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let sa = servers[0].server_authentication.as_ref().unwrap();
@@ -800,8 +977,13 @@ fn resolve_raw_public_keys_central_truststore_reference() {
     .unwrap()
     .tacacs_plus;
 
-    let resolver =
-        TestResolver::new(vec![("rpk-ref", CredentialRefType::Truststore, "PUB_KEY_DATA")]);
+    let resolver = TestResolver::new().with_certificate_bag(
+        "rpk-ref",
+        vec![CertificateEntry {
+            name: "rpk-ref".to_owned(),
+            cert_data: "PUB_KEY_DATA".to_owned(),
+        }],
+    );
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let sa = servers[0].server_authentication.as_ref().unwrap();
@@ -810,6 +992,10 @@ fn resolve_raw_public_keys_central_truststore_reference() {
     let inline = rpk.inline_definition.as_ref().unwrap();
     assert_eq!(inline.public_key.len(), 1);
     assert_eq!(inline.public_key[0].public_key, "PUB_KEY_DATA");
+    assert_eq!(
+        inline.public_key[0].public_key_format,
+        "ietf-crypto-types:subject-public-key-info-format"
+    );
 }
 
 #[test]
@@ -891,7 +1077,7 @@ fn resolve_noop_when_external_resolver_returns_none() {
     .tacacs_plus;
 
     // Resolver that handles nothing (returns None)
-    let resolver = TestResolver::new(vec![]);
+    let resolver = TestResolver::new();
     let err = resolve_servers(&config, Some(&resolver)).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("did not resolve"), "error should indicate unresolved reference: {msg}");
@@ -1305,8 +1491,15 @@ fn resolve_bundle_ref_then_external_keystore_ref() {
     .unwrap()
     .tacacs_plus;
 
-    let resolver =
-        TestResolver::new(vec![("ext-key", CredentialRefType::Keystore, "FULLY_RESOLVED")]);
+    let resolver = TestResolver::new().with_asymmetric_key(
+        "ext-key",
+        AsymmetricKeyMaterial {
+            cleartext_private_key: "FULLY_RESOLVED".to_owned(),
+            public_key: None,
+            private_key_format: None,
+            public_key_format: None,
+        },
+    );
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let ci = servers[0].client_identity.as_ref().unwrap();

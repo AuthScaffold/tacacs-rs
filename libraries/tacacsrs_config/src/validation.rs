@@ -46,6 +46,7 @@ pub fn validate_config(
 
     for credentials in &config.client_credentials {
         validate_client_credentials(credentials)?;
+        reject_unsupported_credentials_features(&credentials.id, credentials)?;
     }
 
     crate::resolvers::validate_credential_references(config, resolver)?;
@@ -82,6 +83,10 @@ fn validate_server(
     validate_security_choice(server)?;
     validate_client_identity(server)?;
     validate_server_authentication(server)?;
+
+    if let Some(ref ci) = server.client_identity {
+        reject_unsupported_inline_features(&server.name, ci)?;
+    }
 
     if let Some(ref hp) = server.hello_params {
         validate_tls_versions(hp, &server.name)?;
@@ -355,6 +360,140 @@ fn choice_case_names(choice_cases: &[(&str, &[&str])]) -> String {
         .map(|(case_name, _)| *case_name)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+// ---------------------------------------------------------------------------
+// Unsupported feature rejection
+// ---------------------------------------------------------------------------
+
+/// Rejects unsupported inline key features that are parsed by the YANG model
+/// but not yet handled by the resolver/connection layers.
+fn reject_unsupported_inline_features(
+    context: &str,
+    ci: &TlsClientClientIdentity,
+) -> anyhow::Result<()> {
+    if let Some(ref cert) = ci.certificate {
+        if let Some(ref inline) = cert.inline_definition {
+            reject_unsupported_asymmetric_key_type(
+                context,
+                "client-identity/certificate",
+                inline.hidden_private_key,
+                inline.encrypted_private_key.is_some(),
+            )?;
+        }
+    }
+    if let Some(ref rpk) = ci.raw_private_key {
+        if let Some(ref inline) = rpk.inline_definition {
+            reject_unsupported_asymmetric_key_type(
+                context,
+                "client-identity/raw-private-key",
+                inline.hidden_private_key,
+                inline.encrypted_private_key.is_some(),
+            )?;
+        }
+    }
+    if let Some(ref epsk) = ci.tls13_epsk {
+        if let Some(ref inline) = epsk.inline_definition {
+            reject_unsupported_symmetric_key_type(
+                context,
+                "client-identity/tls13-epsk",
+                inline.hidden_symmetric_key,
+                inline.encrypted_symmetric_key.is_some(),
+            )?;
+        }
+        reject_unsupported_epsk_derivation(context, epsk)?;
+    }
+    Ok(())
+}
+
+/// Rejects unsupported inline key features in a client-credentials bundle.
+fn reject_unsupported_credentials_features(
+    context: &str,
+    creds: &ClientCredentials,
+) -> anyhow::Result<()> {
+    if let Some(ref cert) = creds.certificate {
+        if let Some(ref inline) = cert.inline_definition {
+            reject_unsupported_asymmetric_key_type(
+                context,
+                "certificate",
+                inline.hidden_private_key,
+                inline.encrypted_private_key.is_some(),
+            )?;
+        }
+    }
+    if let Some(ref rpk) = creds.raw_private_key {
+        if let Some(ref inline) = rpk.inline_definition {
+            reject_unsupported_asymmetric_key_type(
+                context,
+                "raw-private-key",
+                inline.hidden_private_key,
+                inline.encrypted_private_key.is_some(),
+            )?;
+        }
+    }
+    if let Some(ref epsk) = creds.tls13_epsk {
+        if let Some(ref inline) = epsk.inline_definition {
+            reject_unsupported_symmetric_key_type(
+                context,
+                "tls13-epsk",
+                inline.hidden_symmetric_key,
+                inline.encrypted_symmetric_key.is_some(),
+            )?;
+        }
+        reject_unsupported_epsk_derivation(context, epsk)?;
+    }
+    Ok(())
+}
+
+fn reject_unsupported_asymmetric_key_type(
+    context: &str,
+    path: &str,
+    hidden: Option<bool>,
+    has_encrypted: bool,
+) -> anyhow::Result<()> {
+    if hidden == Some(true) {
+        anyhow::bail!("'{context}': {path} uses hidden-private-key which is not yet supported");
+    }
+    if has_encrypted {
+        anyhow::bail!("'{context}': {path} uses encrypted-private-key which is not yet supported");
+    }
+    Ok(())
+}
+
+fn reject_unsupported_symmetric_key_type(
+    context: &str,
+    path: &str,
+    hidden: Option<bool>,
+    has_encrypted: bool,
+) -> anyhow::Result<()> {
+    if hidden == Some(true) {
+        anyhow::bail!("'{context}': {path} uses hidden-symmetric-key which is not yet supported");
+    }
+    if has_encrypted {
+        anyhow::bail!(
+            "'{context}': {path} uses encrypted-symmetric-key which is not yet supported"
+        );
+    }
+    Ok(())
+}
+
+fn reject_unsupported_epsk_derivation(context: &str, epsk: &Tls13Epsk) -> anyhow::Result<()> {
+    if epsk.context.is_some() {
+        anyhow::bail!(
+            "'{context}': tls13-epsk 'context' for additional key derivation is not yet supported"
+        );
+    }
+    if epsk.target_protocol.is_some() {
+        anyhow::bail!(
+            "'{context}': tls13-epsk 'target-protocol' for additional key derivation is not yet supported"
+        );
+    }
+    if epsk.target_kdf.is_some() {
+        anyhow::bail!(
+            "'{context}': tls13-epsk 'target-kdf' for additional key derivation is not yet supported"
+        );
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

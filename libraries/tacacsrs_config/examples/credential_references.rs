@@ -1,20 +1,109 @@
 use tacacsrs_config::{
     parse_yang_json, resolve_server, resolve_servers, validate_credential_references,
-    CredentialRefType, CredentialResolver, TacacsPlusServerType,
+    CredentialResolver, TacacsPlusServerType,
 };
 
 /// Simple reference resolver that copies credentials within the same config
 struct LocalReferenceResolver;
 
 impl CredentialResolver for LocalReferenceResolver {
-    fn resolve(&self, _key: &str, _ref_type: CredentialRefType) -> anyhow::Result<Option<String>> {
-        // In a real implementation, this would look up the credential from
-        // an external keystore or truststore.
-        Ok(Some("RESOLVED_MATERIAL".to_string()))
+    fn resolve_keystore_certificate(
+        &self,
+        _key: &str,
+    ) -> anyhow::Result<Option<tacacsrs_config::X509CertificateMaterial>> {
+        Ok(Some(tacacsrs_config::X509CertificateMaterial {
+            cert_data: "RESOLVED_CERT_DATA".to_string(),
+            key_material: tacacsrs_config::AsymmetricKeyMaterial {
+                cleartext_private_key: "RESOLVED_PRIVATE_KEY".to_string(),
+                public_key: Some("RESOLVED_PUBLIC_KEY".to_string()),
+                private_key_format: Some(
+                    tacacsrs_config::crypto_types::PrivateKeyFormat::OneAsymmetricKeyFormat,
+                ),
+                public_key_format: Some(
+                    tacacsrs_config::crypto_types::PublicKeyFormat::SubjectPublicKeyInfoFormat,
+                ),
+            },
+        }))
     }
 
-    fn validate(&self, _key: &str, _ref_type: CredentialRefType) -> anyhow::Result<()> {
-        // In a real implementation, this would check if credentials exist
+    fn resolve_certificate_bag(
+        &self,
+        _key: &str,
+    ) -> anyhow::Result<Option<Vec<tacacsrs_config::CertificateEntry>>> {
+        Ok(Some(vec![
+            tacacsrs_config::CertificateEntry {
+                name: "root-ca".to_string(),
+                cert_data: "RESOLVED_ROOT_CA".to_string(),
+            },
+            tacacsrs_config::CertificateEntry {
+                name: "intermediate-ca".to_string(),
+                cert_data: "RESOLVED_INTERMEDIATE_CA".to_string(),
+            },
+        ]))
+    }
+
+    fn resolve_asymmetric_key(
+        &self,
+        _key: &str,
+    ) -> anyhow::Result<Option<tacacsrs_config::AsymmetricKeyMaterial>> {
+        // In a real implementation, this would fetch the full asymmetric key
+        // entry (private key, public key, and format identities) from a
+        // central keystore.
+        Ok(Some(tacacsrs_config::AsymmetricKeyMaterial {
+            cleartext_private_key: "RESOLVED_PRIVATE_KEY".to_string(),
+            public_key: Some("RESOLVED_PUBLIC_KEY".to_string()),
+            private_key_format: Some(
+                tacacsrs_config::crypto_types::PrivateKeyFormat::OneAsymmetricKeyFormat,
+            ),
+            public_key_format: Some(
+                tacacsrs_config::crypto_types::PublicKeyFormat::SubjectPublicKeyInfoFormat,
+            ),
+        }))
+    }
+
+    fn resolve_symmetric_key(
+        &self,
+        _key: &str,
+    ) -> anyhow::Result<Option<tacacsrs_config::SymmetricKeyMaterial>> {
+        // In a real implementation, this would fetch the symmetric key
+        // entry (key material and format identity) from a central keystore.
+        Ok(Some(tacacsrs_config::SymmetricKeyMaterial {
+            cleartext_symmetric_key: "RESOLVED_SYMMETRIC_KEY".to_string(),
+            key_format: Some(
+                tacacsrs_config::crypto_types::SymmetricKeyFormat::OctetStringKeyFormat,
+            ),
+        }))
+    }
+
+    fn resolve_public_key_bag(
+        &self,
+        _key: &str,
+    ) -> anyhow::Result<Option<Vec<tacacsrs_config::TruststorePublicKeyMaterial>>> {
+        Ok(Some(vec![tacacsrs_config::TruststorePublicKeyMaterial {
+            name: "resolved-pk".to_string(),
+            public_key: "RESOLVED_PUBLIC_KEY".to_string(),
+            public_key_format:
+                tacacsrs_config::crypto_types::PublicKeyFormat::SubjectPublicKeyInfoFormat,
+        }]))
+    }
+
+    fn validate_keystore_certificate(&self, _key: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn validate_asymmetric_key(&self, _key: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn validate_symmetric_key(&self, _key: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn validate_certificate_bag(&self, _key: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn validate_public_key_bag(&self, _key: &str) -> anyhow::Result<()> {
         Ok(())
     }
 }

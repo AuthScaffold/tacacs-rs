@@ -4,11 +4,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::generated::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
 use crate::generated::tacacs_plus::{
-    ClientIdentityCertificate, RawPrivateKey, ServerAuthenticationCaCerts,
-    ServerAuthenticationRawPublicKeys, TacacsPlus, TacacsPlusServer, Tls13Epsk,
-    TlsClientClientIdentity, TlsClientServerAuthentication,
+    TacacsPlus, TacacsPlusServer, TlsClientClientIdentity, TlsClientServerAuthentication,
 };
+
+mod epsk;
+mod rpk;
+mod tls;
 
 /// Internal no-op resolver returned when the caller passes `None`.
 ///
@@ -18,9 +21,66 @@ use crate::generated::tacacs_plus::{
 struct NoOpResolver;
 
 impl CredentialResolver for NoOpResolver {
-    fn resolve(&self, key: &str, ref_type: CredentialRefType) -> Result<Option<String>> {
+    fn resolve_keystore_certificate(&self, key: &str) -> Result<Option<X509CertificateMaterial>> {
         Err(anyhow::anyhow!(
-            "no credential resolver configured; cannot resolve {ref_type:?} reference '{key}'"
+            "no credential resolver configured; cannot resolve keystore certificate '{key}'"
+        ))
+    }
+
+    fn resolve_certificate_bag(&self, key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot resolve certificate bag '{key}'"
+        ))
+    }
+
+    fn resolve_asymmetric_key(&self, key: &str) -> Result<Option<AsymmetricKeyMaterial>> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot resolve asymmetric key '{key}'"
+        ))
+    }
+
+    fn resolve_symmetric_key(&self, key: &str) -> Result<Option<SymmetricKeyMaterial>> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot resolve symmetric key '{key}'"
+        ))
+    }
+
+    fn resolve_public_key_bag(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<TruststorePublicKeyMaterial>>> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot resolve public key bag '{key}'"
+        ))
+    }
+
+    fn validate_keystore_certificate(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot validate keystore certificate '{key}'"
+        ))
+    }
+
+    fn validate_asymmetric_key(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot validate asymmetric key '{key}'"
+        ))
+    }
+
+    fn validate_symmetric_key(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot validate symmetric key '{key}'"
+        ))
+    }
+
+    fn validate_certificate_bag(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot validate certificate bag '{key}'"
+        ))
+    }
+
+    fn validate_public_key_bag(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot validate public key bag '{key}'"
         ))
     }
 }
@@ -33,13 +93,76 @@ fn effective_resolver(resolver: Option<&dyn CredentialResolver>) -> &dyn Credent
     resolver.unwrap_or(&NOOP)
 }
 
-/// Type of credential reference that requires resolution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CredentialRefType {
-    /// Reference to a central keystore entry (asymmetric keys, certificates).
-    Keystore,
-    /// Reference to a central truststore entry (CA certificates, public keys).
-    Truststore,
+/// Resolved X.509 end-entity certificate with its associated key pair.
+///
+/// Returned by [`CredentialResolver::resolve_keystore_certificate`]. This
+/// represents a single certificate from the central keystore that is paired
+/// with an asymmetric key entry.
+#[derive(Debug, Clone)]
+pub struct X509CertificateMaterial {
+    /// The certificate data (e.g. base64-encoded DER or PEM).
+    pub cert_data: String,
+    /// The asymmetric key material associated with this certificate.
+    pub key_material: AsymmetricKeyMaterial,
+}
+
+/// A single named certificate entry from a certificate bag.
+///
+/// Used by [`CredentialResolver::resolve_certificate_bag`] to return one or
+/// more trust anchor certificates from a truststore certificate bag.
+#[derive(Debug, Clone)]
+pub struct CertificateEntry {
+    /// An arbitrary name for this certificate.
+    pub name: String,
+    /// The certificate data (e.g. base64-encoded DER or PEM).
+    pub cert_data: String,
+}
+
+/// Resolved asymmetric key material from a central keystore entry.
+///
+/// A single keystore entry for an asymmetric key contains both the public and
+/// private halves plus their format identities. This struct carries all fields
+/// so that [`resolve_asymmetric_key`](CredentialResolver::resolve_asymmetric_key)
+/// can return everything in one call.
+#[derive(Debug, Clone)]
+pub struct AsymmetricKeyMaterial {
+    /// The private key material (e.g. base64-encoded DER or PEM).
+    pub cleartext_private_key: String,
+    /// The public key material, if available.
+    pub public_key: Option<String>,
+    /// The private key encoding format.
+    pub private_key_format: Option<PrivateKeyFormat>,
+    /// The public key encoding format.
+    pub public_key_format: Option<PublicKeyFormat>,
+}
+
+/// Resolved symmetric key material from a central keystore entry.
+///
+/// A keystore entry for a symmetric key contains the key material and its
+/// format identity. This struct carries both so that
+/// [`resolve_symmetric_key`](CredentialResolver::resolve_symmetric_key) can
+/// return everything in one call.
+#[derive(Debug, Clone)]
+pub struct SymmetricKeyMaterial {
+    /// The symmetric key material (e.g. base64-encoded octet string).
+    pub cleartext_symmetric_key: String,
+    /// The symmetric key encoding format.
+    pub key_format: Option<SymmetricKeyFormat>,
+}
+
+/// Resolved public key material from a central truststore entry.
+///
+/// A truststore entry for a public key bag contains one or more public keys,
+/// each with its format identity. This struct represents a single resolved
+/// public key entry.
+#[derive(Debug, Clone)]
+pub struct TruststorePublicKeyMaterial {
+    /// An arbitrary name for this public key.
+    pub name: String,
+    /// The public key material (e.g. base64-encoded DER).
+    pub public_key: String,
+    /// The public key encoding format.
+    pub public_key_format: PublicKeyFormat,
 }
 
 /// Trait for resolving external credential references to inline material.
@@ -53,34 +176,95 @@ pub enum CredentialRefType {
 /// or `server-credentials` within the same config) are resolved internally
 /// by [`resolve_servers`] and do not go through this trait.
 pub trait CredentialResolver: Send + Sync {
-    /// Resolve a credential reference key to inline PEM or key material.
+    /// Resolve an end-entity certificate and its key pair from the central
+    /// keystore.
     ///
-    /// The `ref_type` parameter lets implementations specialize by credential
-    /// type (e.g., a keystore resolver only handles [`CredentialRefType::Keystore`]).
-    ///
-    /// Returns the resolved material (e.g., PEM certificate or key bytes).
-    /// Returns `None` if this resolver does not handle this credential type.
-    /// Returns an error if the reference is expected to be handled but fails.
+    /// The keystore entry contains a certificate associated with an asymmetric
+    /// key. The returned [`X509CertificateMaterial`] carries both the
+    /// certificate data and the full key pair with format identities.
     ///
     /// # Errors
     ///
-    /// Returns an error if resolution fails or the credential is invalid.
-    fn resolve(&self, key: &str, ref_type: CredentialRefType) -> Result<Option<String>>;
+    /// Returns an error if the keystore entry cannot be resolved.
+    fn resolve_keystore_certificate(&self, key: &str) -> Result<Option<X509CertificateMaterial>>;
 
-    /// Validate that a credential reference can be resolved.
+    /// Resolve a certificate bag from the central truststore.
     ///
-    /// Called during the validation phase to catch missing credentials early.
-    /// The default implementation attempts resolution and checks for errors.
+    /// A truststore certificate bag contains one or more trust anchor
+    /// certificates (CA certs or EE certs). This method returns all
+    /// certificates in the referenced bag.
     ///
     /// # Errors
     ///
-    /// Returns an error if the credential is invalid or cannot be resolved.
-    fn validate(&self, key: &str, ref_type: CredentialRefType) -> Result<()> {
-        self.resolve(key, ref_type)?.ok_or_else(|| {
-            anyhow::anyhow!("credential resolver did not resolve {ref_type:?} reference '{key}'")
-        })?;
-        Ok(())
-    }
+    /// Returns an error if the truststore entry cannot be resolved.
+    fn resolve_certificate_bag(&self, key: &str) -> Result<Option<Vec<CertificateEntry>>>;
+
+    /// Resolve an asymmetric key entry from the central keystore.
+    ///
+    /// Used for `raw-private-key` client identity resolution. For certificate
+    /// client identity, prefer [`resolve_keystore_certificate`] which returns
+    /// both the certificate and key material in one call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the keystore entry cannot be resolved.
+    fn resolve_asymmetric_key(&self, key: &str) -> Result<Option<AsymmetricKeyMaterial>>;
+
+    /// Resolve a symmetric key entry from the central keystore.
+    ///
+    /// Used for `tls13-epsk` client identity resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the keystore entry cannot be resolved.
+    fn resolve_symmetric_key(&self, key: &str) -> Result<Option<SymmetricKeyMaterial>>;
+
+    /// Resolve a public key bag from the central truststore.
+    ///
+    /// A truststore public key bag contains one or more public keys, each
+    /// with its format identity. This method returns all public keys in the
+    /// referenced bag. Used for `raw-public-keys` server authentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the truststore entry cannot be resolved.
+    fn resolve_public_key_bag(&self, key: &str)
+        -> Result<Option<Vec<TruststorePublicKeyMaterial>>>;
+
+    /// Validate that a keystore certificate reference is known.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the certificate is unknown.
+    fn validate_keystore_certificate(&self, key: &str) -> Result<()>;
+
+    /// Validate that an asymmetric key reference is known in the keystore.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the asymmetric key is unknown.
+    fn validate_asymmetric_key(&self, key: &str) -> Result<()>;
+
+    /// Validate that a symmetric key reference is known in the keystore.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the symmetric key is unknown.
+    fn validate_symmetric_key(&self, key: &str) -> Result<()>;
+
+    /// Validate that a truststore certificate bag reference is known.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the certificate bag is unknown.
+    fn validate_certificate_bag(&self, key: &str) -> Result<()>;
+
+    /// Validate that a truststore public key bag reference is known.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the public key bag is unknown.
+    fn validate_public_key_bag(&self, key: &str) -> Result<()>;
 }
 
 /// A `TacacsPlusServer` with all credential references resolved to inline material.
@@ -380,13 +564,13 @@ fn resolve_client_identity_external_refs(
     resolver: &dyn CredentialResolver,
 ) -> Result<()> {
     if let Some(ref mut cert) = ci.certificate {
-        resolve_certificate_keystore_ref(cert, resolver)?;
+        tls::resolve_certificate_keystore_ref(cert, resolver)?;
     }
-    if let Some(ref mut rpk) = ci.raw_private_key {
-        resolve_raw_private_key_keystore_ref(rpk, resolver)?;
+    if let Some(ref mut rpk_key) = ci.raw_private_key {
+        rpk::resolve_raw_private_key_keystore_ref(rpk_key, resolver)?;
     }
-    if let Some(ref mut epsk) = ci.tls13_epsk {
-        resolve_epsk_keystore_ref(epsk, resolver)?;
+    if let Some(ref mut epsk_key) = ci.tls13_epsk {
+        epsk::resolve_epsk_keystore_ref(epsk_key, resolver)?;
     }
     Ok(())
 }
@@ -397,164 +581,13 @@ fn resolve_server_auth_external_refs(
     resolver: &dyn CredentialResolver,
 ) -> Result<()> {
     if let Some(ref mut ca) = sa.ca_certs {
-        resolve_certs_truststore_ref(ca, resolver)?;
+        tls::resolve_certs_truststore_ref(ca, resolver)?;
     }
     if let Some(ref mut ee) = sa.ee_certs {
-        resolve_certs_truststore_ref(ee, resolver)?;
+        tls::resolve_certs_truststore_ref(ee, resolver)?;
     }
-    if let Some(ref mut rpk) = sa.raw_public_keys {
-        resolve_raw_public_keys_truststore_ref(rpk, resolver)?;
-    }
-    Ok(())
-}
-
-fn resolve_certificate_keystore_ref(
-    cert: &mut ClientIdentityCertificate,
-    resolver: &dyn CredentialResolver,
-) -> Result<()> {
-    if let Some(ref ks_ref) = cert.central_keystore_reference {
-        let key = ks_ref.asymmetric_key.as_deref().unwrap_or_default();
-        let key_material = resolver
-            .resolve(key, CredentialRefType::Keystore)
-            .context("failed to resolve central-keystore-reference for certificate private key")?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "credential resolver did not resolve keystore reference '{key}' for certificate private key"
-                )
-            })?;
-
-        // Resolve the certificate reference if present
-        let cert_data = if let Some(ref cert_ref) = ks_ref.certificate {
-            let material = resolver
-                .resolve(cert_ref, CredentialRefType::Keystore)
-                .with_context(|| {
-                    format!("failed to resolve central-keystore-reference for certificate '{cert_ref}'")
-                })?
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "credential resolver did not resolve keystore reference '{cert_ref}' for certificate"
-                    )
-                })?;
-            Some(material)
-        } else {
-            None
-        };
-
-        // Store the resolved material as PEM in the inline definition
-        cert.inline_definition =
-            Some(crate::generated::keystore::EndEntityCertWithKeyInlineDefinition {
-                public_key_format: None,
-                public_key: None,
-                private_key_format: None,
-                cleartext_private_key: Some(key_material),
-                hidden_private_key: None,
-                encrypted_private_key: None,
-                cert_data,
-            });
-        cert.central_keystore_reference = None;
-    }
-    Ok(())
-}
-
-fn resolve_raw_private_key_keystore_ref(
-    rpk: &mut RawPrivateKey,
-    resolver: &dyn CredentialResolver,
-) -> Result<()> {
-    if let Some(ref ks_ref) = rpk.central_keystore_reference {
-        let material = resolver
-            .resolve(ks_ref, CredentialRefType::Keystore)
-            .context("failed to resolve central-keystore-reference for raw-private-key")?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "credential resolver did not resolve keystore reference '{ks_ref}' for raw-private-key"
-                )
-            })?;
-
-        rpk.inline_definition = Some(crate::generated::keystore::AsymmetricKeyInlineDefinition {
-            public_key_format: None,
-            public_key: None,
-            private_key_format: None,
-            cleartext_private_key: Some(material),
-            hidden_private_key: None,
-            encrypted_private_key: None,
-        });
-        rpk.central_keystore_reference = None;
-    }
-    Ok(())
-}
-
-fn resolve_epsk_keystore_ref(
-    epsk: &mut Tls13Epsk,
-    resolver: &dyn CredentialResolver,
-) -> Result<()> {
-    if let Some(ref ks_ref) = epsk.central_keystore_reference {
-        let material = resolver
-            .resolve(ks_ref, CredentialRefType::Keystore)
-            .context("failed to resolve central-keystore-reference for tls13-epsk")?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "credential resolver did not resolve keystore reference '{ks_ref}' for tls13-epsk"
-                )
-            })?;
-
-        epsk.inline_definition = Some(crate::generated::keystore::SymmetricKeyInlineDefinition {
-            key_format: None,
-            cleartext_symmetric_key: Some(material),
-            hidden_symmetric_key: None,
-            encrypted_symmetric_key: None,
-        });
-        epsk.central_keystore_reference = None;
-    }
-    Ok(())
-}
-
-fn resolve_certs_truststore_ref(
-    certs: &mut ServerAuthenticationCaCerts,
-    resolver: &dyn CredentialResolver,
-) -> Result<()> {
-    if let Some(ref ts_ref) = certs.central_truststore_reference {
-        let material = resolver
-            .resolve(ts_ref, CredentialRefType::Truststore)
-            .context("failed to resolve central-truststore-reference for certs")?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "credential resolver did not resolve truststore reference '{ts_ref}'"
-                )
-            })?;
-
-        certs.inline_definition = Some(crate::generated::truststore::CertsInlineDefinition {
-            certificate: vec![crate::generated::truststore::CertsCertificate {
-                name: ts_ref.clone(),
-                cert_data: material,
-            }],
-        });
-        certs.central_truststore_reference = None;
-    }
-    Ok(())
-}
-
-fn resolve_raw_public_keys_truststore_ref(
-    rpk: &mut ServerAuthenticationRawPublicKeys,
-    resolver: &dyn CredentialResolver,
-) -> Result<()> {
-    if let Some(ref ts_ref) = rpk.central_truststore_reference {
-        let material = resolver
-            .resolve(ts_ref, CredentialRefType::Truststore)
-            .context("failed to resolve central-truststore-reference for raw-public-keys")?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "credential resolver did not resolve truststore reference '{ts_ref}' for raw-public-keys"
-                )
-            })?;
-
-        rpk.inline_definition = Some(crate::generated::truststore::PublicKeysInlineDefinition {
-            public_key: vec![crate::generated::truststore::PublicKeysPublicKey {
-                name: ts_ref.clone(),
-                public_key_format: String::new(),
-                public_key: material,
-            }],
-        });
-        rpk.central_truststore_reference = None;
+    if let Some(ref mut rpk_key) = sa.raw_public_keys {
+        rpk::resolve_raw_public_keys_truststore_ref(rpk_key, resolver)?;
     }
     Ok(())
 }
@@ -569,41 +602,9 @@ fn validate_client_identity_external_refs(
     resolver: &dyn CredentialResolver,
     errors: &mut Vec<String>,
 ) {
-    if let Some(ref cert) = ci.certificate {
-        if let Some(ref ks_ref) = cert.central_keystore_reference {
-            let key = ks_ref.asymmetric_key.as_deref().unwrap_or_default();
-            if let Err(e) = resolver.validate(key, CredentialRefType::Keystore) {
-                errors.push(format!(
-                    "server '{server_name}': certificate central-keystore-reference (asymmetric-key): {e}",
-                ));
-            }
-            if let Some(ref cert_ref) = ks_ref.certificate {
-                if let Err(e) = resolver.validate(cert_ref, CredentialRefType::Keystore) {
-                    errors.push(format!(
-                        "server '{server_name}': certificate central-keystore-reference (certificate): {e}",
-                    ));
-                }
-            }
-        }
-    }
-    if let Some(ref rpk) = ci.raw_private_key {
-        if let Some(ref ks_ref) = rpk.central_keystore_reference {
-            if let Err(e) = resolver.validate(ks_ref, CredentialRefType::Keystore) {
-                errors.push(format!(
-                    "server '{server_name}': raw-private-key central-keystore-reference: {e}",
-                ));
-            }
-        }
-    }
-    if let Some(ref epsk) = ci.tls13_epsk {
-        if let Some(ref ks_ref) = epsk.central_keystore_reference {
-            if let Err(e) = resolver.validate(ks_ref, CredentialRefType::Keystore) {
-                errors.push(format!(
-                    "server '{server_name}': tls13-epsk central-keystore-reference: {e}",
-                ));
-            }
-        }
-    }
+    tls::validate_certificate_refs(ci, server_name, resolver, errors);
+    rpk::validate_rpk_keystore_refs(ci, server_name, resolver, errors);
+    epsk::validate_epsk_keystore_refs(ci, server_name, resolver, errors);
 }
 
 fn validate_server_auth_external_refs(
@@ -612,31 +613,6 @@ fn validate_server_auth_external_refs(
     resolver: &dyn CredentialResolver,
     errors: &mut Vec<String>,
 ) {
-    if let Some(ref ca) = sa.ca_certs {
-        if let Some(ref ts_ref) = ca.central_truststore_reference {
-            if let Err(e) = resolver.validate(ts_ref, CredentialRefType::Truststore) {
-                errors.push(format!(
-                    "server '{server_name}': ca-certs central-truststore-reference: {e}",
-                ));
-            }
-        }
-    }
-    if let Some(ref ee) = sa.ee_certs {
-        if let Some(ref ts_ref) = ee.central_truststore_reference {
-            if let Err(e) = resolver.validate(ts_ref, CredentialRefType::Truststore) {
-                errors.push(format!(
-                    "server '{server_name}': ee-certs central-truststore-reference: {e}",
-                ));
-            }
-        }
-    }
-    if let Some(ref rpk) = sa.raw_public_keys {
-        if let Some(ref ts_ref) = rpk.central_truststore_reference {
-            if let Err(e) = resolver.validate(ts_ref, CredentialRefType::Truststore) {
-                errors.push(format!(
-                    "server '{server_name}': raw-public-keys central-truststore-reference: {e}",
-                ));
-            }
-        }
-    }
+    tls::validate_server_auth_cert_refs(sa, server_name, resolver, errors);
+    rpk::validate_rpk_truststore_refs(sa, server_name, resolver, errors);
 }
