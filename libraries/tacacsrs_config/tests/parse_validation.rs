@@ -1992,3 +1992,485 @@ fn reject_invalid_base64_in_symmetric_key() {
         "unexpected error: {err}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Unsupported inline key feature validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reject_hidden_private_key_in_server_certificate() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "hidden-key",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "certificate": {
+                            "inline-definition": {
+                                "hidden-private-key": true,
+                                "cert-data": "dGVzdA=="
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("hidden-private-key"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_encrypted_private_key_in_server_certificate() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "enc-key",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "certificate": {
+                            "inline-definition": {
+                                "encrypted-private-key": {
+                                    "encrypted-value-format": "ietf-crypto-types:cms-encrypted-data-format",
+                                    "encrypted-value": "dGVzdA=="
+                                },
+                                "cert-data": "dGVzdA=="
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("encrypted-private-key"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_hidden_private_key_in_raw_private_key() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "hidden-rpk",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "raw-private-key": {
+                            "inline-definition": {
+                                "hidden-private-key": true
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("hidden-private-key"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_hidden_symmetric_key_in_epsk() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "hidden-epsk",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "hidden-symmetric-key": true
+                            },
+                            "external-identity": "id"
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("hidden-symmetric-key"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_encrypted_symmetric_key_in_epsk() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "enc-epsk",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "encrypted-symmetric-key": {
+                                    "encrypted-value-format": "ietf-crypto-types:cms-encrypted-data-format",
+                                    "encrypted-value": "dGVzdA=="
+                                }
+                            },
+                            "external-identity": "id"
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("encrypted-symmetric-key"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_epsk_context_derivation() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "epsk-ctx",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "cleartext-symmetric-key": "dG9wc2VjcmV0"
+                            },
+                            "external-identity": "id",
+                            "context": "some-context"
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("context"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_epsk_target_protocol() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "epsk-proto",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "cleartext-symmetric-key": "dG9wc2VjcmV0"
+                            },
+                            "external-identity": "id",
+                            "target-protocol": 1
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("target-protocol"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_epsk_target_kdf() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "epsk-kdf",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "cleartext-symmetric-key": "dG9wc2VjcmV0"
+                            },
+                            "external-identity": "id",
+                            "target-kdf": 1
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("target-kdf"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_hidden_private_key_in_client_credentials() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "hidden-cred",
+                    "certificate": {
+                        "inline-definition": {
+                            "hidden-private-key": true,
+                            "cert-data": "dGVzdA=="
+                        }
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "s1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "shared-secret": "secret"
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("hidden-private-key"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_encrypted_private_key_in_client_credentials_rpk() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "enc-cred",
+                    "raw-private-key": {
+                        "inline-definition": {
+                            "encrypted-private-key": {
+                                "encrypted-value-format": "ietf-crypto-types:cms-encrypted-data-format",
+                                "encrypted-value": "dGVzdA=="
+                            }
+                        }
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "s1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "shared-secret": "secret"
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("encrypted-private-key"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_epsk_context_in_client_credentials() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "epsk-ctx-cred",
+                    "tls13-epsk": {
+                        "inline-definition": {
+                            "cleartext-symmetric-key": "dG9wc2VjcmV0"
+                        },
+                        "external-identity": "id",
+                        "context": "some-ctx"
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "s1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "shared-secret": "secret"
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("context"), "unexpected error: {err}",);
+}
+
+// ---------------------------------------------------------------------------
+// Key-format validation in additional code paths
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reject_invalid_key_format_in_client_credentials_rpk() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "bad-rpk-fmt",
+                    "raw-private-key": {
+                        "inline-definition": {
+                            "private-key-format": "bogus-format",
+                            "cleartext-private-key": "dGVzdA=="
+                        }
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "s1",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "shared-secret": "secret"
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("invalid private-key-format 'bogus-format'"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn reject_invalid_rpk_public_key_format_in_server_auth() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bad-rpk-sa",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "server-authentication": {
+                        "raw-public-keys": {
+                            "inline-definition": {
+                                "public-key": [
+                                    {
+                                        "name": "pk1",
+                                        "public-key-format": "bad-format",
+                                        "public-key": "dGVzdA=="
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("invalid public-key-format"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_invalid_ee_cert_data() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bad-ee",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "server-authentication": {
+                        "ee-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    {"name": "ee1", "cert-data": "!!!not-base64!!!"}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("invalid base64"), "unexpected error: {err}",);
+}
+
+#[test]
+fn reject_invalid_key_format_in_server_rpk() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bad-srv-rpk",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "raw-private-key": {
+                            "inline-definition": {
+                                "private-key-format": "invalid",
+                                "cleartext-private-key": "dGVzdA=="
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("invalid private-key-format 'invalid'"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn reject_invalid_symmetric_key_format_in_server_epsk() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bad-srv-epsk",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "key-format": "bogus",
+                                "cleartext-symmetric-key": "dGVzdA=="
+                            },
+                            "external-identity": "id"
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json, None).unwrap_err();
+    assert!(err.to_string().contains("invalid key-format 'bogus'"), "unexpected error: {err}",);
+}

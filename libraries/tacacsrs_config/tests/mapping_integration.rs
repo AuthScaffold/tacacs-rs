@@ -1511,6 +1511,465 @@ fn resolve_bundle_ref_then_external_keystore_ref() {
 }
 
 // ---------------------------------------------------------------------------
+// IPv6 socket_address
+// ---------------------------------------------------------------------------
+
+#[test]
+fn socket_address_wraps_ipv6_in_brackets() {
+    let server = TacacsPlusServer {
+        name: "ipv6".to_owned(),
+        server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
+        address: "2001:db8::1".to_owned(),
+        port: 49,
+        timeout: 5,
+        ..default_bare_server()
+    };
+
+    let resolved = ResolvedServer::from_raw(server);
+    assert_eq!(resolved.socket_address(), "[2001:db8::1]:49");
+}
+
+// ---------------------------------------------------------------------------
+// NoOpResolver paths (resolver=None with external refs)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_fails_with_noop_resolver_for_certificate_keystore_ref() {
+    let config = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "noop-cert",
+                    "server-type": "accounting",
+                    "address": "10.0.4.1",
+                    "port": 49,
+                    "client-identity": {
+                        "certificate": {
+                            "central-keystore-reference": {
+                                "asymmetric-key": "k",
+                                "certificate": "c"
+                            }
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap()
+    .tacacs_plus;
+
+    let err = resolve_servers(&config, None).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("no credential resolver configured"),
+        "expected NoOpResolver error, got: {msg}",
+    );
+}
+
+#[test]
+fn resolve_fails_with_noop_resolver_for_epsk_keystore_ref() {
+    let config = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "noop-epsk",
+                    "server-type": "accounting",
+                    "address": "10.0.4.2",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "central-keystore-reference": "some-ref",
+                            "external-identity": "id@example.com"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap()
+    .tacacs_plus;
+
+    let err = resolve_servers(&config, None).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("no credential resolver configured"),
+        "expected NoOpResolver error, got: {msg}",
+    );
+}
+
+#[test]
+fn resolve_fails_with_noop_resolver_for_ca_truststore_ref() {
+    let config = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "noop-ca",
+                    "server-type": "accounting",
+                    "address": "10.0.4.3",
+                    "port": 49,
+                    "server-authentication": {
+                        "ca-certs": {
+                            "central-truststore-reference": "ts-ref"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap()
+    .tacacs_plus;
+
+    let err = resolve_servers(&config, None).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("no credential resolver configured"),
+        "expected NoOpResolver error, got: {msg}",
+    );
+}
+
+#[test]
+fn resolve_fails_with_noop_resolver_for_rpk_truststore_ref() {
+    let config = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "noop-rpk-ts",
+                    "server-type": "accounting",
+                    "address": "10.0.4.4",
+                    "port": 49,
+                    "server-authentication": {
+                        "raw-public-keys": {
+                            "central-truststore-reference": "rpk-ts-ref"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap()
+    .tacacs_plus;
+
+    let err = resolve_servers(&config, None).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("no credential resolver configured"),
+        "expected NoOpResolver error, got: {msg}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Resolver returns Ok(None) — "did not resolve" paths
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_certificate_keystore_returns_none_errors() {
+    let config = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "none-cert",
+                    "server-type": "accounting",
+                    "address": "10.0.5.1",
+                    "port": 49,
+                    "client-identity": {
+                        "certificate": {
+                            "central-keystore-reference": {
+                                "asymmetric-key": "k",
+                                "certificate": "unknown-cert"
+                            }
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap()
+    .tacacs_plus;
+
+    let resolver = TestResolver::new(); // empty — returns None for everything
+    let err = resolve_servers(&config, Some(&resolver)).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("did not resolve"), "expected not-resolved error: {msg}");
+}
+
+#[test]
+fn resolve_epsk_keystore_returns_none_errors() {
+    let config = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "none-epsk",
+                    "server-type": "accounting",
+                    "address": "10.0.5.2",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "central-keystore-reference": "unknown-epsk",
+                            "external-identity": "id@example.com"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap()
+    .tacacs_plus;
+
+    let resolver = TestResolver::new();
+    let err = resolve_servers(&config, Some(&resolver)).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("did not resolve"), "expected not-resolved error: {msg}");
+}
+
+#[test]
+fn resolve_ca_certs_truststore_returns_none_errors() {
+    let config = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "none-ca",
+                    "server-type": "accounting",
+                    "address": "10.0.5.3",
+                    "port": 49,
+                    "server-authentication": {
+                        "ca-certs": {
+                            "central-truststore-reference": "unknown-ca"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap()
+    .tacacs_plus;
+
+    let resolver = TestResolver::new();
+    let err = resolve_servers(&config, Some(&resolver)).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("did not resolve"), "expected not-resolved error: {msg}");
+}
+
+#[test]
+fn resolve_ee_certs_truststore_returns_none_errors() {
+    let config = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "none-ee",
+                    "server-type": "accounting",
+                    "address": "10.0.5.4",
+                    "port": 49,
+                    "server-authentication": {
+                        "ee-certs": {
+                            "central-truststore-reference": "unknown-ee"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap()
+    .tacacs_plus;
+
+    let resolver = TestResolver::new();
+    let err = resolve_servers(&config, Some(&resolver)).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("did not resolve"), "expected not-resolved error: {msg}");
+}
+
+#[test]
+fn resolve_rpk_truststore_returns_none_errors() {
+    let config = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "none-rpk-ts",
+                    "server-type": "accounting",
+                    "address": "10.0.5.5",
+                    "port": 49,
+                    "server-authentication": {
+                        "raw-public-keys": {
+                            "central-truststore-reference": "unknown-rpk"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap()
+    .tacacs_plus;
+
+    let resolver = TestResolver::new();
+    let err = resolve_servers(&config, Some(&resolver)).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("did not resolve"), "expected not-resolved error: {msg}");
+}
+
+// ---------------------------------------------------------------------------
+// validate_credential_references with NoOp resolver (external refs, resolver=None)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_credential_references_noop_resolver_rejects_external_refs() {
+    let root = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "noop-val",
+                    "server-type": "accounting",
+                    "address": "10.0.6.1",
+                    "port": 49,
+                    "client-identity": {
+                        "certificate": {
+                            "central-keystore-reference": {
+                                "asymmetric-key": "k",
+                                "certificate": "c"
+                            }
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let err = validate_credential_references(&root.tacacs_plus, None).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("no credential resolver configured"), "error: {msg}",);
+}
+
+#[test]
+fn validate_credential_references_noop_rejects_rpk_keystore_ref() {
+    let root = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "noop-rpk",
+                    "server-type": "accounting",
+                    "address": "10.0.6.2",
+                    "port": 49,
+                    "client-identity": {
+                        "raw-private-key": {
+                            "central-keystore-reference": "rpk-ref"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let err = validate_credential_references(&root.tacacs_plus, None).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("no credential resolver configured"), "error: {msg}");
+}
+
+#[test]
+fn validate_credential_references_noop_rejects_epsk_keystore_ref() {
+    let root = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "noop-epsk",
+                    "server-type": "accounting",
+                    "address": "10.0.6.3",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "central-keystore-reference": "epsk-ref",
+                            "external-identity": "id"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let err = validate_credential_references(&root.tacacs_plus, None).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("no credential resolver configured"), "error: {msg}");
+}
+
+#[test]
+fn validate_credential_references_noop_rejects_ca_truststore_ref() {
+    let root = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "noop-ca",
+                    "server-type": "accounting",
+                    "address": "10.0.6.4",
+                    "port": 49,
+                    "server-authentication": {
+                        "ca-certs": {
+                            "central-truststore-reference": "ca-ref"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let err = validate_credential_references(&root.tacacs_plus, None).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("no credential resolver configured"), "error: {msg}");
+}
+
+#[test]
+fn validate_credential_references_noop_rejects_ee_truststore_ref() {
+    let root = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "noop-ee",
+                    "server-type": "accounting",
+                    "address": "10.0.6.5",
+                    "port": 49,
+                    "server-authentication": {
+                        "ee-certs": {
+                            "central-truststore-reference": "ee-ref"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let err = validate_credential_references(&root.tacacs_plus, None).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("no credential resolver configured"), "error: {msg}");
+}
+
+#[test]
+fn validate_credential_references_noop_rejects_rpk_truststore_ref() {
+    let root = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "noop-rpk-ts",
+                    "server-type": "accounting",
+                    "address": "10.0.6.6",
+                    "port": 49,
+                    "server-authentication": {
+                        "raw-public-keys": {
+                            "central-truststore-reference": "rpk-ts-ref"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let err = validate_credential_references(&root.tacacs_plus, None).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("no credential resolver configured"), "error: {msg}");
+}
+
+// ---------------------------------------------------------------------------
 // Helper to create a bare TacacsPlusServer for from_raw tests
 // ---------------------------------------------------------------------------
 
