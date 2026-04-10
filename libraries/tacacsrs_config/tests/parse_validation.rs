@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use tacacsrs_config::{
-    get_resolved_server, parse_yang_json, parse_yang_json_file, pipeline,
+    resolve_server, parse_yang_json, parse_yang_json_file, pipeline,
     validate_credential_references, CredentialRefType, CredentialResolver, YangConfigRoot,
     TacacsPlusServerType,
 };
@@ -374,7 +374,8 @@ fn reject_no_security() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert!(
-        err.to_string().contains("security requires one of [tls, obfuscation]"),
+        err.to_string()
+            .contains("security requires one of [tls, obfuscation]"),
         "unexpected error: {err}",
     );
 }
@@ -430,7 +431,8 @@ fn reject_missing_inline_or_keystore_choice() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert!(
-        err.to_string().contains("client-identity/certificate requires one of [inline, central-keystore]"),
+        err.to_string()
+            .contains("client-identity/certificate requires one of [inline, central-keystore]"),
         "unexpected error: {err}",
     );
 }
@@ -485,7 +487,8 @@ fn accept_tls13_epsk_config_without_runtime_psk_support() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("tls13-epsk config should parse without runtime PSK support");
+    let config =
+        parse_yang_json(json).expect("tls13-epsk config should parse without runtime PSK support");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "epsk-server");
 }
@@ -569,14 +572,11 @@ fn pipeline_parse_root_json_file_reports_missing_file() {
     missing.push("tacacsrs-config-test-does-not-exist.json");
 
     let err = pipeline::parse_root_json_file(&missing).unwrap_err();
-    assert!(
-        err.to_string().contains("failed to read config file"),
-        "unexpected error: {err}",
-    );
+    assert!(err.to_string().contains("failed to read config file"), "unexpected error: {err}",);
 }
 
 #[test]
-fn get_resolved_server_finds_server_by_name() {
+fn resolve_server_finds_server_by_name() {
     let config = parse_yang_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
@@ -594,13 +594,12 @@ fn get_resolved_server_finds_server_by_name() {
     )
     .expect("config should parse");
 
-    let resolvers: Vec<Box<dyn CredentialResolver>> = vec![];
-    let result = get_resolved_server(&config, "exists", &resolvers);
+    let result = resolve_server(&config, "exists", None);
     assert!(result.is_ok(), "expected successful lookup");
 }
 
 #[test]
-fn get_resolved_server_rejects_unknown_name() {
+fn resolve_server_rejects_unknown_name() {
     let config = parse_yang_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
@@ -618,16 +617,12 @@ fn get_resolved_server_rejects_unknown_name() {
     )
     .expect("config should parse");
 
-    let resolvers: Vec<Box<dyn CredentialResolver>> = vec![];
-    let err = get_resolved_server(&config, "missing", &resolvers).unwrap_err();
-    assert!(
-        err.to_string().contains("server 'missing' not found"),
-        "unexpected error: {err}",
-    );
+    let err = resolve_server(&config, "missing", None).unwrap_err();
+    assert!(err.to_string().contains("server 'missing' not found"), "unexpected error: {err}",);
 }
 
 #[test]
-fn validate_credential_references_placeholder_returns_ok() {
+fn validate_credential_references_returns_ok_for_simple_config() {
     let config = parse_yang_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
@@ -645,9 +640,8 @@ fn validate_credential_references_placeholder_returns_ok() {
     )
     .expect("config should parse");
 
-    let resolvers: Vec<Box<dyn CredentialResolver>> = vec![];
-    validate_credential_references(&config, &resolvers)
-        .expect("placeholder validate_credential_references should return Ok");
+    validate_credential_references(&config, None)
+        .expect("validate_credential_references should return Ok for simple config");
 }
 
 #[test]
@@ -667,10 +661,7 @@ fn reject_empty_server_type_bitflags() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string().contains("at least one bit must be set"),
-        "unexpected error: {err}",
-    );
+    assert!(err.to_string().contains("at least one bit must be set"), "unexpected error: {err}",);
 }
 
 #[test]
@@ -798,8 +789,9 @@ fn reject_raw_private_key_with_multiple_choices() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert!(
-        err.to_string()
-            .contains("client-identity/raw-private-key allows only one of [inline, central-keystore]"),
+        err.to_string().contains(
+            "client-identity/raw-private-key allows only one of [inline, central-keystore]"
+        ),
         "unexpected error: {err}",
     );
 }
@@ -1235,27 +1227,23 @@ fn expected_server_choice_mappings() -> [(&'static str, &'static [&'static str])
     [
         (
             "TacacsPlusServer::CHOICE_SECURITY_MANDATORY",
-            &[
-                r#"
+            &[r#"
                 validate_choice(
                     &server.name,
                     "security",
                     TacacsPlusServer::CHOICE_SECURITY,
                     TacacsPlusServer::CHOICE_SECURITY_MANDATORY,
-                "#,
-            ],
+                "#],
         ),
         (
             "TacacsPlusServer::CHOICE_SOURCE_TYPE_MANDATORY",
-            &[
-                r#"
+            &[r#"
                 validate_choice(
                     &server.name,
                     "source-type",
                     TacacsPlusServer::CHOICE_SOURCE_TYPE,
                     TacacsPlusServer::CHOICE_SOURCE_TYPE_MANDATORY,
-                "#,
-            ],
+                "#],
         ),
     ]
 }
@@ -1264,15 +1252,13 @@ fn expected_client_identity_choice_mappings() -> [(&'static str, &'static [&'sta
     [
         (
             "TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_MANDATORY",
-            &[
-                r#"
+            &[r#"
                 validate_choice(
                     &server.name,
                     "client-identity",
                     TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT,
                     TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_MANDATORY,
-                "#,
-            ],
+                "#],
         ),
         (
             "ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY",
@@ -1338,39 +1324,33 @@ fn expected_server_auth_choice_mappings() -> [(&'static str, &'static [&'static 
     [
         (
             "TlsClientServerAuthentication::CHOICE_REF_OR_EXPLICIT_MANDATORY",
-            &[
-                r#"
+            &[r#"
                 validate_choice(
                     &server.name,
                     "server-authentication",
                     TlsClientServerAuthentication::CHOICE_REF_OR_EXPLICIT,
                     TlsClientServerAuthentication::CHOICE_REF_OR_EXPLICIT_MANDATORY,
-                "#,
-            ],
+                "#],
         ),
         (
             "ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY",
-            &[
-                r#"
+            &[r#"
                 validate_choice(
                     &server.name,
                     "server-authentication/ca-certs",
                     ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
                     ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
-                "#,
-            ],
+                "#],
         ),
         (
             "ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY",
-            &[
-                r#"
+            &[r#"
                 validate_choice(
                     &server.name,
                     "server-authentication/raw-public-keys",
                     ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE,
                     ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
-                "#,
-            ],
+                "#],
         ),
     ]
 }
@@ -1420,7 +1400,9 @@ fn reject_tls_version_min_below_13() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("minimum TLS version must be >= 1.3"));
+    assert!(err
+        .to_string()
+        .contains("minimum TLS version must be >= 1.3"));
 }
 
 #[test]
@@ -1451,7 +1433,9 @@ fn reject_tls_version_max_below_13() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("maximum TLS version must be >= 1.3"));
+    assert!(err
+        .to_string()
+        .contains("maximum TLS version must be >= 1.3"));
 }
 
 #[test]
@@ -1572,11 +1556,7 @@ fn reject_tls13_epsk_with_multiple_choice_sources() {
 struct DummyResolver;
 
 impl CredentialResolver for DummyResolver {
-    fn resolve(
-        &self,
-        _key: &str,
-        _ref_type: CredentialRefType,
-    ) -> anyhow::Result<Option<String>> {
+    fn resolve(&self, _key: &str, _ref_type: CredentialRefType) -> anyhow::Result<Option<String>> {
         Ok(None)
     }
 }
@@ -1585,6 +1565,6 @@ impl CredentialResolver for DummyResolver {
 fn credential_resolver_default_validate_calls_resolve() {
     let resolver = DummyResolver;
     resolver
-        .validate("some-key", CredentialRefType::ClientCredential)
+        .validate("some-key", CredentialRefType::Keystore)
         .expect("default validate should succeed when resolver returns None");
 }

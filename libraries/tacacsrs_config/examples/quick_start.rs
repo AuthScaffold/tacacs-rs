@@ -1,4 +1,4 @@
-use tacacsrs_config::{parse_yang_json, runtime};
+use tacacsrs_config::{parse_yang_json, resolve_servers};
 
 fn main() -> anyhow::Result<()> {
     let json = r#"{
@@ -19,8 +19,8 @@ fn main() -> anyhow::Result<()> {
     // Parse YANG config
     let config = parse_yang_json(json)?;
 
-    // Map to runtime connection configs
-    let servers = runtime::to_connection_configs(&config)?;
+    // Resolve servers (None = no external keystore/truststore resolver needed)
+    let servers = resolve_servers(&config, None)?;
 
     for server in &servers {
         println!(
@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
             server.name,
             server.socket_address(),
             server.single_connection,
-            server.timeout
+            server.timeout_duration()
         );
     }
 

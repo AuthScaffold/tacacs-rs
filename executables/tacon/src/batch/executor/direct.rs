@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use tacacsrs_config::ServerConnectionConfig;
+use tacacsrs_config::ResolvedServer;
 
 use crate::connection::establish_connection;
 
@@ -23,10 +23,7 @@ enum ExecutionMode {
 /// unconditionally. Otherwise a lightweight accounting record is sent via a
 /// dedicated connection to check whether the server echoes
 /// `TAC_PLUS_SINGLE_CONNECT_FLAG`.
-async fn determine_execution_mode(
-    server: &ServerConnectionConfig,
-    dedicated: bool,
-) -> ExecutionMode {
+async fn determine_execution_mode(server: &ResolvedServer, dedicated: bool) -> ExecutionMode {
     if dedicated {
         log::info!("Dedicated mode forced by CLI flag — skipping single-connection probe");
         return ExecutionMode::Dedicated;
@@ -46,7 +43,7 @@ async fn determine_execution_mode(
 /// single-connection support. The result decides whether batch requests use
 /// multiplexed or dedicated connections.
 pub async fn execute_batch(
-    server: &ServerConnectionConfig,
+    server: &ResolvedServer,
     dedicated: bool,
     batch: &BatchFile,
 ) -> anyhow::Result<Vec<RequestResult>> {
@@ -96,7 +93,7 @@ pub async fn execute_batch(
 ///
 /// The execution mode has already been determined by `determine_execution_mode`.
 async fn execute_batch_load_test(
-    server: &ServerConnectionConfig,
+    server: &ResolvedServer,
     batch: &BatchFile,
     load_config: &LoadTestConfig,
     execution_mode: ExecutionMode,

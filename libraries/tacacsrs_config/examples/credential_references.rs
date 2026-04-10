@@ -49,11 +49,8 @@ fn main() -> anyhow::Result<()> {
     // Parse YANG config (preserves credential references)
     let config = parse_yang_json(json)?;
 
-    // Create resolvers
-    let resolvers: Vec<Box<dyn CredentialResolver>> = vec![Box::new(LocalReferenceResolver)];
-
     // Validate all credential references upfront
-    validate_credential_references(&config, &resolvers)?;
+    validate_credential_references(&config, Some(&LocalReferenceResolver))?;
 
     // Get resolved server on-demand (would materialize credentials)
     // let resolved = get_resolved_server(&config, "tls-by-reference", &resolvers)?;

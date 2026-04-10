@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use tacacsrs_config::{ResolvedSecurity, ServerConnectionConfig};
+use tacacsrs_config::ResolvedServer;
 use tacacsrs_networking::{
     connection::TacacsConnection, helpers::tls_server_name, session::Session,
     traits::SessionManagementTrait, transport::tls::TlsConfigurationBuilder, BoxedTransport,
@@ -63,8 +63,8 @@ impl Connection {
 /// - TCP connection cannot be established
 /// - TLS is requested but certificate/key are missing or invalid
 /// - TLS handshake fails
-pub async fn establish_connection(server: &ServerConnectionConfig) -> anyhow::Result<Connection> {
-    let obfuscation_key = obfuscation_key_bytes(&server.security);
+pub async fn establish_connection(server: &ResolvedServer) -> anyhow::Result<Connection> {
+    let obfuscation_key = server.obfuscation_key();
     let stream = establish_stream(server).await?;
 
     let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
@@ -88,75 +88,66 @@ pub async fn establish_connection(server: &ServerConnectionConfig) -> anyhow::Re
 /// - TCP connection cannot be established
 /// - TLS is requested but certificate/key are missing or invalid
 /// - TLS handshake fails
-pub async fn establish_stream(server: &ServerConnectionConfig) -> anyhow::Result<BoxedTransport> {
+pub async fn establish_stream(server: &ResolvedServer) -> anyhow::Result<BoxedTransport> {
     let address = server.socket_address();
     let tcp_stream = tacacsrs_networking::helpers::connect_tcp(&address)
         .await
         .context("Failed to establish TCP connection")?;
 
-    match &server.security {
-        ResolvedSecurity::Obfuscation { .. } => Ok(BoxedTransport::new(tcp_stream)),
-
-        #[cfg(feature = "psk")]
-        ResolvedSecurity::Psk { identity, key } => {
-            let psk =
-                PskIdentity::new(identity, key.as_bytes()).context("Invalid PSK credentials")?;
+    // Check for TLS-PSK first
+    #[cfg(feature = "psk")]
+    if let Some(ref ci) = server.client_identity {
+        if let Some(ref epsk) = ci.tls13_epsk {
+            let key_material = epsk
+                .inline_definition
+                .as_ref()
+                .and_then(|d| d.cleartext_symmetric_key.as_deref())
+                .unwrap_or_default();
+            let psk = PskIdentity::new(&epsk.external_identity, key_material.as_bytes())
+                .context("Invalid PSK credentials")?;
             let tls_stream = PskConfigurationBuilder::new(psk)
                 .connect(tcp_stream)
                 .await
                 .context("Failed to establish TLS PSK connection")?;
-            Ok(BoxedTransport::new(tls_stream))
-        }
-
-        #[cfg(not(feature = "psk"))]
-        ResolvedSecurity::Psk { .. } => {
-            anyhow::bail!("PSK support is not enabled; rebuild with the `psk` feature flag")
-        }
-
-        ResolvedSecurity::Tls {
-            client_cert_pem,
-            client_key_pem,
-            ca_certs_pem: _,
-            insecure_disable_certificate_verification,
-        } => {
-            let mut builder = TlsConfigurationBuilder::new();
-            if let (Some(cert), Some(key)) = (client_cert_pem, client_key_pem) {
-                builder = builder
-                    .with_client_auth_cert_pem(cert, key)
-                    .context("Failed to load TLS certificates")?;
-            }
-
-            let tls_config = Arc::new(
-                builder
-                    .with_certificate_verification_disabled(
-                        *insecure_disable_certificate_verification,
-                    )
-                    .build()
-                    .context("Failed to build TLS configuration")?,
-            );
-
-            let tls_stream = tacacsrs_networking::transport::tls::connect_tls(
-                &tls_config,
-                tcp_stream,
-                tls_server_name(&address),
-            )
-            .await
-            .context("Failed to establish TLS connection")?;
-
-            Ok(BoxedTransport::new(tls_stream))
+            return Ok(BoxedTransport::new(tls_stream));
         }
     }
-}
 
-/// Extracts the obfuscation key bytes from a [`ResolvedSecurity`] variant.
-///
-/// Returns `Some(key_bytes)` only for [`ResolvedSecurity::Obfuscation`] with a
-/// non-empty shared secret; all other variants return `None`.
-pub(crate) fn obfuscation_key_bytes(security: &ResolvedSecurity) -> Option<Vec<u8>> {
-    match security {
-        ResolvedSecurity::Obfuscation { shared_secret } => {
-            shared_secret.as_ref().map(|s| s.as_bytes().to_vec())
+    if server.is_tls() {
+        let mut builder = TlsConfigurationBuilder::new();
+
+        if let Some(ref ci) = server.client_identity {
+            if let Some(ref cert) = ci.certificate {
+                if let Some(ref inline) = cert.inline_definition {
+                    if let (Some(cert_data), Some(key_data)) =
+                        (&inline.cert_data, &inline.cleartext_private_key)
+                    {
+                        builder = builder
+                            .with_client_auth_cert_pem(cert_data, key_data)
+                            .context("Failed to load TLS certificates")?;
+                    }
+                }
+            }
         }
-        _ => None,
+
+        // TODO: Load CA certificates into the builder when TlsConfigurationBuilder supports it
+
+        let tls_config = Arc::new(
+            builder
+                .build()
+                .context("Failed to build TLS configuration")?,
+        );
+
+        let tls_stream = tacacsrs_networking::transport::tls::connect_tls(
+            &tls_config,
+            tcp_stream,
+            tls_server_name(&address),
+        )
+        .await
+        .context("Failed to establish TLS connection")?;
+
+        Ok(BoxedTransport::new(tls_stream))
+    } else {
+        Ok(BoxedTransport::new(tcp_stream))
     }
 }

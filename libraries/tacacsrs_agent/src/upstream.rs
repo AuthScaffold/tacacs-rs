@@ -7,19 +7,15 @@
 //!
 //! # Transport selection
 //!
-//! Each [`tacacsrs_config::ServerConnectionConfig`] carries a
-//! [`tacacsrs_config::ResolvedSecurity`] variant that
-//! determines which transport is used for the upstream TACACS+ connection:
+//! Each [`tacacsrs_config::ResolvedServer`] wraps a fully-resolved
+//! `TacacsPlusServer` whose YANG model fields determine which transport is
+//! used for the upstream TACACS+ connection:
 //!
 //! | Security | Transport |
 //! |----------|-----------|
-//! | `Obfuscation` | Plain TCP |
-//! | `Tls` | mTLS (X.509) |
-//! | `Psk` | TLS-PSK (feature-gated) |
-//!
-//! Certificate verification is enabled by default. The
-//! `insecure_disable_certificate_verification` flag exists only for
-//! development environments using self-signed certificates.
+//! | `shared-secret` only | Plain TCP |
+//! | `client-identity` / `server-authentication` (certificate) | mTLS (X.509) |
+//! | `client-identity` with `tls13-epsk` | TLS-PSK (feature-gated) |
 //!
 //! # Connection reuse
 //!
@@ -43,7 +39,7 @@ use tacacsrs_messages::enumerations::{
 use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
 };
-use tacacsrs_config::{ResolvedSecurity, ServerConnectionConfig};
+use tacacsrs_config::ResolvedServer;
 use tacacsrs_networking::SingleConnectionState;
 use tacacsrs_networking::dedicated_connection::DedicatedConnection;
 use tacacsrs_networking::helpers::tls_server_name;
@@ -104,10 +100,8 @@ pub(crate) trait UpstreamConnector: Send + Sync {
     ///
     /// Returns an error if the TCP connection, TLS handshake, or TACACS+
     /// connection setup fails.
-    async fn connect(
-        &self,
-        server: &ServerConnectionConfig,
-    ) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
+    async fn connect(&self, server: &ResolvedServer)
+        -> anyhow::Result<Arc<dyn UpstreamConnection>>;
 
     /// Sends a single accounting request over a dedicated one-shot connection.
     ///
@@ -117,7 +111,7 @@ pub(crate) trait UpstreamConnector: Send + Sync {
     /// so the server's response reveals whether it supports multiplexing.
     async fn send_accounting_dedicated(
         &self,
-        server: &ServerConnectionConfig,
+        server: &ResolvedServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult>;
 }
@@ -133,7 +127,7 @@ pub(crate) struct DedicatedAccountingResult {
 /// Production connector backed by [`tacacsrs_networking`].
 ///
 /// Extracts per-server connection parameters from the provided
-/// [`ServerConnectionConfig`] at each connection attempt.
+/// [`ResolvedServer`] at each connection attempt.
 #[derive(Debug, Clone)]
 pub(crate) struct NetworkUpstreamConnector;
 
@@ -141,7 +135,7 @@ pub(crate) struct NetworkUpstreamConnector;
 impl UpstreamConnector for NetworkUpstreamConnector {
     async fn connect(
         &self,
-        server: &ServerConnectionConfig,
+        server: &ResolvedServer,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         let address = server.socket_address();
         let connection = connect_upstream(server).await?;
@@ -153,7 +147,7 @@ impl UpstreamConnector for NetworkUpstreamConnector {
 
     async fn send_accounting_dedicated(
         &self,
-        server: &ServerConnectionConfig,
+        server: &ResolvedServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
         send_dedicated_accounting(server, request).await
@@ -287,26 +281,24 @@ fn build_accounting_args(command: &str, command_arguments: &[String]) -> Vec<Str
 /// Returns an error if TCP connection times out, TLS negotiation fails, or
 /// the TACACS+ connection handler cannot start.
 #[allow(clippy::too_many_lines)]
-async fn connect_upstream(
-    server: &ServerConnectionConfig,
-) -> anyhow::Result<Arc<TacacsConnection>> {
+async fn connect_upstream(server: &ResolvedServer) -> anyhow::Result<Arc<TacacsConnection>> {
     let address = server.socket_address();
+    let timeout_duration = server.timeout_duration();
 
+    let security_label = if server.is_tls() {
+        "tls"
+    } else {
+        "obfuscation"
+    };
     log::debug!(
-        "Connecting to upstream TACACS+ server {address} (security: {}, timeout: {:?})",
-        match &server.security {
-            ResolvedSecurity::Obfuscation { .. } => "obfuscation",
-            ResolvedSecurity::Tls { .. } => "tls",
-            ResolvedSecurity::Psk { .. } => "psk",
-        },
-        server.timeout,
+        "Connecting to upstream TACACS+ server {address} (security: {security_label}, timeout: {timeout_duration:?})",
     );
 
     let stream =
-        tokio::time::timeout(server.timeout, tacacsrs_networking::helpers::connect_tcp(&address))
+        tokio::time::timeout(timeout_duration, tacacsrs_networking::helpers::connect_tcp(&address))
             .await
             .with_context(|| {
-                log::warn!("Connection to {address} timed out after {:?}", server.timeout);
+                log::warn!("Connection to {address} timed out after {timeout_duration:?}");
                 format!("Timed out connecting to {address}")
             })?
             .with_context(|| {
@@ -316,77 +308,21 @@ async fn connect_upstream(
 
     log::debug!("TCP connection to {address} established");
 
-    match &server.security {
-        ResolvedSecurity::Obfuscation { shared_secret } => {
-            let connection =
-                Arc::new(TacacsConnection::new(shared_secret.as_deref().map(str::as_bytes)));
-            connection
-                .run(stream)
-                .await
-                .inspect_err(|e| {
-                    log::warn!("TCP connection handler start for {address} failed: {e:#}");
-                })
-                .context("Failed to start TCP connection handler")?;
-            log::debug!("TCP connection to {address} ready");
-            Ok(connection)
-        }
-        ResolvedSecurity::Tls {
-            client_cert_pem,
-            client_key_pem,
-            ca_certs_pem: _,
-            insecure_disable_certificate_verification,
-        } => {
-            log::debug!("Negotiating mTLS handshake with {address}");
-
-            let connection = Arc::new(TacacsConnection::new(None));
-
-            let mut builder = TlsConfigurationBuilder::new();
-            if let (Some(cert), Some(key)) = (client_cert_pem, client_key_pem) {
-                builder = builder
-                    .with_client_auth_cert_pem(cert, key)
-                    .inspect_err(|e| {
-                        log::warn!("Failed to load TLS certificates for {address}: {e:#}");
-                    })
-                    .context("Failed to load TLS certificates")?;
-            }
-
-            let tls_config = Arc::new(
-                builder
-                    .with_certificate_verification_disabled(
-                        *insecure_disable_certificate_verification,
-                    )
-                    .build()
-                    .inspect_err(|e| log::warn!("Failed to build TLS config for {address}: {e:#}"))
-                    .context("Failed to build TLS configuration")?,
-            );
-
-            let tls_stream = tacacsrs_networking::transport::tls::connect_tls(
-                &tls_config,
-                stream,
-                tls_server_name(&address),
-            )
-            .await
-            .inspect_err(|e| log::warn!("TLS handshake with {address} failed: {e:#}"))
-            .context("Failed to establish TLS connection")?;
-
-            connection
-                .run(tls_stream)
-                .await
-                .inspect_err(|e| {
-                    log::warn!("TLS connection handler start for {address} failed: {e:#}");
-                })
-                .context("Failed to start TLS connection handler")?;
-            log::debug!("TLS connection to {address} ready");
-            Ok(connection)
-        }
-        #[cfg(feature = "psk")]
-        ResolvedSecurity::Psk { identity, key } => {
+    // Check for TLS-PSK first (must be checked before general TLS)
+    #[cfg(feature = "psk")]
+    if let Some(ref ci) = server.client_identity {
+        if let Some(ref epsk) = ci.tls13_epsk {
             log::debug!("Negotiating TLS-PSK handshake with {address}");
 
             let connection = Arc::new(TacacsConnection::new(None));
+            let key_material = epsk
+                .inline_definition
+                .as_ref()
+                .and_then(|d| d.cleartext_symmetric_key.as_deref())
+                .unwrap_or_default();
 
-            let psk =
-                PskIdentity::new(identity, key.as_bytes()).context("Invalid PSK credentials")?;
+            let psk = PskIdentity::new(&epsk.external_identity, key_material.as_bytes())
+                .context("Invalid PSK credentials")?;
             let tls_stream = PskConfigurationBuilder::new(psk)
                 .connect(stream)
                 .await
@@ -400,92 +336,117 @@ async fn connect_upstream(
                 })
                 .context("Failed to start TLS PSK connection handler")?;
             log::debug!("TLS-PSK connection to {address} ready");
-            Ok(connection)
+            return Ok(connection);
         }
-        #[cfg(not(feature = "psk"))]
-        ResolvedSecurity::Psk { .. } => {
-            anyhow::bail!("PSK support is not enabled; rebuild with the `psk` feature flag")
+    }
+
+    if server.is_tls() {
+        log::debug!("Negotiating mTLS handshake with {address}");
+
+        let connection = Arc::new(TacacsConnection::new(None));
+
+        let mut builder = TlsConfigurationBuilder::new();
+
+        // Load client certificate if present
+        if let Some(ref ci) = server.client_identity {
+            if let Some(ref cert) = ci.certificate {
+                if let Some(ref inline) = cert.inline_definition {
+                    if let (Some(cert_data), Some(key_data)) =
+                        (&inline.cert_data, &inline.cleartext_private_key)
+                    {
+                        builder = builder
+                            .with_client_auth_cert_pem(cert_data, key_data)
+                            .inspect_err(|e| {
+                                log::warn!("Failed to load TLS certificates for {address}: {e:#}");
+                            })
+                            .context("Failed to load TLS certificates")?;
+                    }
+                }
+            }
         }
+
+        // TODO: Load CA certificates into the builder when TlsConfigurationBuilder supports it
+
+        let tls_config = Arc::new(
+            builder
+                .build()
+                .inspect_err(|e| log::warn!("Failed to build TLS config for {address}: {e:#}"))
+                .context("Failed to build TLS configuration")?,
+        );
+
+        let tls_stream = tacacsrs_networking::transport::tls::connect_tls(
+            &tls_config,
+            stream,
+            tls_server_name(&address),
+        )
+        .await
+        .inspect_err(|e| log::warn!("TLS handshake with {address} failed: {e:#}"))
+        .context("Failed to establish TLS connection")?;
+
+        connection
+            .run(tls_stream)
+            .await
+            .inspect_err(|e| {
+                log::warn!("TLS connection handler start for {address} failed: {e:#}");
+            })
+            .context("Failed to start TLS connection handler")?;
+        log::debug!("TLS connection to {address} ready");
+        Ok(connection)
+    } else {
+        // Obfuscation (plain TCP)
+        let obfuscation_key = server.obfuscation_key();
+        let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
+        connection
+            .run(stream)
+            .await
+            .inspect_err(|e| {
+                log::warn!("TCP connection handler start for {address} failed: {e:#}");
+            })
+            .context("Failed to start TCP connection handler")?;
+        log::debug!("TCP connection to {address} ready");
+        Ok(connection)
     }
 }
 
 /// Sends a single accounting request over a [`DedicatedConnection`] — one
 /// TCP connection, one packet out, one packet back, no background tasks.
 async fn send_dedicated_accounting(
-    server: &ServerConnectionConfig,
+    server: &ResolvedServer,
     request: &AccountingOperation,
 ) -> anyhow::Result<DedicatedAccountingResult> {
     let address = server.socket_address();
+    let timeout_duration = server.timeout_duration();
 
+    let security_label = if server.is_tls() {
+        "tls"
+    } else {
+        "obfuscation"
+    };
     log::debug!(
-        "Dedicated accounting request to {address} (security: {}, timeout: {:?})",
-        match &server.security {
-            ResolvedSecurity::Obfuscation { .. } => "obfuscation",
-            ResolvedSecurity::Tls { .. } => "tls",
-            ResolvedSecurity::Psk { .. } => "psk",
-        },
-        server.timeout,
+        "Dedicated accounting request to {address} (security: {security_label}, timeout: {timeout_duration:?})",
     );
 
     let stream =
-        tokio::time::timeout(server.timeout, tacacsrs_networking::helpers::connect_tcp(&address))
+        tokio::time::timeout(timeout_duration, tacacsrs_networking::helpers::connect_tcp(&address))
             .await
             .with_context(|| format!("Timed out connecting to {address}"))?
             .with_context(|| format!("Failed to establish TCP connection to {address}"))?;
 
     let tacacs_request = build_accounting_request(request);
 
-    let exchange = match &server.security {
-        ResolvedSecurity::Obfuscation { shared_secret } => {
-            let obfuscation_key = shared_secret.as_deref().map(str::as_bytes);
-            let mut conn = DedicatedConnection::new(stream, obfuscation_key);
-            conn.send_accounting(tacacs_request, TacacsFlags::empty())
-                .await?
-        }
-        ResolvedSecurity::Tls {
-            client_cert_pem,
-            client_key_pem,
-            ca_certs_pem: _,
-            insecure_disable_certificate_verification,
-        } => {
-            let mut builder = TlsConfigurationBuilder::new();
-            if let (Some(cert), Some(key)) = (client_cert_pem, client_key_pem) {
-                builder = builder
-                    .with_client_auth_cert_pem(cert, key)
-                    .context("Failed to load TLS certificates")?;
-            }
-
-            let tls_config = Arc::new(
-                builder
-                    .with_certificate_verification_disabled(
-                        *insecure_disable_certificate_verification,
-                    )
-                    .build()
-                    .context("Failed to build TLS configuration")?,
-            );
-
-            let tls_stream = timeout(
-                server.timeout,
-                tacacsrs_networking::transport::tls::connect_tls(
-                    &tls_config,
-                    stream,
-                    tls_server_name(&address),
-                ),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("TLS handshake timed out"))?
-            .context("Failed to establish TLS connection")?;
-
-            let mut conn = DedicatedConnection::new(tls_stream, None);
-            conn.send_accounting(tacacs_request, TacacsFlags::empty())
-                .await?
-        }
-        #[cfg(feature = "psk")]
-        ResolvedSecurity::Psk { identity, key } => {
-            let psk =
-                PskIdentity::new(identity, key.as_bytes()).context("Invalid PSK credentials")?;
+    // Check for TLS-PSK first
+    #[cfg(feature = "psk")]
+    if let Some(ref ci) = server.client_identity {
+        if let Some(ref epsk) = ci.tls13_epsk {
+            let key_material = epsk
+                .inline_definition
+                .as_ref()
+                .and_then(|d| d.cleartext_symmetric_key.as_deref())
+                .unwrap_or_default();
+            let psk = PskIdentity::new(&epsk.external_identity, key_material.as_bytes())
+                .context("Invalid PSK credentials")?;
             let tls_stream =
-                timeout(server.timeout, PskConfigurationBuilder::new(psk).connect(stream))
+                timeout(timeout_duration, PskConfigurationBuilder::new(psk).connect(stream))
                     .await
                     .map_err(|_| anyhow::anyhow!("TLS PSK handshake timed out"))?
                     .context("Failed to establish TLS PSK connection")?;
@@ -495,10 +456,50 @@ async fn send_dedicated_accounting(
                 .await
                 .map(|ex| to_dedicated_result(&address, ex));
         }
-        #[cfg(not(feature = "psk"))]
-        ResolvedSecurity::Psk { .. } => {
-            anyhow::bail!("PSK support is not enabled; rebuild with the `psk` feature flag")
+    }
+
+    let exchange = if server.is_tls() {
+        let mut builder = TlsConfigurationBuilder::new();
+        if let Some(ref ci) = server.client_identity {
+            if let Some(ref cert) = ci.certificate {
+                if let Some(ref inline) = cert.inline_definition {
+                    if let (Some(cert_data), Some(key_data)) =
+                        (&inline.cert_data, &inline.cleartext_private_key)
+                    {
+                        builder = builder
+                            .with_client_auth_cert_pem(cert_data, key_data)
+                            .context("Failed to load TLS certificates")?;
+                    }
+                }
+            }
         }
+
+        let tls_config = Arc::new(
+            builder
+                .build()
+                .context("Failed to build TLS configuration")?,
+        );
+
+        let tls_stream = timeout(
+            timeout_duration,
+            tacacsrs_networking::transport::tls::connect_tls(
+                &tls_config,
+                stream,
+                tls_server_name(&address),
+            ),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("TLS handshake timed out"))?
+        .context("Failed to establish TLS connection")?;
+
+        let mut conn = DedicatedConnection::new(tls_stream, None);
+        conn.send_accounting(tacacs_request, TacacsFlags::empty())
+            .await?
+    } else {
+        let obfuscation_key = server.obfuscation_key();
+        let mut conn = DedicatedConnection::new(stream, obfuscation_key.as_deref());
+        conn.send_accounting(tacacs_request, TacacsFlags::empty())
+            .await?
     };
 
     log::debug!(

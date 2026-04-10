@@ -1,16 +1,14 @@
-use std::time::Duration;
-
 use anyhow::Context;
-use tacacsrs_config::{ResolvedSecurity, ServerConnectionConfig, TacacsPlusServerType};
+use tacacsrs_config::{ResolvedServer, TacacsPlusServer, TacacsPlusServerType};
 
 use crate::cli::Cli;
 
-/// Builds a `ServerConnectionConfig` from CLI flags for direct-mode connections.
+/// Builds a `ResolvedServer` from CLI flags for direct-mode connections.
 ///
 /// # Errors
 ///
 /// Returns an error if `--server-addr` is not provided or the address cannot be parsed.
-pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<ServerConnectionConfig> {
+pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<ResolvedServer> {
     let server_addr = cli
         .server_addr
         .as_deref()
@@ -21,31 +19,57 @@ pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<ServerConnectionConfi
         None => (server_addr.to_owned(), 49),
     };
 
-    let security = resolve_security_from_cli(cli)?;
-
-    Ok(ServerConnectionConfig {
+    let mut server = TacacsPlusServer {
         name: "cli".to_owned(),
         server_type: TacacsPlusServerType::all(),
         address: host,
         port,
-        security,
-        timeout: Duration::from_secs(5),
+        shared_secret: None,
+        timeout: 5,
         single_connection: false,
         domain_name: None,
-        sni_enabled: false,
-    })
+        sni_enabled: None,
+        client_identity: None,
+        server_authentication: None,
+        hello_params: None,
+        source_ip: None,
+        source_interface: None,
+        vrf_instance: None,
+    };
+
+    populate_security_from_cli(cli, &mut server)?;
+
+    Ok(ResolvedServer::from_raw(server))
 }
 
-fn resolve_security_from_cli(cli: &Cli) -> anyhow::Result<ResolvedSecurity> {
+fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyhow::Result<()> {
     if cli.use_tls {
         #[cfg(feature = "psk")]
         if let (Some(psk_identity), Some(psk_key)) =
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
         {
-            return Ok(ResolvedSecurity::Psk {
-                identity: psk_identity.clone(),
-                key: psk_key.clone(),
+            server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
+                credentials_reference: None,
+                certificate: None,
+                raw_private_key: None,
+                tls13_epsk: Some(tacacsrs_config::Tls13Epsk {
+                    inline_definition: Some(
+                        tacacsrs_config::keystore::SymmetricKeyInlineDefinition {
+                            key_format: None,
+                            cleartext_symmetric_key: Some(psk_key.clone()),
+                            hidden_symmetric_key: None,
+                            encrypted_symmetric_key: None,
+                        },
+                    ),
+                    central_keystore_reference: None,
+                    external_identity: psk_identity.clone(),
+                    hash: tacacsrs_config::EpskSupportedHash::Sha256,
+                    context: None,
+                    target_protocol: None,
+                    target_kdf: None,
+                }),
             });
+            return Ok(());
         }
 
         let client_cert_pem = cli
@@ -65,42 +89,62 @@ fn resolve_security_from_cli(cli: &Cli) -> anyhow::Result<ResolvedSecurity> {
             })
             .transpose()?;
 
-        Ok(ResolvedSecurity::Tls {
-            client_cert_pem,
-            client_key_pem,
-            ca_certs_pem: Vec::new(),
-            insecure_disable_certificate_verification: cli
-                .insecure_disable_certificate_verification,
-        })
+        if client_cert_pem.is_some() || client_key_pem.is_some() {
+            server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
+                credentials_reference: None,
+                certificate: Some(tacacsrs_config::ClientIdentityCertificate {
+                    inline_definition: Some(
+                        tacacsrs_config::keystore::EndEntityCertWithKeyInlineDefinition {
+                            public_key_format: None,
+                            public_key: None,
+                            private_key_format: None,
+                            cleartext_private_key: client_key_pem,
+                            hidden_private_key: None,
+                            encrypted_private_key: None,
+                            cert_data: client_cert_pem,
+                        },
+                    ),
+                    central_keystore_reference: None,
+                }),
+                raw_private_key: None,
+                tls13_epsk: None,
+            });
+        } else {
+            // TLS without client certs — hello-params-only or server-auth-only
+            server.hello_params = Some(tacacsrs_config::TlsClientHelloParams {
+                tls_versions: None,
+                cipher_suites: None,
+            });
+        }
     } else {
-        Ok(ResolvedSecurity::Obfuscation {
-            shared_secret: cli.shared_secret.clone(),
-        })
+        server.shared_secret.clone_from(&cli.shared_secret);
     }
+
+    Ok(())
 }
 
-/// Loads a `ServerConnectionConfig` from a YANG JSON config file, using the first server entry.
+/// Loads a `ResolvedServer` from a YANG JSON config file, using the first server entry.
 ///
 /// # Errors
 ///
 /// Returns an error if the config file cannot be read, parsed, or contains no servers.
-pub fn server_config_from_file(path: &std::path::Path) -> anyhow::Result<ServerConnectionConfig> {
+pub fn server_config_from_file(path: &std::path::Path) -> anyhow::Result<ResolvedServer> {
     let yang_config = tacacsrs_config::parse_yang_json_file(path)
         .with_context(|| format!("Failed to load config from {}", path.display()))?;
-    let mut configs = tacacsrs_config::to_connection_configs(&yang_config)
-        .context("Failed to map YANG config to connection parameters")?;
-    if configs.is_empty() {
+    let mut servers = tacacsrs_config::resolve_servers(&yang_config, None)
+        .context("Failed to resolve YANG config servers")?;
+    if servers.is_empty() {
         anyhow::bail!("Config file contains no server entries");
     }
-    Ok(configs.remove(0))
+    Ok(servers.remove(0))
 }
 
-/// Resolves a `ServerConnectionConfig` from either `--config` or CLI flags.
+/// Resolves a `ResolvedServer` from either `--config` or CLI flags.
 ///
 /// # Errors
 ///
 /// Returns an error if neither source provides valid configuration.
-pub fn resolve_server_config(cli: &Cli) -> anyhow::Result<ServerConnectionConfig> {
+pub fn resolve_server_config(cli: &Cli) -> anyhow::Result<ResolvedServer> {
     if let Some(ref config_path) = cli.config {
         server_config_from_file(config_path)
     } else {
@@ -115,7 +159,6 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::server_config_from_file;
-    use tacacsrs_config::ResolvedSecurity;
 
     fn write_temp_config(contents: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -152,17 +195,12 @@ mod tests {
             }"#,
         );
 
-        let config = server_config_from_file(&path).expect("config file should load");
+        let server = server_config_from_file(&path).expect("config file should load");
         fs::remove_file(&path).ok();
 
-        assert_eq!(config.name, "primary");
-        assert_eq!(config.address, "192.0.2.10");
-        assert_eq!(config.port, 49);
-        match config.security {
-            ResolvedSecurity::Obfuscation { shared_secret } => {
-                assert_eq!(shared_secret.as_deref(), Some("secret1"));
-            }
-            other => panic!("expected obfuscation security, got {other:?}"),
-        }
+        assert_eq!(server.name, "primary");
+        assert_eq!(server.address, "192.0.2.10");
+        assert_eq!(server.port, 49);
+        assert_eq!(server.shared_secret.as_deref(), Some("secret1"));
     }
 }

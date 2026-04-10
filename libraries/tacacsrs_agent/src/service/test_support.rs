@@ -17,7 +17,7 @@ use tacacsrs_agent_client::{
 use tokio::sync::{Mutex, Notify};
 
 use crate::upstream::{DedicatedAccountingResult, UpstreamConnection, UpstreamConnector};
-use tacacsrs_config::ServerConnectionConfig;
+use tacacsrs_config::ResolvedServer;
 use tacacsrs_networking::SingleConnectionState;
 
 // ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ impl FakeConnector {
 impl UpstreamConnector for FakeConnector {
     async fn connect(
         &self,
-        server: &ServerConnectionConfig,
+        server: &ResolvedServer,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         let address = server.socket_address();
         {
@@ -142,7 +142,7 @@ impl UpstreamConnector for FakeConnector {
 
     async fn send_accounting_dedicated(
         &self,
-        server: &ServerConnectionConfig,
+        server: &ResolvedServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
         let connection = self.connect(server).await?;
@@ -209,7 +209,7 @@ pub(super) struct SingleSessionConnector {
 impl UpstreamConnector for SingleSessionConnector {
     async fn connect(
         &self,
-        server: &ServerConnectionConfig,
+        server: &ResolvedServer,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         let address = server.socket_address();
         assert_eq!(address, self.address);
@@ -222,7 +222,7 @@ impl UpstreamConnector for SingleSessionConnector {
 
     async fn send_accounting_dedicated(
         &self,
-        server: &ServerConnectionConfig,
+        server: &ResolvedServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
         let connection = self.connect(server).await?;
@@ -284,14 +284,14 @@ pub(super) struct BlockingConnector {
 impl UpstreamConnector for BlockingConnector {
     async fn connect(
         &self,
-        _server: &ServerConnectionConfig,
+        _server: &ResolvedServer,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         Ok(Arc::clone(&self.connection) as Arc<dyn UpstreamConnection>)
     }
 
     async fn send_accounting_dedicated(
         &self,
-        server: &ServerConnectionConfig,
+        server: &ResolvedServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
         let connection = self.connect(server).await?;
@@ -361,7 +361,7 @@ pub(super) struct ExclusiveSessionConnector {
 impl UpstreamConnector for ExclusiveSessionConnector {
     async fn connect(
         &self,
-        server: &ServerConnectionConfig,
+        server: &ResolvedServer,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         let address = server.socket_address();
         assert_eq!(address, self.address);
@@ -374,7 +374,7 @@ impl UpstreamConnector for ExclusiveSessionConnector {
 
     async fn send_accounting_dedicated(
         &self,
-        server: &ServerConnectionConfig,
+        server: &ResolvedServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
         let connection = self.connect(server).await?;

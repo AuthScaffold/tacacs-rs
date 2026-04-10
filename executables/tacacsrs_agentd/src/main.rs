@@ -6,7 +6,7 @@ use anyhow::Context;
 use clap::{ArgGroup, Parser};
 use tacacsrs_agent::{ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_config::{ResolvedSecurity, ServerConnectionConfig, TacacsPlusServerType};
+use tacacsrs_config::{ResolvedServer, TacacsPlusServer, TacacsPlusServerType};
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
@@ -115,10 +115,11 @@ fn init_logger(verbose: u8) {
 }
 
 /// Build server list from CLI flags (legacy path, without a config file).
-fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ServerConnectionConfig>> {
-    let timeout = Duration::from_secs(cli.connect_timeout_seconds);
+#[allow(clippy::too_many_lines)]
+fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
+    let timeout = u16::try_from(cli.connect_timeout_seconds).unwrap_or(u16::MAX);
 
-    let security = if cli.use_tls {
+    if cli.use_tls {
         #[cfg(feature = "psk")]
         if let (Some(psk_identity), Some(psk_key)) =
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
@@ -128,15 +129,29 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ServerConnectionConfig>> {
                 .iter()
                 .enumerate()
                 .map(|(i, addr)| {
-                    server_from_address(
-                        addr,
-                        i,
-                        timeout,
-                        ResolvedSecurity::Psk {
-                            identity: psk_identity.clone(),
-                            key: psk_key.clone(),
-                        },
-                    )
+                    let mut server = base_server_from_address(addr, i, timeout);
+                    server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
+                        credentials_reference: None,
+                        certificate: None,
+                        raw_private_key: None,
+                        tls13_epsk: Some(tacacsrs_config::Tls13Epsk {
+                            inline_definition: Some(
+                                tacacsrs_config::keystore::SymmetricKeyInlineDefinition {
+                                    key_format: None,
+                                    cleartext_symmetric_key: Some(psk_key.clone()),
+                                    hidden_symmetric_key: None,
+                                    encrypted_symmetric_key: None,
+                                },
+                            ),
+                            central_keystore_reference: None,
+                            external_identity: psk_identity.clone(),
+                            hash: tacacsrs_config::EpskSupportedHash::Sha256,
+                            context: None,
+                            target_protocol: None,
+                            target_kdf: None,
+                        }),
+                    });
+                    ResolvedServer::from_raw(server)
                 })
                 .collect());
         }
@@ -158,56 +173,86 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ServerConnectionConfig>> {
             })
             .transpose()?;
 
-        ResolvedSecurity::Tls {
-            client_cert_pem,
-            client_key_pem,
-            ca_certs_pem: Vec::new(),
-            insecure_disable_certificate_verification: cli
-                .insecure_disable_certificate_verification,
-        }
+        Ok(cli
+            .server_addresses
+            .iter()
+            .enumerate()
+            .map(|(i, addr)| {
+                let mut server = base_server_from_address(addr, i, timeout);
+                if client_cert_pem.is_some() || client_key_pem.is_some() {
+                    server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
+                        credentials_reference: None,
+                        certificate: Some(tacacsrs_config::ClientIdentityCertificate {
+                            inline_definition: Some(
+                                tacacsrs_config::keystore::EndEntityCertWithKeyInlineDefinition {
+                                    public_key_format: None,
+                                    public_key: None,
+                                    private_key_format: None,
+                                    cleartext_private_key: client_key_pem.clone(),
+                                    hidden_private_key: None,
+                                    encrypted_private_key: None,
+                                    cert_data: client_cert_pem.clone(),
+                                },
+                            ),
+                            central_keystore_reference: None,
+                        }),
+                        raw_private_key: None,
+                        tls13_epsk: None,
+                    });
+                } else {
+                    // TLS without client certs
+                    server.hello_params = Some(tacacsrs_config::TlsClientHelloParams {
+                        tls_versions: None,
+                        cipher_suites: None,
+                    });
+                }
+                ResolvedServer::from_raw(server)
+            })
+            .collect())
     } else {
-        ResolvedSecurity::Obfuscation {
-            shared_secret: cli.shared_secret.clone(),
-        }
-    };
-
-    Ok(cli
-        .server_addresses
-        .iter()
-        .enumerate()
-        .map(|(i, addr)| server_from_address(addr, i, timeout, security.clone()))
-        .collect())
+        Ok(cli
+            .server_addresses
+            .iter()
+            .enumerate()
+            .map(|(i, addr)| {
+                let mut server = base_server_from_address(addr, i, timeout);
+                server.shared_secret.clone_from(&cli.shared_secret);
+                ResolvedServer::from_raw(server)
+            })
+            .collect())
+    }
 }
 
-fn server_from_address(
-    addr: &str,
-    index: usize,
-    timeout: Duration,
-    security: ResolvedSecurity,
-) -> ServerConnectionConfig {
+fn base_server_from_address(addr: &str, index: usize, timeout: u16) -> TacacsPlusServer {
     let (host, port) = match addr.rsplit_once(':') {
         Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
         None => (addr.to_owned(), 49),
     };
 
-    ServerConnectionConfig {
+    TacacsPlusServer {
         name: format!("server-{index}"),
         server_type: TacacsPlusServerType::all(),
         address: host,
         port,
-        security,
+        shared_secret: None,
         timeout,
         single_connection: false,
         domain_name: None,
-        sni_enabled: false,
+        sni_enabled: None,
+        client_identity: None,
+        server_authentication: None,
+        hello_params: None,
+        source_ip: None,
+        source_interface: None,
+        vrf_instance: None,
     }
 }
 
-fn servers_from_config(path: &std::path::Path) -> anyhow::Result<Vec<ServerConnectionConfig>> {
+fn servers_from_config(path: &std::path::Path) -> anyhow::Result<Vec<ResolvedServer>> {
     let yang_config = tacacsrs_config::parse_yang_json_file(path)
         .with_context(|| format!("Failed to load config from {}", path.display()))?;
-    tacacsrs_config::to_connection_configs(&yang_config)
-        .context("Failed to map YANG config to connection parameters")
+    tacacsrs_config::resolve_servers(&yang_config, None)
+        .context("Failed to resolve YANG config servers")
 }
 
 /// Starts the central TACACS+ client service process.
@@ -247,17 +292,12 @@ async fn main() -> anyhow::Result<()> {
         cli.preferred_probe_interval_seconds,
     );
     for server in &servers {
-        log::info!(
-            "  {} ({}) -> {}:{}",
-            server.name,
-            match &server.security {
-                ResolvedSecurity::Tls { .. } => "TLS",
-                ResolvedSecurity::Psk { .. } => "TLS-PSK",
-                ResolvedSecurity::Obfuscation { .. } => "obfuscation",
-            },
-            server.address,
-            server.port,
-        );
+        let security_label = if server.is_tls() {
+            "TLS"
+        } else {
+            "obfuscation"
+        };
+        log::info!("  {} ({}) -> {}:{}", server.name, security_label, server.address, server.port,);
     }
 
     let service = TacacsClientService::new(ServiceConfig {
@@ -279,7 +319,6 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::servers_from_config;
-    use tacacsrs_config::ResolvedSecurity;
 
     fn write_temp_config(contents: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -322,11 +361,6 @@ mod tests {
         assert_eq!(servers.len(), 2);
         assert_eq!(servers[0].name, "primary");
         assert_eq!(servers[1].name, "secondary");
-        match &servers[0].security {
-            ResolvedSecurity::Obfuscation { shared_secret } => {
-                assert_eq!(shared_secret.as_deref(), Some("secret1"));
-            }
-            other => panic!("expected obfuscation security, got {other:?}"),
-        }
+        assert_eq!(servers[0].shared_secret.as_deref(), Some("secret1"));
     }
 }

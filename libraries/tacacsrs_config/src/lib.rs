@@ -5,7 +5,7 @@ mod statistics;
 mod validation;
 
 pub use resolvers::{
-    CredentialResolver, CredentialRefType, ResolvedServer, get_resolved_server,
+    CredentialRefType, CredentialResolver, ResolvedServer, resolve_server, resolve_servers,
     validate_credential_references,
 };
 
@@ -19,7 +19,6 @@ pub use generated::tacacs_plus::{
 pub use generated::truststore;
 pub use generated::{crypto_types, keystore, tls_common, YangConfigRoot};
 
-pub use mapping::{to_connection_configs, ResolvedSecurity, ServerConnectionConfig};
 pub use statistics::ServerStatistics;
 
 /// Model-oriented API: YANG-generated types and related namespaces.
@@ -67,7 +66,7 @@ pub mod pipeline {
 
 /// Runtime projection API used by networking/client code.
 pub mod runtime {
-    pub use crate::mapping::{to_connection_configs, ResolvedSecurity, ServerConnectionConfig};
+    pub use crate::resolvers::{resolve_server, resolve_servers, ResolvedServer};
 }
 
 /// Runtime statistics types.
@@ -90,9 +89,9 @@ pub mod stats {
 /// - Credential references have matching definitions
 ///
 /// After parsing, to resolve credentials use:
-/// 1. Create resolvers (implementing [`CredentialResolver`])
-/// 2. Call [`validate_credential_references`] for upfront validation
-/// 3. Call [`get_resolved_server`] for on-demand per-server resolution
+/// 1. Create a resolver (implementing [`CredentialResolver`])
+/// 2. Optionally call [`validate_credential_references`] for upfront validation
+/// 3. Call [`resolve_servers`] or [`resolve_server`] to materialize credentials
 ///
 /// # Errors
 ///
@@ -123,9 +122,9 @@ pub fn parse_yang_json(json: &str) -> anyhow::Result<TacacsPlus> {
 /// - Credential references have matching definitions
 ///
 /// After parsing, to resolve credentials use:
-/// 1. Create resolvers (implementing [`CredentialResolver`])
-/// 2. Call [`validate_credential_references`] for upfront validation
-/// 3. Call [`get_resolved_server`] for on-demand per-server resolution
+/// 1. Create a resolver (implementing [`CredentialResolver`])
+/// 2. Optionally call [`validate_credential_references`] for upfront validation
+/// 3. Call [`resolve_servers`] or [`resolve_server`] to materialize credentials
 ///
 /// # Errors
 ///

@@ -58,7 +58,7 @@ pub(super) struct ServiceState {
 /// reconnect serialization and connection caching are independent.
 struct ServerState {
     /// The per-server connection configuration.
-    server: tacacsrs_config::ServerConnectionConfig,
+    server: tacacsrs_config::ResolvedServer,
     /// Cached upstream connection, if any. `None` means the server needs
     /// a fresh connection on the next request.
     connection: RwLock<Option<Arc<dyn UpstreamConnection>>>,
@@ -169,7 +169,7 @@ impl ServiceState {
     /// configured before constructing this state. The higher-level service
     /// constructor enforces that invariant for production use.
     pub(super) fn new(
-        servers: Vec<tacacsrs_config::ServerConnectionConfig>,
+        servers: Vec<tacacsrs_config::ResolvedServer>,
         connector: Arc<dyn UpstreamConnector>,
         preferred_probe_interval: std::time::Duration,
     ) -> Self {
@@ -676,24 +676,28 @@ mod tests {
     };
     use crate::upstream::UpstreamConnector;
 
-    fn test_server(address: &str) -> tacacsrs_config::ServerConnectionConfig {
-        tacacsrs_config::ServerConnectionConfig {
+    fn test_server(address: &str) -> tacacsrs_config::ResolvedServer {
+        let (host, port) = match address.rsplit_once(':') {
+            Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
+            None => (address.to_owned(), 49),
+        };
+        tacacsrs_config::ResolvedServer::from_raw(tacacsrs_config::TacacsPlusServer {
             name: address.to_owned(),
             server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
-            address: address.split(':').next().unwrap_or(address).to_owned(),
-            port: address
-                .split(':')
-                .nth(1)
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(49),
-            security: tacacsrs_config::ResolvedSecurity::Obfuscation {
-                shared_secret: None,
-            },
-            timeout: std::time::Duration::from_secs(5),
+            address: host,
+            port,
+            shared_secret: None,
+            timeout: 5,
             single_connection: false,
             domain_name: None,
-            sni_enabled: false,
-        }
+            sni_enabled: None,
+            client_identity: None,
+            server_authentication: None,
+            hello_params: None,
+            source_ip: None,
+            source_interface: None,
+            vrf_instance: None,
+        })
     }
 
     #[tokio::test]

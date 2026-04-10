@@ -10,7 +10,7 @@ use std::str::FromStr;
 use anyhow::{bail, Context};
 use clap::Parser;
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
-use tacacsrs_config::ServerConnectionConfig;
+use tacacsrs_config::ResolvedServer;
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::DedicatedConnection;
@@ -226,7 +226,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 /// Executes the command using a dedicated connection — a minimal one-shot
 /// TCP connection with no background tasks or session multiplexing.
 async fn execute_command_dedicated(
-    server: &ServerConnectionConfig,
+    server: &ResolvedServer,
     command: &Command,
 ) -> anyhow::Result<()> {
     log::info!("Running in dedicated connection mode");
@@ -244,7 +244,7 @@ async fn execute_command_dedicated(
                 .await
                 .context("Connection failed")?;
 
-            let obfuscation_key = connection::obfuscation_key_bytes(&server.security);
+            let obfuscation_key = server.obfuscation_key();
             let mut conn = DedicatedConnection::new(stream, obfuscation_key.as_deref());
 
             let mut custom_flags = TacacsFlags::empty();

@@ -1,7 +1,7 @@
-use tacacsrs_config::{parse_yang_json, pipeline, to_connection_configs, ResolvedSecurity};
+use tacacsrs_config::{parse_yang_json, pipeline, resolve_servers};
 
 #[test]
-fn to_connection_configs_maps_inline_tls_material() {
+fn resolve_servers_maps_inline_tls_material() {
     let config = parse_yang_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
@@ -36,34 +36,45 @@ fn to_connection_configs_maps_inline_tls_material() {
     )
     .expect("config should parse");
 
-    let servers = to_connection_configs(&config).expect("mapping should succeed");
+    let servers = resolve_servers(&config, None).expect("resolution should succeed");
     assert_eq!(servers.len(), 1);
 
     let server = &servers[0];
     assert_eq!(server.name, "tls_inline");
     assert_eq!(server.address, "10.0.0.10");
     assert_eq!(server.port, 4949);
+    assert!(server.is_tls());
 
-    assert!(matches!(&server.security, ResolvedSecurity::Tls { .. }));
-    if let ResolvedSecurity::Tls {
-        client_cert_pem,
-        client_key_pem,
-        ca_certs_pem,
-        insecure_disable_certificate_verification,
-    } = &server.security
-    {
-        assert_eq!(client_cert_pem.as_deref(), Some("CLIENT_CERT_PEM"));
-        assert_eq!(client_key_pem.as_deref(), Some("CLIENT_KEY_PEM"));
-        assert_eq!(
-            ca_certs_pem,
-            &vec!["CA_CERT_1".to_owned(), "CA_CERT_2".to_owned()],
-        );
-        assert!(!insecure_disable_certificate_verification);
-    }
+    // Client cert should be preserved inline
+    let ci = server
+        .client_identity
+        .as_ref()
+        .expect("client_identity should be set");
+    let cert = ci.certificate.as_ref().expect("certificate should be set");
+    let inline = cert
+        .inline_definition
+        .as_ref()
+        .expect("inline should be set");
+    assert_eq!(inline.cert_data.as_deref(), Some("CLIENT_CERT_PEM"));
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some("CLIENT_KEY_PEM"));
+
+    // CA certs should be preserved inline
+    let sa = server
+        .server_authentication
+        .as_ref()
+        .expect("server_authentication should be set");
+    let ca = sa.ca_certs.as_ref().expect("ca_certs should be set");
+    let ca_inline = ca
+        .inline_definition
+        .as_ref()
+        .expect("ca inline should be set");
+    assert_eq!(ca_inline.certificate.len(), 2);
+    assert_eq!(ca_inline.certificate[0].cert_data, "CA_CERT_1");
+    assert_eq!(ca_inline.certificate[1].cert_data, "CA_CERT_2");
 }
 
 #[test]
-fn to_connection_configs_maps_tls13_epsk_to_psk() {
+fn resolve_servers_maps_tls13_epsk() {
     let config = parse_yang_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
@@ -88,18 +99,26 @@ fn to_connection_configs_maps_tls13_epsk_to_psk() {
     )
     .expect("config should parse");
 
-    let servers = to_connection_configs(&config).expect("mapping should succeed");
+    let servers = resolve_servers(&config, None).expect("resolution should succeed");
     assert_eq!(servers.len(), 1);
+    assert!(servers[0].is_tls());
 
-    assert!(matches!(servers[0].security, ResolvedSecurity::Psk { .. }));
-    if let ResolvedSecurity::Psk { identity, key } = &servers[0].security {
-        assert_eq!(identity, "client@example.com");
-        assert_eq!(key, "topsecret");
-    }
+    let epsk = servers[0]
+        .client_identity
+        .as_ref()
+        .and_then(|ci| ci.tls13_epsk.as_ref())
+        .expect("tls13_epsk should be set");
+    assert_eq!(epsk.external_identity, "client@example.com");
+    assert_eq!(
+        epsk.inline_definition
+            .as_ref()
+            .and_then(|d| d.cleartext_symmetric_key.as_deref()),
+        Some("topsecret"),
+    );
 }
 
 #[test]
-fn to_connection_configs_accepts_reference_based_tls_server() {
+fn resolve_servers_resolves_credential_references() {
     let config = parse_yang_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
@@ -145,119 +164,50 @@ fn to_connection_configs_accepts_reference_based_tls_server() {
     )
     .expect("config should parse");
 
-    let servers = to_connection_configs(&config).expect("mapping should succeed");
+    let servers = resolve_servers(&config, None).expect("resolution should succeed");
     assert_eq!(servers.len(), 1);
 
     let server = &servers[0];
     assert_eq!(server.name, "tls_server");
-    assert_eq!(server.address, "10.0.0.1");
-    assert_eq!(server.port, 4949);
+    assert!(server.is_tls());
 
-    assert!(matches!(&server.security, ResolvedSecurity::Tls { .. }));
-    if let ResolvedSecurity::Tls {
-        client_cert_pem,
-        client_key_pem,
-        ca_certs_pem,
-        ..
-    } = &server.security
-    {
-        assert!(client_cert_pem.is_none());
-        assert!(client_key_pem.is_none());
-        assert!(ca_certs_pem.is_empty());
-    }
+    // Client identity should have been resolved from the bundle
+    let ci = server
+        .client_identity
+        .as_ref()
+        .expect("client_identity should be set");
+    assert!(ci.credentials_reference.is_none(), "reference should be cleared after resolution");
+    let cert = ci
+        .certificate
+        .as_ref()
+        .expect("certificate should be populated from bundle");
+    let inline = cert
+        .inline_definition
+        .as_ref()
+        .expect("inline should be set");
+    assert_eq!(inline.cert_data.as_deref(), Some("MIIB..."));
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some("MIIEv..."));
+
+    // Server authentication should have been resolved from the bundle
+    let sa = server
+        .server_authentication
+        .as_ref()
+        .expect("server_authentication should be set");
+    assert!(sa.credentials_reference.is_none(), "reference should be cleared");
+    let ca = sa
+        .ca_certs
+        .as_ref()
+        .expect("ca_certs should be populated from bundle");
+    let ca_inline = ca
+        .inline_definition
+        .as_ref()
+        .expect("ca inline should be set");
+    assert_eq!(ca_inline.certificate.len(), 1);
+    assert_eq!(ca_inline.certificate[0].cert_data, "MIIB...");
 }
 
 #[test]
-fn to_connection_configs_maps_tls_security_without_inline_material() {
-    let config = parse_yang_json(
-        r#"{
-            "ietf-system-tacacs-plus:tacacs-plus": {
-                "server": [
-                    {
-                        "name": "tls_keystore_refs",
-                        "server-type": "accounting",
-                        "address": "10.0.0.11",
-                        "port": 49,
-                        "client-identity": {
-                            "certificate": {
-                                "central-keystore-reference": {
-                                    "asymmetric-key": "key-1",
-                                    "certificate": "cert-1"
-                                }
-                            }
-                        },
-                        "server-authentication": {
-                            "ca-certs": {
-                                "central-truststore-reference": "truststore-ca-id"
-                            }
-                        }
-                    }
-                ]
-            }
-        }"#,
-    )
-    .expect("config should parse");
-
-    let servers = to_connection_configs(&config).expect("mapping should succeed");
-    assert_eq!(servers.len(), 1);
-    assert_eq!(servers[0].name, "tls_keystore_refs");
-
-    assert!(matches!(&servers[0].security, ResolvedSecurity::Tls { .. }));
-    if let ResolvedSecurity::Tls {
-        client_cert_pem,
-        client_key_pem,
-        ca_certs_pem,
-        ..
-    } = &servers[0].security
-    {
-        assert!(client_cert_pem.is_none());
-        assert!(client_key_pem.is_none());
-        assert!(ca_certs_pem.is_empty());
-    }
-}
-
-#[test]
-fn to_connection_configs_maps_tls_hello_only_server() {
-    let config = parse_yang_json(
-        r#"{
-            "ietf-system-tacacs-plus:tacacs-plus": {
-                "server": [
-                    {
-                        "name": "tls_hello_only",
-                        "server-type": "accounting",
-                        "address": "10.0.0.42",
-                        "port": 49,
-                        "hello-params": {
-                            "tls-versions": {
-                                "min": "tls13"
-                            }
-                        }
-                    }
-                ]
-            }
-        }"#,
-    )
-    .expect("config should parse");
-
-    let servers = to_connection_configs(&config).expect("mapping should succeed");
-    assert_eq!(servers.len(), 1);
-
-    assert!(matches!(&servers[0].security, ResolvedSecurity::Tls { .. }));
-    if let ResolvedSecurity::Tls {
-        client_cert_pem,
-        client_key_pem,
-        ca_certs_pem,
-        ..
-    } = &servers[0].security
-    {
-        assert!(client_cert_pem.is_none());
-        assert!(client_key_pem.is_none());
-        assert!(ca_certs_pem.is_empty());
-    }
-}
-
-#[test]
-fn to_connection_configs_maps_shared_secret_obfuscation_literal() {
+fn resolve_servers_maps_shared_secret_obfuscation() {
     let config = parse_yang_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
@@ -275,18 +225,14 @@ fn to_connection_configs_maps_shared_secret_obfuscation_literal() {
     )
     .expect("config should parse");
 
-    let servers = to_connection_configs(&config).expect("mapping should succeed");
+    let servers = resolve_servers(&config, None).expect("resolution should succeed");
     assert_eq!(servers.len(), 1);
 
     let server = &servers[0];
     assert_eq!(server.name, "obf_server");
-    assert_eq!(server.address, "10.0.0.20");
-    assert_eq!(server.port, 49);
-
-    assert!(matches!(&server.security, ResolvedSecurity::Obfuscation { .. }));
-    if let ResolvedSecurity::Obfuscation { shared_secret } = &server.security {
-        assert_eq!(shared_secret.as_deref(), Some("corp-shared-secret"));
-    }
+    assert!(server.is_obfuscation());
+    assert_eq!(server.shared_secret.as_deref(), Some("corp-shared-secret"));
+    assert_eq!(server.obfuscation_key(), Some(b"corp-shared-secret".to_vec()));
 }
 
 #[test]
@@ -308,14 +254,41 @@ fn socket_address_returns_address_and_port() {
     )
     .expect("config should parse");
 
-    let servers = to_connection_configs(&config).expect("mapping should succeed");
+    let servers = resolve_servers(&config, None).expect("resolution should succeed");
     assert_eq!(servers[0].socket_address(), "192.0.2.10:4049");
 }
 
 #[test]
-fn to_connection_configs_maps_tls_server_auth_only_no_client_identity() {
-    // server_authentication is Some, client_identity is None — exercises the
-    // decisive `|| server_authentication.is_some()` arm in resolve_security.
+fn resolve_servers_maps_tls_hello_only_server() {
+    let config = parse_yang_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [
+                    {
+                        "name": "tls_hello_only",
+                        "server-type": "accounting",
+                        "address": "10.0.0.42",
+                        "port": 49,
+                        "hello-params": {
+                            "tls-versions": {
+                                "min": "tls13"
+                            }
+                        }
+                    }
+                ]
+            }
+        }"#,
+    )
+    .expect("config should parse");
+
+    let servers = resolve_servers(&config, None).expect("resolution should succeed");
+    assert_eq!(servers.len(), 1);
+    assert!(servers[0].is_tls());
+    assert!(servers[0].hello_params.is_some());
+}
+
+#[test]
+fn resolve_servers_maps_tls_server_auth_only() {
     let config = parse_yang_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
@@ -341,21 +314,22 @@ fn to_connection_configs_maps_tls_server_auth_only_no_client_identity() {
     )
     .expect("config should parse");
 
-    let servers = to_connection_configs(&config).expect("mapping should succeed");
+    let servers = resolve_servers(&config, None).expect("resolution should succeed");
     assert_eq!(servers.len(), 1);
+    assert!(servers[0].is_tls());
 
-    assert!(matches!(&servers[0].security, ResolvedSecurity::Tls { .. }));
-    if let ResolvedSecurity::Tls { client_cert_pem, client_key_pem, ca_certs_pem, .. } =
-        &servers[0].security
-    {
-        assert!(client_cert_pem.is_none());
-        assert!(client_key_pem.is_none());
-        assert_eq!(ca_certs_pem, &vec!["CA_CERT".to_owned()]);
-    }
+    let sa = servers[0]
+        .server_authentication
+        .as_ref()
+        .expect("server_authentication");
+    let ca = sa.ca_certs.as_ref().expect("ca_certs");
+    let inline = ca.inline_definition.as_ref().expect("inline");
+    assert_eq!(inline.certificate.len(), 1);
+    assert_eq!(inline.certificate[0].cert_data, "CA_CERT");
 }
 
 #[test]
-fn to_connection_configs_maps_none_obfuscation_for_unvalidated_server_without_security() {
+fn resolve_servers_maps_none_obfuscation_for_unvalidated_bare_server() {
     let root = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
@@ -372,11 +346,8 @@ fn to_connection_configs_maps_none_obfuscation_for_unvalidated_server_without_se
     )
     .expect("root should parse without validation");
 
-    let servers = to_connection_configs(&root.tacacs_plus).expect("mapping should succeed");
+    let servers = resolve_servers(&root.tacacs_plus, None).expect("resolution should succeed");
     assert_eq!(servers.len(), 1);
-
-    assert!(matches!(&servers[0].security, ResolvedSecurity::Obfuscation { .. }));
-    if let ResolvedSecurity::Obfuscation { shared_secret } = &servers[0].security {
-        assert!(shared_secret.is_none());
-    }
+    assert!(servers[0].is_obfuscation());
+    assert!(servers[0].shared_secret.is_none());
 }

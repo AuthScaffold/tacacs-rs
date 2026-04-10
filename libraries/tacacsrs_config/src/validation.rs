@@ -92,7 +92,10 @@ fn validate_server(
         "source-type",
         TacacsPlusServer::CHOICE_SOURCE_TYPE,
         TacacsPlusServer::CHOICE_SOURCE_TYPE_MANDATORY,
-        &[server.source_ip.is_some(), server.source_interface.is_some()],
+        &[
+            server.source_ip.is_some(),
+            server.source_interface.is_some(),
+        ],
     )?;
 
     let key = (server.address.clone(), server.port);
