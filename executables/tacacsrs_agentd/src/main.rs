@@ -224,10 +224,7 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
 }
 
 fn base_server_from_address(addr: &str, index: usize, timeout: u16) -> TacacsPlusServer {
-    let (host, port) = match addr.rsplit_once(':') {
-        Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
-        None => (addr.to_owned(), 49),
-    };
+    let (host, port) = tacacsrs_networking::helpers::parse_host_port(addr, 49);
 
     TacacsPlusServer {
         name: format!("server-{index}"),
@@ -249,7 +246,7 @@ fn base_server_from_address(addr: &str, index: usize, timeout: u16) -> TacacsPlu
 }
 
 fn servers_from_config(path: &std::path::Path) -> anyhow::Result<Vec<ResolvedServer>> {
-    let yang_config = tacacsrs_config::parse_yang_json_file(path)
+    let yang_config = tacacsrs_config::parse_yang_json_file(path, None)
         .with_context(|| format!("Failed to load config from {}", path.display()))?;
     tacacsrs_config::resolve_servers(&yang_config, None)
         .context("Failed to resolve YANG config servers")

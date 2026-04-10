@@ -14,10 +14,7 @@ pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<ResolvedServer> {
         .as_deref()
         .context("A TACACS+ server address is required for direct mode")?;
 
-    let (host, port) = match server_addr.rsplit_once(':') {
-        Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
-        None => (server_addr.to_owned(), 49),
-    };
+    let (host, port) = tacacsrs_networking::helpers::parse_host_port(server_addr, 49);
 
     let mut server = TacacsPlusServer {
         name: "cli".to_owned(),
@@ -129,7 +126,7 @@ fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyho
 ///
 /// Returns an error if the config file cannot be read, parsed, or contains no servers.
 pub fn server_config_from_file(path: &std::path::Path) -> anyhow::Result<ResolvedServer> {
-    let yang_config = tacacsrs_config::parse_yang_json_file(path)
+    let yang_config = tacacsrs_config::parse_yang_json_file(path, None)
         .with_context(|| format!("Failed to load config from {}", path.display()))?;
     let mut servers = tacacsrs_config::resolve_servers(&yang_config, None)
         .context("Failed to resolve YANG config servers")?;

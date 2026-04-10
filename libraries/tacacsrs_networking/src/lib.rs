@@ -17,6 +17,7 @@ pub mod packet_writer;
 pub mod single_connect_tracker;
 pub mod transport;
 pub mod connection;
+pub mod config_connect;
 pub mod dedicated_connection;
 
 pub use session_manager::SingleConnectionState;

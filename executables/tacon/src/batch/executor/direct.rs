@@ -1,6 +1,7 @@
 use anyhow::Context;
 
 use tacacsrs_config::ResolvedServer;
+use tacacsrs_networking::config_connect::ConnectOptions;
 
 use crate::connection::establish_connection;
 
@@ -46,6 +47,7 @@ pub async fn execute_batch(
     server: &ResolvedServer,
     dedicated: bool,
     batch: &BatchFile,
+    options: &ConnectOptions,
 ) -> anyhow::Result<Vec<RequestResult>> {
     if let Some(description) = &batch.metadata.description {
         log::info!("Executing batch: {description}");
@@ -67,7 +69,7 @@ pub async fn execute_batch(
 
     let results = match execution_mode {
         ExecutionMode::Multiplexed => {
-            let connection = establish_connection(server)
+            let connection = establish_connection(server, options)
                 .await
                 .context("Failed to establish multiplexed connection after probe")?;
 

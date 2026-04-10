@@ -2,28 +2,28 @@ use tacacsrs_config::parse_yang_json;
 
 fn main() -> anyhow::Result<()> {
     let json = r#"{
-        \"ietf-system-tacacs-plus:tacacs-plus\": {
-            \"server\": [
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
                 {
-                    \"name\": \"acct-tls\",
-                    \"server-type\": \"accounting\",
-                    \"domain-name\": \"tacacs.example.net\",
-                    \"sni-enabled\": true,
-                    \"address\": \"203.0.113.20\",
-                    \"port\": 49,
-                    \"client-identity\": {
-                        \"certificate\": {
-                            \"inline-definition\": {
-                                \"cert-data\": \"CLIENT_CERT_PEM\",
-                                \"cleartext-private-key\": \"CLIENT_KEY_PEM\"
+                    "name": "acct-tls",
+                    "server-type": "accounting",
+                    "domain-name": "tacacs.example.net",
+                    "sni-enabled": true,
+                    "address": "203.0.113.20",
+                    "port": 49,
+                    "client-identity": {
+                        "certificate": {
+                            "inline-definition": {
+                                "cert-data": "CLIENT_CERT_PEM",
+                                "cleartext-private-key": "CLIENT_KEY_PEM"
                             }
                         }
                     },
-                    \"server-authentication\": {
-                        \"ca-certs\": {
-                            \"inline-definition\": {
-                                \"certificate\": [
-                                    { \"name\": \"ca-main\", \"cert-data\": \"CA_CERT_PEM\" }
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [
+                                    { "name": "ca-main", "cert-data": "CA_CERT_PEM" }
                                 ]
                             }
                         }
@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     }"#;
 
     // Step 1: Parse YANG config (non-destructive - preserves original for round-tripping)
-    let config = parse_yang_json(json)?;
+    let config = parse_yang_json(json, None)?;
 
     // Step 2: Access raw YANG model structure
     let server = &config.server[0];

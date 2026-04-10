@@ -4,6 +4,7 @@ use futures::future::join_all;
 use tacacsrs_config::ResolvedServer;
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::DedicatedConnection;
+use tacacsrs_networking::config_connect::ConnectOptions;
 
 use crate::commands::accounting::build_accounting_request;
 use crate::connection::establish_stream;
@@ -16,7 +17,7 @@ use super::super::types::{BatchRequest, LoadTestConfig, RequestResult};
 /// server echoed `TAC_PLUS_SINGLE_CONNECT_FLAG`.
 pub(super) async fn probe_single_connect(server: &ResolvedServer) -> bool {
     let result = async {
-        let stream = establish_stream(server)
+        let stream = establish_stream(server, &ConnectOptions::default())
             .await
             .context("Probe connection failed")?;
         let obfuscation_key = server.obfuscation_key();
@@ -83,7 +84,7 @@ async fn execute_single_request_dedicated(
 ) -> Result<String, String> {
     match request {
         BatchRequest::Accounting(req) => {
-            let stream = establish_stream(server)
+            let stream = establish_stream(server, &ConnectOptions::default())
                 .await
                 .map_err(|error| format!("Connection failed: {error}"))?;
 

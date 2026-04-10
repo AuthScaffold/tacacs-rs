@@ -18,6 +18,7 @@ use tacacsrs_networking::DedicatedConnection;
 use cli::{Cli, Command};
 use commands::accounting::send_accounting_request;
 use connection::establish_connection;
+use tacacsrs_networking::config_connect::ConnectOptions;
 
 /// Initializes the logger based on verbosity level
 fn init_logger(verbose: u8) {
@@ -165,7 +166,11 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
         batch::execute_batch_via_service(endpoint, &batch_file).await?
     } else {
         let server_config = config::resolve_server_config(cli)?;
-        batch::execute_batch(&server_config, cli.dedicated, &batch_file).await?
+        let options = ConnectOptions {
+            disable_certificate_verification: cli.insecure_disable_certificate_verification,
+            ..ConnectOptions::default()
+        };
+        batch::execute_batch(&server_config, cli.dedicated, &batch_file, &options).await?
     };
 
     batch::print_results_summary(&results);
@@ -201,14 +206,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let server_config = config::resolve_server_config(&cli)?;
+    let connect_options = ConnectOptions {
+        disable_certificate_verification: cli.insecure_disable_certificate_verification,
+        ..ConnectOptions::default()
+    };
 
     // Dedicated connection mode: minimal one-shot connection (TCP or TLS) per
     // request, no background tasks, no session multiplexing.
     if cli.dedicated {
-        return execute_command_dedicated(&server_config, &cli.command).await;
+        return execute_command_dedicated(&server_config, &connect_options, &cli.command).await;
     }
 
-    let connection = establish_connection(&server_config).await?;
+    let connection = establish_connection(&server_config, &connect_options).await?;
 
     let custom_session_id = cli.command.session_id();
     let session = connection
@@ -227,6 +236,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 /// TCP connection with no background tasks or session multiplexing.
 async fn execute_command_dedicated(
     server: &ResolvedServer,
+    options: &ConnectOptions,
     command: &Command,
 ) -> anyhow::Result<()> {
     log::info!("Running in dedicated connection mode");
@@ -240,7 +250,7 @@ async fn execute_command_dedicated(
             custom_flag_2,
             session_id: _,
         } => {
-            let stream = connection::establish_stream(server)
+            let stream = connection::establish_stream(server, options)
                 .await
                 .context("Connection failed")?;
 

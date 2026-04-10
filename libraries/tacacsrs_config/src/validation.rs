@@ -5,13 +5,23 @@ use crate::generated::tacacs_plus::{
     ServerAuthenticationRawPublicKeys, TacacsPlus, TacacsPlusServer, Tls13Epsk,
     TlsClientClientIdentity, TlsClientServerAuthentication,
 };
+use crate::resolvers::CredentialResolver;
 
 /// Validate a parsed TACACS+ configuration against YANG model constraints.
+///
+/// When `resolver` is provided, external credential references
+/// (`central-keystore-reference`, `central-truststore-reference`) are
+/// validated against it. When `resolver` is `None`, configs containing
+/// external references will fail validation since the references cannot be
+/// verified.
 ///
 /// # Errors
 ///
 /// Returns an error describing the first constraint violation found.
-pub fn validate_config(config: &TacacsPlus) -> anyhow::Result<()> {
+pub fn validate_config(
+    config: &TacacsPlus,
+    resolver: Option<&dyn CredentialResolver>,
+) -> anyhow::Result<()> {
     if config.server.is_empty() {
         anyhow::bail!("server list must contain at least one entry");
     }
@@ -34,51 +44,7 @@ pub fn validate_config(config: &TacacsPlus) -> anyhow::Result<()> {
         validate_client_credentials(credentials)?;
     }
 
-    validate_credential_references(config)?;
-
-    Ok(())
-}
-
-fn validate_credential_references(config: &TacacsPlus) -> anyhow::Result<()> {
-    let client_cred_ids: HashSet<&str> = config
-        .client_credentials
-        .iter()
-        .map(|c| c.id.as_str())
-        .collect();
-
-    let server_cred_ids: HashSet<&str> = config
-        .server_credentials
-        .iter()
-        .map(|c| c.id.as_str())
-        .collect();
-
-    for server in &config.server {
-        // Validate client identity credential reference
-        if let Some(ref ci) = server.client_identity {
-            if let Some(ref cref) = ci.credentials_reference {
-                if !client_cred_ids.contains(cref.as_str()) {
-                    anyhow::bail!(
-                        "server '{}': client-credentials reference '{}' not found",
-                        server.name,
-                        cref,
-                    );
-                }
-            }
-        }
-
-        // Validate server authentication credential reference
-        if let Some(ref sa) = server.server_authentication {
-            if let Some(ref cref) = sa.credentials_reference {
-                if !server_cred_ids.contains(cref.as_str()) {
-                    anyhow::bail!(
-                        "server '{}': server-credentials reference '{}' not found",
-                        server.name,
-                        cref,
-                    );
-                }
-            }
-        }
-    }
+    crate::resolvers::validate_credential_references(config, resolver)?;
 
     Ok(())
 }
@@ -226,6 +192,19 @@ fn validate_server_authentication(
             &[
                 ca_certs.inline_definition.is_some(),
                 ca_certs.central_truststore_reference.is_some(),
+            ],
+        )?;
+    }
+
+    if let Some(ref ee_certs) = server_authentication.ee_certs {
+        validate_choice(
+            &server.name,
+            "server-authentication/ee-certs",
+            ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
+            ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
+            &[
+                ee_certs.inline_definition.is_some(),
+                ee_certs.central_truststore_reference.is_some(),
             ],
         )?;
     }

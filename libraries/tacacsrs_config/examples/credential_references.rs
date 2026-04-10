@@ -7,9 +7,9 @@ struct LocalReferenceResolver;
 
 impl CredentialResolver for LocalReferenceResolver {
     fn resolve(&self, _key: &str, _ref_type: CredentialRefType) -> anyhow::Result<Option<String>> {
-        // In a real implementation, this would look up the credential from the config
-        // For this example, we just return None to show validation
-        Ok(None)
+        // In a real implementation, this would look up the credential from
+        // an external keystore or truststore.
+        Ok(Some("RESOLVED_MATERIAL".to_string()))
     }
 
     fn validate(&self, _key: &str, _ref_type: CredentialRefType) -> anyhow::Result<()> {
@@ -20,26 +20,26 @@ impl CredentialResolver for LocalReferenceResolver {
 
 fn main() -> anyhow::Result<()> {
     let json = r#"{
-        \"ietf-system-tacacs-plus:tacacs-plus\": {
-            \"client-credentials\": [
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
                 {
-                    \"id\": \"client-bundle-1\",
-                    \"certificate\": {
-                        \"inline-definition\": {
-                            \"cert-data\": \"CLIENT_CERT_PEM\",
-                            \"cleartext-private-key\": \"CLIENT_KEY_PEM\"
+                    "id": "client-bundle-1",
+                    "certificate": {
+                        "inline-definition": {
+                            "cert-data": "CLIENT_CERT_PEM",
+                            "cleartext-private-key": "CLIENT_KEY_PEM"
                         }
                     }
                 }
             ],
-            \"server\": [
+            "server": [
                 {
-                    \"name\": \"tls-by-reference\",
-                    \"server-type\": \"authentication\",
-                    \"address\": \"192.0.2.44\",
-                    \"port\": 49,
-                    \"client-identity\": {
-                        \"credentials-reference\": \"client-bundle-1\"
+                    "name": "tls-by-reference",
+                    "server-type": "authentication",
+                    "address": "192.0.2.44",
+                    "port": 49,
+                    "client-identity": {
+                        "credentials-reference": "client-bundle-1"
                     }
                 }
             ]
@@ -47,7 +47,7 @@ fn main() -> anyhow::Result<()> {
     }"#;
 
     // Parse YANG config (preserves credential references)
-    let config = parse_yang_json(json)?;
+    let config = parse_yang_json(json, None)?;
 
     // Validate all credential references upfront
     validate_credential_references(&config, Some(&LocalReferenceResolver))?;

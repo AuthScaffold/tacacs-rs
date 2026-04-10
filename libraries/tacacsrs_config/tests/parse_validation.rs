@@ -40,7 +40,7 @@ fn parse_minimal_obfuscation_config() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("should parse minimal config");
+    let config = parse_yang_json(json, None).expect("should parse minimal config");
     assert_eq!(config.server.len(), 1);
 
     let s = &config.server[0];
@@ -71,7 +71,7 @@ fn parse_multi_type_server() {
         }
     }"#;
 
-    let config = parse_yang_json(json).unwrap();
+    let config = parse_yang_json(json, None).unwrap();
     let st = config.server[0].server_type;
     assert!(st.contains(TacacsPlusServerType::AUTHENTICATION));
     assert!(st.contains(TacacsPlusServerType::AUTHORIZATION));
@@ -116,7 +116,7 @@ fn parse_tls_config() {
         }
     }"#;
 
-    let config = parse_yang_json(json).unwrap();
+    let config = parse_yang_json(json, None).unwrap();
     let s = &config.server[0];
     assert_eq!(s.server_type, TacacsPlusServerType::ACCOUNTING);
     assert_eq!(s.domain_name.as_deref(), Some("tacacs.example.com"));
@@ -168,7 +168,7 @@ fn parse_multiple_servers_with_failover_order() {
         }
     }"#;
 
-    let config = parse_yang_json(json).unwrap();
+    let config = parse_yang_json(json, None).unwrap();
     assert_eq!(config.server.len(), 2);
     assert_eq!(config.server[0].name, "primary");
     assert_eq!(config.server[1].name, "secondary");
@@ -197,7 +197,7 @@ fn reject_duplicate_address_port() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(err.to_string().contains("duplicate server address+port"), "unexpected error: {err}");
 }
 
@@ -218,7 +218,7 @@ fn reject_sni_without_domain_name() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string().contains("sni-enabled requires domain-name"),
         "unexpected error: {err}",
@@ -233,7 +233,7 @@ fn reject_empty_server_list() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(err.to_string().contains("at least one entry"), "unexpected error: {err}");
 }
 
@@ -253,7 +253,7 @@ fn reject_invalid_server_type() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(err.to_string().contains("unknown variant"), "unexpected error: {err}");
 }
 
@@ -273,7 +273,7 @@ fn default_timeout_applied() {
         }
     }"#;
 
-    let config = parse_yang_json(json).unwrap();
+    let config = parse_yang_json(json, None).unwrap();
     assert_eq!(config.server[0].timeout, 5);
 }
 
@@ -321,7 +321,7 @@ fn credential_references_preserved_for_roundtrip() {
         }
     }"#;
 
-    let config = parse_yang_json(json).unwrap();
+    let config = parse_yang_json(json, None).unwrap();
     let s = &config.server[0];
 
     let ci = s.client_identity.as_ref().unwrap();
@@ -353,7 +353,7 @@ fn reject_missing_credential_reference() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(err.to_string().contains("nonexistent"), "unexpected error: {err}");
 }
 
@@ -372,7 +372,7 @@ fn reject_no_security() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string()
             .contains("security requires one of [tls, obfuscation]"),
@@ -403,7 +403,7 @@ fn reject_tls_and_obfuscation() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string()
             .contains("security allows only one of [tls, obfuscation]"),
@@ -429,7 +429,7 @@ fn reject_missing_inline_or_keystore_choice() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string()
             .contains("client-identity/certificate requires one of [inline, central-keystore]"),
@@ -455,7 +455,7 @@ fn reject_missing_inline_or_truststore_choice() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string().contains(
             "server-authentication/ca-certs requires one of [inline, central-truststore]"
@@ -487,8 +487,8 @@ fn accept_tls13_epsk_config_without_runtime_psk_support() {
         }
     }"#;
 
-    let config =
-        parse_yang_json(json).expect("tls13-epsk config should parse without runtime PSK support");
+    let config = parse_yang_json(json, None)
+        .expect("tls13-epsk config should parse without runtime PSK support");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "epsk-server");
 }
@@ -533,7 +533,7 @@ fn parse_yang_json_file_parses_and_validates_config() {
     }"#;
 
     let path = write_temp_json_file(json);
-    let result = parse_yang_json_file(&path);
+    let result = parse_yang_json_file(&path, None);
     let _ = std::fs::remove_file(&path);
 
     let config = result.expect("file-based parse should succeed");
@@ -591,6 +591,7 @@ fn resolve_server_finds_server_by_name() {
                 ]
             }
         }"#,
+        None,
     )
     .expect("config should parse");
 
@@ -614,6 +615,7 @@ fn resolve_server_rejects_unknown_name() {
                 ]
             }
         }"#,
+        None,
     )
     .expect("config should parse");
 
@@ -637,6 +639,7 @@ fn validate_credential_references_returns_ok_for_simple_config() {
                 ]
             }
         }"#,
+        None,
     )
     .expect("config should parse");
 
@@ -660,7 +663,7 @@ fn reject_empty_server_type_bitflags() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(err.to_string().contains("at least one bit must be set"), "unexpected error: {err}",);
 }
 
@@ -684,7 +687,7 @@ fn reject_duplicate_client_credentials_ids() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(err.to_string().contains("duplicate client-credentials id"));
 }
 
@@ -708,7 +711,7 @@ fn reject_duplicate_server_credentials_ids() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(err.to_string().contains("duplicate server-credentials id"));
 }
 
@@ -730,10 +733,10 @@ fn reject_missing_client_credential_reference() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string()
-            .contains("client-credentials reference 'missing-client' not found"),
+            .contains("credentials-reference 'missing-client' not found"),
         "unexpected error: {err}",
     );
 }
@@ -756,7 +759,7 @@ fn reject_raw_private_key_without_choice() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string()
             .contains("client-identity/raw-private-key requires one of [inline, central-keystore]"),
@@ -787,7 +790,7 @@ fn reject_raw_private_key_with_multiple_choices() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string().contains(
             "client-identity/raw-private-key allows only one of [inline, central-keystore]"
@@ -814,7 +817,7 @@ fn reject_raw_public_keys_without_choice() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string().contains(
             "server-authentication/raw-public-keys requires one of [inline, central-truststore]"
@@ -846,7 +849,7 @@ fn reject_raw_public_keys_with_multiple_choices() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string().contains(
             "server-authentication/raw-public-keys allows only one of [inline, central-truststore]"
@@ -873,7 +876,7 @@ fn reject_source_ip_and_source_interface_together() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string()
             .contains("source-type allows only one of [source-ip, source-interface]"),
@@ -916,7 +919,7 @@ fn reject_client_identity_reference_and_explicit_together() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string()
             .contains("client-identity allows only one of [ref, explicit/auth-type]"),
@@ -968,7 +971,7 @@ fn reject_server_auth_reference_and_explicit_together() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string()
             .contains("server-authentication allows only one of [ref, explicit]"),
@@ -1000,7 +1003,7 @@ fn accept_server_authentication_with_ee_certs_only() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("ee-certs explicit mode should be accepted");
+    let config = parse_yang_json(json, None).expect("ee-certs explicit mode should be accepted");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "ee-only");
 }
@@ -1037,7 +1040,7 @@ fn reject_client_credentials_with_multiple_auth_types() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(
         err.to_string()
             .contains("client-credentials/auth-type allows only one of [certificate, raw-public-key, tls13-epsk]"),
@@ -1072,7 +1075,7 @@ fn accept_client_credentials_with_certificate_auth_type() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("certificate auth-type should be accepted");
+    let config = parse_yang_json(json, None).expect("certificate auth-type should be accepted");
     assert_eq!(config.client_credentials.len(), 1);
     assert_eq!(config.client_credentials[0].id, "cert-only");
 }
@@ -1103,7 +1106,7 @@ fn accept_client_credentials_with_raw_private_key_auth_type() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("raw-private-key auth-type should be accepted");
+    let config = parse_yang_json(json, None).expect("raw-private-key auth-type should be accepted");
     assert_eq!(config.client_credentials.len(), 1);
     assert_eq!(config.client_credentials[0].id, "rpk-only");
 }
@@ -1135,7 +1138,8 @@ fn accept_client_credentials_with_tls13_epsk_auth_type() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("tls13-epsk auth-type should be accepted with psk");
+    let config =
+        parse_yang_json(json, None).expect("tls13-epsk auth-type should be accepted with psk");
     assert_eq!(config.client_credentials.len(), 1);
     assert_eq!(config.client_credentials[0].id, "epsk-only");
 }
@@ -1399,7 +1403,7 @@ fn reject_tls_version_min_below_13() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(err
         .to_string()
         .contains("minimum TLS version must be >= 1.3"));
@@ -1432,7 +1436,7 @@ fn reject_tls_version_max_below_13() {
         }
     }"#;
 
-    let err = parse_yang_json(json).unwrap_err();
+    let err = parse_yang_json(json, None).unwrap_err();
     assert!(err
         .to_string()
         .contains("maximum TLS version must be >= 1.3"));
@@ -1466,7 +1470,7 @@ fn accept_tls_versions_at_or_above_13() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("tls version bounds should be accepted");
+    let config = parse_yang_json(json, None).expect("tls version bounds should be accepted");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "tls-bounds-ok");
 }
@@ -1487,7 +1491,7 @@ fn accept_tls_hello_params_without_tls_versions() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("empty hello-params should be accepted");
+    let config = parse_yang_json(json, None).expect("empty hello-params should be accepted");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "tls-empty-hello");
     assert!(config.server[0].hello_params.is_some());
@@ -1516,7 +1520,7 @@ fn accept_tls13_epsk_when_present() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("tls13-epsk should parse");
+    let config = parse_yang_json(json, None).expect("tls13-epsk should parse");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "epsk-ok");
 }
@@ -1545,7 +1549,7 @@ fn reject_tls13_epsk_with_multiple_choice_sources() {
         }
     }"#;
 
-    let err = parse_yang_json(json).expect_err("tls13-epsk with multiple choices must fail");
+    let err = parse_yang_json(json, None).expect_err("tls13-epsk with multiple choices must fail");
     assert!(
         err.to_string()
             .contains("client-identity/tls13-epsk allows only one of [inline, central-keystore]"),

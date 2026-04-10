@@ -2,6 +2,7 @@ use anyhow::Context;
 use futures::future::join_all;
 
 use tacacsrs_config::ResolvedServer;
+use tacacsrs_networking::config_connect::ConnectOptions;
 use tacacsrs_networking::session::Session;
 
 use crate::connection::{establish_connection, Connection};
@@ -116,9 +117,11 @@ async fn execute_load_test_single(
     rep: usize,
     idx: usize,
 ) -> Result<(), String> {
-    let connection = establish_connection(server).await.map_err(|error| {
-        format!("Connection failed at rep {}, request {}: {}", rep + 1, idx + 1, error)
-    })?;
+    let connection = establish_connection(server, &ConnectOptions::default())
+        .await
+        .map_err(|error| {
+            format!("Connection failed at rep {}, request {}: {}", rep + 1, idx + 1, error)
+        })?;
 
     let session = connection
         .create_session_optional_id(request.session_id())

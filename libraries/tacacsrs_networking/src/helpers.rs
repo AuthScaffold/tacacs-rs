@@ -96,9 +96,44 @@ pub fn default_root_cert_store() -> rustls::RootCertStore {
     }
 }
 
+/// Parses a `host:port` string into its host and port components.
+///
+/// Supports these formats:
+/// - `host:port` — IPv4 or hostname with explicit port
+/// - `host` — bare hostname, uses `default_port`
+/// - `[ipv6]:port` — bracketed IPv6 with explicit port
+/// - `[ipv6]` — bracketed IPv6, uses `default_port`
+/// - `ipv6` — unbracketed IPv6 literal (≥2 colons), uses `default_port`
+#[must_use]
+pub fn parse_host_port(addr: &str, default_port: u16) -> (String, u16) {
+    // Bracketed IPv6: [addr] or [addr]:port
+    if let Some(rest) = addr.strip_prefix('[') {
+        if let Some((host, after_bracket)) = rest.split_once(']') {
+            let port = after_bracket
+                .strip_prefix(':')
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(default_port);
+            return (host.to_owned(), port);
+        }
+    }
+
+    // Only attempt host:port splitting when exactly one colon is present.
+    // Any valid IPv6 literal contains ≥2 colons, so this guard ensures
+    // unbracketed IPv6 addresses are never misinterpreted as host:port.
+    if addr.matches(':').count() == 1 {
+        if let Some((host, port_str)) = addr.rsplit_once(':') {
+            if let Ok(port) = port_str.parse::<u16>() {
+                return (host.to_owned(), port);
+            }
+        }
+    }
+
+    (addr.to_owned(), default_port)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{default_root_cert_store, tls_server_name};
+    use super::{default_root_cert_store, parse_host_port, tls_server_name};
 
     #[test]
     fn test_tls_server_name_plain_hostname() {
@@ -152,5 +187,50 @@ mod tests {
     fn test_default_root_cert_store_is_not_empty() {
         let root_store = default_root_cert_store();
         assert!(!root_store.is_empty());
+    }
+
+    #[test]
+    fn test_parse_host_port_plain_hostname() {
+        assert_eq!(parse_host_port("example.com", 49), ("example.com".to_owned(), 49));
+    }
+
+    #[test]
+    fn test_parse_host_port_hostname_with_port() {
+        assert_eq!(parse_host_port("example.com:8080", 49), ("example.com".to_owned(), 8080));
+    }
+
+    #[test]
+    fn test_parse_host_port_ipv4_with_port() {
+        assert_eq!(parse_host_port("192.0.2.10:49", 49), ("192.0.2.10".to_owned(), 49));
+    }
+
+    #[test]
+    fn test_parse_host_port_ipv4_without_port() {
+        assert_eq!(parse_host_port("192.0.2.10", 49), ("192.0.2.10".to_owned(), 49));
+    }
+
+    #[test]
+    fn test_parse_host_port_bracketed_ipv6_with_port() {
+        assert_eq!(parse_host_port("[2001:db8::1]:49", 49), ("2001:db8::1".to_owned(), 49),);
+    }
+
+    #[test]
+    fn test_parse_host_port_bracketed_ipv6_without_port() {
+        assert_eq!(parse_host_port("[2001:db8::1]", 49), ("2001:db8::1".to_owned(), 49),);
+    }
+
+    #[test]
+    fn test_parse_host_port_unbracketed_ipv6() {
+        assert_eq!(parse_host_port("2001:db8::1", 49), ("2001:db8::1".to_owned(), 49),);
+    }
+
+    #[test]
+    fn test_parse_host_port_ipv6_localhost() {
+        assert_eq!(parse_host_port("::1", 49), ("::1".to_owned(), 49));
+    }
+
+    #[test]
+    fn test_parse_host_port_non_numeric_port_treated_as_bare_host() {
+        assert_eq!(parse_host_port("host:notaport", 49), ("host:notaport".to_owned(), 49),);
     }
 }

@@ -3,8 +3,8 @@ use std::time::Duration;
 use anyhow::Result;
 
 use tacacsrs_config::{
-    parse_yang_json, pipeline, resolve_servers, validate_credential_references,
-    CredentialRefType, CredentialResolver, ResolvedServer, TacacsPlusServer,
+    parse_yang_json, pipeline, resolve_servers, validate_credential_references, CredentialRefType,
+    CredentialResolver, ResolvedServer, TacacsPlusServer,
 };
 
 #[test]
@@ -40,6 +40,7 @@ fn resolve_servers_maps_inline_tls_material() {
                 ]
             }
         }"#,
+        None,
     )
     .expect("config should parse");
 
@@ -103,6 +104,7 @@ fn resolve_servers_maps_tls13_epsk() {
                 ]
             }
         }"#,
+        None,
     )
     .expect("config should parse");
 
@@ -168,6 +170,7 @@ fn resolve_servers_resolves_credential_references() {
                 ]
             }
         }"#,
+        None,
     )
     .expect("config should parse");
 
@@ -229,6 +232,7 @@ fn resolve_servers_maps_shared_secret_obfuscation() {
                 ]
             }
         }"#,
+        None,
     )
     .expect("config should parse");
 
@@ -258,6 +262,7 @@ fn socket_address_returns_address_and_port() {
                 ]
             }
         }"#,
+        None,
     )
     .expect("config should parse");
 
@@ -285,6 +290,7 @@ fn resolve_servers_maps_tls_hello_only_server() {
                 ]
             }
         }"#,
+        None,
     )
     .expect("config should parse");
 
@@ -318,6 +324,7 @@ fn resolve_servers_maps_tls_server_auth_only() {
                 ]
             }
         }"#,
+        None,
     )
     .expect("config should parse");
 
@@ -411,6 +418,7 @@ fn resolved_server_timeout_duration() {
                 }]
             }
         }"#,
+        None,
     )
     .unwrap();
 
@@ -452,6 +460,7 @@ fn resolved_server_sni_enabled_defaults_to_false() {
                 }]
             }
         }"#,
+        None,
     )
     .unwrap();
 
@@ -482,6 +491,7 @@ fn resolved_server_sni_enabled_returns_true_when_set() {
                 }]
             }
         }"#,
+        None,
     )
     .unwrap();
 
@@ -517,6 +527,7 @@ fn resolved_server_debug_redacts_secrets() {
                 }]
             }
         }"#,
+        None,
     )
     .unwrap();
 
@@ -542,6 +553,7 @@ fn resolved_server_debug_redacts_shared_secret() {
                 }]
             }
         }"#,
+        None,
     )
     .unwrap();
 
@@ -593,7 +605,7 @@ impl CredentialResolver for FailingResolver {
 
 #[test]
 fn resolve_certificate_central_keystore_reference() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -613,32 +625,24 @@ fn resolve_certificate_central_keystore_reference() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
-    let resolver = TestResolver::new(vec![(
-        "my-key",
-        CredentialRefType::Keystore,
-        "RESOLVED_KEY_PEM",
-    )]);
+    let resolver =
+        TestResolver::new(vec![("my-key", CredentialRefType::Keystore, "RESOLVED_KEY_PEM")]);
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let ci = servers[0].client_identity.as_ref().unwrap();
     let cert = ci.certificate.as_ref().unwrap();
-    assert!(
-        cert.central_keystore_reference.is_none(),
-        "keystore ref should be cleared"
-    );
+    assert!(cert.central_keystore_reference.is_none(), "keystore ref should be cleared");
     let inline = cert.inline_definition.as_ref().unwrap();
-    assert_eq!(
-        inline.cleartext_private_key.as_deref(),
-        Some("RESOLVED_KEY_PEM")
-    );
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some("RESOLVED_KEY_PEM"));
     assert_eq!(inline.cert_data.as_deref(), Some("my-cert"));
 }
 
 #[test]
 fn resolve_raw_private_key_central_keystore_reference() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -655,28 +659,23 @@ fn resolve_raw_private_key_central_keystore_reference() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
-    let resolver = TestResolver::new(vec![(
-        "rpk-ref",
-        CredentialRefType::Keystore,
-        "RPK_MATERIAL",
-    )]);
+    let resolver =
+        TestResolver::new(vec![("rpk-ref", CredentialRefType::Keystore, "RPK_MATERIAL")]);
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let ci = servers[0].client_identity.as_ref().unwrap();
     let rpk = ci.raw_private_key.as_ref().unwrap();
     assert!(rpk.central_keystore_reference.is_none());
     let inline = rpk.inline_definition.as_ref().unwrap();
-    assert_eq!(
-        inline.cleartext_private_key.as_deref(),
-        Some("RPK_MATERIAL")
-    );
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some("RPK_MATERIAL"));
 }
 
 #[test]
 fn resolve_tls13_epsk_central_keystore_reference() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -694,28 +693,23 @@ fn resolve_tls13_epsk_central_keystore_reference() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
-    let resolver = TestResolver::new(vec![(
-        "epsk-ref",
-        CredentialRefType::Keystore,
-        "EPSK_SECRET",
-    )]);
+    let resolver =
+        TestResolver::new(vec![("epsk-ref", CredentialRefType::Keystore, "EPSK_SECRET")]);
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let ci = servers[0].client_identity.as_ref().unwrap();
     let epsk = ci.tls13_epsk.as_ref().unwrap();
     assert!(epsk.central_keystore_reference.is_none());
     let inline = epsk.inline_definition.as_ref().unwrap();
-    assert_eq!(
-        inline.cleartext_symmetric_key.as_deref(),
-        Some("EPSK_SECRET")
-    );
+    assert_eq!(inline.cleartext_symmetric_key.as_deref(), Some("EPSK_SECRET"));
 }
 
 #[test]
 fn resolve_ca_certs_central_truststore_reference() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -732,13 +726,11 @@ fn resolve_ca_certs_central_truststore_reference() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
-    let resolver = TestResolver::new(vec![(
-        "ca-ref",
-        CredentialRefType::Truststore,
-        "CA_CERT_PEM",
-    )]);
+    let resolver =
+        TestResolver::new(vec![("ca-ref", CredentialRefType::Truststore, "CA_CERT_PEM")]);
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let sa = servers[0].server_authentication.as_ref().unwrap();
@@ -752,7 +744,7 @@ fn resolve_ca_certs_central_truststore_reference() {
 
 #[test]
 fn resolve_ee_certs_central_truststore_reference() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -769,13 +761,11 @@ fn resolve_ee_certs_central_truststore_reference() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
-    let resolver = TestResolver::new(vec![(
-        "ee-ref",
-        CredentialRefType::Truststore,
-        "EE_CERT_PEM",
-    )]);
+    let resolver =
+        TestResolver::new(vec![("ee-ref", CredentialRefType::Truststore, "EE_CERT_PEM")]);
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let sa = servers[0].server_authentication.as_ref().unwrap();
@@ -788,7 +778,7 @@ fn resolve_ee_certs_central_truststore_reference() {
 
 #[test]
 fn resolve_raw_public_keys_central_truststore_reference() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -805,13 +795,11 @@ fn resolve_raw_public_keys_central_truststore_reference() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
-    let resolver = TestResolver::new(vec![(
-        "rpk-ref",
-        CredentialRefType::Truststore,
-        "PUB_KEY_DATA",
-    )]);
+    let resolver =
+        TestResolver::new(vec![("rpk-ref", CredentialRefType::Truststore, "PUB_KEY_DATA")]);
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let sa = servers[0].server_authentication.as_ref().unwrap();
@@ -824,7 +812,7 @@ fn resolve_raw_public_keys_central_truststore_reference() {
 
 #[test]
 fn resolve_server_errors_on_failing_external_resolver() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -841,20 +829,18 @@ fn resolve_server_errors_on_failing_external_resolver() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
     let err = resolve_servers(&config, Some(&FailingResolver)).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("fail-ks"), "error should name the server: {msg}");
-    assert!(
-        msg.contains("resolution failed"),
-        "error should include resolver failure: {msg}"
-    );
+    assert!(msg.contains("resolution failed"), "error should include resolver failure: {msg}");
 }
 
 #[test]
 fn resolve_server_errors_on_failing_truststore_resolver() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -871,20 +857,18 @@ fn resolve_server_errors_on_failing_truststore_resolver() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
     let err = resolve_servers(&config, Some(&FailingResolver)).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("fail-ts"), "error should name the server: {msg}");
-    assert!(
-        msg.contains("resolution failed"),
-        "error should include resolver failure: {msg}"
-    );
+    assert!(msg.contains("resolution failed"), "error should include resolver failure: {msg}");
 }
 
 #[test]
 fn resolve_noop_when_external_resolver_returns_none() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -901,21 +885,14 @@ fn resolve_noop_when_external_resolver_returns_none() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
     // Resolver that handles nothing (returns None)
     let resolver = TestResolver::new(vec![]);
-    let servers = resolve_servers(&config, Some(&resolver)).unwrap();
-    let rpk = servers[0]
-        .client_identity
-        .as_ref()
-        .unwrap()
-        .raw_private_key
-        .as_ref()
-        .unwrap();
-    // When resolver returns None, the reference stays in place
-    assert!(rpk.central_keystore_reference.is_some());
-    assert!(rpk.inline_definition.is_none());
+    let err = resolve_servers(&config, Some(&resolver)).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("did not resolve"), "error should indicate unresolved reference: {msg}");
 }
 
 // ---------------------------------------------------------------------------
@@ -944,10 +921,7 @@ fn validate_credential_references_collects_missing_client_bundle_ref() {
     let err = validate_credential_references(&root.tacacs_plus, None).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("nonexistent-client"), "error: {msg}");
-    assert!(
-        msg.contains("client-identity credentials-reference"),
-        "error: {msg}"
-    );
+    assert!(msg.contains("client-identity credentials-reference"), "error: {msg}");
 }
 
 #[test]
@@ -972,10 +946,7 @@ fn validate_credential_references_collects_missing_server_bundle_ref() {
     let err = validate_credential_references(&root.tacacs_plus, None).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("nonexistent-server"), "error: {msg}");
-    assert!(
-        msg.contains("server-authentication credentials-reference"),
-        "error: {msg}"
-    );
+    assert!(msg.contains("server-authentication credentials-reference"), "error: {msg}");
 }
 
 #[test]
@@ -1037,12 +1008,10 @@ fn validate_credential_references_collects_external_keystore_errors() {
     )
     .unwrap();
 
-    let err = validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
+    let err =
+        validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
     let msg = err.to_string();
-    assert!(
-        msg.contains("certificate central-keystore-reference"),
-        "error: {msg}"
-    );
+    assert!(msg.contains("certificate central-keystore-reference"), "error: {msg}");
 }
 
 #[test]
@@ -1066,12 +1035,10 @@ fn validate_credential_references_collects_external_rpk_keystore_error() {
     )
     .unwrap();
 
-    let err = validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
+    let err =
+        validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
     let msg = err.to_string();
-    assert!(
-        msg.contains("raw-private-key central-keystore-reference"),
-        "error: {msg}"
-    );
+    assert!(msg.contains("raw-private-key central-keystore-reference"), "error: {msg}");
 }
 
 #[test]
@@ -1096,12 +1063,10 @@ fn validate_credential_references_collects_external_epsk_keystore_error() {
     )
     .unwrap();
 
-    let err = validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
+    let err =
+        validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
     let msg = err.to_string();
-    assert!(
-        msg.contains("tls13-epsk central-keystore-reference"),
-        "error: {msg}"
-    );
+    assert!(msg.contains("tls13-epsk central-keystore-reference"), "error: {msg}");
 }
 
 #[test]
@@ -1125,12 +1090,10 @@ fn validate_credential_references_collects_external_ca_truststore_error() {
     )
     .unwrap();
 
-    let err = validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
+    let err =
+        validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
     let msg = err.to_string();
-    assert!(
-        msg.contains("ca-certs central-truststore-reference"),
-        "error: {msg}"
-    );
+    assert!(msg.contains("ca-certs central-truststore-reference"), "error: {msg}");
 }
 
 #[test]
@@ -1154,12 +1117,10 @@ fn validate_credential_references_collects_external_ee_truststore_error() {
     )
     .unwrap();
 
-    let err = validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
+    let err =
+        validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
     let msg = err.to_string();
-    assert!(
-        msg.contains("ee-certs central-truststore-reference"),
-        "error: {msg}"
-    );
+    assert!(msg.contains("ee-certs central-truststore-reference"), "error: {msg}");
 }
 
 #[test]
@@ -1183,17 +1144,15 @@ fn validate_credential_references_collects_external_rpk_truststore_error() {
     )
     .unwrap();
 
-    let err = validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
+    let err =
+        validate_credential_references(&root.tacacs_plus, Some(&FailingResolver)).unwrap_err();
     let msg = err.to_string();
-    assert!(
-        msg.contains("raw-public-keys central-truststore-reference"),
-        "error: {msg}"
-    );
+    assert!(msg.contains("raw-public-keys central-truststore-reference"), "error: {msg}");
 }
 
 #[test]
 fn resolve_certificate_keystore_ref_error_has_context() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -1212,7 +1171,8 @@ fn resolve_certificate_keystore_ref_error_has_context() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
     let err = resolve_servers(&config, Some(&FailingResolver)).unwrap_err();
     let msg = format!("{err:#}");
@@ -1225,7 +1185,7 @@ fn resolve_certificate_keystore_ref_error_has_context() {
 
 #[test]
 fn resolve_epsk_keystore_ref_error_has_context() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -1243,7 +1203,8 @@ fn resolve_epsk_keystore_ref_error_has_context() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
     let err = resolve_servers(&config, Some(&FailingResolver)).unwrap_err();
     let msg = format!("{err:#}");
@@ -1256,7 +1217,7 @@ fn resolve_epsk_keystore_ref_error_has_context() {
 
 #[test]
 fn resolve_raw_public_keys_truststore_ref_error_has_context() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -1273,7 +1234,8 @@ fn resolve_raw_public_keys_truststore_ref_error_has_context() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
     let err = resolve_servers(&config, Some(&FailingResolver)).unwrap_err();
     let msg = format!("{err:#}");
@@ -1286,7 +1248,7 @@ fn resolve_raw_public_keys_truststore_ref_error_has_context() {
 
 #[test]
 fn resolve_ee_certs_truststore_ref_error_has_context() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -1303,7 +1265,8 @@ fn resolve_ee_certs_truststore_ref_error_has_context() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
     let err = resolve_servers(&config, Some(&FailingResolver)).unwrap_err();
     let msg = format!("{err:#}");
@@ -1316,7 +1279,7 @@ fn resolve_ee_certs_truststore_ref_error_has_context() {
 
 #[test]
 fn resolve_bundle_ref_then_external_keystore_ref() {
-    let config = parse_yang_json(
+    let config = pipeline::parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "client-credentials": [{
@@ -1337,13 +1300,11 @@ fn resolve_bundle_ref_then_external_keystore_ref() {
             }
         }"#,
     )
-    .unwrap();
+    .unwrap()
+    .tacacs_plus;
 
-    let resolver = TestResolver::new(vec![(
-        "ext-key",
-        CredentialRefType::Keystore,
-        "FULLY_RESOLVED",
-    )]);
+    let resolver =
+        TestResolver::new(vec![("ext-key", CredentialRefType::Keystore, "FULLY_RESOLVED")]);
 
     let servers = resolve_servers(&config, Some(&resolver)).unwrap();
     let ci = servers[0].client_identity.as_ref().unwrap();
@@ -1351,10 +1312,7 @@ fn resolve_bundle_ref_then_external_keystore_ref() {
     let rpk = ci.raw_private_key.as_ref().unwrap();
     assert!(rpk.central_keystore_reference.is_none());
     let inline = rpk.inline_definition.as_ref().unwrap();
-    assert_eq!(
-        inline.cleartext_private_key.as_deref(),
-        Some("FULLY_RESOLVED")
-    );
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some("FULLY_RESOLVED"));
 }
 
 // ---------------------------------------------------------------------------
