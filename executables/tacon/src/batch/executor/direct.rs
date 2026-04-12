@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use tacacsrs_config::ResolvedServer;
+use tacacsrs_credentials::ResolvedServer;
 use tacacsrs_networking::config_connect::ConnectOptions;
 
 use crate::connection::establish_connection;

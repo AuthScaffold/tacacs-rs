@@ -395,12 +395,12 @@ mod tests {
     use super::super::test_support::{FakeConnection, FakeConnector, build_request};
 
     #[cfg(unix)]
-    fn test_server(address: &str) -> tacacsrs_config::ResolvedServer {
+    fn test_server(address: &str) -> tacacsrs_credentials::ResolvedServer {
         let (host, port) = match address.rsplit_once(':') {
             Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
             None => (address.to_owned(), 49),
         };
-        tacacsrs_config::ResolvedServer::from_raw(tacacsrs_config::TacacsPlusServer {
+        tacacsrs_credentials::ResolvedServer::from_raw(tacacsrs_config::TacacsPlusServer {
             name: address.to_owned(),
             server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
             address: host,
@@ -422,7 +422,7 @@ mod tests {
     #[cfg(unix)]
     fn service_config(
         endpoint: IpcEndpoint,
-        servers: Vec<tacacsrs_config::ResolvedServer>,
+        servers: Vec<tacacsrs_credentials::ResolvedServer>,
     ) -> ServiceConfig {
         ServiceConfig {
             endpoint,
@@ -444,7 +444,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        IpcEndpoint::Unix(std::env::temp_dir().join(unique))
+        IpcEndpoint::Unix(std::path::PathBuf::from("/tmp").join(unique))
     }
 
     #[cfg(unix)]

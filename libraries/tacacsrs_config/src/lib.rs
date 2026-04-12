@@ -1,14 +1,10 @@
 pub mod generated;
+mod enumeration;
 mod mapping;
-mod resolvers;
 mod statistics;
 mod validation;
 
-pub use resolvers::{
-    AsymmetricKeyMaterial, CertificateEntry, CredentialResolver, ResolvedServer,
-    SymmetricKeyMaterial, TruststorePublicKeyMaterial, X509CertificateMaterial, resolve_server,
-    resolve_servers, validate_credential_references,
-};
+pub use enumeration::{enumerate_server, enumerate_servers, validate_credential_references};
 
 // Re-export key types from generated module for convenience
 pub use generated::tacacs_plus::{
@@ -67,7 +63,7 @@ pub mod pipeline {
 
 /// Runtime projection API used by networking/client code.
 pub mod runtime {
-    pub use crate::resolvers::{resolve_server, resolve_servers, ResolvedServer};
+    pub use crate::enumeration::{enumerate_server, enumerate_servers};
 }
 
 /// Runtime statistics types.
@@ -87,30 +83,23 @@ pub mod stats {
 /// - Server addresses and ports are unique
 /// - SNI-enabled servers have domain names
 /// - Security configuration is present and valid
-/// - Credential references have matching definitions
-/// - External credential references are resolvable (when a resolver is provided)
+/// - Credential bundle references have matching definitions
 ///
-/// When `resolver` is `None`, configs containing external keystore/truststore
-/// references will fail validation. Pass a [`CredentialResolver`] implementation
-/// when external references need resolution.
-///
-/// After parsing, to resolve credentials use:
-/// 1. Call [`resolve_servers`] or [`resolve_server`] with the same resolver
+/// The returned config preserves the submitted structure, including any
+/// `central-keystore-reference` and `central-truststore-reference` values.
+/// To inline shared `client-credentials` / `server-credentials` bundles for
+/// per-server processing, call [`enumerate_servers`] or [`enumerate_server`].
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - The JSON is malformed or does not match the YANG schema
 /// - Validation constraints are violated
-/// - External credential references exist but no resolver is provided
-pub fn parse_yang_json(
-    json: &str,
-    resolver: Option<&dyn CredentialResolver>,
-) -> anyhow::Result<TacacsPlus> {
+pub fn parse_yang_json(json: &str) -> anyhow::Result<TacacsPlus> {
     let root: YangConfigRoot = pipeline::parse_root_json(json)?;
 
     let config = root.tacacs_plus;
-    validation::validate_config(&config, resolver)?;
+    validation::validate_config(&config)?;
 
     Ok(config)
 }
@@ -127,12 +116,7 @@ pub fn parse_yang_json(
 /// - Server addresses and ports are unique
 /// - SNI-enabled servers have domain names
 /// - Security configuration is present and valid
-/// - Credential references have matching definitions
-/// - External credential references are resolvable (when a resolver is provided)
-///
-/// When `resolver` is `None`, configs containing external keystore/truststore
-/// references will fail validation. Pass a [`CredentialResolver`] implementation
-/// when external references need resolution.
+/// - Credential bundle references have matching definitions
 ///
 /// # Errors
 ///
@@ -140,15 +124,11 @@ pub fn parse_yang_json(
 /// - The file cannot be read
 /// - The JSON is malformed or does not match the YANG schema
 /// - Validation constraints are violated
-/// - External credential references exist but no resolver is provided
-pub fn parse_yang_json_file(
-    path: &std::path::Path,
-    resolver: Option<&dyn CredentialResolver>,
-) -> anyhow::Result<TacacsPlus> {
+pub fn parse_yang_json_file(path: &std::path::Path) -> anyhow::Result<TacacsPlus> {
     let root: YangConfigRoot = pipeline::parse_root_json_file(path)?;
 
     let config = root.tacacs_plus;
-    validation::validate_config(&config, resolver)?;
+    validation::validate_config(&config)?;
 
     Ok(config)
 }

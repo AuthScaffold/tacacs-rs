@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     }"#;
 
     // Step 1: Parse YANG config (non-destructive - preserves original for round-tripping)
-    let config = parse_yang_json(json, None)?;
+    let config = parse_yang_json(json)?;
     println!("🧪 Pipeline flow example");
     println!("1. Parsed YANG JSON into the raw model\n");
 
@@ -47,11 +47,10 @@ fn main() -> anyhow::Result<()> {
     println!("   └─ has server-authentication: {}", server.server_authentication.is_some());
 
     // Step 3: For production code:
-    // 1. Create resolvers implementing CredentialResolver trait
-    // 2. Call validate_credential_references(&config, Some(&resolver))?
-    // 3. Call resolve_server(&config, server_name, Some(&resolver))? for on-demand resolution
-    // This avoids destructive modifications and supports round-tripping
-    println!("\n3. Production flow: validate references, then resolve on demand when connecting");
+    // 1. Call enumerate_server(s) to inline shared credential bundles.
+    // 2. Use tacacsrs-credentials to validate external refs if needed.
+    // 3. Use tacacsrs-credentials to resolve one enumerated server when connecting.
+    println!("\n3. Production flow: enumerate bundles, then resolve external secrets on demand when connecting");
 
     Ok(())
 }

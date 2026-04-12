@@ -10,7 +10,7 @@ use std::str::FromStr;
 use anyhow::{bail, Context};
 use clap::Parser;
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
-use tacacsrs_config::ResolvedServer;
+use tacacsrs_credentials::ResolvedServer;
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::DedicatedConnection;

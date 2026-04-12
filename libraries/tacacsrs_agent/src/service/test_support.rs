@@ -14,10 +14,10 @@ use async_trait::async_trait;
 use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
 };
+use tacacsrs_credentials::ResolvedServer;
 use tokio::sync::{Mutex, Notify};
 
 use crate::upstream::{DedicatedAccountingResult, UpstreamConnection, UpstreamConnector};
-use tacacsrs_config::ResolvedServer;
 use tacacsrs_networking::SingleConnectionState;
 
 // ---------------------------------------------------------------------------

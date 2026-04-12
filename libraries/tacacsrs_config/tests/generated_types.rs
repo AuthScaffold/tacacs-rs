@@ -355,7 +355,7 @@ fn server_type_deserialize_partial_flags() {
         }
     }"#;
 
-    let config = parse_yang_json(json, None).unwrap();
+    let config = parse_yang_json(json).unwrap();
     let st = config.server[0].server_type;
     assert!(st.contains(TacacsPlusServerType::AUTHENTICATION));
     assert!(!st.contains(TacacsPlusServerType::AUTHORIZATION));
@@ -390,7 +390,7 @@ fn epsk_hash_sha384_explicit() {
         }
     }"#;
 
-    let config = parse_yang_json(json, None).expect("sha-384 should be accepted");
+    let config = parse_yang_json(json).expect("sha-384 should be accepted");
     let epsk = config.server[0]
         .client_identity
         .as_ref()

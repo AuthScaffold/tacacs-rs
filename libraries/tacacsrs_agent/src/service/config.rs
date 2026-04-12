@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_config::ResolvedServer;
+use tacacsrs_credentials::ResolvedServer;
 
 /// Configuration for the long-lived TACACS+ client service process.
 ///

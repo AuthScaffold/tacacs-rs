@@ -1,7 +1,7 @@
 use anyhow::Context;
 use futures::future::join_all;
 
-use tacacsrs_config::ResolvedServer;
+use tacacsrs_credentials::ResolvedServer;
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::DedicatedConnection;
 use tacacsrs_networking::config_connect::ConnectOptions;

@@ -2,12 +2,29 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use tacacsrs_config::{
-    parse_yang_json, pipeline, resolve_servers, validate_credential_references,
-    AsymmetricKeyMaterial, CertificateEntry, CredentialResolver, ResolvedServer,
-    SymmetricKeyMaterial, TacacsPlusServer, TruststorePublicKeyMaterial, X509CertificateMaterial,
-};
 use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
+use tacacsrs_config::{TacacsPlus, TacacsPlusServer, parse_yang_json, pipeline};
+use tacacsrs_credentials::{
+    AsymmetricKeyMaterial, CertificateEntry, CredentialResolver, ResolvedServer,
+    SymmetricKeyMaterial, TruststorePublicKeyMaterial, X509CertificateMaterial,
+};
+
+fn resolve_servers(
+    config: &TacacsPlus,
+    resolver: Option<&dyn CredentialResolver>,
+) -> Result<Vec<ResolvedServer>> {
+    let enumerated_servers = tacacsrs_config::enumerate_servers(config)?;
+    tacacsrs_credentials::resolve_servers(enumerated_servers, resolver)
+}
+
+fn validate_credential_references(
+    config: &TacacsPlus,
+    resolver: Option<&dyn CredentialResolver>,
+) -> Result<()> {
+    tacacsrs_config::validate_credential_references(config)?;
+    let enumerated_servers = tacacsrs_config::enumerate_servers(config)?;
+    tacacsrs_credentials::validate_external_servers_references(&enumerated_servers, resolver)
+}
 
 #[test]
 fn resolve_servers_maps_inline_tls_material() {
@@ -42,7 +59,6 @@ fn resolve_servers_maps_inline_tls_material() {
                 ]
             }
         }"#,
-        None,
     )
     .expect("config should parse");
 
@@ -106,7 +122,6 @@ fn resolve_servers_maps_tls13_epsk() {
                 ]
             }
         }"#,
-        None,
     )
     .expect("config should parse");
 
@@ -172,7 +187,6 @@ fn resolve_servers_resolves_credential_references() {
                 ]
             }
         }"#,
-        None,
     )
     .expect("config should parse");
 
@@ -234,7 +248,6 @@ fn resolve_servers_maps_shared_secret_obfuscation() {
                 ]
             }
         }"#,
-        None,
     )
     .expect("config should parse");
 
@@ -264,7 +277,6 @@ fn socket_address_returns_address_and_port() {
                 ]
             }
         }"#,
-        None,
     )
     .expect("config should parse");
 
@@ -292,7 +304,6 @@ fn resolve_servers_maps_tls_hello_only_server() {
                 ]
             }
         }"#,
-        None,
     )
     .expect("config should parse");
 
@@ -326,7 +337,6 @@ fn resolve_servers_maps_tls_server_auth_only() {
                 ]
             }
         }"#,
-        None,
     )
     .expect("config should parse");
 
@@ -420,7 +430,6 @@ fn resolved_server_timeout_duration() {
                 }]
             }
         }"#,
-        None,
     )
     .unwrap();
 
@@ -462,7 +471,6 @@ fn resolved_server_sni_enabled_defaults_to_false() {
                 }]
             }
         }"#,
-        None,
     )
     .unwrap();
 
@@ -493,7 +501,6 @@ fn resolved_server_sni_enabled_returns_true_when_set() {
                 }]
             }
         }"#,
-        None,
     )
     .unwrap();
 
@@ -529,7 +536,6 @@ fn resolved_server_debug_redacts_secrets() {
                 }]
             }
         }"#,
-        None,
     )
     .unwrap();
 
@@ -555,7 +561,6 @@ fn resolved_server_debug_redacts_shared_secret() {
                 }]
             }
         }"#,
-        None,
     )
     .unwrap();
 

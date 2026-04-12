@@ -7,27 +7,30 @@
 - Generated Rust types in `src/generated.rs` that mirror the expanded YANG tree
 - Generated identity set enums for YANG `identityref` leaves (key format types)
 - Validation logic for YANG-specific constraints, key format identities, and inline key material
-- Credential-reference resolution helpers
-- On-demand per-server credential resolution via `ResolvedServer`
+- Config-local credential bundle validation
+- Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
+
+External keystore/truststore validation and secret materialization now live in the separate `tacacsrs-credentials` crate.
 
 ## Parsing API
 
 ```rust
-use tacacsrs_config::{parse_yang_json, resolve_servers};
+use tacacsrs_config::{enumerate_servers, parse_yang_json};
 
-let config = parse_yang_json(json_str, None)?;
-let servers = resolve_servers(&config, None)?;
+let config = parse_yang_json(json_str)?;
+let servers = enumerate_servers(&config)?;
 # anyhow::Ok::<()>(())
 ```
 
 The primary entry points are:
 
-- `parse_yang_json(&str, Option<&dyn CredentialResolver>)` — parse and validate a JSON string without mutating credential references
-- `parse_yang_json_file(&Path, Option<&dyn CredentialResolver>)` — file-based wrapper around `parse_yang_json`
-- `resolve_servers(&TacacsPlus, Option<&dyn CredentialResolver>)` — resolve credential references and return `ResolvedServer` values
-- `resolve_server(&TacacsPlus, &str, Option<&dyn CredentialResolver>)` — resolve a single server by name
+- `parse_yang_json(&str)` — parse and structurally validate a JSON string without mutating credential references
+- `parse_yang_json_file(&Path)` — file-based wrapper around `parse_yang_json`
+- `validate_credential_references(&TacacsPlus)` — validate config-local `credentials-reference` links into shared bundles
+- `enumerate_servers(&TacacsPlus)` — inline shared credential bundles onto each `TacacsPlusServer`
+- `enumerate_server(&TacacsPlus, &str)` — inline shared credential bundles for one named server
 
-The `resolver` parameter is `None` when only in-config credential bundles are used. Pass a `CredentialResolver` implementation when external keystore/truststore references need resolution.
+For external keystore or truststore references, enumerate the servers first and then pass the resulting `TacacsPlusServer` values to `tacacsrs-credentials`.
 
 ## Multi-layer design
 
@@ -45,93 +48,26 @@ let raw_config = pipeline::parse_root_json(json_str)?;
 
 Use this when you need the root YANG model exactly as submitted for round-tripping, reporting, or further custom processing.
 
-### 2) Credential resolvers (pluggable)
+### 2) Config-local bundle enumeration
 
-Credential references in YANG can point to:
+Credential references in YANG can point to shared bundles inside the same config:
 - **Bundles** (`client-credentials`, `server-credentials`) in the same config
-- **Central keystores/truststores** managed by the operating system
-- **Filesystem** certificates
-- **Environment** variables, etc.
 
-Define custom resolvers to handle your credential sources:
+Use the config crate to validate and inline only those local references:
 
 ```rust
-pub struct X509CertificateMaterial {
-    pub cert_data: String,
-    pub key_material: AsymmetricKeyMaterial,
-}
+use tacacsrs_config::{enumerate_server, parse_yang_json, validate_credential_references};
 
-pub struct CertificateEntry {
-    pub name: String,
-    pub cert_data: String,
-}
+let config = parse_yang_json(json_str)?;
+validate_credential_references(&config)?;
 
-pub struct AsymmetricKeyMaterial {
-    pub cleartext_private_key: String,
-    pub public_key: Option<String>,
-    pub private_key_format: Option<PrivateKeyFormat>,
-    pub public_key_format: Option<PublicKeyFormat>,
-}
-
-pub struct SymmetricKeyMaterial {
-    pub cleartext_symmetric_key: String,
-    pub key_format: Option<SymmetricKeyFormat>,
-}
-
-pub struct TruststorePublicKeyMaterial {
-    pub name: String,
-    pub public_key: String,
-    pub public_key_format: PublicKeyFormat,
-}
-
-pub trait CredentialResolver: Send + Sync {
-    // --- Keystore resolution ---
-
-    /// Resolve an end-entity certificate + key pair from the keystore
-    fn resolve_keystore_certificate(&self, key: &str) -> Result<Option<X509CertificateMaterial>>;
-
-    /// Resolve an asymmetric key entry (for RPK client identity)
-    fn resolve_asymmetric_key(&self, key: &str) -> Result<Option<AsymmetricKeyMaterial>>;
-
-    /// Resolve a symmetric key entry (for TLS 1.3 EPSK)
-    fn resolve_symmetric_key(&self, key: &str) -> Result<Option<SymmetricKeyMaterial>>;
-
-    // --- Truststore resolution ---
-
-    /// Resolve a certificate bag (one or more CA/EE certs)
-    fn resolve_certificate_bag(&self, key: &str) -> Result<Option<Vec<CertificateEntry>>>;
-
-    /// Resolve a public key bag (one or more pinned server public keys)
-    fn resolve_public_key_bag(&self, key: &str) -> Result<Option<Vec<TruststorePublicKeyMaterial>>>;
-
-    // --- Validation (check key existence without materializing) ---
-
-    fn validate_keystore_certificate(&self, key: &str) -> Result<()>;
-    fn validate_asymmetric_key(&self, key: &str) -> Result<()>;
-    fn validate_symmetric_key(&self, key: &str) -> Result<()>;
-    fn validate_certificate_bag(&self, key: &str) -> Result<()>;
-    fn validate_public_key_bag(&self, key: &str) -> Result<()>;
-}
+let server = enumerate_server(&config, "primary")?;
 ```
 
-### 3) On-demand resolved servers (secret-safe)
+### 3) External secret resolution (separate crate)
 
-Resolve credentials **only when accessing a specific server**, not for the entire config.
-This avoids materializing all secrets at once, reducing the risk of accidental leaks:
-
-```rust
-use tacacsrs_config::{parse_yang_json, resolve_server, validate_credential_references};
-
-let config = parse_yang_json(json_str, None)?;
-
-// Validate all credential references upfront (optional but recommended)
-validate_credential_references(&config, None)?;
-
-// Resolve credentials only for the server being used
-let resolved = resolve_server(&config, "primary", None)?;
-```
-
-The parsed config remains unmodified and safe for round-tripping. Secrets are materialized only on demand. Structural validation happens during parsing; resolver-based validation can be run separately to catch missing external credentials early rather than at runtime.
+External keystore/truststore references are intentionally handled outside this crate.
+After enumeration, pass the resulting `TacacsPlusServer` values to `tacacsrs-credentials` for optional external validation and runtime secret materialization.
 
 ### Module-oriented API (recommended for most users)
 
@@ -139,7 +75,7 @@ This crate also exposes grouped modules so callers can choose APIs by intent:
 
 - `model` — YANG-generated types and namespaces
 - `pipeline` — step-by-step processing
-- `runtime` — runtime projection (`resolve_server`, `resolve_servers`, `ResolvedServer`)
+- `runtime` — bundle enumeration (`enumerate_server`, `enumerate_servers`)
 - `stats` — runtime stats types
 
 For simple end-to-end usage with in-config credential bundles:
@@ -147,8 +83,8 @@ For simple end-to-end usage with in-config credential bundles:
 ```rust
 use tacacsrs_config::{parse_yang_json, runtime};
 
-let config = parse_yang_json(json_str, None)?;
-let servers = runtime::resolve_servers(&config, None)?;
+let config = parse_yang_json(json_str)?;
+let servers = runtime::enumerate_servers(&config)?;
 ```
 
 The existing flat root exports remain available for compatibility.
@@ -157,11 +93,11 @@ The existing flat root exports remain available for compatibility.
 
 The crate includes runnable examples under `examples/`:
 
-- `quick_start.rs` — parse + validate + resolve using the root exports plus `runtime`
-- `quick_start_credential_refs.rs` — minimal end-to-end example showing separate resolver validation and on-demand server resolution
-- `pipeline_flow.rs` — explicit step-by-step parse/resolve/validate pipeline
+- `quick_start.rs` — parse + validate + enumerate using the root exports plus `runtime`
+- `quick_start_credential_refs.rs` — minimal end-to-end example showing bundle validation and enumeration
+- `pipeline_flow.rs` — explicit step-by-step parse/enumerate/external-resolution pipeline
 - `model_access.rs` — direct access to generated model types and flags
-- `credential_references.rs` — resolve credential references into inline material
+- `credential_references.rs` — parse, enumerate, then resolve external references with `tacacsrs-credentials`
 
 Run examples from the workspace root:
 
@@ -180,14 +116,15 @@ This crate intentionally exposes both:
 - a high-level, opinionated parsing pipeline for most callers
 - the full generated YANG model and lower-level helpers for advanced integrations
 
-### 1) High-level parse + validate + resolve workflow
+### 1) High-level parse + validate + enumerate workflow
 
 These are the recommended entry points for application code:
 
-- `parse_yang_json(&str, Option<&dyn CredentialResolver>) -> anyhow::Result<TacacsPlus>`
-- `parse_yang_json_file(&Path, Option<&dyn CredentialResolver>) -> anyhow::Result<TacacsPlus>`
-- `resolve_servers(&TacacsPlus, Option<&dyn CredentialResolver>) -> anyhow::Result<Vec<ResolvedServer>>`
-- `resolve_server(&TacacsPlus, &str, Option<&dyn CredentialResolver>) -> anyhow::Result<ResolvedServer>`
+- `parse_yang_json(&str) -> anyhow::Result<TacacsPlus>`
+- `parse_yang_json_file(&Path) -> anyhow::Result<TacacsPlus>`
+- `validate_credential_references(&TacacsPlus) -> anyhow::Result<()>`
+- `enumerate_servers(&TacacsPlus) -> anyhow::Result<Vec<TacacsPlusServer>>`
+- `enumerate_server(&TacacsPlus, &str) -> anyhow::Result<TacacsPlusServer>`
 
 `parse_yang_json()` performs deserialization and validation of YANG-derived JSON constraints (server presence, unique addresses, SNI requirements, choice constraints, key format identities, inline key material encoding, etc.). The config is returned **without mutations**—credential references remain intact for round-tripping.
 
@@ -201,12 +138,9 @@ Validation checks include:
 - Key format identity values (`private-key-format`, `public-key-format`, `key-format`) are valid RFC 7951 identityref strings
 - Inline key material (`cleartext-private-key`, `public-key`, `cert-data`, `cleartext-symmetric-key`) is valid base64 or PEM
 - Credential references have matching definitions in the same config
-- External credential references are resolvable (when a resolver is provided)
+- Config-local credential references have matching definitions
 
-To resolve credentials and materialize them for runtime use, use the pluggable resolver API:
-1. Create resolvers implementing `CredentialResolver`
-2. Call `validate_credential_references()` to validate all references can be resolved
-3. Call `resolve_server()` or `resolve_servers()` for on-demand resolution
+To resolve external credentials and materialize them for runtime use, use `tacacsrs-credentials` after enumeration.
 
 This design separates parsing/validation from credential retrieval and enables round-trip safety.
 
@@ -220,11 +154,7 @@ For advanced use cases, these lower-level functions are available:
 
 ### 3) Runtime types
 
-The runtime-facing types are public:
-
-- `ResolvedServer` — a validated, credential-resolved server ready for connection
-
-`ResolvedServer` wraps `TacacsPlusServer` with `Deref` access to the full YANG model and adds convenience methods (`socket_address()`, `timeout_duration()`, `obfuscation_key()`, `is_tls()`, `sni_enabled()`). Debug output redacts secrets.
+Runtime secret-materialized server types now live in `tacacsrs-credentials`.
 
 Runtime statistics are exposed separately via:
 

@@ -1,19 +1,8 @@
-//! TLS certificate resolution and validation.
-//!
-//! Handles `central-keystore-reference` for certificate client identity and
-//! `central-truststore-reference` for CA/EE certificate bags in server
-//! authentication.
-
 use anyhow::{Context, Result};
+use tacacsrs_config::{ClientIdentityCertificate, ServerAuthenticationCaCerts};
 
-use crate::generated::tacacs_plus::{ClientIdentityCertificate, ServerAuthenticationCaCerts};
+use crate::CredentialResolver;
 
-use super::CredentialResolver;
-
-/// Resolves a certificate keystore reference to inline material.
-///
-/// Calls [`CredentialResolver::resolve_keystore_certificate`] to fetch the
-/// X.509 end-entity certificate and its associated asymmetric key pair.
 pub(crate) fn resolve_certificate_keystore_ref(
     cert: &mut ClientIdentityCertificate,
     resolver: &dyn CredentialResolver,
@@ -32,7 +21,7 @@ pub(crate) fn resolve_certificate_keystore_ref(
             })?;
 
         cert.inline_definition =
-            Some(crate::generated::keystore::EndEntityCertWithKeyInlineDefinition {
+            Some(tacacsrs_config::keystore::EndEntityCertWithKeyInlineDefinition {
                 public_key_format: material
                     .key_material
                     .public_key_format
@@ -52,10 +41,6 @@ pub(crate) fn resolve_certificate_keystore_ref(
     Ok(())
 }
 
-/// Resolves a CA/EE certificate truststore reference to inline material.
-///
-/// Calls [`CredentialResolver::resolve_certificate_bag`] to fetch all
-/// certificates from the referenced certificate bag.
 pub(crate) fn resolve_certs_truststore_ref(
     certs: &mut ServerAuthenticationCaCerts,
     resolver: &dyn CredentialResolver,
@@ -70,10 +55,10 @@ pub(crate) fn resolve_certs_truststore_ref(
                 )
             })?;
 
-        certs.inline_definition = Some(crate::generated::truststore::CertsInlineDefinition {
+        certs.inline_definition = Some(tacacsrs_config::truststore::CertsInlineDefinition {
             certificate: entries
                 .into_iter()
-                .map(|entry| crate::generated::truststore::CertsCertificate {
+                .map(|entry| tacacsrs_config::truststore::CertsCertificate {
                     name: entry.name,
                     cert_data: entry.cert_data,
                 })
@@ -84,9 +69,8 @@ pub(crate) fn resolve_certs_truststore_ref(
     Ok(())
 }
 
-/// Validates TLS certificate external references in the client-identity subtree.
 pub(crate) fn validate_certificate_refs(
-    ci: &crate::generated::tacacs_plus::TlsClientClientIdentity,
+    ci: &tacacsrs_config::TlsClientClientIdentity,
     server_name: &str,
     resolver: &dyn CredentialResolver,
     errors: &mut Vec<String>,
@@ -94,36 +78,35 @@ pub(crate) fn validate_certificate_refs(
     if let Some(ref cert) = ci.certificate {
         if let Some(ref ks_ref) = cert.central_keystore_reference {
             let cert_ref = ks_ref.certificate.as_deref().unwrap_or_default();
-            if let Err(e) = resolver.validate_keystore_certificate(cert_ref) {
+            if let Err(error) = resolver.validate_keystore_certificate(cert_ref) {
                 errors.push(format!(
-                    "server '{server_name}': certificate central-keystore-reference: {e}",
+                    "server '{server_name}': certificate central-keystore-reference: {error}",
                 ));
             }
         }
     }
 }
 
-/// Validates CA/EE certificate truststore references in the server-authentication subtree.
 pub(crate) fn validate_server_auth_cert_refs(
-    sa: &crate::generated::tacacs_plus::TlsClientServerAuthentication,
+    sa: &tacacsrs_config::TlsClientServerAuthentication,
     server_name: &str,
     resolver: &dyn CredentialResolver,
     errors: &mut Vec<String>,
 ) {
     if let Some(ref ca) = sa.ca_certs {
         if let Some(ref ts_ref) = ca.central_truststore_reference {
-            if let Err(e) = resolver.validate_certificate_bag(ts_ref) {
+            if let Err(error) = resolver.validate_certificate_bag(ts_ref) {
                 errors.push(format!(
-                    "server '{server_name}': ca-certs central-truststore-reference: {e}",
+                    "server '{server_name}': ca-certs central-truststore-reference: {error}",
                 ));
             }
         }
     }
     if let Some(ref ee) = sa.ee_certs {
         if let Some(ref ts_ref) = ee.central_truststore_reference {
-            if let Err(e) = resolver.validate_certificate_bag(ts_ref) {
+            if let Err(error) = resolver.validate_certificate_bag(ts_ref) {
                 errors.push(format!(
-                    "server '{server_name}': ee-certs central-truststore-reference: {e}",
+                    "server '{server_name}': ee-certs central-truststore-reference: {error}",
                 ));
             }
         }

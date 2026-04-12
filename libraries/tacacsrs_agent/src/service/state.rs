@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::bail;
 use tacacsrs_agent_client::{AccountingOperation, AccountingOperationResponse, ServiceError};
+use tacacsrs_credentials::ResolvedServer;
 use tacacsrs_networking::SingleConnectionState;
 use tokio::sync::{Mutex, Notify, RwLock};
 
@@ -58,7 +59,7 @@ pub(super) struct ServiceState {
 /// reconnect serialization and connection caching are independent.
 struct ServerState {
     /// The per-server connection configuration.
-    server: tacacsrs_config::ResolvedServer,
+    server: ResolvedServer,
     /// Cached upstream connection, if any. `None` means the server needs
     /// a fresh connection on the next request.
     connection: RwLock<Option<Arc<dyn UpstreamConnection>>>,
@@ -169,7 +170,7 @@ impl ServiceState {
     /// configured before constructing this state. The higher-level service
     /// constructor enforces that invariant for production use.
     pub(super) fn new(
-        servers: Vec<tacacsrs_config::ResolvedServer>,
+        servers: Vec<ResolvedServer>,
         connector: Arc<dyn UpstreamConnector>,
         preferred_probe_interval: std::time::Duration,
     ) -> Self {
@@ -667,6 +668,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use tacacsrs_credentials::ResolvedServer;
     use tokio::sync::Notify;
 
     use super::ServiceState;
@@ -676,12 +678,12 @@ mod tests {
     };
     use crate::upstream::UpstreamConnector;
 
-    fn test_server(address: &str) -> tacacsrs_config::ResolvedServer {
+    fn test_server(address: &str) -> ResolvedServer {
         let (host, port) = match address.rsplit_once(':') {
             Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
             None => (address.to_owned(), 49),
         };
-        tacacsrs_config::ResolvedServer::from_raw(tacacsrs_config::TacacsPlusServer {
+        ResolvedServer::from_raw(tacacsrs_config::TacacsPlusServer {
             name: address.to_owned(),
             server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
             address: host,

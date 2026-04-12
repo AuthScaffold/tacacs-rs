@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use tacacsrs_config::ResolvedServer;
+use tacacsrs_credentials::ResolvedServer;
 use tacacsrs_networking::{
     BoxedTransport,
     config_connect::{self, ConnectOptions},

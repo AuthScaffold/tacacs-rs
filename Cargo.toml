@@ -6,6 +6,7 @@ members = [
     "libraries/tacacsrs_agent_client",
     "libraries/tacacsrs_agent",
     "libraries/tacacsrs_config",
+    "libraries/tacacsrs_credentials",
     "executables/tacon",
     "executables/tacacsrs_agentd"
 ]

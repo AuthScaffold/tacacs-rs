@@ -1,4 +1,4 @@
-use tacacsrs_config::{parse_yang_json, resolve_server, validate_credential_references};
+use tacacsrs_config::{enumerate_server, parse_yang_json};
 
 fn main() -> anyhow::Result<()> {
     let json = r#"{
@@ -46,15 +46,12 @@ fn main() -> anyhow::Result<()> {
     }"#;
 
     // Parse raw config without destructively resolving references
-    let config = parse_yang_json(json, None)?;
+    let config = parse_yang_json(json)?;
     println!("📄 Parsed config with reusable client/server credential bundles");
 
-    // Validate all credential references upfront (None = no external resolver needed)
-    validate_credential_references(&config, None)?;
-    println!("✅ Bundle references are valid\n");
-
-    // Resolve a specific server — bundle references are materialized inline
-    let resolved = resolve_server(&config, "primary", None)?;
+    // Enumerate a specific server — shared bundle references are materialized inline
+    let resolved = enumerate_server(&config, "primary")?;
+    println!("✅ Bundle references enumerated inline\n");
 
     let client_identity = resolved
         .client_identity
@@ -72,11 +69,16 @@ fn main() -> anyhow::Result<()> {
     assert_eq!(inline.cert_data.as_deref(), Some("dGVzdC1jZXJ0"));
     assert_eq!(inline.cleartext_private_key.as_deref(), Some("dGVzdC1rZXk="));
 
-    println!("🔐 Resolved server '{}'", resolved.name);
-    println!("  ├─ endpoint: {}", resolved.socket_address());
-    println!("  ├─ is_tls: {}", resolved.is_tls());
+    println!("🔐 Enumerated server '{}'", resolved.name);
+    println!("  ├─ endpoint: {}:{}", resolved.address, resolved.port);
+    println!(
+        "  ├─ is_tls: {}",
+        resolved.client_identity.is_some()
+            || resolved.server_authentication.is_some()
+            || resolved.hello_params.is_some()
+    );
     println!("  ├─ bundle reference cleared: {}", client_identity.credentials_reference.is_none());
-    println!("  └─ inline certificate + private key are now present on the resolved value");
+    println!("  └─ inline certificate + private key are now present on the enumerated value");
 
     Ok(())
 }

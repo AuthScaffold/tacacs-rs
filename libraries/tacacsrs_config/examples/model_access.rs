@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
     }"#;
 
     // Parse YANG config without credential resolution
-    let config = parse_yang_json(json, None)?;
+    let config = parse_yang_json(json)?;
     let server = &config.server[0];
 
     println!("📄 Raw model access example");

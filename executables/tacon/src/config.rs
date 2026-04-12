@@ -1,5 +1,6 @@
 use anyhow::Context;
-use tacacsrs_config::{ResolvedServer, TacacsPlusServer, TacacsPlusServerType};
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
+use tacacsrs_credentials::{ResolvedServer, resolve_servers};
 
 use crate::cli::Cli;
 
@@ -126,9 +127,11 @@ fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyho
 ///
 /// Returns an error if the config file cannot be read, parsed, or contains no servers.
 pub fn server_config_from_file(path: &std::path::Path) -> anyhow::Result<ResolvedServer> {
-    let yang_config = tacacsrs_config::parse_yang_json_file(path, None)
+    let yang_config = tacacsrs_config::parse_yang_json_file(path)
         .with_context(|| format!("Failed to load config from {}", path.display()))?;
-    let mut servers = tacacsrs_config::resolve_servers(&yang_config, None)
+    let enumerated_servers = tacacsrs_config::enumerate_servers(&yang_config)
+        .context("Failed to enumerate YANG config servers")?;
+    let mut servers = resolve_servers(enumerated_servers, None)
         .context("Failed to resolve YANG config servers")?;
     if servers.is_empty() {
         anyhow::bail!("Config file contains no server entries");

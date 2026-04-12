@@ -9,23 +9,13 @@ use crate::generated::tacacs_plus::{
     ServerAuthenticationRawPublicKeys, TacacsPlus, TacacsPlusServer, Tls13Epsk,
     TlsClientClientIdentity, TlsClientServerAuthentication,
 };
-use crate::resolvers::CredentialResolver;
 
 /// Validate a parsed TACACS+ configuration against YANG model constraints.
-///
-/// When `resolver` is provided, external credential references
-/// (`central-keystore-reference`, `central-truststore-reference`) are
-/// validated against it. When `resolver` is `None`, configs containing
-/// external references will fail validation since the references cannot be
-/// verified.
 ///
 /// # Errors
 ///
 /// Returns an error describing the first constraint violation found.
-pub fn validate_config(
-    config: &TacacsPlus,
-    resolver: Option<&dyn CredentialResolver>,
-) -> anyhow::Result<()> {
+pub fn validate_config(config: &TacacsPlus) -> anyhow::Result<()> {
     if config.server.is_empty() {
         anyhow::bail!("server list must contain at least one entry");
     }
@@ -49,7 +39,7 @@ pub fn validate_config(
         reject_unsupported_credentials_features(&credentials.id, credentials)?;
     }
 
-    crate::resolvers::validate_credential_references(config, resolver)?;
+    crate::enumeration::validate_credential_references(config)?;
 
     validate_key_formats(config)?;
 

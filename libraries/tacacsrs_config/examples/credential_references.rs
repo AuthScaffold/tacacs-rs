@@ -1,6 +1,8 @@
-use tacacsrs_config::{
-    parse_yang_json, resolve_server, resolve_servers, validate_credential_references,
-    CredentialResolver, TacacsPlusServerType,
+use tacacsrs_config::{enumerate_server, enumerate_servers, parse_yang_json, TacacsPlusServerType};
+use tacacsrs_credentials::{
+    AsymmetricKeyMaterial, CertificateEntry, CredentialResolver, SymmetricKeyMaterial,
+    TruststorePublicKeyMaterial, X509CertificateMaterial, resolve_server, resolve_servers,
+    validate_external_servers_references,
 };
 
 /// Simple reference resolver that copies credentials within the same config
@@ -10,10 +12,10 @@ impl CredentialResolver for LocalReferenceResolver {
     fn resolve_keystore_certificate(
         &self,
         _key: &str,
-    ) -> anyhow::Result<Option<tacacsrs_config::X509CertificateMaterial>> {
-        Ok(Some(tacacsrs_config::X509CertificateMaterial {
+    ) -> anyhow::Result<Option<X509CertificateMaterial>> {
+        Ok(Some(X509CertificateMaterial {
             cert_data: "RESOLVED_CERT_DATA".to_string(),
-            key_material: tacacsrs_config::AsymmetricKeyMaterial {
+            key_material: AsymmetricKeyMaterial {
                 cleartext_private_key: "RESOLVED_PRIVATE_KEY".to_string(),
                 public_key: Some("RESOLVED_PUBLIC_KEY".to_string()),
                 private_key_format: Some(
@@ -26,30 +28,24 @@ impl CredentialResolver for LocalReferenceResolver {
         }))
     }
 
-    fn resolve_certificate_bag(
-        &self,
-        _key: &str,
-    ) -> anyhow::Result<Option<Vec<tacacsrs_config::CertificateEntry>>> {
+    fn resolve_certificate_bag(&self, _key: &str) -> anyhow::Result<Option<Vec<CertificateEntry>>> {
         Ok(Some(vec![
-            tacacsrs_config::CertificateEntry {
+            CertificateEntry {
                 name: "root-ca".to_string(),
                 cert_data: "RESOLVED_ROOT_CA".to_string(),
             },
-            tacacsrs_config::CertificateEntry {
+            CertificateEntry {
                 name: "intermediate-ca".to_string(),
                 cert_data: "RESOLVED_INTERMEDIATE_CA".to_string(),
             },
         ]))
     }
 
-    fn resolve_asymmetric_key(
-        &self,
-        _key: &str,
-    ) -> anyhow::Result<Option<tacacsrs_config::AsymmetricKeyMaterial>> {
+    fn resolve_asymmetric_key(&self, _key: &str) -> anyhow::Result<Option<AsymmetricKeyMaterial>> {
         // In a real implementation, this would fetch the full asymmetric key
         // entry (private key, public key, and format identities) from a
         // central keystore.
-        Ok(Some(tacacsrs_config::AsymmetricKeyMaterial {
+        Ok(Some(AsymmetricKeyMaterial {
             cleartext_private_key: "RESOLVED_PRIVATE_KEY".to_string(),
             public_key: Some("RESOLVED_PUBLIC_KEY".to_string()),
             private_key_format: Some(
@@ -61,13 +57,10 @@ impl CredentialResolver for LocalReferenceResolver {
         }))
     }
 
-    fn resolve_symmetric_key(
-        &self,
-        _key: &str,
-    ) -> anyhow::Result<Option<tacacsrs_config::SymmetricKeyMaterial>> {
+    fn resolve_symmetric_key(&self, _key: &str) -> anyhow::Result<Option<SymmetricKeyMaterial>> {
         // In a real implementation, this would fetch the symmetric key
         // entry (key material and format identity) from a central keystore.
-        Ok(Some(tacacsrs_config::SymmetricKeyMaterial {
+        Ok(Some(SymmetricKeyMaterial {
             cleartext_symmetric_key: "RESOLVED_SYMMETRIC_KEY".to_string(),
             key_format: Some(
                 tacacsrs_config::crypto_types::SymmetricKeyFormat::OctetStringKeyFormat,
@@ -78,8 +71,8 @@ impl CredentialResolver for LocalReferenceResolver {
     fn resolve_public_key_bag(
         &self,
         _key: &str,
-    ) -> anyhow::Result<Option<Vec<tacacsrs_config::TruststorePublicKeyMaterial>>> {
-        Ok(Some(vec![tacacsrs_config::TruststorePublicKeyMaterial {
+    ) -> anyhow::Result<Option<Vec<TruststorePublicKeyMaterial>>> {
+        Ok(Some(vec![TruststorePublicKeyMaterial {
             name: "resolved-pk".to_string(),
             public_key: "RESOLVED_PUBLIC_KEY".to_string(),
             public_key_format:
@@ -108,6 +101,7 @@ impl CredentialResolver for LocalReferenceResolver {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> anyhow::Result<()> {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
@@ -141,15 +135,20 @@ fn main() -> anyhow::Result<()> {
     }"#;
 
     // Parse YANG config (preserves credential references in the raw model)
-    let config = parse_yang_json(json, Some(&LocalReferenceResolver))?;
+    let config = parse_yang_json(json)?;
     println!("📄 Parsed YANG config — raw model preserved, credential references intact");
 
-    // Validate all credential references upfront
-    validate_credential_references(&config, Some(&LocalReferenceResolver))?;
-    println!("✅ All credential references validated successfully\n");
+    let enumerated_servers = enumerate_servers(&config)?;
+
+    // Validate external credential references after bundle enumeration.
+    validate_external_servers_references(&enumerated_servers, Some(&LocalReferenceResolver))?;
+    println!("✅ All external credential references validated successfully\n");
 
     // Named resolution: resolve a specific server by name.
-    let named = resolve_server(&config, "authz-tls-by-reference", Some(&LocalReferenceResolver))?;
+    let named = resolve_server(
+        enumerate_server(&config, "authz-tls-by-reference")?,
+        Some(&LocalReferenceResolver),
+    )?;
 
     let rpk_inline = named
         .client_identity
@@ -159,10 +158,10 @@ fn main() -> anyhow::Result<()> {
         .and_then(|inline| inline.cleartext_private_key.as_deref())
         .expect("resolved server should include inline private key material");
 
-    assert_eq!(rpk_inline, "RESOLVED_MATERIAL");
+    assert_eq!(rpk_inline, "RESOLVED_PRIVATE_KEY");
 
     // Enumeration approach: resolve all servers, then pick by server-type bitflag.
-    let resolved_servers = resolve_servers(&config, Some(&LocalReferenceResolver))?;
+    let resolved_servers = resolve_servers(enumerated_servers, Some(&LocalReferenceResolver))?;
     let accounting = resolved_servers
         .iter()
         .find(|s| s.server_type.contains(TacacsPlusServerType::ACCOUNTING))

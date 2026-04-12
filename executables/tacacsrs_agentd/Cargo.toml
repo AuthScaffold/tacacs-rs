@@ -15,6 +15,7 @@ log = "0.4"
 tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
 tacacsrs-agent = { path = "../../libraries/tacacsrs_agent" }
 tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
+tacacsrs-credentials = { path = "../../libraries/tacacsrs_credentials" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
 tokio = { version = "1.49.0", features = ["full"] }
 

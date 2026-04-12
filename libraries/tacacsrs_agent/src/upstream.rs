@@ -7,7 +7,7 @@
 //!
 //! # Transport selection
 //!
-//! Each [`tacacsrs_config::ResolvedServer`] wraps a fully-resolved
+//! Each [`tacacsrs_credentials::ResolvedServer`] wraps a fully-resolved
 //! `TacacsPlusServer` whose YANG model fields determine which transport is
 //! used for the upstream TACACS+ connection:
 //!
@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
+use tacacsrs_credentials::ResolvedServer;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
@@ -38,7 +39,6 @@ use tacacsrs_messages::enumerations::{
 use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
 };
-use tacacsrs_config::ResolvedServer;
 use tacacsrs_networking::SingleConnectionState;
 use tacacsrs_networking::config_connect::{self, ConnectOptions};
 use tacacsrs_networking::dedicated_connection::DedicatedConnection;

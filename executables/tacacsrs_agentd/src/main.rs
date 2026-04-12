@@ -6,7 +6,8 @@ use anyhow::Context;
 use clap::{ArgGroup, Parser};
 use tacacsrs_agent::{ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_config::{ResolvedServer, TacacsPlusServer, TacacsPlusServerType};
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
+use tacacsrs_credentials::{ResolvedServer, resolve_servers};
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
@@ -250,10 +251,11 @@ fn base_server_from_address(addr: &str, index: usize, timeout: u16) -> TacacsPlu
 }
 
 fn servers_from_config(path: &std::path::Path) -> anyhow::Result<Vec<ResolvedServer>> {
-    let yang_config = tacacsrs_config::parse_yang_json_file(path, None)
+    let yang_config = tacacsrs_config::parse_yang_json_file(path)
         .with_context(|| format!("Failed to load config from {}", path.display()))?;
-    tacacsrs_config::resolve_servers(&yang_config, None)
-        .context("Failed to resolve YANG config servers")
+    let enumerated_servers = tacacsrs_config::enumerate_servers(&yang_config)
+        .context("Failed to enumerate YANG config servers")?;
+    resolve_servers(enumerated_servers, None).context("Failed to resolve YANG config servers")
 }
 
 /// Starts the central TACACS+ client service process.

@@ -1,6 +1,6 @@
 //! Centralised stream establishment from a [`ResolvedServer`] configuration.
 //!
-//! This module bridges the config layer ([`tacacsrs_config::ResolvedServer`])
+//! This module bridges the credentials layer ([`tacacsrs_credentials::ResolvedServer`])
 //! and the transport layer, providing a single function that handles TCP,
 //! TLS (certificate-based), and TLS-PSK connection setup. It replaces the
 //! duplicated connection logic that previously lived in both `tacon` and
@@ -13,8 +13,8 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-use tacacsrs_config::ResolvedServer;
 use tacacsrs_config::crypto_types::PrivateKeyFormat;
+use tacacsrs_credentials::ResolvedServer;
 use tokio_rustls::rustls;
 
 use crate::BoxedTransport;

@@ -16,6 +16,7 @@ parking_lot = "0.12.5"
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "logging"] }
 rustls-pki-types = "1.14.0"
 rustls-cert-file-reader = "0.4.2"
+tacacsrs-credentials = { path = "../tacacsrs_credentials" }
 webpki-roots = "1.0.6"
 openssl = { version = "0.10.76", optional = true }
 openssl-sys = { version = "0.9.112", optional = true }
