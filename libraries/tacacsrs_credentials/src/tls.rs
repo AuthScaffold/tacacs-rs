@@ -1,72 +1,104 @@
 use anyhow::{Context, Result};
+use tacacsrs_config::crypto_types::PublicKeyFormat;
 use tacacsrs_config::{ClientIdentityCertificate, ServerAuthenticationCaCerts};
 
-use crate::CredentialResolver;
+use crate::{
+    CredentialResolver, TlsClientCertificateReference, encode_certificate_der,
+    encode_private_key_data, encode_public_key_der,
+};
 
 pub(crate) fn resolve_certificate_keystore_ref(
     cert: &mut ClientIdentityCertificate,
     resolver: &dyn CredentialResolver,
 ) -> Result<()> {
     if let Some(ref ks_ref) = cert.central_keystore_reference {
-        let cert_ref = ks_ref.certificate.as_deref().unwrap_or_default();
+        let reference = TlsClientCertificateReference {
+            certificate: ks_ref.certificate.clone(),
+            asymmetric_key: ks_ref.asymmetric_key.clone(),
+        };
         let material = resolver
-            .resolve_keystore_certificate(cert_ref)
+            .resolve_tls_client_certificate(&reference)
             .with_context(|| {
-                format!("failed to resolve central-keystore-reference for certificate '{cert_ref}'")
+                format!(
+                    "failed to resolve central-keystore-reference for certificate '{}'",
+                    reference.display_key()
+                )
             })?
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "credential resolver did not resolve keystore certificate '{cert_ref}'"
+                    "credential resolver did not resolve TLS client certificate '{}'",
+                    reference.display_key()
                 )
             })?;
 
+        let encoded_private_key = encode_private_key_data(&material.private_key)?;
+
         cert.inline_definition =
             Some(tacacsrs_config::keystore::EndEntityCertWithKeyInlineDefinition {
-                public_key_format: material
-                    .key_material
-                    .public_key_format
-                    .map(|f| f.as_rfc7951_str().to_owned()),
-                public_key: material.key_material.public_key,
-                private_key_format: material
-                    .key_material
-                    .private_key_format
-                    .map(|f| f.as_rfc7951_str().to_owned()),
-                cleartext_private_key: Some(material.key_material.cleartext_private_key),
+                public_key_format: material.public_key.as_ref().map(|_| {
+                    PublicKeyFormat::SubjectPublicKeyInfoFormat
+                        .as_rfc7951_str()
+                        .to_owned()
+                }),
+                public_key: material.public_key.as_ref().map(encode_public_key_der),
+                private_key_format: Some(encoded_private_key.format_rfc7951),
+                cleartext_private_key: Some(encoded_private_key.der_base64),
                 hidden_private_key: None,
                 encrypted_private_key: None,
-                cert_data: Some(material.cert_data),
+                cert_data: Some(encode_certificate_der(&material.certificate)),
             });
         cert.central_keystore_reference = None;
     }
     Ok(())
 }
 
-pub(crate) fn resolve_certs_truststore_ref(
+fn resolve_certs_truststore_ref(
     certs: &mut ServerAuthenticationCaCerts,
     resolver: &dyn CredentialResolver,
+    is_end_entity: bool,
 ) -> Result<()> {
     if let Some(ref ts_ref) = certs.central_truststore_reference {
-        let entries = resolver
-            .resolve_certificate_bag(ts_ref)
-            .context("failed to resolve central-truststore-reference for certs")?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "credential resolver did not resolve truststore certificate bag '{ts_ref}'"
-                )
-            })?;
+        let entries = if is_end_entity {
+            resolver
+                .resolve_tls_server_ee_certificates(ts_ref)
+                .context("failed to resolve central-truststore-reference for ee-certs")?
+        } else {
+            resolver
+                .resolve_tls_server_ca_certificates(ts_ref)
+                .context("failed to resolve central-truststore-reference for ca-certs")?
+        }
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "credential resolver did not resolve truststore certificate bag '{ts_ref}'"
+            )
+        })?;
 
         certs.inline_definition = Some(tacacsrs_config::truststore::CertsInlineDefinition {
             certificate: entries
                 .into_iter()
                 .map(|entry| tacacsrs_config::truststore::CertsCertificate {
                     name: entry.name,
-                    cert_data: entry.cert_data,
+                    cert_data: encode_certificate_der(&entry.certificate),
                 })
                 .collect(),
         });
         certs.central_truststore_reference = None;
     }
     Ok(())
+}
+
+pub(crate) fn resolve_ca_certs_truststore_ref(
+    certs: &mut ServerAuthenticationCaCerts,
+    resolver: &dyn CredentialResolver,
+) -> Result<()> {
+    resolve_certs_truststore_ref(certs, resolver, false)
+}
+
+pub(crate) fn resolve_ee_certs_truststore_ref(
+    certs: &mut ServerAuthenticationCaCerts,
+    resolver: &dyn CredentialResolver,
+) -> Result<()> {
+    resolve_certs_truststore_ref(certs, resolver, true)
 }
 
 pub(crate) fn validate_certificate_refs(
@@ -77,8 +109,11 @@ pub(crate) fn validate_certificate_refs(
 ) {
     if let Some(ref cert) = ci.certificate {
         if let Some(ref ks_ref) = cert.central_keystore_reference {
-            let cert_ref = ks_ref.certificate.as_deref().unwrap_or_default();
-            if let Err(error) = resolver.validate_keystore_certificate(cert_ref) {
+            let reference = TlsClientCertificateReference {
+                certificate: ks_ref.certificate.clone(),
+                asymmetric_key: ks_ref.asymmetric_key.clone(),
+            };
+            if let Err(error) = resolver.validate_tls_client_certificate(&reference) {
                 errors.push(format!(
                     "server '{server_name}': certificate central-keystore-reference: {error}",
                 ));
@@ -95,7 +130,7 @@ pub(crate) fn validate_server_auth_cert_refs(
 ) {
     if let Some(ref ca) = sa.ca_certs {
         if let Some(ref ts_ref) = ca.central_truststore_reference {
-            if let Err(error) = resolver.validate_certificate_bag(ts_ref) {
+            if let Err(error) = resolver.validate_tls_server_ca_certificates(ts_ref) {
                 errors.push(format!(
                     "server '{server_name}': ca-certs central-truststore-reference: {error}",
                 ));
@@ -104,7 +139,7 @@ pub(crate) fn validate_server_auth_cert_refs(
     }
     if let Some(ref ee) = sa.ee_certs {
         if let Some(ref ts_ref) = ee.central_truststore_reference {
-            if let Err(error) = resolver.validate_certificate_bag(ts_ref) {
+            if let Err(error) = resolver.validate_tls_server_ee_certificates(ts_ref) {
                 errors.push(format!(
                     "server '{server_name}': ee-certs central-truststore-reference: {error}",
                 ));
@@ -116,6 +151,7 @@ pub(crate) fn validate_server_auth_cert_refs(
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
     use tacacsrs_config::{
         ClientIdentityCertificate, ServerAuthenticationCaCerts, TacacsPlusServer,
@@ -123,18 +159,18 @@ mod tests {
     };
 
     use super::{
-        resolve_certificate_keystore_ref, resolve_certs_truststore_ref, validate_certificate_refs,
-        validate_server_auth_cert_refs,
+        resolve_ca_certs_truststore_ref, resolve_certificate_keystore_ref,
+        validate_certificate_refs, validate_server_auth_cert_refs,
     };
     use crate::{
         resolve_server, validate_external_server_references, AsymmetricKeyMaterial,
-        CertificateEntry, CredentialResolver, SymmetricKeyMaterial, TruststorePublicKeyMaterial,
-        X509CertificateMaterial,
+        CredentialResolver, NamedCertificateDer, SymmetricKeyMaterial,
+        TlsClientCertificateMaterial, TlsClientCertificateReference, TruststorePublicKeyMaterial,
     };
 
     struct TlsResolver {
-        certificate: Option<X509CertificateMaterial>,
-        certificate_bag: Option<Vec<CertificateEntry>>,
+        certificate: Option<TlsClientCertificateMaterial>,
+        certificate_bag: Option<Vec<NamedCertificateDer>>,
         resolve_certificate_error: Option<&'static str>,
         resolve_bag_error: Option<&'static str>,
         validate_certificate_error: Option<&'static str>,
@@ -142,17 +178,30 @@ mod tests {
     }
 
     impl CredentialResolver for TlsResolver {
-        fn resolve_keystore_certificate(
+        fn resolve_tls_client_certificate(
             &self,
-            _key: &str,
-        ) -> Result<Option<X509CertificateMaterial>> {
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<Option<TlsClientCertificateMaterial>> {
             if let Some(message) = self.resolve_certificate_error {
                 return Err(anyhow::anyhow!(message));
             }
             Ok(self.certificate.clone())
         }
 
-        fn resolve_certificate_bag(&self, _key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+        fn resolve_tls_server_ca_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
+            if let Some(message) = self.resolve_bag_error {
+                return Err(anyhow::anyhow!(message));
+            }
+            Ok(self.certificate_bag.clone())
+        }
+
+        fn resolve_tls_server_ee_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
             if let Some(message) = self.resolve_bag_error {
                 return Err(anyhow::anyhow!(message));
             }
@@ -174,8 +223,25 @@ mod tests {
             panic!("unexpected public key bag lookup")
         }
 
-        fn validate_keystore_certificate(&self, _key: &str) -> Result<()> {
+        fn validate_tls_client_certificate(
+            &self,
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<()> {
             if let Some(message) = self.validate_certificate_error {
+                return Err(anyhow::anyhow!(message));
+            }
+            Ok(())
+        }
+
+        fn validate_tls_server_ca_certificates(&self, _key: &str) -> Result<()> {
+            if let Some(message) = self.validate_bag_error {
+                return Err(anyhow::anyhow!(message));
+            }
+            Ok(())
+        }
+
+        fn validate_tls_server_ee_certificates(&self, _key: &str) -> Result<()> {
+            if let Some(message) = self.validate_bag_error {
                 return Err(anyhow::anyhow!(message));
             }
             Ok(())
@@ -189,13 +255,6 @@ mod tests {
             panic!("unexpected symmetric key validation")
         }
 
-        fn validate_certificate_bag(&self, _key: &str) -> Result<()> {
-            if let Some(message) = self.validate_bag_error {
-                return Err(anyhow::anyhow!(message));
-            }
-            Ok(())
-        }
-
         fn validate_public_key_bag(&self, _key: &str) -> Result<()> {
             panic!("unexpected public key bag validation")
         }
@@ -204,14 +263,24 @@ mod tests {
     struct PanicResolver;
 
     impl CredentialResolver for PanicResolver {
-        fn resolve_keystore_certificate(
+        fn resolve_tls_client_certificate(
             &self,
-            _key: &str,
-        ) -> Result<Option<X509CertificateMaterial>> {
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<Option<TlsClientCertificateMaterial>> {
             panic!("resolver should not be called")
         }
 
-        fn resolve_certificate_bag(&self, _key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+        fn resolve_tls_server_ca_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
+            panic!("resolver should not be called")
+        }
+
+        fn resolve_tls_server_ee_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
             panic!("resolver should not be called")
         }
 
@@ -230,7 +299,18 @@ mod tests {
             panic!("resolver should not be called")
         }
 
-        fn validate_keystore_certificate(&self, _key: &str) -> Result<()> {
+        fn validate_tls_client_certificate(
+            &self,
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<()> {
+            panic!("resolver should not be called")
+        }
+
+        fn validate_tls_server_ca_certificates(&self, _key: &str) -> Result<()> {
+            panic!("resolver should not be called")
+        }
+
+        fn validate_tls_server_ee_certificates(&self, _key: &str) -> Result<()> {
             panic!("resolver should not be called")
         }
 
@@ -242,13 +322,17 @@ mod tests {
             panic!("resolver should not be called")
         }
 
-        fn validate_certificate_bag(&self, _key: &str) -> Result<()> {
-            panic!("resolver should not be called")
-        }
-
         fn validate_public_key_bag(&self, _key: &str) -> Result<()> {
             panic!("resolver should not be called")
         }
+    }
+
+    fn sample_certificate_der(label: &str) -> CertificateDer<'static> {
+        CertificateDer::from(label.as_bytes().to_vec())
+    }
+
+    fn sample_private_key_der(label: &str) -> PrivateKeyDer<'static> {
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(label.as_bytes().to_vec()))
     }
 
     fn certificate_keystore_ref(reference: &str) -> ClientIdentityCertificate {
@@ -382,14 +466,10 @@ mod tests {
     fn resolve_certificate_keystore_ref_populates_inline_definition() {
         let mut certificate = certificate_keystore_ref("my-cert");
         let resolver = TlsResolver {
-            certificate: Some(X509CertificateMaterial {
-                cert_data: "RESOLVED_CERT_PEM".to_owned(),
-                key_material: AsymmetricKeyMaterial {
-                    cleartext_private_key: "RESOLVED_KEY_PEM".to_owned(),
-                    public_key: None,
-                    private_key_format: None,
-                    public_key_format: None,
-                },
+            certificate: Some(TlsClientCertificateMaterial {
+                certificate: sample_certificate_der("RESOLVED_CERT_DER"),
+                private_key: sample_private_key_der("RESOLVED_KEY_DER"),
+                public_key: None,
             }),
             certificate_bag: None,
             resolve_certificate_error: None,
@@ -402,8 +482,12 @@ mod tests {
 
         assert!(certificate.central_keystore_reference.is_none());
         let inline = certificate.inline_definition.as_ref().unwrap();
-        assert_eq!(inline.cert_data.as_deref(), Some("RESOLVED_CERT_PEM"));
-        assert_eq!(inline.cleartext_private_key.as_deref(), Some("RESOLVED_KEY_PEM"));
+        assert_eq!(inline.cert_data.as_deref(), Some("UkVTT0xWRURfQ0VSVF9ERVI="));
+        assert_eq!(inline.cleartext_private_key.as_deref(), Some("UkVTT0xWRURfS0VZX0RFUg=="));
+        assert_eq!(
+            inline.private_key_format.as_deref(),
+            Some("ietf-crypto-types:one-asymmetric-key-format"),
+        );
     }
 
     #[test]
@@ -411,9 +495,9 @@ mod tests {
         let mut certs = certs_truststore_ref("ca-ref");
         let resolver = TlsResolver {
             certificate: None,
-            certificate_bag: Some(vec![CertificateEntry {
+            certificate_bag: Some(vec![NamedCertificateDer {
                 name: "ca-ref".to_owned(),
-                cert_data: "CA_CERT_PEM".to_owned(),
+                certificate: sample_certificate_der("CA_CERT_DER"),
             }]),
             resolve_certificate_error: None,
             resolve_bag_error: None,
@@ -421,13 +505,13 @@ mod tests {
             validate_bag_error: None,
         };
 
-        resolve_certs_truststore_ref(&mut certs, &resolver).unwrap();
+        resolve_ca_certs_truststore_ref(&mut certs, &resolver).unwrap();
 
         assert!(certs.central_truststore_reference.is_none());
         let inline = certs.inline_definition.as_ref().unwrap();
         assert_eq!(inline.certificate.len(), 1);
         assert_eq!(inline.certificate[0].name, "ca-ref");
-        assert_eq!(inline.certificate[0].cert_data, "CA_CERT_PEM");
+        assert_eq!(inline.certificate[0].cert_data, "Q0FfQ0VSVF9ERVI=");
     }
 
     #[test]
@@ -444,7 +528,7 @@ mod tests {
 
         let error = resolve_certificate_keystore_ref(&mut certificate, &resolver).unwrap_err();
         let message = error.to_string();
-        assert!(message.contains("did not resolve keystore certificate 'missing-cert'"));
+        assert!(message.contains("did not resolve TLS client certificate 'missing-cert'"));
     }
 
     #[test]
@@ -459,7 +543,7 @@ mod tests {
             validate_bag_error: None,
         };
 
-        let error = resolve_certs_truststore_ref(&mut certs, &resolver).unwrap_err();
+        let error = resolve_ca_certs_truststore_ref(&mut certs, &resolver).unwrap_err();
         let message = error.to_string();
         assert!(message.contains("did not resolve truststore certificate bag 'missing-ca'"));
     }
@@ -536,7 +620,7 @@ mod tests {
         let error = resolve_server(server, Some(&resolver)).unwrap_err();
         let message = format!("{error:#}");
         assert!(message.contains("ctx-ee-ts"));
-        assert!(message.contains("central-truststore-reference for certs"));
+        assert!(message.contains("central-truststore-reference for ee-certs"));
     }
 
     #[test]
@@ -642,6 +726,6 @@ mod tests {
         let error = resolve_server(server, None).unwrap_err();
         let message = format!("{error:#}");
         assert!(message.contains("no credential resolver configured"));
-        assert!(message.contains("central-truststore-reference for certs"));
+        assert!(message.contains("TLS server CA certificates 'ca-ref'"));
     }
 }

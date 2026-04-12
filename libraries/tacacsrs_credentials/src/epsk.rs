@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use tacacsrs_config::Tls13Epsk;
 
-use crate::CredentialResolver;
+use crate::{CredentialResolver, encode_symmetric_key_data};
 
 pub(crate) fn resolve_epsk_keystore_ref(
     epsk: &mut Tls13Epsk,
@@ -19,7 +19,7 @@ pub(crate) fn resolve_epsk_keystore_ref(
 
         epsk.inline_definition = Some(tacacsrs_config::keystore::SymmetricKeyInlineDefinition {
             key_format: material.key_format.map(|f| f.as_rfc7951_str().to_owned()),
-            cleartext_symmetric_key: Some(material.cleartext_symmetric_key),
+            cleartext_symmetric_key: Some(encode_symmetric_key_data(&material.key_bytes)),
             hidden_symmetric_key: None,
             encrypted_symmetric_key: None,
         });
@@ -48,6 +48,7 @@ pub(crate) fn validate_epsk_keystore_refs(
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use base64::Engine;
 
     use tacacsrs_config::crypto_types::SymmetricKeyFormat;
     use tacacsrs_config::{
@@ -57,9 +58,9 @@ mod tests {
 
     use super::{resolve_epsk_keystore_ref, validate_epsk_keystore_refs};
     use crate::{
+        NamedCertificateDer, TlsClientCertificateMaterial, TlsClientCertificateReference,
         resolve_server, validate_external_server_references, AsymmetricKeyMaterial,
-        CertificateEntry, CredentialResolver, SymmetricKeyMaterial, TruststorePublicKeyMaterial,
-        X509CertificateMaterial,
+        CredentialResolver, SymmetricKeyMaterial, TruststorePublicKeyMaterial,
     };
 
     struct SymmetricResolver {
@@ -69,14 +70,24 @@ mod tests {
     }
 
     impl CredentialResolver for SymmetricResolver {
-        fn resolve_keystore_certificate(
+        fn resolve_tls_client_certificate(
             &self,
-            _key: &str,
-        ) -> Result<Option<X509CertificateMaterial>> {
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<Option<TlsClientCertificateMaterial>> {
             panic!("unexpected certificate lookup")
         }
 
-        fn resolve_certificate_bag(&self, _key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+        fn resolve_tls_server_ca_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
+            panic!("unexpected certificate bag lookup")
+        }
+
+        fn resolve_tls_server_ee_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
             panic!("unexpected certificate bag lookup")
         }
 
@@ -98,8 +109,19 @@ mod tests {
             panic!("unexpected public key bag lookup")
         }
 
-        fn validate_keystore_certificate(&self, _key: &str) -> Result<()> {
+        fn validate_tls_client_certificate(
+            &self,
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<()> {
             panic!("unexpected certificate validation")
+        }
+
+        fn validate_tls_server_ca_certificates(&self, _key: &str) -> Result<()> {
+            panic!("unexpected certificate bag validation")
+        }
+
+        fn validate_tls_server_ee_certificates(&self, _key: &str) -> Result<()> {
+            panic!("unexpected certificate bag validation")
         }
 
         fn validate_asymmetric_key(&self, _key: &str) -> Result<()> {
@@ -113,10 +135,6 @@ mod tests {
             Ok(())
         }
 
-        fn validate_certificate_bag(&self, _key: &str) -> Result<()> {
-            panic!("unexpected certificate bag validation")
-        }
-
         fn validate_public_key_bag(&self, _key: &str) -> Result<()> {
             panic!("unexpected public key bag validation")
         }
@@ -125,14 +143,24 @@ mod tests {
     struct PanicResolver;
 
     impl CredentialResolver for PanicResolver {
-        fn resolve_keystore_certificate(
+        fn resolve_tls_client_certificate(
             &self,
-            _key: &str,
-        ) -> Result<Option<X509CertificateMaterial>> {
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<Option<TlsClientCertificateMaterial>> {
             panic!("resolver should not be called")
         }
 
-        fn resolve_certificate_bag(&self, _key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+        fn resolve_tls_server_ca_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
+            panic!("resolver should not be called")
+        }
+
+        fn resolve_tls_server_ee_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
             panic!("resolver should not be called")
         }
 
@@ -151,7 +179,18 @@ mod tests {
             panic!("resolver should not be called")
         }
 
-        fn validate_keystore_certificate(&self, _key: &str) -> Result<()> {
+        fn validate_tls_client_certificate(
+            &self,
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<()> {
+            panic!("resolver should not be called")
+        }
+
+        fn validate_tls_server_ca_certificates(&self, _key: &str) -> Result<()> {
+            panic!("resolver should not be called")
+        }
+
+        fn validate_tls_server_ee_certificates(&self, _key: &str) -> Result<()> {
             panic!("resolver should not be called")
         }
 
@@ -160,10 +199,6 @@ mod tests {
         }
 
         fn validate_symmetric_key(&self, _key: &str) -> Result<()> {
-            panic!("resolver should not be called")
-        }
-
-        fn validate_certificate_bag(&self, _key: &str) -> Result<()> {
             panic!("resolver should not be called")
         }
 
@@ -238,7 +273,7 @@ mod tests {
         let mut epsk = epsk_keystore("epsk-ref", "client@example.com");
         let resolver = SymmetricResolver {
             resolved: Some(SymmetricKeyMaterial {
-                cleartext_symmetric_key: "EPSK_SECRET".to_owned(),
+                key_bytes: b"EPSK_SECRET".to_vec(),
                 key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
             }),
             resolve_error: None,
@@ -249,7 +284,14 @@ mod tests {
 
         assert!(epsk.central_keystore_reference.is_none());
         let inline = epsk.inline_definition.as_ref().unwrap();
-        assert_eq!(inline.cleartext_symmetric_key.as_deref(), Some("EPSK_SECRET"));
+        assert_eq!(
+            inline.cleartext_symmetric_key.as_deref(),
+            Some(
+                base64::engine::general_purpose::STANDARD
+                    .encode(b"EPSK_SECRET")
+                    .as_str()
+            ),
+        );
         assert_eq!(inline.key_format.as_deref(), Some("ietf-crypto-types:octet-string-key-format"),);
     }
 

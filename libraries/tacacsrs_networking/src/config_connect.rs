@@ -101,12 +101,12 @@ pub async fn establish_stream(
                 .as_ref()
                 .and_then(|d| d.cleartext_symmetric_key.as_deref())
                 .unwrap_or_default();
+            let key_bytes = parse_symmetric_key_data(key_material)
+                .context("failed to parse TLS PSK key data")?;
 
-            let psk = crate::transport::tls_psk::PskIdentity::new(
-                &epsk.external_identity,
-                key_material.as_bytes(),
-            )
-            .context("Invalid PSK credentials")?;
+            let psk =
+                crate::transport::tls_psk::PskIdentity::new(&epsk.external_identity, key_bytes)
+                    .context("Invalid PSK credentials")?;
 
             let tls_stream = crate::transport::tls_psk::PskConfigurationBuilder::new(psk)
                 .connect(tcp_stream)
@@ -420,6 +420,13 @@ fn parse_private_key_data(
     }
 }
 
+#[cfg(feature = "psk")]
+fn parse_symmetric_key_data(data: &str) -> Result<Vec<u8>> {
+    BASE64
+        .decode(data.trim())
+        .context("failed to base64-decode symmetric key data")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,5 +511,25 @@ mod tests {
         // This will succeed at the decode step but may fail at store.add;
         // we're testing the parsing path here
         assert!(result.is_ok());
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn parse_symmetric_key_data_base64() {
+        let b64 = BASE64.encode(b"resolved-psk-bytes");
+
+        let key = parse_symmetric_key_data(&b64).unwrap();
+
+        assert_eq!(key, b"resolved-psk-bytes");
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn parse_symmetric_key_data_rejects_invalid_base64() {
+        let error = parse_symmetric_key_data("not base64!!!").unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("failed to base64-decode symmetric key data"));
     }
 }

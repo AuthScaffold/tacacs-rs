@@ -3,7 +3,10 @@ use std::ops::Deref;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, SubjectPublicKeyInfoDer};
+use tacacsrs_config::crypto_types::{PrivateKeyFormat, SymmetricKeyFormat};
 use tacacsrs_config::{TacacsPlusServer, TlsClientClientIdentity, TlsClientServerAuthentication};
 
 mod epsk;
@@ -13,15 +16,31 @@ mod tls;
 struct NoOpResolver;
 
 impl CredentialResolver for NoOpResolver {
-    fn resolve_keystore_certificate(&self, key: &str) -> Result<Option<X509CertificateMaterial>> {
+    fn resolve_tls_client_certificate(
+        &self,
+        reference: &TlsClientCertificateReference,
+    ) -> Result<Option<TlsClientCertificateMaterial>> {
         Err(anyhow::anyhow!(
-            "no credential resolver configured; cannot resolve keystore certificate '{key}'"
+            "no credential resolver configured; cannot resolve TLS client certificate reference '{}'",
+            reference.display_key(),
         ))
     }
 
-    fn resolve_certificate_bag(&self, key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+    fn resolve_tls_server_ca_certificates(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<NamedCertificateDer>>> {
         Err(anyhow::anyhow!(
-            "no credential resolver configured; cannot resolve certificate bag '{key}'"
+            "no credential resolver configured; cannot resolve TLS server CA certificates '{key}'"
+        ))
+    }
+
+    fn resolve_tls_server_ee_certificates(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<NamedCertificateDer>>> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot resolve TLS server end-entity certificates '{key}'"
         ))
     }
 
@@ -46,9 +65,25 @@ impl CredentialResolver for NoOpResolver {
         ))
     }
 
-    fn validate_keystore_certificate(&self, key: &str) -> Result<()> {
+    fn validate_tls_client_certificate(
+        &self,
+        reference: &TlsClientCertificateReference,
+    ) -> Result<()> {
         Err(anyhow::anyhow!(
-            "no credential resolver configured; cannot validate keystore certificate '{key}'"
+            "no credential resolver configured; cannot validate TLS client certificate reference '{}'",
+            reference.display_key(),
+        ))
+    }
+
+    fn validate_tls_server_ca_certificates(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot validate TLS server CA certificates '{key}'"
+        ))
+    }
+
+    fn validate_tls_server_ee_certificates(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "no credential resolver configured; cannot validate TLS server end-entity certificates '{key}'"
         ))
     }
 
@@ -64,12 +99,6 @@ impl CredentialResolver for NoOpResolver {
         ))
     }
 
-    fn validate_certificate_bag(&self, key: &str) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "no credential resolver configured; cannot validate certificate bag '{key}'"
-        ))
-    }
-
     fn validate_public_key_bag(&self, key: &str) -> Result<()> {
         Err(anyhow::anyhow!(
             "no credential resolver configured; cannot validate public key bag '{key}'"
@@ -82,37 +111,87 @@ fn effective_resolver(resolver: Option<&dyn CredentialResolver>) -> &dyn Credent
     resolver.unwrap_or(&NOOP)
 }
 
-#[derive(Debug, Clone)]
-pub struct X509CertificateMaterial {
-    pub cert_data: String,
-    pub key_material: AsymmetricKeyMaterial,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsClientCertificateReference {
+    pub certificate: Option<String>,
+    pub asymmetric_key: Option<String>,
+}
+
+impl TlsClientCertificateReference {
+    #[must_use]
+    pub fn display_key(&self) -> &str {
+        self.certificate
+            .as_deref()
+            .or(self.asymmetric_key.as_deref())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct CertificateEntry {
+pub struct NamedCertificateDer {
     pub name: String,
-    pub cert_data: String,
+    pub certificate: CertificateDer<'static>,
 }
 
-#[derive(Debug, Clone)]
+pub struct TlsClientCertificateMaterial {
+    pub certificate: CertificateDer<'static>,
+    pub private_key: PrivateKeyDer<'static>,
+    pub public_key: Option<SubjectPublicKeyInfoDer<'static>>,
+}
+
+impl Clone for TlsClientCertificateMaterial {
+    fn clone(&self) -> Self {
+        Self {
+            certificate: self.certificate.clone(),
+            private_key: self.private_key.clone_key(),
+            public_key: self.public_key.clone(),
+        }
+    }
+}
+
+impl fmt::Debug for TlsClientCertificateMaterial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TlsClientCertificateMaterial")
+            .field("certificate", &self.certificate)
+            .field("private_key", &"<redacted>")
+            .field("public_key", &self.public_key)
+            .finish()
+    }
+}
+
 pub struct AsymmetricKeyMaterial {
-    pub cleartext_private_key: String,
-    pub public_key: Option<String>,
-    pub private_key_format: Option<PrivateKeyFormat>,
-    pub public_key_format: Option<PublicKeyFormat>,
+    pub private_key: PrivateKeyDer<'static>,
+    pub public_key: Option<SubjectPublicKeyInfoDer<'static>>,
+}
+
+impl Clone for AsymmetricKeyMaterial {
+    fn clone(&self) -> Self {
+        Self {
+            private_key: self.private_key.clone_key(),
+            public_key: self.public_key.clone(),
+        }
+    }
+}
+
+impl fmt::Debug for AsymmetricKeyMaterial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AsymmetricKeyMaterial")
+            .field("private_key", &"<redacted>")
+            .field("public_key", &self.public_key)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct SymmetricKeyMaterial {
-    pub cleartext_symmetric_key: String,
+    pub key_bytes: Vec<u8>,
     pub key_format: Option<SymmetricKeyFormat>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TruststorePublicKeyMaterial {
     pub name: String,
-    pub public_key: String,
-    pub public_key_format: PublicKeyFormat,
+    pub public_key: SubjectPublicKeyInfoDer<'static>,
 }
 
 /// Resolves external keystore and truststore references after config-local
@@ -137,38 +216,50 @@ pub trait CredentialResolver: Send + Sync {
     /// Resolve `client-identity.certificate.central-keystore-reference`.
     ///
     /// This is used for the TLS client certificate path. The returned material
-    /// populates the certificate inline definition, including the certificate
-    /// body and the associated key material.
-    ///
-    /// The input `key` is the `certificate` member of the central keystore
-    /// reference. The config model also carries an optional `asymmetric-key`
-    /// member, but the current resolver contract does not pass that value
-    /// separately; implementations must supply the matching key material from
-    /// whatever lookup strategy they use.
+    /// carries the X.509 certificate in DER form together with the private key
+    /// and optional SPKI public key.
     ///
     /// # Errors
     ///
     /// Returns an error if the backing store cannot be queried or if the
     /// reference cannot be checked reliably.
-    fn resolve_keystore_certificate(&self, key: &str) -> Result<Option<X509CertificateMaterial>>;
+    fn resolve_tls_client_certificate(
+        &self,
+        reference: &TlsClientCertificateReference,
+    ) -> Result<Option<TlsClientCertificateMaterial>>;
 
-    /// Resolve `server-authentication.ca-certs.central-truststore-reference`
-    /// and `server-authentication.ee-certs.central-truststore-reference`.
+    /// Resolve `server-authentication.ca-certs.central-truststore-reference`.
     ///
-    /// The returned entries are copied into the truststore certificate bag
-    /// inline definition.
+    /// The returned entries are copied into the truststore CA certificate bag
+    /// inline definition as DER-backed certificate values.
     ///
     /// # Errors
     ///
     /// Returns an error if the backing store cannot be queried or if the
     /// reference cannot be checked reliably.
-    fn resolve_certificate_bag(&self, key: &str) -> Result<Option<Vec<CertificateEntry>>>;
+    fn resolve_tls_server_ca_certificates(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<NamedCertificateDer>>>;
+
+    /// Resolve `server-authentication.ee-certs.central-truststore-reference`.
+    ///
+    /// The returned entries are copied into the truststore end-entity
+    /// certificate bag inline definition as DER-backed certificate values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backing store cannot be queried or if the
+    /// reference cannot be checked reliably.
+    fn resolve_tls_server_ee_certificates(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<NamedCertificateDer>>>;
 
     /// Resolve `client-identity.raw-private-key.central-keystore-reference`.
     ///
-    /// The returned material becomes the inline raw private key definition and
-    /// may include both private and public key data plus their format
-    /// identifiers.
+    /// The returned material becomes the inline raw private key definition,
+    /// using DER-backed private key and optional SPKI public key values.
     ///
     /// # Errors
     ///
@@ -190,7 +281,8 @@ pub trait CredentialResolver: Send + Sync {
     /// Resolve `server-authentication.raw-public-keys.central-truststore-reference`.
     ///
     /// The returned entries are copied into the inline raw public key bag used
-    /// for RPK-based server authentication.
+    /// for RPK-based server authentication, using SPKI DER as the canonical
+    /// public-key encoding.
     ///
     /// # Errors
     ///
@@ -201,14 +293,31 @@ pub trait CredentialResolver: Send + Sync {
 
     /// Validate `client-identity.certificate.central-keystore-reference`.
     ///
-    /// This is the preflight companion to `resolve_keystore_certificate` and is
-    /// used when callers want to verify references before materializing secret
-    /// data.
+    /// This is the preflight companion to `resolve_tls_client_certificate` and
+    /// is used when callers want to verify references before materializing
+    /// secret data.
     ///
     /// # Errors
     ///
     /// Returns an error if the reference is unknown or unusable.
-    fn validate_keystore_certificate(&self, key: &str) -> Result<()>;
+    fn validate_tls_client_certificate(
+        &self,
+        reference: &TlsClientCertificateReference,
+    ) -> Result<()>;
+
+    /// Validate `server-authentication.ca-certs.central-truststore-reference`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the reference is unknown or unusable.
+    fn validate_tls_server_ca_certificates(&self, key: &str) -> Result<()>;
+
+    /// Validate `server-authentication.ee-certs.central-truststore-reference`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the reference is unknown or unusable.
+    fn validate_tls_server_ee_certificates(&self, key: &str) -> Result<()>;
 
     /// Validate `client-identity.raw-private-key.central-keystore-reference`.
     ///
@@ -224,20 +333,44 @@ pub trait CredentialResolver: Send + Sync {
     /// Returns an error if the reference is unknown or unusable.
     fn validate_symmetric_key(&self, key: &str) -> Result<()>;
 
-    /// Validate `server-authentication.ca-certs.central-truststore-reference`
-    /// and `server-authentication.ee-certs.central-truststore-reference`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the reference is unknown or unusable.
-    fn validate_certificate_bag(&self, key: &str) -> Result<()>;
-
     /// Validate `server-authentication.raw-public-keys.central-truststore-reference`.
     ///
     /// # Errors
     ///
     /// Returns an error if the reference is unknown or unusable.
     fn validate_public_key_bag(&self, key: &str) -> Result<()>;
+}
+
+#[derive(Debug)]
+pub(crate) struct EncodedPrivateKey {
+    pub format_rfc7951: String,
+    pub der_base64: String,
+}
+
+pub(crate) fn encode_certificate_der(certificate: &CertificateDer<'_>) -> String {
+    BASE64.encode(certificate.as_ref())
+}
+
+pub(crate) fn encode_public_key_der(public_key: &SubjectPublicKeyInfoDer<'_>) -> String {
+    BASE64.encode(public_key.as_ref())
+}
+
+pub(crate) fn encode_symmetric_key_data(key_bytes: &[u8]) -> String {
+    BASE64.encode(key_bytes)
+}
+
+pub(crate) fn encode_private_key_data(key: &PrivateKeyDer<'_>) -> Result<EncodedPrivateKey> {
+    let format = match key {
+        PrivateKeyDer::Pkcs1(_) => PrivateKeyFormat::RsaPrivateKeyFormat.as_rfc7951_str(),
+        PrivateKeyDer::Sec1(_) => PrivateKeyFormat::EcPrivateKeyFormat.as_rfc7951_str(),
+        PrivateKeyDer::Pkcs8(_) => PrivateKeyFormat::OneAsymmetricKeyFormat.as_rfc7951_str(),
+        _ => anyhow::bail!("unsupported DER private key variant for TACACS+ credential encoding"),
+    };
+
+    Ok(EncodedPrivateKey {
+        format_rfc7951: format.to_owned(),
+        der_base64: BASE64.encode(key.secret_der()),
+    })
 }
 
 #[derive(Clone)]
@@ -495,10 +628,10 @@ fn resolve_server_auth_external_refs(
     resolver: &dyn CredentialResolver,
 ) -> Result<()> {
     if let Some(ref mut ca) = sa.ca_certs {
-        tls::resolve_certs_truststore_ref(ca, resolver)?;
+        tls::resolve_ca_certs_truststore_ref(ca, resolver)?;
     }
     if let Some(ref mut ee) = sa.ee_certs {
-        tls::resolve_certs_truststore_ref(ee, resolver)?;
+        tls::resolve_ee_certs_truststore_ref(ee, resolver)?;
     }
     if let Some(ref mut rpk_key) = sa.raw_public_keys {
         rpk::resolve_raw_public_keys_truststore_ref(rpk_key, resolver)?;

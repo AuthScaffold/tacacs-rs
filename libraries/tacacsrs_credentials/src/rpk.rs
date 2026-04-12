@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
+use tacacsrs_config::crypto_types::PublicKeyFormat;
 use tacacsrs_config::{RawPrivateKey, ServerAuthenticationRawPublicKeys};
 
-use crate::CredentialResolver;
+use crate::{CredentialResolver, encode_private_key_data, encode_public_key_der};
 
 pub(crate) fn resolve_raw_private_key_keystore_ref(
     rpk: &mut RawPrivateKey,
@@ -17,15 +18,17 @@ pub(crate) fn resolve_raw_private_key_keystore_ref(
                 )
             })?;
 
+        let encoded_private_key = encode_private_key_data(&material.private_key)?;
+
         rpk.inline_definition = Some(tacacsrs_config::keystore::AsymmetricKeyInlineDefinition {
-            public_key_format: material
-                .public_key_format
-                .map(|f| f.as_rfc7951_str().to_owned()),
-            public_key: material.public_key,
-            private_key_format: material
-                .private_key_format
-                .map(|f| f.as_rfc7951_str().to_owned()),
-            cleartext_private_key: Some(material.cleartext_private_key),
+            public_key_format: material.public_key.as_ref().map(|_| {
+                PublicKeyFormat::SubjectPublicKeyInfoFormat
+                    .as_rfc7951_str()
+                    .to_owned()
+            }),
+            public_key: material.public_key.as_ref().map(encode_public_key_der),
+            private_key_format: Some(encoded_private_key.format_rfc7951),
+            cleartext_private_key: Some(encoded_private_key.der_base64),
             hidden_private_key: None,
             encrypted_private_key: None,
         });
@@ -53,8 +56,10 @@ pub(crate) fn resolve_raw_public_keys_truststore_ref(
                 .into_iter()
                 .map(|entry| tacacsrs_config::truststore::PublicKeysPublicKey {
                     name: entry.name,
-                    public_key_format: entry.public_key_format.as_rfc7951_str().to_owned(),
-                    public_key: entry.public_key,
+                    public_key_format: PublicKeyFormat::SubjectPublicKeyInfoFormat
+                        .as_rfc7951_str()
+                        .to_owned(),
+                    public_key: encode_public_key_der(&entry.public_key),
                 })
                 .collect(),
         });
@@ -100,8 +105,9 @@ pub(crate) fn validate_rpk_truststore_refs(
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use rustls_pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer, SubjectPublicKeyInfoDer};
 
-    use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat};
+    use tacacsrs_config::crypto_types::PublicKeyFormat;
     use tacacsrs_config::{
         RawPrivateKey, ServerAuthenticationRawPublicKeys, TacacsPlusServer, TacacsPlusServerType,
         TlsClientClientIdentity, TlsClientServerAuthentication,
@@ -112,9 +118,10 @@ mod tests {
         validate_rpk_keystore_refs, validate_rpk_truststore_refs,
     };
     use crate::{
-        resolve_server, validate_external_server_references, AsymmetricKeyMaterial,
-        CertificateEntry, CredentialResolver, SymmetricKeyMaterial, TruststorePublicKeyMaterial,
-        X509CertificateMaterial,
+        NamedCertificateDer, TlsClientCertificateMaterial, TlsClientCertificateReference,
+        encode_private_key_data, encode_public_key_der, resolve_server,
+        validate_external_server_references, AsymmetricKeyMaterial, CredentialResolver,
+        SymmetricKeyMaterial, TruststorePublicKeyMaterial,
     };
 
     struct RpkResolver {
@@ -127,14 +134,24 @@ mod tests {
     }
 
     impl CredentialResolver for RpkResolver {
-        fn resolve_keystore_certificate(
+        fn resolve_tls_client_certificate(
             &self,
-            _key: &str,
-        ) -> Result<Option<X509CertificateMaterial>> {
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<Option<TlsClientCertificateMaterial>> {
             panic!("unexpected certificate lookup")
         }
 
-        fn resolve_certificate_bag(&self, _key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+        fn resolve_tls_server_ca_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
+            panic!("unexpected certificate bag lookup")
+        }
+
+        fn resolve_tls_server_ee_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
             panic!("unexpected certificate bag lookup")
         }
 
@@ -159,8 +176,19 @@ mod tests {
             Ok(self.public_key_bag.clone())
         }
 
-        fn validate_keystore_certificate(&self, _key: &str) -> Result<()> {
+        fn validate_tls_client_certificate(
+            &self,
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<()> {
             panic!("unexpected certificate validation")
+        }
+
+        fn validate_tls_server_ca_certificates(&self, _key: &str) -> Result<()> {
+            panic!("unexpected certificate bag validation")
+        }
+
+        fn validate_tls_server_ee_certificates(&self, _key: &str) -> Result<()> {
+            panic!("unexpected certificate bag validation")
         }
 
         fn validate_asymmetric_key(&self, _key: &str) -> Result<()> {
@@ -174,10 +202,6 @@ mod tests {
             panic!("unexpected symmetric key validation")
         }
 
-        fn validate_certificate_bag(&self, _key: &str) -> Result<()> {
-            panic!("unexpected certificate bag validation")
-        }
-
         fn validate_public_key_bag(&self, _key: &str) -> Result<()> {
             if let Some(message) = self.validate_public_key_bag_error {
                 return Err(anyhow::anyhow!(message));
@@ -189,14 +213,24 @@ mod tests {
     struct PanicResolver;
 
     impl CredentialResolver for PanicResolver {
-        fn resolve_keystore_certificate(
+        fn resolve_tls_client_certificate(
             &self,
-            _key: &str,
-        ) -> Result<Option<X509CertificateMaterial>> {
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<Option<TlsClientCertificateMaterial>> {
             panic!("resolver should not be called")
         }
 
-        fn resolve_certificate_bag(&self, _key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+        fn resolve_tls_server_ca_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
+            panic!("resolver should not be called")
+        }
+
+        fn resolve_tls_server_ee_certificates(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<NamedCertificateDer>>> {
             panic!("resolver should not be called")
         }
 
@@ -215,7 +249,18 @@ mod tests {
             panic!("resolver should not be called")
         }
 
-        fn validate_keystore_certificate(&self, _key: &str) -> Result<()> {
+        fn validate_tls_client_certificate(
+            &self,
+            _reference: &TlsClientCertificateReference,
+        ) -> Result<()> {
+            panic!("resolver should not be called")
+        }
+
+        fn validate_tls_server_ca_certificates(&self, _key: &str) -> Result<()> {
+            panic!("resolver should not be called")
+        }
+
+        fn validate_tls_server_ee_certificates(&self, _key: &str) -> Result<()> {
             panic!("resolver should not be called")
         }
 
@@ -227,13 +272,17 @@ mod tests {
             panic!("resolver should not be called")
         }
 
-        fn validate_certificate_bag(&self, _key: &str) -> Result<()> {
-            panic!("resolver should not be called")
-        }
-
         fn validate_public_key_bag(&self, _key: &str) -> Result<()> {
             panic!("resolver should not be called")
         }
+    }
+
+    fn sample_private_key_der(label: &str) -> PrivateKeyDer<'static> {
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(label.as_bytes().to_vec()))
+    }
+
+    fn sample_public_key_der(label: &str) -> SubjectPublicKeyInfoDer<'static> {
+        SubjectPublicKeyInfoDer::from(label.as_bytes().to_vec())
     }
 
     fn raw_private_key_keystore(reference: &str) -> RawPrivateKey {
@@ -352,10 +401,8 @@ mod tests {
         let mut raw_private_key = raw_private_key_keystore("rpk-ref");
         let resolver = RpkResolver {
             asymmetric_key: Some(AsymmetricKeyMaterial {
-                cleartext_private_key: "RPK_PRIVATE_KEY".to_owned(),
-                public_key: Some("RPK_PUBLIC_KEY".to_owned()),
-                private_key_format: Some(PrivateKeyFormat::OneAsymmetricKeyFormat),
-                public_key_format: Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),
+                private_key: sample_private_key_der("RPK_PRIVATE_KEY"),
+                public_key: Some(sample_public_key_der("RPK_PUBLIC_KEY")),
             }),
             public_key_bag: None,
             resolve_asymmetric_error: None,
@@ -368,8 +415,19 @@ mod tests {
 
         assert!(raw_private_key.central_keystore_reference.is_none());
         let inline = raw_private_key.inline_definition.as_ref().unwrap();
-        assert_eq!(inline.cleartext_private_key.as_deref(), Some("RPK_PRIVATE_KEY"));
-        assert_eq!(inline.public_key.as_deref(), Some("RPK_PUBLIC_KEY"));
+        assert_eq!(
+            inline.cleartext_private_key.as_deref(),
+            Some(
+                encode_private_key_data(&sample_private_key_der("RPK_PRIVATE_KEY"))
+                    .unwrap()
+                    .der_base64
+                    .as_str(),
+            ),
+        );
+        assert_eq!(
+            inline.public_key.as_deref(),
+            Some(encode_public_key_der(&sample_public_key_der("RPK_PUBLIC_KEY")).as_str()),
+        );
         assert_eq!(
             inline.private_key_format.as_deref(),
             Some("ietf-crypto-types:one-asymmetric-key-format"),
@@ -406,8 +464,7 @@ mod tests {
             asymmetric_key: None,
             public_key_bag: Some(vec![TruststorePublicKeyMaterial {
                 name: "rpk-ref".to_owned(),
-                public_key: "PUB_KEY_DATA".to_owned(),
-                public_key_format: PublicKeyFormat::SubjectPublicKeyInfoFormat,
+                public_key: sample_public_key_der("PUB_KEY_DATA"),
             }]),
             resolve_asymmetric_error: None,
             resolve_public_key_bag_error: None,
@@ -421,7 +478,10 @@ mod tests {
         let inline = raw_public_keys.inline_definition.as_ref().unwrap();
         assert_eq!(inline.public_key.len(), 1);
         assert_eq!(inline.public_key[0].name, "rpk-ref");
-        assert_eq!(inline.public_key[0].public_key, "PUB_KEY_DATA");
+        assert_eq!(
+            inline.public_key[0].public_key,
+            encode_public_key_der(&sample_public_key_der("PUB_KEY_DATA")),
+        );
         assert_eq!(
             inline.public_key[0].public_key_format,
             "ietf-crypto-types:subject-public-key-info-format",

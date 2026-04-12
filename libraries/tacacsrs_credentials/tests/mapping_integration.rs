@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use anyhow::Result;
-
 use tacacsrs_config::keystore::{AsymmetricKeyInlineDefinition, EndEntityCertWithKeyInlineDefinition};
 use tacacsrs_config::tls_common::{HelloParamsTlsVersions, TlsVersionBase};
 use tacacsrs_config::truststore::{CertsCertificate, CertsInlineDefinition};
@@ -11,8 +10,9 @@ use tacacsrs_config::{
     TlsClientHelloParams, TlsClientServerAuthentication,
 };
 use tacacsrs_credentials::{
-    AsymmetricKeyMaterial, CertificateEntry, CredentialResolver, ResolvedServer,
-    SymmetricKeyMaterial, TruststorePublicKeyMaterial, X509CertificateMaterial,
+    AsymmetricKeyMaterial, CredentialResolver, NamedCertificateDer, ResolvedServer,
+    SymmetricKeyMaterial, TlsClientCertificateMaterial, TlsClientCertificateReference,
+    TruststorePublicKeyMaterial,
 };
 
 fn resolve_servers(
@@ -537,11 +537,24 @@ fn resolved_server_debug_redacts_shared_secret() {
 struct PanicResolver;
 
 impl CredentialResolver for PanicResolver {
-    fn resolve_keystore_certificate(&self, key: &str) -> Result<Option<X509CertificateMaterial>> {
+    fn resolve_tls_client_certificate(
+        &self,
+        reference: &TlsClientCertificateReference,
+    ) -> Result<Option<TlsClientCertificateMaterial>> {
+        panic!("resolver should not be called for inline definitions: {}", reference.display_key());
+    }
+
+    fn resolve_tls_server_ca_certificates(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<NamedCertificateDer>>> {
         panic!("resolver should not be called for inline definitions: {key}");
     }
 
-    fn resolve_certificate_bag(&self, key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+    fn resolve_tls_server_ee_certificates(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<NamedCertificateDer>>> {
         panic!("resolver should not be called for inline definitions: {key}");
     }
 
@@ -560,7 +573,18 @@ impl CredentialResolver for PanicResolver {
         panic!("resolver should not be called for inline definitions: {key}");
     }
 
-    fn validate_keystore_certificate(&self, key: &str) -> Result<()> {
+    fn validate_tls_client_certificate(
+        &self,
+        reference: &TlsClientCertificateReference,
+    ) -> Result<()> {
+        panic!("resolver should not be called for inline definitions: {}", reference.display_key());
+    }
+
+    fn validate_tls_server_ca_certificates(&self, key: &str) -> Result<()> {
+        panic!("resolver should not be called for inline definitions: {key}");
+    }
+
+    fn validate_tls_server_ee_certificates(&self, key: &str) -> Result<()> {
         panic!("resolver should not be called for inline definitions: {key}");
     }
 
@@ -569,10 +593,6 @@ impl CredentialResolver for PanicResolver {
     }
 
     fn validate_symmetric_key(&self, key: &str) -> Result<()> {
-        panic!("resolver should not be called for inline definitions: {key}");
-    }
-
-    fn validate_certificate_bag(&self, key: &str) -> Result<()> {
         panic!("resolver should not be called for inline definitions: {key}");
     }
 
@@ -584,11 +604,24 @@ impl CredentialResolver for PanicResolver {
 struct FailingResolver;
 
 impl CredentialResolver for FailingResolver {
-    fn resolve_keystore_certificate(&self, key: &str) -> Result<Option<X509CertificateMaterial>> {
+    fn resolve_tls_client_certificate(
+        &self,
+        reference: &TlsClientCertificateReference,
+    ) -> Result<Option<TlsClientCertificateMaterial>> {
+        Err(anyhow::anyhow!("resolution failed for '{}'", reference.display_key()))
+    }
+
+    fn resolve_tls_server_ca_certificates(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<NamedCertificateDer>>> {
         Err(anyhow::anyhow!("resolution failed for '{key}'"))
     }
 
-    fn resolve_certificate_bag(&self, key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+    fn resolve_tls_server_ee_certificates(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<NamedCertificateDer>>> {
         Err(anyhow::anyhow!("resolution failed for '{key}'"))
     }
 
@@ -607,7 +640,18 @@ impl CredentialResolver for FailingResolver {
         Err(anyhow::anyhow!("resolution failed for '{key}'"))
     }
 
-    fn validate_keystore_certificate(&self, key: &str) -> Result<()> {
+    fn validate_tls_client_certificate(
+        &self,
+        reference: &TlsClientCertificateReference,
+    ) -> Result<()> {
+        Err(anyhow::anyhow!("resolution failed for '{}'", reference.display_key()))
+    }
+
+    fn validate_tls_server_ca_certificates(&self, key: &str) -> Result<()> {
+        Err(anyhow::anyhow!("resolution failed for '{key}'"))
+    }
+
+    fn validate_tls_server_ee_certificates(&self, key: &str) -> Result<()> {
         Err(anyhow::anyhow!("resolution failed for '{key}'"))
     }
 
@@ -616,10 +660,6 @@ impl CredentialResolver for FailingResolver {
     }
 
     fn validate_symmetric_key(&self, key: &str) -> Result<()> {
-        Err(anyhow::anyhow!("resolution failed for '{key}'"))
-    }
-
-    fn validate_certificate_bag(&self, key: &str) -> Result<()> {
         Err(anyhow::anyhow!("resolution failed for '{key}'"))
     }
 

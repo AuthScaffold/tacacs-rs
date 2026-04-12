@@ -1,44 +1,64 @@
+use base64::Engine;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, SubjectPublicKeyInfoDer};
+
 use tacacsrs_config::{enumerate_server, enumerate_servers, parse_yang_json, TacacsPlusServerType};
 use tacacsrs_credentials::{
-    AsymmetricKeyMaterial, CertificateEntry, CredentialResolver, SymmetricKeyMaterial,
-    TruststorePublicKeyMaterial, X509CertificateMaterial, resolve_server, resolve_servers,
-    validate_external_servers_references,
+    AsymmetricKeyMaterial, CredentialResolver, NamedCertificateDer, SymmetricKeyMaterial,
+    TlsClientCertificateMaterial, TlsClientCertificateReference, TruststorePublicKeyMaterial,
+    resolve_server, resolve_servers, validate_external_servers_references,
 };
 
 /// Simple reference resolver that copies credentials within the same config
 struct LocalReferenceResolver;
 
+fn sample_certificate_der(label: &str) -> CertificateDer<'static> {
+    CertificateDer::from(label.as_bytes().to_vec())
+}
+
+fn sample_private_key_der(label: &str) -> PrivateKeyDer<'static> {
+    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(label.as_bytes().to_vec()))
+}
+
+fn sample_public_key_der(label: &str) -> SubjectPublicKeyInfoDer<'static> {
+    SubjectPublicKeyInfoDer::from(label.as_bytes().to_vec())
+}
+
 impl CredentialResolver for LocalReferenceResolver {
-    fn resolve_keystore_certificate(
+    fn resolve_tls_client_certificate(
         &self,
-        _key: &str,
-    ) -> anyhow::Result<Option<X509CertificateMaterial>> {
-        Ok(Some(X509CertificateMaterial {
-            cert_data: "RESOLVED_CERT_DATA".to_string(),
-            key_material: AsymmetricKeyMaterial {
-                cleartext_private_key: "RESOLVED_PRIVATE_KEY".to_string(),
-                public_key: Some("RESOLVED_PUBLIC_KEY".to_string()),
-                private_key_format: Some(
-                    tacacsrs_config::crypto_types::PrivateKeyFormat::OneAsymmetricKeyFormat,
-                ),
-                public_key_format: Some(
-                    tacacsrs_config::crypto_types::PublicKeyFormat::SubjectPublicKeyInfoFormat,
-                ),
-            },
+        _reference: &TlsClientCertificateReference,
+    ) -> anyhow::Result<Option<TlsClientCertificateMaterial>> {
+        Ok(Some(TlsClientCertificateMaterial {
+            certificate: sample_certificate_der("RESOLVED_CERT_DATA"),
+            private_key: sample_private_key_der("RESOLVED_PRIVATE_KEY"),
+            public_key: Some(sample_public_key_der("RESOLVED_PUBLIC_KEY")),
         }))
     }
 
-    fn resolve_certificate_bag(&self, _key: &str) -> anyhow::Result<Option<Vec<CertificateEntry>>> {
+    fn resolve_tls_server_ca_certificates(
+        &self,
+        _key: &str,
+    ) -> anyhow::Result<Option<Vec<NamedCertificateDer>>> {
         Ok(Some(vec![
-            CertificateEntry {
+            NamedCertificateDer {
                 name: "root-ca".to_string(),
-                cert_data: "RESOLVED_ROOT_CA".to_string(),
+                certificate: sample_certificate_der("RESOLVED_ROOT_CA"),
             },
-            CertificateEntry {
+            NamedCertificateDer {
                 name: "intermediate-ca".to_string(),
-                cert_data: "RESOLVED_INTERMEDIATE_CA".to_string(),
+                certificate: sample_certificate_der("RESOLVED_INTERMEDIATE_CA"),
             },
         ]))
+    }
+
+    fn resolve_tls_server_ee_certificates(
+        &self,
+        _key: &str,
+    ) -> anyhow::Result<Option<Vec<NamedCertificateDer>>> {
+        Ok(Some(vec![NamedCertificateDer {
+            name: "resolved-ee".to_string(),
+            certificate: sample_certificate_der("RESOLVED_EE_CERT"),
+        }]))
     }
 
     fn resolve_asymmetric_key(&self, _key: &str) -> anyhow::Result<Option<AsymmetricKeyMaterial>> {
@@ -46,14 +66,8 @@ impl CredentialResolver for LocalReferenceResolver {
         // entry (private key, public key, and format identities) from a
         // central keystore.
         Ok(Some(AsymmetricKeyMaterial {
-            cleartext_private_key: "RESOLVED_PRIVATE_KEY".to_string(),
-            public_key: Some("RESOLVED_PUBLIC_KEY".to_string()),
-            private_key_format: Some(
-                tacacsrs_config::crypto_types::PrivateKeyFormat::OneAsymmetricKeyFormat,
-            ),
-            public_key_format: Some(
-                tacacsrs_config::crypto_types::PublicKeyFormat::SubjectPublicKeyInfoFormat,
-            ),
+            private_key: sample_private_key_der("RESOLVED_PRIVATE_KEY"),
+            public_key: Some(sample_public_key_der("RESOLVED_PUBLIC_KEY")),
         }))
     }
 
@@ -61,7 +75,7 @@ impl CredentialResolver for LocalReferenceResolver {
         // In a real implementation, this would fetch the symmetric key
         // entry (key material and format identity) from a central keystore.
         Ok(Some(SymmetricKeyMaterial {
-            cleartext_symmetric_key: "RESOLVED_SYMMETRIC_KEY".to_string(),
+            key_bytes: b"RESOLVED_SYMMETRIC_KEY".to_vec(),
             key_format: Some(
                 tacacsrs_config::crypto_types::SymmetricKeyFormat::OctetStringKeyFormat,
             ),
@@ -74,13 +88,22 @@ impl CredentialResolver for LocalReferenceResolver {
     ) -> anyhow::Result<Option<Vec<TruststorePublicKeyMaterial>>> {
         Ok(Some(vec![TruststorePublicKeyMaterial {
             name: "resolved-pk".to_string(),
-            public_key: "RESOLVED_PUBLIC_KEY".to_string(),
-            public_key_format:
-                tacacsrs_config::crypto_types::PublicKeyFormat::SubjectPublicKeyInfoFormat,
+            public_key: sample_public_key_der("RESOLVED_PUBLIC_KEY"),
         }]))
     }
 
-    fn validate_keystore_certificate(&self, _key: &str) -> anyhow::Result<()> {
+    fn validate_tls_client_certificate(
+        &self,
+        _reference: &TlsClientCertificateReference,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn validate_tls_server_ca_certificates(&self, _key: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn validate_tls_server_ee_certificates(&self, _key: &str) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -89,10 +112,6 @@ impl CredentialResolver for LocalReferenceResolver {
     }
 
     fn validate_symmetric_key(&self, _key: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn validate_certificate_bag(&self, _key: &str) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -158,7 +177,10 @@ fn main() -> anyhow::Result<()> {
         .and_then(|inline| inline.cleartext_private_key.as_deref())
         .expect("resolved server should include inline private key material");
 
-    assert_eq!(rpk_inline, "RESOLVED_PRIVATE_KEY");
+    assert_eq!(
+        rpk_inline,
+        base64::engine::general_purpose::STANDARD.encode(b"RESOLVED_PRIVATE_KEY"),
+    );
 
     // Enumeration approach: resolve all servers, then pick by server-type bitflag.
     let resolved_servers = resolve_servers(enumerated_servers, Some(&LocalReferenceResolver))?;

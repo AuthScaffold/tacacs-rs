@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
+rustls-pki-types = "1.14.0"
 tacacsrs-config = { path = "../tacacsrs_config" }
 
 [dev-dependencies]
