@@ -401,7 +401,7 @@ fn resolve_servers_maps_none_obfuscation_for_unvalidated_bare_server() {
 }
 
 #[test]
-fn resolved_server_from_raw_wraps_without_resolution() {
+fn resolve_server_wraps_inlined_server_without_external_resolution() {
     let server = TacacsPlusServer {
         name: "raw".to_owned(),
         server_type: TacacsPlusServerType::ACCOUNTING,
@@ -411,7 +411,7 @@ fn resolved_server_from_raw_wraps_without_resolution() {
         ..default_bare_server()
     };
 
-    let resolved = ResolvedServer::from_raw(server);
+    let resolved = tacacsrs_credentials::resolve_server(server, None).unwrap();
     assert_eq!(resolved.name, "raw");
     assert_eq!(resolved.port, 4949);
 }
@@ -427,10 +427,36 @@ fn resolved_server_into_inner_returns_original() {
         ..default_bare_server()
     };
 
-    let resolved = ResolvedServer::from_raw(server);
+    let resolved = tacacsrs_credentials::resolve_server(server, None).unwrap();
     let inner = resolved.into_inner();
     assert_eq!(inner.name, "inner");
     assert_eq!(inner.address, "10.0.0.98");
+}
+
+#[test]
+fn resolve_server_rejects_client_credentials_reference() {
+    let server = with_client_identity(
+        bare_server("raw-client-ref", "10.0.0.101", 49),
+        client_identity_reference("shared-client-bundle"),
+    );
+
+    let error = tacacsrs_credentials::resolve_server(server, None).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("raw-client-ref"), "error: {message}");
+    assert!(message.contains("client-identity credentials-reference"), "error: {message}");
+}
+
+#[test]
+fn resolve_server_rejects_server_credentials_reference() {
+    let server = with_server_authentication(
+        bare_server("raw-server-ref", "10.0.0.102", 49),
+        server_authentication_reference("shared-server-bundle"),
+    );
+
+    let error = tacacsrs_credentials::resolve_server(server, None).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("raw-server-ref"), "error: {message}");
+    assert!(message.contains("server-authentication credentials-reference"), "error: {message}");
 }
 
 #[test]
@@ -636,6 +662,32 @@ fn resolve_server_errors_on_failing_truststore_resolver() {
 }
 
 #[test]
+fn resolve_servers_rejects_unenumerated_client_credentials_reference() {
+    let server = with_client_identity(
+        bare_server("unevaluated-client-ref", "10.0.2.10", 49),
+        client_identity_reference("shared-client-bundle"),
+    );
+
+    let error = tacacsrs_credentials::resolve_servers(vec![server], None).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("unevaluated-client-ref"), "error: {message}");
+    assert!(message.contains("client-identity credentials-reference"), "error: {message}");
+}
+
+#[test]
+fn resolve_servers_rejects_unenumerated_server_credentials_reference() {
+    let server = with_server_authentication(
+        bare_server("unevaluated-server-ref", "10.0.2.11", 49),
+        server_authentication_reference("shared-server-bundle"),
+    );
+
+    let error = tacacsrs_credentials::resolve_servers(vec![server], None).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("unevaluated-server-ref"), "error: {message}");
+    assert!(message.contains("server-authentication credentials-reference"), "error: {message}");
+}
+
+#[test]
 fn validate_credential_references_collects_missing_client_bundle_ref() {
     let config = config_with_servers(vec![with_client_identity(
         bare_server("vcr-client", "10.0.2.1", 49),
@@ -714,7 +766,7 @@ fn socket_address_wraps_ipv6_in_brackets() {
         ..default_bare_server()
     };
 
-    let resolved = ResolvedServer::from_raw(server);
+    let resolved = tacacsrs_credentials::resolve_server(server, None).unwrap();
     assert_eq!(resolved.socket_address(), "[2001:db8::1]:49");
 }
 

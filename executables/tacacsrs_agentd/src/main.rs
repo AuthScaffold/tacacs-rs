@@ -7,7 +7,7 @@ use clap::{ArgGroup, Parser};
 use tacacsrs_agent::{ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
-use tacacsrs_credentials::{ResolvedServer, resolve_servers};
+use tacacsrs_credentials::{ResolvedServer, resolve_server, resolve_servers};
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
@@ -124,7 +124,7 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
         if let (Some(psk_identity), Some(psk_key)) =
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
         {
-            return Ok(cli
+            return cli
                 .server_addresses
                 .iter()
                 .enumerate()
@@ -151,23 +151,22 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
                             target_kdf: None,
                         }),
                     });
-                    ResolvedServer::from_raw(server)
+                    resolve_server(server, None)
                 })
-                .collect());
+                .collect::<anyhow::Result<Vec<_>>>();
         }
 
         tls_cert_servers_from_cli(cli, timeout)
     } else {
-        Ok(cli
-            .server_addresses
+        cli.server_addresses
             .iter()
             .enumerate()
             .map(|(i, addr)| {
                 let mut server = base_server_from_address(addr, i, timeout);
                 server.shared_secret.clone_from(&cli.shared_secret);
-                ResolvedServer::from_raw(server)
+                resolve_server(server, None)
             })
-            .collect())
+            .collect::<anyhow::Result<Vec<_>>>()
     }
 }
 
@@ -190,8 +189,7 @@ fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<Reso
         })
         .transpose()?;
 
-    Ok(cli
-        .server_addresses
+    cli.server_addresses
         .iter()
         .enumerate()
         .map(|(i, addr)| {
@@ -223,9 +221,9 @@ fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<Reso
                     cipher_suites: None,
                 });
             }
-            ResolvedServer::from_raw(server)
+            resolve_server(server, None)
         })
-        .collect())
+        .collect::<anyhow::Result<Vec<_>>>()
 }
 
 fn base_server_from_address(addr: &str, index: usize, timeout: u16) -> TacacsPlusServer {

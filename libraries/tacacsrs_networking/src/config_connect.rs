@@ -426,46 +426,54 @@ mod tests {
 
     #[test]
     fn derive_sni_name_uses_domain_when_sni_enabled() {
-        let server = ResolvedServer::from_raw(tacacsrs_config::TacacsPlusServer {
-            name: "test".to_owned(),
-            server_type: tacacsrs_config::TacacsPlusServerType::all(),
-            address: "10.0.0.1".to_owned(),
-            port: 49,
-            shared_secret: None,
-            timeout: 5,
-            single_connection: false,
-            domain_name: Some("tacacs.example.com".to_owned()),
-            sni_enabled: Some(true),
-            client_identity: None,
-            server_authentication: None,
-            hello_params: None,
-            source_ip: None,
-            source_interface: None,
-            vrf_instance: None,
-        });
+        let server = tacacsrs_credentials::resolve_server(
+            tacacsrs_config::TacacsPlusServer {
+                name: "test".to_owned(),
+                server_type: tacacsrs_config::TacacsPlusServerType::all(),
+                address: "10.0.0.1".to_owned(),
+                port: 49,
+                shared_secret: None,
+                timeout: 5,
+                single_connection: false,
+                domain_name: Some("tacacs.example.com".to_owned()),
+                sni_enabled: Some(true),
+                client_identity: None,
+                server_authentication: None,
+                hello_params: None,
+                source_ip: None,
+                source_interface: None,
+                vrf_instance: None,
+            },
+            None,
+        )
+        .unwrap();
 
         assert_eq!(derive_sni_name(&server, "10.0.0.1:49"), "tacacs.example.com");
     }
 
     #[test]
     fn derive_sni_name_falls_back_to_address_when_sni_disabled() {
-        let server = ResolvedServer::from_raw(tacacsrs_config::TacacsPlusServer {
-            name: "test".to_owned(),
-            server_type: tacacsrs_config::TacacsPlusServerType::all(),
-            address: "10.0.0.1".to_owned(),
-            port: 49,
-            shared_secret: None,
-            timeout: 5,
-            single_connection: false,
-            domain_name: Some("tacacs.example.com".to_owned()),
-            sni_enabled: None,
-            client_identity: None,
-            server_authentication: None,
-            hello_params: None,
-            source_ip: None,
-            source_interface: None,
-            vrf_instance: None,
-        });
+        let server = tacacsrs_credentials::resolve_server(
+            tacacsrs_config::TacacsPlusServer {
+                name: "test".to_owned(),
+                server_type: tacacsrs_config::TacacsPlusServerType::all(),
+                address: "10.0.0.1".to_owned(),
+                port: 49,
+                shared_secret: None,
+                timeout: 5,
+                single_connection: false,
+                domain_name: Some("tacacs.example.com".to_owned()),
+                sni_enabled: None,
+                client_identity: None,
+                server_authentication: None,
+                hello_params: None,
+                source_ip: None,
+                source_interface: None,
+                vrf_instance: None,
+            },
+            None,
+        )
+        .unwrap();
 
         assert_eq!(derive_sni_name(&server, "10.0.0.1:49"), "10.0.0.1");
     }

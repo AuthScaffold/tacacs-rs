@@ -683,23 +683,27 @@ mod tests {
             Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
             None => (address.to_owned(), 49),
         };
-        ResolvedServer::from_raw(tacacsrs_config::TacacsPlusServer {
-            name: address.to_owned(),
-            server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
-            address: host,
-            port,
-            shared_secret: None,
-            timeout: 5,
-            single_connection: false,
-            domain_name: None,
-            sni_enabled: None,
-            client_identity: None,
-            server_authentication: None,
-            hello_params: None,
-            source_ip: None,
-            source_interface: None,
-            vrf_instance: None,
-        })
+        tacacsrs_credentials::resolve_server(
+            tacacsrs_config::TacacsPlusServer {
+                name: address.to_owned(),
+                server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
+                address: host,
+                port,
+                shared_secret: None,
+                timeout: 5,
+                single_connection: false,
+                domain_name: None,
+                sni_enabled: None,
+                client_identity: None,
+                server_authentication: None,
+                hello_params: None,
+                source_ip: None,
+                source_interface: None,
+                vrf_instance: None,
+            },
+            None,
+        )
+        .unwrap()
     }
 
     #[tokio::test]

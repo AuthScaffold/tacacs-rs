@@ -115,77 +115,128 @@ pub struct TruststorePublicKeyMaterial {
     pub public_key_format: PublicKeyFormat,
 }
 
+/// Resolves external keystore and truststore references after config-local
+/// `credentials-reference` bundles have already been expanded inline.
+///
+/// `resolve_server`, `resolve_servers`, and the validation helpers call these
+/// methods only for external `central-keystore-reference` and
+/// `central-truststore-reference` fields that are still present on the server
+/// model.
+///
+/// The `resolve_*` methods are the materialization phase. They are expected to
+/// return the concrete secret or trust material needed to replace an external
+/// reference with the corresponding inline definition. Returning `Ok(None)`
+/// means the reference was not resolved; the current callers treat that as an
+/// unresolved-reference error.
+///
+/// The `validate_*` methods are the preflight phase used by
+/// `validate_external_server_references` and
+/// `validate_external_servers_references`. They should check that the supplied
+/// reference is known and usable without mutating the server model.
 pub trait CredentialResolver: Send + Sync {
-    /// Resolve an end-entity certificate and its key pair from the central
-    /// keystore.
+    /// Resolve `client-identity.certificate.central-keystore-reference`.
+    ///
+    /// This is used for the TLS client certificate path. The returned material
+    /// populates the certificate inline definition, including the certificate
+    /// body and the associated key material.
+    ///
+    /// The input `key` is the `certificate` member of the central keystore
+    /// reference. The config model also carries an optional `asymmetric-key`
+    /// member, but the current resolver contract does not pass that value
+    /// separately; implementations must supply the matching key material from
+    /// whatever lookup strategy they use.
     ///
     /// # Errors
     ///
-    /// Returns an error if the referenced keystore entry cannot be resolved.
+    /// Returns an error if the backing store cannot be queried or if the
+    /// reference cannot be checked reliably.
     fn resolve_keystore_certificate(&self, key: &str) -> Result<Option<X509CertificateMaterial>>;
 
-    /// Resolve a certificate bag from the central truststore.
+    /// Resolve `server-authentication.ca-certs.central-truststore-reference`
+    /// and `server-authentication.ee-certs.central-truststore-reference`.
+    ///
+    /// The returned entries are copied into the truststore certificate bag
+    /// inline definition.
     ///
     /// # Errors
     ///
-    /// Returns an error if the referenced truststore entry cannot be resolved.
+    /// Returns an error if the backing store cannot be queried or if the
+    /// reference cannot be checked reliably.
     fn resolve_certificate_bag(&self, key: &str) -> Result<Option<Vec<CertificateEntry>>>;
 
-    /// Resolve an asymmetric key entry from the central keystore.
+    /// Resolve `client-identity.raw-private-key.central-keystore-reference`.
+    ///
+    /// The returned material becomes the inline raw private key definition and
+    /// may include both private and public key data plus their format
+    /// identifiers.
     ///
     /// # Errors
     ///
-    /// Returns an error if the referenced keystore entry cannot be resolved.
+    /// Returns an error if the backing store cannot be queried or if the
+    /// reference cannot be checked reliably.
     fn resolve_asymmetric_key(&self, key: &str) -> Result<Option<AsymmetricKeyMaterial>>;
 
-    /// Resolve a symmetric key entry from the central keystore.
+    /// Resolve `client-identity.tls13-epsk.central-keystore-reference`.
+    ///
+    /// The returned material becomes the inline TLS 1.3 external PSK
+    /// definition.
     ///
     /// # Errors
     ///
-    /// Returns an error if the referenced keystore entry cannot be resolved.
+    /// Returns an error if the backing store cannot be queried or if the
+    /// reference cannot be checked reliably.
     fn resolve_symmetric_key(&self, key: &str) -> Result<Option<SymmetricKeyMaterial>>;
 
-    /// Resolve a public key bag from the central truststore.
+    /// Resolve `server-authentication.raw-public-keys.central-truststore-reference`.
+    ///
+    /// The returned entries are copied into the inline raw public key bag used
+    /// for RPK-based server authentication.
     ///
     /// # Errors
     ///
-    /// Returns an error if the referenced truststore entry cannot be resolved.
+    /// Returns an error if the backing store cannot be queried or if the
+    /// reference cannot be checked reliably.
     fn resolve_public_key_bag(&self, key: &str)
         -> Result<Option<Vec<TruststorePublicKeyMaterial>>>;
 
-    /// Validate that a keystore certificate reference is known.
+    /// Validate `client-identity.certificate.central-keystore-reference`.
+    ///
+    /// This is the preflight companion to `resolve_keystore_certificate` and is
+    /// used when callers want to verify references before materializing secret
+    /// data.
     ///
     /// # Errors
     ///
-    /// Returns an error if the certificate reference is unknown.
+    /// Returns an error if the reference is unknown or unusable.
     fn validate_keystore_certificate(&self, key: &str) -> Result<()>;
 
-    /// Validate that an asymmetric key reference is known in the keystore.
+    /// Validate `client-identity.raw-private-key.central-keystore-reference`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the asymmetric key reference is unknown.
+    /// Returns an error if the reference is unknown or unusable.
     fn validate_asymmetric_key(&self, key: &str) -> Result<()>;
 
-    /// Validate that a symmetric key reference is known in the keystore.
+    /// Validate `client-identity.tls13-epsk.central-keystore-reference`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the symmetric key reference is unknown.
+    /// Returns an error if the reference is unknown or unusable.
     fn validate_symmetric_key(&self, key: &str) -> Result<()>;
 
-    /// Validate that a truststore certificate bag reference is known.
+    /// Validate `server-authentication.ca-certs.central-truststore-reference`
+    /// and `server-authentication.ee-certs.central-truststore-reference`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the certificate bag reference is unknown.
+    /// Returns an error if the reference is unknown or unusable.
     fn validate_certificate_bag(&self, key: &str) -> Result<()>;
 
-    /// Validate that a truststore public key bag reference is known.
+    /// Validate `server-authentication.raw-public-keys.central-truststore-reference`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the public key bag reference is unknown.
+    /// Returns an error if the reference is unknown or unusable.
     fn validate_public_key_bag(&self, key: &str) -> Result<()>;
 }
 
@@ -194,7 +245,7 @@ pub struct ResolvedServer(TacacsPlusServer);
 
 impl ResolvedServer {
     #[must_use]
-    pub fn from_raw(server: TacacsPlusServer) -> Self {
+    fn from_raw(server: TacacsPlusServer) -> Self {
         Self(server)
     }
 
@@ -279,11 +330,12 @@ pub fn resolve_server(
     mut server: TacacsPlusServer,
     credential_resolver: Option<&dyn CredentialResolver>,
 ) -> Result<ResolvedServer> {
+    validate_no_config_credential_references(&server)?;
     let ext_resolver = effective_resolver(credential_resolver);
     resolve_server_external_credentials(&mut server, ext_resolver).with_context(|| {
         format!("failed to resolve external credentials for server '{}'", server.name)
     })?;
-    Ok(ResolvedServer(server))
+    Ok(ResolvedServer::from_raw(server))
 }
 
 /// Resolve all external keystore and truststore references for many servers.
@@ -303,10 +355,11 @@ where
     servers
         .into_iter()
         .map(|mut server| {
+            validate_no_config_credential_references(&server)?;
             resolve_server_external_credentials(&mut server, ext_resolver).with_context(|| {
                 format!("failed to resolve external credentials for server '{}'", server.name)
             })?;
-            Ok(ResolvedServer(server))
+            Ok(ResolvedServer::from_raw(server))
         })
         .collect()
 }
@@ -388,6 +441,37 @@ fn resolve_server_external_credentials(
     }
 
     Ok(())
+}
+
+fn validate_no_config_credential_references(server: &TacacsPlusServer) -> Result<()> {
+    let mut errors = Vec::new();
+
+    if let Some(ref client_identity) = server.client_identity {
+        if let Some(ref credentials_reference) = client_identity.credentials_reference {
+            errors.push(format!(
+                "server '{}': client-identity credentials-reference '{}' must be expanded before constructing ResolvedServer",
+                server.name, credentials_reference,
+            ));
+        }
+    }
+
+    if let Some(ref server_authentication) = server.server_authentication {
+        if let Some(ref credentials_reference) = server_authentication.credentials_reference {
+            errors.push(format!(
+                "server '{}': server-authentication credentials-reference '{}' must be expanded before constructing ResolvedServer",
+                server.name, credentials_reference,
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "resolved server construction requires inline credential bundles:\n  - {}",
+            errors.join("\n  - ")
+        ))
+    }
 }
 
 fn resolve_client_identity_external_refs(

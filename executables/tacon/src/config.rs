@@ -1,6 +1,6 @@
 use anyhow::Context;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
-use tacacsrs_credentials::{ResolvedServer, resolve_servers};
+use tacacsrs_credentials::{ResolvedServer, resolve_server, resolve_servers};
 
 use crate::cli::Cli;
 
@@ -37,7 +37,7 @@ pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<ResolvedServer> {
 
     populate_security_from_cli(cli, &mut server)?;
 
-    Ok(ResolvedServer::from_raw(server))
+    resolve_server(server, None)
 }
 
 fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyhow::Result<()> {
