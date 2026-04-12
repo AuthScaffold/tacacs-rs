@@ -96,3 +96,516 @@ pub(crate) fn validate_rpk_truststore_refs(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+
+    use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat};
+    use tacacsrs_config::{
+        RawPrivateKey, ServerAuthenticationRawPublicKeys, TacacsPlusServer, TacacsPlusServerType,
+        TlsClientClientIdentity, TlsClientServerAuthentication,
+    };
+
+    use super::{
+        resolve_raw_private_key_keystore_ref, resolve_raw_public_keys_truststore_ref,
+        validate_rpk_keystore_refs, validate_rpk_truststore_refs,
+    };
+    use crate::{
+        resolve_server, validate_external_server_references, AsymmetricKeyMaterial,
+        CertificateEntry, CredentialResolver, SymmetricKeyMaterial, TruststorePublicKeyMaterial,
+        X509CertificateMaterial,
+    };
+
+    struct RpkResolver {
+        asymmetric_key: Option<AsymmetricKeyMaterial>,
+        public_key_bag: Option<Vec<TruststorePublicKeyMaterial>>,
+        resolve_asymmetric_error: Option<&'static str>,
+        resolve_public_key_bag_error: Option<&'static str>,
+        validate_asymmetric_error: Option<&'static str>,
+        validate_public_key_bag_error: Option<&'static str>,
+    }
+
+    impl CredentialResolver for RpkResolver {
+        fn resolve_keystore_certificate(
+            &self,
+            _key: &str,
+        ) -> Result<Option<X509CertificateMaterial>> {
+            panic!("unexpected certificate lookup")
+        }
+
+        fn resolve_certificate_bag(&self, _key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+            panic!("unexpected certificate bag lookup")
+        }
+
+        fn resolve_asymmetric_key(&self, _key: &str) -> Result<Option<AsymmetricKeyMaterial>> {
+            if let Some(message) = self.resolve_asymmetric_error {
+                return Err(anyhow::anyhow!(message));
+            }
+            Ok(self.asymmetric_key.clone())
+        }
+
+        fn resolve_symmetric_key(&self, _key: &str) -> Result<Option<SymmetricKeyMaterial>> {
+            panic!("unexpected symmetric key lookup")
+        }
+
+        fn resolve_public_key_bag(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<TruststorePublicKeyMaterial>>> {
+            if let Some(message) = self.resolve_public_key_bag_error {
+                return Err(anyhow::anyhow!(message));
+            }
+            Ok(self.public_key_bag.clone())
+        }
+
+        fn validate_keystore_certificate(&self, _key: &str) -> Result<()> {
+            panic!("unexpected certificate validation")
+        }
+
+        fn validate_asymmetric_key(&self, _key: &str) -> Result<()> {
+            if let Some(message) = self.validate_asymmetric_error {
+                return Err(anyhow::anyhow!(message));
+            }
+            Ok(())
+        }
+
+        fn validate_symmetric_key(&self, _key: &str) -> Result<()> {
+            panic!("unexpected symmetric key validation")
+        }
+
+        fn validate_certificate_bag(&self, _key: &str) -> Result<()> {
+            panic!("unexpected certificate bag validation")
+        }
+
+        fn validate_public_key_bag(&self, _key: &str) -> Result<()> {
+            if let Some(message) = self.validate_public_key_bag_error {
+                return Err(anyhow::anyhow!(message));
+            }
+            Ok(())
+        }
+    }
+
+    struct PanicResolver;
+
+    impl CredentialResolver for PanicResolver {
+        fn resolve_keystore_certificate(
+            &self,
+            _key: &str,
+        ) -> Result<Option<X509CertificateMaterial>> {
+            panic!("resolver should not be called")
+        }
+
+        fn resolve_certificate_bag(&self, _key: &str) -> Result<Option<Vec<CertificateEntry>>> {
+            panic!("resolver should not be called")
+        }
+
+        fn resolve_asymmetric_key(&self, _key: &str) -> Result<Option<AsymmetricKeyMaterial>> {
+            panic!("resolver should not be called")
+        }
+
+        fn resolve_symmetric_key(&self, _key: &str) -> Result<Option<SymmetricKeyMaterial>> {
+            panic!("resolver should not be called")
+        }
+
+        fn resolve_public_key_bag(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Vec<TruststorePublicKeyMaterial>>> {
+            panic!("resolver should not be called")
+        }
+
+        fn validate_keystore_certificate(&self, _key: &str) -> Result<()> {
+            panic!("resolver should not be called")
+        }
+
+        fn validate_asymmetric_key(&self, _key: &str) -> Result<()> {
+            panic!("resolver should not be called")
+        }
+
+        fn validate_symmetric_key(&self, _key: &str) -> Result<()> {
+            panic!("resolver should not be called")
+        }
+
+        fn validate_certificate_bag(&self, _key: &str) -> Result<()> {
+            panic!("resolver should not be called")
+        }
+
+        fn validate_public_key_bag(&self, _key: &str) -> Result<()> {
+            panic!("resolver should not be called")
+        }
+    }
+
+    fn raw_private_key_keystore(reference: &str) -> RawPrivateKey {
+        RawPrivateKey {
+            inline_definition: None,
+            central_keystore_reference: Some(reference.to_owned()),
+        }
+    }
+
+    fn raw_private_key_inline(cleartext_private_key: &str) -> RawPrivateKey {
+        RawPrivateKey {
+            inline_definition: Some(tacacsrs_config::keystore::AsymmetricKeyInlineDefinition {
+                public_key_format: None,
+                public_key: None,
+                private_key_format: None,
+                cleartext_private_key: Some(cleartext_private_key.to_owned()),
+                hidden_private_key: None,
+                encrypted_private_key: None,
+            }),
+            central_keystore_reference: None,
+        }
+    }
+
+    fn client_identity_with_raw_private_key(
+        raw_private_key: RawPrivateKey,
+    ) -> TlsClientClientIdentity {
+        TlsClientClientIdentity {
+            credentials_reference: None,
+            certificate: None,
+            raw_private_key: Some(raw_private_key),
+            tls13_epsk: None,
+        }
+    }
+
+    fn raw_public_keys_truststore_ref(reference: &str) -> ServerAuthenticationRawPublicKeys {
+        ServerAuthenticationRawPublicKeys {
+            inline_definition: None,
+            central_truststore_reference: Some(reference.to_owned()),
+        }
+    }
+
+    fn raw_public_keys_inline(public_keys: &[(&str, &str)]) -> ServerAuthenticationRawPublicKeys {
+        ServerAuthenticationRawPublicKeys {
+            inline_definition: Some(tacacsrs_config::truststore::PublicKeysInlineDefinition {
+                public_key: public_keys
+                    .iter()
+                    .map(|(name, public_key)| tacacsrs_config::truststore::PublicKeysPublicKey {
+                        name: (*name).to_owned(),
+                        public_key_format: PublicKeyFormat::SubjectPublicKeyInfoFormat
+                            .as_rfc7951_str()
+                            .to_owned(),
+                        public_key: (*public_key).to_owned(),
+                    })
+                    .collect(),
+            }),
+            central_truststore_reference: None,
+        }
+    }
+
+    fn server_auth_with_raw_public_keys(
+        raw_public_keys: ServerAuthenticationRawPublicKeys,
+    ) -> TlsClientServerAuthentication {
+        TlsClientServerAuthentication {
+            credentials_reference: None,
+            ca_certs: None,
+            ee_certs: None,
+            raw_public_keys: Some(raw_public_keys),
+            tls13_epsks: None,
+        }
+    }
+
+    fn default_server() -> TacacsPlusServer {
+        TacacsPlusServer {
+            name: String::new(),
+            server_type: TacacsPlusServerType::ACCOUNTING,
+            address: "10.0.1.2".to_owned(),
+            port: 49,
+            domain_name: None,
+            sni_enabled: None,
+            single_connection: false,
+            timeout: 5,
+            source_ip: None,
+            source_interface: None,
+            shared_secret: None,
+            client_identity: None,
+            server_authentication: None,
+            hello_params: None,
+            vrf_instance: None,
+        }
+    }
+
+    fn server_with_client_identity(
+        name: &str,
+        client_identity: TlsClientClientIdentity,
+    ) -> TacacsPlusServer {
+        TacacsPlusServer {
+            name: name.to_owned(),
+            client_identity: Some(client_identity),
+            ..default_server()
+        }
+    }
+
+    fn server_with_server_auth(
+        name: &str,
+        server_authentication: TlsClientServerAuthentication,
+    ) -> TacacsPlusServer {
+        TacacsPlusServer {
+            name: name.to_owned(),
+            server_authentication: Some(server_authentication),
+            ..default_server()
+        }
+    }
+
+    #[test]
+    fn resolve_raw_private_key_keystore_ref_populates_inline_definition() {
+        let mut raw_private_key = raw_private_key_keystore("rpk-ref");
+        let resolver = RpkResolver {
+            asymmetric_key: Some(AsymmetricKeyMaterial {
+                cleartext_private_key: "RPK_PRIVATE_KEY".to_owned(),
+                public_key: Some("RPK_PUBLIC_KEY".to_owned()),
+                private_key_format: Some(PrivateKeyFormat::OneAsymmetricKeyFormat),
+                public_key_format: Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),
+            }),
+            public_key_bag: None,
+            resolve_asymmetric_error: None,
+            resolve_public_key_bag_error: None,
+            validate_asymmetric_error: None,
+            validate_public_key_bag_error: None,
+        };
+
+        resolve_raw_private_key_keystore_ref(&mut raw_private_key, &resolver).unwrap();
+
+        assert!(raw_private_key.central_keystore_reference.is_none());
+        let inline = raw_private_key.inline_definition.as_ref().unwrap();
+        assert_eq!(inline.cleartext_private_key.as_deref(), Some("RPK_PRIVATE_KEY"));
+        assert_eq!(inline.public_key.as_deref(), Some("RPK_PUBLIC_KEY"));
+        assert_eq!(
+            inline.private_key_format.as_deref(),
+            Some("ietf-crypto-types:one-asymmetric-key-format"),
+        );
+        assert_eq!(
+            inline.public_key_format.as_deref(),
+            Some("ietf-crypto-types:subject-public-key-info-format"),
+        );
+    }
+
+    #[test]
+    fn resolve_raw_private_key_keystore_ref_returns_unresolved_error() {
+        let mut raw_private_key = raw_private_key_keystore("missing-rpk");
+        let resolver = RpkResolver {
+            asymmetric_key: None,
+            public_key_bag: None,
+            resolve_asymmetric_error: None,
+            resolve_public_key_bag_error: None,
+            validate_asymmetric_error: None,
+            validate_public_key_bag_error: None,
+        };
+
+        let error =
+            resolve_raw_private_key_keystore_ref(&mut raw_private_key, &resolver).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("did not resolve keystore reference 'missing-rpk'"));
+        assert!(message.contains("raw-private-key"));
+    }
+
+    #[test]
+    fn resolve_raw_public_keys_truststore_ref_populates_inline_definition() {
+        let mut raw_public_keys = raw_public_keys_truststore_ref("rpk-ref");
+        let resolver = RpkResolver {
+            asymmetric_key: None,
+            public_key_bag: Some(vec![TruststorePublicKeyMaterial {
+                name: "rpk-ref".to_owned(),
+                public_key: "PUB_KEY_DATA".to_owned(),
+                public_key_format: PublicKeyFormat::SubjectPublicKeyInfoFormat,
+            }]),
+            resolve_asymmetric_error: None,
+            resolve_public_key_bag_error: None,
+            validate_asymmetric_error: None,
+            validate_public_key_bag_error: None,
+        };
+
+        resolve_raw_public_keys_truststore_ref(&mut raw_public_keys, &resolver).unwrap();
+
+        assert!(raw_public_keys.central_truststore_reference.is_none());
+        let inline = raw_public_keys.inline_definition.as_ref().unwrap();
+        assert_eq!(inline.public_key.len(), 1);
+        assert_eq!(inline.public_key[0].name, "rpk-ref");
+        assert_eq!(inline.public_key[0].public_key, "PUB_KEY_DATA");
+        assert_eq!(
+            inline.public_key[0].public_key_format,
+            "ietf-crypto-types:subject-public-key-info-format",
+        );
+    }
+
+    #[test]
+    fn resolve_raw_public_keys_truststore_ref_returns_unresolved_error() {
+        let mut raw_public_keys = raw_public_keys_truststore_ref("missing-rpk");
+        let resolver = RpkResolver {
+            asymmetric_key: None,
+            public_key_bag: None,
+            resolve_asymmetric_error: None,
+            resolve_public_key_bag_error: None,
+            validate_asymmetric_error: None,
+            validate_public_key_bag_error: None,
+        };
+
+        let error =
+            resolve_raw_public_keys_truststore_ref(&mut raw_public_keys, &resolver).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("did not resolve truststore public key bag 'missing-rpk'"));
+    }
+
+    #[test]
+    fn resolve_server_preserves_inline_raw_private_key_without_resolver_calls() {
+        let server = server_with_client_identity(
+            "inline-rpk",
+            client_identity_with_raw_private_key(raw_private_key_inline("RPK_PRIVATE_KEY")),
+        );
+
+        let resolved = resolve_server(server, Some(&PanicResolver)).unwrap();
+
+        let raw_private_key = resolved
+            .client_identity
+            .as_ref()
+            .and_then(|client_identity| client_identity.raw_private_key.as_ref())
+            .unwrap();
+        let inline = raw_private_key.inline_definition.as_ref().unwrap();
+        assert_eq!(inline.cleartext_private_key.as_deref(), Some("RPK_PRIVATE_KEY"));
+        assert!(inline.public_key.is_none());
+        assert!(inline.private_key_format.is_none());
+        assert!(inline.public_key_format.is_none());
+    }
+
+    #[test]
+    fn resolve_server_preserves_inline_raw_public_keys_without_resolver_calls() {
+        let server = server_with_server_auth(
+            "inline-rpk-ts",
+            server_auth_with_raw_public_keys(raw_public_keys_inline(&[(
+                "rpk-ref",
+                "PUB_KEY_DATA",
+            )])),
+        );
+
+        let resolved = resolve_server(server, Some(&PanicResolver)).unwrap();
+
+        let raw_public_keys = resolved
+            .server_authentication
+            .as_ref()
+            .and_then(|server_authentication| server_authentication.raw_public_keys.as_ref())
+            .unwrap();
+        let inline = raw_public_keys.inline_definition.as_ref().unwrap();
+        assert_eq!(inline.public_key.len(), 1);
+        assert_eq!(inline.public_key[0].name, "rpk-ref");
+        assert_eq!(inline.public_key[0].public_key, "PUB_KEY_DATA");
+    }
+
+    #[test]
+    fn resolve_server_adds_server_context_for_raw_public_keys_errors() {
+        let server = server_with_server_auth(
+            "ctx-rpk-ts",
+            server_auth_with_raw_public_keys(raw_public_keys_truststore_ref("err-rpk")),
+        );
+        let resolver = RpkResolver {
+            asymmetric_key: None,
+            public_key_bag: None,
+            resolve_asymmetric_error: None,
+            resolve_public_key_bag_error: Some("resolution failed"),
+            validate_asymmetric_error: None,
+            validate_public_key_bag_error: None,
+        };
+
+        let error = resolve_server(server, Some(&resolver)).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("ctx-rpk-ts"));
+        assert!(message.contains("central-truststore-reference for raw-public-keys"));
+    }
+
+    #[test]
+    fn resolve_server_without_resolver_rejects_raw_public_keys_refs() {
+        let server = server_with_server_auth(
+            "noop-rpk-ts",
+            server_auth_with_raw_public_keys(raw_public_keys_truststore_ref("rpk-ts-ref")),
+        );
+
+        let error = resolve_server(server, None).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("no credential resolver configured"));
+        assert!(message.contains("raw-public-keys"));
+    }
+
+    #[test]
+    fn resolve_server_without_resolver_rejects_raw_private_key_refs() {
+        let server = server_with_client_identity(
+            "noop-rpk",
+            client_identity_with_raw_private_key(raw_private_key_keystore("rpk-ref")),
+        );
+
+        let error = resolve_server(server, None).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("no credential resolver configured"));
+        assert!(message.contains("raw-private-key"));
+    }
+
+    #[test]
+    fn validate_rpk_keystore_refs_collects_resolver_errors() {
+        let client_identity =
+            client_identity_with_raw_private_key(raw_private_key_keystore("bad-rpk"));
+        let resolver = RpkResolver {
+            asymmetric_key: None,
+            public_key_bag: None,
+            resolve_asymmetric_error: None,
+            resolve_public_key_bag_error: None,
+            validate_asymmetric_error: Some("resolution failed"),
+            validate_public_key_bag_error: None,
+        };
+        let mut errors = Vec::new();
+
+        validate_rpk_keystore_refs(&client_identity, "ext-rpk-ks", &resolver, &mut errors);
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].contains("server 'ext-rpk-ks': raw-private-key central-keystore-reference")
+        );
+        assert!(errors[0].contains("resolution failed"));
+    }
+
+    #[test]
+    fn validate_rpk_truststore_refs_collects_resolver_errors() {
+        let server_auth =
+            server_auth_with_raw_public_keys(raw_public_keys_truststore_ref("bad-rpk-ts"));
+        let resolver = RpkResolver {
+            asymmetric_key: None,
+            public_key_bag: None,
+            resolve_asymmetric_error: None,
+            resolve_public_key_bag_error: None,
+            validate_asymmetric_error: None,
+            validate_public_key_bag_error: Some("resolution failed"),
+        };
+        let mut errors = Vec::new();
+
+        validate_rpk_truststore_refs(&server_auth, "ext-rpk-ts", &resolver, &mut errors);
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].contains("server 'ext-rpk-ts': raw-public-keys central-truststore-reference")
+        );
+        assert!(errors[0].contains("resolution failed"));
+    }
+
+    #[test]
+    fn validate_external_server_references_without_resolver_rejects_rpk_keystore_refs() {
+        let server = server_with_client_identity(
+            "noop-rpk",
+            client_identity_with_raw_private_key(raw_private_key_keystore("rpk-ref")),
+        );
+
+        let error = validate_external_server_references(&server, None).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("no credential resolver configured"));
+        assert!(message.contains("raw-private-key central-keystore-reference"));
+    }
+
+    #[test]
+    fn validate_external_server_references_without_resolver_rejects_rpk_truststore_refs() {
+        let server = server_with_server_auth(
+            "noop-rpk-ts",
+            server_auth_with_raw_public_keys(raw_public_keys_truststore_ref("rpk-ts-ref")),
+        );
+
+        let error = validate_external_server_references(&server, None).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("no credential resolver configured"));
+        assert!(message.contains("raw-public-keys central-truststore-reference"));
+    }
+}

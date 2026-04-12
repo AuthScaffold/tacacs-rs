@@ -97,7 +97,7 @@ The crate includes runnable examples under `examples/`:
 - `quick_start_credential_refs.rs` — minimal end-to-end example showing bundle validation and enumeration
 - `pipeline_flow.rs` — explicit step-by-step parse/enumerate/external-resolution pipeline
 - `model_access.rs` — direct access to generated model types and flags
-- `credential_references.rs` — parse, enumerate, then resolve external references with `tacacsrs-credentials`
+- External secret-resolution example now lives in `tacacsrs-credentials/examples/credential_references.rs`
 
 Run examples from the workspace root:
 
