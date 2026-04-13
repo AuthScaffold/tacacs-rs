@@ -1,4 +1,3 @@
-use base64::Engine;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, SubjectPublicKeyInfoDer};
 
 use tacacsrs_config::{enumerate_server, enumerate_servers, parse_yang_json, TacacsPlusServerType};
@@ -177,10 +176,7 @@ fn main() -> anyhow::Result<()> {
         .and_then(|inline| inline.cleartext_private_key.as_deref())
         .expect("resolved server should include inline private key material");
 
-    assert_eq!(
-        rpk_inline,
-        base64::engine::general_purpose::STANDARD.encode(b"RESOLVED_PRIVATE_KEY"),
-    );
+    assert_eq!(rpk_inline, b"RESOLVED_PRIVATE_KEY",);
 
     // Enumeration approach: resolve all servers, then pick by server-type bitflag.
     let resolved_servers = resolve_servers(enumerated_servers, Some(&LocalReferenceResolver))?;

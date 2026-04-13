@@ -35,14 +35,13 @@ pub(crate) fn resolve_certificate_keystore_ref(
 
         cert.inline_definition =
             Some(tacacsrs_config::keystore::EndEntityCertWithKeyInlineDefinition {
-                public_key_format: material.public_key.as_ref().map(|_| {
-                    PublicKeyFormat::SubjectPublicKeyInfoFormat
-                        .as_rfc7951_str()
-                        .to_owned()
-                }),
+                public_key_format: material
+                    .public_key
+                    .as_ref()
+                    .map(|_| PublicKeyFormat::SubjectPublicKeyInfoFormat),
                 public_key: material.public_key.as_ref().map(encode_public_key_der),
-                private_key_format: Some(encoded_private_key.format_rfc7951),
-                cleartext_private_key: Some(encoded_private_key.der_base64),
+                private_key_format: Some(encoded_private_key.format),
+                cleartext_private_key: Some(encoded_private_key.der_bytes),
                 hidden_private_key: None,
                 encrypted_private_key: None,
                 cert_data: Some(encode_certificate_der(&material.certificate)),
@@ -152,6 +151,7 @@ pub(crate) fn validate_server_auth_cert_refs(
 mod tests {
     use anyhow::Result;
     use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use tacacsrs_config::crypto_types::PrivateKeyFormat;
 
     use tacacsrs_config::{
         ClientIdentityCertificate, ServerAuthenticationCaCerts, TacacsPlusServer,
@@ -357,10 +357,10 @@ mod tests {
                     public_key_format: None,
                     public_key: None,
                     private_key_format: None,
-                    cleartext_private_key: Some(cleartext_private_key.to_owned()),
+                    cleartext_private_key: Some(cleartext_private_key.as_bytes().to_vec()),
                     hidden_private_key: None,
                     encrypted_private_key: None,
-                    cert_data: Some(cert_data.to_owned()),
+                    cert_data: Some(cert_data.as_bytes().to_vec()),
                 },
             ),
             central_keystore_reference: None,
@@ -392,7 +392,7 @@ mod tests {
                     .iter()
                     .map(|(name, cert_data)| tacacsrs_config::truststore::CertsCertificate {
                         name: (*name).to_owned(),
-                        cert_data: (*cert_data).to_owned(),
+                        cert_data: cert_data.as_bytes().to_vec(),
                     })
                     .collect(),
             }),
@@ -482,12 +482,9 @@ mod tests {
 
         assert!(certificate.central_keystore_reference.is_none());
         let inline = certificate.inline_definition.as_ref().unwrap();
-        assert_eq!(inline.cert_data.as_deref(), Some("UkVTT0xWRURfQ0VSVF9ERVI="));
-        assert_eq!(inline.cleartext_private_key.as_deref(), Some("UkVTT0xWRURfS0VZX0RFUg=="));
-        assert_eq!(
-            inline.private_key_format.as_deref(),
-            Some("ietf-crypto-types:one-asymmetric-key-format"),
-        );
+        assert_eq!(inline.cert_data.as_deref(), Some(b"RESOLVED_CERT_DER".as_slice()));
+        assert_eq!(inline.cleartext_private_key.as_deref(), Some(b"RESOLVED_KEY_DER".as_slice()),);
+        assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat),);
     }
 
     #[test]
@@ -511,7 +508,7 @@ mod tests {
         let inline = certs.inline_definition.as_ref().unwrap();
         assert_eq!(inline.certificate.len(), 1);
         assert_eq!(inline.certificate[0].name, "ca-ref");
-        assert_eq!(inline.certificate[0].cert_data, "Q0FfQ0VSVF9ERVI=");
+        assert_eq!(inline.certificate[0].cert_data, b"CA_CERT_DER");
     }
 
     #[test]
@@ -569,8 +566,11 @@ mod tests {
             .and_then(|client_identity| client_identity.certificate.as_ref())
             .unwrap();
         let inline_certificate = certificate.inline_definition.as_ref().unwrap();
-        assert_eq!(inline_certificate.cert_data.as_deref(), Some("Y2xpZW50LWNlcnQ="));
-        assert_eq!(inline_certificate.cleartext_private_key.as_deref(), Some("Y2xpZW50LWtleQ=="),);
+        assert_eq!(inline_certificate.cert_data.as_deref(), Some(b"Y2xpZW50LWNlcnQ=".as_slice()),);
+        assert_eq!(
+            inline_certificate.cleartext_private_key.as_deref(),
+            Some(b"Y2xpZW50LWtleQ==".as_slice()),
+        );
 
         let ca_certs = resolved
             .server_authentication

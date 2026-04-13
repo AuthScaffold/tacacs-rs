@@ -10,8 +10,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tacacsrs_config::crypto_types::PrivateKeyFormat;
 use tacacsrs_credentials::ResolvedServer;
@@ -101,8 +99,7 @@ pub async fn establish_stream(
                 .as_ref()
                 .and_then(|d| d.cleartext_symmetric_key.as_deref())
                 .unwrap_or_default();
-            let key_bytes = parse_symmetric_key_data(key_material)
-                .context("failed to parse TLS PSK key data")?;
+            let key_bytes = parse_symmetric_key_data(key_material);
 
             let psk =
                 crate::transport::tls_psk::PskIdentity::new(&epsk.external_identity, key_bytes)
@@ -128,7 +125,7 @@ pub async fn establish_stream(
                     let tls_stream = establish_rpk_stream(
                         server,
                         &address,
-                        inline.private_key_format.as_deref(),
+                        inline.private_key_format.as_ref(),
                         cleartext_key,
                         tcp_stream,
                     )
@@ -184,12 +181,11 @@ async fn establish_cert_tls_stream(
                         })
                         .context("Failed to parse TLS certificate")?;
 
-                    let key =
-                        parse_private_key_data(key_data, inline.private_key_format.as_deref())
-                            .inspect_err(|e| {
-                                log::warn!("Failed to parse TLS private key for {address}: {e:#}");
-                            })
-                            .context("Failed to parse TLS private key")?;
+                    let key = parse_private_key_data(key_data, inline.private_key_format.as_ref())
+                        .inspect_err(|e| {
+                            log::warn!("Failed to parse TLS private key for {address}: {e:#}");
+                        })
+                        .context("Failed to parse TLS private key")?;
 
                     builder = builder.with_client_auth_der(certs, key);
                 }
@@ -223,32 +219,21 @@ async fn establish_cert_tls_stream(
 async fn establish_rpk_stream(
     server: &ResolvedServer,
     address: &str,
-    private_key_format: Option<&str>,
-    cleartext_key: &str,
+    private_key_format: Option<&PrivateKeyFormat>,
+    cleartext_key: &[u8],
     tcp_stream: tokio::net::TcpStream,
 ) -> Result<tokio_openssl::SslStream<tokio::net::TcpStream>> {
     log::debug!("Setting up TLS-RPK connection to {address}");
 
     let key_format = match private_key_format {
-        Some(fmt) => {
-            let f = PrivateKeyFormat::from_rfc7951_str(fmt)
-                .ok_or_else(|| anyhow::anyhow!("unsupported private-key-format '{fmt}'"))?;
-            match f {
-                PrivateKeyFormat::RsaPrivateKeyFormat => {
-                    crate::transport::tls_rpk::KeyFormat::Pkcs1
-                }
-                PrivateKeyFormat::EcPrivateKeyFormat => crate::transport::tls_rpk::KeyFormat::Sec1,
-                PrivateKeyFormat::OneAsymmetricKeyFormat => {
-                    crate::transport::tls_rpk::KeyFormat::Pkcs8
-                }
-            }
+        Some(PrivateKeyFormat::RsaPrivateKeyFormat) => crate::transport::tls_rpk::KeyFormat::Pkcs1,
+        Some(PrivateKeyFormat::EcPrivateKeyFormat) => crate::transport::tls_rpk::KeyFormat::Sec1,
+        Some(PrivateKeyFormat::OneAsymmetricKeyFormat) | None => {
+            crate::transport::tls_rpk::KeyFormat::Pkcs8
         }
-        None => crate::transport::tls_rpk::KeyFormat::Pkcs8,
     };
 
-    let private_key_der = BASE64
-        .decode(cleartext_key.trim())
-        .context("failed to base64-decode RPK private key")?;
+    let private_key_der = cleartext_key.to_vec();
 
     let mut identity = crate::transport::tls_rpk::RpkIdentity::new(private_key_der, key_format)
         .context("Invalid RPK credentials")?;
@@ -259,12 +244,9 @@ async fn establish_rpk_stream(
             if let Some(ref inline_def) = raw_pub_keys.inline_definition {
                 let mut pinned = Vec::new();
                 for pk in &inline_def.public_key {
-                    let spki_der = BASE64.decode(pk.public_key.trim()).with_context(|| {
-                        format!("failed to base64-decode pinned server key '{}'", pk.name,)
-                    })?;
                     pinned.push(crate::transport::tls_rpk::PinnedPublicKey {
                         name: pk.name.clone(),
-                        spki_der,
+                        spki_der: pk.public_key.clone(),
                     });
                 }
                 identity = identity.with_pinned_server_keys(pinned);
@@ -343,8 +325,8 @@ fn build_root_cert_store(server: &ResolvedServer) -> Result<Option<rustls::RootC
     }
 }
 
-/// Adds a certificate (PEM or base64-encoded DER) to a root cert store.
-fn add_cert_to_store(cert_data: &str, store: &mut rustls::RootCertStore) -> Result<()> {
+/// Adds a certificate (PEM text or DER bytes) to a root cert store.
+fn add_cert_to_store(cert_data: &[u8], store: &mut rustls::RootCertStore) -> Result<()> {
     let certs = parse_certificate_data(cert_data)?;
     for cert in certs {
         store
@@ -354,48 +336,38 @@ fn add_cert_to_store(cert_data: &str, store: &mut rustls::RootCertStore) -> Resu
     Ok(())
 }
 
-/// Parses certificate data that may be either PEM (with BEGIN/END markers)
-/// or base64-encoded DER.
-fn parse_certificate_data(data: &str) -> Result<Vec<CertificateDer<'static>>> {
-    let trimmed = data.trim();
+/// Parses certificate data that may be either PEM text (with BEGIN/END markers)
+/// or raw DER bytes.
+fn parse_certificate_data(data: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
+    let trimmed = data;
 
-    if trimmed.starts_with("-----BEGIN") {
+    if trimmed.starts_with(b"-----BEGIN") {
         // PEM format
-        CertificateDer::pem_slice_iter(trimmed.as_bytes())
+        CertificateDer::pem_slice_iter(trimmed)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| anyhow::anyhow!("failed to parse certificate PEM: {e}"))
     } else {
-        // Base64-encoded DER
-        let der_bytes = BASE64
-            .decode(trimmed)
-            .context("failed to base64-decode certificate data")?;
-        Ok(vec![CertificateDer::from(der_bytes)])
+        Ok(vec![CertificateDer::from(trimmed.to_vec())])
     }
 }
 
 /// Parses private key data using the YANG `private-key-format` identity when
-/// available.  Falls back to PEM auto-detection when no format is specified.
+/// available. Falls back to PEM auto-detection when no format is specified.
 ///
 /// Format mapping (RFC 9640 / `ietf-crypto-types`):
 /// - `rsa-private-key-format`  → PKCS#1 `RSAPrivateKey` DER
 /// - `ec-private-key-format`   → SEC1 `ECPrivateKey` DER
 /// - `one-asymmetric-key-format` → PKCS#8 `OneAsymmetricKey` DER
 fn parse_private_key_data(
-    data: &str,
-    private_key_format: Option<&str>,
+    data: &[u8],
+    private_key_format: Option<&PrivateKeyFormat>,
 ) -> Result<PrivateKeyDer<'static>> {
-    let trimmed = data.trim();
+    let trimmed = data;
 
-    // When a format is specified, base64-decode and wrap in the correct variant.
     if let Some(fmt) = private_key_format {
-        let format = PrivateKeyFormat::from_rfc7951_str(fmt)
-            .ok_or_else(|| anyhow::anyhow!("unsupported private-key-format '{fmt}'"))?;
+        let der_bytes = trimmed.to_vec();
 
-        let der_bytes = BASE64
-            .decode(trimmed)
-            .context("failed to base64-decode private key data")?;
-
-        return match format {
+        return match fmt {
             PrivateKeyFormat::RsaPrivateKeyFormat => {
                 Ok(PrivateKeyDer::Pkcs1(rustls_pki_types::PrivatePkcs1KeyDer::from(der_bytes)))
             }
@@ -409,22 +381,17 @@ fn parse_private_key_data(
     }
 
     // No format specified — try PEM auto-detection, then fall back to PKCS#8.
-    if trimmed.starts_with("-----BEGIN") {
-        PrivateKeyDer::from_pem_slice(trimmed.as_bytes())
+    if trimmed.starts_with(b"-----BEGIN") {
+        PrivateKeyDer::from_pem_slice(trimmed)
             .map_err(|e| anyhow::anyhow!("failed to parse private key PEM: {e}"))
     } else {
-        let der_bytes = BASE64
-            .decode(trimmed)
-            .context("failed to base64-decode private key data")?;
-        Ok(PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(der_bytes)))
+        Ok(PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(trimmed.to_vec())))
     }
 }
 
 #[cfg(feature = "psk")]
-fn parse_symmetric_key_data(data: &str) -> Result<Vec<u8>> {
-    BASE64
-        .decode(data.trim())
-        .context("failed to base64-decode symmetric key data")
+fn parse_symmetric_key_data(data: &[u8]) -> Vec<u8> {
+    data.to_vec()
 }
 
 #[cfg(test)]
@@ -497,39 +464,23 @@ mod tests {
                     AAECMAoGCCqGSM49BAMCA0gAMEUCIQCI+GS5E3D1JvHb4M0ouHuaRKEFW0GW8UOO\n\
                     OAXAG+bOygIgW7LF5J4c8O4DJPP2VddsNOKmKHqEZnnVqMSGIgfaoFo=\n\
                     -----END CERTIFICATE-----";
-        let certs = parse_certificate_data(pem);
+        let certs = parse_certificate_data(pem.as_bytes());
         assert!(certs.is_ok());
         assert_eq!(certs.unwrap().len(), 1);
     }
 
     #[test]
-    fn parse_certificate_data_base64_der() {
-        // Just verify the base64 decode path doesn't panic on valid base64
-        // (the decoded bytes won't be a real cert, but we test the decode logic)
-        let b64 = BASE64.encode(b"\x30\x82\x01\x00fake-der-cert-data");
-        let result = parse_certificate_data(&b64);
-        // This will succeed at the decode step but may fail at store.add;
-        // we're testing the parsing path here
+    fn parse_certificate_data_der_bytes() {
+        let der = b"\x30\x82\x01\x00fake-der-cert-data";
+        let result = parse_certificate_data(der);
         assert!(result.is_ok());
     }
 
     #[cfg(feature = "psk")]
     #[test]
-    fn parse_symmetric_key_data_base64() {
-        let b64 = BASE64.encode(b"resolved-psk-bytes");
-
-        let key = parse_symmetric_key_data(&b64).unwrap();
+    fn parse_symmetric_key_data_bytes() {
+        let key = parse_symmetric_key_data(b"resolved-psk-bytes");
 
         assert_eq!(key, b"resolved-psk-bytes");
-    }
-
-    #[cfg(feature = "psk")]
-    #[test]
-    fn parse_symmetric_key_data_rejects_invalid_base64() {
-        let error = parse_symmetric_key_data("not base64!!!").unwrap_err();
-
-        assert!(error
-            .to_string()
-            .contains("failed to base64-decode symmetric key data"));
     }
 }

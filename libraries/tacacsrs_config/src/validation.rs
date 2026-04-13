@@ -1,14 +1,11 @@
 use std::collections::HashSet;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
-
-use crate::generated::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
 use crate::generated::tacacs_plus::{
     ClientCredentials, ClientIdentityCertificate, RawPrivateKey, ServerAuthenticationCaCerts,
     ServerAuthenticationRawPublicKeys, TacacsPlus, TacacsPlusServer, Tls13Epsk,
     TlsClientClientIdentity, TlsClientServerAuthentication,
 };
+use crate::generated::tls_common::TlsVersionBase;
 
 /// Validate a parsed TACACS+ configuration against YANG model constraints.
 ///
@@ -232,16 +229,18 @@ fn validate_tls_versions(
 ) -> anyhow::Result<()> {
     if let Some(ref versions) = hp.tls_versions {
         if let Some(ref min) = versions.min {
-            if is_below_tls13(min) {
+            if is_below_tls13(*min) {
                 anyhow::bail!(
-                    "server '{server_name}': minimum TLS version must be >= 1.3, got '{min}'",
+                    "server '{server_name}': minimum TLS version must be >= 1.3, got '{}'",
+                    min.as_rfc7951_str(),
                 );
             }
         }
         if let Some(ref max) = versions.max {
-            if is_below_tls13(max) {
+            if is_below_tls13(*max) {
                 anyhow::bail!(
-                    "server '{server_name}': maximum TLS version must be >= 1.3, got '{max}'",
+                    "server '{server_name}': maximum TLS version must be >= 1.3, got '{}'",
+                    max.as_rfc7951_str(),
                 );
             }
         }
@@ -249,8 +248,8 @@ fn validate_tls_versions(
     Ok(())
 }
 
-fn is_below_tls13(version: &str) -> bool {
-    matches!(version, "tls10" | "tls11" | "tls12")
+fn is_below_tls13(version: TlsVersionBase) -> bool {
+    matches!(version, TlsVersionBase::Tls12)
 }
 
 fn validate_unique_ids<'a>(
@@ -487,25 +486,10 @@ fn reject_unsupported_epsk_derivation(context: &str, epsk: &Tls13Epsk) -> anyhow
 }
 
 // ---------------------------------------------------------------------------
-// Identityref key-format validation
+// Inline key material validation
 // ---------------------------------------------------------------------------
 
-fn validate_identityref(
-    context: &str,
-    field_name: &str,
-    value: &str,
-    allowed: &[&str],
-) -> anyhow::Result<()> {
-    if !allowed.contains(&value) {
-        anyhow::bail!(
-            "{context}: invalid {field_name} '{value}', expected one of [{}]",
-            allowed.join(", "),
-        );
-    }
-    Ok(())
-}
-
-/// Validate key format identityrefs in all inline definitions across the config.
+/// Validate inline key material in all inline definitions across the config.
 pub(crate) fn validate_key_formats(config: &TacacsPlus) -> anyhow::Result<()> {
     for server in &config.server {
         let ctx = format!("server '{}'", server.name);
@@ -526,20 +510,6 @@ pub(crate) fn validate_key_formats(config: &TacacsPlus) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_asymmetric_key_formats(
-    public_key_format: Option<&str>,
-    private_key_format: Option<&str>,
-    context: &str,
-) -> anyhow::Result<()> {
-    if let Some(pkf) = public_key_format {
-        validate_identityref(context, "public-key-format", pkf, PublicKeyFormat::ALLOWED_VALUES)?;
-    }
-    if let Some(pkf) = private_key_format {
-        validate_identityref(context, "private-key-format", pkf, PrivateKeyFormat::ALLOWED_VALUES)?;
-    }
-    Ok(())
-}
-
 fn validate_client_identity_key_formats(
     ci: &TlsClientClientIdentity,
     context: &str,
@@ -547,11 +517,6 @@ fn validate_client_identity_key_formats(
     if let Some(ref cert) = ci.certificate {
         if let Some(ref inline) = cert.inline_definition {
             let path = format!("{context}/client-identity/certificate");
-            validate_asymmetric_key_formats(
-                inline.public_key_format.as_deref(),
-                inline.private_key_format.as_deref(),
-                &path,
-            )?;
             validate_inline_asymmetric_key_material(
                 inline.public_key.as_deref(),
                 inline.cleartext_private_key.as_deref(),
@@ -563,11 +528,6 @@ fn validate_client_identity_key_formats(
     if let Some(ref rpk) = ci.raw_private_key {
         if let Some(ref inline) = rpk.inline_definition {
             let path = format!("{context}/client-identity/raw-private-key");
-            validate_asymmetric_key_formats(
-                inline.public_key_format.as_deref(),
-                inline.private_key_format.as_deref(),
-                &path,
-            )?;
             validate_inline_asymmetric_key_material(
                 inline.public_key.as_deref(),
                 inline.cleartext_private_key.as_deref(),
@@ -579,9 +539,6 @@ fn validate_client_identity_key_formats(
     if let Some(ref epsk) = ci.tls13_epsk {
         if let Some(ref inline) = epsk.inline_definition {
             let path = format!("{context}/client-identity/tls13-epsk");
-            if let Some(ref kf) = inline.key_format {
-                validate_identityref(&path, "key-format", kf, SymmetricKeyFormat::ALLOWED_VALUES)?;
-            }
             if let Some(ref key) = inline.cleartext_symmetric_key {
                 validate_binary_data(key, &path, "cleartext-symmetric-key")?;
             }
@@ -598,12 +555,6 @@ fn validate_server_auth_key_formats(
         if let Some(ref inline) = rpk.inline_definition {
             for pk in &inline.public_key {
                 let path = format!("{context}/server-authentication/raw-public-keys");
-                validate_identityref(
-                    &path,
-                    "public-key-format",
-                    &pk.public_key_format,
-                    PublicKeyFormat::ALLOWED_VALUES,
-                )?;
                 validate_binary_data(&pk.public_key, &path, "public-key")?;
             }
         }
@@ -641,11 +592,6 @@ fn validate_client_credential_key_formats(
     if let Some(ref cert) = cred.certificate {
         if let Some(ref inline) = cert.inline_definition {
             let path = format!("{context}/certificate");
-            validate_asymmetric_key_formats(
-                inline.public_key_format.as_deref(),
-                inline.private_key_format.as_deref(),
-                &path,
-            )?;
             validate_inline_asymmetric_key_material(
                 inline.public_key.as_deref(),
                 inline.cleartext_private_key.as_deref(),
@@ -657,11 +603,6 @@ fn validate_client_credential_key_formats(
     if let Some(ref rpk) = cred.raw_private_key {
         if let Some(ref inline) = rpk.inline_definition {
             let path = format!("{context}/raw-private-key");
-            validate_asymmetric_key_formats(
-                inline.public_key_format.as_deref(),
-                inline.private_key_format.as_deref(),
-                &path,
-            )?;
             validate_inline_asymmetric_key_material(
                 inline.public_key.as_deref(),
                 inline.cleartext_private_key.as_deref(),
@@ -673,9 +614,6 @@ fn validate_client_credential_key_formats(
     if let Some(ref epsk) = cred.tls13_epsk {
         if let Some(ref inline) = epsk.inline_definition {
             let path = format!("{context}/tls13-epsk");
-            if let Some(ref kf) = inline.key_format {
-                validate_identityref(&path, "key-format", kf, SymmetricKeyFormat::ALLOWED_VALUES)?;
-            }
             if let Some(ref key) = inline.cleartext_symmetric_key {
                 validate_binary_data(key, &path, "cleartext-symmetric-key")?;
             }
@@ -684,42 +622,23 @@ fn validate_client_credential_key_formats(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Inline key material validation
-// ---------------------------------------------------------------------------
-
-/// Validates that a YANG `binary` field contains decodable data.
+/// Validates that a parsed YANG `binary` field contains usable data.
 ///
-/// YANG binary values are either base64-encoded DER or PEM with BEGIN/END
-/// markers. This accepts both forms and rejects data that cannot be decoded.
-fn validate_binary_data(data: &str, context: &str, field: &str) -> anyhow::Result<()> {
-    let trimmed = data.trim();
-    if trimmed.is_empty() {
+/// RFC 7951 base64 decoding already happened during deserialization, so the
+/// remaining semantic validation here is that the field is not empty.
+fn validate_binary_data(data: &[u8], context: &str, field: &str) -> anyhow::Result<()> {
+    if data.is_empty() {
         anyhow::bail!("{context}: {field} must not be empty");
     }
-
-    // PEM data is valid if it has proper markers — the base64 payload inside
-    // is decoded by PEM parsers, not by us.
-    if trimmed.starts_with("-----BEGIN") {
-        if !trimmed.contains("-----END") {
-            anyhow::bail!("{context}: {field} contains a PEM BEGIN marker but no END marker");
-        }
-        return Ok(());
-    }
-
-    // Raw base64 — validate it decodes.
-    BASE64
-        .decode(trimmed)
-        .map_err(|e| anyhow::anyhow!("{context}: {field} contains invalid base64: {e}"))?;
     Ok(())
 }
 
 /// Validates that inline asymmetric key material fields (public-key,
 /// cleartext-private-key, cert-data) contain decodable data when present.
 fn validate_inline_asymmetric_key_material(
-    public_key: Option<&str>,
-    cleartext_private_key: Option<&str>,
-    cert_data: Option<&str>,
+    public_key: Option<&[u8]>,
+    cleartext_private_key: Option<&[u8]>,
+    cert_data: Option<&[u8]>,
     context: &str,
 ) -> anyhow::Result<()> {
     if let Some(pk) = public_key {

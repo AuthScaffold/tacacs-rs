@@ -21,14 +21,13 @@ pub(crate) fn resolve_raw_private_key_keystore_ref(
         let encoded_private_key = encode_private_key_data(&material.private_key)?;
 
         rpk.inline_definition = Some(tacacsrs_config::keystore::AsymmetricKeyInlineDefinition {
-            public_key_format: material.public_key.as_ref().map(|_| {
-                PublicKeyFormat::SubjectPublicKeyInfoFormat
-                    .as_rfc7951_str()
-                    .to_owned()
-            }),
+            public_key_format: material
+                .public_key
+                .as_ref()
+                .map(|_| PublicKeyFormat::SubjectPublicKeyInfoFormat),
             public_key: material.public_key.as_ref().map(encode_public_key_der),
-            private_key_format: Some(encoded_private_key.format_rfc7951),
-            cleartext_private_key: Some(encoded_private_key.der_base64),
+            private_key_format: Some(encoded_private_key.format),
+            cleartext_private_key: Some(encoded_private_key.der_bytes),
             hidden_private_key: None,
             encrypted_private_key: None,
         });
@@ -56,9 +55,7 @@ pub(crate) fn resolve_raw_public_keys_truststore_ref(
                 .into_iter()
                 .map(|entry| tacacsrs_config::truststore::PublicKeysPublicKey {
                     name: entry.name,
-                    public_key_format: PublicKeyFormat::SubjectPublicKeyInfoFormat
-                        .as_rfc7951_str()
-                        .to_owned(),
+                    public_key_format: PublicKeyFormat::SubjectPublicKeyInfoFormat,
                     public_key: encode_public_key_der(&entry.public_key),
                 })
                 .collect(),
@@ -107,7 +104,7 @@ mod tests {
     use anyhow::Result;
     use rustls_pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer, SubjectPublicKeyInfoDer};
 
-    use tacacsrs_config::crypto_types::PublicKeyFormat;
+    use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat};
     use tacacsrs_config::{
         RawPrivateKey, ServerAuthenticationRawPublicKeys, TacacsPlusServer, TacacsPlusServerType,
         TlsClientClientIdentity, TlsClientServerAuthentication,
@@ -298,7 +295,7 @@ mod tests {
                 public_key_format: None,
                 public_key: None,
                 private_key_format: None,
-                cleartext_private_key: Some(cleartext_private_key.to_owned()),
+                cleartext_private_key: Some(cleartext_private_key.as_bytes().to_vec()),
                 hidden_private_key: None,
                 encrypted_private_key: None,
             }),
@@ -331,10 +328,8 @@ mod tests {
                     .iter()
                     .map(|(name, public_key)| tacacsrs_config::truststore::PublicKeysPublicKey {
                         name: (*name).to_owned(),
-                        public_key_format: PublicKeyFormat::SubjectPublicKeyInfoFormat
-                            .as_rfc7951_str()
-                            .to_owned(),
-                        public_key: (*public_key).to_owned(),
+                        public_key_format: PublicKeyFormat::SubjectPublicKeyInfoFormat,
+                        public_key: public_key.as_bytes().to_vec(),
                     })
                     .collect(),
             }),
@@ -420,22 +415,16 @@ mod tests {
             Some(
                 encode_private_key_data(&sample_private_key_der("RPK_PRIVATE_KEY"))
                     .unwrap()
-                    .der_base64
-                    .as_str(),
+                    .der_bytes
+                    .as_slice(),
             ),
         );
         assert_eq!(
             inline.public_key.as_deref(),
-            Some(encode_public_key_der(&sample_public_key_der("RPK_PUBLIC_KEY")).as_str()),
+            Some(encode_public_key_der(&sample_public_key_der("RPK_PUBLIC_KEY")).as_slice()),
         );
-        assert_eq!(
-            inline.private_key_format.as_deref(),
-            Some("ietf-crypto-types:one-asymmetric-key-format"),
-        );
-        assert_eq!(
-            inline.public_key_format.as_deref(),
-            Some("ietf-crypto-types:subject-public-key-info-format"),
-        );
+        assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat),);
+        assert_eq!(inline.public_key_format, Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),);
     }
 
     #[test]
@@ -484,7 +473,7 @@ mod tests {
         );
         assert_eq!(
             inline.public_key[0].public_key_format,
-            "ietf-crypto-types:subject-public-key-info-format",
+            PublicKeyFormat::SubjectPublicKeyInfoFormat,
         );
     }
 
@@ -521,7 +510,7 @@ mod tests {
             .and_then(|client_identity| client_identity.raw_private_key.as_ref())
             .unwrap();
         let inline = raw_private_key.inline_definition.as_ref().unwrap();
-        assert_eq!(inline.cleartext_private_key.as_deref(), Some("RPK_PRIVATE_KEY"));
+        assert_eq!(inline.cleartext_private_key.as_deref(), Some(b"RPK_PRIVATE_KEY".as_slice()),);
         assert!(inline.public_key.is_none());
         assert!(inline.private_key_format.is_none());
         assert!(inline.public_key_format.is_none());
@@ -547,7 +536,7 @@ mod tests {
         let inline = raw_public_keys.inline_definition.as_ref().unwrap();
         assert_eq!(inline.public_key.len(), 1);
         assert_eq!(inline.public_key[0].name, "rpk-ref");
-        assert_eq!(inline.public_key[0].public_key, "PUB_KEY_DATA");
+        assert_eq!(inline.public_key[0].public_key, b"PUB_KEY_DATA");
     }
 
     #[test]

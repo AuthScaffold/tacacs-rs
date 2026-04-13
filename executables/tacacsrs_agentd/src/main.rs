@@ -138,7 +138,7 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
                             inline_definition: Some(
                                 tacacsrs_config::keystore::SymmetricKeyInlineDefinition {
                                     key_format: None,
-                                    cleartext_symmetric_key: Some(psk_key.clone()),
+                                    cleartext_symmetric_key: Some(psk_key.as_bytes().to_vec()),
                                     hidden_symmetric_key: None,
                                     encrypted_symmetric_key: None,
                                 },
@@ -176,7 +176,7 @@ fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<Reso
         .client_certificate
         .as_ref()
         .map(|path| {
-            std::fs::read_to_string(path)
+            std::fs::read(path)
                 .with_context(|| format!("Failed to read client certificate: {path}"))
         })
         .transpose()?;
@@ -184,8 +184,7 @@ fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<Reso
         .client_key
         .as_ref()
         .map(|path| {
-            std::fs::read_to_string(path)
-                .with_context(|| format!("Failed to read client key: {path}"))
+            std::fs::read(path).with_context(|| format!("Failed to read client key: {path}"))
         })
         .transpose()?;
 

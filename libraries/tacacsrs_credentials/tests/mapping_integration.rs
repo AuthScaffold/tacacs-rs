@@ -124,10 +124,10 @@ fn client_identity_certificate_inline(
                 public_key_format: None,
                 public_key: None,
                 private_key_format: None,
-                cleartext_private_key: Some(cleartext_private_key.to_owned()),
+                cleartext_private_key: Some(cleartext_private_key.as_bytes().to_vec()),
                 hidden_private_key: None,
                 encrypted_private_key: None,
-                cert_data: Some(cert_data.to_owned()),
+                cert_data: Some(cert_data.as_bytes().to_vec()),
             }),
             central_keystore_reference: None,
         }),
@@ -152,7 +152,7 @@ fn certs_inline(certs: &[(&str, &str)]) -> CertsInlineDefinition {
             .iter()
             .map(|(name, cert_data)| CertsCertificate {
                 name: (*name).to_owned(),
-                cert_data: (*cert_data).to_owned(),
+                cert_data: cert_data.as_bytes().to_vec(),
             })
             .collect(),
     }
@@ -209,10 +209,10 @@ fn client_credentials_certificate(
                 public_key_format: None,
                 public_key: None,
                 private_key_format: None,
-                cleartext_private_key: Some(cleartext_private_key.to_owned()),
+                cleartext_private_key: Some(cleartext_private_key.as_bytes().to_vec()),
                 hidden_private_key: None,
                 encrypted_private_key: None,
-                cert_data: Some(cert_data.to_owned()),
+                cert_data: Some(cert_data.as_bytes().to_vec()),
             }),
             central_keystore_reference: None,
         }),
@@ -233,7 +233,7 @@ fn client_credentials_raw_private_key_inline(
                 public_key_format: None,
                 public_key: None,
                 private_key_format: None,
-                cleartext_private_key: Some(cleartext_private_key.to_owned()),
+                cleartext_private_key: Some(cleartext_private_key.as_bytes().to_vec()),
                 hidden_private_key: None,
                 encrypted_private_key: None,
             }),
@@ -259,7 +259,7 @@ fn server_credentials_ca_inline(id: &str, certs: &[(&str, &str)]) -> ServerCrede
 fn hello_params_min_tls13() -> TlsClientHelloParams {
     TlsClientHelloParams {
         tls_versions: Some(HelloParamsTlsVersions {
-            min: Some(TlsVersionBase::Tls13.as_rfc7951_str().to_owned()),
+            min: Some(TlsVersionBase::Tls13),
             max: None,
         }),
         cipher_suites: None,
@@ -308,8 +308,8 @@ fn resolve_servers_resolves_credential_references() {
         .inline_definition
         .as_ref()
         .expect("inline should be set");
-    assert_eq!(inline.cert_data.as_deref(), Some("dGVzdC1jZXJ0"));
-    assert_eq!(inline.cleartext_private_key.as_deref(), Some("dGVzdC1rZXk="));
+    assert_eq!(inline.cert_data.as_deref(), Some(b"dGVzdC1jZXJ0".as_slice()));
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some(b"dGVzdC1rZXk=".as_slice()),);
 
     let server_authentication = server
         .server_authentication
@@ -325,7 +325,7 @@ fn resolve_servers_resolves_credential_references() {
         .as_ref()
         .expect("ca inline should be set");
     assert_eq!(ca_inline.certificate.len(), 1);
-    assert_eq!(ca_inline.certificate[0].cert_data, "dGVzdC1jZXJ0");
+    assert_eq!(ca_inline.certificate[0].cert_data, b"dGVzdC1jZXJ0");
 }
 
 #[test]
@@ -387,7 +387,7 @@ fn resolve_servers_maps_tls_server_auth_only() {
     let ca_certs = server_authentication.ca_certs.as_ref().expect("ca_certs");
     let inline = ca_certs.inline_definition.as_ref().expect("inline");
     assert_eq!(inline.certificate.len(), 1);
-    assert_eq!(inline.certificate[0].cert_data, "Y2EtY2VydA==");
+    assert_eq!(inline.certificate[0].cert_data, b"Y2EtY2VydA==");
 }
 
 #[test]
@@ -682,7 +682,7 @@ fn resolve_ee_certs_inline_definition_without_calling_resolver() {
     let inline = ee_certs.inline_definition.as_ref().unwrap();
     assert_eq!(inline.certificate.len(), 1);
     assert_eq!(inline.certificate[0].name, "ee-ref");
-    assert_eq!(inline.certificate[0].cert_data, "EE_CERT_PEM");
+    assert_eq!(inline.certificate[0].cert_data, b"EE_CERT_PEM");
 }
 
 #[test]
@@ -792,7 +792,7 @@ fn resolve_bundle_ref_then_inline_raw_private_key() {
     let raw_private_key = client_identity.raw_private_key.as_ref().unwrap();
     assert!(raw_private_key.central_keystore_reference.is_none());
     let inline = raw_private_key.inline_definition.as_ref().unwrap();
-    assert_eq!(inline.cleartext_private_key.as_deref(), Some("FULLY_RESOLVED"));
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some(b"FULLY_RESOLVED".as_slice()),);
 }
 
 #[test]

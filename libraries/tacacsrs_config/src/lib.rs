@@ -1,6 +1,7 @@
 pub mod generated;
 mod enumeration;
 mod mapping;
+pub(crate) mod serde_helpers;
 mod statistics;
 mod validation;
 

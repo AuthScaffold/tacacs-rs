@@ -28,6 +28,7 @@ def pyang_plugin_init():
 _ENUM_SENTINEL = "__ENUM__"
 _BITS_SENTINEL = "__BITS__"
 _IDENTITYREF_SENTINEL = "__IDENTITYREF__"
+_BINARY_SENTINEL = "__BINARY__"
 
 _YANG_TO_RUST = {
     "string": "String",
@@ -41,7 +42,7 @@ _YANG_TO_RUST = {
     "int16": "i16",
     "int32": "i32",
     "int64": "i64",
-    "binary": "String",
+    "binary": _BINARY_SENTINEL,
     "identityref": _IDENTITYREF_SENTINEL,
     "union": "String",
     "decimal64": "f64",
@@ -157,6 +158,9 @@ def _resolve_type(type_stmt) -> str:
     if type_name == "bits":
         return _BITS_SENTINEL
 
+    if type_name == "binary":
+        return "Vec<u8>"
+
     if type_name in _YANG_TO_RUST:
         return _YANG_TO_RUST[type_name]
 
@@ -250,12 +254,10 @@ def _first_line(text: str | None) -> str | None:
     return None
 
 
-def _doc_lines(text: str, max_lines: int = 3) -> list[str]:
-    lines = []
-    for raw in text.strip().split("\n"):
-        lines.append(raw.strip())
-        if len(lines) >= max_lines:
-            break
+def _doc_lines(text: str, max_lines: int | None = None) -> list[str]:
+    lines = [raw.strip() for raw in text.strip().split("\n")]
+    if max_lines is not None:
+        return lines[:max_lines]
     return lines
 
 
@@ -349,6 +351,25 @@ def _resolve_default(yang_default: str, rust_type: str) -> str | None:
     # String-like types
     if rust_type == "String":
         return f'"{yang_default}".to_owned()'
+
+    # Identityref defaults round-trip through the generated parser.
+    if ":" in yang_default:
+        return (
+            f'{rust_type}::from_rfc7951_str("{yang_default}")'
+            '.expect("generated YANG identityref default must be valid")'
+        )
+
+    # Bitflags defaults are space-separated flag names.
+    if " " in yang_default:
+        parts = [
+            f"{rust_type}::{token.upper().replace('-', '_')}"
+            for token in yang_default.split()
+        ]
+        return " | ".join(parts)
+
+    # YANG enum defaults map directly to the generated PascalCase variant.
+    if "<" not in rust_type:
+        return f"{rust_type}::{_yang_to_pascal(yang_default)}"
 
     # Enum types — can't generate inline, needs a Default impl or helper fn
     return f'/* YANG default: "{yang_default}" */'
@@ -688,16 +709,16 @@ class Collector:
 
     # -- main dispatch ---
 
-    def _process_node(self, stmt, parent_prefix: str) -> Field | None:
+    def _process_node(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field | None:
         kw = stmt.keyword
         if kw == "container":
             return self._process_container(stmt, parent_prefix)
         if kw == "list":
             return self._process_list(stmt, parent_prefix)
         if kw == "leaf":
-            return self._process_leaf(stmt, parent_prefix)
+            return self._process_leaf(stmt, parent_prefix, current_mod)
         if kw == "leaf-list":
-            return self._process_leaf_list(stmt, parent_prefix)
+            return self._process_leaf_list(stmt, parent_prefix, current_mod)
         if kw == "choice":
             return None  # caller uses _flatten_choice
         return None
@@ -706,7 +727,7 @@ class Collector:
         mod, sname, existed = self._struct_name(stmt, parent_prefix)
         if not existed:
             rs = Struct(sname, _get_desc(stmt))
-            self._fill_children(stmt, rs, sname)
+            self._fill_children(stmt, rs, sname, mod)
             mod.structs[sname] = rs
 
         type_ref = self._qualified_type(stmt, sname)
@@ -716,15 +737,16 @@ class Collector:
         mod, sname, existed = self._struct_name(stmt, parent_prefix)
         if not existed:
             rs = Struct(sname, _get_desc(stmt))
-            self._fill_children(stmt, rs, sname)
+            self._fill_children(stmt, rs, sname, mod)
             mod.structs[sname] = rs
 
         type_ref = self._qualified_type(stmt, sname)
         return Field(stmt.arg, type_ref, is_vec=True, doc=_get_desc(stmt))
 
-    def _process_leaf(self, stmt, parent_prefix: str) -> Field:
+    def _process_leaf(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field:
         type_stmt = stmt.search_one("type")
         rust_type = _resolve_type(type_stmt)
+        field_mod = current_mod or self._mod_for_stmt(stmt)
 
         if rust_type == _ENUM_SENTINEL:
             mod = self._mod_for_stmt(stmt)
@@ -739,6 +761,8 @@ class Collector:
                     rust_enum.variants.append(EnumVariant(e.arg, _get_desc(e)))
                 mod.enums[enum_name] = rust_enum
                 rust_type = enum_name
+            if mod.rust_name != field_mod.rust_name:
+                rust_type = f"{mod.rust_name}::{rust_type}"
 
         if rust_type == _BITS_SENTINEL:
             mod = self._mod_for_stmt(stmt)
@@ -753,6 +777,8 @@ class Collector:
                     bf.bits.append(BitflagsBit(bit_stmt.arg, pos, _get_desc(bit_stmt)))
                 mod.bitflags[bf_name] = bf
             rust_type = bf_name
+            if mod.rust_name != field_mod.rust_name:
+                rust_type = f"{mod.rust_name}::{rust_type}"
 
         if rust_type == _IDENTITYREF_SENTINEL:
             # Try to resolve the base identity and collect derived identities
@@ -776,8 +802,11 @@ class Collector:
                                 d["features"], d["doc"],
                             ))
                         target_mod.identity_sets[set_name] = iset
-            # Keep String for the field type (hybrid approach)
-            rust_type = "String"
+                rust_type = set_name
+                if target_mod.rust_name != field_mod.rust_name:
+                    rust_type = f"{target_mod.rust_name}::{set_name}"
+            else:
+                rust_type = "String"
 
         optional = _leaf_is_optional(stmt)
 
@@ -798,14 +827,67 @@ class Collector:
         return Field(stmt.arg, rust_type, optional=optional,
                      doc=_get_desc(stmt), default_value=default_value)
 
-    def _process_leaf_list(self, stmt, parent_prefix: str) -> Field:
+    def _process_leaf_list(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field:
         type_stmt = stmt.search_one("type")
         rust_type = _resolve_type(type_stmt)
+        field_mod = current_mod or self._mod_for_stmt(stmt)
         if rust_type == _ENUM_SENTINEL:
-            rust_type = "String"
+            mod = self._mod_for_stmt(stmt)
+            td_name = _find_enum_typedef_name(type_stmt)
+            if td_name and td_name in mod.enums:
+                rust_type = td_name
+            else:
+                enum_name = td_name or _yang_to_pascal(stmt.arg)
+                enum_name = mod.unique_name(enum_name)
+                rust_enum = Enum(enum_name, _get_desc(stmt))
+                for e in _find_enum_stmts(type_stmt):
+                    rust_enum.variants.append(EnumVariant(e.arg, _get_desc(e)))
+                mod.enums[enum_name] = rust_enum
+                rust_type = enum_name
+            if mod.rust_name != field_mod.rust_name:
+                rust_type = f"{mod.rust_name}::{rust_type}"
+        if rust_type == _BITS_SENTINEL:
+            mod = self._mod_for_stmt(stmt)
+            td_name = _find_bits_typedef_name(type_stmt)
+            bf_name = td_name or _yang_to_pascal(stmt.arg)
+            if bf_name not in mod.bitflags:
+                bf_name = mod.unique_name(bf_name)
+                bf = Bitflags(bf_name, _get_desc(stmt))
+                for i, bit_stmt in enumerate(_find_bits_stmts(type_stmt)):
+                    pos_stmt = bit_stmt.search_one("position")
+                    pos = int(pos_stmt.arg) if pos_stmt else i
+                    bf.bits.append(BitflagsBit(bit_stmt.arg, pos, _get_desc(bit_stmt)))
+                mod.bitflags[bf_name] = bf
+            rust_type = bf_name
+            if mod.rust_name != field_mod.rust_name:
+                rust_type = f"{mod.rust_name}::{rust_type}"
+        if rust_type == _IDENTITYREF_SENTINEL:
+            base_ident = _resolve_identityref_base(type_stmt)
+            if base_ident is not None and self._ctx is not None:
+                base_mod = _source_module(base_ident) or "unknown"
+                set_name = _yang_to_pascal(base_ident.arg)
+                target_mod = self._get_mod(base_mod) if base_mod not in _SKIP_MODULES else field_mod
+                if set_name not in target_mod.identity_sets:
+                    derived = _find_derived_identities(base_ident, self._ctx)
+                    if derived:
+                        iset = IdentitySet(
+                            set_name, base_ident.arg, base_mod,
+                            _get_desc(base_ident),
+                        )
+                        for d in derived:
+                            iset.values.append(IdentityValue(
+                                d["name"], d["module"],
+                                d["features"], d["doc"],
+                            ))
+                        target_mod.identity_sets[set_name] = iset
+                rust_type = set_name
+                if target_mod.rust_name != field_mod.rust_name:
+                    rust_type = f"{target_mod.rust_name}::{set_name}"
+            else:
+                rust_type = "String"
         return Field(stmt.arg, rust_type, is_vec=True, doc=_get_desc(stmt))
 
-    def _flatten_choice(self, choice_stmt, parent_prefix: str) -> tuple[list[Field], ChoiceGroup]:
+    def _flatten_choice(self, choice_stmt, parent_prefix: str, current_mod: ModuleTypes) -> tuple[list[Field], ChoiceGroup]:
         """Flatten all case branches into ``Option<T>`` fields and record choice metadata."""
         mandatory = _is_mandatory(choice_stmt)
         choice_group = ChoiceGroup(choice_stmt.arg, mandatory)
@@ -820,7 +902,7 @@ class Collector:
             for child in _get_children(case):
                 if child.keyword == "choice":
                     # Nested choice — recurse and merge
-                    nested_fields, nested_group = self._flatten_choice(child, parent_prefix)
+                    nested_fields, nested_group = self._flatten_choice(child, parent_prefix, current_mod)
                     fields.extend(nested_fields)
                     # Attach nested choice as a separate group
                     choice_group.cases.append((
@@ -828,7 +910,7 @@ class Collector:
                         [f.yang_name for f in nested_fields],
                     ))
                 else:
-                    field = self._process_node(child, parent_prefix)
+                    field = self._process_node(child, parent_prefix, current_mod)
                     if field is not None:
                         field.optional = True
                         fields.append(field)
@@ -838,15 +920,15 @@ class Collector:
 
         return fields, choice_group
 
-    def _fill_children(self, stmt, rs: Struct, sname: str):
+    def _fill_children(self, stmt, rs: Struct, sname: str, current_mod: ModuleTypes):
         for child in _get_children(stmt):
             if child.keyword == "choice":
-                choice_fields, choice_group = self._flatten_choice(child, sname)
+                choice_fields, choice_group = self._flatten_choice(child, sname, current_mod)
                 rs.fields.extend(choice_fields)
                 if choice_group.cases:
                     rs.choices.append(choice_group)
             else:
-                field = self._process_node(child, sname)
+                field = self._process_node(child, sname, current_mod)
                 if field is not None:
                     rs.fields.append(field)
 
@@ -887,7 +969,11 @@ class RustEmitter:
     def emit(self):
         w = self.fd.write
         w("// Auto-generated from YANG modules by yang2rust.py — DO NOT EDIT\n\n")
-        w("#![allow(dead_code)]\n\n")
+        w("#![allow(dead_code)]\n")
+        w("#![allow(non_camel_case_types)]\n")
+        w("#![allow(clippy::doc_markdown)]\n\n")
+        w("#![allow(clippy::too_long_first_doc_paragraph)]\n\n")
+        w("#![allow(rustdoc::broken_intra_doc_links)]\n\n")
         w("use serde::{Deserialize, Serialize};\n\n")
 
         # Emit each module
@@ -977,7 +1063,7 @@ class RustEmitter:
         w("    #[derive(Debug, Clone, Serialize, Deserialize)]\n")
         w(f"    pub enum {enum.name} {{\n")
         for v in enum.variants:
-            self._doc(v.doc, "        ", max_lines=1)
+            self._doc(v.doc, "        ")
             if v.yang_name != _yang_to_snake(v.rust_name):
                 w(f'        #[serde(rename = "{v.yang_name}")]\n')
             w(f"        {v.rust_name},\n")
@@ -990,10 +1076,7 @@ class RustEmitter:
         w(f"        #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n")
         w(f"        pub struct {bf.name}: u32 {{\n")
         for bit in bf.bits:
-            if bit.doc:
-                first = _first_line(bit.doc)
-                if first:
-                    w(f"            /// {first}\n")
+            self._doc(bit.doc, "            ")
             w(f"            const {bit.rust_name} = 1 << {bit.position};\n")
         w("        }\n")
         w("    }\n\n")
@@ -1046,16 +1129,12 @@ class RustEmitter:
         w = self.fd.write
 
         w(f"    /// Valid identities derived from `{iset.base_module}:{iset.base_name}`.\n")
-        if iset.doc:
-            for line in _doc_lines(iset.doc, max_lines=2):
-                w(f"    /// {line}\n")
-        w("    #[derive(Debug, Clone, PartialEq, Eq)]\n")
+        self._doc(iset.doc, "    ")
+        w("    #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n")
         w(f"    #[allow(clippy::doc_markdown)]\n")
         w(f"    pub enum {iset.name} {{\n")
         for val in iset.values:
-            first = _first_line(val.doc)
-            if first:
-                w(f"        /// {first}\n")
+            self._doc(val.doc, "        ")
             if val.features:
                 w(f"        /// Requires YANG features: {', '.join(val.features)}\n")
             w(f"        {val.rust_name},\n")
@@ -1108,6 +1187,27 @@ class RustEmitter:
 
         w("    }\n\n")
 
+        w(f"    impl<'de> serde::Deserialize<'de> for {iset.name} {{\n")
+        w(f"        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\n")
+        w(f"        where\n")
+        w(f"            D: serde::Deserializer<'de>,\n")
+        w(f"        {{\n")
+        w(f"            let s = String::deserialize(deserializer)?;\n")
+        w(f"            Self::from_rfc7951_str(&s).ok_or_else(|| {{\n")
+        w(f"                serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES)\n")
+        w(f"            }})\n")
+        w(f"        }}\n")
+        w(f"    }}\n\n")
+
+        w(f"    impl serde::Serialize for {iset.name} {{\n")
+        w(f"        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>\n")
+        w(f"        where\n")
+        w(f"            S: serde::Serializer,\n")
+        w(f"        {{\n")
+        w(f"            serializer.serialize_str(self.as_rfc7951_str())\n")
+        w(f"        }}\n")
+        w(f"    }}\n\n")
+
     def _emit_struct(self, st: Struct, current_mod: str):
         w = self.fd.write
 
@@ -1150,12 +1250,18 @@ class RustEmitter:
 
     def _emit_field(self, f: Field, current_mod: str, default_fns: dict, bare_defaults: set):
         w = self.fd.write
-        first = _first_line(f.doc)
-        if first:
-            w(f"        /// {first}\n")
+        self._doc(f.doc, "        ")
 
         if _needs_rename(f.yang_name):
             w(f'        #[serde(rename = "{f.yang_name}")]\n')
+
+        if f.rust_type == "Vec<u8>":
+            if f.is_vec:
+                w('        #[serde(with = "crate::serde_helpers::base64_binary::vec_bytes")]\n')
+            elif f.optional:
+                w('        #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]\n')
+            else:
+                w('        #[serde(with = "crate::serde_helpers::base64_binary::bytes")]\n')
 
         if f.optional or f.is_vec:
             w("        #[serde(default)]\n")
@@ -1173,12 +1279,10 @@ class RustEmitter:
         name = _safe_name(f.rust_name)
         w(f"        pub {name}: {type_str},\n")
 
-    def _doc(self, text, indent, max_lines=3):
+    def _doc(self, text, indent, max_lines=None):
         if not text:
             return
-        for i, line in enumerate(_doc_lines(text, max_lines)):
-            if i >= max_lines:
-                break
+        for line in _doc_lines(text, max_lines):
             self.fd.write(f"{indent}/// {line}\n")
 
     def _emit_choice_constants(self, st: Struct):

@@ -66,8 +66,8 @@ fn main() -> anyhow::Result<()> {
         .as_ref()
         .expect("certificate inline definition should be present");
 
-    assert_eq!(inline.cert_data.as_deref(), Some("dGVzdC1jZXJ0"));
-    assert_eq!(inline.cleartext_private_key.as_deref(), Some("dGVzdC1rZXk="));
+    assert_eq!(inline.cert_data.as_deref(), Some(b"test-cert".as_slice()));
+    assert_eq!(inline.cleartext_private_key.as_deref(), Some(b"test-key".as_slice()),);
 
     println!("🔐 Enumerated server '{}'", resolved.name);
     println!("  ├─ endpoint: {}:{}", resolved.address, resolved.port);

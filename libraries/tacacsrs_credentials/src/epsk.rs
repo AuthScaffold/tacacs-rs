@@ -18,7 +18,7 @@ pub(crate) fn resolve_epsk_keystore_ref(
             })?;
 
         epsk.inline_definition = Some(tacacsrs_config::keystore::SymmetricKeyInlineDefinition {
-            key_format: material.key_format.map(|f| f.as_rfc7951_str().to_owned()),
+            key_format: material.key_format,
             cleartext_symmetric_key: Some(encode_symmetric_key_data(&material.key_bytes)),
             hidden_symmetric_key: None,
             encrypted_symmetric_key: None,
@@ -48,8 +48,6 @@ pub(crate) fn validate_epsk_keystore_refs(
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use base64::Engine;
-
     use tacacsrs_config::crypto_types::SymmetricKeyFormat;
     use tacacsrs_config::{
         EpskSupportedHash, TacacsPlusServer, TacacsPlusServerType, Tls13Epsk,
@@ -219,11 +217,11 @@ mod tests {
         }
     }
 
-    fn epsk_inline(secret: &str, external_identity: &str) -> Tls13Epsk {
+    fn epsk_inline(secret: &[u8], external_identity: &str) -> Tls13Epsk {
         Tls13Epsk {
             inline_definition: Some(tacacsrs_config::keystore::SymmetricKeyInlineDefinition {
                 key_format: None,
-                cleartext_symmetric_key: Some(secret.to_owned()),
+                cleartext_symmetric_key: Some(secret.to_vec()),
                 hidden_symmetric_key: None,
                 encrypted_symmetric_key: None,
             }),
@@ -284,15 +282,8 @@ mod tests {
 
         assert!(epsk.central_keystore_reference.is_none());
         let inline = epsk.inline_definition.as_ref().unwrap();
-        assert_eq!(
-            inline.cleartext_symmetric_key.as_deref(),
-            Some(
-                base64::engine::general_purpose::STANDARD
-                    .encode(b"EPSK_SECRET")
-                    .as_str()
-            ),
-        );
-        assert_eq!(inline.key_format.as_deref(), Some("ietf-crypto-types:octet-string-key-format"),);
+        assert_eq!(inline.cleartext_symmetric_key.as_deref(), Some(b"EPSK_SECRET".as_slice()),);
+        assert_eq!(inline.key_format, Some(SymmetricKeyFormat::OctetStringKeyFormat),);
     }
 
     #[test]
@@ -314,7 +305,7 @@ mod tests {
     fn resolve_server_preserves_inline_epsk_without_resolver_calls() {
         let server = server_with_client_identity(
             "epsk-inline",
-            client_identity_with_epsk(epsk_inline("dG9wc2VjcmV0", "client@example.com")),
+            client_identity_with_epsk(epsk_inline(b"topsecret", "client@example.com")),
         );
 
         let resolved = resolve_server(server, Some(&PanicResolver)).unwrap();
@@ -330,7 +321,7 @@ mod tests {
             epsk.inline_definition
                 .as_ref()
                 .and_then(|definition| definition.cleartext_symmetric_key.as_deref()),
-            Some("dG9wc2VjcmV0"),
+            Some(b"topsecret".as_slice()),
         );
     }
 

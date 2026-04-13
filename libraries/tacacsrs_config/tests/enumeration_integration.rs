@@ -66,8 +66,8 @@ fn enumerate_servers_inlines_credential_bundles() {
         .inline_definition
         .as_ref()
         .expect("certificate inline definition should exist");
-    assert_eq!(inline_certificate.cert_data.as_deref(), Some("dGVzdC1jZXJ0"));
-    assert_eq!(inline_certificate.cleartext_private_key.as_deref(), Some("dGVzdC1rZXk="),);
+    assert_eq!(inline_certificate.cert_data.as_deref(), Some(b"test-cert".as_slice()),);
+    assert_eq!(inline_certificate.cleartext_private_key.as_deref(), Some(b"test-key".as_slice()),);
 
     let server_authentication = server
         .server_authentication
@@ -83,7 +83,7 @@ fn enumerate_servers_inlines_credential_bundles() {
         .as_ref()
         .expect("ca cert inline definition should exist");
     assert_eq!(inline_certs.certificate.len(), 1);
-    assert_eq!(inline_certs.certificate[0].cert_data, "dGVzdC1jZXJ0");
+    assert_eq!(inline_certs.certificate[0].cert_data, b"test-cert");
 }
 
 #[test]

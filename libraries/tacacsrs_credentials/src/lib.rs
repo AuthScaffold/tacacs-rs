@@ -3,8 +3,6 @@ use std::ops::Deref;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, SubjectPublicKeyInfoDer};
 use tacacsrs_config::crypto_types::{PrivateKeyFormat, SymmetricKeyFormat};
 use tacacsrs_config::{TacacsPlusServer, TlsClientClientIdentity, TlsClientServerAuthentication};
@@ -343,33 +341,33 @@ pub trait CredentialResolver: Send + Sync {
 
 #[derive(Debug)]
 pub(crate) struct EncodedPrivateKey {
-    pub format_rfc7951: String,
-    pub der_base64: String,
+    pub format: PrivateKeyFormat,
+    pub der_bytes: Vec<u8>,
 }
 
-pub(crate) fn encode_certificate_der(certificate: &CertificateDer<'_>) -> String {
-    BASE64.encode(certificate.as_ref())
+pub(crate) fn encode_certificate_der(certificate: &CertificateDer<'_>) -> Vec<u8> {
+    certificate.as_ref().to_vec()
 }
 
-pub(crate) fn encode_public_key_der(public_key: &SubjectPublicKeyInfoDer<'_>) -> String {
-    BASE64.encode(public_key.as_ref())
+pub(crate) fn encode_public_key_der(public_key: &SubjectPublicKeyInfoDer<'_>) -> Vec<u8> {
+    public_key.as_ref().to_vec()
 }
 
-pub(crate) fn encode_symmetric_key_data(key_bytes: &[u8]) -> String {
-    BASE64.encode(key_bytes)
+pub(crate) fn encode_symmetric_key_data(key_bytes: &[u8]) -> Vec<u8> {
+    key_bytes.to_vec()
 }
 
 pub(crate) fn encode_private_key_data(key: &PrivateKeyDer<'_>) -> Result<EncodedPrivateKey> {
     let format = match key {
-        PrivateKeyDer::Pkcs1(_) => PrivateKeyFormat::RsaPrivateKeyFormat.as_rfc7951_str(),
-        PrivateKeyDer::Sec1(_) => PrivateKeyFormat::EcPrivateKeyFormat.as_rfc7951_str(),
-        PrivateKeyDer::Pkcs8(_) => PrivateKeyFormat::OneAsymmetricKeyFormat.as_rfc7951_str(),
+        PrivateKeyDer::Pkcs1(_) => PrivateKeyFormat::RsaPrivateKeyFormat,
+        PrivateKeyDer::Sec1(_) => PrivateKeyFormat::EcPrivateKeyFormat,
+        PrivateKeyDer::Pkcs8(_) => PrivateKeyFormat::OneAsymmetricKeyFormat,
         _ => anyhow::bail!("unsupported DER private key variant for TACACS+ credential encoding"),
     };
 
     Ok(EncodedPrivateKey {
-        format_rfc7951: format.to_owned(),
-        der_base64: BASE64.encode(key.secret_der()),
+        format,
+        der_bytes: key.secret_der().to_vec(),
     })
 }
 

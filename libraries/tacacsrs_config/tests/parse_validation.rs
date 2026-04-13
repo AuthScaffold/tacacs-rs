@@ -134,14 +134,14 @@ fn parse_tls_config() {
             .unwrap()
             .cert_data
             .as_deref(),
-        Some("dGVzdC1jZXJ0"),
+        Some(b"test-cert".as_slice()),
     );
     let sa = s.server_authentication.as_ref().unwrap();
     let ca = sa.ca_certs.as_ref().unwrap();
     let certs = &ca.inline_definition.as_ref().unwrap().certificate;
     assert_eq!(certs.len(), 1);
     assert_eq!(certs[0].name, "ca1");
-    assert_eq!(certs[0].cert_data, "dGVzdC1jZXJ0");
+    assert_eq!(certs[0].cert_data, b"test-cert");
 }
 
 #[test]
@@ -933,7 +933,7 @@ fn reject_server_auth_reference_and_explicit_together() {
                     "ca-certs": {
                         "inline-definition": {
                             "certificate": [
-                                {"name": "ca1", "cert-data": "CA_CERT_1"}
+                                {"name": "ca1", "cert-data": "Y2EtY2VydC0x"}
                             ]
                         }
                     }
@@ -957,7 +957,7 @@ fn reject_server_auth_reference_and_explicit_together() {
                         "ca-certs": {
                             "inline-definition": {
                                 "certificate": [
-                                    {"name": "ca1", "cert-data": "CA_CERT_1"}
+                                    {"name": "ca1", "cert-data": "Y2EtY2VydC0x"}
                                 ]
                             }
                         }
@@ -1390,7 +1390,7 @@ fn reject_tls_version_min_below_13() {
                     },
                     "hello-params": {
                         "tls-versions": {
-                            "min": "tls12"
+                            "min": "ietf-tls-common:tls12"
                         }
                     }
                 }
@@ -1423,7 +1423,7 @@ fn reject_tls_version_max_below_13() {
                     },
                     "hello-params": {
                         "tls-versions": {
-                            "max": "tls11"
+                            "max": "ietf-tls-common:tls12"
                         }
                     }
                 }
@@ -1456,8 +1456,8 @@ fn accept_tls_versions_at_or_above_13() {
                     },
                     "hello-params": {
                         "tls-versions": {
-                            "min": "tls13",
-                            "max": "tls13"
+                            "min": "ietf-tls-common:tls13",
+                            "max": "ietf-tls-common:tls13"
                         }
                     }
                 }
@@ -1632,11 +1632,8 @@ fn reject_invalid_private_key_format() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("invalid private-key-format 'bogus-format'"),
-        "unexpected error: {err}",
-    );
+    let message = err.to_string();
+    assert!(message.contains("unknown variant `bogus-format`"), "unexpected error: {message}");
 }
 
 #[test]
@@ -1677,7 +1674,8 @@ fn reject_invalid_public_key_format() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("invalid public-key-format"), "unexpected error: {err}",);
+    let message = err.to_string();
+    assert!(message.contains("unknown variant `not-a-real-format`"), "unexpected error: {message}");
 }
 
 #[test]
@@ -1721,7 +1719,8 @@ fn reject_invalid_symmetric_key_format() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("invalid key-format 'bad-format'"), "unexpected error: {err}",);
+    let message = err.to_string();
+    assert!(message.contains("unknown variant `bad-format`"), "unexpected error: {message}");
 }
 
 #[test]
@@ -1804,11 +1803,8 @@ fn reject_invalid_base64_in_private_key() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("cleartext-private-key contains invalid base64"),
-        "unexpected error: {err}",
-    );
+    let message = err.to_string();
+    assert!(message.contains("Invalid symbol"), "unexpected error: {message}");
 }
 
 #[test]
@@ -1836,11 +1832,8 @@ fn reject_invalid_base64_in_cert_data() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("certificate 'ca1' contains invalid base64"),
-        "unexpected error: {err}",
-    );
+    let message = err.to_string();
+    assert!(message.contains("Invalid symbol"), "unexpected error: {message}");
 }
 
 #[test]
@@ -1884,7 +1877,7 @@ fn reject_empty_private_key() {
 }
 
 #[test]
-fn accept_pem_certificate_data() {
+fn reject_pem_certificate_data() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
             "server": [
@@ -1907,7 +1900,9 @@ fn accept_pem_certificate_data() {
         }
     }"#;
 
-    parse_yang_json(json).expect("PEM certificate data should be accepted");
+    let err = parse_yang_json(json).unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("Invalid symbol"), "unexpected error: {message}");
 }
 
 #[test]
@@ -1935,11 +1930,8 @@ fn reject_pem_without_end_marker() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("PEM BEGIN marker but no END marker"),
-        "unexpected error: {err}",
-    );
+    let message = err.to_string();
+    assert!(message.contains("Invalid symbol"), "unexpected error: {message}");
 }
 
 #[test]
@@ -1982,11 +1974,8 @@ fn reject_invalid_base64_in_symmetric_key() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("cleartext-symmetric-key contains invalid base64"),
-        "unexpected error: {err}",
-    );
+    let message = err.to_string();
+    assert!(message.contains("Invalid symbol"), "unexpected error: {message}");
 }
 
 // ---------------------------------------------------------------------------
@@ -2345,11 +2334,8 @@ fn reject_invalid_key_format_in_client_credentials_rpk() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("invalid private-key-format 'bogus-format'"),
-        "unexpected error: {err}",
-    );
+    let message = err.to_string();
+    assert!(message.contains("unknown variant `bogus-format`"), "unexpected error: {message}");
 }
 
 #[test]
@@ -2381,7 +2367,8 @@ fn reject_invalid_rpk_public_key_format_in_server_auth() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("invalid public-key-format"), "unexpected error: {err}",);
+    let message = err.to_string();
+    assert!(message.contains("unknown variant `bad-format`"), "unexpected error: {message}");
 }
 
 #[test]
@@ -2409,7 +2396,8 @@ fn reject_invalid_ee_cert_data() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("invalid base64"), "unexpected error: {err}",);
+    let message = err.to_string();
+    assert!(message.contains("Invalid symbol"), "unexpected error: {message}");
 }
 
 #[test]
@@ -2436,11 +2424,8 @@ fn reject_invalid_key_format_in_server_rpk() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("invalid private-key-format 'invalid'"),
-        "unexpected error: {err}",
-    );
+    let message = err.to_string();
+    assert!(message.contains("unknown variant `invalid`"), "unexpected error: {message}");
 }
 
 #[test]
@@ -2468,5 +2453,6 @@ fn reject_invalid_symmetric_key_format_in_server_epsk() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("invalid key-format 'bogus'"), "unexpected error: {err}",);
+    let message = err.to_string();
+    assert!(message.contains("unknown variant `bogus`"), "unexpected error: {message}");
 }

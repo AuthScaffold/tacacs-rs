@@ -6,7 +6,7 @@
 
 - Generated Rust types in `src/generated.rs` that mirror the expanded YANG tree
 - Generated identity set enums for YANG `identityref` leaves (key format types)
-- Validation logic for YANG-specific constraints, key format identities, and inline key material
+- Validation logic for YANG-specific constraints and semantic checks on inline key material
 - Config-local credential bundle validation
 - Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
 
@@ -201,7 +201,7 @@ Available identity sets:
 - `crypto_types::SymmetricKeyFormat` — `octet-string-key-format`, `one-symmetric-key-format`
 - `crypto_types::EncryptedValueFormat` — `cms-encrypted-data-format`, `cms-enveloped-data-format`
 
-These are generated automatically from the YANG identity hierarchy by `yang2rust.py`. The existing struct fields remain `String`/`Option<String>` for serde compatibility; the enums are additive companion types for validation and programmatic use.
+These are generated automatically from the YANG identity hierarchy by `yang2rust.py`. Fixed-set `identityref` fields now use these enums directly in the generated struct graph, so unknown RFC 7951 strings fail during deserialization instead of being validated later as plain strings.
 
 ## Inline key format identities
 
@@ -304,9 +304,9 @@ The generated Rust types come from the checked-in YANG tooling under `yang/`:
 - `yang/generated_types.rs` — generator output, produced on demand and copied into `src/generated.rs`
 - `yang/plugins/yang2rust.py` — copy of the plugin used by `--plugindir` (avoids loading `expand_yang_tree.py` from the same directory)
 
-The generator automatically resolves `identityref` base identities and walks loaded modules to collect derived identities, emitting companion Rust enums with `ALL`, `ALLOWED_VALUES`, `as_rfc7951_str()`, `from_rfc7951_str()`, and `is_valid()` helpers. Existing `String` field types are preserved for serde compatibility (hybrid approach).
+The generator automatically resolves `identityref` base identities and walks loaded modules to collect derived identities, emitting Rust enums with `ALL`, `ALLOWED_VALUES`, `as_rfc7951_str()`, `from_rfc7951_str()`, and `is_valid()` helpers. Fixed-set `identityref` fields use these enums directly, while YANG `binary` leaves deserialize from RFC 7951 base64 into in-memory `Vec<u8>` values and serialize back to base64 when writing JSON.
 
-Today, the Rust type graph and identity set enums are generated, but the higher-level validation logic in `src/validation.rs` is still maintained manually. The validation code uses the generated `ALLOWED_VALUES` constants for key format checking. That split is intentional for now: the YANG-derived constraints are manageable in handwritten Rust, and keeping them explicit has made it easier to refine behavior during development.
+The higher-level validation logic in `src/validation.rs` is still maintained manually, but enum membership and base64 decoding now happen during deserialization. The handwritten validation layer is therefore focused on semantic checks such as choice rules, non-empty inline material, and TLS-specific policy.
 
 To regenerate after YANG module updates:
 
@@ -319,6 +319,7 @@ pyang \
   -f rust \
   --plugindir plugins \
   -p .yang-cache/yang-models/standard/ietf/RFC \
+  -p .yang-cache/yang-models/standard/iana \
   -p .yang-cache/secure-tacacs-yang/yang \
   .yang-cache/secure-tacacs-yang/yang/ietf-system-tacacs-plus.yang \
   .yang-cache/yang-models/standard/ietf/RFC/ietf-keystore@2024-10-10.yang \
@@ -328,7 +329,5 @@ pyang \
   -o generated_types.rs
 cp generated_types.rs ../src/generated.rs
 ```
-
-The `default_tls13_epsk_hash()` function in `generated.rs` requires a manual fixup after regeneration — the generator emits a placeholder comment for enum defaults. Replace the generated body with `EpskSupportedHash::Sha256`.
 
 Run the normal workspace formatting, clippy, build, and test commands after regeneration.
