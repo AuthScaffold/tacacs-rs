@@ -1,0 +1,68 @@
+name: Release-plz
+
+on:
+  push:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-plz-release:
+    name: Release-plz Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          cache-key: release-plz
+
+      - name: Install release-plz
+        uses: taiki-e/install-action@eea29cff9a2b68892c0845ae3e4f45fc47ee9354 # v2.75.13
+        with:
+          tool: release-plz
+
+      - name: Run release-plz release
+        run: release-plz release --git-token "${GITHUB_TOKEN}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          cache-key: release-plz
+
+      - name: Install release-plz
+        uses: taiki-e/install-action@eea29cff9a2b68892c0845ae3e4f45fc47ee9354 # v2.75.13
+        with:
+          tool: release-plz
+
+      - name: Run release-plz release-pr
+        run: release-plz release-pr --git-token "${GITHUB_TOKEN}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

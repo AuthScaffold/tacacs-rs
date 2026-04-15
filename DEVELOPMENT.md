@@ -24,7 +24,7 @@ This document covers development workflows, CI/CD, and release processes for tac
 cargo install cargo-llvm-cov
 
 # Release automation
-cargo install cargo-release
+cargo install release-plz
 
 # Unused dependencies check
 cargo install cargo-udeps
@@ -241,7 +241,7 @@ These artifacts are uploaded and retained for 7 days, allowing for testing and v
 
 ### Release Workflow
 
-Triggered automatically when a version tag (`v*.*.*`) is pushed. Builds release binaries for:
+Triggered automatically when release-plz publishes a GitHub release. Builds release binaries for:
 
 - `x86_64-unknown-linux-gnu`
 - `x86_64-unknown-linux-musl`
@@ -269,7 +269,7 @@ All member crates inherit this version via `version.workspace = true`.
 
 ### Release Process (GitHub Actions)
 
-We use [cargo-bins/release-pr](https://github.com/cargo-bins/release-pr) to create release PRs, which are then reviewed and merged to trigger the full release workflow.
+We use [release-plz](https://github.com/release-plz/release-plz) in git-only mode to manage the repository version, open release PRs, create tags, and publish GitHub releases for `tacon`.
 
 #### Prerequisites
 
@@ -277,21 +277,14 @@ Ensure your repository settings allow GitHub Actions to create PRs:
 1. Go to **Settings** > **Actions** > **General**
 2. Under "Workflow permissions", enable **"Allow GitHub Actions to create and approve pull requests"**
 
-#### 1. Open a Release PR
+#### 1. Let release-plz open or update the Release PR
 
-1. Go to **Actions** > **"Open Release PR"** workflow
-2. Click **"Run workflow"**
-3. Enter the version:
-   - Exact version: `1.2.3`
-   - Bump level: `patch`, `minor`, or `major`
-4. Optionally select a specific crate (leave empty for all crates)
-5. Click **"Run workflow"**
+Every push to `main` runs the **Release-plz** workflow. When unreleased changes are detected for `tacon`, release-plz opens or updates a release PR that:
 
-This creates a PR that:
-- Updates version numbers in `Cargo.toml` files
-- Runs `cargo publish --dry-run` to validate the release
-- Includes a section for writing release notes
-- Is labeled with `release` for automation
+- Updates the workspace version in `Cargo.toml`
+- Prepares the next `vX.Y.Z` git tag
+- Applies the `release` label for visibility
+- Defers the actual release until the release PR is merged
 
 #### 2. Review the Release PR
 
@@ -303,55 +296,39 @@ This creates a PR that:
 #### 3. Merge to Release
 
 When the PR is merged:
-1. The release workflow automatically triggers
-2. Builds release binaries for all platforms
-3. Generates Software Bill of Materials (SBOM) in CycloneDX format
-4. Creates and pushes the git tag (`vX.Y.Z`)
-5. Generates SHA256 checksums for all artifacts
-6. Creates a GitHub Release with all artifacts (binaries, checksums, and SBOMs)
+1. release-plz creates and pushes the git tag (`vX.Y.Z`)
+2. release-plz publishes the GitHub release
+3. The release asset workflow automatically attaches binaries, SBOMs, Debian packages, and checksums
+4. The final GitHub release notes are regenerated from merged PR titles instead of commit prefixes
 
 Release artifacts include:
 - Pre-built binaries for each platform
+- Debian package (`.deb`) and optional debug symbols package
 - SHA256 checksums file
 - SBOM files in both JSON and XML formats (for supply chain compliance)
 
-### Alternative: Manual Tag Release
-
-You can still trigger releases by pushing a tag directly:
-
-```bash
-# Create and push a tag
-git tag -a v1.2.3 -m "Release v1.2.3"
-git push origin v1.2.3
-```
-
-Or use `cargo-release` locally:
+### Alternative: Local release-plz run
 
 ```bash
 # Install (one-time)
-cargo install cargo-release
+cargo install release-plz
 
-# Dry run first
-cargo release patch --dry-run
+# Open or update the release PR
+release-plz release-pr
 
-# Execute release
-cargo release patch --execute
+# Publish after the release PR is merged
+release-plz release
 ```
 
 ### Pre-release Versions
 
-For alpha/beta/rc releases, use the full version string:
-
-- Via GitHub Actions: Enter `0.2.0-alpha.1` as the version
-- Via tag: `git tag -a v0.2.0-alpha.1 -m "Pre-release v0.2.0-alpha.1"`
-
-Tags containing `-` are automatically marked as pre-releases on GitHub.
+For alpha/beta/rc releases, set the version in the release PR to the full version string (for example `0.2.0-alpha.1`). The generated `v0.2.0-alpha.1` tag is automatically marked as a pre-release on GitHub.
 
 ### Troubleshooting Releases
 
-**Release PR not triggering the release workflow?**
+**Release PR not opening or updating?**
 
-Ensure the PR has the `release` label and the PR title contains the version (e.g., `release: v1.2.3`).
+Ensure GitHub Actions has permission to create pull requests and that the default branch is `main`.
 
 **Tag already exists?**
 
@@ -372,13 +349,14 @@ Simply close the PR without merging. No changes will be made to the repository.
 ```
 tacacs-rs/
 ├── Cargo.toml              # Workspace root with shared version
-├── release.toml            # cargo-release configuration
+├── release-plz.toml        # release-plz configuration
 ├── rustfmt.toml            # Formatting configuration
 ├── .github/
 │   ├── workflows/          # CI/CD workflows
 │   │   ├── ci.yml          # Main branch CI
 │   │   ├── pullrequest_workflow.yml
-│   │   ├── release.yml     # Release automation
+│   │   ├── release-plz.yml # Release PR and tag automation
+│   │   ├── release.yml     # Release asset publishing
 │   │   └── reusable-*.yml  # Shared workflow components
 │   └── steps/              # Reusable composite actions
 ├── executables/

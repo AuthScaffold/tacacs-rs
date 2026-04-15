@@ -244,21 +244,14 @@ Machine-readable copyright file following the [DEP-5 format](https://www.debian.
 
 ### Automated Builds
 
-The `.deb` package is automatically built and published on GitHub releases via the release workflow (`.github/workflows/release.yml`).
+The `.deb` package is automatically built and attached to GitHub releases via the release asset workflow (`.github/workflows/release.yml`) after release-plz publishes the release.
 
 ### Triggering a Release
 
 Releases are triggered by:
 
-1. **Pushing a version tag**:
-   ```bash
-   git tag -a v0.1.1 -m "Release 0.1.1"
-   git push origin v0.1.1
-   ```
-
-2. **Merging a release PR** with the `release` label
-
-3. **Manual workflow dispatch** with a version tag
+1. **Merging a release PR** opened by release-plz
+2. **Running `release-plz release`** after the release PR has been merged
 
 ### Release Artifacts
 

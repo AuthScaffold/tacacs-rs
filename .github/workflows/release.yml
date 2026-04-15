@@ -1,19 +1,8 @@
-name: Release
+name: Release Assets
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
-  # Trigger when a release PR is merged
-  pull_request:
-    types: [closed]
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag (e.g., v1.0.0)"
-        required: true
-        type: string
+  release:
+    types: [published]
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,63 +10,11 @@ env:
   BINARY_NAME: tacon
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # ============================================
-  # Determine if this is a valid release trigger
-  # ============================================
-  check-release:
-    name: Check Release Trigger
-    runs-on: ubuntu-latest
-    outputs:
-      should-release: ${{ steps.check.outputs.should-release }}
-      tag: ${{ steps.check.outputs.tag }}
-    steps:
-      - name: Check trigger conditions
-        id: check
-        run: |
-          SHOULD_RELEASE="false"
-          TAG=""
-          
-          # Tag push trigger
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/v* ]]; then
-            SHOULD_RELEASE="true"
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
-          
-          # Manual workflow dispatch
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            SHOULD_RELEASE="true"
-            TAG="${{ github.event.inputs.tag }}"
-          fi
-          
-          # Merged release PR (check for 'release' label)
-          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.event.pull_request.merged }}" == "true" ]]; then
-            if [[ "${{ contains(github.event.pull_request.labels.*.name, 'release') }}" == "true" ]]; then
-              SHOULD_RELEASE="true"
-              # Extract version from PR title (expects format: "release: vX.Y.Z" or "release: crate-name vX.Y.Z")
-              PR_TITLE="${{ github.event.pull_request.title }}"
-              TAG=$(echo "$PR_TITLE" | grep -oP 'v\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?' || echo "")
-              if [[ -z "$TAG" ]]; then
-                echo "::warning::Could not extract version from PR title: $PR_TITLE"
-                SHOULD_RELEASE="false"
-              fi
-            fi
-          fi
-          
-          echo "should-release=$SHOULD_RELEASE" >> $GITHUB_OUTPUT
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Should release: $SHOULD_RELEASE, Tag: $TAG"
-
-  # ============================================
-  # Build binaries for all platforms
-  # Uses reusable build workflow with artifact upload enabled
-  # ============================================
   build:
     name: Build
-    needs: check-release
-    if: needs.check-release.outputs.should-release == 'true'
     uses: ./.github/workflows/reusable-build.yml
     with:
       build-release: true
@@ -89,7 +26,6 @@ jobs:
   # ============================================
   sbom:
     name: Generate SBOM
-    needs: [check-release]
     uses: ./.github/workflows/reusable-sbom.yml
 
   # ============================================
@@ -97,8 +33,7 @@ jobs:
   # ============================================
   build-deb:
     name: Build Debian Package
-    needs: [check-release, build]
-    if: needs.check-release.outputs.should-release == 'true'
+    needs: [build]
     uses: ./.github/workflows/reusable-deb.yml
     with:
       package-name: tacon
@@ -110,50 +45,100 @@ jobs:
   # ============================================
   checksums:
     name: Generate Checksums
-    needs: [check-release, build, build-deb]
+    needs: [build, build-deb]
     uses: ./.github/workflows/reusable-checksums.yml
 
-  # ============================================
-  # Create GitHub Release
-  # ============================================
   release:
-    name: Create Release
-    needs: [check-release, build, build-deb, sbom, checksums]
+    name: Update Release
+    needs: [build, build-deb, sbom, checksums]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-      
+
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts
           merge-multiple: true
-      
+
       - name: List artifacts
         run: ls -la artifacts/
 
-      - name: Create and push tag (for PR-triggered releases)
-        if: github.event_name == 'pull_request'
+      - name: Determine tags
+        id: tags
         run: |
-          TAG="${{ needs.check-release.outputs.tag }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
+          TAG="${{ github.event.release.tag_name }}"
+          PREVIOUS_TAG="$(git tag --sort=-v:refname 'v*' | grep -Fxv "$TAG" | head -n1 || true)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Generate PR-title release notes
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Create Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
-        with:
-          tag_name: ${{ needs.check-release.outputs.tag }}
-          name: Release ${{ needs.check-release.outputs.tag }}
-          draft: false
-          prerelease: ${{ contains(needs.check-release.outputs.tag, '-') }}
-          generate_release_notes: true
-          files: |
-            artifacts/*
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tags.outputs.tag }}"
+          PREVIOUS_TAG="${{ steps.tags.outputs.previous_tag }}"
+
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="$TAG" \
+              -f previous_tag_name="$PREVIOUS_TAG" \
+              > /tmp/release-notes.json
+          else
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="$TAG" \
+              > /tmp/release-notes.json
+          fi
+
+          TAG="$TAG" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          tag = os.environ["TAG"]
+          notes = json.loads(Path("/tmp/release-notes.json").read_text(encoding="utf-8"))
+          Path("/tmp/release-update.json").write_text(
+              json.dumps(
+                  {
+                      "name": f"Release {tag}",
+                      "body": notes["body"],
+                  }
+              ),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Update GitHub release metadata
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tags.outputs.tag }}"
+          RELEASE_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.id')"
+          gh api \
+            --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            --input /tmp/release-update.json \
+            >/dev/null
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(find artifacts -maxdepth 1 -type f -print0 | sort -z)
+          if ((${#files[@]} == 0)); then
+            echo "No release artifacts were produced"
+            exit 1
+          fi
+          gh release upload "${{ steps.tags.outputs.tag }}" "${files[@]}" --clobber
