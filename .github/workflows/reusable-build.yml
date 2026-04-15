@@ -4,13 +4,13 @@ on:
   workflow_call:
     inputs:
       targets:
-        description: 'JSON array of target configurations with os, target, and optional asset_name'
+        description: 'JSON array of target configurations with os, target, asset_name, and optional features'
         required: false
         default: |
           [
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64"},
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-musl", "asset_name": "tacon-linux-musl-x86_64"},
-            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64.exe"}
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "features": ""},
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-musl", "asset_name": "tacon-linux-musl-x86_64", "features": ""},
+            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64.zip", "features": "psk"}
           ]
         type: string
       build-release:
@@ -51,7 +51,7 @@ jobs:
 
       - name: Build (simple)
         if: inputs.upload-artifacts == false
-        run: cargo build --workspace ${{ inputs.build-release && '--release' || '' }} --target ${{ matrix.config.target }}
+        run: cargo build --workspace ${{ inputs.build-release && '--release' || '' }} --target ${{ matrix.config.target }} ${{ matrix.config.features != '' && format('--features {0}', matrix.config.features) || '' }}
 
       - name: Build Binary (with artifacts)
         if: inputs.upload-artifacts == true
@@ -60,3 +60,4 @@ jobs:
           target: ${{ matrix.config.target }}
           binary-name: ${{ inputs.binary-name }}
           asset-name: ${{ matrix.config.asset_name }}
+          features: ${{ matrix.config.features }}
