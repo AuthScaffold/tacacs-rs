@@ -241,7 +241,7 @@ These artifacts are uploaded and retained for 7 days, allowing for testing and v
 
 ### Release Workflow
 
-Triggered automatically when release-plz publishes a GitHub release. Builds release binaries for:
+Triggered automatically when release-plz publishes a GitHub release. The workflow regenerates GitHub-generated release notes from merged PRs (so the final notes use PR-driven GitHub summaries instead of release-plz's commit-message grouping) and uploads release binaries for:
 
 - `x86_64-unknown-linux-gnu`
 - `x86_64-unknown-linux-musl`
@@ -277,7 +277,7 @@ Ensure your repository settings allow GitHub Actions to create PRs:
 1. Go to **Settings** > **Actions** > **General**
 2. Under "Workflow permissions", enable **"Allow GitHub Actions to create and approve pull requests"**
 
-#### 1. Let release-plz open or update the Release PR
+#### 1. Let release-plz open or update the release PR
 
 Every push to `main` runs the **Release-plz** workflow. When unreleased changes are detected for `tacon`, release-plz opens or updates a release PR that:
 
@@ -299,7 +299,7 @@ When the PR is merged:
 1. release-plz creates and pushes the git tag (`vX.Y.Z`)
 2. release-plz publishes the GitHub release
 3. The release asset workflow automatically attaches binaries, SBOMs, Debian packages, and checksums
-4. The final GitHub release notes are regenerated from merged PR titles instead of commit prefixes
+4. The final GitHub release notes are regenerated from merged PRs so they do not depend on release-plz's commit-message changelog grouping
 
 Release artifacts include:
 - Pre-built binaries for each platform

@@ -10,6 +10,7 @@ env:
   BINARY_NAME: tacon
 
 permissions:
+  # Most jobs only need read access; the final release job elevates to write.
   contents: read
 
 jobs:
@@ -71,8 +72,12 @@ jobs:
 
       - name: Determine tags
         id: tags
+        shell: bash
         run: |
           TAG="${{ github.event.release.tag_name }}"
+          # Keep using the highest semver-like v* tag so GitHub-generated release notes
+          # compare against the last repository release rather than against an asset upload rerun.
+          # This is empty on the first release, which the next step handles explicitly.
           PREVIOUS_TAG="$(git tag --sort=-v:refname 'v*' | grep -Fxv "$TAG" | head -n1 || true)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "previous_tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
@@ -80,47 +85,28 @@ jobs:
       - name: Generate PR-title release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           set -euo pipefail
           TAG="${{ steps.tags.outputs.tag }}"
           PREVIOUS_TAG="${{ steps.tags.outputs.previous_tag }}"
-
+          args=(--method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="$TAG")
           if [[ -n "$PREVIOUS_TAG" ]]; then
-            gh api \
-              --method POST \
-              "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-              -f tag_name="$TAG" \
-              -f previous_tag_name="$PREVIOUS_TAG" \
-              > /tmp/release-notes.json
-          else
-            gh api \
-              --method POST \
-              "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-              -f tag_name="$TAG" \
-              > /tmp/release-notes.json
+            args+=(-f previous_tag_name="$PREVIOUS_TAG")
           fi
+          gh api "${args[@]}" > /tmp/release-notes.json
 
-          TAG="$TAG" python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          tag = os.environ["TAG"]
-          notes = json.loads(Path("/tmp/release-notes.json").read_text(encoding="utf-8"))
-          Path("/tmp/release-update.json").write_text(
-              json.dumps(
-                  {
-                      "name": f"Release {tag}",
-                      "body": notes["body"],
-                  }
-              ),
-              encoding="utf-8",
-          )
-          PY
+          BODY="$(jq -er '.body' /tmp/release-notes.json)"
+          jq -n \
+            --arg name "Release $TAG" \
+            --arg body "$BODY" \
+            '{name: $name, body: $body}' \
+            > /tmp/release-update.json
 
       - name: Update GitHub release metadata
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           set -euo pipefail
           TAG="${{ steps.tags.outputs.tag }}"
@@ -134,11 +120,13 @@ jobs:
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           set -euo pipefail
+          # GitHub-hosted Ubuntu runners provide a modern bash with mapfile support.
           mapfile -d '' files < <(find artifacts -maxdepth 1 -type f -print0 | sort -z)
           if ((${#files[@]} == 0)); then
-            echo "No release artifacts were produced"
+            echo "No release artifacts were produced. Check that the build, build-deb, sbom, and checksums jobs completed successfully."
             exit 1
           fi
           gh release upload "${{ steps.tags.outputs.tag }}" "${files[@]}" --clobber
