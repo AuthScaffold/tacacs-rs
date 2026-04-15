@@ -3,6 +3,9 @@ name: Reusable Outdated Dependencies
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   outdated:
     name: Outdated Dependencies
