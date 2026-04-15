@@ -59,6 +59,21 @@ jobs:
       skip-if-no-dep-changes: true
     secrets: inherit
 
+  minimal-versions:
+    name: Minimal Versions
+    needs: [fmt, clippy]
+    uses: ./.github/workflows/reusable-minimal-versions.yml
+
+  unused-deps:
+    name: Unused Dependencies
+    needs: [fmt, clippy]
+    uses: ./.github/workflows/reusable-unused-deps.yml
+
+  outdated:
+    name: Outdated Dependencies
+    needs: [fmt, clippy]
+    uses: ./.github/workflows/reusable-outdated.yml
+
   # ── Tier 3: Expensive, gate on tests ─────────────────────
   clippy-nursery:
     name: Clippy Nursery
@@ -115,6 +130,9 @@ jobs:
       - test
       - coverage
       - audit
+      - minimal-versions
+      - unused-deps
+      - outdated
       - build-artifacts
       - sbom
       - build-deb
@@ -130,6 +148,9 @@ jobs:
             "${{ needs.test.result }}"
             "${{ needs.coverage.result }}"
             "${{ needs.audit.result }}"
+            "${{ needs.minimal-versions.result }}"
+            "${{ needs.unused-deps.result }}"
+            "${{ needs.outdated.result }}"
             "${{ needs.build-artifacts.result }}"
             "${{ needs.sbom.result }}"
             "${{ needs.build-deb.result }}"

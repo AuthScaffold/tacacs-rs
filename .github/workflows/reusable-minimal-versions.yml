@@ -1,0 +1,26 @@
+name: Reusable Minimal Versions
+
+on:
+  workflow_call:
+
+jobs:
+  minimal-versions:
+    name: Minimal Versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Rust nightly
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: nightly
+          cache-key: minimal-versions
+
+      - name: Install Rust stable
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Generate minimal versions lockfile
+        run: cargo +nightly update -Z minimal-versions
+
+      - name: Build with minimal versions
+        run: cargo +stable build --workspace --all-features
