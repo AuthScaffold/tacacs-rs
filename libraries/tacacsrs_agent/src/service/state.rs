@@ -837,7 +837,7 @@ mod tests {
                 release,
             }),
         });
-        #[allow(clippy::duration_suboptimal_units)]
+        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state =
             ServiceState::new(vec!["server:49".to_owned()], connector, Duration::from_secs(60));
 
@@ -856,7 +856,7 @@ mod tests {
                 release: Arc::clone(&release),
             }),
         });
-        #[allow(clippy::duration_suboptimal_units)]
+        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state = Arc::new(ServiceState::new(
             vec!["server:49".to_owned()],
             connector,
@@ -907,7 +907,7 @@ mod tests {
                 release: Arc::clone(&release),
             }),
         });
-        #[allow(clippy::duration_suboptimal_units)]
+        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state = Arc::new(ServiceState::new(
             vec!["server:49".to_owned()],
             connector,
