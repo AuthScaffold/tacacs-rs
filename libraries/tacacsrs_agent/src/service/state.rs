@@ -839,7 +839,7 @@ mod tests {
         });
         #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state =
-            ServiceState::new(vec!["server:49".to_owned()], connector, Duration::from_secs(60));
+            ServiceState::new(vec!["server:49".to_owned()], connector, Duration::from_mins(1));
 
         // No requests in flight — drain should return immediately.
         tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients())
@@ -860,7 +860,7 @@ mod tests {
         let state = Arc::new(ServiceState::new(
             vec!["server:49".to_owned()],
             connector,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         ));
         state.warm_connections().await;
 
@@ -911,7 +911,7 @@ mod tests {
         let state = Arc::new(ServiceState::new(
             vec!["server:49".to_owned()],
             connector,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         ));
         state.warm_connections().await;
 
