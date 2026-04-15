@@ -7,6 +7,10 @@ on:
     # Run weekly on Monday at 00:00 UTC to catch dependency issues
     - cron: "0 0 * * 1"
 
+permissions:
+  contents: read
+  packages: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
