@@ -443,29 +443,27 @@ impl ServiceState {
         connection: &dyn UpstreamConnection,
     ) {
         match connection.single_connection_state().await {
-            SingleConnectionState::Supported => {
+            SingleConnectionState::Supported
                 if !self.servers[index]
                     .single_connection_supported
-                    .swap(true, Ordering::Relaxed)
-                {
-                    log::info!(
-                        "Server {} supports single-connection mode; \
-                         switching to shared connections for future requests",
-                        self.servers[index].address,
-                    );
-                }
+                    .swap(true, Ordering::Relaxed) =>
+            {
+                log::info!(
+                    "Server {} supports single-connection mode; \
+                     switching to shared connections for future requests",
+                    self.servers[index].address,
+                );
             }
-            SingleConnectionState::NotSupported => {
+            SingleConnectionState::NotSupported
                 if self.servers[index]
                     .single_connection_supported
-                    .swap(false, Ordering::Relaxed)
-                {
-                    log::info!(
-                        "Server {} revoked single-connection support; \
-                         switching to dedicated connections for future requests",
-                        self.servers[index].address,
-                    );
-                }
+                    .swap(false, Ordering::Relaxed) =>
+            {
+                log::info!(
+                    "Server {} revoked single-connection support; \
+                     switching to dedicated connections for future requests",
+                    self.servers[index].address,
+                );
             }
             // Initial or Negotiating — no actionable information yet.
             _ => {}
@@ -839,8 +837,9 @@ mod tests {
                 release,
             }),
         });
+        #[allow(clippy::duration_suboptimal_units)]
         let state =
-            ServiceState::new(vec!["server:49".to_owned()], connector, Duration::from_mins(1));
+            ServiceState::new(vec!["server:49".to_owned()], connector, Duration::from_secs(60));
 
         // No requests in flight — drain should return immediately.
         tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients())
@@ -857,10 +856,11 @@ mod tests {
                 release: Arc::clone(&release),
             }),
         });
+        #[allow(clippy::duration_suboptimal_units)]
         let state = Arc::new(ServiceState::new(
             vec!["server:49".to_owned()],
             connector,
-            Duration::from_mins(1),
+            Duration::from_secs(60),
         ));
         state.warm_connections().await;
 
@@ -907,10 +907,11 @@ mod tests {
                 release: Arc::clone(&release),
             }),
         });
+        #[allow(clippy::duration_suboptimal_units)]
         let state = Arc::new(ServiceState::new(
             vec!["server:49".to_owned()],
             connector,
-            Duration::from_mins(1),
+            Duration::from_secs(60),
         ));
         state.warm_connections().await;
 
