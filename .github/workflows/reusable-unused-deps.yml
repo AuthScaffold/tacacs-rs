@@ -3,6 +3,9 @@ name: Reusable Unused Dependencies
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   unused-deps:
     name: Unused Dependencies
