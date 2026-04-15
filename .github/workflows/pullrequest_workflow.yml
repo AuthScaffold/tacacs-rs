@@ -52,6 +52,9 @@ jobs:
   audit:
     name: Security Audit
     uses: ./.github/workflows/reusable-security-audit.yml
+    permissions:
+      checks: write
+      contents: read
     with:
       skip-if-no-dep-changes: true
     secrets: inherit

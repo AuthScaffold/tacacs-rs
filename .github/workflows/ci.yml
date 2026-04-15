@@ -38,6 +38,9 @@ jobs:
   audit:
     name: Security Audit
     uses: ./.github/workflows/reusable-security-audit.yml
+    permissions:
+      checks: write
+      contents: read
     secrets: inherit
 
   # ── Tier 2: Moderate cost ────────────────────────────────
