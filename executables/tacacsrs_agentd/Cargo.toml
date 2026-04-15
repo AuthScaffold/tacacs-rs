@@ -11,10 +11,7 @@ anyhow = { version = "1.0.100", features = ["backtrace"] }
 clap = { version = "4.5.57", features = ["derive"] }
 console-subscriber = { version = "0.5.0", optional = true }
 env_logger = "0.11.8"
-flate2 = "1.0.35" # Floor for -Z minimal-versions: flate2 <1.0.17 pulls miniz-sys → gcc 0.3 (requires nightly)
-lazy_static = "1.4.0" # Floor for -Z minimal-versions: lazy_static <1.4 fails on modern Rust (missing __lazy_static_internal macro)
 log = "0.4"
-sharded-slab = "0.1.7" # Floor for -Z minimal-versions: sharded-slab <0.1.7 uses lazy_static 1.0 which fails on modern Rust
 tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
 tacacsrs-agent = { path = "../../libraries/tacacsrs_agent" }
 tokio = { version = "1.49.0", features = ["full"] }

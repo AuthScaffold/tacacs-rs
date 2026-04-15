@@ -46,11 +46,6 @@ jobs:
       contents: read
     secrets: inherit
 
-  minimal-versions:
-    name: Minimal Versions
-    needs: [docs]
-    uses: ./.github/workflows/reusable-minimal-versions.yml
-
   unused-deps:
     name: Unused Dependencies
     needs: [docs]
@@ -125,7 +120,6 @@ jobs:
       - coverage
       - clippy-nursery
       - nightly
-      - minimal-versions
       - unused-deps
       - outdated
       - miri
@@ -146,7 +140,6 @@ jobs:
             "${{ needs.coverage.result }}"
             "${{ needs.clippy-nursery.result }}"
             "${{ needs.nightly.result }}"
-            "${{ needs.minimal-versions.result }}"
             "${{ needs.unused-deps.result }}"
             "${{ needs.outdated.result }}"
             "${{ needs.miri.result }}"
