@@ -51,7 +51,14 @@ jobs:
 
       - name: Build (simple)
         if: inputs.upload-artifacts == false
-        run: cargo build --workspace ${{ inputs.build-release && '--release' || '' }} --target ${{ matrix.config.target }} ${{ matrix.config.features != '' && format('--features {0}', matrix.config.features) || '' }}
+        shell: bash
+        run: |
+          FEATURE_ARGS=()
+          if [[ -n "${{ matrix.config.features }}" ]]; then
+            FEATURE_ARGS+=(--features "${{ matrix.config.features }}")
+          fi
+
+          cargo build --workspace ${{ inputs.build-release && '--release' || '' }} --target ${{ matrix.config.target }} "${FEATURE_ARGS[@]}"
 
       - name: Build Binary (with artifacts)
         if: inputs.upload-artifacts == true

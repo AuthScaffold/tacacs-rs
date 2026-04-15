@@ -131,14 +131,18 @@ runs:
           throw "OpenSSL bin directory not found: $opensslBinDir"
         }
 
-        $dlls = @(
-          Get-ChildItem -Path $opensslBinDir -Filter "libcrypto-*.dll" -File -ErrorAction SilentlyContinue
-          Get-ChildItem -Path $opensslBinDir -Filter "libssl-*.dll" -File -ErrorAction SilentlyContinue
-        ) | Sort-Object -Property FullName -Unique
+        $libcryptoDlls = @(Get-ChildItem -Path $opensslBinDir -Filter "libcrypto-*.dll" -File -ErrorAction SilentlyContinue)
+        $libsslDlls = @(Get-ChildItem -Path $opensslBinDir -Filter "libssl-*.dll" -File -ErrorAction SilentlyContinue)
 
-        if ($dlls.Count -eq 0) {
-          throw "No OpenSSL runtime DLLs found in $opensslBinDir"
+        if ($libcryptoDlls.Count -ne 1) {
+          throw "Expected exactly one libcrypto runtime DLL in $opensslBinDir, found $($libcryptoDlls.Count)"
         }
+
+        if ($libsslDlls.Count -ne 1) {
+          throw "Expected exactly one libssl runtime DLL in $opensslBinDir, found $($libsslDlls.Count)"
+        }
+
+        $dlls = @($libcryptoDlls + $libsslDlls)
 
         foreach ($dll in $dlls) {
           Copy-Item $dll.FullName (Join-Path $packageDir $dll.Name)
