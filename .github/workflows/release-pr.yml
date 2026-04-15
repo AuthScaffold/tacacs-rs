@@ -33,19 +33,19 @@ jobs:
     
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup gitsign for commit signing
-        uses: chainguard-dev/actions/setup-gitsign@main
+        uses: chainguard-dev/actions/setup-gitsign@de68b87302e6266db5fb5220246f8aa46fe94b67 # v1.6.14
 
       - name: Install cargo-release
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@eea29cff9a2b68892c0845ae3e4f45fc47ee9354 # v2.75.13
         with:
           tool: cargo-release
 
       - name: Create Release PR (all crates)
         if: ${{ inputs.crate == '' }}
-        uses: cargo-bins/release-pr@v2
+        uses: cargo-bins/release-pr@0c019c0e5a6b9f722578d231d43ba900cacc5ffa # v2.1.3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version: ${{ inputs.version }}
@@ -57,7 +57,7 @@ jobs:
 
       - name: Create Release PR (single crate)
         if: ${{ inputs.crate != '' }}
-        uses: cargo-bins/release-pr@v2
+        uses: cargo-bins/release-pr@0c019c0e5a6b9f722578d231d43ba900cacc5ffa # v2.1.3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version: ${{ inputs.version }}

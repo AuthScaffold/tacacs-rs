@@ -15,9 +15,11 @@ runs:
       run: rustup toolchain install stable --profile minimal --component llvm-tools-preview
 
     - name: Install cargo-llvm-cov
-      uses: taiki-e/install-action@cargo-llvm-cov
+      uses: taiki-e/install-action@eea29cff9a2b68892c0845ae3e4f45fc47ee9354 # v2.75.13
+      with:
+        tool: cargo-llvm-cov
 
     - name: Setup Rust cache
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
       with:
         key: ${{ inputs.cache-key }}
