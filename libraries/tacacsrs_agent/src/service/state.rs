@@ -443,29 +443,27 @@ impl ServiceState {
         connection: &dyn UpstreamConnection,
     ) {
         match connection.single_connection_state().await {
-            SingleConnectionState::Supported => {
+            SingleConnectionState::Supported
                 if !self.servers[index]
                     .single_connection_supported
-                    .swap(true, Ordering::Relaxed)
-                {
-                    log::info!(
-                        "Server {} supports single-connection mode; \
-                         switching to shared connections for future requests",
-                        self.servers[index].address,
-                    );
-                }
+                    .swap(true, Ordering::Relaxed) =>
+            {
+                log::info!(
+                    "Server {} supports single-connection mode; \
+                     switching to shared connections for future requests",
+                    self.servers[index].address,
+                );
             }
-            SingleConnectionState::NotSupported => {
+            SingleConnectionState::NotSupported
                 if self.servers[index]
                     .single_connection_supported
-                    .swap(false, Ordering::Relaxed)
-                {
-                    log::info!(
-                        "Server {} revoked single-connection support; \
-                         switching to dedicated connections for future requests",
-                        self.servers[index].address,
-                    );
-                }
+                    .swap(false, Ordering::Relaxed) =>
+            {
+                log::info!(
+                    "Server {} revoked single-connection support; \
+                     switching to dedicated connections for future requests",
+                    self.servers[index].address,
+                );
             }
             // Initial or Negotiating — no actionable information yet.
             _ => {}
@@ -839,6 +837,7 @@ mod tests {
                 release,
             }),
         });
+        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state =
             ServiceState::new(vec!["server:49".to_owned()], connector, Duration::from_secs(60));
 
@@ -857,6 +856,7 @@ mod tests {
                 release: Arc::clone(&release),
             }),
         });
+        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state = Arc::new(ServiceState::new(
             vec!["server:49".to_owned()],
             connector,
@@ -907,6 +907,7 @@ mod tests {
                 release: Arc::clone(&release),
             }),
         });
+        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state = Arc::new(ServiceState::new(
             vec!["server:49".to_owned()],
             connector,

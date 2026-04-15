@@ -303,7 +303,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
                 );
             }
             Err(error) => {
-                log::warn!("Accounting request to {} failed: {error:#}", self.server_address,);
+                log::warn!("Accounting request to {} failed: {error:#}", self.server_address);
             }
         }
 
@@ -384,7 +384,7 @@ async fn connect_upstream(
     )
     .await
     .with_context(|| {
-        log::warn!("Connection to {address} timed out after {:?}", options.connect_timeout,);
+        log::warn!("Connection to {address} timed out after {:?}", options.connect_timeout);
         format!("Timed out connecting to {address}")
     })?
     .with_context(|| {
