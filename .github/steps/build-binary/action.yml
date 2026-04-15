@@ -73,7 +73,7 @@ runs:
         
         echo "Found binary: $BINARY_PATH"
         
-        if [[ "${{ runner.os }}" == "Windows" && "${{ inputs.asset-name }}" == *.zip ]]; then
+        if [[ "${{ runner.os }}" == "Windows" && "${{ inputs.asset-name }}" =~ \.zip$ ]]; then
           cp "$BINARY_PATH" "package/${BINARY_NAME}"
         else
           # Copy and rename to asset name
@@ -131,8 +131,8 @@ runs:
           throw "OpenSSL bin directory not found: $opensslBinDir"
         }
 
-        $libcryptoDlls = @(Get-ChildItem -Path $opensslBinDir -Filter "libcrypto-*.dll" -File -ErrorAction SilentlyContinue)
-        $libsslDlls = @(Get-ChildItem -Path $opensslBinDir -Filter "libssl-*.dll" -File -ErrorAction SilentlyContinue)
+        $libcryptoDlls = @(Get-ChildItem -Path $opensslBinDir -Filter "libcrypto-*.dll" -ErrorAction SilentlyContinue)
+        $libsslDlls = @(Get-ChildItem -Path $opensslBinDir -Filter "libssl-*.dll" -ErrorAction SilentlyContinue)
 
         if ($libcryptoDlls.Count -ne 1) {
           throw "Expected exactly one libcrypto runtime DLL in $opensslBinDir, found $($libcryptoDlls.Count)"
@@ -142,7 +142,7 @@ runs:
           throw "Expected exactly one libssl runtime DLL in $opensslBinDir, found $($libsslDlls.Count)"
         }
 
-        $dlls = @($libcryptoDlls + $libsslDlls)
+        $dlls = $libcryptoDlls + $libsslDlls
 
         foreach ($dll in $dlls) {
           Copy-Item $dll.FullName (Join-Path $packageDir $dll.Name)
