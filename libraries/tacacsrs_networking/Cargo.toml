@@ -23,7 +23,6 @@ default = []
 psk = ["dep:openssl", "dep:tokio-openssl"]
 
 [dev-dependencies]
-argh = "0.1.13"
 console-subscriber = "0.5.0"
 test-log = "0.2.19"
 env_logger = "0.11.8"
@@ -31,6 +30,9 @@ futures = "0.3"
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-udeps.ignore]
+development = ["console-subscriber"]
 
 [[example]]
 name = "tls_psk_client"

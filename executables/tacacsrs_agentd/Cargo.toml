@@ -9,7 +9,7 @@ description = "Central TACACS+ client service for local consumers"
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
 clap = { version = "4.5.57", features = ["derive"] }
-console-subscriber = { version = "0.4", optional = true }
+console-subscriber = { version = "0.5.0", optional = true }
 env_logger = "0.11.8"
 log = "0.4"
 tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }

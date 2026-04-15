@@ -82,6 +82,9 @@ jobs:
           components: clippy
           cache-key: nightly
 
+      - name: Setup OpenSSL
+        uses: ./.github/steps/setup-openssl
+
       - name: Build on nightly
         run: cargo +nightly build --workspace --all-features
         continue-on-error: true
@@ -101,6 +104,9 @@ jobs:
         with:
           toolchain: nightly
           cache-key: minimal-versions
+
+      - name: Setup OpenSSL
+        uses: ./.github/steps/setup-openssl
 
       - name: Install Rust stable
         run: rustup toolchain install stable --profile minimal
