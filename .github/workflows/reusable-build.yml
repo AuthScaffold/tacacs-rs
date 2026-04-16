@@ -28,6 +28,11 @@ on:
         required: false
         default: 'tacon'
         type: string
+      version:
+        description: 'Override package version in Cargo.toml before building (e.g. CalVer tag version)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   build:
@@ -41,6 +46,16 @@ jobs:
         config: ${{ fromJson(inputs.targets) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Override package version
+        if: inputs.version != ''
+        shell: bash
+        run: |
+          CARGO_TOML=$(find executables -name 'Cargo.toml' -exec grep -l "name = \"${{ inputs.binary-name }}\"" {} \;)
+          if [ -n "$CARGO_TOML" ]; then
+            sed -i "s/^version = \".*\"/version = \"${{ inputs.version }}\"/" "$CARGO_TOML"
+            echo "Updated $CARGO_TOML to version ${{ inputs.version }}"
+          fi
 
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
