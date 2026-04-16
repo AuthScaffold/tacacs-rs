@@ -158,6 +158,9 @@ jobs:
           # Tag HEAD directly — the release pipeline injects the CalVer
           # version into Cargo.toml at build time, so no commit to main is
           # needed (and branch protection would block it anyway).
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git tag -a "${{ steps.calver.outputs.tag }}" \
             -m "Release ${{ matrix.binary.name }} ${{ steps.calver.outputs.version }}"
 
