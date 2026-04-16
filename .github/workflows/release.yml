@@ -1,116 +1,116 @@
-name: Release
+name: Release Binaries
 
+# Triggered by CalVer tags pushed from the release-plz.yml CalVer job.
+# To add a new binary, append its tag pattern below and ensure the CalVer
+# matrix in release-plz.yml includes it.
 on:
   push:
     tags:
-      - "v*.*.*"
-  # Trigger when a release PR is merged
-  pull_request:
-    types: [closed]
-    branches: [main]
+      - "tacon-*"
+      # Uncomment when ready to release:
+      # - "tacacsrs-agentd-*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g., v1.0.0)"
+        description: "Release tag (e.g., tacon-2026.416.0)"
         required: true
         type: string
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  BINARY_NAME: tacon
 
 permissions:
   contents: write
 
 jobs:
   # ============================================
-  # Determine if this is a valid release trigger
+  # Parse binary name and version from the tag
   # ============================================
-  check-release:
-    name: Check Release Trigger
+  parse-tag:
+    name: Parse Release Tag
     runs-on: ubuntu-latest
     outputs:
-      should-release: ${{ steps.check.outputs.should-release }}
-      tag: ${{ steps.check.outputs.tag }}
+      binary-name: ${{ steps.parse.outputs.binary-name }}
+      version: ${{ steps.parse.outputs.version }}
+      tag: ${{ steps.parse.outputs.tag }}
+      has-deb: ${{ steps.parse.outputs.has-deb }}
     steps:
-      - name: Check trigger conditions
-        id: check
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Parse tag
+        id: parse
         run: |
-          SHOULD_RELEASE="false"
-          TAG=""
-          
-          # Tag push trigger
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/v* ]]; then
-            SHOULD_RELEASE="true"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
             TAG="${GITHUB_REF#refs/tags/}"
           fi
-          
-          # Manual workflow dispatch
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            SHOULD_RELEASE="true"
-            TAG="${{ github.event.inputs.tag }}"
-          fi
-          
-          # Merged release PR (check for 'release' label)
-          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.event.pull_request.merged }}" == "true" ]]; then
-            if [[ "${{ contains(github.event.pull_request.labels.*.name, 'release') }}" == "true" ]]; then
-              SHOULD_RELEASE="true"
-              # Extract version from PR title (expects format: "release: vX.Y.Z" or "release: crate-name vX.Y.Z")
-              PR_TITLE="${{ github.event.pull_request.title }}"
-              TAG=$(echo "$PR_TITLE" | grep -oP 'v\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?' || echo "")
-              if [[ -z "$TAG" ]]; then
-                echo "::warning::Could not extract version from PR title: $PR_TITLE"
-                SHOULD_RELEASE="false"
-              fi
+
+          # Extract binary name (everything before the last -YYYY.MMDD.BUILD)
+          BINARY_NAME=$(echo "$TAG" | sed -E 's/-[0-9]+\.[0-9]+\.[0-9]+$//')
+          VERSION=$(echo "$TAG" | sed -E 's/^.*-([0-9]+\.[0-9]+\.[0-9]+)$/\1/')
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "binary-name=$BINARY_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Parsed: binary=$BINARY_NAME version=$VERSION tag=$TAG"
+
+          # Check if this binary has debian packaging
+          # Find the binary's directory by scanning workspace members
+          BINARY_DIR=$(find executables -maxdepth 1 -type d | while read dir; do
+            if grep -q "name = \"$BINARY_NAME\"" "$dir/Cargo.toml" 2>/dev/null; then
+              echo "$dir"
+              break
             fi
+          done)
+
+          if [ -n "$BINARY_DIR" ] && [ -d "$BINARY_DIR/debian" ]; then
+            echo "has-deb=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-deb=false" >> "$GITHUB_OUTPUT"
           fi
-          
-          echo "should-release=$SHOULD_RELEASE" >> $GITHUB_OUTPUT
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Should release: $SHOULD_RELEASE, Tag: $TAG"
 
   # ============================================
   # Build binaries for all platforms
-  # Uses reusable build workflow with artifact upload enabled
   # ============================================
   build:
     name: Build
-    needs: check-release
-    if: needs.check-release.outputs.should-release == 'true'
+    needs: parse-tag
     uses: ./.github/workflows/reusable-build.yml
     with:
       build-release: true
       upload-artifacts: true
-      binary-name: tacon
+      binary-name: ${{ needs.parse-tag.outputs.binary-name }}
 
   # ============================================
   # Generate Software Bill of Materials (SBOM)
   # ============================================
   sbom:
     name: Generate SBOM
-    needs: [check-release]
+    needs: [parse-tag]
     uses: ./.github/workflows/reusable-sbom.yml
 
   # ============================================
-  # Build Debian package
+  # Build Debian package (only for binaries with debian/ dir)
   # ============================================
   build-deb:
     name: Build Debian Package
-    needs: [check-release, build]
-    if: needs.check-release.outputs.should-release == 'true'
+    needs: [parse-tag, build]
+    if: needs.parse-tag.outputs.has-deb == 'true'
     uses: ./.github/workflows/reusable-deb.yml
     with:
-      package-name: tacon
+      package-name: ${{ needs.parse-tag.outputs.binary-name }}
       upload-artifacts: true
-      binary-artifact-name: tacon-linux-gnu-x86_64
+      binary-artifact-name: ${{ needs.parse-tag.outputs.binary-name }}-linux-gnu-x86_64
 
   # ============================================
   # Create checksums for all artifacts
   # ============================================
   checksums:
     name: Generate Checksums
-    needs: [check-release, build, build-deb]
+    needs: [parse-tag, build, build-deb]
+    if: "!cancelled() && needs.build.result == 'success'"
     uses: ./.github/workflows/reusable-checksums.yml
 
   # ============================================
@@ -118,40 +118,30 @@ jobs:
   # ============================================
   release:
     name: Create Release
-    needs: [check-release, build, build-deb, sbom, checksums]
+    needs: [parse-tag, build, sbom, checksums]
+    if: "!cancelled() && needs.build.result == 'success'"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-      
+
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts
           merge-multiple: true
-      
+
       - name: List artifacts
         run: ls -la artifacts/
 
-      - name: Create and push tag (for PR-triggered releases)
-        if: github.event_name == 'pull_request'
-        run: |
-          TAG="${{ needs.check-release.outputs.tag }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
       - name: Create Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
-          tag_name: ${{ needs.check-release.outputs.tag }}
-          name: Release ${{ needs.check-release.outputs.tag }}
+          tag_name: ${{ needs.parse-tag.outputs.tag }}
+          name: "${{ needs.parse-tag.outputs.binary-name }} ${{ needs.parse-tag.outputs.version }}"
           draft: false
-          prerelease: ${{ contains(needs.check-release.outputs.tag, '-') }}
+          prerelease: false
           generate_release_notes: true
           files: |
             artifacts/*
