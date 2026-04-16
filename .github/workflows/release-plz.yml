@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Prevent parallel release runs
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── release-plz: library version management ─────────────
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'AuthScaffold'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz release-pr
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-plz-release:
+    name: Release-plz Release
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'AuthScaffold'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz release
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── CalVer: application version management ──────────────
+  #
+  # To add a new binary, append an entry to the matrix below and add its
+  # tag pattern to .github/workflows/release-binaries.yml triggers.
+  #
+  calver-release:
+    name: CalVer Release (${{ matrix.binary.name }})
+    runs-on: ubuntu-latest
+    needs: [release-plz-release]
+    if: github.repository_owner == 'AuthScaffold'
+    strategy:
+      fail-fast: false
+      matrix:
+        binary:
+          - name: tacon
+            path: executables/tacon
+          # Uncomment when ready to release:
+          # - name: tacacsrs-agentd
+          #   path: executables/tacacsrs_agentd
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Find latest tag for this binary
+        id: latest-tag
+        run: |
+          # Find the most recent tag matching <binary>-*
+          LATEST_TAG=$(git tag --list '${{ matrix.binary.name }}-*' --sort=-v:refname | head -n1)
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No existing tag found for ${{ matrix.binary.name }}"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "has_tag=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Latest tag: $LATEST_TAG"
+            echo "tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+            echo "has_tag=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for changes since last tag
+        id: changes
+        run: |
+          if [ "${{ steps.latest-tag.outputs.has_tag }}" = "false" ]; then
+            echo "No previous tag — treating as changed"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            # Check for changes in the binary's directory or any library
+            DIFF=$(git diff --name-only "${{ steps.latest-tag.outputs.tag }}"..HEAD -- \
+              "${{ matrix.binary.path }}/" \
+              "libraries/")
+            if [ -n "$DIFF" ]; then
+              echo "Changes detected:"
+              echo "$DIFF"
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "No changes since ${{ steps.latest-tag.outputs.tag }}"
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Calculate CalVer version
+        id: calver
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          # CalVer format: YYYY.MMDD.BUILD
+          # MMDD = month*100 + day (no leading zeros, Cargo semver compatible)
+          YEAR=$(date -u +%Y)
+          MONTH=$(date -u +%-m)
+          DAY=$(date -u +%-d)
+          MMDD=$((MONTH * 100 + DAY))
+
+          # Find existing tags for today to determine build number
+          TAG_PREFIX="${{ matrix.binary.name }}-${YEAR}.${MMDD}."
+          EXISTING_BUILDS=$(git tag --list "${TAG_PREFIX}*" | sed "s|${TAG_PREFIX}||" | sort -n)
+
+          if [ -z "$EXISTING_BUILDS" ]; then
+            BUILD=0
+          else
+            MAX_BUILD=$(echo "$EXISTING_BUILDS" | tail -n1)
+            BUILD=$((MAX_BUILD + 1))
+          fi
+
+          VERSION="${YEAR}.${MMDD}.${BUILD}"
+          TAG="${{ matrix.binary.name }}-${VERSION}"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Calculated version: $VERSION (tag: $TAG)"
+
+      - name: Update Cargo.toml version
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          sed -i "s/^version = \".*\"/version = \"${{ steps.calver.outputs.version }}\"/" \
+            "${{ matrix.binary.path }}/Cargo.toml"
+          echo "Updated ${{ matrix.binary.path }}/Cargo.toml:"
+          head -5 "${{ matrix.binary.path }}/Cargo.toml"
+
+      - name: Create and push CalVer tag
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "${{ matrix.binary.path }}/Cargo.toml"
+          git commit -m "chore(${{ matrix.binary.name }}): bump to ${{ steps.calver.outputs.version }}"
+
+          git tag -a "${{ steps.calver.outputs.tag }}" \
+            -m "Release ${{ matrix.binary.name }} ${{ steps.calver.outputs.version }}"
+
+          git push origin HEAD:main "${{ steps.calver.outputs.tag }}"

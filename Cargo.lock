@@ -1674,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-agentd"
-version = "0.1.2"
+version = "2026.416.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1722,7 +1722,7 @@ dependencies = [
 
 [[package]]
 name = "tacon"
-version = "0.1.2"
+version = "2026.416.0"
 dependencies = [
  "anyhow",
  "clap",
