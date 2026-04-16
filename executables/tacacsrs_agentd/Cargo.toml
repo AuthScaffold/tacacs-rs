@@ -12,8 +12,8 @@ clap = { version = "4.5.57", features = ["derive"] }
 console-subscriber = { version = "0.5.0", optional = true }
 env_logger = "0.11.8"
 log = "0.4"
-tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
-tacacsrs-agent = { path = "../../libraries/tacacsrs_agent" }
+tacacsrs-agent-client = { version = "0.1.2", path = "../../libraries/tacacsrs_agent_client" }
+tacacsrs-agent = { version = "0.1.2", path = "../../libraries/tacacsrs_agent" }
 tokio = { version = "1.49.0", features = ["full"] }
 
 [features]

@@ -2,6 +2,9 @@
 name = "tacacsrs-messages"
 version = "0.1.2"
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TACACS+ protocol message types and serialization"
 
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
