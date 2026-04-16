@@ -4,6 +4,8 @@
 [workspace]
 # Not publishing to crates.io; determine versions from git tags
 git_only = true
+# Allow running in repos with uncommitted/gitignored files (e.g. yang cache)
+allow_dirty = true
 publish = false
 # Skip cargo package verification — path-only workspace deps lack version
 # fields, which cargo package requires but we don't need since we never publish
