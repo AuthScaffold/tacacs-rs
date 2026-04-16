@@ -82,6 +82,7 @@ jobs:
       build-release: true
       upload-artifacts: true
       binary-name: ${{ needs.parse-tag.outputs.binary-name }}
+      version: ${{ needs.parse-tag.outputs.version }}
 
   # ============================================
   # Generate Software Bill of Materials (SBOM)
@@ -103,6 +104,7 @@ jobs:
       package-name: ${{ needs.parse-tag.outputs.binary-name }}
       upload-artifacts: true
       binary-artifact-name: ${{ needs.parse-tag.outputs.binary-name }}-linux-gnu-x86_64
+      version: ${{ needs.parse-tag.outputs.version }}
 
   # ============================================
   # Create checksums for all artifacts

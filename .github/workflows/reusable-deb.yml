@@ -16,6 +16,11 @@ on:
         description: 'Name of the artifact containing the pre-built binary (e.g., tacon-linux-gnu-x86_64). If not provided, binary will be built from scratch.'
         required: false
         type: string
+      version:
+        description: 'Override package version in Cargo.toml and debian/changelog (e.g. CalVer tag version)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   build-deb:
@@ -23,6 +28,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Override package version
+        if: inputs.version != ''
+        run: |
+          CARGO_TOML="executables/${{ inputs.package-name }}/Cargo.toml"
+          if [ -f "$CARGO_TOML" ]; then
+            sed -i "s/^version = \".*\"/version = \"${{ inputs.version }}\"/" "$CARGO_TOML"
+            echo "Updated $CARGO_TOML to version ${{ inputs.version }}"
+          fi
+          CHANGELOG="executables/${{ inputs.package-name }}/debian/changelog"
+          if [ -f "$CHANGELOG" ]; then
+            sed -i "1s/([^)]*)/(${{ inputs.version }})/" "$CHANGELOG"
+            echo "Updated $CHANGELOG to version ${{ inputs.version }}"
+          fi
 
       - name: Download pre-built binary
         if: inputs.binary-artifact-name != ''
