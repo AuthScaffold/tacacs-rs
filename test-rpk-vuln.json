@@ -1,0 +1,22 @@
+{
+  "ietf-system-tacacs-plus:tacacs-plus": {
+    "server": [
+      {
+        "name": "test-rpk-no-server-auth",
+        "server-type": ["authentication", "authorization", "accounting"],
+        "address": "10.0.0.1",
+        "port": 49,
+        "timeout": 5,
+        "single-connection": false,
+        "client-identity": {
+          "raw-private-key": {
+            "inline-definition": {
+              "private-key-format": "ietf-crypto-types:one-asymmetric-key-format",
+              "cleartext-private-key": "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1DNENBUUF3QlFZREsyVndCQ0lFS0RBRjAwNjdCWjE0bHlaMWVJREhmejREbUpRd3F1VUF2S0trNEhIeURnPT0KLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLQ=="
+            }
+          }
+        }
+      }
+    ]
+  }
+}

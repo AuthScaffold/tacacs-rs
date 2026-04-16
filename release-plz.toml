@@ -5,6 +5,9 @@
 # Not publishing to crates.io; determine versions from git tags
 git_only = true
 publish = false
+# Skip cargo package verification — path-only workspace deps lack version
+# fields, which cargo package requires but we don't need since we never publish
+publish_no_verify = true
 # No semver API checking (internal libraries, not published)
 semver_check = false
 # Label release PRs for identification
