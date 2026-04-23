@@ -18,7 +18,7 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_
 rustls-pki-types = "1.14.0"
 rustls-cert-file-reader = "0.4.2"
 webpki-roots = "1.0.6"
-openssl = { version = "0.10.76", optional = true }
+openssl = { version = "0.10.78", optional = true }
 tokio-openssl = { version = "0.6.5", optional = true }
 
 [features]
