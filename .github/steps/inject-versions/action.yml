@@ -36,20 +36,3 @@ runs:
           sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" "$CARGO_TOML"
           echo "  ${CRATE} → ${VERSION}  (${CARGO_TOML})"
         done
-
-    - name: Update debian/changelog if present
-      shell: bash
-      run: |
-        VERSIONS='${{ inputs.versions }}'
-
-        if [ -z "$VERSIONS" ] || [ "$VERSIONS" = "{}" ]; then
-          exit 0
-        fi
-
-        echo "$VERSIONS" | jq -r 'to_entries[] | "\(.key)\t\(.value)"' | tr -d '\r' | while IFS=$'\t' read -r CRATE VERSION; do
-          CHANGELOG="executables/${CRATE}/debian/changelog"
-          if [ -f "$CHANGELOG" ]; then
-            sed -i "1s/([^)]*)/($VERSION)/" "$CHANGELOG"
-            echo "  ${CRATE} debian/changelog → ${VERSION}"
-          fi
-        done

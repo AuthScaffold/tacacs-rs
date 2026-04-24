@@ -48,6 +48,7 @@ class VersionResult:
     version: str
     tag: str | None = None  # non-None when a new tag should be created
     reason: str = ""
+    previous_tag: str | None = None  # the tag this release is based on
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +292,7 @@ def compute_calver(
         version=version,
         tag=tag,
         reason="calver",
+        previous_tag=latest,
     )
 
 
@@ -528,11 +530,13 @@ def compute_all_versions(
         print(f"  {r.name}: {r.version} ({r.reason})")
 
     calver_tag = ""
+    previous_calver_tag = ""
     if calver_result is not None:
         versions[calver_result.name] = calver_result.version
         if calver_result.tag:
             new_tags.append(calver_result.tag)
             calver_tag = calver_result.tag
+            previous_calver_tag = calver_result.previous_tag or ""
         print(f"  {calver_result.name}: {calver_result.version} ({calver_result.reason})")
     else:
         print(f"  {binary_name}: unchanged (no calver)")
@@ -542,6 +546,7 @@ def compute_all_versions(
         "new_tags": new_tags,
         "has_release": len(new_tags) > 0,
         "calver_tag": calver_tag,
+        "previous_calver_tag": previous_calver_tag,
     }
 
 
@@ -583,6 +588,7 @@ def main() -> None:
     write_github_output("new_tags", json.dumps(result["new_tags"]))
     write_github_output("has_release", json.dumps(result["has_release"]))
     write_github_output("calver_tag", result["calver_tag"])
+    write_github_output("previous_calver_tag", result["previous_calver_tag"])
 
 
 if __name__ == "__main__":
