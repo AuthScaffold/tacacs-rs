@@ -25,10 +25,26 @@ permissions:
 
 jobs:
   # ============================================
+  # Gate: ensure CI passed for this commit
+  # ============================================
+  check-ci:
+    name: Verify CI Passed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for CI to pass
+        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-name: CI Success
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 30
+
+  # ============================================
   # Parse binary name and version from the tag
   # ============================================
   parse-tag:
     name: Parse Release Tag
+    needs: check-ci
     runs-on: ubuntu-latest
     outputs:
       binary-name: ${{ steps.parse.outputs.binary-name }}

@@ -11,152 +11,25 @@ permissions:
   contents: read
   packages: read
 
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  BINARY_NAME: tacon
-
 jobs:
-  # ── Tier 1: Cheapest, most likely to fail ────────────────
-  docs:
-    name: Documentation
-    uses: ./.github/workflows/reusable-docs.yml
-
-  proto-compat:
-    name: Protobuf Compatibility
-    uses: ./.github/workflows/reusable-proto-compat.yml
-
-  # ── Tier 2: Moderate cost, gate on Tier 1 ────────────────
-  test:
-    name: Test
-    needs: [docs]
-    uses: ./.github/workflows/reusable-test.yml
-    with:
-      rust-matrix: '["stable", "beta"]'
-      include-msrv: true
-      msrv: "1.85"
-      release: true
-
-  coverage:
-    name: Code Coverage
-    needs: [docs]
-    uses: ./.github/workflows/reusable-coverage.yml
-
-  audit:
-    name: Security Audit
-    uses: ./.github/workflows/reusable-security-audit.yml
+  pipeline:
+    name: CI Pipeline
+    uses: ./.github/workflows/reusable-pipeline.yml
     permissions:
       checks: write
       contents: read
+      packages: read
+    with:
+      include-fmt: false
+      include-proto-compat: false
     secrets: inherit
 
-  unused-deps:
-    name: Unused Dependencies
-    needs: [docs]
-    uses: ./.github/workflows/reusable-unused-deps.yml
-
-  outdated:
-    name: Outdated Dependencies
-    needs: [docs]
-    uses: ./.github/workflows/reusable-outdated.yml
-
-  # ── Tier 3: Expensive, gate on tests ─────────────────────
-  clippy-nursery:
-    name: Clippy Nursery
-    needs: [docs]
-    uses: ./.github/workflows/reusable-clippy-nursery.yml
-
-  nightly:
-    name: Nightly Rust Check
-    needs: [docs]
-    uses: ./.github/workflows/reusable-clippy.yml
-    with:
-      toolchain: nightly
-
-  miri:
-    name: Miri
-    needs: [test]
-    uses: ./.github/workflows/reusable-miri.yml
-
-  fuzz:
-    name: Fuzz Smoke Test
-    needs: [test, miri]
-    uses: ./.github/workflows/reusable-fuzz.yml
-
-  # ── Tier 4: Artifacts, gate on tests ─────────────────────
-  build-artifacts:
-    name: Build Artifacts
-    needs: [test, miri]
-    uses: ./.github/workflows/reusable-build.yml
-    with:
-      build-release: true
-      upload-artifacts: true
-      binary-name: tacon
-
-  sbom:
-    name: Generate SBOM
-    needs: [test, miri]
-    uses: ./.github/workflows/reusable-sbom.yml
-
-  build-deb:
-    name: Build Debian Package
-    needs: [build-artifacts]
-    uses: ./.github/workflows/reusable-deb.yml
-    with:
-      package-name: tacon
-      upload-artifacts: true
-      binary-artifact-name: tacon-linux-gnu-x86_64
-
-  checksums:
-    name: Generate Checksums
-    needs: [build-artifacts, build-deb]
-    uses: ./.github/workflows/reusable-checksums.yml
-
-  # ── Gate: all required jobs must pass ───────────────────
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs:
-      - docs
-      - proto-compat
-      - audit
-      - test
-      - coverage
-      - clippy-nursery
-      - nightly
-      - unused-deps
-      - outdated
-      - miri
-      - fuzz
-      - build-artifacts
-      - sbom
-      - build-deb
-      - checksums
+    needs: [pipeline]
     if: always()
     steps:
-      - name: Check all jobs passed
-        run: |
-          results=(
-            "${{ needs.docs.result }}"
-            "${{ needs.proto-compat.result }}"
-            "${{ needs.audit.result }}"
-            "${{ needs.test.result }}"
-            "${{ needs.coverage.result }}"
-            "${{ needs.clippy-nursery.result }}"
-            "${{ needs.nightly.result }}"
-            "${{ needs.unused-deps.result }}"
-            "${{ needs.outdated.result }}"
-            "${{ needs.miri.result }}"
-            "${{ needs.fuzz.result }}"
-            "${{ needs.build-artifacts.result }}"
-            "${{ needs.sbom.result }}"
-            "${{ needs.build-deb.result }}"
-            "${{ needs.checksums.result }}"
-          )
-          for result in "${results[@]}"; do
-            if [[ "$result" != "success" ]]; then
-              echo "One or more required jobs failed"
-              exit 1
-            fi
-          done
-          echo "All required jobs passed!"
+      - name: Check pipeline result
+        if: needs.pipeline.result != 'success'
+        run: exit 1

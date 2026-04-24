@@ -126,44 +126,40 @@ impl AccountingRequest {
 
         let mut cursor = Cursor::new(data);
 
-        let flags = match cursor
-            .read_u8()
-            .with_context(|| "Invalid flags. Unable to read data")
-        {
-            Ok(a) => TacacsAccountingFlags::from_bits(a)
-                .with_context(|| "Invalid flags. Conversion failed with error")?,
-            Err(err) => return Err(err),
+        let flags = {
+            let a = cursor
+                .read_u8()
+                .with_context(|| "Invalid flags. Unable to read data")?;
+            TacacsAccountingFlags::from_bits(a)
+                .with_context(|| "Invalid flags. Conversion failed with error")?
         };
 
-        let authen_method = match cursor
-            .read_u8()
-            .with_context(|| "Invalid authen_method. Unable to read data")
-        {
-            Ok(data) => TacacsAuthenticationMethod::try_from_primitive(data)
-                .with_context(|| "Invalid authen_method. Conversion failed with error")?,
-            Err(err) => return Err(err),
+        let authen_method = {
+            let data = cursor
+                .read_u8()
+                .with_context(|| "Invalid authen_method. Unable to read data")?;
+            TacacsAuthenticationMethod::try_from_primitive(data)
+                .with_context(|| "Invalid authen_method. Conversion failed with error")?
         };
 
         let priv_lvl = cursor
             .read_u8()
             .with_context(|| "Invalid priv_lvl. Unable to read data")?;
 
-        let authen_type = match cursor
-            .read_u8()
-            .with_context(|| "Invalid authen_type. Unable to read data: {}")
-        {
-            Ok(data) => TacacsAuthenticationType::try_from_primitive(data)
-                .with_context(|| "Invalid authen_type. Conversion failed with error")?,
-            Err(err) => return Err(err),
+        let authen_type = {
+            let data = cursor
+                .read_u8()
+                .with_context(|| "Invalid authen_type. Unable to read data: {}")?;
+            TacacsAuthenticationType::try_from_primitive(data)
+                .with_context(|| "Invalid authen_type. Conversion failed with error")?
         };
 
-        let authen_service = match cursor
-            .read_u8()
-            .with_context(|| "Invalid authen_service. Unable to read data")
-        {
-            Ok(a) => TacacsAuthenticationService::try_from_primitive(a)
-                .with_context(|| "Invalid authen_service. Conversion failed with error")?,
-            Err(err) => return Err(err),
+        let authen_service = {
+            let a = cursor
+                .read_u8()
+                .with_context(|| "Invalid authen_service. Unable to read data")?;
+            TacacsAuthenticationService::try_from_primitive(a)
+                .with_context(|| "Invalid authen_service. Conversion failed with error")?
         };
 
         let user_len = cursor

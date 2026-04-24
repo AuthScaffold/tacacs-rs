@@ -7,18 +7,18 @@ repository.workspace = true
 description = "TACACS+ transport layer with TCP, TLS, and PSK support"
 
 [dependencies]
-anyhow = { version = "1.0.100", features = ["backtrace"] }
-tokio = { version = "1.49.0", features = ["full"] }
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+tokio = { version = "1.52.1", features = ["full"] }
 tacacsrs-messages = { version = "0.1.2", path = "../tacacsrs_messages" }
 async-trait = "0.1.89"
-rand = "0.10.0"
+rand = "0.10.1"
 log = "0.4.29"
 parking_lot = "0.12.5"
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "logging"] }
 rustls-pki-types = "1.14.0"
 rustls-cert-file-reader = "0.4.2"
-webpki-roots = "1.0.6"
-openssl = { version = "0.10.76", optional = true }
+webpki-roots = "1.0.7"
+openssl = { version = "0.10.78", optional = true }
 tokio-openssl = { version = "0.6.5", optional = true }
 
 [features]
@@ -27,8 +27,8 @@ psk = ["dep:openssl", "dep:tokio-openssl"]
 
 [dev-dependencies]
 console-subscriber = "0.5.0"
-test-log = "0.2.19"
-env_logger = "0.11.8"
+test-log = "0.2.20"
+env_logger = "0.11.10"
 futures = "0.3"
 
 [lints]

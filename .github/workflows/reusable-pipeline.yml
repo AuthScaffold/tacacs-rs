@@ -1,0 +1,246 @@
+name: Reusable CI Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      include-fmt:
+        description: 'Include the rustfmt check job'
+        required: false
+        default: true
+        type: boolean
+      include-nightly-clippy:
+        description: 'Include a separate nightly clippy job'
+        required: false
+        default: true
+        type: boolean
+      include-proto-compat:
+        description: 'Include protobuf backward compatibility check'
+        required: false
+        default: true
+        type: boolean
+      include-miri:
+        description: 'Include Miri job'
+        required: false
+        default: true
+        type: boolean
+      include-fuzz:
+        description: 'Include fuzz smoke test job'
+        required: false
+        default: true
+        type: boolean
+      include-clippy-nursery:
+        description: 'Include clippy nursery lints job'
+        required: false
+        default: true
+        type: boolean
+      rust-test-matrix:
+        description: 'JSON array of Rust toolchains for test job'
+        required: false
+        default: '["stable"]'
+        type: string
+      include-msrv:
+        description: 'Include MSRV test on Linux'
+        required: false
+        default: true
+        type: boolean
+      msrv:
+        description: 'Minimum Supported Rust Version'
+        required: false
+        default: '1.85'
+        type: string
+      proto-compat-ref:
+        description: 'Git ref for protobuf backward compatibility check'
+        required: false
+        default: 'main'
+        type: string
+      skip-audit-if-no-dep-changes:
+        description: 'Skip security audit if no dependency files changed'
+        required: false
+        default: false
+        type: boolean
+      build-release:
+        description: 'Build and test in release mode'
+        required: false
+        default: true
+        type: boolean
+      binary-name:
+        description: 'Name of the binary to build'
+        required: false
+        default: 'tacon'
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  # ── Tier 1: Cheapest, most likely to fail ────────────────
+  fmt:
+    name: Rustfmt
+    if: ${{ inputs.include-fmt }}
+    uses: ./.github/workflows/reusable-fmt.yml
+
+  clippy:
+    name: Clippy
+    uses: ./.github/workflows/reusable-clippy.yml
+
+  docs:
+    name: Documentation
+    uses: ./.github/workflows/reusable-docs.yml
+
+  proto-compat:
+    name: Protobuf Compatibility
+    if: ${{ inputs.include-proto-compat }}
+    uses: ./.github/workflows/reusable-proto-compat.yml
+    with:
+      against-ref: ${{ inputs.proto-compat-ref }}
+
+  tier-1-gate:
+    name: "Gate: Tier 1"
+    runs-on: ubuntu-latest
+    needs: [fmt, clippy, docs, proto-compat]
+    if: always()
+    steps:
+      - name: Check tier 1
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+
+  # ── Tier 2: Moderate cost, gate on Tier 1 ────────────────
+  test:
+    name: Test
+    needs: [tier-1-gate]
+    if: ${{ !cancelled() && !failure() }}
+    uses: ./.github/workflows/reusable-test.yml
+    with:
+      rust-matrix: ${{ inputs.rust-test-matrix }}
+      include-msrv: ${{ inputs.include-msrv }}
+      msrv: ${{ inputs.msrv }}
+      release: ${{ inputs.build-release }}
+
+  coverage:
+    name: Code Coverage
+    needs: [tier-1-gate]
+    if: ${{ !cancelled() && !failure() }}
+    uses: ./.github/workflows/reusable-coverage.yml
+
+  audit:
+    name: Security Audit
+    needs: [tier-1-gate]
+    if: ${{ !cancelled() && !failure() }}
+    uses: ./.github/workflows/reusable-security-audit.yml
+    permissions:
+      checks: write
+      contents: read
+    with:
+      skip-if-no-dep-changes: ${{ inputs.skip-audit-if-no-dep-changes }}
+    secrets: inherit
+
+  unused-deps:
+    name: Unused Dependencies
+    needs: [tier-1-gate]
+    if: ${{ !cancelled() && !failure() }}
+    uses: ./.github/workflows/reusable-unused-deps.yml
+
+  outdated:
+    name: Outdated Dependencies
+    needs: [tier-1-gate]
+    if: ${{ !cancelled() && !failure() }}
+    uses: ./.github/workflows/reusable-outdated.yml
+
+  tier-2-gate:
+    name: "Gate: Tier 2"
+    runs-on: ubuntu-latest
+    needs: [test, coverage, audit, unused-deps, outdated]
+    if: always()
+    steps:
+      - name: Check tier 2
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+
+  # ── Tier 3: Expensive, gate on Tier 2 ───────────────────
+  clippy-nursery:
+    name: Clippy Nursery
+    if: ${{ inputs.include-clippy-nursery && !cancelled() && !failure() }}
+    needs: [tier-2-gate]
+    uses: ./.github/workflows/reusable-clippy-nursery.yml
+
+  nightly-clippy:
+    name: Nightly Rust Check
+    if: ${{ inputs.include-nightly-clippy && !cancelled() && !failure() }}
+    needs: [tier-2-gate]
+    uses: ./.github/workflows/reusable-clippy.yml
+    with:
+      toolchain: nightly
+
+  miri:
+    name: Miri
+    if: ${{ inputs.include-miri && !cancelled() && !failure() }}
+    needs: [tier-2-gate]
+    uses: ./.github/workflows/reusable-miri.yml
+
+  fuzz:
+    name: Fuzz Smoke Test
+    if: ${{ inputs.include-fuzz && !cancelled() && !failure() }}
+    needs: [tier-2-gate, miri]
+    uses: ./.github/workflows/reusable-fuzz.yml
+
+  tier-3-gate:
+    name: "Gate: Tier 3"
+    runs-on: ubuntu-latest
+    needs: [clippy-nursery, nightly-clippy, miri, fuzz]
+    if: always()
+    steps:
+      - name: Check tier 3
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+
+  # ── Tier 4: Artifacts, gate on Tier 3 ───────────────────
+  build-artifacts:
+    name: Build Artifacts
+    needs: [tier-3-gate]
+    if: ${{ !cancelled() && !failure() }}
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      build-release: ${{ inputs.build-release }}
+      upload-artifacts: true
+      binary-name: ${{ inputs.binary-name }}
+
+  sbom:
+    name: Generate SBOM
+    needs: [tier-3-gate]
+    if: ${{ !cancelled() && !failure() }}
+    uses: ./.github/workflows/reusable-sbom.yml
+
+  build-deb:
+    name: Build Debian Package
+    needs: [build-artifacts]
+    if: ${{ !cancelled() && !failure() }}
+    uses: ./.github/workflows/reusable-deb.yml
+    with:
+      package-name: ${{ inputs.binary-name }}
+      upload-artifacts: true
+      binary-artifact-name: ${{ inputs.binary-name }}-linux-gnu-x86_64
+
+  checksums:
+    name: Generate Checksums
+    needs: [build-artifacts, build-deb]
+    if: ${{ !cancelled() && !failure() }}
+    uses: ./.github/workflows/reusable-checksums.yml
+
+  # ── Final gate: all tiers must pass ─────────────────────
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - tier-1-gate
+      - tier-2-gate
+      - tier-3-gate
+      - build-artifacts
+      - sbom
+      - build-deb
+      - checksums
+    steps:
+      - name: Check all jobs passed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
