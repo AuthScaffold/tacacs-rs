@@ -68,6 +68,11 @@ on:
         required: false
         default: 'tacon'
         type: string
+      version:
+        description: 'Version to inject into builds (e.g. CalVer for apps). Empty means use Cargo.toml as-is.'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -204,6 +209,7 @@ jobs:
       build-release: ${{ inputs.build-release }}
       upload-artifacts: true
       binary-name: ${{ inputs.binary-name }}
+      version: ${{ inputs.version }}
 
   sbom:
     name: Generate SBOM
@@ -220,6 +226,7 @@ jobs:
       package-name: ${{ inputs.binary-name }}
       upload-artifacts: true
       binary-artifact-name: ${{ inputs.binary-name }}-linux-gnu-x86_64
+      version: ${{ inputs.version }}
 
   checksums:
     name: Generate Checksums

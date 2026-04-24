@@ -1,6 +1,6 @@
 [package]
 name = "tacon"
-version = "2026.416.0"
+version = "0.0.0-dev"
 edition.workspace = true
 description = "TACACS+ client CLI for authentication, authorization, and accounting"
 readme = "README.md"
@@ -17,9 +17,9 @@ futures = "0.3"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tacacsrs-agent-client = { version = "0.1.2", path = "../../libraries/tacacsrs_agent_client" }
-tacacsrs-messages = { version = "0.1.2", path = "../../libraries/tacacsrs_messages" }
-tacacsrs-networking = { version = "0.1.2", path = "../../libraries/tacacsrs_networking" }
+tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
+tacacsrs-messages = { path = "../../libraries/tacacsrs_messages" }
+tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
 tokio = { version = "1.52.1", features = ["full"] }
 
 [features]
