@@ -17,9 +17,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ── Gate: wait for CI to pass before any release activity ──
+  wait-for-ci:
+    name: Wait for CI
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'AuthScaffold'
+    steps:
+      - name: Wait for CI pipeline to pass
+        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-name: CI Success
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 30
+
   # ── release-plz: library version management ─────────────
   release-plz-pr:
     name: Release-plz PR
+    needs: [wait-for-ci]
     runs-on: ubuntu-latest
     if: github.repository_owner == 'AuthScaffold'
     steps:
@@ -42,6 +57,7 @@ jobs:
 
   release-plz-release:
     name: Release-plz Release
+    needs: [wait-for-ci]
     runs-on: ubuntu-latest
     if: github.repository_owner == 'AuthScaffold'
     steps:

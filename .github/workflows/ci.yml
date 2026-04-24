@@ -23,3 +23,13 @@ jobs:
       include-fmt: false
       include-proto-compat: false
     secrets: inherit
+
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [pipeline]
+    if: always()
+    steps:
+      - name: Check pipeline result
+        if: needs.pipeline.result != 'success'
+        run: exit 1

@@ -26,3 +26,13 @@ jobs:
       rust-test-matrix: '["stable", "beta"]'
       skip-audit-if-no-dep-changes: true
     secrets: inherit
+
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [pipeline]
+    if: always()
+    steps:
+      - name: Check pipeline result
+        if: needs.pipeline.result != 'success'
+        run: exit 1
