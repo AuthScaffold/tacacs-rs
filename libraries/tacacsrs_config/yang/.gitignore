@@ -1,3 +1,4 @@
 .yang-cache/
-plugins/
+plugins/__pycache__/
 __pycache__/
+generated_types.rs

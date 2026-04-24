@@ -201,7 +201,7 @@ Available identity sets:
 - `crypto_types::SymmetricKeyFormat` — `octet-string-key-format`, `one-symmetric-key-format`
 - `crypto_types::EncryptedValueFormat` — `cms-encrypted-data-format`, `cms-enveloped-data-format`
 
-These are generated automatically from the YANG identity hierarchy by `yang2rust.py`. Fixed-set `identityref` fields now use these enums directly in the generated struct graph, so unknown RFC 7951 strings fail during deserialization instead of being validated later as plain strings.
+These are generated automatically from the YANG identity hierarchy by `plugins/yang2rust.py`. Fixed-set `identityref` fields now use these enums directly in the generated struct graph, so unknown RFC 7951 strings fail during deserialization instead of being validated later as plain strings.
 
 ## Inline key format identities
 
@@ -299,10 +299,9 @@ Used in `SymmetricKeyInlineDefinition` (the inline definition for TLS 1.3 extern
 
 The generated Rust types come from the checked-in YANG tooling under `yang/`:
 
-- `yang/yang2rust.py` — custom `pyang` plugin that emits Rust structs/enums/bitflags and identity set enums from YANG `identityref` leaves
+- `yang/plugins/yang2rust.py` — custom `pyang` plugin that emits Rust structs/enums/bitflags and identity set enums from YANG `identityref` leaves
 - `yang/expand_yang_tree.py` — helper used to refresh the fully expanded tree reference
 - `yang/generated_types.rs` — generator output, produced on demand and copied into `src/generated.rs`
-- `yang/plugins/yang2rust.py` — copy of the plugin used by `--plugindir` (avoids loading `expand_yang_tree.py` from the same directory)
 
 The generator automatically resolves `identityref` base identities and walks loaded modules to collect derived identities, emitting Rust enums with `ALL`, `ALLOWED_VALUES`, `as_rfc7951_str()`, `from_rfc7951_str()`, and `is_valid()` helpers. Fixed-set `identityref` fields use these enums directly, while YANG `binary` leaves deserialize from RFC 7951 base64 into in-memory `Vec<u8>` values and serialize back to base64 when writing JSON.
 
@@ -311,21 +310,21 @@ The higher-level validation logic in `src/validation.rs` is still maintained man
 To regenerate after YANG module updates:
 
 ```bash
+# Install pyang either in an activated virtual environment or globally.
 python -m pip install pyang
+
+# Example with a repo-local venv instead of a global install:
+# python -m venv .venv
+# source .venv/bin/activate
+# python -m pip install pyang
+
 cd libraries/tacacsrs_config/yang
 python expand_yang_tree.py > expanded-tree.txt
-cp yang2rust.py plugins/yang2rust.py
-pyang \
+python expand_yang_tree.py --list-features
+python expand_yang_tree.py --list-features --list-features-format ini > feature-flags.ini
+python expand_yang_tree.py \
   -f rust \
-  --plugindir plugins \
-  -p .yang-cache/yang-models/standard/ietf/RFC \
-  -p .yang-cache/yang-models/standard/iana \
-  -p .yang-cache/secure-tacacs-yang/yang \
-  .yang-cache/secure-tacacs-yang/yang/ietf-system-tacacs-plus.yang \
-  .yang-cache/yang-models/standard/ietf/RFC/ietf-keystore@2024-10-10.yang \
-  .yang-cache/yang-models/standard/ietf/RFC/ietf-truststore@2024-10-10.yang \
-  .yang-cache/yang-models/standard/ietf/RFC/ietf-crypto-types@2024-10-10.yang \
-  .yang-cache/yang-models/standard/ietf/RFC/ietf-tls-common@2024-10-10.yang \
+  --features-ini feature-flags.ini \
   -o generated_types.rs
 cp generated_types.rs ../src/generated.rs
 ```
