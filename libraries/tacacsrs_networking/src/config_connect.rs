@@ -283,7 +283,7 @@ fn derive_sni_name<'a>(server: &'a ResolvedServer, address: &'a str) -> &'a str 
     tls_server_name(address)
 }
 
-/// Builds a custom [`RootCertStore`] from the server's `ca-certs` and
+/// Builds a custom [`rustls::RootCertStore`] from the server's `ca-certs` and
 /// `ee-certs` inline definitions. Returns `None` if no custom CA material
 /// is configured (the builder will use the default webpki roots).
 fn build_root_cert_store(server: &ResolvedServer) -> Result<Option<rustls::RootCertStore>> {
