@@ -297,7 +297,7 @@ async fn main() -> anyhow::Result<()> {
         } else {
             "obfuscation"
         };
-        log::info!("  {} ({}) -> {}:{}", server.name, security_label, server.address, server.port,);
+        log::info!("  {} ({}) -> {}:{}", server.name, security_label, server.address, server.port);
     }
 
     let service = TacacsClientService::new(ServiceConfig {

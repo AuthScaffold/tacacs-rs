@@ -571,7 +571,7 @@ fn pipeline_parse_root_json_file_reports_missing_file() {
     missing.push("tacacsrs-config-test-does-not-exist.json");
 
     let err = pipeline::parse_root_json_file(&missing).unwrap_err();
-    assert!(err.to_string().contains("failed to read config file"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("failed to read config file"), "unexpected error: {err}");
 }
 
 #[test]
@@ -617,7 +617,7 @@ fn resolve_server_rejects_unknown_name() {
     .expect("config should parse");
 
     let err = resolve_server(&config, "missing").unwrap_err();
-    assert!(err.to_string().contains("server 'missing' not found"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("server 'missing' not found"), "unexpected error: {err}");
 }
 
 #[test]
@@ -660,7 +660,7 @@ fn reject_empty_server_type_bitflags() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("at least one bit must be set"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("at least one bit must be set"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2006,7 +2006,7 @@ fn reject_hidden_private_key_in_server_certificate() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("hidden-private-key"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("hidden-private-key"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2036,7 +2036,7 @@ fn reject_encrypted_private_key_in_server_certificate() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("encrypted-private-key"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("encrypted-private-key"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2062,7 +2062,7 @@ fn reject_hidden_private_key_in_raw_private_key() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("hidden-private-key"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("hidden-private-key"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2089,7 +2089,7 @@ fn reject_hidden_symmetric_key_in_epsk() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("hidden-symmetric-key"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("hidden-symmetric-key"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2119,7 +2119,7 @@ fn reject_encrypted_symmetric_key_in_epsk() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("encrypted-symmetric-key"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("encrypted-symmetric-key"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2147,7 +2147,7 @@ fn reject_epsk_context_derivation() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("context"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("context"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2175,7 +2175,7 @@ fn reject_epsk_target_protocol() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("target-protocol"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("target-protocol"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2203,7 +2203,7 @@ fn reject_epsk_target_kdf() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("target-kdf"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("target-kdf"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2234,7 +2234,7 @@ fn reject_hidden_private_key_in_client_credentials() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("hidden-private-key"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("hidden-private-key"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2267,7 +2267,7 @@ fn reject_encrypted_private_key_in_client_credentials_rpk() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("encrypted-private-key"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("encrypted-private-key"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2299,7 +2299,7 @@ fn reject_epsk_context_in_client_credentials() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("context"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("context"), "unexpected error: {err}");
 }
 
 // ---------------------------------------------------------------------------

@@ -60,11 +60,11 @@ fn validate_server(
 
     let key = (server.address.clone(), server.port);
     if !seen_endpoints.insert(key) {
-        anyhow::bail!("duplicate server address+port: {}:{}", server.address, server.port,);
+        anyhow::bail!("duplicate server address+port: {}:{}", server.address, server.port);
     }
 
     if server.sni_enabled == Some(true) && server.domain_name.is_none() {
-        anyhow::bail!("server '{}': sni-enabled requires domain-name to be set", server.name,);
+        anyhow::bail!("server '{}': sni-enabled requires domain-name to be set", server.name);
     }
 
     validate_security_choice(server)?;

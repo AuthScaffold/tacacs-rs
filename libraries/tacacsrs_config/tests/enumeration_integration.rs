@@ -195,7 +195,7 @@ fn validate_credential_references_collects_missing_server_bundle_ref() {
         validate_credential_references(&root.tacacs_plus).expect_err("validation should fail");
     let message = error.to_string();
     assert!(message.contains("nonexistent-server"), "error: {message}");
-    assert!(message.contains("server-authentication credentials-reference"), "error: {message}",);
+    assert!(message.contains("server-authentication credentials-reference"), "error: {message}");
 }
 
 #[test]

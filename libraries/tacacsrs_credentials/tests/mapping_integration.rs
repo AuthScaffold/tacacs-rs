@@ -737,7 +737,7 @@ fn validate_credential_references_collects_missing_client_bundle_ref() {
     let error = validate_credential_references(&config, None).unwrap_err();
     let message = error.to_string();
     assert!(message.contains("nonexistent-client"), "error: {message}");
-    assert!(message.contains("client-identity credentials-reference"), "error: {message}",);
+    assert!(message.contains("client-identity credentials-reference"), "error: {message}");
 }
 
 #[test]
@@ -750,7 +750,7 @@ fn validate_credential_references_collects_missing_server_bundle_ref() {
     let error = validate_credential_references(&config, None).unwrap_err();
     let message = error.to_string();
     assert!(message.contains("nonexistent-server"), "error: {message}");
-    assert!(message.contains("server-authentication credentials-reference"), "error: {message}",);
+    assert!(message.contains("server-authentication credentials-reference"), "error: {message}");
 }
 
 #[test]
@@ -768,8 +768,8 @@ fn validate_credential_references_collects_multiple_errors() {
 
     let error = validate_credential_references(&config, None).unwrap_err();
     let message = error.to_string();
-    assert!(message.contains("missing-ci"), "error should mention first ref: {message}",);
-    assert!(message.contains("missing-sa"), "error should mention second ref: {message}",);
+    assert!(message.contains("missing-ci"), "error should mention first ref: {message}");
+    assert!(message.contains("missing-sa"), "error should mention second ref: {message}");
 }
 
 #[test]
