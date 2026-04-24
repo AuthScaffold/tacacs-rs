@@ -24,6 +24,7 @@ jobs:
       calver-tag: ${{ steps.compute.outputs.calver_tag }}
       has-release: ${{ steps.compute.outputs.has_release }}
       new-tags: ${{ steps.compute.outputs.new_tags }}
+      previous-calver-tag: ${{ steps.compute.outputs.previous_calver_tag }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -117,6 +118,7 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          previous_tag: ${{ needs.compute-versions.outputs.previous-calver-tag }}
           files: |
             artifacts/*
         env:

@@ -31,6 +31,9 @@ outputs:
   calver_tag:
     description: 'CalVer tag for the executable (empty if unchanged)'
     value: ${{ steps.compute.outputs.calver_tag }}
+  previous_calver_tag:
+    description: 'Previous CalVer tag used as baseline (empty if first release)'
+    value: ${{ steps.compute.outputs.previous_calver_tag }}
 
 runs:
   using: composite
