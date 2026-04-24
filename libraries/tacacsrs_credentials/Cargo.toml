@@ -1,7 +1,7 @@
 [package]
 name = "tacacsrs-credentials"
 description = "External credential resolution for TACACS+ runtime server configs"
-version.workspace = true
+version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

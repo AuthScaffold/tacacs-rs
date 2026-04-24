@@ -447,26 +447,24 @@ impl ServiceState {
             SingleConnectionState::Supported
                 if !self.servers[index]
                     .single_connection_supported
-                    .swap(true, Ordering::Relaxed)
-                {
-                    log::info!(
-                        "Server {} supports single-connection mode; \
+                    .swap(true, Ordering::Relaxed) =>
+            {
+                log::info!(
+                    "Server {} supports single-connection mode; \
                          switching to shared connections for future requests",
-                        self.servers[index].server.socket_address(),
-                    );
-                }
+                    self.servers[index].server.socket_address(),
+                );
             }
             SingleConnectionState::NotSupported
                 if self.servers[index]
                     .single_connection_supported
-                    .swap(false, Ordering::Relaxed)
-                {
-                    log::info!(
-                        "Server {} revoked single-connection support; \
+                    .swap(false, Ordering::Relaxed) =>
+            {
+                log::info!(
+                    "Server {} revoked single-connection support; \
                          switching to dedicated connections for future requests",
-                        self.servers[index].server.socket_address(),
-                    );
-                }
+                    self.servers[index].server.socket_address(),
+                );
             }
             // Initial or Negotiating — no actionable information yet.
             _ => {}

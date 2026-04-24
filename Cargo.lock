@@ -178,6 +178,9 @@ name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "block-buffer"
@@ -1649,6 +1652,8 @@ dependencies = [
  "async-trait",
  "log",
  "tacacsrs-agent-client",
+ "tacacsrs-config",
+ "tacacsrs-credentials",
  "tacacsrs-messages",
  "tacacsrs-networking",
  "tokio",
@@ -1683,7 +1688,32 @@ dependencies = [
  "log",
  "tacacsrs-agent",
  "tacacsrs-agent-client",
+ "tacacsrs-config",
+ "tacacsrs-credentials",
+ "tacacsrs-networking",
  "tokio",
+]
+
+[[package]]
+name = "tacacsrs-config"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bitflags",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "tacacsrs-credentials"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "rustls-pki-types",
+ "serde_json",
+ "tacacsrs-config",
 ]
 
 [[package]]
@@ -1703,15 +1733,19 @@ version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "console-subscriber",
  "env_logger",
  "futures",
  "log",
  "openssl",
+ "openssl-sys",
  "parking_lot",
  "rand",
  "rustls-cert-file-reader",
  "rustls-pki-types",
+ "tacacsrs-config",
+ "tacacsrs-credentials",
  "tacacsrs-messages",
  "test-log",
  "tokio",
@@ -1733,6 +1767,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tacacsrs-agent-client",
+ "tacacsrs-config",
+ "tacacsrs-credentials",
  "tacacsrs-messages",
  "tacacsrs-networking",
  "tokio",
