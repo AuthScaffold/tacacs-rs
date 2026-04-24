@@ -1,0 +1,44 @@
+# release-plz configuration
+# https://release-plz.ieni.dev/docs/config
+
+[workspace]
+# Not publishing to crates.io; determine versions from git tags
+git_only = true
+# Allow running in repos with uncommitted/gitignored files (e.g. yang cache)
+allow_dirty = true
+publish = false
+# Skip cargo package verification — path-only workspace deps lack version
+# fields, which cargo package requires but we don't need since we never publish
+publish_no_verify = true
+# No semver API checking (internal libraries, not published)
+semver_check = false
+# Label release PRs for identification
+pr_labels = ["release"]
+# Only release when the release PR is merged, not on every push
+release_always = false
+
+# --- Exclude applications (CalVer-managed separately) ---
+
+[[package]]
+name = "tacon"
+release = false
+
+[[package]]
+name = "tacacsrs-agentd"
+release = false
+
+# --- Changelog: flat list of PR titles, no conventional-commit grouping ---
+
+[changelog]
+body = """
+## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for commit in commits %}
+- {{ commit.message }}
+{%- endfor %}
+"""
+commit_parsers = [
+  { message = "^chore: release", skip = true },
+  { message = "^ci:", skip = true },
+  { message = "^\\s*$", skip = true },
+  { message = "^.*", group = "Changes" },
+]

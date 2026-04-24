@@ -1,6 +1,6 @@
 [package]
 name = "tacon"
-version.workspace = true
+version = "0.0.0-dev"
 edition.workspace = true
 description = "TACACS+ client CLI for authentication, authorization, and accounting"
 readme = "README.md"
@@ -10,9 +10,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-anyhow = { version = "1.0.100", features = ["backtrace"] }
-clap = { version = "4.5.57", features = ["derive"] }
-env_logger = "0.11.8"
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+clap = { version = "4.6.1", features = ["derive"] }
+env_logger = "0.11.10"
 futures = "0.3"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
@@ -22,7 +22,7 @@ tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
 tacacsrs-credentials = { path = "../../libraries/tacacsrs_credentials" }
 tacacsrs-messages = { path = "../../libraries/tacacsrs_messages" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
-tokio = { version = "1.49.0", features = ["full"] }
+tokio = { version = "1.52.1", features = ["full"] }
 
 [features]
 default = []
@@ -30,8 +30,8 @@ psk = ["tacacsrs-networking/psk"]
 rpk = ["tacacsrs-networking/rpk"]
 
 [build-dependencies]
-clap = { version = "4.5.57", features = ["derive"] }
-clap_mangen = "0.2.25"
+clap = { version = "4.6.1", features = ["derive"] }
+clap_mangen = "0.3.0"
 
 [lints]
 workspace = true

@@ -32,7 +32,10 @@ If a relevant check cannot be run in the current environment, say so explicitly 
 
 ## Architecture
 
-This is a Rust workspace implementing the TACACS+ protocol (RFC 8907) for authentication, authorization, and accounting (AAA). The workspace version is defined once in the root `Cargo.toml` and inherited by all members via `version.workspace = true`.
+This is a Rust workspace implementing the TACACS+ protocol (RFC 8907) for authentication, authorization, and accounting (AAA). Each crate has its own version:
+
+- **Libraries** (`tacacsrs-messages`, `tacacsrs-networking`, `tacacsrs-agent-client`, `tacacsrs-agent`) use **semver** (e.g. `0.1.2`), managed by [release-plz](https://release-plz.ieni.dev/). Version bumps, changelogs, git tags, and GitHub releases are automated via the `release-plz.yml` workflow.
+- **Applications** (`tacon`, `tacacsrs-agentd`) use **CalVer** `YYYY.MMDD.BUILD` (e.g. `2026.416.0`), where MMDD = month×100+day and BUILD is a zero-based same-day counter. CalVer tags are created automatically when changes land on `main`. The CalVer version is injected into `Cargo.toml` at build time by the release pipeline (not committed to `main`).
 
 ### Crate Dependency Graph
 

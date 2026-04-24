@@ -215,7 +215,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
                 );
             }
             Err(error) => {
-                log::warn!("Accounting request to {} failed: {error:#}", self.server_address,);
+                log::warn!("Accounting request to {} failed: {error:#}", self.server_address);
             }
         }
 

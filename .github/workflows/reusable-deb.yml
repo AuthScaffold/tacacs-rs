@@ -16,17 +16,29 @@ on:
         description: 'Name of the artifact containing the pre-built binary (e.g., tacon-linux-gnu-x86_64). If not provided, binary will be built from scratch.'
         required: false
         type: string
+      versions:
+        description: 'JSON map of crate-name → version to inject into Cargo.toml and debian/changelog. Empty or {} is a no-op.'
+        required: false
+        default: '{}'
+        type: string
 
 jobs:
   build-deb:
     name: Build Debian Package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Inject versions
+        uses: ./.github/steps/inject-versions
+        with:
+          versions: ${{ inputs.versions }}
 
       - name: Download pre-built binary
         if: inputs.binary-artifact-name != ''
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ inputs.binary-artifact-name }}
           path: binary-artifact
@@ -75,11 +87,73 @@ jobs:
             exit 1
           fi
           echo "Found man page at: $MAN_PAGE"
-          # Copy to debian directory and compress
           cp "$MAN_PAGE" executables/${{ inputs.package-name }}/debian/${{ inputs.package-name }}.1
-          cd executables/${{ inputs.package-name }}/debian
+
+          # Generate full debian changelog from git tag history
+          PKG="${{ inputs.package-name }}"
+          VERSIONS='${{ inputs.versions }}'
+          VERSION=$(echo "$VERSIONS" | jq -r --arg pkg "$PKG" '.[$pkg] // "0.0.0-dev"' | tr -d '\r')
+          TAG_PREFIX="${PKG}-"
+          MAINTAINER="AuthScaffold <support@authscaffold.com>"
+          PKG_DIR="executables/${PKG}"
+          CHANGELOG="${PKG_DIR}/debian/changelog"
+
+          # Collect all CalVer tags for this package, oldest first
+          mapfile -t TAGS < <(git tag --list "${TAG_PREFIX}*" --sort=v:refname)
+
+          > "$CHANGELOG"
+
+          # --- Current (unreleased) stanza: commits since last tag ---
+          if [ ${#TAGS[@]} -gt 0 ]; then
+            LAST_TAG="${TAGS[-1]}"
+            COMMITS=$(git log --pretty=format:"  * %s" "${LAST_TAG}..HEAD" -- "${PKG_DIR}")
+          else
+            COMMITS=$(git log --pretty=format:"  * %s" -- "${PKG_DIR}")
+          fi
+          if [ -z "$COMMITS" ]; then
+            COMMITS="  * Release ${VERSION}"
+          fi
+          {
+            echo "${PKG} (${VERSION}) stable; urgency=medium"
+            echo ""
+            echo "$COMMITS"
+            echo ""
+            echo " -- ${MAINTAINER}  $(date -u -R)"
+          } >> "$CHANGELOG"
+
+          # --- Historical stanzas from tags, newest first ---
+          for (( i=${#TAGS[@]}-1; i>=0; i-- )); do
+            TAG="${TAGS[$i]}"
+            TAG_VERSION="${TAG#${TAG_PREFIX}}"
+            TAG_DATE=$(git log -1 --format="%aD" "$TAG")
+
+            if [ $i -gt 0 ]; then
+              PREV="${TAGS[$((i-1))]}"
+              COMMITS=$(git log --pretty=format:"  * %s" "${PREV}..${TAG}" -- "${PKG_DIR}")
+            else
+              COMMITS=$(git log --pretty=format:"  * %s" "${TAG}" -- "${PKG_DIR}")
+            fi
+
+            if [ -z "$COMMITS" ]; then
+              COMMITS="  * Release ${TAG_VERSION}"
+            fi
+
+            {
+              echo ""
+              echo "${PKG} (${TAG_VERSION}) stable; urgency=medium"
+              echo ""
+              echo "$COMMITS"
+              echo ""
+              echo " -- ${MAINTAINER}  ${TAG_DATE}"
+            } >> "$CHANGELOG"
+          done
+
+          echo "Generated changelog ($(grep -c '^${PKG} ' "$CHANGELOG" || true) stanzas):"
+          cat "$CHANGELOG"
+
+          cd "${PKG_DIR}/debian"
           gzip -9 -n -c changelog > changelog.gz
-          gzip -9 -n -c ${{ inputs.package-name }}.1 > ${{ inputs.package-name }}.1.gz
+          gzip -9 -n -c ${PKG}.1 > ${PKG}.1.gz
 
       - name: Generate .deb package
         run: cargo deb --package ${{ inputs.package-name }} --no-build --dbgsym
@@ -99,14 +173,14 @@ jobs:
 
       - name: Upload Debian package
         if: inputs.upload-artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ inputs.package-name }}.deb
           path: target/debian/${{ inputs.package-name }}_*.deb
 
       - name: Upload Debian debug symbols package
         if: inputs.upload-artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ inputs.package-name }}-dbgsym.ddeb
           path: target/debian/${{ inputs.package-name }}-dbgsym_*.ddeb

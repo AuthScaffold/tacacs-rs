@@ -49,20 +49,18 @@ impl AccountingReply {
     fn size_from_bytes(data: &[u8]) -> Result<usize, anyhow::Error> {
         let mut cursor = Cursor::new(data);
 
-        let server_msg_len = match cursor
-            .read_u16::<BigEndian>()
-            .with_context(|| "Unable to read server_msg_len")
-        {
-            Ok(len) => len as usize,
-            Err(err) => return Err(err),
+        let server_msg_len = {
+            let len = cursor
+                .read_u16::<BigEndian>()
+                .with_context(|| "Unable to read server_msg_len")?;
+            len as usize
         };
 
-        let data_len = match cursor
-            .read_u16::<BigEndian>()
-            .with_context(|| "Unable to read data_len")
-        {
-            Ok(len) => len as usize,
-            Err(err) => return Err(err),
+        let data_len = {
+            let len = cursor
+                .read_u16::<BigEndian>()
+                .with_context(|| "Unable to read data_len")?;
+            len as usize
         };
 
         Ok(TACACS_ACCOUNTING_REPLY_MIN_LENGTH + server_msg_len + data_len)
@@ -73,26 +71,24 @@ impl AccountingReply {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         let mut cursor = Cursor::new(bytes);
 
-        let server_msg_len = match cursor
-            .read_u16::<BigEndian>()
-            .with_context(|| "Unable to read server_msg_len")
-        {
-            Ok(len) => len as usize,
-            Err(err) => return Err(err),
+        let server_msg_len = {
+            let len = cursor
+                .read_u16::<BigEndian>()
+                .with_context(|| "Unable to read server_msg_len")?;
+            len as usize
         };
 
-        let data_len = match cursor
-            .read_u16::<BigEndian>()
-            .with_context(|| "Unable to read data_len")
-        {
-            Ok(len) => len as usize,
-            Err(err) => return Err(err),
+        let data_len = {
+            let len = cursor
+                .read_u16::<BigEndian>()
+                .with_context(|| "Unable to read data_len")?;
+            len as usize
         };
 
-        let status = match cursor.read_u8().with_context(|| "Unable to read status") {
-            Ok(status) => TacacsAccountingStatus::try_from_primitive(status)
-                .with_context(|| "Unable to convert status to TacacsAccountingStatus")?,
-            Err(err) => return Err(err),
+        let status = {
+            let status = cursor.read_u8().with_context(|| "Unable to read status")?;
+            TacacsAccountingStatus::try_from_primitive(status)
+                .with_context(|| "Unable to convert status to TacacsAccountingStatus")?
         };
 
         let server_msg = read_string(&mut cursor, server_msg_len)

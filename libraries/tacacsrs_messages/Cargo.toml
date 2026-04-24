@@ -1,14 +1,17 @@
 [package]
 name = "tacacsrs-messages"
-version.workspace = true
+version = "0.0.0-dev"
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TACACS+ protocol message types and serialization"
 
 [dependencies]
-anyhow = { version = "1.0.100", features = ["backtrace"] }
-bitflags = "2.10.0"
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+bitflags = "2.11.1"
 byteorder = "1.5.0"
-md-5 = "0.10.6"
-num_enum = "0.7.5"
+md-5 = "0.11.0"
+num_enum = "0.7.6"
 
 [lints]
 workspace = true

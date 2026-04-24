@@ -1,6 +1,6 @@
 [package]
 name = "tacacsrs-agent-client"
-version.workspace = true
+version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -9,14 +9,14 @@ readme = "README.md"
 build = "build.rs"
 
 [dependencies]
-anyhow = { version = "1.0.100", features = ["backtrace"] }
+anyhow = { version = "1.0.102", features = ["backtrace"] }
 http = "1.4.0"
 hyper-util = "0.1.20"
 prost = "0.14.3"
-tokio = { version = "1.49.0", features = ["full"] }
+tokio = { version = "1.52.1", features = ["full"] }
 tonic = "0.14.5"
 tonic-prost = "0.14.5"
-tower = { version = "0.5.2", features = ["util"] }
+tower = { version = "0.5.3", features = ["util"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3.2.0"

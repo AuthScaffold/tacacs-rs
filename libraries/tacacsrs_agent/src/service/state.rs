@@ -444,7 +444,7 @@ impl ServiceState {
         connection: &dyn UpstreamConnection,
     ) {
         match connection.single_connection_state().await {
-            SingleConnectionState::Supported => {
+            SingleConnectionState::Supported
                 if !self.servers[index]
                     .single_connection_supported
                     .swap(true, Ordering::Relaxed)
@@ -456,7 +456,7 @@ impl ServiceState {
                     );
                 }
             }
-            SingleConnectionState::NotSupported => {
+            SingleConnectionState::NotSupported
                 if self.servers[index]
                     .single_connection_supported
                     .swap(false, Ordering::Relaxed)
@@ -872,6 +872,7 @@ mod tests {
                 release,
             }),
         });
+        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state =
             ServiceState::new(vec![test_server("server:49")], connector, Duration::from_mins(1));
 
@@ -890,6 +891,7 @@ mod tests {
                 release: Arc::clone(&release),
             }),
         });
+        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state = Arc::new(ServiceState::new(
             vec![test_server("server:49")],
             connector,
@@ -940,6 +942,7 @@ mod tests {
                 release: Arc::clone(&release),
             }),
         });
+        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state = Arc::new(ServiceState::new(
             vec![test_server("server:49")],
             connector,
