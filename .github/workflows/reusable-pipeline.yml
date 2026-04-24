@@ -68,10 +68,10 @@ on:
         required: false
         default: 'tacon'
         type: string
-      version:
-        description: 'Version to inject into builds (e.g. CalVer for apps). Empty means use Cargo.toml as-is.'
+      versions:
+        description: 'JSON map of crate-name → version to inject into Cargo.toml files. Empty or {} is a no-op.'
         required: false
-        default: ''
+        default: '{}'
         type: string
 
 permissions:
@@ -209,13 +209,15 @@ jobs:
       build-release: ${{ inputs.build-release }}
       upload-artifacts: true
       binary-name: ${{ inputs.binary-name }}
-      version: ${{ inputs.version }}
+      versions: ${{ inputs.versions }}
 
   sbom:
     name: Generate SBOM
     needs: [tier-3-gate]
     if: ${{ !cancelled() && !failure() }}
     uses: ./.github/workflows/reusable-sbom.yml
+    with:
+      versions: ${{ inputs.versions }}
 
   build-deb:
     name: Build Debian Package
@@ -226,7 +228,7 @@ jobs:
       package-name: ${{ inputs.binary-name }}
       upload-artifacts: true
       binary-artifact-name: ${{ inputs.binary-name }}-linux-gnu-x86_64
-      version: ${{ inputs.version }}
+      versions: ${{ inputs.versions }}
 
   checksums:
     name: Generate Checksums
