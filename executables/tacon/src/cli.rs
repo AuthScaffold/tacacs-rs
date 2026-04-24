@@ -37,11 +37,11 @@ pub struct Cli {
     #[arg(long, conflicts_with = "service_endpoint")]
     pub use_tls: bool,
 
-    /// Path to client certificate file for TLS authentication
+    /// Path to a DER-encoded client certificate file for TLS authentication
     #[arg(long, value_name = "FILE", requires = "client_key", conflicts_with = "service_endpoint")]
     pub client_certificate: Option<String>,
 
-    /// Path to client private key file for TLS authentication
+    /// Path to a DER-encoded client private key file for TLS authentication
     #[arg(
         long,
         value_name = "FILE",
@@ -225,7 +225,7 @@ mod tests {
             "localhost:49",
             "--use-tls",
             "--client-certificate",
-            "cert.pem",
+            "cert.der",
             "batch",
             "batch.txt",
         ]);

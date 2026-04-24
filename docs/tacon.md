@@ -210,7 +210,7 @@ The config file must use RFC 7951 JSON encoding with the root key `ietf-system-t
 
 ```bash
 tacon -s tacacs-server:449 --use-tls \
-    --client-certificate client.crt --client-key client.key \
+    --client-certificate client.crt.der --client-key client.key.der \
     --user admin --port tty0 --rem-addr 10.0.0.1 \
     accounting "show version"
 ```

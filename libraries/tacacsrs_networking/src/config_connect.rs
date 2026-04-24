@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tacacsrs_config::crypto_types::PrivateKeyFormat;
 use tacacsrs_credentials::ResolvedServer;
 use tokio_rustls::rustls;
@@ -325,7 +325,7 @@ fn build_root_cert_store(server: &ResolvedServer) -> Result<Option<rustls::RootC
     }
 }
 
-/// Adds a certificate (PEM text or DER bytes) to a root cert store.
+/// Adds a DER-encoded certificate to a root cert store.
 fn add_cert_to_store(cert_data: &[u8], store: &mut rustls::RootCertStore) -> Result<()> {
     let certs = parse_certificate_data(cert_data)?;
     for cert in certs {
@@ -336,23 +336,21 @@ fn add_cert_to_store(cert_data: &[u8], store: &mut rustls::RootCertStore) -> Res
     Ok(())
 }
 
-/// Parses certificate data that may be either PEM text (with BEGIN/END markers)
-/// or raw DER bytes.
+/// Parses DER-encoded certificate data.
 fn parse_certificate_data(data: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
-    let trimmed = data;
-
-    if trimmed.starts_with(b"-----BEGIN") {
-        // PEM format
-        CertificateDer::pem_slice_iter(trimmed)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("failed to parse certificate PEM: {e}"))
-    } else {
-        Ok(vec![CertificateDer::from(trimmed.to_vec())])
+    if data.is_empty() {
+        anyhow::bail!("certificate DER data is empty");
     }
+
+    if data.starts_with(b"-----BEGIN") {
+        anyhow::bail!("PEM-encoded certificates are not supported; provide DER bytes");
+    }
+
+    Ok(vec![CertificateDer::from(data.to_vec())])
 }
 
-/// Parses private key data using the YANG `private-key-format` identity when
-/// available. Falls back to PEM auto-detection when no format is specified.
+/// Parses DER-encoded private key data using the YANG `private-key-format`
+/// identity when available. When no format is specified, PKCS#8 DER is used.
 ///
 /// Format mapping (RFC 9640 / `ietf-crypto-types`):
 /// - `rsa-private-key-format`  → PKCS#1 `RSAPrivateKey` DER
@@ -362,10 +360,16 @@ fn parse_private_key_data(
     data: &[u8],
     private_key_format: Option<&PrivateKeyFormat>,
 ) -> Result<PrivateKeyDer<'static>> {
-    let trimmed = data;
+    if data.is_empty() {
+        anyhow::bail!("private key DER data is empty");
+    }
+
+    if data.starts_with(b"-----BEGIN") {
+        anyhow::bail!("PEM-encoded private keys are not supported; provide DER bytes");
+    }
 
     if let Some(fmt) = private_key_format {
-        let der_bytes = trimmed.to_vec();
+        let der_bytes = data.to_vec();
 
         return match fmt {
             PrivateKeyFormat::RsaPrivateKeyFormat => {
@@ -380,13 +384,7 @@ fn parse_private_key_data(
         };
     }
 
-    // No format specified — try PEM auto-detection, then fall back to PKCS#8.
-    if trimmed.starts_with(b"-----BEGIN") {
-        PrivateKeyDer::from_pem_slice(trimmed)
-            .map_err(|e| anyhow::anyhow!("failed to parse private key PEM: {e}"))
-    } else {
-        Ok(PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(trimmed.to_vec())))
-    }
+    Ok(PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(data.to_vec())))
 }
 
 #[cfg(feature = "psk")]
@@ -453,27 +451,32 @@ mod tests {
     }
 
     #[test]
-    fn parse_certificate_data_pem() {
-        // A minimal self-signed cert PEM (just check parsing works)
-        let pem = "-----BEGIN CERTIFICATE-----\n\
-                    MIIBkTCB+wIUfC9WJvBfXv/v4gXyBEkHJ2cGbV0wDQYJKoZIhvcNAQELBQAwEjEQ\n\
-                    MA4GA1UEAwwHdGVzdC1jYTAeFw0yNDA0MDEwMDAwMDBaFw0yNjA0MDEwMDAwMDBa\n\
-                    MBIxEDAOBgNVBAMMB3Rlc3QtY2EwXDANBgkqhkiG9w0BAQEFAANLADBIAkEA0Z3q\n\
-                    X2BTLS4e+aThBsGMx5I0MBiAl4vBE1oMRcJ+s6J2bbTGCNkXOxnJPRjy9QAOG1aG\n\
-                    M+whxfdPYFbajbW0bQIDAQABoyMwITAfBgNVHREEGDAWhwR/AAABhwQKAAEBhwQK\n\
-                    AAECMAoGCCqGSM49BAMCA0gAMEUCIQCI+GS5E3D1JvHb4M0ouHuaRKEFW0GW8UOO\n\
-                    OAXAG+bOygIgW7LF5J4c8O4DJPP2VddsNOKmKHqEZnnVqMSGIgfaoFo=\n\
-                    -----END CERTIFICATE-----";
-        let certs = parse_certificate_data(pem.as_bytes());
-        assert!(certs.is_ok());
-        assert_eq!(certs.unwrap().len(), 1);
-    }
-
-    #[test]
     fn parse_certificate_data_der_bytes() {
         let der = b"\x30\x82\x01\x00fake-der-cert-data";
         let result = parse_certificate_data(der);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parse_certificate_data_rejects_pem() {
+        let result = parse_certificate_data(b"-----BEGIN CERTIFICATE-----\n...");
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "PEM-encoded certificates are not supported; provide DER bytes",
+        );
+    }
+
+    #[test]
+    fn parse_private_key_data_rejects_pem() {
+        let result = parse_private_key_data(b"-----BEGIN PRIVATE KEY-----\n...", None);
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "PEM-encoded private keys are not supported; provide DER bytes",
+        );
     }
 
     #[cfg(feature = "psk")]

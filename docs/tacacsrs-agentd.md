@@ -174,8 +174,8 @@ tacacsrs-agentd \
     --server-addr tacacs1.example.com:449 \
     --server-addr tacacs2.example.com:449 \
     --use-tls \
-    --client-certificate /etc/tacacs/client.crt \
-    --client-key /etc/tacacs/client.key \
+    --client-certificate /etc/tacacs/client.crt.der \
+    --client-key /etc/tacacs/client.key.der \
     --listen-endpoint /run/tacacs.sock
 ```
 

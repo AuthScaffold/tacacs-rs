@@ -48,11 +48,11 @@ struct Cli {
     #[arg(long)]
     use_tls: bool,
 
-    /// Path to client certificate file for TLS authentication.
+    /// Path to a DER-encoded client certificate file for TLS authentication.
     #[arg(long, value_name = "FILE", requires = "client_key")]
     client_certificate: Option<String>,
 
-    /// Path to client private key file for TLS authentication.
+    /// Path to a DER-encoded client private key file for TLS authentication.
     #[arg(long, value_name = "FILE", requires = "client_certificate")]
     client_key: Option<String>,
 
@@ -172,7 +172,7 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
 
 /// Build TLS certificate-based server entries from CLI flags.
 fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<ResolvedServer>> {
-    let client_cert_pem = cli
+    let client_cert_der = cli
         .client_certificate
         .as_ref()
         .map(|path| {
@@ -180,7 +180,7 @@ fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<Reso
                 .with_context(|| format!("Failed to read client certificate: {path}"))
         })
         .transpose()?;
-    let client_key_pem = cli
+    let client_key_der = cli
         .client_key
         .as_ref()
         .map(|path| {
@@ -193,7 +193,7 @@ fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<Reso
         .enumerate()
         .map(|(i, addr)| {
             let mut server = base_server_from_address(addr, i, timeout);
-            if client_cert_pem.is_some() || client_key_pem.is_some() {
+            if client_cert_der.is_some() || client_key_der.is_some() {
                 server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
                     credentials_reference: None,
                     certificate: Some(tacacsrs_config::ClientIdentityCertificate {
@@ -202,10 +202,10 @@ fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<Reso
                                 public_key_format: None,
                                 public_key: None,
                                 private_key_format: None,
-                                cleartext_private_key: client_key_pem.clone(),
+                                cleartext_private_key: client_key_der.clone(),
                                 hidden_private_key: None,
                                 encrypted_private_key: None,
-                                cert_data: client_cert_pem.clone(),
+                                cert_data: client_cert_der.clone(),
                             },
                         ),
                         central_keystore_reference: None,

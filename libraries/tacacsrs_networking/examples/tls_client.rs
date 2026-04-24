@@ -37,8 +37,8 @@ async fn main() -> anyhow::Result<()> {
         .join("tacacsrs_networking")
         .join("examples");
 
-    let client_certificate = examples_folder.join("samples").join("client.crt");
-    let client_key = examples_folder.join("samples").join("client.key");
+    let client_certificate = examples_folder.join("samples").join("client.crt.der");
+    let client_key = examples_folder.join("samples").join("client.key.der");
 
     if !client_certificate.exists() || !client_key.exists() {
         println!(

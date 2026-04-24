@@ -70,7 +70,7 @@ fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyho
             return Ok(());
         }
 
-        let client_cert_pem = cli
+        let client_cert_der = cli
             .client_certificate
             .as_ref()
             .map(|path| {
@@ -78,7 +78,7 @@ fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyho
                     .with_context(|| format!("Failed to read client certificate: {path}"))
             })
             .transpose()?;
-        let client_key_pem = cli
+        let client_key_der = cli
             .client_key
             .as_ref()
             .map(|path| {
@@ -86,7 +86,7 @@ fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyho
             })
             .transpose()?;
 
-        if client_cert_pem.is_some() || client_key_pem.is_some() {
+        if client_cert_der.is_some() || client_key_der.is_some() {
             server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
                 credentials_reference: None,
                 certificate: Some(tacacsrs_config::ClientIdentityCertificate {
@@ -95,10 +95,10 @@ fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyho
                             public_key_format: None,
                             public_key: None,
                             private_key_format: None,
-                            cleartext_private_key: client_key_pem,
+                            cleartext_private_key: client_key_der,
                             hidden_private_key: None,
                             encrypted_private_key: None,
-                            cert_data: client_cert_pem,
+                            cert_data: client_cert_der,
                         },
                     ),
                     central_keystore_reference: None,

@@ -132,8 +132,8 @@ tacon \
 tacon \
     --server-addr tacacsserver.local:449 \
     --use-tls \
-    --client-certificate /path/to/client.crt \
-    --client-key /path/to/client.key \
+    --client-certificate /path/to/client.crt.der \
+    --client-key /path/to/client.key.der \
     --user testuser \
     --port tty1 \
     --rem-addr 192.168.1.100 \
