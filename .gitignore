@@ -26,3 +26,5 @@ target/
 # SBOM files (generated during CI/CD)
 *.cdx.json
 *.cdx.xml
+__pycache__/
+

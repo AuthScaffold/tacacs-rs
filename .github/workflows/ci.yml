@@ -20,153 +20,25 @@ jobs:
     permissions:
       contents: read
     outputs:
-      versions: ${{ steps.assemble.outputs.versions }}
-      calver-tag: ${{ steps.calver.outputs.tag }}
-      has-release: ${{ steps.assemble.outputs.has_release }}
-      new-tags: ${{ steps.assemble.outputs.new_tags }}
+      versions: ${{ steps.compute.outputs.versions }}
+      calver-tag: ${{ steps.compute.outputs.calver_tag }}
+      has-release: ${{ steps.compute.outputs.has_release }}
+      new-tags: ${{ steps.compute.outputs.new_tags }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
-      # ── CalVer for tacon ──
-      - name: Find latest CalVer tag
-        id: latest-tag
-        run: |
-          LATEST_TAG=$(git tag --list 'tacon-*' --sort=-v:refname | head -n1)
-          if [ -z "$LATEST_TAG" ]; then
-            echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "has_tag=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
-            echo "has_tag=true" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          cache-key: compute-versions
 
-      - name: Check for tacon changes
-        id: app-changes
-        run: |
-          if [ "${{ steps.latest-tag.outputs.has_tag }}" = "false" ]; then
-            echo "No previous tag — treating as changed"
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            DIFF=$(git diff --name-only "${{ steps.latest-tag.outputs.tag }}"..HEAD -- \
-              "executables/tacon/" \
-              "libraries/")
-            if [ -n "$DIFF" ]; then
-              echo "Changes detected:"
-              echo "$DIFF"
-              echo "changed=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "No changes since ${{ steps.latest-tag.outputs.tag }}"
-              echo "changed=false" >> "$GITHUB_OUTPUT"
-            fi
-          fi
-
-      - name: Calculate CalVer version
-        id: calver
-        if: steps.app-changes.outputs.changed == 'true'
-        run: |
-          YEAR=$(date -u +%Y)
-          MONTH=$(date -u +%-m)
-          DAY=$(date -u +%-d)
-          MMDD=$((MONTH * 100 + DAY))
-
-          TAG_PREFIX="tacon-${YEAR}.${MMDD}."
-          EXISTING_BUILDS=$(git tag --list "${TAG_PREFIX}*" | sed "s|${TAG_PREFIX}||" | sort -n)
-
-          if [ -z "$EXISTING_BUILDS" ]; then
-            BUILD=0
-          else
-            MAX_BUILD=$(echo "$EXISTING_BUILDS" | tail -n1)
-            BUILD=$((MAX_BUILD + 1))
-          fi
-
-          VERSION="${YEAR}.${MMDD}.${BUILD}"
-          TAG="tacon-${VERSION}"
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "CalVer: $VERSION (tag: $TAG)"
-
-      # ── Semver for libraries ──
-      - name: Compute library versions
-        id: libs
-        run: |
-          LIB_JSON="{}"
-          TAGS_JSON="[]"
-
-          for CARGO_TOML in libraries/*/Cargo.toml; do
-            DIR=$(dirname "$CARGO_TOML")
-            CRATE=$(grep '^name = ' "$CARGO_TOML" | head -1 | sed 's/name = "\(.*\)"/\1/')
-
-            if [ -z "$CRATE" ]; then
-              echo "WARNING: Could not read crate name from ${CARGO_TOML}"
-              continue
-            fi
-
-            TAG_PREFIX="${CRATE}-v"
-
-            LATEST=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname | head -n1)
-
-            if [ -z "$LATEST" ]; then
-              # First release — start at 0.1.0
-              VERSION="0.1.0"
-              echo "  ${CRATE}: no tag found → ${VERSION} (initial)"
-              LIB_JSON=$(echo "$LIB_JSON" | jq --arg k "$CRATE" --arg v "$VERSION" '. + {($k): $v}')
-              TAGS_JSON=$(echo "$TAGS_JSON" | jq --arg t "${TAG_PREFIX}${VERSION}" '. + [$t]')
-            else
-              CURRENT="${LATEST#${TAG_PREFIX}}"
-
-              DIFF=$(git diff --name-only "${LATEST}"..HEAD -- "${DIR}/")
-              if [ -n "$DIFF" ]; then
-                # Bump patch
-                IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-                PATCH=$((PATCH + 1))
-                VERSION="${MAJOR}.${MINOR}.${PATCH}"
-                echo "  ${CRATE}: ${CURRENT} → ${VERSION} (changed)"
-                LIB_JSON=$(echo "$LIB_JSON" | jq --arg k "$CRATE" --arg v "$VERSION" '. + {($k): $v}')
-                TAGS_JSON=$(echo "$TAGS_JSON" | jq --arg t "${TAG_PREFIX}${VERSION}" '. + [$t]')
-              else
-                VERSION="$CURRENT"
-                echo "  ${CRATE}: ${VERSION} (unchanged)"
-                LIB_JSON=$(echo "$LIB_JSON" | jq --arg k "$CRATE" --arg v "$VERSION" '. + {($k): $v}')
-              fi
-            fi
-          done
-
-          echo "lib_versions=${LIB_JSON}" >> "$GITHUB_OUTPUT"
-          echo "new_lib_tags=${TAGS_JSON}" >> "$GITHUB_OUTPUT"
-
-      # ── Assemble full versions map ──
-      - name: Assemble versions
-        id: assemble
-        run: |
-          VERSIONS='${{ steps.libs.outputs.lib_versions }}'
-
-          # Add CalVer for tacon if it was computed
-          CALVER='${{ steps.calver.outputs.version }}'
-          if [ -n "$CALVER" ]; then
-            VERSIONS=$(echo "$VERSIONS" | jq --arg v "$CALVER" '. + {"tacon": $v}')
-          fi
-
-          echo "versions=${VERSIONS}" >> "$GITHUB_OUTPUT"
-          echo "Final versions map: ${VERSIONS}"
-
-          # Merge library tags with CalVer tag
-          NEW_TAGS='${{ steps.libs.outputs.new_lib_tags }}'
-          CALVER_TAG='${{ steps.calver.outputs.tag }}'
-          if [ -n "$CALVER_TAG" ]; then
-            NEW_TAGS=$(echo "$NEW_TAGS" | jq --arg t "$CALVER_TAG" '. + [$t]')
-          fi
-
-          echo "new_tags=${NEW_TAGS}" >> "$GITHUB_OUTPUT"
-
-          # There's a release if any new tags need to be created
-          if [ "$(echo "$NEW_TAGS" | jq 'length')" -gt 0 ]; then
-            echo "has_release=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_release=false" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Compute versions
+        id: compute
+        uses: ./.github/steps/compute-versions
+        with:
+          binary-name: tacon
 
   # ── Run the full CI pipeline ─────────────────────────────
   pipeline:

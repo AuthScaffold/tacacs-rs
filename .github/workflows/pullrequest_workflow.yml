@@ -14,8 +14,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  compute-versions:
+    name: Compute Pre-release Versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      versions: ${{ steps.compute.outputs.versions }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Compute versions
+        id: compute
+        uses: ./.github/steps/compute-versions
+        with:
+          binary-name: tacon
+          pre-release: dev
+
   pipeline:
     name: PR Pipeline
+    needs: [compute-versions]
     uses: ./.github/workflows/reusable-pipeline.yml
     permissions:
       checks: write
@@ -25,6 +45,7 @@ jobs:
       include-nightly-clippy: false
       rust-test-matrix: '["stable", "beta"]'
       skip-audit-if-no-dep-changes: true
+      versions: ${{ needs.compute-versions.outputs.versions || '{}' }}
     secrets: inherit
 
   ci-success:
