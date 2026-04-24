@@ -23,7 +23,7 @@ runs:
           exit 0
         fi
 
-        echo "$VERSIONS" | jq -r 'to_entries[] | "\(.key)\t\(.value)"' | while IFS=$'\t' read -r CRATE VERSION; do
+        echo "$VERSIONS" | jq -r 'to_entries[] | "\(.key)\t\(.value)"' | tr -d '\r' | while IFS=$'\t' read -r CRATE VERSION; do
           # Find the Cargo.toml that declares this crate
           CARGO_TOML=$(find . -name 'Cargo.toml' -not -path '*/target/*' \
             -exec grep -l "^name = \"${CRATE}\"" {} \;)
@@ -46,7 +46,7 @@ runs:
           exit 0
         fi
 
-        echo "$VERSIONS" | jq -r 'to_entries[] | "\(.key)\t\(.value)"' | while IFS=$'\t' read -r CRATE VERSION; do
+        echo "$VERSIONS" | jq -r 'to_entries[] | "\(.key)\t\(.value)"' | tr -d '\r' | while IFS=$'\t' read -r CRATE VERSION; do
           CHANGELOG="executables/${CRATE}/debian/changelog"
           if [ -f "$CHANGELOG" ]; then
             sed -i "1s/([^)]*)/($VERSION)/" "$CHANGELOG"

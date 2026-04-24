@@ -31,7 +31,7 @@ on:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }} / ${{ matrix.rust }})
+    name: Test (${{ matrix.os }} - ${{ matrix.rust }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
