@@ -1,6 +1,6 @@
 [package]
 name = "tacacsrs-agent"
-version = "0.1.2"
+version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -11,9 +11,9 @@ readme = "README.md"
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 async-trait = "0.1.89"
 log = "0.4.29"
-tacacsrs-agent-client = { version = "0.1.2", path = "../tacacsrs_agent_client" }
-tacacsrs-messages = { version = "0.1.2", path = "../tacacsrs_messages" }
-tacacsrs-networking = { version = "0.1.2", path = "../tacacsrs_networking" }
+tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
+tacacsrs-messages = { path = "../tacacsrs_messages" }
+tacacsrs-networking = { path = "../tacacsrs_networking" }
 tokio = { version = "1.52.1", features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }
 tonic = "0.14.5"

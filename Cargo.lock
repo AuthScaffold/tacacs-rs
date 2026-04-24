@@ -1643,7 +1643,7 @@ checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 
 [[package]]
 name = "tacacsrs-agent"
-version = "0.1.2"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1658,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-agent-client"
-version = "0.1.2"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "http",
@@ -1674,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-agentd"
-version = "2026.416.0"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "clap",
@@ -1688,7 +1688,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-messages"
-version = "0.1.2"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -1699,7 +1699,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-networking"
-version = "0.1.2"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1722,7 +1722,7 @@ dependencies = [
 
 [[package]]
 name = "tacon"
-version = "2026.416.0"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "clap",

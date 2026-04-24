@@ -1,6 +1,6 @@
 [package]
 name = "tacacsrs-networking"
-version = "0.1.2"
+version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -9,7 +9,7 @@ description = "TACACS+ transport layer with TCP, TLS, and PSK support"
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 tokio = { version = "1.52.1", features = ["full"] }
-tacacsrs-messages = { version = "0.1.2", path = "../tacacsrs_messages" }
+tacacsrs-messages = { path = "../tacacsrs_messages" }
 async-trait = "0.1.89"
 rand = "0.10.1"
 log = "0.4.29"
