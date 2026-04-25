@@ -7,8 +7,7 @@
 //!
 //! # Transport selection
 //!
-//! Each [`tacacsrs_credentials::ResolvedServer`] wraps a fully-resolved
-//! `TacacsPlusServer` whose YANG model fields determine which transport is
+//! Each [`tacacsrs_config::TacacsPlusServer`] carries the YANG model fields that determine which transport is
 //! used for the upstream TACACS+ connection:
 //!
 //! | Security | Transport |
@@ -30,7 +29,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tacacsrs_credentials::ResolvedServer;
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
@@ -97,8 +96,10 @@ pub(crate) trait UpstreamConnector: Send + Sync {
     ///
     /// Returns an error if the TCP connection, TLS handshake, or TACACS+
     /// connection setup fails.
-    async fn connect(&self, server: &ResolvedServer)
-        -> anyhow::Result<Arc<dyn UpstreamConnection>>;
+    async fn connect(
+        &self,
+        server: &TacacsPlusServer,
+    ) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
 
     /// Sends a single accounting request over a dedicated one-shot connection.
     ///
@@ -108,7 +109,7 @@ pub(crate) trait UpstreamConnector: Send + Sync {
     /// so the server's response reveals whether it supports multiplexing.
     async fn send_accounting_dedicated(
         &self,
-        server: &ResolvedServer,
+        server: &TacacsPlusServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult>;
 }
@@ -124,7 +125,7 @@ pub(crate) struct DedicatedAccountingResult {
 /// Production connector backed by [`tacacsrs_networking`].
 ///
 /// Extracts per-server connection parameters from the provided
-/// [`ResolvedServer`] at each connection attempt.
+/// [`tacacsrs_config::TacacsPlusServer`] at each connection attempt.
 #[derive(Debug, Clone)]
 pub(crate) struct NetworkUpstreamConnector {
     /// Dangerously disable TLS certificate verification for upstream connections.
@@ -135,7 +136,7 @@ pub(crate) struct NetworkUpstreamConnector {
 impl UpstreamConnector for NetworkUpstreamConnector {
     async fn connect(
         &self,
-        server: &ResolvedServer,
+        server: &TacacsPlusServer,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         let address = server.socket_address();
         let connection = connect_upstream(server, self.disable_certificate_verification).await?;
@@ -147,7 +148,7 @@ impl UpstreamConnector for NetworkUpstreamConnector {
 
     async fn send_accounting_dedicated(
         &self,
-        server: &ResolvedServer,
+        server: &TacacsPlusServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
         send_dedicated_accounting(server, self.disable_certificate_verification, request).await
@@ -281,7 +282,7 @@ fn build_accounting_args(command: &str, command_arguments: &[String]) -> Vec<Str
 /// Returns an error if TCP connection times out, TLS negotiation fails, or
 /// the TACACS+ connection handler cannot start.
 async fn connect_upstream(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     disable_certificate_verification: bool,
 ) -> anyhow::Result<Arc<TacacsConnection>> {
     let address = server.socket_address();
@@ -338,7 +339,7 @@ async fn connect_upstream(
 /// Sends a single accounting request over a [`DedicatedConnection`] — one
 /// TCP connection, one packet out, one packet back, no background tasks.
 async fn send_dedicated_accounting(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     disable_certificate_verification: bool,
     request: &AccountingOperation,
 ) -> anyhow::Result<DedicatedAccountingResult> {

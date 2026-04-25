@@ -1,7 +1,7 @@
-//! Centralised stream establishment from a [`ResolvedServer`] configuration.
+//! Centralised stream establishment from a [`TacacsPlusServer`] configuration.
 //!
-//! This module bridges the credentials layer ([`tacacsrs_credentials::ResolvedServer`])
-//! and the transport layer, providing a single function that handles TCP,
+//! This module bridges the configuration model and the transport layer,
+//! providing a single function that handles TCP,
 //! TLS (certificate-based), and TLS-PSK connection setup. It replaces the
 //! duplicated connection logic that previously lived in both `tacon` and
 //! `tacacsrs_agent`.
@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tacacsrs_config::crypto_types::PrivateKeyFormat;
-use tacacsrs_credentials::ResolvedServer;
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tokio_rustls::rustls;
 
 use crate::BoxedTransport;
@@ -20,7 +20,7 @@ use crate::helpers::{connect_tcp, tls_server_name};
 use crate::transport::tls::TlsConfigurationBuilder;
 
 /// Options that control connection behaviour beyond what the
-/// [`ResolvedServer`] already carries.
+/// [`TacacsPlusServer`] already carries.
 #[derive(Debug, Clone, Default)]
 pub struct ConnectOptions {
     /// Dangerously disable TLS certificate verification.
@@ -52,7 +52,7 @@ pub struct ConnectOptions {
 /// - TLS certificate/key material cannot be parsed
 /// - TLS handshake fails
 pub async fn establish_stream(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     options: &ConnectOptions,
 ) -> Result<BoxedTransport> {
     let address = server.socket_address();
@@ -123,7 +123,7 @@ pub async fn establish_stream(
 
 /// Establishes a certificate-based TLS connection.
 async fn establish_cert_tls_stream(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     address: &str,
     options: &ConnectOptions,
     tcp_stream: tokio::net::TcpStream,
@@ -187,7 +187,7 @@ async fn establish_cert_tls_stream(
 /// configuration. When `sni-enabled` is true and `domain-name` is set, the
 /// domain name is used; otherwise falls back to extracting the host from the
 /// socket address.
-fn derive_sni_name<'a>(server: &'a ResolvedServer, address: &'a str) -> &'a str {
+fn derive_sni_name<'a>(server: &'a TacacsPlusServer, address: &'a str) -> &'a str {
     if server.sni_enabled() {
         if let Some(ref domain) = server.domain_name {
             return domain.as_str();
@@ -199,7 +199,7 @@ fn derive_sni_name<'a>(server: &'a ResolvedServer, address: &'a str) -> &'a str 
 /// Builds a custom [`rustls::RootCertStore`] from the server's `ca-certs` and
 /// `ee-certs` inline definitions. Returns `None` if no custom CA material
 /// is configured (the builder will use the default webpki roots).
-fn build_root_cert_store(server: &ResolvedServer) -> Result<Option<rustls::RootCertStore>> {
+fn build_root_cert_store(server: &TacacsPlusServer) -> Result<Option<rustls::RootCertStore>> {
     let Some(ref sa) = server.server_authentication else {
         return Ok(None);
     };
@@ -311,52 +311,44 @@ mod tests {
 
     #[test]
     fn derive_sni_name_uses_domain_when_sni_enabled() {
-        let server = tacacsrs_credentials::resolve_server(
-            tacacsrs_config::TacacsPlusServer {
-                name: "test".to_owned(),
-                server_type: tacacsrs_config::TacacsPlusServerType::all(),
-                address: "10.0.0.1".to_owned(),
-                port: 49,
-                shared_secret: None,
-                timeout: 5,
-                single_connection: false,
-                domain_name: Some("tacacs.example.com".to_owned()),
-                sni_enabled: Some(true),
-                client_identity: None,
-                server_authentication: None,
-                source_ip: None,
-                source_interface: None,
-                vrf_instance: None,
-            },
-            None,
-        )
-        .unwrap();
+        let server = tacacsrs_config::TacacsPlusServer {
+            name: "test".to_owned(),
+            server_type: tacacsrs_config::TacacsPlusServerType::all(),
+            address: "10.0.0.1".to_owned(),
+            port: 49,
+            shared_secret: None,
+            timeout: 5,
+            single_connection: false,
+            domain_name: Some("tacacs.example.com".to_owned()),
+            sni_enabled: Some(true),
+            client_identity: None,
+            server_authentication: None,
+            source_ip: None,
+            source_interface: None,
+            vrf_instance: None,
+        };
 
         assert_eq!(derive_sni_name(&server, "10.0.0.1:49"), "tacacs.example.com");
     }
 
     #[test]
     fn derive_sni_name_falls_back_to_address_when_sni_disabled() {
-        let server = tacacsrs_credentials::resolve_server(
-            tacacsrs_config::TacacsPlusServer {
-                name: "test".to_owned(),
-                server_type: tacacsrs_config::TacacsPlusServerType::all(),
-                address: "10.0.0.1".to_owned(),
-                port: 49,
-                shared_secret: None,
-                timeout: 5,
-                single_connection: false,
-                domain_name: Some("tacacs.example.com".to_owned()),
-                sni_enabled: None,
-                client_identity: None,
-                server_authentication: None,
-                source_ip: None,
-                source_interface: None,
-                vrf_instance: None,
-            },
-            None,
-        )
-        .unwrap();
+        let server = tacacsrs_config::TacacsPlusServer {
+            name: "test".to_owned(),
+            server_type: tacacsrs_config::TacacsPlusServerType::all(),
+            address: "10.0.0.1".to_owned(),
+            port: 49,
+            shared_secret: None,
+            timeout: 5,
+            single_connection: false,
+            domain_name: Some("tacacs.example.com".to_owned()),
+            sni_enabled: None,
+            client_identity: None,
+            server_authentication: None,
+            source_ip: None,
+            source_interface: None,
+            vrf_instance: None,
+        };
 
         assert_eq!(derive_sni_name(&server, "10.0.0.1:49"), "10.0.0.1");
     }

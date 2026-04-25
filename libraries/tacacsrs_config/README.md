@@ -10,7 +10,7 @@
 - Config-local credential bundle validation
 - Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
 
-External keystore/truststore validation and secret materialization now live in the separate `tacacsrs-credentials` crate.
+Any future external secret resolution and materialization should live in a separate runtime/provider crate rather than in `tacacsrs-config`.
 
 ## Parsing API
 
@@ -30,7 +30,7 @@ The primary entry points are:
 - `enumerate_servers(&TacacsPlus)` — inline shared credential bundles onto each `TacacsPlusServer`
 - `enumerate_server(&TacacsPlus, &str)` — inline shared credential bundles for one named server
 
-For external keystore or truststore references, enumerate the servers first and then pass the resulting `TacacsPlusServer` values to `tacacsrs-credentials`.
+If external secret providers are introduced, enumerate the servers first and then pass the resulting `TacacsPlusServer` values to that runtime/provider layer.
 
 ## Multi-layer design
 
@@ -66,14 +66,15 @@ let server = enumerate_server(&config, "primary")?;
 
 ### 3) External secret resolution (separate crate)
 
-External keystore/truststore references are intentionally handled outside this crate.
-After enumeration, pass the resulting `TacacsPlusServer` values to `tacacsrs-credentials` for optional external validation and runtime secret materialization.
+External secret providers are intentionally handled outside this crate.
+After enumeration, pass the resulting `TacacsPlusServer` values to a separate runtime/provider layer for any optional external validation and secret materialization.
 
 ### Module-oriented API (recommended for most users)
 
 This crate also exposes grouped modules so callers can choose APIs by intent:
 
 - `model` — YANG-generated types and namespaces
+- `extensions` — helper traits layered over generated model types
 - `pipeline` — step-by-step processing
 - `runtime` — bundle enumeration (`enumerate_server`, `enumerate_servers`)
 - `stats` — runtime stats types
@@ -89,6 +90,16 @@ let servers = runtime::enumerate_servers(&config)?;
 
 The existing flat root exports remain available for compatibility.
 
+### Future external crypto integration
+
+The intended long-term split is:
+
+- `tacacsrs-config` stays as the open configuration model. It owns RFC 7951 parsing, schema validation, bundle enumeration, and generated YANG types.
+- Small derived helpers that are valid before and after secret resolution belong here, in `extensions`, on top of `TacacsPlusServer` and other generated types.
+- External crypto providers should sit behind a separate boundary that consumes enumerated `TacacsPlusServer` values and returns a closed runtime representation with concrete material.
+
+That keeps the generated config model optimized for round-tripping and reporting, while runtime code gets a provider-agnostic handoff with only the normalized fields needed to connect.
+
 ## Examples
 
 The crate includes runnable examples under `examples/`:
@@ -97,7 +108,7 @@ The crate includes runnable examples under `examples/`:
 - `quick_start_credential_refs.rs` — minimal end-to-end example showing bundle validation and enumeration
 - `pipeline_flow.rs` — explicit step-by-step parse/enumerate/external-resolution pipeline
 - `model_access.rs` — direct access to generated model types and flags
-- External secret-resolution example now lives in `tacacsrs-credentials/examples/credential_references.rs`
+- External secret-resolution examples should live in a separate runtime/provider crate if that integration is added later.
 
 Run examples from the workspace root:
 
@@ -140,7 +151,7 @@ Validation checks include:
 - Credential references have matching definitions in the same config
 - Config-local credential references have matching definitions
 
-To resolve external credentials and materialize them for runtime use, use `tacacsrs-credentials` after enumeration.
+To resolve external credentials and materialize them for runtime use, introduce a separate runtime/provider layer after enumeration.
 
 This design separates parsing/validation from credential retrieval and enables round-trip safety.
 
@@ -154,7 +165,8 @@ For advanced use cases, these lower-level functions are available:
 
 ### 3) Runtime types
 
-Runtime secret-materialized server types now live in `tacacsrs-credentials`.
+If runtime secret-materialized server types are introduced later, they should live outside `tacacsrs-config` in a dedicated runtime/provider crate.
+Shared derived helpers for the generated server model live in `TacacsPlusServerExt`.
 
 Runtime statistics are exposed separately via:
 
@@ -166,7 +178,7 @@ Runtime statistics are exposed separately via:
 The generated model is intentionally public for schema-aware or tooling-heavy integrations:
 
 - `generated` module (full generated type graph)
-- Re-exported submodules: `keystore`, `truststore`, `crypto_types`, `tls_common`
+- Re-exported submodules: `keystore`, `truststore`, `crypto_types`
 - Re-exported root: `YangConfigRoot`
 - Re-exported common TACACS+ model types, including:
   - `TacacsPlus`
@@ -176,13 +188,11 @@ The generated model is intentionally public for schema-aware or tooling-heavy in
   - `ServerCredentials`
   - `TlsClientClientIdentity`
   - `TlsClientServerAuthentication`
-  - `TlsClientHelloParams`
   - `ClientIdentityCertificate`
-  - `RawPrivateKey`
   - `Tls13Epsk`
   - `ServerAuthenticationCaCerts`
-  - `ServerAuthenticationRawPublicKeys`
   - `EpskSupportedHash`
+  - `TacacsPlusServerExt`
 
 ### 5) Generated identity set types
 
@@ -199,7 +209,6 @@ Available identity sets:
 - `crypto_types::PrivateKeyFormat` — `rsa-private-key-format`, `ec-private-key-format`, `one-asymmetric-key-format`
 - `crypto_types::PublicKeyFormat` — `ssh-public-key-format`, `subject-public-key-info-format`
 - `crypto_types::SymmetricKeyFormat` — `octet-string-key-format`, `one-symmetric-key-format`
-- `crypto_types::EncryptedValueFormat` — `cms-encrypted-data-format`, `cms-enveloped-data-format`
 
 These are generated automatically from the YANG identity hierarchy by `plugins/yang2rust.py`. Fixed-set `identityref` fields now use these enums directly in the generated struct graph, so unknown RFC 7951 strings fail during deserialization instead of being validated later as plain strings.
 
@@ -209,7 +218,7 @@ When configuring TLS with inline key material, several fields indicate the encod
 
 ### `private-key-format`
 
-Used in `EndEntityCertWithKeyInlineDefinition` and `AsymmetricKeyInlineDefinition` (the inline definitions for certificate and raw-private-key client identities). Indicates how the private key binary is encoded.
+Used in `EndEntityCertWithKeyInlineDefinition` (the inline definition for certificate client identities). Indicates how the private key binary is encoded.
 
 | JSON value | Meaning |
 |---|---|
@@ -219,7 +228,7 @@ Used in `EndEntityCertWithKeyInlineDefinition` and `AsymmetricKeyInlineDefinitio
 
 ### `public-key-format`
 
-Used alongside `private-key-format` in the same inline definitions and in `PublicKeysPublicKey` (raw public keys for server authentication). Indicates how the public key binary is encoded.
+Used alongside `private-key-format` in `EndEntityCertWithKeyInlineDefinition`. Indicates how the public key binary is encoded.
 
 | JSON value | Meaning |
 |---|---|

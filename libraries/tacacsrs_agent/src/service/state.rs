@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::bail;
 use tacacsrs_agent_client::{AccountingOperation, AccountingOperationResponse, ServiceError};
-use tacacsrs_credentials::ResolvedServer;
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_networking::SingleConnectionState;
 use tokio::sync::{Mutex, Notify, RwLock};
 
@@ -59,7 +59,7 @@ pub(super) struct ServiceState {
 /// reconnect serialization and connection caching are independent.
 struct ServerState {
     /// The per-server connection configuration.
-    server: ResolvedServer,
+    server: TacacsPlusServer,
     /// Cached upstream connection, if any. `None` means the server needs
     /// a fresh connection on the next request.
     connection: RwLock<Option<Arc<dyn UpstreamConnection>>>,
@@ -170,7 +170,7 @@ impl ServiceState {
     /// configured before constructing this state. The higher-level service
     /// constructor enforces that invariant for production use.
     pub(super) fn new(
-        servers: Vec<ResolvedServer>,
+        servers: Vec<TacacsPlusServer>,
         connector: Arc<dyn UpstreamConnector>,
         preferred_probe_interval: std::time::Duration,
     ) -> Self {
@@ -666,7 +666,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use tacacsrs_credentials::ResolvedServer;
+    use tacacsrs_config::TacacsPlusServer;
     use tokio::sync::Notify;
 
     use super::ServiceState;
@@ -676,32 +676,27 @@ mod tests {
     };
     use crate::upstream::UpstreamConnector;
 
-    fn test_server(address: &str) -> ResolvedServer {
+    fn test_server(address: &str) -> TacacsPlusServer {
         let (host, port) = match address.rsplit_once(':') {
             Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
             None => (address.to_owned(), 49),
         };
-        tacacsrs_credentials::resolve_server(
-            tacacsrs_config::TacacsPlusServer {
-                name: address.to_owned(),
-                server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
-                address: host,
-                port,
-                shared_secret: None,
-                timeout: 5,
-                single_connection: false,
-                domain_name: None,
-                sni_enabled: None,
-                client_identity: None,
-                server_authentication: None,
-                hello_params: None,
-                source_ip: None,
-                source_interface: None,
-                vrf_instance: None,
-            },
-            None,
-        )
-        .unwrap()
+        tacacsrs_config::TacacsPlusServer {
+            name: address.to_owned(),
+            server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
+            address: host,
+            port,
+            shared_secret: None,
+            timeout: 5,
+            single_connection: false,
+            domain_name: None,
+            sni_enabled: None,
+            client_identity: None,
+            server_authentication: None,
+            source_ip: None,
+            source_interface: None,
+            vrf_instance: None,
+        }
     }
 
     #[tokio::test]

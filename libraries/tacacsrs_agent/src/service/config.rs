@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_credentials::ResolvedServer;
+use tacacsrs_config::TacacsPlusServer;
 
 /// Configuration for the long-lived TACACS+ client service process.
 ///
@@ -41,7 +41,7 @@ pub struct ServiceConfig {
     ///
     /// Each entry carries its own security settings (TLS vs obfuscation),
     /// timeout, and server type. Index zero is the preferred server.
-    pub servers: Vec<ResolvedServer>,
+    pub servers: Vec<TacacsPlusServer>,
 
     /// How often the preferred server should be reprobed while failed over.
     ///

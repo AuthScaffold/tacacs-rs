@@ -10,8 +10,8 @@ use std::str::FromStr;
 use anyhow::{bail, Context};
 use clap::Parser;
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
-use tacacsrs_credentials::ResolvedServer;
 use tacacsrs_messages::enumerations::TacacsFlags;
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::DedicatedConnection;
 
@@ -235,7 +235,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 /// Executes the command using a dedicated connection — a minimal one-shot
 /// TCP connection with no background tasks or session multiplexing.
 async fn execute_command_dedicated(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     options: &ConnectOptions,
     command: &Command,
 ) -> anyhow::Result<()> {

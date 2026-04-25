@@ -1,4 +1,5 @@
 pub mod generated;
+pub mod extensions;
 mod enumeration;
 mod mapping;
 pub(crate) mod serde_helpers;
@@ -13,6 +14,7 @@ pub use generated::tacacs_plus::{
     ServerCredentials, TacacsPlus, TacacsPlusServer, TacacsPlusServerType, Tls13Epsk,
     TlsClientClientIdentity, TlsClientServerAuthentication,
 };
+pub use extensions::TacacsPlusServerExt;
 pub use generated::truststore;
 pub use generated::{crypto_types, keystore, YangConfigRoot};
 
@@ -20,6 +22,7 @@ pub use statistics::ServerStatistics;
 
 /// Model-oriented API: YANG-generated types and related namespaces.
 pub mod model {
+    pub use crate::extensions::TacacsPlusServerExt;
     pub use crate::generated;
     pub use crate::generated::tacacs_plus::{
         ClientCredentials, ClientIdentityCertificate, EpskSupportedHash,
@@ -79,6 +82,7 @@ pub mod pipeline {
 /// Runtime projection API used by networking/client code.
 pub mod runtime {
     pub use crate::enumeration::{enumerate_server, enumerate_servers};
+    pub use crate::extensions::TacacsPlusServerExt;
 }
 
 /// Runtime statistics types.
@@ -101,7 +105,7 @@ pub mod stats {
 /// - Credential bundle references have matching definitions
 ///
 /// The returned config preserves the submitted structure, including any
-/// `central-keystore-reference` and `central-truststore-reference` values.
+/// credential references.
 /// To inline shared `client-credentials` / `server-credentials` bundles for
 /// per-server processing, call [`enumerate_servers`] or [`enumerate_server`].
 ///

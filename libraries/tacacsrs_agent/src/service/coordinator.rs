@@ -395,38 +395,33 @@ mod tests {
     use super::super::test_support::{FakeConnection, FakeConnector, build_request};
 
     #[cfg(unix)]
-    fn test_server(address: &str) -> tacacsrs_credentials::ResolvedServer {
+    fn test_server(address: &str) -> tacacsrs_config::TacacsPlusServer {
         let (host, port) = match address.rsplit_once(':') {
             Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
             None => (address.to_owned(), 49),
         };
-        tacacsrs_credentials::resolve_server(
-            tacacsrs_config::TacacsPlusServer {
-                name: address.to_owned(),
-                server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
-                address: host,
-                port,
-                shared_secret: None,
-                timeout: 5,
-                single_connection: false,
-                domain_name: None,
-                sni_enabled: None,
-                client_identity: None,
-                server_authentication: None,
-                hello_params: None,
-                source_ip: None,
-                source_interface: None,
-                vrf_instance: None,
-            },
-            None,
-        )
-        .unwrap()
+        tacacsrs_config::TacacsPlusServer {
+            name: address.to_owned(),
+            server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
+            address: host,
+            port,
+            shared_secret: None,
+            timeout: 5,
+            single_connection: false,
+            domain_name: None,
+            sni_enabled: None,
+            client_identity: None,
+            server_authentication: None,
+            source_ip: None,
+            source_interface: None,
+            vrf_instance: None,
+        }
     }
 
     #[cfg(unix)]
     fn service_config(
         endpoint: IpcEndpoint,
-        servers: Vec<tacacsrs_credentials::ResolvedServer>,
+        servers: Vec<tacacsrs_config::TacacsPlusServer>,
     ) -> ServiceConfig {
         ServiceConfig {
             endpoint,

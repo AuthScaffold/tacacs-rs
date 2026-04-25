@@ -1,7 +1,7 @@
 use anyhow::Context;
 use futures::future::join_all;
 
-use tacacsrs_credentials::ResolvedServer;
+use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_networking::config_connect::ConnectOptions;
 use tacacsrs_networking::session::Session;
 
@@ -89,7 +89,7 @@ pub(super) async fn execute_parallel_multiplexed(
 /// Each iteration opens a new multiplexed connection, creates a session, and
 /// sends the request. The test stops immediately on the first failure.
 pub(super) async fn execute_load_test_multiplexed(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     requests: &[BatchRequest],
     config: &LoadTestConfig,
 ) -> anyhow::Result<LoadTestResult> {
@@ -112,7 +112,7 @@ pub(super) async fn execute_load_test_multiplexed(
 
 /// Executes a single load test iteration on a new multiplexed connection
 async fn execute_load_test_single(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     request: &BatchRequest,
     rep: usize,
     idx: usize,

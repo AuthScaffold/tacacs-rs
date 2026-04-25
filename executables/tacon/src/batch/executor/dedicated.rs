@@ -1,7 +1,7 @@
 use anyhow::Context;
 use futures::future::join_all;
 
-use tacacsrs_credentials::ResolvedServer;
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::DedicatedConnection;
 use tacacsrs_networking::config_connect::ConnectOptions;
@@ -15,7 +15,7 @@ use super::super::types::{BatchRequest, LoadTestConfig, RequestResult};
 /// Probes the server for single-connection support by sending a lightweight
 /// accounting record that logs tacon's invocation. Returns `true` if the
 /// server echoed `TAC_PLUS_SINGLE_CONNECT_FLAG`.
-pub(super) async fn probe_single_connect(server: &ResolvedServer) -> bool {
+pub(super) async fn probe_single_connect(server: &TacacsPlusServer) -> bool {
     let result = async {
         let stream = establish_stream(server, &ConnectOptions::default())
             .await
@@ -79,7 +79,7 @@ fn redact_secret_args(args: impl Iterator<Item = String>) -> Vec<String> {
 /// Executes a single batch request using a dedicated connection (no background
 /// tasks, no session multiplexing).
 async fn execute_single_request_dedicated(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     request: &BatchRequest,
 ) -> Result<String, String> {
     match request {
@@ -115,7 +115,7 @@ async fn execute_single_request_dedicated(
 }
 
 pub(super) async fn execute_requests_dedicated(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     requests: &[BatchRequest],
     parallel: bool,
 ) -> Vec<RequestResult> {
@@ -150,7 +150,7 @@ pub(super) async fn execute_requests_dedicated(
 }
 
 pub(super) async fn run_dedicated_load_test(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     requests: &[BatchRequest],
     load_config: &LoadTestConfig,
 ) -> super::super::types::LoadTestResult {

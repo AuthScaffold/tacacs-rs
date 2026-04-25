@@ -48,9 +48,10 @@ fn main() -> anyhow::Result<()> {
 
     // Step 3: For production code:
     // 1. Call enumerate_server(s) to inline shared credential bundles.
-    // 2. Use tacacsrs-credentials to validate external refs if needed.
-    // 3. Use tacacsrs-credentials to resolve one enumerated server when connecting.
-    println!("\n3. Production flow: enumerate bundles, then resolve external secrets on demand when connecting");
+    // 2. Hand the enumerated server to runtime code directly.
+    // 3. If external secret providers are added later, resolve them at a
+    //    separate runtime/provider boundary before connecting.
+    println!("\n3. Production flow: enumerate bundles, then resolve external secrets at a separate runtime boundary only if that feature is introduced");
 
     Ok(())
 }

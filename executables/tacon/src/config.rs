@@ -1,15 +1,14 @@
 use anyhow::Context;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
-use tacacsrs_credentials::{ResolvedServer, resolve_server, resolve_servers};
 
 use crate::cli::Cli;
 
-/// Builds a `ResolvedServer` from CLI flags for direct-mode connections.
+/// Builds a `TacacsPlusServer` from CLI flags for direct-mode connections.
 ///
 /// # Errors
 ///
 /// Returns an error if `--server-addr` is not provided or the address cannot be parsed.
-pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<ResolvedServer> {
+pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlusServer> {
     let server_addr = cli
         .server_addr
         .as_deref()
@@ -36,7 +35,7 @@ pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<ResolvedServer> {
 
     populate_security_from_cli(cli, &mut server)?;
 
-    resolve_server(server, None)
+    Ok(server)
 }
 
 fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyhow::Result<()> {
@@ -113,30 +112,29 @@ fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyho
     Ok(())
 }
 
-/// Loads a `ResolvedServer` from a YANG JSON config file, using the first server entry.
+/// Loads a `TacacsPlusServer` from a YANG JSON config file, using the first server entry.
 ///
 /// # Errors
 ///
 /// Returns an error if the config file cannot be read, parsed, or contains no servers.
-pub fn server_config_from_file(path: &std::path::Path) -> anyhow::Result<ResolvedServer> {
+pub fn server_config_from_file(path: &std::path::Path) -> anyhow::Result<TacacsPlusServer> {
     let yang_config = tacacsrs_config::parse_yang_json_file(path)
         .with_context(|| format!("Failed to load config from {}", path.display()))?;
     let enumerated_servers = tacacsrs_config::enumerate_servers(&yang_config)
         .context("Failed to enumerate YANG config servers")?;
-    let mut servers = resolve_servers(enumerated_servers, None)
-        .context("Failed to resolve YANG config servers")?;
+    let mut servers = enumerated_servers;
     if servers.is_empty() {
         anyhow::bail!("Config file contains no server entries");
     }
     Ok(servers.remove(0))
 }
 
-/// Resolves a `ResolvedServer` from either `--config` or CLI flags.
+/// Resolves a `TacacsPlusServer` from either `--config` or CLI flags.
 ///
 /// # Errors
 ///
 /// Returns an error if neither source provides valid configuration.
-pub fn resolve_server_config(cli: &Cli) -> anyhow::Result<ResolvedServer> {
+pub fn resolve_server_config(cli: &Cli) -> anyhow::Result<TacacsPlusServer> {
     if let Some(ref config_path) = cli.config {
         server_config_from_file(config_path)
     } else {

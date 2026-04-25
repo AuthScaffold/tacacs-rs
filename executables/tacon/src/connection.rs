@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use tacacsrs_credentials::ResolvedServer;
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_networking::{
     BoxedTransport,
     config_connect::{self, ConnectOptions},
@@ -65,7 +65,7 @@ impl Connection {
 /// - TLS is requested but certificate/key are missing or invalid
 /// - TLS handshake fails
 pub async fn establish_connection(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     options: &ConnectOptions,
 ) -> anyhow::Result<Connection> {
     let obfuscation_key = server.obfuscation_key();
@@ -93,7 +93,7 @@ pub async fn establish_connection(
 /// - TLS is requested but certificate/key are missing or invalid
 /// - TLS handshake fails
 pub async fn establish_stream(
-    server: &ResolvedServer,
+    server: &TacacsPlusServer,
     options: &ConnectOptions,
 ) -> anyhow::Result<BoxedTransport> {
     config_connect::establish_stream(server, options).await

@@ -1642,7 +1642,6 @@ dependencies = [
  "log",
  "tacacsrs-agent-client",
  "tacacsrs-config",
- "tacacsrs-credentials",
  "tacacsrs-messages",
  "tacacsrs-networking",
  "tokio",
@@ -1678,7 +1677,6 @@ dependencies = [
  "tacacsrs-agent",
  "tacacsrs-agent-client",
  "tacacsrs-config",
- "tacacsrs-credentials",
  "tacacsrs-networking",
  "tokio",
 ]
@@ -1693,17 +1691,6 @@ dependencies = [
  "serde",
  "serde_ignored",
  "serde_json",
-]
-
-[[package]]
-name = "tacacsrs-credentials"
-version = "0.0.0-dev"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "rustls-pki-types",
- "serde_json",
- "tacacsrs-config",
 ]
 
 [[package]]
@@ -1734,7 +1721,6 @@ dependencies = [
  "rand",
  "rustls-pki-types",
  "tacacsrs-config",
- "tacacsrs-credentials",
  "tacacsrs-messages",
  "test-log",
  "tokio",
@@ -1757,7 +1743,6 @@ dependencies = [
  "serde_json",
  "tacacsrs-agent-client",
  "tacacsrs-config",
- "tacacsrs-credentials",
  "tacacsrs-messages",
  "tacacsrs-networking",
  "tokio",

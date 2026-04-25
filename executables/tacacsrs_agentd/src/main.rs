@@ -6,8 +6,7 @@ use anyhow::Context;
 use clap::{ArgGroup, Parser};
 use tacacsrs_agent::{ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
-use tacacsrs_credentials::{ResolvedServer, resolve_server, resolve_servers};
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
@@ -116,7 +115,7 @@ fn init_logger(verbose: u8) {
 }
 
 /// Build server list from CLI flags (legacy path, without a config file).
-fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
+fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<TacacsPlusServer>> {
     let timeout = u16::try_from(cli.connect_timeout_seconds).unwrap_or(u16::MAX);
 
     if cli.use_tls {
@@ -133,17 +132,13 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
                     server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
                         credentials_reference: None,
                         certificate: None,
-                        raw_private_key: None,
                         tls13_epsk: Some(tacacsrs_config::Tls13Epsk {
                             inline_definition: Some(
                                 tacacsrs_config::keystore::SymmetricKeyInlineDefinition {
                                     key_format: None,
                                     cleartext_symmetric_key: Some(psk_key.as_bytes().to_vec()),
-                                    hidden_symmetric_key: None,
-                                    encrypted_symmetric_key: None,
                                 },
                             ),
-                            central_keystore_reference: None,
                             external_identity: psk_identity.clone(),
                             hash: tacacsrs_config::EpskSupportedHash::Sha256,
                             context: None,
@@ -151,7 +146,7 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
                             target_kdf: None,
                         }),
                     });
-                    resolve_server(server, None)
+                    Ok(server)
                 })
                 .collect::<anyhow::Result<Vec<_>>>();
         }
@@ -164,14 +159,14 @@ fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<ResolvedServer>> {
             .map(|(i, addr)| {
                 let mut server = base_server_from_address(addr, i, timeout);
                 server.shared_secret.clone_from(&cli.shared_secret);
-                resolve_server(server, None)
+                Ok(server)
             })
             .collect::<anyhow::Result<Vec<_>>>()
     }
 }
 
 /// Build TLS certificate-based server entries from CLI flags.
-fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<ResolvedServer>> {
+fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<TacacsPlusServer>> {
     let client_cert_der = cli
         .client_certificate
         .as_ref()
@@ -211,14 +206,15 @@ fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<Reso
                 });
             } else {
                 // TLS without client certs still needs an explicit TLS selector.
-                server.server_authentication = Some(tacacsrs_config::TlsClientServerAuthentication {
-                    credentials_reference: None,
-                    ca_certs: None,
-                    ee_certs: None,
-                    tls13_epsks: None,
-                });
+                server.server_authentication =
+                    Some(tacacsrs_config::TlsClientServerAuthentication {
+                        credentials_reference: None,
+                        ca_certs: None,
+                        ee_certs: None,
+                        tls13_epsks: None,
+                    });
             }
-            resolve_server(server, None)
+            Ok(server)
         })
         .collect::<anyhow::Result<Vec<_>>>()
 }
@@ -244,12 +240,11 @@ fn base_server_from_address(addr: &str, index: usize, timeout: u16) -> TacacsPlu
     }
 }
 
-fn servers_from_config(path: &std::path::Path) -> anyhow::Result<Vec<ResolvedServer>> {
+fn servers_from_config(path: &std::path::Path) -> anyhow::Result<Vec<TacacsPlusServer>> {
     let yang_config = tacacsrs_config::parse_yang_json_file(path)
         .with_context(|| format!("Failed to load config from {}", path.display()))?;
-    let enumerated_servers = tacacsrs_config::enumerate_servers(&yang_config)
-        .context("Failed to enumerate YANG config servers")?;
-    resolve_servers(enumerated_servers, None).context("Failed to resolve YANG config servers")
+    tacacsrs_config::enumerate_servers(&yang_config)
+        .context("Failed to enumerate YANG config servers")
 }
 
 /// Starts the central TACACS+ client service process.
