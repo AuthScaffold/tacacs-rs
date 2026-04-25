@@ -53,6 +53,11 @@ on:
         required: false
         default: 'main'
         type: string
+      include-outdated:
+        description: 'Include the outdated dependencies check job'
+        required: false
+        default: true
+        type: boolean
       skip-audit-if-no-dep-changes:
         description: 'Skip security audit if no dependency files changed'
         required: false
@@ -149,7 +154,7 @@ jobs:
   outdated:
     name: Outdated Dependencies
     needs: [tier-1-gate]
-    if: ${{ !cancelled() && !failure() }}
+    if: ${{ inputs.include-outdated && !cancelled() && !failure() }}
     uses: ./.github/workflows/reusable-outdated.yml
 
   tier-2-gate:
