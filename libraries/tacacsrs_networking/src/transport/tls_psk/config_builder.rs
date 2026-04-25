@@ -1,4 +1,10 @@
-//! Builder for TLS 1.3 PSK client configurations.
+//! Internal builder for TLS 1.3 PSK client configurations.
+//!
+//! This type is intentionally **not** part of the public API: all callers
+//! must drive PSK connection construction through
+//! [`crate::config_connect::establish_stream`], which guarantees that the
+//! YANG configuration model is the single source of truth for transport
+//! parameters.
 
 use openssl::ssl::Ssl;
 use tokio::net::TcpStream;
@@ -6,98 +12,26 @@ use tokio_openssl::SslStream;
 
 use super::{PskIdentity, create_psk_ssl_context};
 
-/// A builder for creating TLS 1.3 PSK client connections.
-///
-/// Provides a fluent API for configuring PSK-based TLS connections with options
-/// for SNI (Server Name Indication) and cipher suite selection.
-///
-/// # Example
-///
-/// ```no_run
-/// use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
-/// use tacacsrs_networking::helpers::connect_tcp;
-///
-/// # async fn example() -> anyhow::Result<()> {
-/// let psk = PskIdentity::new("client1", b"shared_key_at_least_16")?;
-///
-/// let tcp_stream = connect_tcp("tacacs.example.com:49").await?;
-/// let tls_stream = PskConfigurationBuilder::new(psk)
-///     .with_server_name("tacacs.example.com")
-///     .connect(tcp_stream)
-///     .await?;
-/// # Ok(())
-/// # }
-/// ```
-pub struct PskConfigurationBuilder {
+pub(crate) struct PskConfigurationBuilder {
     psk: PskIdentity,
-    server_name: Option<String>,
-    ciphersuites: Option<String>,
 }
 
 impl PskConfigurationBuilder {
-    /// Creates a new `PskConfigurationBuilder` with the given PSK identity.
-    ///
-    /// # Arguments
-    ///
-    /// * `psk` - The pre-shared key identity and secret to use for authentication
-    #[must_use]
-    pub const fn new(psk: PskIdentity) -> Self {
-        Self {
-            psk,
-            server_name: None,
-            ciphersuites: None,
-        }
-    }
-
-    /// Sets the server name for SNI (Server Name Indication).
-    ///
-    /// While PSK doesn't require SNI for authentication, some servers may
-    /// expect it for routing or configuration purposes.
-    ///
-    /// # Arguments
-    ///
-    /// * `server_name` - The server hostname for SNI
-    #[must_use]
-    pub fn with_server_name(mut self, server_name: impl Into<String>) -> Self {
-        self.server_name = Some(server_name.into());
-        self
-    }
-
-    /// Sets custom TLS 1.3 cipher suites.
-    ///
-    /// The default cipher suites are `TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256`.
-    ///
-    /// # Arguments
-    ///
-    /// * `ciphersuites` - Colon-separated list of TLS 1.3 cipher suite names
-    #[must_use]
-    pub fn with_ciphersuites(mut self, ciphersuites: impl Into<String>) -> Self {
-        self.ciphersuites = Some(ciphersuites.into());
-        self
+    /// Creates a new builder for the given PSK identity.
+    pub(crate) const fn new(psk: PskIdentity) -> Self {
+        Self { psk }
     }
 
     /// Establishes a TLS 1.3 PSK connection over the provided TCP stream.
     ///
-    /// # Arguments
-    ///
-    /// * `stream` - The underlying TCP stream to wrap with TLS
-    ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - The OpenSSL SSL context cannot be created
-    /// - The SSL object cannot be created
-    /// - The TLS handshake fails
-    pub async fn connect(self, stream: TcpStream) -> anyhow::Result<SslStream<TcpStream>> {
-        let ssl_context = create_psk_ssl_context(&self.psk, self.ciphersuites.as_deref())?;
+    /// Returns an error if the OpenSSL `SslContext` or `Ssl` object cannot be
+    /// created, or if the TLS handshake fails.
+    pub(crate) async fn connect(self, stream: TcpStream) -> anyhow::Result<SslStream<TcpStream>> {
+        let ssl_context = create_psk_ssl_context(&self.psk, None)?;
 
-        let mut ssl = Ssl::new(&ssl_context)?;
-
-        // Set SNI if configured
-        if let Some(ref server_name) = self.server_name {
-            ssl.set_hostname(server_name)?;
-        }
-
+        let ssl = Ssl::new(&ssl_context)?;
         let mut tls_stream = SslStream::new(ssl, stream)?;
 
         tokio_openssl::SslStream::connect(std::pin::Pin::new(&mut tls_stream)).await?;

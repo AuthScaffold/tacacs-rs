@@ -1,113 +1,46 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
-use anyhow::Context;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls;
 
 use super::danger::NoCertificateVerification;
 
-/// A builder for creating TLS client configurations.
+/// Internal builder used by [`super::establish_from_server`] to assemble a
+/// [`rustls::ClientConfig`] from configuration material that has already been
+/// extracted from a [`tacacsrs_config::TacacsPlusServer`].
 ///
-/// This builder provides a fluent API for configuring TLS settings including:
-/// - Root certificate stores for server verification
-/// - Client authentication certificates
-/// - Session resumption settings
-/// - Certificate verification bypass (dangerous, for testing only)
-///
-/// # Example
-///
-/// ```no_run
-/// use tacacsrs_networking::transport::tls::TlsConfigurationBuilder;
-///
-/// # async fn example() -> anyhow::Result<()> {
-/// let config = TlsConfigurationBuilder::new()
-///     .with_resumption(true)
-///     .build()?;
-/// # Ok(())
-/// # }
-/// ```
-pub struct TlsConfigurationBuilder {
+/// This type is intentionally **not** part of the public API: all callers must
+/// drive TLS connection construction through
+/// [`crate::config_connect::establish_stream`], which guarantees that the YANG
+/// configuration model is the single source of truth for transport parameters.
+pub(crate) struct TlsConfigurationBuilder {
     root_cert_store: rustls::RootCertStore,
-    resumption_enabled: bool,
     certificate_chain: Option<Vec<CertificateDer<'static>>>,
     private_key: Option<PrivateKeyDer<'static>>,
     disable_certificate_verification: bool,
 }
 
-impl Default for TlsConfigurationBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl TlsConfigurationBuilder {
-    /// Creates a new `TlsConfigurationBuilder` with default settings.
-    #[must_use]
-    pub fn new() -> Self {
+    /// Creates a new builder seeded with the default web PKI root store and no
+    /// client authentication.
+    pub(crate) fn new() -> Self {
         Self {
             root_cert_store: crate::helpers::default_root_cert_store(),
-            resumption_enabled: false,
             certificate_chain: None,
             private_key: None,
             disable_certificate_verification: false,
         }
     }
 
-    /// Sets the root certificate store for verifying server certificates.
-    #[must_use]
-    pub fn with_root_certificates(mut self, root_cert_store: rustls::RootCertStore) -> Self {
+    /// Replaces the trust anchors used to verify the server certificate.
+    pub(crate) fn with_root_certificates(mut self, root_cert_store: rustls::RootCertStore) -> Self {
         self.root_cert_store = root_cert_store;
         self
     }
 
-    /// Enables or disables TLS session resumption.
-    #[must_use]
-    pub const fn with_resumption(mut self, enabled: bool) -> Self {
-        self.resumption_enabled = enabled;
-        self
-    }
-
-    /// Loads client authentication certificates and private key from files.
-    ///
-    /// # Arguments
-    ///
-    /// * `certificate_chain_file` - Path to the DER-encoded certificate file
-    /// * `private_key_file` - Path to the PKCS#8 DER-encoded private key file
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - A certificate chain is provided without a private key
-    /// - The TLS certificate/key files cannot be read
-    /// - Either file contains PEM text instead of DER bytes
-    pub async fn with_client_auth_cert_files(
-        mut self,
-        certificate_chain_file: impl Into<PathBuf>,
-        private_key_file: impl Into<PathBuf>,
-    ) -> anyhow::Result<Self> {
-        let cert_der = tokio::fs::read(certificate_chain_file.into())
-            .await
-            .context("failed to read client certificate file")?;
-        reject_pem_input(&cert_der, "certificate")?;
-
-        let key_der = tokio::fs::read(private_key_file.into())
-            .await
-            .context("failed to read client private key file")?;
-        reject_pem_input(&key_der, "private key")?;
-
-        self.certificate_chain = Some(vec![CertificateDer::from(cert_der)]);
-        self.private_key =
-            Some(PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(key_der)));
-        Ok(self)
-    }
-
-    /// Sets client authentication from pre-parsed DER certificate chain and
-    /// private key.
-    ///
-    /// This is the preferred path when the YANG `private-key-format` identity
-    /// is known, since the caller can decode and wrap the DER bytes into the
-    /// correct [`PrivateKeyDer`] variant directly.
-    #[must_use]
-    pub fn with_client_auth_der(
+    /// Sets the client authentication certificate chain and private key,
+    /// already decoded into the appropriate `rustls` DER variants.
+    pub(crate) fn with_client_auth_der(
         mut self,
         cert_chain: Vec<CertificateDer<'static>>,
         key_der: PrivateKeyDer<'static>,
@@ -117,26 +50,21 @@ impl TlsConfigurationBuilder {
         self
     }
 
-    /// Disables certificate verification.
-    ///
-    /// # Warning
-    ///
-    /// This is dangerous and should only be used for testing or in controlled environments.
-    /// Using this in production exposes you to man-in-the-middle attacks.
-    #[must_use]
-    pub const fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
+    /// Disables certificate verification. Dangerous; only intended for the
+    /// CLI's `--insecure` style flags and tightly controlled test setups.
+    pub(crate) const fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
         self.disable_certificate_verification = disabled;
         self
     }
 
-    /// Builds the TLS client configuration.
+    /// Builds the `rustls` client configuration.
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - A certificate chain is provided without a private key
-    /// - The client authentication configuration is invalid
-    pub fn build(self) -> anyhow::Result<rustls::ClientConfig> {
+    /// Returns an error if a certificate chain was provided without a private
+    /// key, or if `rustls` rejects the supplied client authentication
+    /// material.
+    pub(crate) fn build(self) -> anyhow::Result<rustls::ClientConfig> {
         let supported_tls_versions = vec![&rustls::version::TLS13];
 
         let config =
@@ -153,11 +81,11 @@ impl TlsConfigurationBuilder {
             None => config.with_no_client_auth(),
         };
 
-        if !self.resumption_enabled {
-            config.resumption = config
-                .resumption
-                .tls12_resumption(rustls::client::Tls12Resumption::Disabled);
-        }
+        // TLS 1.2 session resumption is unconditionally disabled because the
+        // workspace only negotiates TLS 1.3.
+        config.resumption = config
+            .resumption
+            .tls12_resumption(rustls::client::Tls12Resumption::Disabled);
 
         if self.disable_certificate_verification {
             config
@@ -171,19 +99,10 @@ impl TlsConfigurationBuilder {
     }
 }
 
-fn reject_pem_input(data: &[u8], label: &str) -> anyhow::Result<()> {
-    if crate::helpers::data_contains_pem_header(data) {
-        anyhow::bail!("PEM-encoded {label} data is not supported; provide DER bytes");
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 
@@ -209,14 +128,6 @@ mod tests {
         (cert_chain, key_der)
     }
 
-    fn temp_path(suffix: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("tls-builder-test-{unique}.{suffix}"))
-    }
-
     #[test]
     fn with_client_auth_der_accepts_valid_der() {
         let (cert_chain, key_der) = sample_client_auth_der();
@@ -228,53 +139,17 @@ mod tests {
         assert!(config.is_ok(), "unexpected error: {config:?}");
     }
 
-    #[tokio::test]
-    async fn with_client_auth_cert_files_accepts_valid_der() {
-        let (cert_chain, key_der) = sample_client_auth_der();
-        let cert_path = temp_path("crt.der");
-        let key_path = temp_path("key.der");
-
-        fs::write(&cert_path, cert_chain[0].as_ref()).expect("cert temp file should be written");
-        fs::write(&key_path, key_der.secret_der()).expect("key temp file should be written");
-
-        let config = TlsConfigurationBuilder::new()
-            .with_client_auth_cert_files(&cert_path, &key_path)
-            .await
-            .and_then(TlsConfigurationBuilder::build);
-
-        fs::remove_file(&cert_path).ok();
-        fs::remove_file(&key_path).ok();
-
+    #[test]
+    fn build_without_client_auth_succeeds() {
+        let config = TlsConfigurationBuilder::new().build();
         assert!(config.is_ok(), "unexpected error: {config:?}");
     }
 
-    #[tokio::test]
-    async fn with_client_auth_cert_files_rejects_pem_input() {
-        let err = TlsConfigurationBuilder::new()
-            .with_client_auth_cert_files(sample_path("client.crt"), sample_path("client.key"))
-            .await
-            .err()
-            .expect("PEM input should fail");
-
-        assert!(
-            err.to_string()
-                .contains("PEM-encoded certificate data is not supported; provide DER bytes"),
-            "unexpected error: {err}",
-        );
-    }
-
     #[test]
-    fn reject_pem_input_ignores_leading_whitespace_and_bom() {
-        let err = super::reject_pem_input(
-            b"\n\t \xEF\xBB\xBF-----BEGIN CERTIFICATE-----\n...",
-            "certificate",
-        )
-        .expect_err("PEM input should fail");
-
-        assert!(
-            err.to_string()
-                .contains("PEM-encoded certificate data is not supported; provide DER bytes"),
-            "unexpected error: {err}",
-        );
+    fn build_with_disabled_verification_succeeds() {
+        let config = TlsConfigurationBuilder::new()
+            .with_certificate_verification_disabled(true)
+            .build();
+        assert!(config.is_ok(), "unexpected error: {config:?}");
     }
 }

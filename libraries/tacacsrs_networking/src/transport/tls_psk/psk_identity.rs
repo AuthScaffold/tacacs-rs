@@ -4,6 +4,10 @@
 /// and the corresponding shared secret key. Both values must match what the
 /// server expects.
 ///
+/// This type is internal to the crate; PSK material is supplied through the
+/// YANG configuration model and consumed by
+/// [`super::establish_from_server`].
+///
 /// # Security
 ///
 /// The PSK key material is sensitive. Avoid logging or displaying it.
@@ -12,7 +16,7 @@
 ///
 /// [RFC 9257 §6]: https://www.rfc-editor.org/rfc/rfc9257.html#section-6
 #[derive(Clone)]
-pub struct PskIdentity {
+pub(crate) struct PskIdentity {
     /// The identity string sent to the server during the TLS handshake.
     /// This allows the server to look up the correct pre-shared key.
     identity: String,
@@ -26,39 +30,18 @@ impl PskIdentity {
     /// The minimum required key length in bytes.
     ///
     /// Per RFC 9257 §6, PSKs MUST be at least 128 bits (16 bytes).
-    pub const MIN_KEY_LENGTH: usize = 16;
+    pub(crate) const MIN_KEY_LENGTH: usize = 16;
 
     /// Creates a new PSK identity with the given identity string and key.
     ///
-    /// # Arguments
-    ///
-    /// * `identity` - A string identifying this client to the server (e.g., "tacacs-client-1").
-    ///   Must not contain NUL (`\0`) bytes, as the identity is sent as a null-terminated
-    ///   C string during the TLS handshake.
-    /// * `key` - The shared secret key bytes. Must be at least [`Self::MIN_KEY_LENGTH`] bytes
-    ///   (16 bytes / 128 bits), per RFC 9257 §6.
-    ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - `identity` contains a NUL byte (`\0`)
-    /// - `identity` is empty
-    /// - `key` is shorter than [`Self::MIN_KEY_LENGTH`] bytes
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use tacacsrs_networking::transport::tls_psk::PskIdentity;
-    ///
-    /// let psk = PskIdentity::new("my-client", b"super_secret_key!").unwrap();
-    ///
-    /// // NUL bytes in identity are rejected
-    /// assert!(PskIdentity::new("bad\0id", b"super_secret_key!").is_err());
-    ///
-    /// // Keys shorter than 16 bytes are rejected
-    /// assert!(PskIdentity::new("my-client", b"too_short").is_err());
-    /// ```
-    pub fn new(identity: impl Into<String>, key: impl Into<Vec<u8>>) -> anyhow::Result<Self> {
+    /// Returns an error if `identity` is empty, contains a NUL byte, or `key`
+    /// is shorter than [`Self::MIN_KEY_LENGTH`] bytes.
+    pub(crate) fn new(
+        identity: impl Into<String>,
+        key: impl Into<Vec<u8>>,
+    ) -> anyhow::Result<Self> {
         let identity = identity.into();
         let key = key.into();
 
@@ -84,14 +67,12 @@ impl PskIdentity {
     }
 
     /// Returns the PSK identity string.
-    #[must_use]
-    pub fn identity(&self) -> &str {
+    pub(crate) fn identity(&self) -> &str {
         &self.identity
     }
 
     /// Returns the PSK key bytes.
-    #[must_use]
-    pub fn key(&self) -> &[u8] {
+    pub(crate) fn key(&self) -> &[u8] {
         &self.key
     }
 }

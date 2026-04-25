@@ -29,11 +29,9 @@ async fn main() -> anyhow::Result<()> {
     let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
     connection.run(tcp_stream).await?;
 
-    // For TLS, use:
-    // let tcp_stream = connect_tcp(hostname).await?;
-    // let tls_stream = tacacsrs_networking::transport::tls::connect_tls(&tls_config, tcp_stream, "tacacsserver.local").await?;
-    // let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
-    // connection.run(tls_stream).await?;
+    // For TLS or TLS-PSK, build a TacacsPlusServer via TacacsPlusServerBuilder
+    // and call tacacsrs_networking::config_connect::establish_stream — see the
+    // tls_client.rs and tls_psk_client.rs examples in this directory.
 
     let session_count = 100_000;
 
