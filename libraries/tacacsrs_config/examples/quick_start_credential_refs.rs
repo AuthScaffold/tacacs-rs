@@ -73,9 +73,7 @@ fn main() -> anyhow::Result<()> {
     println!("  ├─ endpoint: {}:{}", resolved.address, resolved.port);
     println!(
         "  ├─ is_tls: {}",
-        resolved.client_identity.is_some()
-            || resolved.server_authentication.is_some()
-            || resolved.hello_params.is_some()
+        resolved.client_identity.is_some() || resolved.server_authentication.is_some()
     );
     println!("  ├─ bundle reference cleared: {}", client_identity.credentials_reference.is_none());
     println!("  └─ inline certificate + private key are now present on the enumerated value");

@@ -1,11 +1,9 @@
 use std::collections::HashSet;
 
 use crate::generated::tacacs_plus::{
-    ClientCredentials, ClientIdentityCertificate, RawPrivateKey, ServerAuthenticationCaCerts,
-    ServerAuthenticationRawPublicKeys, TacacsPlus, TacacsPlusServer, Tls13Epsk,
-    TlsClientClientIdentity, TlsClientServerAuthentication,
+    ClientCredentials, ClientIdentityCertificate, ServerAuthenticationCaCerts, TacacsPlus,
+    TacacsPlusServer, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
 };
-use crate::generated::tls_common::TlsVersionBase;
 
 /// Validate a parsed TACACS+ configuration against YANG model constraints.
 ///
@@ -75,19 +73,13 @@ fn validate_server(
         reject_unsupported_inline_features(&server.name, ci)?;
     }
 
-    if let Some(ref hp) = server.hello_params {
-        validate_tls_versions(hp, &server.name)?;
-    }
-
     Ok(())
 }
 
 fn validate_security_choice(
     server: &crate::generated::tacacs_plus::TacacsPlusServer,
 ) -> anyhow::Result<()> {
-    let has_tls = server.client_identity.is_some()
-        || server.server_authentication.is_some()
-        || server.hello_params.is_some();
+    let has_tls = server.client_identity.is_some() || server.server_authentication.is_some();
     let has_obfuscation = server.shared_secret.is_some();
     validate_choice(
         &server.name,
@@ -112,9 +104,7 @@ fn validate_client_identity(
         TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_MANDATORY,
         &[
             client_identity.credentials_reference.is_some(),
-            client_identity.certificate.is_some()
-                || client_identity.raw_private_key.is_some()
-                || client_identity.tls13_epsk.is_some(),
+            client_identity.certificate.is_some() || client_identity.tls13_epsk.is_some(),
         ],
     )?;
 
@@ -124,23 +114,7 @@ fn validate_client_identity(
             "client-identity/certificate",
             ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
             ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-            &[
-                certificate.inline_definition.is_some(),
-                certificate.central_keystore_reference.is_some(),
-            ],
-        )?;
-    }
-
-    if let Some(ref raw_private_key) = client_identity.raw_private_key {
-        validate_choice(
-            &server.name,
-            "client-identity/raw-private-key",
-            RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE,
-            RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-            &[
-                raw_private_key.inline_definition.is_some(),
-                raw_private_key.central_keystore_reference.is_some(),
-            ],
+            &[certificate.inline_definition.is_some()],
         )?;
     }
 
@@ -150,10 +124,7 @@ fn validate_client_identity(
             "client-identity/tls13-epsk",
             Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
             Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-            &[
-                tls13_epsk.inline_definition.is_some(),
-                tls13_epsk.central_keystore_reference.is_some(),
-            ],
+            &[tls13_epsk.inline_definition.is_some()],
         )?;
     }
 
@@ -176,7 +147,6 @@ fn validate_server_authentication(
             server_authentication.credentials_reference.is_some(),
             server_authentication.ca_certs.is_some()
                 || server_authentication.ee_certs.is_some()
-                || server_authentication.raw_public_keys.is_some()
                 || server_authentication.tls13_epsks.is_some(),
         ],
     )?;
@@ -187,10 +157,7 @@ fn validate_server_authentication(
             "server-authentication/ca-certs",
             ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
             ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
-            &[
-                ca_certs.inline_definition.is_some(),
-                ca_certs.central_truststore_reference.is_some(),
-            ],
+            &[ca_certs.inline_definition.is_some()],
         )?;
     }
 
@@ -200,56 +167,11 @@ fn validate_server_authentication(
             "server-authentication/ee-certs",
             ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
             ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
-            &[
-                ee_certs.inline_definition.is_some(),
-                ee_certs.central_truststore_reference.is_some(),
-            ],
-        )?;
-    }
-
-    if let Some(ref raw_public_keys) = server_authentication.raw_public_keys {
-        validate_choice(
-            &server.name,
-            "server-authentication/raw-public-keys",
-            ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE,
-            ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
-            &[
-                raw_public_keys.inline_definition.is_some(),
-                raw_public_keys.central_truststore_reference.is_some(),
-            ],
+            &[ee_certs.inline_definition.is_some()],
         )?;
     }
 
     Ok(())
-}
-
-fn validate_tls_versions(
-    hp: &crate::generated::tacacs_plus::TlsClientHelloParams,
-    server_name: &str,
-) -> anyhow::Result<()> {
-    if let Some(ref versions) = hp.tls_versions {
-        if let Some(ref min) = versions.min {
-            if is_below_tls13(*min) {
-                anyhow::bail!(
-                    "server '{server_name}': minimum TLS version must be >= 1.3, got '{}'",
-                    min.as_rfc7951_str(),
-                );
-            }
-        }
-        if let Some(ref max) = versions.max {
-            if is_below_tls13(*max) {
-                anyhow::bail!(
-                    "server '{server_name}': maximum TLS version must be >= 1.3, got '{}'",
-                    max.as_rfc7951_str(),
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-fn is_below_tls13(version: TlsVersionBase) -> bool {
-    matches!(version, TlsVersionBase::Tls12)
 }
 
 fn validate_unique_ids<'a>(
@@ -273,7 +195,6 @@ fn validate_client_credentials(credentials: &ClientCredentials) -> anyhow::Resul
         ClientCredentials::CHOICE_AUTH_TYPE_MANDATORY,
         &[
             credentials.certificate.is_some(),
-            credentials.raw_private_key.is_some(),
             credentials.tls13_epsk.is_some(),
         ],
     )?;
@@ -284,23 +205,7 @@ fn validate_client_credentials(credentials: &ClientCredentials) -> anyhow::Resul
             "client-credentials/certificate",
             ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
             ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-            &[
-                certificate.inline_definition.is_some(),
-                certificate.central_keystore_reference.is_some(),
-            ],
-        )?;
-    }
-
-    if let Some(ref raw_private_key) = credentials.raw_private_key {
-        validate_choice(
-            &credentials.id,
-            "client-credentials/raw-private-key",
-            RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE,
-            RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-            &[
-                raw_private_key.inline_definition.is_some(),
-                raw_private_key.central_keystore_reference.is_some(),
-            ],
+            &[certificate.inline_definition.is_some()],
         )?;
     }
 
@@ -310,10 +215,7 @@ fn validate_client_credentials(credentials: &ClientCredentials) -> anyhow::Resul
             "client-credentials/tls13-epsk",
             Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
             Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-            &[
-                tls13_epsk.inline_definition.is_some(),
-                tls13_epsk.central_keystore_reference.is_some(),
-            ],
+            &[tls13_epsk.inline_definition.is_some()],
         )?;
     }
 
@@ -361,35 +263,7 @@ fn reject_unsupported_inline_features(
     context: &str,
     ci: &TlsClientClientIdentity,
 ) -> anyhow::Result<()> {
-    if let Some(ref cert) = ci.certificate {
-        if let Some(ref inline) = cert.inline_definition {
-            reject_unsupported_asymmetric_key_type(
-                context,
-                "client-identity/certificate",
-                inline.hidden_private_key,
-                inline.encrypted_private_key.is_some(),
-            )?;
-        }
-    }
-    if let Some(ref rpk) = ci.raw_private_key {
-        if let Some(ref inline) = rpk.inline_definition {
-            reject_unsupported_asymmetric_key_type(
-                context,
-                "client-identity/raw-private-key",
-                inline.hidden_private_key,
-                inline.encrypted_private_key.is_some(),
-            )?;
-        }
-    }
     if let Some(ref epsk) = ci.tls13_epsk {
-        if let Some(ref inline) = epsk.inline_definition {
-            reject_unsupported_symmetric_key_type(
-                context,
-                "client-identity/tls13-epsk",
-                inline.hidden_symmetric_key,
-                inline.encrypted_symmetric_key.is_some(),
-            )?;
-        }
         reject_unsupported_epsk_derivation(context, epsk)?;
     }
     Ok(())
@@ -400,68 +274,8 @@ fn reject_unsupported_credentials_features(
     context: &str,
     creds: &ClientCredentials,
 ) -> anyhow::Result<()> {
-    if let Some(ref cert) = creds.certificate {
-        if let Some(ref inline) = cert.inline_definition {
-            reject_unsupported_asymmetric_key_type(
-                context,
-                "certificate",
-                inline.hidden_private_key,
-                inline.encrypted_private_key.is_some(),
-            )?;
-        }
-    }
-    if let Some(ref rpk) = creds.raw_private_key {
-        if let Some(ref inline) = rpk.inline_definition {
-            reject_unsupported_asymmetric_key_type(
-                context,
-                "raw-private-key",
-                inline.hidden_private_key,
-                inline.encrypted_private_key.is_some(),
-            )?;
-        }
-    }
     if let Some(ref epsk) = creds.tls13_epsk {
-        if let Some(ref inline) = epsk.inline_definition {
-            reject_unsupported_symmetric_key_type(
-                context,
-                "tls13-epsk",
-                inline.hidden_symmetric_key,
-                inline.encrypted_symmetric_key.is_some(),
-            )?;
-        }
         reject_unsupported_epsk_derivation(context, epsk)?;
-    }
-    Ok(())
-}
-
-fn reject_unsupported_asymmetric_key_type(
-    context: &str,
-    path: &str,
-    hidden: Option<bool>,
-    has_encrypted: bool,
-) -> anyhow::Result<()> {
-    if hidden == Some(true) {
-        anyhow::bail!("'{context}': {path} uses hidden-private-key which is not yet supported");
-    }
-    if has_encrypted {
-        anyhow::bail!("'{context}': {path} uses encrypted-private-key which is not yet supported");
-    }
-    Ok(())
-}
-
-fn reject_unsupported_symmetric_key_type(
-    context: &str,
-    path: &str,
-    hidden: Option<bool>,
-    has_encrypted: bool,
-) -> anyhow::Result<()> {
-    if hidden == Some(true) {
-        anyhow::bail!("'{context}': {path} uses hidden-symmetric-key which is not yet supported");
-    }
-    if has_encrypted {
-        anyhow::bail!(
-            "'{context}': {path} uses encrypted-symmetric-key which is not yet supported"
-        );
     }
     Ok(())
 }
@@ -525,17 +339,6 @@ fn validate_client_identity_key_formats(
             )?;
         }
     }
-    if let Some(ref rpk) = ci.raw_private_key {
-        if let Some(ref inline) = rpk.inline_definition {
-            let path = format!("{context}/client-identity/raw-private-key");
-            validate_inline_asymmetric_key_material(
-                inline.public_key.as_deref(),
-                inline.cleartext_private_key.as_deref(),
-                None, // no cert-data in asymmetric key definition
-                &path,
-            )?;
-        }
-    }
     if let Some(ref epsk) = ci.tls13_epsk {
         if let Some(ref inline) = epsk.inline_definition {
             let path = format!("{context}/client-identity/tls13-epsk");
@@ -551,14 +354,6 @@ fn validate_server_auth_key_formats(
     sa: &TlsClientServerAuthentication,
     context: &str,
 ) -> anyhow::Result<()> {
-    if let Some(ref rpk) = sa.raw_public_keys {
-        if let Some(ref inline) = rpk.inline_definition {
-            for pk in &inline.public_key {
-                let path = format!("{context}/server-authentication/raw-public-keys");
-                validate_binary_data(&pk.public_key, &path, "public-key")?;
-            }
-        }
-    }
     // Validate inline CA and EE certificate data
     if let Some(ref ca) = sa.ca_certs {
         if let Some(ref inline) = ca.inline_definition {
@@ -596,17 +391,6 @@ fn validate_client_credential_key_formats(
                 inline.public_key.as_deref(),
                 inline.cleartext_private_key.as_deref(),
                 inline.cert_data.as_deref(),
-                &path,
-            )?;
-        }
-    }
-    if let Some(ref rpk) = cred.raw_private_key {
-        if let Some(ref inline) = rpk.inline_definition {
-            let path = format!("{context}/raw-private-key");
-            validate_inline_asymmetric_key_material(
-                inline.public_key.as_deref(),
-                inline.cleartext_private_key.as_deref(),
-                None,
                 &path,
             )?;
         }

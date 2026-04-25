@@ -31,10 +31,7 @@ fn main() -> anyhow::Result<()> {
         println!("  │  timeout: {}s", server.timeout);
         println!(
             "  │  transport: {}",
-            if server.client_identity.is_some()
-                || server.server_authentication.is_some()
-                || server.hello_params.is_some()
-            {
+            if server.client_identity.is_some() || server.server_authentication.is_some() {
                 "TLS"
             } else {
                 "obfuscation"

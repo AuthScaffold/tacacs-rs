@@ -1,7 +1,4 @@
-use tacacsrs_config::crypto_types::{
-    EncryptedValueFormat, PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat,
-};
-use tacacsrs_config::tls_common::TlsVersionBase;
+use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
 use tacacsrs_config::{parse_yang_json, TacacsPlusServerType};
 
 // ---------------------------------------------------------------------------
@@ -113,76 +110,6 @@ fn private_key_format_all_and_allowed_values() {
 }
 
 // ---------------------------------------------------------------------------
-// EncryptedValueFormat identity enum
-// ---------------------------------------------------------------------------
-
-#[test]
-fn encrypted_value_format_from_rfc7951_str_valid() {
-    assert_eq!(
-        EncryptedValueFormat::from_rfc7951_str(
-            "ietf-crypto-types:symmetrically-encrypted-value-format"
-        ),
-        Some(EncryptedValueFormat::SymmetricallyEncryptedValueFormat),
-    );
-    assert_eq!(
-        EncryptedValueFormat::from_rfc7951_str(
-            "ietf-crypto-types:asymmetrically-encrypted-value-format"
-        ),
-        Some(EncryptedValueFormat::AsymmetricallyEncryptedValueFormat),
-    );
-    assert_eq!(
-        EncryptedValueFormat::from_rfc7951_str("ietf-crypto-types:cms-encrypted-data-format"),
-        Some(EncryptedValueFormat::CmsEncryptedDataFormat),
-    );
-    assert_eq!(
-        EncryptedValueFormat::from_rfc7951_str("ietf-crypto-types:cms-enveloped-data-format"),
-        Some(EncryptedValueFormat::CmsEnvelopedDataFormat),
-    );
-}
-
-#[test]
-fn encrypted_value_format_from_rfc7951_str_invalid() {
-    assert_eq!(EncryptedValueFormat::from_rfc7951_str("invalid"), None);
-}
-
-#[test]
-fn encrypted_value_format_as_rfc7951_str() {
-    assert_eq!(
-        EncryptedValueFormat::SymmetricallyEncryptedValueFormat.as_rfc7951_str(),
-        "ietf-crypto-types:symmetrically-encrypted-value-format",
-    );
-    assert_eq!(
-        EncryptedValueFormat::AsymmetricallyEncryptedValueFormat.as_rfc7951_str(),
-        "ietf-crypto-types:asymmetrically-encrypted-value-format",
-    );
-    assert_eq!(
-        EncryptedValueFormat::CmsEncryptedDataFormat.as_rfc7951_str(),
-        "ietf-crypto-types:cms-encrypted-data-format",
-    );
-    assert_eq!(
-        EncryptedValueFormat::CmsEnvelopedDataFormat.as_rfc7951_str(),
-        "ietf-crypto-types:cms-enveloped-data-format",
-    );
-}
-
-#[test]
-fn encrypted_value_format_is_valid() {
-    for val in EncryptedValueFormat::ALLOWED_VALUES {
-        assert!(EncryptedValueFormat::is_valid(val));
-    }
-    assert!(!EncryptedValueFormat::is_valid("bogus"));
-}
-
-#[test]
-fn encrypted_value_format_all_and_allowed_values() {
-    assert_eq!(EncryptedValueFormat::ALL.len(), 4);
-    assert_eq!(EncryptedValueFormat::ALLOWED_VALUES.len(), 4);
-    for variant in EncryptedValueFormat::ALL {
-        assert!(EncryptedValueFormat::ALLOWED_VALUES.contains(&variant.as_rfc7951_str()));
-    }
-}
-
-// ---------------------------------------------------------------------------
 // SymmetricKeyFormat identity enum
 // ---------------------------------------------------------------------------
 
@@ -231,48 +158,6 @@ fn symmetric_key_format_all_and_allowed_values() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TlsVersionBase identity enum
-// ---------------------------------------------------------------------------
-
-#[test]
-fn tls_version_base_from_rfc7951_str_valid() {
-    assert_eq!(
-        TlsVersionBase::from_rfc7951_str("ietf-tls-common:tls12"),
-        Some(TlsVersionBase::Tls12),
-    );
-    assert_eq!(
-        TlsVersionBase::from_rfc7951_str("ietf-tls-common:tls13"),
-        Some(TlsVersionBase::Tls13),
-    );
-}
-
-#[test]
-fn tls_version_base_from_rfc7951_str_invalid() {
-    assert_eq!(TlsVersionBase::from_rfc7951_str("unknown"), None);
-}
-
-#[test]
-fn tls_version_base_as_rfc7951_str() {
-    assert_eq!(TlsVersionBase::Tls12.as_rfc7951_str(), "ietf-tls-common:tls12");
-    assert_eq!(TlsVersionBase::Tls13.as_rfc7951_str(), "ietf-tls-common:tls13");
-}
-
-#[test]
-fn tls_version_base_is_valid() {
-    assert!(TlsVersionBase::is_valid("ietf-tls-common:tls12"));
-    assert!(TlsVersionBase::is_valid("ietf-tls-common:tls13"));
-    assert!(!TlsVersionBase::is_valid("tls14"));
-}
-
-#[test]
-fn tls_version_base_all_and_allowed_values() {
-    assert_eq!(TlsVersionBase::ALL.len(), 2);
-    assert_eq!(TlsVersionBase::ALLOWED_VALUES.len(), 2);
-    for variant in TlsVersionBase::ALL {
-        assert!(TlsVersionBase::ALLOWED_VALUES.contains(&variant.as_rfc7951_str()));
-    }
-}
 
 // ---------------------------------------------------------------------------
 // TacacsPlusServerType serde round-trips
@@ -298,7 +183,6 @@ fn server_type_serialize_single_flag() {
                 shared_secret: Some("key".to_owned()),
                 client_identity: None,
                 server_authentication: None,
-                hello_params: None,
                 vrf_instance: None,
             }],
         },
@@ -329,7 +213,6 @@ fn server_type_serialize_two_flags() {
                 shared_secret: Some("key".to_owned()),
                 client_identity: None,
                 server_authentication: None,
-                hello_params: None,
                 vrf_instance: None,
             }],
         },

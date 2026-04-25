@@ -11,6 +11,7 @@ anyhow = "1"
 base64 = "0.22"
 bitflags = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
+serde_ignored = "0.1"
 serde_json = "1"
 
 [lints]

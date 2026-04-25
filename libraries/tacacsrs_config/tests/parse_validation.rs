@@ -21,6 +21,14 @@ fn write_temp_json_file(json: &str) -> PathBuf {
     path
 }
 
+fn assert_unknown_field_error(err: &anyhow::Error, field: &str) {
+    let message = err.to_string();
+    assert!(
+        message.contains("failed to parse config: unknown field(s):") && message.contains(field),
+        "unexpected error: {message}",
+    );
+}
+
 #[test]
 fn parse_minimal_obfuscation_config() {
     let json = r#"{
@@ -431,7 +439,7 @@ fn reject_missing_inline_or_keystore_choice() {
     let err = parse_yang_json(json).unwrap_err();
     assert!(
         err.to_string()
-            .contains("client-identity/certificate requires one of [inline, central-keystore]"),
+            .contains("client-identity/certificate requires one of [inline]"),
         "unexpected error: {err}",
     );
 }
@@ -456,9 +464,8 @@ fn reject_missing_inline_or_truststore_choice() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert!(
-        err.to_string().contains(
-            "server-authentication/ca-certs requires one of [inline, central-truststore]"
-        ),
+        err.to_string()
+            .contains("server-authentication/ca-certs requires one of [inline]"),
         "unexpected error: {err}",
     );
 }
@@ -756,11 +763,7 @@ fn reject_raw_private_key_without_choice() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("client-identity/raw-private-key requires one of [inline, central-keystore]"),
-        "unexpected error: {err}",
-    );
+    assert_unknown_field_error(&err, "raw-private-key");
 }
 
 #[test]
@@ -787,12 +790,7 @@ fn reject_raw_private_key_with_multiple_choices() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string().contains(
-            "client-identity/raw-private-key allows only one of [inline, central-keystore]"
-        ),
-        "unexpected error: {err}",
-    );
+    assert_unknown_field_error(&err, "raw-private-key");
 }
 
 #[test]
@@ -814,12 +812,7 @@ fn reject_raw_public_keys_without_choice() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string().contains(
-            "server-authentication/raw-public-keys requires one of [inline, central-truststore]"
-        ),
-        "unexpected error: {err}",
-    );
+    assert_unknown_field_error(&err, "raw-public-keys");
 }
 
 #[test]
@@ -846,12 +839,7 @@ fn reject_raw_public_keys_with_multiple_choices() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string().contains(
-            "server-authentication/raw-public-keys allows only one of [inline, central-truststore]"
-        ),
-        "unexpected error: {err}",
-    );
+    assert_unknown_field_error(&err, "raw-public-keys");
 }
 
 #[test]
@@ -1037,11 +1025,7 @@ fn reject_client_credentials_with_multiple_auth_types() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("client-credentials/auth-type allows only one of [certificate, raw-public-key, tls13-epsk]"),
-        "unexpected error: {err}",
-    );
+    assert_unknown_field_error(&err, "raw-private-key");
 }
 
 #[test]
@@ -1102,9 +1086,8 @@ fn accept_client_credentials_with_raw_private_key_auth_type() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("raw-private-key auth-type should be accepted");
-    assert_eq!(config.client_credentials.len(), 1);
-    assert_eq!(config.client_credentials[0].id, "rpk-only");
+    let err = parse_yang_json(json).unwrap_err();
+    assert_unknown_field_error(&err, "raw-private-key");
 }
 
 #[test]
@@ -1247,7 +1230,7 @@ fn expected_server_choice_mappings() -> [(&'static str, &'static [&'static str])
     ]
 }
 
-fn expected_client_identity_choice_mappings() -> [(&'static str, &'static [&'static str]); 4] {
+fn expected_client_identity_choice_mappings() -> [(&'static str, &'static [&'static str]); 3] {
     [
         (
             "TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_MANDATORY",
@@ -1279,25 +1262,6 @@ fn expected_client_identity_choice_mappings() -> [(&'static str, &'static [&'sta
             ],
         ),
         (
-            "RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE_MANDATORY",
-            &[
-                r#"
-                validate_choice(
-                    &server.name,
-                    "client-identity/raw-private-key",
-                    RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE,
-                    RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-                "#,
-                r#"
-                validate_choice(
-                    &credentials.id,
-                    "client-credentials/raw-private-key",
-                    RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE,
-                    RawPrivateKey::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-                "#,
-            ],
-        ),
-        (
             "Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY",
             &[
                 r#"
@@ -1319,7 +1283,7 @@ fn expected_client_identity_choice_mappings() -> [(&'static str, &'static [&'sta
     ]
 }
 
-fn expected_server_auth_choice_mappings() -> [(&'static str, &'static [&'static str]); 3] {
+fn expected_server_auth_choice_mappings() -> [(&'static str, &'static [&'static str]); 2] {
     [
         (
             "TlsClientServerAuthentication::CHOICE_REF_OR_EXPLICIT_MANDATORY",
@@ -1339,16 +1303,6 @@ fn expected_server_auth_choice_mappings() -> [(&'static str, &'static [&'static 
                     "server-authentication/ca-certs",
                     ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
                     ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
-                "#],
-        ),
-        (
-            "ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY",
-            &[r#"
-                validate_choice(
-                    &server.name,
-                    "server-authentication/raw-public-keys",
-                    ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE,
-                    ServerAuthenticationRawPublicKeys::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
                 "#],
         ),
     ]
@@ -1399,9 +1353,7 @@ fn reject_tls_version_min_below_13() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("minimum TLS version must be >= 1.3"));
+    assert_unknown_field_error(&err, "hello-params");
 }
 
 #[test]
@@ -1432,9 +1384,7 @@ fn reject_tls_version_max_below_13() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("maximum TLS version must be >= 1.3"));
+    assert_unknown_field_error(&err, "hello-params");
 }
 
 #[test]
@@ -1465,31 +1415,8 @@ fn accept_tls_versions_at_or_above_13() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("tls version bounds should be accepted");
-    assert_eq!(config.server.len(), 1);
-    assert_eq!(config.server[0].name, "tls-bounds-ok");
-}
-
-#[test]
-fn accept_tls_hello_params_without_tls_versions() {
-    let json = r#"{
-        "ietf-system-tacacs-plus:tacacs-plus": {
-            "server": [
-                {
-                    "name": "tls-empty-hello",
-                    "server-type": "accounting",
-                    "address": "10.0.0.33",
-                    "port": 49,
-                    "hello-params": {}
-                }
-            ]
-        }
-    }"#;
-
-    let config = parse_yang_json(json).expect("empty hello-params should be accepted");
-    assert_eq!(config.server.len(), 1);
-    assert_eq!(config.server[0].name, "tls-empty-hello");
-    assert!(config.server[0].hello_params.is_some());
+    let err = parse_yang_json(json).unwrap_err();
+    assert_unknown_field_error(&err, "hello-params");
 }
 
 #[test]
@@ -1544,12 +1471,8 @@ fn reject_tls13_epsk_with_multiple_choice_sources() {
         }
     }"#;
 
-    let err = parse_yang_json(json).expect_err("tls13-epsk with multiple choices must fail");
-    assert!(
-        err.to_string()
-            .contains("client-identity/tls13-epsk allows only one of [inline, central-keystore]"),
-        "unexpected error: {err}",
-    );
+    let err = parse_yang_json(json).unwrap_err();
+    assert_unknown_field_error(&err, "central-keystore-reference");
 }
 
 // ---------------------------------------------------------------------------
@@ -2006,7 +1929,7 @@ fn reject_hidden_private_key_in_server_certificate() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("hidden-private-key"), "unexpected error: {err}");
+    assert_unknown_field_error(&err, "hidden-private-key");
 }
 
 #[test]
@@ -2036,7 +1959,7 @@ fn reject_encrypted_private_key_in_server_certificate() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("encrypted-private-key"), "unexpected error: {err}");
+    assert_unknown_field_error(&err, "encrypted-private-key");
 }
 
 #[test]
@@ -2062,7 +1985,7 @@ fn reject_hidden_private_key_in_raw_private_key() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("hidden-private-key"), "unexpected error: {err}");
+    assert_unknown_field_error(&err, "raw-private-key");
 }
 
 #[test]
@@ -2267,7 +2190,7 @@ fn reject_encrypted_private_key_in_client_credentials_rpk() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert!(err.to_string().contains("encrypted-private-key"), "unexpected error: {err}");
+    assert_unknown_field_error(&err, "raw-private-key");
 }
 
 #[test]
@@ -2334,8 +2257,7 @@ fn reject_invalid_key_format_in_client_credentials_rpk() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    let message = err.to_string();
-    assert!(message.contains("unknown variant `bogus-format`"), "unexpected error: {message}");
+    assert_unknown_field_error(&err, "raw-private-key");
 }
 
 #[test]
@@ -2367,8 +2289,7 @@ fn reject_invalid_rpk_public_key_format_in_server_auth() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    let message = err.to_string();
-    assert!(message.contains("unknown variant `bad-format`"), "unexpected error: {message}");
+    assert_unknown_field_error(&err, "raw-public-keys");
 }
 
 #[test]
@@ -2424,8 +2345,7 @@ fn reject_invalid_key_format_in_server_rpk() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    let message = err.to_string();
-    assert!(message.contains("unknown variant `invalid`"), "unexpected error: {message}");
+    assert_unknown_field_error(&err, "raw-private-key");
 }
 
 #[test]

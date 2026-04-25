@@ -115,7 +115,6 @@ fn enumerate_server_credentials(server: &mut TacacsPlusServer, config: &TacacsPl
                 })?;
 
             ci.certificate = bundle.certificate.clone();
-            ci.raw_private_key = bundle.raw_private_key.clone();
             ci.tls13_epsk = bundle.tls13_epsk.clone();
             ci.credentials_reference = None;
         }
@@ -135,7 +134,6 @@ fn enumerate_server_credentials(server: &mut TacacsPlusServer, config: &TacacsPl
 
             sa.ca_certs = bundle.ca_certs.clone();
             sa.ee_certs = bundle.ee_certs.clone();
-            sa.raw_public_keys = bundle.raw_public_keys.clone();
             sa.tls13_epsks = bundle.tls13_epsks;
             sa.credentials_reference = None;
         }

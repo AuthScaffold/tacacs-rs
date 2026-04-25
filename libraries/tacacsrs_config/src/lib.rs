@@ -9,13 +9,12 @@ pub use enumeration::{enumerate_server, enumerate_servers, validate_credential_r
 
 // Re-export key types from generated module for convenience
 pub use generated::tacacs_plus::{
-    ClientCredentials, ClientIdentityCertificate, EpskSupportedHash, RawPrivateKey,
-    ServerAuthenticationCaCerts, ServerAuthenticationRawPublicKeys, ServerCredentials, TacacsPlus,
-    TacacsPlusServer, TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity,
-    TlsClientHelloParams, TlsClientServerAuthentication,
+    ClientCredentials, ClientIdentityCertificate, EpskSupportedHash, ServerAuthenticationCaCerts,
+    ServerCredentials, TacacsPlus, TacacsPlusServer, TacacsPlusServerType, Tls13Epsk,
+    TlsClientClientIdentity, TlsClientServerAuthentication,
 };
 pub use generated::truststore;
-pub use generated::{crypto_types, keystore, tls_common, YangConfigRoot};
+pub use generated::{crypto_types, keystore, YangConfigRoot};
 
 pub use statistics::ServerStatistics;
 
@@ -23,17 +22,19 @@ pub use statistics::ServerStatistics;
 pub mod model {
     pub use crate::generated;
     pub use crate::generated::tacacs_plus::{
-        ClientCredentials, ClientIdentityCertificate, EpskSupportedHash, RawPrivateKey,
-        ServerAuthenticationCaCerts, ServerAuthenticationRawPublicKeys, ServerCredentials,
-        TacacsPlus, TacacsPlusServer, TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity,
-        TlsClientHelloParams, TlsClientServerAuthentication,
+        ClientCredentials, ClientIdentityCertificate, EpskSupportedHash,
+        ServerAuthenticationCaCerts, ServerCredentials, TacacsPlus, TacacsPlusServer,
+        TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
     };
-    pub use crate::generated::{crypto_types, keystore, tls_common, truststore, YangConfigRoot};
+    pub use crate::generated::{crypto_types, keystore, truststore, YangConfigRoot};
 }
 
 /// Step-by-step processing API for custom parse/validate flows.
 pub mod pipeline {
+    use std::collections::BTreeSet;
     use std::path::Path;
+
+    use anyhow::bail;
 
     use crate::generated::YangConfigRoot;
 
@@ -44,7 +45,20 @@ pub mod pipeline {
     ///
     /// Returns an error if the JSON is malformed or does not match the model.
     pub fn parse_root_json(json: &str) -> anyhow::Result<YangConfigRoot> {
-        serde_json::from_str(json).map_err(|e| anyhow::anyhow!("failed to parse config: {e}"))
+        let mut deserializer = serde_json::Deserializer::from_str(json);
+        let mut ignored_paths = BTreeSet::new();
+
+        let root = serde_ignored::deserialize(&mut deserializer, |path| {
+            ignored_paths.insert(path.to_string());
+        })
+        .map_err(|e| anyhow::anyhow!("failed to parse config: {e}"))?;
+
+        if !ignored_paths.is_empty() {
+            let paths = ignored_paths.into_iter().collect::<Vec<_>>().join(", ");
+            bail!("failed to parse config: unknown field(s): {paths}");
+        }
+
+        Ok(root)
     }
 
     /// Read and parse RFC 7951 JSON from a file into the root generated model

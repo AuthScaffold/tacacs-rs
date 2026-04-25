@@ -1,6 +1,4 @@
-use tacacsrs_config::{
-    enumerate_server, enumerate_servers, parse_yang_json, pipeline, validate_credential_references,
-};
+use tacacsrs_config::{enumerate_servers, parse_yang_json, pipeline, validate_credential_references};
 
 #[test]
 fn enumerate_servers_inlines_credential_bundles() {
@@ -84,66 +82,6 @@ fn enumerate_servers_inlines_credential_bundles() {
         .expect("ca cert inline definition should exist");
     assert_eq!(inline_certs.certificate.len(), 1);
     assert_eq!(inline_certs.certificate[0].cert_data, b"test-cert");
-}
-
-#[test]
-fn enumerate_server_preserves_external_references_from_bundles() {
-    let config = parse_yang_json(
-        r#"{
-            "ietf-system-tacacs-plus:tacacs-plus": {
-                "client-credentials": [
-                    {
-                        "id": "client-bundle",
-                        "raw-private-key": {
-                            "central-keystore-reference": "ext-key"
-                        }
-                    }
-                ],
-                "server-credentials": [
-                    {
-                        "id": "server-bundle",
-                        "ca-certs": {
-                            "central-truststore-reference": "ext-ca"
-                        }
-                    }
-                ],
-                "server": [
-                    {
-                        "name": "bundled-external",
-                        "server-type": "accounting",
-                        "address": "10.0.0.2",
-                        "port": 49,
-                        "client-identity": {
-                            "credentials-reference": "client-bundle"
-                        },
-                        "server-authentication": {
-                            "credentials-reference": "server-bundle"
-                        }
-                    }
-                ]
-            }
-        }"#,
-    )
-    .expect("config should parse");
-
-    let enumerated = enumerate_server(&config, "bundled-external")
-        .expect("enumeration should succeed for named server");
-
-    let raw_private_key = enumerated
-        .client_identity
-        .as_ref()
-        .and_then(|identity| identity.raw_private_key.as_ref())
-        .expect("raw private key should be copied from bundle");
-    assert!(raw_private_key.central_keystore_reference.as_deref() == Some("ext-key"));
-    assert!(raw_private_key.inline_definition.is_none());
-
-    let ca_certs = enumerated
-        .server_authentication
-        .as_ref()
-        .and_then(|authentication| authentication.ca_certs.as_ref())
-        .expect("ca certs should be copied from bundle");
-    assert!(ca_certs.central_truststore_reference.as_deref() == Some("ext-ca"));
-    assert!(ca_certs.inline_definition.is_none());
 }
 
 #[test]
