@@ -88,13 +88,26 @@ fn populate_security_from_cli(
     }
 }
 
+/// Loads a [`TacacsPlus`] root from a YANG JSON string.
+///
+/// # Errors
+///
+/// Returns an error if the config cannot be parsed.
+pub fn tacacs_plus_from_str(contents: &str) -> anyhow::Result<TacacsPlus> {
+    tacacsrs_config::parse_yang_json(contents)
+        .context("Failed to load config from provided YANG JSON")
+}
+
 /// Loads a [`TacacsPlus`] root from a YANG JSON config file.
 ///
 /// # Errors
 ///
 /// Returns an error if the config file cannot be read or parsed.
 pub fn tacacs_plus_from_file(path: &std::path::Path) -> anyhow::Result<TacacsPlus> {
-    tacacsrs_config::parse_yang_json_file(path)
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config from {}", path.display()))?;
+
+    tacacs_plus_from_str(&contents)
         .with_context(|| format!("Failed to load config from {}", path.display()))
 }
 
@@ -190,9 +203,8 @@ mod tests {
     use clap::Parser;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{select_first_server_for_type, tacacs_plus_from_cli, tacacs_plus_from_file};
+    use super::{select_first_server_for_type, tacacs_plus_from_cli, tacacs_plus_from_str};
     use crate::cli::Cli;
     use tacacsrs_config::{TacacsPlusServerType, crypto_types::PrivateKeyFormat};
 
@@ -207,19 +219,9 @@ mod tests {
             .join(file_name)
     }
 
-    fn write_temp_config(contents: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("tacon-config-test-{unique}.json"));
-        fs::write(&path, contents).expect("temp config should be written");
-        path
-    }
-
     #[test]
-    fn tacacs_plus_from_file_loads_root() {
-        let path = write_temp_config(
+    fn tacacs_plus_from_str_loads_root() {
+        let root = tacacs_plus_from_str(
             r#"{
                 "ietf-system-tacacs-plus:tacacs-plus": {
                     "server": [
@@ -240,10 +242,8 @@ mod tests {
                     ]
                 }
             }"#,
-        );
-
-        let root = tacacs_plus_from_file(&path).expect("config file should load");
-        fs::remove_file(&path).ok();
+        )
+        .expect("config string should load");
 
         assert_eq!(root.server.len(), 2);
         assert_eq!(root.server[0].name, "primary");
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn select_first_server_for_type_skips_servers_without_requested_type() {
-        let path = write_temp_config(
+        let root = tacacs_plus_from_str(
             r#"{
                 "ietf-system-tacacs-plus:tacacs-plus": {
                     "server": [
@@ -275,10 +275,8 @@ mod tests {
                     ]
                 }
             }"#,
-        );
-
-        let root = tacacs_plus_from_file(&path).expect("config file should load");
-        fs::remove_file(&path).ok();
+        )
+        .expect("config string should load");
 
         let server = select_first_server_for_type(&root, TacacsPlusServerType::ACCOUNTING)
             .expect("accounting server should be selected");
@@ -287,7 +285,7 @@ mod tests {
 
     #[test]
     fn select_first_server_for_type_errors_when_no_server_supports_type() {
-        let path = write_temp_config(
+        let root = tacacs_plus_from_str(
             r#"{
                 "ietf-system-tacacs-plus:tacacs-plus": {
                     "server": [
@@ -301,10 +299,8 @@ mod tests {
                     ]
                 }
             }"#,
-        );
-
-        let root = tacacs_plus_from_file(&path).expect("config file should load");
-        fs::remove_file(&path).ok();
+        )
+        .expect("config string should load");
 
         let error = select_first_server_for_type(&root, TacacsPlusServerType::ACCOUNTING)
             .expect_err("accounting server should be required");
