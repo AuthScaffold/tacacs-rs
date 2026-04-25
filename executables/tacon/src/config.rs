@@ -29,7 +29,6 @@ pub fn server_config_from_cli(cli: &Cli) -> anyhow::Result<ResolvedServer> {
         sni_enabled: None,
         client_identity: None,
         server_authentication: None,
-        hello_params: None,
         source_ip: None,
         source_interface: None,
         vrf_instance: None,
@@ -49,17 +48,13 @@ fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyho
             server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
                 credentials_reference: None,
                 certificate: None,
-                raw_private_key: None,
                 tls13_epsk: Some(tacacsrs_config::Tls13Epsk {
                     inline_definition: Some(
                         tacacsrs_config::keystore::SymmetricKeyInlineDefinition {
                             key_format: None,
                             cleartext_symmetric_key: Some(psk_key.as_bytes().to_vec()),
-                            hidden_symmetric_key: None,
-                            encrypted_symmetric_key: None,
                         },
                     ),
-                    central_keystore_reference: None,
                     external_identity: psk_identity.clone(),
                     hash: tacacsrs_config::EpskSupportedHash::Sha256,
                     context: None,
@@ -96,21 +91,19 @@ fn populate_security_from_cli(cli: &Cli, server: &mut TacacsPlusServer) -> anyho
                             public_key: None,
                             private_key_format: None,
                             cleartext_private_key: client_key_der,
-                            hidden_private_key: None,
-                            encrypted_private_key: None,
                             cert_data: client_cert_der,
                         },
                     ),
-                    central_keystore_reference: None,
                 }),
-                raw_private_key: None,
                 tls13_epsk: None,
             });
         } else {
-            // TLS without client certs — hello-params-only or server-auth-only
-            server.hello_params = Some(tacacsrs_config::TlsClientHelloParams {
-                tls_versions: None,
-                cipher_suites: None,
+            // TLS without client certs still needs an explicit TLS selector.
+            server.server_authentication = Some(tacacsrs_config::TlsClientServerAuthentication {
+                credentials_reference: None,
+                ca_certs: None,
+                ee_certs: None,
+                tls13_epsks: None,
             });
         }
     } else {

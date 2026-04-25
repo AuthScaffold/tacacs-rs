@@ -51,20 +51,11 @@ pub struct ConnectOptions {
 /// - TCP connection fails or times out
 /// - TLS certificate/key material cannot be parsed
 /// - TLS handshake fails
-/// - Raw private key (RPK) client auth is configured (not yet supported)
 pub async fn establish_stream(
     server: &ResolvedServer,
     options: &ConnectOptions,
 ) -> Result<BoxedTransport> {
     let address = server.socket_address();
-
-    // Reject unsupported client identity types before opening a connection
-    #[cfg(not(feature = "rpk"))]
-    if let Some(ref ci) = server.client_identity {
-        if ci.raw_private_key.is_some() {
-            anyhow::bail!("raw public key (RPK) client authentication requires the 'rpk' feature");
-        }
-    }
 
     let security_label = if server.is_tls() {
         "tls"
@@ -113,27 +104,6 @@ pub async fn establish_stream(
 
             log::debug!("TLS-PSK connection to {address} ready");
             return Ok(BoxedTransport::new(tls_stream));
-        }
-    }
-
-    // --- TLS-RPK (must be checked before general TLS, after PSK) ---
-    #[cfg(feature = "rpk")]
-    if let Some(ref ci) = server.client_identity {
-        if let Some(ref rpk) = ci.raw_private_key {
-            if let Some(ref inline) = rpk.inline_definition {
-                if let Some(ref cleartext_key) = inline.cleartext_private_key {
-                    let tls_stream = establish_rpk_stream(
-                        server,
-                        &address,
-                        inline.private_key_format.as_ref(),
-                        cleartext_key,
-                        tcp_stream,
-                    )
-                    .await?;
-
-                    return Ok(BoxedTransport::new(tls_stream));
-                }
-            }
         }
     }
 
@@ -210,63 +180,6 @@ async fn establish_cert_tls_stream(
         .context("Failed to establish TLS connection")?;
 
     log::debug!("TLS connection to {address} ready");
-    Ok(tls_stream)
-}
-
-/// Establishes a TLS-RPK connection using the raw key material from the
-/// YANG configuration.
-#[cfg(feature = "rpk")]
-async fn establish_rpk_stream(
-    server: &ResolvedServer,
-    address: &str,
-    private_key_format: Option<&PrivateKeyFormat>,
-    cleartext_key: &[u8],
-    tcp_stream: tokio::net::TcpStream,
-) -> Result<tokio_openssl::SslStream<tokio::net::TcpStream>> {
-    log::debug!("Setting up TLS-RPK connection to {address}");
-
-    let key_format = match private_key_format {
-        Some(PrivateKeyFormat::RsaPrivateKeyFormat) => crate::transport::tls_rpk::KeyFormat::Pkcs1,
-        Some(PrivateKeyFormat::EcPrivateKeyFormat) => crate::transport::tls_rpk::KeyFormat::Sec1,
-        Some(PrivateKeyFormat::OneAsymmetricKeyFormat) | None => {
-            crate::transport::tls_rpk::KeyFormat::Pkcs8
-        }
-    };
-
-    let private_key_der = cleartext_key.to_vec();
-
-    let mut identity = crate::transport::tls_rpk::RpkIdentity::new(private_key_der, key_format)
-        .context("Invalid RPK credentials")?;
-
-    // Collect pinned server public keys for verification
-    if let Some(ref sa) = server.server_authentication {
-        if let Some(ref raw_pub_keys) = sa.raw_public_keys {
-            if let Some(ref inline_def) = raw_pub_keys.inline_definition {
-                let mut pinned = Vec::new();
-                for pk in &inline_def.public_key {
-                    pinned.push(crate::transport::tls_rpk::PinnedPublicKey {
-                        name: pk.name.clone(),
-                        spki_der: pk.public_key.clone(),
-                    });
-                }
-                identity = identity.with_pinned_server_keys(pinned);
-            }
-        }
-    }
-
-    let sni_name = derive_sni_name(server, address);
-    let mut builder = crate::transport::tls_rpk::RpkConfigurationBuilder::new(identity);
-    if server.sni_enabled() {
-        builder = builder.with_server_name(sni_name);
-    }
-
-    let tls_stream = builder
-        .connect(tcp_stream)
-        .await
-        .inspect_err(|e| log::warn!("TLS-RPK handshake with {address} failed: {e:#}"))
-        .context("Failed to establish TLS RPK connection")?;
-
-    log::debug!("TLS-RPK connection to {address} ready");
     Ok(tls_stream)
 }
 
@@ -411,7 +324,6 @@ mod tests {
                 sni_enabled: Some(true),
                 client_identity: None,
                 server_authentication: None,
-                hello_params: None,
                 source_ip: None,
                 source_interface: None,
                 vrf_instance: None,
@@ -438,7 +350,6 @@ mod tests {
                 sni_enabled: None,
                 client_identity: None,
                 server_authentication: None,
-                hello_params: None,
                 source_ip: None,
                 source_interface: None,
                 vrf_instance: None,

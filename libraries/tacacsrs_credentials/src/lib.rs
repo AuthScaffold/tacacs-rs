@@ -4,12 +4,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, SubjectPublicKeyInfoDer};
-use tacacsrs_config::crypto_types::{PrivateKeyFormat, SymmetricKeyFormat};
+use tacacsrs_config::crypto_types::SymmetricKeyFormat;
 use tacacsrs_config::{TacacsPlusServer, TlsClientClientIdentity, TlsClientServerAuthentication};
-
-mod epsk;
-mod rpk;
-mod tls;
 
 struct NoOpResolver;
 
@@ -339,38 +335,6 @@ pub trait CredentialResolver: Send + Sync {
     fn validate_public_key_bag(&self, key: &str) -> Result<()>;
 }
 
-#[derive(Debug)]
-pub(crate) struct EncodedPrivateKey {
-    pub format: PrivateKeyFormat,
-    pub der_bytes: Vec<u8>,
-}
-
-pub(crate) fn encode_certificate_der(certificate: &CertificateDer<'_>) -> Vec<u8> {
-    certificate.as_ref().to_vec()
-}
-
-pub(crate) fn encode_public_key_der(public_key: &SubjectPublicKeyInfoDer<'_>) -> Vec<u8> {
-    public_key.as_ref().to_vec()
-}
-
-pub(crate) fn encode_symmetric_key_data(key_bytes: &[u8]) -> Vec<u8> {
-    key_bytes.to_vec()
-}
-
-pub(crate) fn encode_private_key_data(key: &PrivateKeyDer<'_>) -> Result<EncodedPrivateKey> {
-    let format = match key {
-        PrivateKeyDer::Pkcs1(_) => PrivateKeyFormat::RsaPrivateKeyFormat,
-        PrivateKeyDer::Sec1(_) => PrivateKeyFormat::EcPrivateKeyFormat,
-        PrivateKeyDer::Pkcs8(_) => PrivateKeyFormat::OneAsymmetricKeyFormat,
-        _ => anyhow::bail!("unsupported DER private key variant for TACACS+ credential encoding"),
-    };
-
-    Ok(EncodedPrivateKey {
-        format,
-        der_bytes: key.secret_der().to_vec(),
-    })
-}
-
 #[derive(Clone)]
 pub struct ResolvedServer(TacacsPlusServer);
 
@@ -406,9 +370,7 @@ impl ResolvedServer {
 
     #[must_use]
     pub fn is_tls(&self) -> bool {
-        self.0.client_identity.is_some()
-            || self.0.server_authentication.is_some()
-            || self.0.hello_params.is_some()
+        self.0.client_identity.is_some() || self.0.server_authentication.is_some()
     }
 
     #[must_use]
@@ -443,7 +405,6 @@ impl fmt::Debug for ResolvedServer {
             .field("timeout", &self.0.timeout)
             .field("client_identity", &"<redacted>")
             .field("server_authentication", &"<redacted>")
-            .field("hello_params", &self.0.hello_params)
             .field("shared_secret", &self.0.shared_secret.as_ref().map(|_| "<redacted>"))
             .finish()
     }
@@ -563,14 +524,7 @@ fn resolve_server_external_credentials(
     server: &mut TacacsPlusServer,
     resolver: &dyn CredentialResolver,
 ) -> Result<()> {
-    if let Some(ref mut ci) = server.client_identity {
-        resolve_client_identity_external_refs(ci, resolver)?;
-    }
-
-    if let Some(ref mut sa) = server.server_authentication {
-        resolve_server_auth_external_refs(sa, resolver)?;
-    }
-
+    let _ = (server, resolver);
     Ok(())
 }
 
@@ -605,47 +559,13 @@ fn validate_no_config_credential_references(server: &TacacsPlusServer) -> Result
     }
 }
 
-fn resolve_client_identity_external_refs(
-    ci: &mut TlsClientClientIdentity,
-    resolver: &dyn CredentialResolver,
-) -> Result<()> {
-    if let Some(ref mut cert) = ci.certificate {
-        tls::resolve_certificate_keystore_ref(cert, resolver)?;
-    }
-    if let Some(ref mut rpk_key) = ci.raw_private_key {
-        rpk::resolve_raw_private_key_keystore_ref(rpk_key, resolver)?;
-    }
-    if let Some(ref mut epsk_key) = ci.tls13_epsk {
-        epsk::resolve_epsk_keystore_ref(epsk_key, resolver)?;
-    }
-    Ok(())
-}
-
-fn resolve_server_auth_external_refs(
-    sa: &mut TlsClientServerAuthentication,
-    resolver: &dyn CredentialResolver,
-) -> Result<()> {
-    if let Some(ref mut ca) = sa.ca_certs {
-        tls::resolve_ca_certs_truststore_ref(ca, resolver)?;
-    }
-    if let Some(ref mut ee) = sa.ee_certs {
-        tls::resolve_ee_certs_truststore_ref(ee, resolver)?;
-    }
-    if let Some(ref mut rpk_key) = sa.raw_public_keys {
-        rpk::resolve_raw_public_keys_truststore_ref(rpk_key, resolver)?;
-    }
-    Ok(())
-}
-
 fn validate_client_identity_external_refs(
     ci: &TlsClientClientIdentity,
     server_name: &str,
     resolver: &dyn CredentialResolver,
     errors: &mut Vec<String>,
 ) {
-    tls::validate_certificate_refs(ci, server_name, resolver, errors);
-    rpk::validate_rpk_keystore_refs(ci, server_name, resolver, errors);
-    epsk::validate_epsk_keystore_refs(ci, server_name, resolver, errors);
+    let _ = (ci, server_name, resolver, errors);
 }
 
 fn validate_server_auth_external_refs(
@@ -654,6 +574,5 @@ fn validate_server_auth_external_refs(
     resolver: &dyn CredentialResolver,
     errors: &mut Vec<String>,
 ) {
-    tls::validate_server_auth_cert_refs(sa, server_name, resolver, errors);
-    rpk::validate_rpk_truststore_refs(sa, server_name, resolver, errors);
+    let _ = (sa, server_name, resolver, errors);
 }

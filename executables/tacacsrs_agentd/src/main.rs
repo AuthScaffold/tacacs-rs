@@ -203,21 +203,19 @@ fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<Reso
                                 public_key: None,
                                 private_key_format: None,
                                 cleartext_private_key: client_key_der.clone(),
-                                hidden_private_key: None,
-                                encrypted_private_key: None,
                                 cert_data: client_cert_der.clone(),
                             },
                         ),
-                        central_keystore_reference: None,
                     }),
-                    raw_private_key: None,
                     tls13_epsk: None,
                 });
             } else {
-                // TLS without client certs
-                server.hello_params = Some(tacacsrs_config::TlsClientHelloParams {
-                    tls_versions: None,
-                    cipher_suites: None,
+                // TLS without client certs still needs an explicit TLS selector.
+                server.server_authentication = Some(tacacsrs_config::TlsClientServerAuthentication {
+                    credentials_reference: None,
+                    ca_certs: None,
+                    ee_certs: None,
+                    tls13_epsks: None,
                 });
             }
             resolve_server(server, None)
@@ -240,7 +238,6 @@ fn base_server_from_address(addr: &str, index: usize, timeout: u16) -> TacacsPlu
         sni_enabled: None,
         client_identity: None,
         server_authentication: None,
-        hello_params: None,
         source_ip: None,
         source_interface: None,
         vrf_instance: None,
