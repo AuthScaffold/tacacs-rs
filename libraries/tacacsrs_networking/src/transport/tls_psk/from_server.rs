@@ -16,7 +16,7 @@ use super::{PskConfigurationBuilder, PskIdentity};
 /// Returns `true` when `server` carries a TLS 1.3 PSK client identity that
 /// would direct the dispatcher to use the PSK transport.
 #[must_use]
-pub fn server_has_psk(server: &TacacsPlusServer) -> bool {
+pub(crate) fn server_has_psk(server: &TacacsPlusServer) -> bool {
     server
         .client_identity
         .as_ref()
@@ -37,7 +37,7 @@ pub fn server_has_psk(server: &TacacsPlusServer) -> bool {
 /// should ensure [`server_has_psk`] returns `true` before invoking this
 /// function — if no PSK is configured, an error is returned because there is
 /// no key material to negotiate with.
-pub async fn establish_from_server(
+pub(crate) async fn establish_from_server(
     server: &TacacsPlusServer,
     address: &str,
     tcp_stream: TcpStream,

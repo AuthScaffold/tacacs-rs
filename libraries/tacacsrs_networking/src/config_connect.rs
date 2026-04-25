@@ -2,8 +2,8 @@
 //! for a [`TacacsPlusServer`] configuration and establishes a stream.
 //!
 //! This module deliberately does **not** know how to parse certificates,
-//! private keys, or PSK material. Each transport backend
-//! ([`crate::transport::tls`], [`crate::transport::tls_psk`]) owns its own
+//! private keys, or PSK material. Each transport backend (the crate-internal
+//! `transport::tls` and `transport::tls_psk` modules) owns its own
 //! translation from [`TacacsPlusServer`] to a connected stream. The dispatcher
 //! is only responsible for:
 //!

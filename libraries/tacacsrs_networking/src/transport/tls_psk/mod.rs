@@ -1,31 +1,13 @@
-//! TLS 1.3 Pre-Shared Key (PSK) support for TACACS+ connections.
+//! TLS 1.3 Pre-Shared Key (PSK) transport for TACACS+ connections.
 //!
-//! This module provides TLS 1.3 with out-of-band PSK authentication using OpenSSL,
-//! as an alternative to certificate-based TLS authentication. This is useful in
-//! environments where managing PKI infrastructure is impractical, and both the
-//! client and server share a pre-configured secret key and identity.
+//! Connections are constructed exclusively through
+//! [`establish_from_server`], which interprets a [`TacacsPlusServer`]
+//! configuration (specifically, the `client-identity.tls13-epsk` container)
+//! and performs the TLS-PSK handshake. The internal `PskIdentity` and
+//! `PskConfigurationBuilder` helpers are no longer part of the public API;
+//! callers should drive the dispatcher in [`crate::config_connect`] instead.
 //!
-//! # Overview
-//!
-//! TLS 1.3 PSK (RFC 8446 §2.2) allows a client and server to authenticate using
-//! a shared secret rather than certificates. This module implements the "external PSK"
-//! variant, where the PSK identity and key are provisioned out-of-band (i.e., configured
-//! ahead of time on both endpoints).
-//!
-//! # Example
-//!
-//! ```no_run
-//! use tacacsrs_networking::transport::tls_psk::{PskIdentity, connect_tls_psk};
-//! use tacacsrs_networking::helpers::connect_tcp;
-//!
-//! # async fn example() -> anyhow::Result<()> {
-//! let psk = PskIdentity::new("my-tacacs-client", b"shared_secret_key_here!!")?;
-//!
-//! let tcp_stream = connect_tcp("tacacs.example.com:49").await?;
-//! let tls_stream = connect_tls_psk(tcp_stream, &psk).await?;
-//! # Ok(())
-//! # }
-//! ```
+//! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 
 mod config_builder;
 mod from_server;
@@ -33,56 +15,15 @@ mod psk_identity;
 #[allow(clippy::module_inception)]
 mod tls_psk;
 
-pub use config_builder::PskConfigurationBuilder;
-pub use from_server::{establish_from_server, server_has_psk};
-pub use psk_identity::PskIdentity;
+pub(crate) use config_builder::PskConfigurationBuilder;
+pub(crate) use from_server::{establish_from_server, server_has_psk};
+pub(crate) use psk_identity::PskIdentity;
 
 use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
-use tokio::net::TcpStream;
-use tokio_openssl::SslStream;
-
-/// Establishes a TLS 1.3 PSK connection over an existing TCP stream.
-///
-/// This is a convenience function that creates a [`PskConfigurationBuilder`]
-/// with default settings and connects using the provided PSK identity.
-///
-/// # Arguments
-///
-/// * `stream` - The underlying TCP stream
-/// * `psk` - The pre-shared key identity and secret
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The OpenSSL context cannot be created
-/// - The TLS handshake fails (e.g., PSK mismatch, server doesn't support PSK)
-///
-/// # Example
-///
-/// ```no_run
-/// use tacacsrs_networking::transport::tls_psk::{PskIdentity, connect_tls_psk};
-/// use tacacsrs_networking::helpers::connect_tcp;
-///
-/// # async fn example() -> anyhow::Result<()> {
-/// let psk = PskIdentity::new("client1", b"shared_key_at_least_16")?;
-/// let tcp = connect_tcp("tacacs.example.com:49").await?;
-/// let tls = connect_tls_psk(tcp, &psk).await?;
-/// # Ok(())
-/// # }
-/// ```
-pub async fn connect_tls_psk(
-    stream: TcpStream,
-    psk: &PskIdentity,
-) -> anyhow::Result<SslStream<TcpStream>> {
-    PskConfigurationBuilder::new(psk.clone())
-        .connect(stream)
-        .await
-}
 
 /// Creates an OpenSSL `SslContext` configured for TLS 1.3 PSK.
 ///
-/// This is used internally by [`PskConfigurationBuilder`] but can also be used
-/// directly for advanced configuration scenarios.
+/// This is used internally by [`PskConfigurationBuilder`].
 ///
 /// # Arguments
 ///

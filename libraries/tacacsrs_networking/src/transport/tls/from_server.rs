@@ -36,7 +36,7 @@ use crate::helpers::{data_contains_pem_header, tls_server_name};
 /// Returns an error if any TLS material in the configuration cannot be parsed,
 /// the resulting `rustls::ClientConfig` cannot be built, or the TLS handshake
 /// fails.
-pub async fn establish_from_server(
+pub(crate) async fn establish_from_server(
     server: &TacacsPlusServer,
     address: &str,
     tcp_stream: TcpStream,

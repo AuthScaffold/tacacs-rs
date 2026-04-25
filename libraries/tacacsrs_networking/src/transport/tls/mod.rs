@@ -1,23 +1,13 @@
-//! TLS configuration and transport utilities for TACACS+ connections.
+//! TLS transport for TACACS+ connections.
 //!
-//! This module provides:
-//! - [`TlsConfigurationBuilder`] - A builder for creating TLS client configurations
-//! - [`connect_tls`] - A helper function for establishing TLS connections
+//! Connections are constructed exclusively through
+//! [`establish_from_server`], which interprets a [`TacacsPlusServer`]
+//! configuration and performs the TLS handshake. The internal
+//! `TlsConfigurationBuilder` and `connect_tls` helpers are no longer part
+//! of the public API; callers should drive the dispatcher in
+//! [`crate::config_connect`] instead.
 //!
-//! # Example
-//!
-//! ```no_run
-//! use std::sync::Arc;
-//! use tacacsrs_networking::transport::tls::{TlsConfigurationBuilder, connect_tls};
-//! use tacacsrs_networking::helpers::connect_tcp;
-//!
-//! # async fn example() -> anyhow::Result<()> {
-//! let config = Arc::new(TlsConfigurationBuilder::new().build()?);
-//! let tcp_stream = connect_tcp("tacacs.example.com:49").await?;
-//! let tls_stream = connect_tls(&config, tcp_stream, "tacacs.example.com").await?;
-//! # Ok(())
-//! # }
-//! ```
+//! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 
 mod config_builder;
 mod danger;
@@ -25,8 +15,8 @@ mod from_server;
 #[allow(clippy::module_inception)]
 mod tls;
 
-pub use config_builder::TlsConfigurationBuilder;
-pub use from_server::establish_from_server;
+pub(crate) use config_builder::TlsConfigurationBuilder;
+pub(crate) use from_server::establish_from_server;
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -46,7 +36,7 @@ use tokio_rustls::{rustls, TlsConnector};
 /// Returns an error if:
 /// - The server name is neither a valid domain name nor IP address
 /// - The TLS handshake fails
-pub async fn connect_tls(
+pub(crate) async fn connect_tls(
     config: &Arc<rustls::ClientConfig>,
     stream: tokio::net::TcpStream,
     server_name: &str,
