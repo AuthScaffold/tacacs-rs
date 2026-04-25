@@ -411,7 +411,7 @@ mod tests {
             server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
             address: host,
             port,
-            shared_secret: None,
+            shared_secret: Some("test-secret".to_owned()),
             timeout: 5,
             single_connection: false,
             domain_name: None,
@@ -435,7 +435,8 @@ mod tests {
                 tacacsrs_config::TacacsPlusBuilder::new(),
                 tacacsrs_config::TacacsPlusBuilder::with_server,
             )
-            .build();
+            .build()
+            .expect("test config is valid");
         ServiceConfig {
             endpoint,
             tacacs_plus,
