@@ -243,10 +243,7 @@ mod tests {
         let err = TacacsPlusBuilder::new()
             .build()
             .expect_err("empty server list should be rejected");
-        assert!(
-            err.to_string().contains("at least one"),
-            "unexpected error: {err}",
-        );
+        assert!(err.to_string().contains("at least one"), "unexpected error: {err}",);
     }
 
     #[test]
@@ -324,10 +321,7 @@ mod tests {
         let result = TacacsPlusBuilder::new().build();
 
         let err = result.expect_err("empty server list should be rejected");
-        assert!(
-            err.to_string().contains("at least one"),
-            "unexpected error: {err}",
-        );
+        assert!(err.to_string().contains("at least one"), "unexpected error: {err}",);
     }
 
     #[test]
@@ -387,9 +381,6 @@ mod tests {
         let result = TacacsPlusBuilder::new().with_server(server).build();
 
         let err = result.expect_err("server with no security choice should be rejected");
-        assert!(
-            err.to_string().contains("security"),
-            "unexpected error: {err}",
-        );
+        assert!(err.to_string().contains("security"), "unexpected error: {err}",);
     }
 }
