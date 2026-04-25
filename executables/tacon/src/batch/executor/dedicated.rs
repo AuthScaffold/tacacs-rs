@@ -15,9 +15,12 @@ use super::super::types::{BatchRequest, LoadTestConfig, RequestResult};
 /// Probes the server for single-connection support by sending a lightweight
 /// accounting record that logs tacon's invocation. Returns `true` if the
 /// server echoed `TAC_PLUS_SINGLE_CONNECT_FLAG`.
-pub(super) async fn probe_single_connect(server: &TacacsPlusServer) -> bool {
+pub(super) async fn probe_single_connect(
+    server: &TacacsPlusServer,
+    options: &ConnectOptions,
+) -> bool {
     let result = async {
-        let stream = establish_stream(server, &ConnectOptions::default())
+        let stream = establish_stream(server, options)
             .await
             .context("Probe connection failed")?;
         let obfuscation_key = server.obfuscation_key();
@@ -80,11 +83,12 @@ fn redact_secret_args(args: impl Iterator<Item = String>) -> Vec<String> {
 /// tasks, no session multiplexing).
 async fn execute_single_request_dedicated(
     server: &TacacsPlusServer,
+    options: &ConnectOptions,
     request: &BatchRequest,
 ) -> Result<String, String> {
     match request {
         BatchRequest::Accounting(req) => {
-            let stream = establish_stream(server, &ConnectOptions::default())
+            let stream = establish_stream(server, options)
                 .await
                 .map_err(|error| format!("Connection failed: {error}"))?;
 
@@ -118,6 +122,7 @@ pub(super) async fn execute_requests_dedicated(
     server: &TacacsPlusServer,
     requests: &[BatchRequest],
     parallel: bool,
+    options: &ConnectOptions,
 ) -> Vec<RequestResult> {
     if parallel {
         let futures: Vec<_> = requests
@@ -125,11 +130,12 @@ pub(super) async fn execute_requests_dedicated(
             .enumerate()
             .map(|(index, request)| {
                 let server = server.clone();
+                let options = options.clone();
                 async move {
                     RequestResult {
                         index,
                         request_type: request.type_name(),
-                        result: execute_single_request_dedicated(&server, request).await,
+                        result: execute_single_request_dedicated(&server, &options, request).await,
                     }
                 }
             })
@@ -142,7 +148,7 @@ pub(super) async fn execute_requests_dedicated(
             results.push(RequestResult {
                 index,
                 request_type: request.type_name(),
-                result: execute_single_request_dedicated(server, request).await,
+                result: execute_single_request_dedicated(server, options, request).await,
             });
         }
         results
@@ -153,16 +159,19 @@ pub(super) async fn run_dedicated_load_test(
     server: &TacacsPlusServer,
     requests: &[BatchRequest],
     load_config: &LoadTestConfig,
+    options: &ConnectOptions,
 ) -> super::super::types::LoadTestResult {
     let server = server.clone();
+    let options = options.clone();
     run_load_test(
         requests.len() * load_config.repetitions,
         load_test_iterations(requests, load_config.repetitions),
         load_config.max_parallel,
         move |rep, idx, request| {
             let server = server.clone();
+            let options = options.clone();
             async move {
-                execute_single_request_dedicated(&server, request)
+                execute_single_request_dedicated(&server, &options, request)
                     .await
                     .map(|_| ())
                     .map_err(|error| {

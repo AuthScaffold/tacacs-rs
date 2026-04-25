@@ -92,19 +92,22 @@ pub(super) async fn execute_load_test_multiplexed(
     server: &TacacsPlusServer,
     requests: &[BatchRequest],
     config: &LoadTestConfig,
+    options: &ConnectOptions,
 ) -> anyhow::Result<LoadTestResult> {
     let total_requests = requests.len() * config.repetitions;
 
     println!("Starting load test with {total_requests} total requests...\n");
 
     let server = server.clone();
+    let options = options.clone();
     Ok(run_load_test(
         total_requests,
         load_test_iterations(requests, config.repetitions),
         config.max_parallel,
         move |rep, idx, request| {
             let server = server.clone();
-            async move { execute_load_test_single(&server, request, rep, idx).await }
+            let options = options.clone();
+            async move { execute_load_test_single(&server, &options, request, rep, idx).await }
         },
     )
     .await)
@@ -113,11 +116,12 @@ pub(super) async fn execute_load_test_multiplexed(
 /// Executes a single load test iteration on a new multiplexed connection
 async fn execute_load_test_single(
     server: &TacacsPlusServer,
+    options: &ConnectOptions,
     request: &BatchRequest,
     rep: usize,
     idx: usize,
 ) -> Result<(), String> {
-    let connection = establish_connection(server, &ConnectOptions::default())
+    let connection = establish_connection(server, options)
         .await
         .map_err(|error| {
             format!("Connection failed at rep {}, request {}: {}", rep + 1, idx + 1, error)

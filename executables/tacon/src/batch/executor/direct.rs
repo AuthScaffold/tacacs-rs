@@ -24,14 +24,18 @@ enum ExecutionMode {
 /// unconditionally. Otherwise a lightweight accounting record is sent via a
 /// dedicated connection to check whether the server echoes
 /// `TAC_PLUS_SINGLE_CONNECT_FLAG`.
-async fn determine_execution_mode(server: &TacacsPlusServer, dedicated: bool) -> ExecutionMode {
+async fn determine_execution_mode(
+    server: &TacacsPlusServer,
+    dedicated: bool,
+    options: &ConnectOptions,
+) -> ExecutionMode {
     if dedicated {
         log::info!("Dedicated mode forced by CLI flag — skipping single-connection probe");
         return ExecutionMode::Dedicated;
     }
 
     log::info!("Probing server for single-connection support via dedicated connection");
-    if probe_single_connect(server).await {
+    if probe_single_connect(server, options).await {
         ExecutionMode::Multiplexed
     } else {
         ExecutionMode::Dedicated
@@ -58,10 +62,10 @@ pub async fn execute_batch(
         return Ok(vec![]);
     }
 
-    let execution_mode = determine_execution_mode(server, dedicated).await;
+    let execution_mode = determine_execution_mode(server, dedicated, options).await;
 
     if let Some(load_config) = &batch.metadata.load_test {
-        return execute_batch_load_test(server, batch, load_config, execution_mode).await;
+        return execute_batch_load_test(server, batch, load_config, execution_mode, options).await;
     }
 
     let request_count = batch.requests.len();
@@ -84,7 +88,8 @@ pub async fn execute_batch(
                 "Executing {request_count} requests with dedicated connections (parallel: {})",
                 batch.metadata.parallel,
             );
-            execute_requests_dedicated(server, &batch.requests, batch.metadata.parallel).await
+            execute_requests_dedicated(server, &batch.requests, batch.metadata.parallel, options)
+                .await
         }
     };
 
@@ -99,6 +104,7 @@ async fn execute_batch_load_test(
     batch: &BatchFile,
     load_config: &LoadTestConfig,
     execution_mode: ExecutionMode,
+    options: &ConnectOptions,
 ) -> anyhow::Result<Vec<RequestResult>> {
     let mode_label = match execution_mode {
         ExecutionMode::Multiplexed => "Multiplexed Connections",
@@ -118,10 +124,10 @@ async fn execute_batch_load_test(
 
     let result = match execution_mode {
         ExecutionMode::Multiplexed => {
-            execute_load_test_multiplexed(server, &batch.requests, load_config).await?
+            execute_load_test_multiplexed(server, &batch.requests, load_config, options).await?
         }
         ExecutionMode::Dedicated => {
-            run_dedicated_load_test(server, &batch.requests, load_config).await
+            run_dedicated_load_test(server, &batch.requests, load_config, options).await
         }
     };
     print_load_test_summary(&result);

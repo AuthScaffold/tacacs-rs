@@ -11,7 +11,7 @@ use anyhow::{bail, Context};
 use clap::Parser;
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
 use tacacsrs_messages::enumerations::TacacsFlags;
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::DedicatedConnection;
 
@@ -165,7 +165,10 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
     let results = if let Some(ref endpoint) = cli.service_endpoint {
         batch::execute_batch_via_service(endpoint, &batch_file).await?
     } else {
-        let server_config = config::resolve_first_server(cli)?;
+        let required_type = batch_file
+            .required_server_type()
+            .unwrap_or(TacacsPlusServerType::ACCOUNTING);
+        let server_config = config::resolve_server_for_type(cli, required_type)?;
         let options = ConnectOptions {
             disable_certificate_verification: cli.insecure_disable_certificate_verification,
             ..ConnectOptions::default()
@@ -205,7 +208,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return execute_command_via_service(endpoint, &cli.command).await;
     }
 
-    let server_config = config::resolve_first_server(&cli)?;
+    let server_config = config::resolve_server_for_command(&cli, &cli.command)?;
     let connect_options = ConnectOptions {
         disable_certificate_verification: cli.insecure_disable_certificate_verification,
         ..ConnectOptions::default()

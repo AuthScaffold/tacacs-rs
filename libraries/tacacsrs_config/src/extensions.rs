@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::TacacsPlusServer;
+use crate::{TacacsPlusServer, TacacsPlusServerType};
 
 /// Convenience helpers for runtime-oriented access to a TACACS+ server entry.
 ///
@@ -24,6 +24,9 @@ pub trait TacacsPlusServerExt {
 
     /// Returns true when SNI is explicitly enabled.
     fn sni_enabled(&self) -> bool;
+
+    /// Returns true when this server is configured for all requested service types.
+    fn supports_server_type(&self, server_type: TacacsPlusServerType) -> bool;
 }
 
 impl TacacsPlusServerExt for TacacsPlusServer {
@@ -55,6 +58,10 @@ impl TacacsPlusServerExt for TacacsPlusServer {
 
     fn sni_enabled(&self) -> bool {
         self.sni_enabled.unwrap_or(false)
+    }
+
+    fn supports_server_type(&self, server_type: TacacsPlusServerType) -> bool {
+        self.server_type.contains(server_type)
     }
 }
 
@@ -116,5 +123,18 @@ mod tests {
         });
         assert!(server.is_tls());
         assert!(!server.is_obfuscation());
+    }
+
+    #[test]
+    fn supports_server_type_requires_all_requested_services() {
+        let mut server = base_server();
+        server.server_type =
+            TacacsPlusServerType::AUTHENTICATION | TacacsPlusServerType::ACCOUNTING;
+
+        assert!(server.supports_server_type(TacacsPlusServerType::ACCOUNTING));
+        assert!(server.supports_server_type(
+            TacacsPlusServerType::AUTHENTICATION | TacacsPlusServerType::ACCOUNTING
+        ));
+        assert!(!server.supports_server_type(TacacsPlusServerType::AUTHORIZATION));
     }
 }

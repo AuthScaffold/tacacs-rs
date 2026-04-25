@@ -1,9 +1,10 @@
 use anyhow::Context;
 use tacacsrs_config::{
-    TacacsPlus, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerType,
+    TacacsPlus, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerExt,
+    TacacsPlusServerType,
 };
 
-use crate::cli::Cli;
+use crate::cli::{Cli, Command};
 
 /// Builds a single-server [`TacacsPlus`] root from CLI flags for direct-mode connections.
 ///
@@ -95,7 +96,8 @@ pub fn resolve_tacacs_plus_config(cli: &Cli) -> anyhow::Result<TacacsPlus> {
     }
 }
 
-/// Resolves the first upstream server from the CLI's effective [`TacacsPlus`] config.
+/// Resolves the first upstream server with the requested service type from the
+/// CLI's effective [`TacacsPlus`] config.
 ///
 /// This is the entry point used by direct-mode commands, which operate on a
 /// single server. Credential references in the parsed config are resolved via
@@ -103,16 +105,69 @@ pub fn resolve_tacacs_plus_config(cli: &Cli) -> anyhow::Result<TacacsPlus> {
 ///
 /// # Errors
 ///
-/// Returns an error if the resolved configuration contains no servers, or if
-/// credential-reference resolution fails.
-pub fn resolve_first_server(cli: &Cli) -> anyhow::Result<TacacsPlusServer> {
+/// Returns an error if the resolved configuration contains no matching server,
+/// or if credential-reference resolution fails.
+pub fn resolve_server_for_type(
+    cli: &Cli,
+    required_type: TacacsPlusServerType,
+) -> anyhow::Result<TacacsPlusServer> {
     let root = resolve_tacacs_plus_config(cli)?;
-    let mut servers = tacacsrs_config::enumerate_servers(&root)
+    select_first_server_for_type(&root, required_type)
+}
+
+/// Resolves the upstream server required by a direct-mode command.
+///
+/// # Errors
+///
+/// Returns an error if the command has no direct server type or if no configured
+/// server supports the command's required service.
+pub fn resolve_server_for_command(
+    cli: &Cli,
+    command: &Command,
+) -> anyhow::Result<TacacsPlusServer> {
+    let required_type = server_type_for_command(command)
+        .context("Batch commands must resolve their server type from the batch file")?;
+    resolve_server_for_type(cli, required_type)
+}
+
+fn select_first_server_for_type(
+    root: &TacacsPlus,
+    required_type: TacacsPlusServerType,
+) -> anyhow::Result<TacacsPlusServer> {
+    let servers = tacacsrs_config::enumerate_servers(root)
         .context("Failed to enumerate TACACS+ servers from configuration")?;
-    if servers.is_empty() {
-        anyhow::bail!("No TACACS+ servers configured");
+
+    if required_type.is_empty() {
+        anyhow::bail!("A non-empty TACACS+ server type is required");
     }
-    Ok(servers.remove(0))
+
+    servers
+        .into_iter()
+        .find(|server| server.supports_server_type(required_type))
+        .ok_or_else(|| {
+            anyhow::anyhow!("No TACACS+ server configured for {}", server_type_label(required_type))
+        })
+}
+
+const fn server_type_for_command(command: &Command) -> Option<TacacsPlusServerType> {
+    match command {
+        Command::Accounting { .. } => Some(TacacsPlusServerType::ACCOUNTING),
+        Command::Authentication { .. } => Some(TacacsPlusServerType::AUTHENTICATION),
+        Command::Authorization { .. } => Some(TacacsPlusServerType::AUTHORIZATION),
+        Command::Batch { .. } => None,
+    }
+}
+
+fn server_type_label(server_type: TacacsPlusServerType) -> String {
+    [
+        (TacacsPlusServerType::AUTHENTICATION, "authentication"),
+        (TacacsPlusServerType::AUTHORIZATION, "authorization"),
+        (TacacsPlusServerType::ACCOUNTING, "accounting"),
+    ]
+    .into_iter()
+    .filter_map(|(flag, label)| server_type.contains(flag).then_some(label))
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 #[cfg(test)]
@@ -121,7 +176,8 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::tacacs_plus_from_file;
+    use super::{select_first_server_for_type, tacacs_plus_from_file};
+    use tacacsrs_config::TacacsPlusServerType;
 
     fn write_temp_config(contents: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -166,5 +222,66 @@ mod tests {
         assert_eq!(root.server[0].address, "192.0.2.10");
         assert_eq!(root.server[0].port, 49);
         assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
+    }
+
+    #[test]
+    fn select_first_server_for_type_skips_servers_without_requested_type() {
+        let path = write_temp_config(
+            r#"{
+                "ietf-system-tacacs-plus:tacacs-plus": {
+                    "server": [
+                        {
+                            "name": "auth-only",
+                            "server-type": "authentication",
+                            "address": "192.0.2.10",
+                            "port": 49,
+                            "shared-secret": "secret1"
+                        },
+                        {
+                            "name": "acct",
+                            "server-type": "accounting",
+                            "address": "192.0.2.11",
+                            "port": 49,
+                            "shared-secret": "secret2"
+                        }
+                    ]
+                }
+            }"#,
+        );
+
+        let root = tacacs_plus_from_file(&path).expect("config file should load");
+        fs::remove_file(&path).ok();
+
+        let server = select_first_server_for_type(&root, TacacsPlusServerType::ACCOUNTING)
+            .expect("accounting server should be selected");
+        assert_eq!(server.name, "acct");
+    }
+
+    #[test]
+    fn select_first_server_for_type_errors_when_no_server_supports_type() {
+        let path = write_temp_config(
+            r#"{
+                "ietf-system-tacacs-plus:tacacs-plus": {
+                    "server": [
+                        {
+                            "name": "auth-only",
+                            "server-type": "authentication",
+                            "address": "192.0.2.10",
+                            "port": 49,
+                            "shared-secret": "secret1"
+                        }
+                    ]
+                }
+            }"#,
+        );
+
+        let root = tacacs_plus_from_file(&path).expect("config file should load");
+        fs::remove_file(&path).ok();
+
+        let error = select_first_server_for_type(&root, TacacsPlusServerType::ACCOUNTING)
+            .expect_err("accounting server should be required");
+        assert!(error
+            .to_string()
+            .contains("No TACACS+ server configured for accounting"));
     }
 }
