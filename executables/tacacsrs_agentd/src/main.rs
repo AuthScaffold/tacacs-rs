@@ -6,7 +6,10 @@ use anyhow::Context;
 use clap::{ArgGroup, Parser};
 use tacacsrs_agent::{ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
+use tacacsrs_config::{
+    TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerExt,
+    TacacsPlusServerType,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
@@ -114,59 +117,53 @@ fn init_logger(verbose: u8) {
     }
 }
 
-/// Build server list from CLI flags (legacy path, without a config file).
-fn servers_from_cli(cli: &Cli) -> anyhow::Result<Vec<TacacsPlusServer>> {
+/// Build the TACACS+ root configuration from CLI flags (legacy path, without a config file).
+fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
     let timeout = u16::try_from(cli.connect_timeout_seconds).unwrap_or(u16::MAX);
 
-    if cli.use_tls {
+    let server_builders: Vec<TacacsPlusServerBuilder> = if cli.use_tls {
         #[cfg(feature = "psk")]
         if let (Some(psk_identity), Some(psk_key)) =
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
         {
-            return cli
-                .server_addresses
+            cli.server_addresses
                 .iter()
                 .enumerate()
                 .map(|(i, addr)| {
-                    let mut server = base_server_from_address(addr, i, timeout);
-                    server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
-                        credentials_reference: None,
-                        certificate: None,
-                        tls13_epsk: Some(tacacsrs_config::Tls13Epsk {
-                            inline_definition: Some(
-                                tacacsrs_config::keystore::SymmetricKeyInlineDefinition {
-                                    key_format: None,
-                                    cleartext_symmetric_key: Some(psk_key.as_bytes().to_vec()),
-                                },
-                            ),
-                            external_identity: psk_identity.clone(),
-                            hash: tacacsrs_config::EpskSupportedHash::Sha256,
-                            context: None,
-                            target_protocol: None,
-                            target_kdf: None,
-                        }),
-                    });
-                    Ok(server)
+                    base_server_builder_from_address(addr, i, timeout)
+                        .with_tls13_epsk(psk_identity.clone(), psk_key.as_bytes().to_vec())
                 })
-                .collect::<anyhow::Result<Vec<_>>>();
+                .collect()
+        } else {
+            tls_cert_server_builders_from_cli(cli, timeout)?
         }
-
-        tls_cert_servers_from_cli(cli, timeout)
+        #[cfg(not(feature = "psk"))]
+        {
+            tls_cert_server_builders_from_cli(cli, timeout)?
+        }
     } else {
         cli.server_addresses
             .iter()
             .enumerate()
-            .map(|(i, addr)| {
-                let mut server = base_server_from_address(addr, i, timeout);
-                server.shared_secret.clone_from(&cli.shared_secret);
-                Ok(server)
+            .map(|(i, addr)| match cli.shared_secret.clone() {
+                Some(shared_secret) => base_server_builder_from_address(addr, i, timeout)
+                    .with_shared_secret(shared_secret),
+                None => base_server_builder_from_address(addr, i, timeout),
             })
-            .collect::<anyhow::Result<Vec<_>>>()
-    }
+            .collect()
+    };
+
+    Ok(server_builders
+        .into_iter()
+        .fold(TacacsPlusBuilder::new(), TacacsPlusBuilder::with_server_builder)
+        .build())
 }
 
-/// Build TLS certificate-based server entries from CLI flags.
-fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<TacacsPlusServer>> {
+/// Build TLS certificate-based server builders from CLI flags.
+fn tls_cert_server_builders_from_cli(
+    cli: &Cli,
+    timeout: u16,
+) -> anyhow::Result<Vec<TacacsPlusServerBuilder>> {
     let client_cert_der = cli
         .client_certificate
         .as_ref()
@@ -183,68 +180,35 @@ fn tls_cert_servers_from_cli(cli: &Cli, timeout: u16) -> anyhow::Result<Vec<Taca
         })
         .transpose()?;
 
-    cli.server_addresses
+    Ok(cli
+        .server_addresses
         .iter()
         .enumerate()
         .map(|(i, addr)| {
-            let mut server = base_server_from_address(addr, i, timeout);
             if client_cert_der.is_some() || client_key_der.is_some() {
-                server.client_identity = Some(tacacsrs_config::TlsClientClientIdentity {
-                    credentials_reference: None,
-                    certificate: Some(tacacsrs_config::ClientIdentityCertificate {
-                        inline_definition: Some(
-                            tacacsrs_config::keystore::EndEntityCertWithKeyInlineDefinition {
-                                public_key_format: None,
-                                public_key: None,
-                                private_key_format: None,
-                                cleartext_private_key: client_key_der.clone(),
-                                cert_data: client_cert_der.clone(),
-                            },
-                        ),
-                    }),
-                    tls13_epsk: None,
-                });
+                base_server_builder_from_address(addr, i, timeout)
+                    .with_tls_client_certificate(client_cert_der.clone(), client_key_der.clone())
             } else {
-                // TLS without client certs still needs an explicit TLS selector.
-                server.server_authentication =
-                    Some(tacacsrs_config::TlsClientServerAuthentication {
-                        credentials_reference: None,
-                        ca_certs: None,
-                        ee_certs: None,
-                        tls13_epsks: None,
-                    });
+                base_server_builder_from_address(addr, i, timeout).with_tls_server_authentication()
             }
-            Ok(server)
         })
-        .collect::<anyhow::Result<Vec<_>>>()
+        .collect())
 }
 
-fn base_server_from_address(addr: &str, index: usize, timeout: u16) -> TacacsPlusServer {
+fn base_server_builder_from_address(
+    addr: &str,
+    index: usize,
+    timeout: u16,
+) -> TacacsPlusServerBuilder {
     let (host, port) = tacacsrs_networking::helpers::parse_host_port(addr, 49);
 
-    TacacsPlusServer {
-        name: format!("server-{index}"),
-        server_type: TacacsPlusServerType::all(),
-        address: host,
-        port,
-        shared_secret: None,
-        timeout,
-        single_connection: false,
-        domain_name: None,
-        sni_enabled: None,
-        client_identity: None,
-        server_authentication: None,
-        source_ip: None,
-        source_interface: None,
-        vrf_instance: None,
-    }
+    TacacsPlusServerBuilder::new(format!("server-{index}"), TacacsPlusServerType::all(), host, port)
+        .with_timeout(timeout)
 }
 
-fn servers_from_config(path: &std::path::Path) -> anyhow::Result<Vec<TacacsPlusServer>> {
-    let yang_config = tacacsrs_config::parse_yang_json_file(path)
-        .with_context(|| format!("Failed to load config from {}", path.display()))?;
-    tacacsrs_config::enumerate_servers(&yang_config)
-        .context("Failed to enumerate YANG config servers")
+fn tacacs_plus_from_config(path: &std::path::Path) -> anyhow::Result<TacacsPlus> {
+    tacacsrs_config::parse_yang_json_file(path)
+        .with_context(|| format!("Failed to load config from {}", path.display()))
 }
 
 /// Starts the central TACACS+ client service process.
@@ -271,19 +235,19 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Linux deployments must use a Unix domain socket endpoint");
     }
 
-    let servers = if let Some(ref config_path) = cli.config {
+    let tacacs_plus = if let Some(ref config_path) = cli.config {
         log::info!("Loading YANG JSON configuration from {}", config_path.display());
-        servers_from_config(config_path)?
+        tacacs_plus_from_config(config_path)?
     } else {
-        servers_from_cli(&cli)?
+        tacacs_plus_from_cli(&cli)?
     };
 
     log::info!(
         "Upstream servers: {} configured, probe interval: {}s",
-        servers.len(),
+        tacacs_plus.server.len(),
         cli.preferred_probe_interval_seconds,
     );
-    for server in &servers {
+    for server in &tacacs_plus.server {
         let security_label = if server.is_tls() {
             "TLS"
         } else {
@@ -294,7 +258,7 @@ async fn main() -> anyhow::Result<()> {
 
     let service = TacacsClientService::new(ServiceConfig {
         endpoint,
-        servers,
+        tacacs_plus,
         preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
         #[cfg(unix)]
         socket_mode: parse_socket_mode(&cli.socket_mode)?,
@@ -311,7 +275,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::servers_from_config;
+    use super::tacacs_plus_from_config;
 
     fn write_temp_config(contents: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -324,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn servers_from_config_loads_all_servers() {
+    fn tacacs_plus_from_config_loads_all_servers() {
         let path = write_temp_config(
             r#"{
                 "ietf-system-tacacs-plus:tacacs-plus": {
@@ -348,12 +312,12 @@ mod tests {
             }"#,
         );
 
-        let servers = servers_from_config(&path).expect("config file should load");
+        let root = tacacs_plus_from_config(&path).expect("config file should load");
         fs::remove_file(&path).ok();
 
-        assert_eq!(servers.len(), 2);
-        assert_eq!(servers[0].name, "primary");
-        assert_eq!(servers[1].name, "secondary");
-        assert_eq!(servers[0].shared_secret.as_deref(), Some("secret1"));
+        assert_eq!(root.server.len(), 2);
+        assert_eq!(root.server[0].name, "primary");
+        assert_eq!(root.server[1].name, "secondary");
+        assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
     }
 }

@@ -131,20 +131,19 @@ impl TacacsClientService {
     ///
     /// # Errors
     ///
-    /// Returns an error if no upstream TACACS+ servers are configured.
+    /// Returns an error if no upstream TACACS+ servers are configured or if
+    /// credential-reference resolution fails.
     pub fn new(config: ServiceConfig) -> anyhow::Result<Self> {
-        if config.servers.is_empty() {
+        let servers = tacacsrs_config::enumerate_servers(&config.tacacs_plus)?;
+        if servers.is_empty() {
             bail!("At least one TACACS+ server must be configured");
         }
 
         let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector {
             disable_certificate_verification: config.disable_certificate_verification,
         });
-        let state = Arc::new(ServiceState::new(
-            config.servers.clone(),
-            connector,
-            config.preferred_probe_interval,
-        ));
+        let state =
+            Arc::new(ServiceState::new(servers, connector, config.preferred_probe_interval));
 
         Ok(Self { config, state })
     }
@@ -154,15 +153,13 @@ impl TacacsClientService {
         config: ServiceConfig,
         connector: Arc<dyn UpstreamConnector>,
     ) -> anyhow::Result<Self> {
-        if config.servers.is_empty() {
+        let servers = tacacsrs_config::enumerate_servers(&config.tacacs_plus)?;
+        if servers.is_empty() {
             bail!("At least one TACACS+ server must be configured");
         }
 
-        let state = Arc::new(ServiceState::new(
-            config.servers.clone(),
-            connector,
-            config.preferred_probe_interval,
-        ));
+        let state =
+            Arc::new(ServiceState::new(servers, connector, config.preferred_probe_interval));
 
         Ok(Self { config, state })
     }
@@ -423,9 +420,16 @@ mod tests {
         endpoint: IpcEndpoint,
         servers: Vec<tacacsrs_config::TacacsPlusServer>,
     ) -> ServiceConfig {
+        let tacacs_plus = servers
+            .into_iter()
+            .fold(
+                tacacsrs_config::TacacsPlusBuilder::new(),
+                tacacsrs_config::TacacsPlusBuilder::with_server,
+            )
+            .build();
         ServiceConfig {
             endpoint,
-            servers,
+            tacacs_plus,
             preferred_probe_interval: Duration::from_millis(50),
             socket_mode: 0o660,
             disable_certificate_verification: false,

@@ -165,7 +165,7 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
     let results = if let Some(ref endpoint) = cli.service_endpoint {
         batch::execute_batch_via_service(endpoint, &batch_file).await?
     } else {
-        let server_config = config::resolve_server_config(cli)?;
+        let server_config = config::resolve_first_server(cli)?;
         let options = ConnectOptions {
             disable_certificate_verification: cli.insecure_disable_certificate_verification,
             ..ConnectOptions::default()
@@ -205,7 +205,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return execute_command_via_service(endpoint, &cli.command).await;
     }
 
-    let server_config = config::resolve_server_config(&cli)?;
+    let server_config = config::resolve_first_server(&cli)?;
     let connect_options = ConnectOptions {
         disable_certificate_verification: cli.insecure_disable_certificate_verification,
         ..ConnectOptions::default()

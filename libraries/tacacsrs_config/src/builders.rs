@@ -1,0 +1,270 @@
+use crate::{
+    ClientIdentityCertificate, EpskSupportedHash, TacacsPlus, TacacsPlusServer,
+    TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
+    keystore,
+};
+
+/// Builder for constructing a [`TacacsPlus`] root configuration in code.
+///
+/// This builder is the in-process counterpart to parsing YANG JSON via
+/// [`crate::parse_yang_json`]. It composes one or more
+/// [`TacacsPlusServerBuilder`] values into the root configuration consumed by
+/// the agent service.
+///
+/// The shared `client-credentials` / `server-credentials` bundles are
+/// intentionally left empty: in-code construction is expected to inline all
+/// security material directly on each server, bypassing the YANG references
+/// mechanism.
+#[derive(Debug, Clone)]
+pub struct TacacsPlusBuilder {
+    root: TacacsPlus,
+}
+
+impl Default for TacacsPlusBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TacacsPlusBuilder {
+    /// Creates an empty root configuration with no servers and no credential bundles.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            root: TacacsPlus {
+                client_credentials: Vec::new(),
+                server_credentials: Vec::new(),
+                server: Vec::new(),
+            },
+        }
+    }
+
+    /// Appends a pre-built [`TacacsPlusServer`] to the root.
+    #[must_use]
+    pub fn with_server(mut self, server: TacacsPlusServer) -> Self {
+        self.root.server.push(server);
+        self
+    }
+
+    /// Builds and appends a [`TacacsPlusServer`] from the supplied builder.
+    #[must_use]
+    pub fn with_server_builder(self, builder: TacacsPlusServerBuilder) -> Self {
+        self.with_server(builder.build())
+    }
+
+    /// Returns the constructed [`TacacsPlus`] root.
+    #[must_use]
+    pub fn build(self) -> TacacsPlus {
+        self.root
+    }
+}
+
+/// Builder for constructing `TacacsPlusServer` values in code.
+#[derive(Debug, Clone)]
+pub struct TacacsPlusServerBuilder {
+    server: TacacsPlusServer,
+}
+
+impl TacacsPlusServerBuilder {
+    /// Creates a server builder with the workspace's standard default field values.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        server_type: TacacsPlusServerType,
+        address: impl Into<String>,
+        port: u16,
+    ) -> Self {
+        Self {
+            server: TacacsPlusServer {
+                name: name.into(),
+                server_type,
+                domain_name: None,
+                sni_enabled: None,
+                address: address.into(),
+                port,
+                client_identity: None,
+                server_authentication: None,
+                shared_secret: None,
+                source_ip: None,
+                source_interface: None,
+                vrf_instance: None,
+                single_connection: false,
+                timeout: 5,
+            },
+        }
+    }
+
+    /// Sets the server timeout in seconds.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: u16) -> Self {
+        self.server.timeout = timeout;
+        self
+    }
+
+    /// Selects obfuscation mode using the supplied shared secret.
+    #[must_use]
+    pub fn with_shared_secret(mut self, shared_secret: impl Into<String>) -> Self {
+        self.server.shared_secret = Some(shared_secret.into());
+        self.server.client_identity = None;
+        self.server.server_authentication = None;
+        self
+    }
+
+    /// Selects TLS using a client certificate identity.
+    #[must_use]
+    pub fn with_tls_client_certificate(
+        mut self,
+        cert_data: Option<Vec<u8>>,
+        cleartext_private_key: Option<Vec<u8>>,
+    ) -> Self {
+        self.server.shared_secret = None;
+        self.server.client_identity = Some(TlsClientClientIdentity {
+            credentials_reference: None,
+            certificate: Some(ClientIdentityCertificate {
+                inline_definition: Some(keystore::EndEntityCertWithKeyInlineDefinition {
+                    public_key_format: None,
+                    public_key: None,
+                    private_key_format: None,
+                    cleartext_private_key,
+                    cert_data,
+                }),
+            }),
+            tls13_epsk: None,
+        });
+        self.server.server_authentication = None;
+        self
+    }
+
+    /// Selects TLS using a TLS 1.3 externally provisioned PSK.
+    #[must_use]
+    pub fn with_tls13_epsk(
+        mut self,
+        external_identity: impl Into<String>,
+        cleartext_symmetric_key: Vec<u8>,
+    ) -> Self {
+        self.server.shared_secret = None;
+        self.server.client_identity = Some(TlsClientClientIdentity {
+            credentials_reference: None,
+            certificate: None,
+            tls13_epsk: Some(Tls13Epsk {
+                inline_definition: Some(keystore::SymmetricKeyInlineDefinition {
+                    key_format: None,
+                    cleartext_symmetric_key: Some(cleartext_symmetric_key),
+                }),
+                external_identity: external_identity.into(),
+                hash: EpskSupportedHash::Sha256,
+                context: None,
+                target_protocol: None,
+                target_kdf: None,
+            }),
+        });
+        self.server.server_authentication = None;
+        self
+    }
+
+    /// Selects TLS without a client identity by setting the server-authentication container.
+    #[must_use]
+    pub fn with_tls_server_authentication(mut self) -> Self {
+        self.server.shared_secret = None;
+        self.server.client_identity = None;
+        self.server.server_authentication = Some(TlsClientServerAuthentication {
+            credentials_reference: None,
+            ca_certs: None,
+            ee_certs: None,
+            tls13_epsks: None,
+        });
+        self
+    }
+
+    /// Returns the constructed server.
+    #[must_use]
+    pub fn build(self) -> TacacsPlusServer {
+        self.server
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{TacacsPlusServerExt, TacacsPlusServerType, enumerate_servers};
+
+    use super::{TacacsPlusBuilder, TacacsPlusServerBuilder};
+
+    #[test]
+    fn builder_defaults_match_current_cli_construction() {
+        let server =
+            TacacsPlusServerBuilder::new("cli", TacacsPlusServerType::all(), "192.0.2.10", 49)
+                .build();
+
+        assert_eq!(server.name, "cli");
+        assert_eq!(server.socket_address(), "192.0.2.10:49");
+        assert_eq!(server.timeout, 5);
+        assert!(!server.single_connection);
+        assert!(server.shared_secret.is_none());
+        assert!(server.client_identity.is_none());
+        assert!(server.server_authentication.is_none());
+    }
+
+    #[test]
+    fn builder_security_modes_replace_previous_mode() {
+        let server =
+            TacacsPlusServerBuilder::new("cli", TacacsPlusServerType::ACCOUNTING, "192.0.2.10", 49)
+                .with_shared_secret("secret")
+                .with_tls_server_authentication()
+                .build();
+
+        assert!(server.shared_secret.is_none());
+        assert!(server.client_identity.is_none());
+        assert!(server.server_authentication.is_some());
+        assert!(server.is_tls());
+    }
+
+    #[test]
+    fn root_builder_starts_empty() {
+        let root = TacacsPlusBuilder::new().build();
+        assert!(root.server.is_empty());
+        assert!(root.client_credentials.is_empty());
+        assert!(root.server_credentials.is_empty());
+    }
+
+    #[test]
+    fn root_builder_preserves_server_order() {
+        let root = TacacsPlusBuilder::new()
+            .with_server_builder(TacacsPlusServerBuilder::new(
+                "primary",
+                TacacsPlusServerType::all(),
+                "192.0.2.10",
+                49,
+            ))
+            .with_server_builder(TacacsPlusServerBuilder::new(
+                "secondary",
+                TacacsPlusServerType::all(),
+                "192.0.2.11",
+                49,
+            ))
+            .build();
+
+        assert_eq!(root.server.len(), 2);
+        assert_eq!(root.server[0].name, "primary");
+        assert_eq!(root.server[1].name, "secondary");
+    }
+
+    #[test]
+    fn root_builder_roundtrips_through_enumerate_servers() {
+        let root = TacacsPlusBuilder::new()
+            .with_server_builder(
+                TacacsPlusServerBuilder::new(
+                    "primary",
+                    TacacsPlusServerType::all(),
+                    "192.0.2.10",
+                    49,
+                )
+                .with_shared_secret("secret"),
+            )
+            .build();
+
+        let enumerated = enumerate_servers(&root).expect("enumeration should succeed");
+        assert_eq!(enumerated.len(), 1);
+        assert_eq!(enumerated[0].name, "primary");
+        assert_eq!(enumerated[0].shared_secret.as_deref(), Some("secret"));
+    }
+}

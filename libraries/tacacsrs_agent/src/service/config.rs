@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_config::TacacsPlusServer;
+use tacacsrs_config::TacacsPlus;
 
 /// Configuration for the long-lived TACACS+ client service process.
 ///
@@ -25,9 +25,10 @@ use tacacsrs_config::TacacsPlusServer;
 ///
 /// # Required fields
 ///
-/// - **`servers`** — at least one upstream TACACS+ server must be
-///   configured. The list order determines failover priority (index 0 is
-///   preferred).
+/// - **`tacacs_plus`** — the YANG-modelled root configuration. After
+///   credential-reference resolution, at least one upstream TACACS+ server
+///   must be present. The order of `tacacs_plus.server` determines failover
+///   priority (index 0 is preferred).
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
     /// Local IPC endpoint exposed to local consumers.
@@ -37,11 +38,16 @@ pub struct ServiceConfig {
     /// developer workflows. Empty strings are rejected instead of defaulting.
     pub endpoint: IpcEndpoint,
 
-    /// Ordered upstream TACACS+ servers with per-server connection config.
+    /// Root TACACS+ configuration including upstream servers and any shared
+    /// credential bundles.
     ///
-    /// Each entry carries its own security settings (TLS vs obfuscation),
-    /// timeout, and server type. Index zero is the preferred server.
-    pub servers: Vec<TacacsPlusServer>,
+    /// The service resolves `client-credentials` / `server-credentials`
+    /// references at startup via
+    /// [`tacacsrs_config::enumerate_servers`]. In-process construction via
+    /// [`tacacsrs_config::TacacsPlusBuilder`] typically inlines all security
+    /// material directly on each server and leaves the credential bundles
+    /// empty.
+    pub tacacs_plus: TacacsPlus,
 
     /// How often the preferred server should be reprobed while failed over.
     ///

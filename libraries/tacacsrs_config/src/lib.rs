@@ -1,5 +1,6 @@
 pub mod generated;
 pub mod extensions;
+pub mod builders;
 mod enumeration;
 mod mapping;
 pub(crate) mod serde_helpers;
@@ -14,6 +15,7 @@ pub use generated::tacacs_plus::{
     ServerCredentials, TacacsPlus, TacacsPlusServer, TacacsPlusServerType, Tls13Epsk,
     TlsClientClientIdentity, TlsClientServerAuthentication,
 };
+pub use builders::{TacacsPlusBuilder, TacacsPlusServerBuilder};
 pub use extensions::TacacsPlusServerExt;
 pub use generated::truststore;
 pub use generated::{crypto_types, keystore, YangConfigRoot};
@@ -22,6 +24,7 @@ pub use statistics::ServerStatistics;
 
 /// Model-oriented API: YANG-generated types and related namespaces.
 pub mod model {
+    pub use crate::builders::{TacacsPlusBuilder, TacacsPlusServerBuilder};
     pub use crate::extensions::TacacsPlusServerExt;
     pub use crate::generated;
     pub use crate::generated::tacacs_plus::{
@@ -82,6 +85,7 @@ pub mod pipeline {
 /// Runtime projection API used by networking/client code.
 pub mod runtime {
     pub use crate::enumeration::{enumerate_server, enumerate_servers};
+    pub use crate::builders::{TacacsPlusBuilder, TacacsPlusServerBuilder};
     pub use crate::extensions::TacacsPlusServerExt;
 }
 

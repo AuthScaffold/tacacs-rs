@@ -9,6 +9,7 @@
 - Validation logic for YANG-specific constraints and semantic checks on inline key material
 - Config-local credential bundle validation
 - Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
+- A reusable `TacacsPlusServerBuilder` for constructing `TacacsPlusServer` values in code
 
 Any future external secret resolution and materialization should live in a separate runtime/provider crate rather than in `tacacsrs-config`.
 
@@ -73,6 +74,7 @@ After enumeration, pass the resulting `TacacsPlusServer` values to a separate ru
 
 This crate also exposes grouped modules so callers can choose APIs by intent:
 
+- `builders` — programmatic construction helpers for `TacacsPlusServer`
 - `model` — YANG-generated types and namespaces
 - `extensions` — helper traits layered over generated model types
 - `pipeline` — step-by-step processing
@@ -89,6 +91,41 @@ let servers = runtime::enumerate_servers(&config)?;
 ```
 
 The existing flat root exports remain available for compatibility.
+
+## Programmatic builder API
+
+When callers need to construct TACACS+ server definitions in Rust instead of parsing RFC 7951 JSON, use `TacacsPlusServerBuilder`.
+
+The builder centralizes the same defaulting and security-shape choices that were previously duplicated in CLI callers:
+
+- `TacacsPlusServerBuilder::new(...)` — create a server with standard defaults
+- `with_timeout(...)` — override the default timeout
+- `with_shared_secret(...)` — select obfuscation mode
+- `with_tls_client_certificate(...)` — select TLS with an inline client certificate and private key
+- `with_tls13_epsk(...)` — select TLS 1.3 PSK mode
+- `with_tls_server_authentication()` — select TLS without a client identity by enabling the server-authentication container
+
+Example:
+
+```rust
+use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerExt, TacacsPlusServerType};
+
+let server = TacacsPlusServerBuilder::new(
+  "primary",
+  TacacsPlusServerType::ACCOUNTING,
+  "192.0.2.10",
+  49,
+)
+.with_timeout(10)
+.with_shared_secret("super-secret")
+.build();
+
+assert_eq!(server.socket_address(), "192.0.2.10:49");
+assert!(server.is_obfuscation());
+# anyhow::Ok::<(), anyhow::Error>(())
+```
+
+The builder is intentionally small. It is meant for runtime construction of valid server shapes, not as a replacement for schema validation or full YANG parsing.
 
 ### Future external crypto integration
 
@@ -155,6 +192,20 @@ To resolve external credentials and materialize them for runtime use, introduce 
 
 This design separates parsing/validation from credential retrieval and enables round-trip safety.
 
+### 1b) Programmatic server construction
+
+For code paths that do not start from RFC 7951 JSON, use:
+
+- `TacacsPlusServerBuilder::new(...) -> TacacsPlusServerBuilder`
+- `TacacsPlusServerBuilder::with_timeout(...) -> TacacsPlusServerBuilder`
+- `TacacsPlusServerBuilder::with_shared_secret(...) -> TacacsPlusServerBuilder`
+- `TacacsPlusServerBuilder::with_tls_client_certificate(...) -> TacacsPlusServerBuilder`
+- `TacacsPlusServerBuilder::with_tls13_epsk(...) -> TacacsPlusServerBuilder`
+- `TacacsPlusServerBuilder::with_tls_server_authentication() -> TacacsPlusServerBuilder`
+- `TacacsPlusServerBuilder::build() -> TacacsPlusServer`
+
+This is the supported way to create `TacacsPlusServer` values in application code without manually repeating the crate's default field setup.
+
 ### 2) Advanced: Generated YANG model and pipeline API
 
 For advanced use cases, these lower-level functions are available:
@@ -167,6 +218,7 @@ For advanced use cases, these lower-level functions are available:
 
 If runtime secret-materialized server types are introduced later, they should live outside `tacacsrs-config` in a dedicated runtime/provider crate.
 Shared derived helpers for the generated server model live in `TacacsPlusServerExt`.
+Programmatic construction helpers for the generated server model live in `TacacsPlusServerBuilder`.
 
 Runtime statistics are exposed separately via:
 
@@ -193,6 +245,7 @@ The generated model is intentionally public for schema-aware or tooling-heavy in
   - `ServerAuthenticationCaCerts`
   - `EpskSupportedHash`
   - `TacacsPlusServerExt`
+  - `TacacsPlusServerBuilder`
 
 ### 5) Generated identity set types
 
