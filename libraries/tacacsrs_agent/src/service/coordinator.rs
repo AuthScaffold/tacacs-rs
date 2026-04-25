@@ -522,7 +522,7 @@ mod tests {
         let service_task = tokio::spawn(async move { service.serve().await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let client = ServiceClient::new(endpoint.clone());
+        let client = ServiceClient::connect(endpoint.clone()).await.unwrap();
         let request = build_request();
 
         let first = client.send_accounting(request.clone()).await.unwrap();

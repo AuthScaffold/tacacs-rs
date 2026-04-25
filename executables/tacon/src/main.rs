@@ -106,7 +106,9 @@ fn ensure_service_mode_accounting_supported(
 
 async fn execute_command_via_service(endpoint: &str, command: &Command) -> anyhow::Result<()> {
     let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
-    let client = ServiceClient::new(endpoint);
+    let client = ServiceClient::connect(endpoint)
+        .await
+        .context("Failed to connect to TACACS+ service")?;
 
     match command {
         Command::Accounting {
