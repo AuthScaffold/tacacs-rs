@@ -3,6 +3,7 @@ use crate::{
     TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
     keystore,
 };
+use crate::validation;
 
 /// Builder for constructing a [`TacacsPlus`] root configuration in code.
 ///
@@ -52,10 +53,18 @@ impl TacacsPlusBuilder {
         self.with_server(builder.build())
     }
 
-    /// Returns the constructed [`TacacsPlus`] root.
-    #[must_use]
-    pub fn build(self) -> TacacsPlus {
-        self.root
+    /// Validates and returns the constructed [`TacacsPlus`] root.
+    ///
+    /// Applies the same YANG constraint checks as [`crate::parse_yang_json`],
+    /// including server presence, unique endpoints, SNI requirements, security
+    /// choice constraints, and credential reference integrity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any validation constraint is violated.
+    pub fn build(self) -> anyhow::Result<TacacsPlus> {
+        validation::validate_config(&self.root)?;
+        Ok(self.root)
     }
 }
 
@@ -230,29 +239,36 @@ mod tests {
     }
 
     #[test]
-    fn root_builder_starts_empty() {
-        let root = TacacsPlusBuilder::new().build();
-        assert!(root.server.is_empty());
-        assert!(root.client_credentials.is_empty());
-        assert!(root.server_credentials.is_empty());
+    fn root_builder_build_rejects_empty_server_list() {
+        let err = TacacsPlusBuilder::new()
+            .build()
+            .expect_err("empty server list should be rejected");
+        assert!(err.to_string().contains("at least one"), "unexpected error: {err}");
     }
 
     #[test]
     fn root_builder_preserves_server_order() {
         let root = TacacsPlusBuilder::new()
-            .with_server_builder(TacacsPlusServerBuilder::new(
-                "primary",
-                TacacsPlusServerType::all(),
-                "192.0.2.10",
-                49,
-            ))
-            .with_server_builder(TacacsPlusServerBuilder::new(
-                "secondary",
-                TacacsPlusServerType::all(),
-                "192.0.2.11",
-                49,
-            ))
-            .build();
+            .with_server_builder(
+                TacacsPlusServerBuilder::new(
+                    "primary",
+                    TacacsPlusServerType::all(),
+                    "192.0.2.10",
+                    49,
+                )
+                .with_shared_secret("secret"),
+            )
+            .with_server_builder(
+                TacacsPlusServerBuilder::new(
+                    "secondary",
+                    TacacsPlusServerType::all(),
+                    "192.0.2.11",
+                    49,
+                )
+                .with_shared_secret("secret"),
+            )
+            .build()
+            .expect("valid config should build successfully");
 
         assert_eq!(root.server.len(), 2);
         assert_eq!(root.server[0].name, "primary");
@@ -271,11 +287,100 @@ mod tests {
                 )
                 .with_shared_secret("secret"),
             )
-            .build();
+            .build()
+            .expect("valid config should build successfully");
 
         let enumerated = enumerate_servers(&root).expect("enumeration should succeed");
         assert_eq!(enumerated.len(), 1);
         assert_eq!(enumerated[0].name, "primary");
         assert_eq!(enumerated[0].shared_secret.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn build_accepts_valid_config() {
+        let result = TacacsPlusBuilder::new()
+            .with_server_builder(
+                TacacsPlusServerBuilder::new(
+                    "primary",
+                    TacacsPlusServerType::all(),
+                    "192.0.2.10",
+                    49,
+                )
+                .with_shared_secret("secret"),
+            )
+            .build();
+
+        assert!(result.is_ok(), "valid config should pass validation: {result:?}");
+        let config = result.unwrap();
+        assert_eq!(config.server.len(), 1);
+        assert_eq!(config.server[0].name, "primary");
+    }
+
+    #[test]
+    fn build_rejects_empty_server_list() {
+        let result = TacacsPlusBuilder::new().build();
+
+        let err = result.expect_err("empty server list should be rejected");
+        assert!(err.to_string().contains("at least one"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn build_rejects_duplicate_endpoints() {
+        let result = TacacsPlusBuilder::new()
+            .with_server_builder(
+                TacacsPlusServerBuilder::new(
+                    "primary",
+                    TacacsPlusServerType::all(),
+                    "192.0.2.10",
+                    49,
+                )
+                .with_shared_secret("secret"),
+            )
+            .with_server_builder(
+                TacacsPlusServerBuilder::new(
+                    "duplicate",
+                    TacacsPlusServerType::all(),
+                    "192.0.2.10",
+                    49,
+                )
+                .with_shared_secret("secret"),
+            )
+            .build();
+
+        let err = result.expect_err("duplicate endpoints should be rejected");
+        assert!(
+            err.to_string().contains("duplicate server address+port"),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn build_rejects_sni_without_domain_name() {
+        let mut server =
+            TacacsPlusServerBuilder::new("s", TacacsPlusServerType::all(), "192.0.2.10", 49)
+                .with_shared_secret("secret")
+                .build();
+        server.sni_enabled = Some(true);
+        server.domain_name = None;
+
+        let result = TacacsPlusBuilder::new().with_server(server).build();
+
+        let err = result.expect_err("sni-enabled without domain-name should be rejected");
+        assert!(
+            err.to_string().contains("sni-enabled requires domain-name"),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn build_rejects_missing_security_choice() {
+        let server =
+            TacacsPlusServerBuilder::new("s", TacacsPlusServerType::all(), "192.0.2.10", 49)
+                .build();
+
+        let result = TacacsPlusBuilder::new().with_server(server).build();
+
+        let err = result.expect_err("server with no security choice should be rejected");
+        assert!(err.to_string().contains("security"), "unexpected error: {err}");
     }
 }
