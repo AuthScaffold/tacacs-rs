@@ -1,9 +1,10 @@
 use anyhow::Context;
 use futures::future::join_all;
 
+use tacacsrs_config::TacacsPlusServer;
+use tacacsrs_networking::config_connect::ConnectOptions;
 use tacacsrs_networking::session::Session;
 
-use crate::cli::Cli;
 use crate::connection::{establish_connection, Connection};
 
 use super::common::{execute_single_request, load_test_iterations, run_load_test};
@@ -88,22 +89,25 @@ pub(super) async fn execute_parallel_multiplexed(
 /// Each iteration opens a new multiplexed connection, creates a session, and
 /// sends the request. The test stops immediately on the first failure.
 pub(super) async fn execute_load_test_multiplexed(
-    cli: &Cli,
+    server: &TacacsPlusServer,
     requests: &[BatchRequest],
     config: &LoadTestConfig,
+    options: &ConnectOptions,
 ) -> anyhow::Result<LoadTestResult> {
     let total_requests = requests.len() * config.repetitions;
 
     println!("Starting load test with {total_requests} total requests...\n");
 
-    let cli = cli.clone();
+    let server = server.clone();
+    let options = options.clone();
     Ok(run_load_test(
         total_requests,
         load_test_iterations(requests, config.repetitions),
         config.max_parallel,
         move |rep, idx, request| {
-            let cli = cli.clone();
-            async move { execute_load_test_single(&cli, request, rep, idx).await }
+            let server = server.clone();
+            let options = options.clone();
+            async move { execute_load_test_single(&server, &options, request, rep, idx).await }
         },
     )
     .await)
@@ -111,14 +115,17 @@ pub(super) async fn execute_load_test_multiplexed(
 
 /// Executes a single load test iteration on a new multiplexed connection
 async fn execute_load_test_single(
-    cli: &Cli,
+    server: &TacacsPlusServer,
+    options: &ConnectOptions,
     request: &BatchRequest,
     rep: usize,
     idx: usize,
 ) -> Result<(), String> {
-    let connection = establish_connection(cli).await.map_err(|error| {
-        format!("Connection failed at rep {}, request {}: {}", rep + 1, idx + 1, error)
-    })?;
+    let connection = establish_connection(server, options)
+        .await
+        .map_err(|error| {
+            format!("Connection failed at rep {}, request {}: {}", rep + 1, idx + 1, error)
+        })?;
 
     let session = connection
         .create_session_optional_id(request.session_id())

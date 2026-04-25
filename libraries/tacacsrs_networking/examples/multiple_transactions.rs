@@ -14,7 +14,6 @@ use tacacsrs_networking::traits::SessionManagementTrait;
 use tacacsrs_networking::TacacsConnection;
 use tokio::task::JoinHandle;
 
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = init_logging();
@@ -91,7 +90,6 @@ async fn send_test_request(session: Session) -> anyhow::Result<()> {
 
     Ok(())
 }
-
 
 use log::{Record, Level, Metadata};
 use log::{SetLoggerError, LevelFilter};

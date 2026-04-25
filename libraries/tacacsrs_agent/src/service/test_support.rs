@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
 };
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tokio::sync::{Mutex, Notify};
 
 use crate::upstream::{DedicatedAccountingResult, UpstreamConnection, UpstreamConnector};
@@ -107,10 +108,14 @@ impl FakeConnector {
 
 #[async_trait]
 impl UpstreamConnector for FakeConnector {
-    async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+    async fn connect(
+        &self,
+        server: &TacacsPlusServer,
+    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        let address = server.socket_address();
         {
             let mut attempts = self.connect_attempts.lock().await;
-            *attempts.entry(address.to_owned()).or_default() += 1;
+            *attempts.entry(address.clone()).or_default() += 1;
         }
 
         let in_flight = self.in_flight_connects.fetch_add(1, Ordering::Relaxed) + 1;
@@ -122,7 +127,7 @@ impl UpstreamConnector for FakeConnector {
 
         let connection = self
             .connections
-            .get(address)
+            .get(&address)
             .with_context(|| format!("missing fake connection for {address}"))?;
 
         let result = if connection.usable.load(Ordering::Relaxed) {
@@ -137,10 +142,10 @@ impl UpstreamConnector for FakeConnector {
 
     async fn send_accounting_dedicated(
         &self,
-        address: &str,
+        server: &TacacsPlusServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
-        let connection = self.connect(address).await?;
+        let connection = self.connect(server).await?;
         let response = connection.send_accounting(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
@@ -202,7 +207,11 @@ pub(super) struct SingleSessionConnector {
 
 #[async_trait]
 impl UpstreamConnector for SingleSessionConnector {
-    async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+    async fn connect(
+        &self,
+        server: &TacacsPlusServer,
+    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        let address = server.socket_address();
         assert_eq!(address, self.address);
         self.connect_attempts.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(SingleSessionConnection {
@@ -213,10 +222,10 @@ impl UpstreamConnector for SingleSessionConnector {
 
     async fn send_accounting_dedicated(
         &self,
-        address: &str,
+        server: &TacacsPlusServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
-        let connection = self.connect(address).await?;
+        let connection = self.connect(server).await?;
         let response = connection.send_accounting(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
@@ -273,16 +282,19 @@ pub(super) struct BlockingConnector {
 
 #[async_trait]
 impl UpstreamConnector for BlockingConnector {
-    async fn connect(&self, _address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+    async fn connect(
+        &self,
+        _server: &TacacsPlusServer,
+    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         Ok(Arc::clone(&self.connection) as Arc<dyn UpstreamConnection>)
     }
 
     async fn send_accounting_dedicated(
         &self,
-        address: &str,
+        server: &TacacsPlusServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
-        let connection = self.connect(address).await?;
+        let connection = self.connect(server).await?;
         let response = connection.send_accounting(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
@@ -347,7 +359,11 @@ pub(super) struct ExclusiveSessionConnector {
 
 #[async_trait]
 impl UpstreamConnector for ExclusiveSessionConnector {
-    async fn connect(&self, address: &str) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+    async fn connect(
+        &self,
+        server: &TacacsPlusServer,
+    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        let address = server.socket_address();
         assert_eq!(address, self.address);
         self.connect_attempts.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(ExclusiveSessionConnection {
@@ -358,10 +374,10 @@ impl UpstreamConnector for ExclusiveSessionConnector {
 
     async fn send_accounting_dedicated(
         &self,
-        address: &str,
+        server: &TacacsPlusServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
-        let connection = self.connect(address).await?;
+        let connection = self.connect(server).await?;
         let response = connection.send_accounting(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;

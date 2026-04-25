@@ -4,7 +4,7 @@
 //! - [`abstractions`] for common transport traits and shared logic
 //! - [`tcp`] for plain TCP transport support
 //! - [`tls`] for TLS transport support
-//! - [`tls_psk`] for TLS-PSK transport support (feature-gated)
+//! - `tls_psk` for TLS-PSK transport support (feature-gated)
 
 pub mod abstractions;
 pub mod boxed;

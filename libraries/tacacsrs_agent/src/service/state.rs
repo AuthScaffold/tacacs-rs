@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::bail;
 use tacacsrs_agent_client::{AccountingOperation, AccountingOperationResponse, ServiceError};
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_networking::SingleConnectionState;
 use tokio::sync::{Mutex, Notify, RwLock};
 
@@ -57,8 +58,8 @@ pub(super) struct ServiceState {
 /// Each configured TACACS+ server gets its own `ServerState` so that
 /// reconnect serialization and connection caching are independent.
 struct ServerState {
-    /// The `host:port` address of this server.
-    address: String,
+    /// The per-server connection configuration.
+    server: TacacsPlusServer,
     /// Cached upstream connection, if any. `None` means the server needs
     /// a fresh connection on the next request.
     connection: RwLock<Option<Arc<dyn UpstreamConnection>>>,
@@ -169,15 +170,15 @@ impl ServiceState {
     /// configured before constructing this state. The higher-level service
     /// constructor enforces that invariant for production use.
     pub(super) fn new(
-        server_addresses: Vec<String>,
+        servers: Vec<TacacsPlusServer>,
         connector: Arc<dyn UpstreamConnector>,
         preferred_probe_interval: std::time::Duration,
     ) -> Self {
         Self {
-            servers: server_addresses
+            servers: servers
                 .into_iter()
-                .map(|address| ServerState {
-                    address,
+                .map(|server| ServerState {
+                    server,
                     connection: RwLock::new(None),
                     connect_lock: Mutex::new(()),
                     completed_connect_attempts: AtomicU64::new(0),
@@ -219,7 +220,7 @@ impl ServiceState {
                 Err(error) => {
                     log::warn!(
                         "Initial connection attempt to {} failed: {error}",
-                        self.servers[index].address
+                        self.servers[index].server.socket_address()
                     );
                 }
             }
@@ -255,15 +256,15 @@ impl ServiceState {
                 if active_index == 0 {
                     log::trace!(
                         "Preferred server probe: already using preferred server {}",
-                        state.servers[0].address,
+                        state.servers[0].server.socket_address(),
                     );
                     continue;
                 }
 
                 log::debug!(
                     "Probing preferred server {} (currently failed over to {})",
-                    state.servers[0].address,
-                    state.servers[active_index].address,
+                    state.servers[0].server.socket_address(),
+                    state.servers[active_index].server.socket_address(),
                 );
 
                 match state.ensure_connection(0).await {
@@ -277,7 +278,7 @@ impl ServiceState {
                     Err(error) => {
                         log::debug!(
                             "Preferred TACACS+ server {} probe failed: {error:#}",
-                            state.servers[0].address,
+                            state.servers[0].server.socket_address(),
                         );
                     }
                 }
@@ -359,7 +360,7 @@ impl ServiceState {
                     log::info!(
                         "Shared connection to {} no longer usable; \
                          falling back to a dedicated connection",
-                        self.servers[bound_server.index].address,
+                        self.servers[bound_server.index].server.socket_address(),
                     );
                     self.check_single_connection_negotiation(
                         bound_server.index,
@@ -397,12 +398,12 @@ impl ServiceState {
         index: usize,
         request: &AccountingOperation,
     ) -> Result<AccountingOperationResponse, ServiceError> {
-        let address = &self.servers[index].address;
+        let address = self.servers[index].server.socket_address();
         log::debug!("Sending dedicated accounting request to {address}");
 
         match self
             .connector
-            .send_accounting_dedicated(address, request)
+            .send_accounting_dedicated(&self.servers[index].server, request)
             .await
         {
             Ok(result) => {
@@ -422,7 +423,7 @@ impl ServiceState {
                 log::warn!("Dedicated accounting request to {address} failed: {error:#}");
                 self.note_failure(index).await;
                 Err(ServiceError::new(error.to_string())
-                    .with_server(address)
+                    .with_server(&address)
                     .retriable(true))
             }
         }
@@ -450,8 +451,8 @@ impl ServiceState {
             {
                 log::info!(
                     "Server {} supports single-connection mode; \
-                     switching to shared connections for future requests",
-                    self.servers[index].address,
+                         switching to shared connections for future requests",
+                    self.servers[index].server.socket_address(),
                 );
             }
             SingleConnectionState::NotSupported
@@ -461,8 +462,8 @@ impl ServiceState {
             {
                 log::info!(
                     "Server {} revoked single-connection support; \
-                     switching to dedicated connections for future requests",
-                    self.servers[index].address,
+                         switching to dedicated connections for future requests",
+                    self.servers[index].server.socket_address(),
                 );
             }
             // Initial or Negotiating — no actionable information yet.
@@ -503,7 +504,7 @@ impl ServiceState {
                 Err(error) => {
                     log::warn!(
                         "TACACS+ server {} is non-responsive: {error}",
-                        self.servers[index].address
+                        self.servers[index].server.socket_address()
                     );
                     self.note_failure(index).await;
                 }
@@ -551,14 +552,14 @@ impl ServiceState {
             if existing.is_usable_for_new_sessions().await {
                 log::debug!(
                     "Reusing cached upstream connection for {}",
-                    self.servers[index].address
+                    self.servers[index].server.socket_address()
                 );
                 return Ok(existing);
             }
 
             log::debug!(
                 "Cached upstream connection for {} is no longer usable for new sessions; reconnecting",
-                self.servers[index].address
+                self.servers[index].server.socket_address()
             );
         }
 
@@ -572,7 +573,7 @@ impl ServiceState {
             if existing.is_usable_for_new_sessions().await {
                 log::debug!(
                     "Reusing cached upstream connection for {} after waiting on another reconnect",
-                    self.servers[index].address
+                    self.servers[index].server.socket_address()
                 );
                 return Ok(existing);
             }
@@ -585,20 +586,23 @@ impl ServiceState {
         {
             log::debug!(
                 "Skipping duplicate reconnect to {}; another attempt already completed",
-                self.servers[index].address,
+                self.servers[index].server.socket_address(),
             );
             bail!(
                 "Another reconnect attempt for TACACS+ server {} already completed for this request wave",
-                self.servers[index].address
+                self.servers[index].server.socket_address()
             );
         }
 
-        log::debug!("Opening upstream connection to {}", self.servers[index].address);
-        match self.connector.connect(&self.servers[index].address).await {
+        log::debug!(
+            "Opening upstream connection to {}",
+            self.servers[index].server.socket_address()
+        );
+        match self.connector.connect(&self.servers[index].server).await {
             Ok(connection) => {
                 log::info!(
                     "Upstream connection to {} established successfully",
-                    self.servers[index].address,
+                    self.servers[index].server.socket_address(),
                 );
                 *self.servers[index].connection.write().await = Some(Arc::clone(&connection));
                 self.servers[index]
@@ -609,7 +613,7 @@ impl ServiceState {
             Err(error) => {
                 log::warn!(
                     "Failed to connect to upstream TACACS+ server {}: {error:#}",
-                    self.servers[index].address,
+                    self.servers[index].server.socket_address(),
                 );
                 *self.servers[index].connection.write().await = None;
                 self.servers[index]
@@ -641,8 +645,8 @@ impl ServiceState {
             let next_index = (index + 1) % self.servers.len();
             log::info!(
                 "Failing over new IPC sessions from {} to {}",
-                self.servers[index].address,
-                self.servers[next_index].address
+                self.servers[index].server.socket_address(),
+                self.servers[next_index].server.socket_address()
             );
             *active_index = next_index;
         }
@@ -662,6 +666,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use tacacsrs_config::TacacsPlusServer;
     use tokio::sync::Notify;
 
     use super::ServiceState;
@@ -670,6 +675,29 @@ mod tests {
         FakeConnector, SingleSessionConnector, build_request,
     };
     use crate::upstream::UpstreamConnector;
+
+    fn test_server(address: &str) -> TacacsPlusServer {
+        let (host, port) = match address.rsplit_once(':') {
+            Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
+            None => (address.to_owned(), 49),
+        };
+        tacacsrs_config::TacacsPlusServer {
+            name: address.to_owned(),
+            server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
+            address: host,
+            port,
+            shared_secret: None,
+            timeout: 5,
+            single_connection: false,
+            domain_name: None,
+            sni_enabled: None,
+            client_identity: None,
+            server_authentication: None,
+            source_ip: None,
+            source_interface: None,
+            vrf_instance: None,
+        }
+    }
 
     #[tokio::test]
     async fn test_server_selection_wraps_to_later_server() {
@@ -697,9 +725,9 @@ mod tests {
 
         let state = ServiceState::new(
             vec![
-                first.address.clone(),
-                second.address.clone(),
-                third.address.clone(),
+                test_server("server-a:49"),
+                test_server("server-b:49"),
+                test_server("server-c:49"),
             ],
             connector,
             Duration::from_millis(25),
@@ -735,9 +763,9 @@ mod tests {
 
         let state = ServiceState::new(
             vec![
-                first.address.clone(),
-                second.address.clone(),
-                third.address.clone(),
+                test_server("server-a:49"),
+                test_server("server-b:49"),
+                test_server("server-c:49"),
             ],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(25),
@@ -776,7 +804,7 @@ mod tests {
         );
 
         let state = Arc::new(ServiceState::new(
-            vec![first.address.clone(), second.address.clone()],
+            vec![test_server("server-a:49"), test_server("server-b:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(200),
         ));
@@ -807,7 +835,7 @@ mod tests {
         });
 
         let state = ServiceState::new(
-            vec![connector.address.clone()],
+            vec![test_server("server-a:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(200),
         );
@@ -839,7 +867,7 @@ mod tests {
         });
         #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state =
-            ServiceState::new(vec!["server:49".to_owned()], connector, Duration::from_secs(60));
+            ServiceState::new(vec![test_server("server:49")], connector, Duration::from_secs(60));
 
         // No requests in flight — drain should return immediately.
         tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients())
@@ -858,7 +886,7 @@ mod tests {
         });
         #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state = Arc::new(ServiceState::new(
-            vec!["server:49".to_owned()],
+            vec![test_server("server:49")],
             connector,
             Duration::from_secs(60),
         ));
@@ -909,7 +937,7 @@ mod tests {
         });
         #[allow(unknown_lints, clippy::duration_suboptimal_units)]
         let state = Arc::new(ServiceState::new(
-            vec!["server:49".to_owned()],
+            vec![test_server("server:49")],
             connector,
             Duration::from_secs(60),
         ));
@@ -951,7 +979,7 @@ mod tests {
         });
 
         let state = Arc::new(ServiceState::new(
-            vec!["server:49".to_owned()],
+            vec![test_server("server:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(200),
         ));
@@ -991,7 +1019,7 @@ mod tests {
         )])));
 
         let state = ServiceState::new(
-            vec!["server:49".to_owned()],
+            vec![test_server("server:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(200),
         );

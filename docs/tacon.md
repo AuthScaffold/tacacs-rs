@@ -39,13 +39,14 @@ tacon --service-endpoint /run/tacacs.sock \
 | Flag | Description |
 |------|-------------|
 | `-s, --server-addr <ADDR>` | Direct connection to a TACACS+ server (e.g. `192.168.1.1:49`) |
+| `--config <FILE>` | Load the direct connection from a YANG JSON config file |
 | `--service-endpoint <PATH>` | Connect via the agent service (Unix socket or TCP address) |
 
 ### Encryption (direct mode only)
 
 | Flag | Description |
 |------|-------------|
-| `-k, --obfuscation-key <KEY>` | Shared secret for TACACS+ packet obfuscation |
+| `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
 | `--use-tls` | Enable TLS 1.3 |
 | `--client-certificate <FILE>` | Client TLS certificate (requires `--client-key`) |
 | `--client-key <FILE>` | Client TLS private key (requires `--client-certificate`) |
@@ -195,11 +196,21 @@ tacon -s tacacs-server:49 -k tac_plus_key \
     accounting "show version"
 ```
 
+### YANG JSON configuration
+
+```bash
+tacon --config ./tacacs.json \
+    --user admin --port tty0 --rem-addr 10.0.0.1 \
+    accounting "show version"
+```
+
+The config file must use RFC 7951 JSON encoding with the root key `ietf-system-tacacs-plus:tacacs-plus`.
+
 ### TLS 1.3 with Certificates
 
 ```bash
 tacon -s tacacs-server:449 --use-tls \
-    --client-certificate client.crt --client-key client.key \
+    --client-certificate client.crt.der --client-key client.key.der \
     --user admin --port tty0 --rem-addr 10.0.0.1 \
     accounting "show version"
 ```

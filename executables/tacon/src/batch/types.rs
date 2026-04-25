@@ -5,6 +5,7 @@
 
 use serde::Deserialize;
 use std::time::Duration;
+use tacacsrs_config::TacacsPlusServerType;
 use tacacsrs_messages::enumerations::TacacsFlags;
 
 /// Custom flags that can be set on TACACS+ packet headers
@@ -42,6 +43,19 @@ pub struct BatchFile {
 
     /// List of requests to execute
     pub requests: Vec<BatchRequest>,
+}
+
+impl BatchFile {
+    /// Returns the combined TACACS+ server type required to execute all requests.
+    #[must_use]
+    pub fn required_server_type(&self) -> Option<TacacsPlusServerType> {
+        let required_type = self
+            .requests
+            .iter()
+            .fold(TacacsPlusServerType::empty(), |acc, request| acc | request.server_type());
+
+        (!required_type.is_empty()).then_some(required_type)
+    }
 }
 
 /// Metadata controlling how the batch is executed
@@ -105,6 +119,15 @@ impl BatchRequest {
             Self::Accounting(req) => req.session_id,
             Self::Authentication(req) => req.session_id,
             Self::Authorization(req) => req.session_id,
+        }
+    }
+
+    /// Returns the TACACS+ server type required to execute this request.
+    pub const fn server_type(&self) -> TacacsPlusServerType {
+        match self {
+            Self::Accounting(_) => TacacsPlusServerType::ACCOUNTING,
+            Self::Authentication(_) => TacacsPlusServerType::AUTHENTICATION,
+            Self::Authorization(_) => TacacsPlusServerType::AUTHORIZATION,
         }
     }
 }

@@ -41,15 +41,19 @@ This is a Rust workspace implementing the TACACS+ protocol (RFC 8907) for authen
 
 ```
 tacon (CLI)  ──────┬──► tacacsrs-agent-client (gRPC IPC client)
+                   ├──► tacacsrs-config (YANG JSON config + validation)
                    ├──► tacacsrs-messages (protocol types)
                    └──► tacacsrs-networking (transport/sessions)
 
 tacacsrs-agentd (daemon) ──┬──► tacacsrs-agent (service logic)
-                           └──► tacacsrs-agent-client
+                           ├──► tacacsrs-agent-client
+                           └──► tacacsrs-config
 
 tacacsrs-agent ──┬──► tacacsrs-agent-client
                  ├──► tacacsrs-messages
                  └──► tacacsrs-networking
+
+tacacsrs-config ──► serde/serde_json (RFC 7951 parsing, generated YANG types)
 
 tacacsrs-networking ──► tacacsrs-messages
 ```
@@ -60,6 +64,7 @@ tacacsrs-networking ──► tacacsrs-messages
 - **`tacacsrs-networking`** — Transport layer: `Transport` trait (TCP, TLS, PSK, mock), `TacacsConnection` (multiplexed sessions), `DedicatedConnection` (one-shot). TLS configured via `TlsConfigurationBuilder` (builder pattern, rustls + webpki-roots). Session multiplexing uses `SessionManager` to route packets by `session_id` over bidirectional `DuplexChannel`s.
 - **`tacacsrs-agent-client`** — Stateless gRPC client (`ServiceClient`) for IPC with the agent daemon. Protobuf schema in `proto/tacacsrs_agent.proto`, auto-generated via tonic/prost in `build.rs`. Uses Unix domain sockets on Linux, TCP on Windows.
 - **`tacacsrs-agent`** — Service coordinator with ordered upstream failover. `TacacsClientService` manages connections to TACACS+ servers, probes preferred server for recovery, and serializes reconnects per-server.
+- **`tacacsrs-config`** — Generated YANG JSON types plus validation/mapping helpers for the `ietf-system-tacacs-plus` model. Public entry points include `parse_yang_json`, `parse_yang_json_file`, and server enumeration helpers.
 
 ### Executables
 
@@ -69,6 +74,14 @@ tacacsrs-networking ──► tacacsrs-messages
 ### The `psk` Feature Flag
 
 The `psk` feature enables TLS 1.3 Pre-Shared Key support via OpenSSL. Without it, the default build uses rustls (pure Rust) and requires no external dependencies. The feature propagates through the crate graph: `tacon` → `tacacsrs-networking` → OpenSSL.
+
+### API Stability Policy
+
+All crates in this workspace are internal-only and are not published to crates.io.
+
+- We make no public API stability guarantees.
+- Breaking API changes are acceptable when they improve correctness, maintainability, or alignment with upstream specs (including YANG model evolution).
+- AI coding agents may introduce breaking API changes when appropriate for the change being implemented.
 
 ## Conventions
 
@@ -106,7 +119,7 @@ Uses `anyhow::Result<T>` with `.context()` / `.with_context()` for error chains.
 - Prefer borrowing (`&T`, `&str`) over cloning or taking ownership unless ownership transfer is required.
 - Use iterators over index-based loops.
 - Avoid `unwrap()`/`expect()` in library code — return `Result` instead.
-- Avoid `unsafe` — the workspace forbids it via `unsafe_code = "forbid"`.
+- Avoid `unsafe` — the workspace denies it by default; the only allowed exception is the feature-gated RPK OpenSSL FFI module.
 - Don't ignore compiler or clippy warnings — CI treats them as errors.
 - Prefer `&str` over `String` for function parameters when ownership is not needed.
 

@@ -142,7 +142,6 @@ impl SessionManager {
         Ok((duplex_channel, session_id))
     }
 
-
     pub async fn can_create_sessions(&self) -> bool {
         let can_accept_lock = self.can_accept_new_sessions.read().await;
         if !*can_accept_lock {
@@ -390,7 +389,6 @@ impl SessionManager {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,7 +424,6 @@ mod tests {
 
         assert_ne!(session.session_id(), 0);
     }
-
 
     #[tokio::test]
     async fn test_create_session_when_connection_is_not_accepting_new_sessions() {

@@ -30,6 +30,7 @@ use anyhow::{Context, bail};
 use tacacsrs_agent_client::ipc;
 use tacacsrs_agent_client::ipc::tacacs_agent_server::{TacacsAgent, TacacsAgentServer};
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint};
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -131,19 +132,16 @@ impl TacacsClientService {
     ///
     /// # Errors
     ///
-    /// Returns an error if no upstream TACACS+ servers are configured.
+    /// Returns an error if no upstream TACACS+ servers are configured or if
+    /// credential-reference resolution fails.
     pub fn new(config: ServiceConfig) -> anyhow::Result<Self> {
-        if config.server_addresses.is_empty() {
-            bail!("At least one TACACS+ server address must be configured");
-        }
+        let servers = enumerate_accounting_servers(&config)?;
 
-        let connector: Arc<dyn UpstreamConnector> =
-            Arc::new(NetworkUpstreamConnector::new(config.upstream.clone()));
-        let state = Arc::new(ServiceState::new(
-            config.server_addresses.clone(),
-            connector,
-            config.preferred_probe_interval,
-        ));
+        let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector {
+            disable_certificate_verification: config.disable_certificate_verification,
+        });
+        let state =
+            Arc::new(ServiceState::new(servers, connector, config.preferred_probe_interval));
 
         Ok(Self { config, state })
     }
@@ -153,15 +151,10 @@ impl TacacsClientService {
         config: ServiceConfig,
         connector: Arc<dyn UpstreamConnector>,
     ) -> anyhow::Result<Self> {
-        if config.server_addresses.is_empty() {
-            bail!("At least one TACACS+ server address must be configured");
-        }
+        let servers = enumerate_accounting_servers(&config)?;
 
-        let state = Arc::new(ServiceState::new(
-            config.server_addresses.clone(),
-            connector,
-            config.preferred_probe_interval,
-        ));
+        let state =
+            Arc::new(ServiceState::new(servers, connector, config.preferred_probe_interval));
 
         Ok(Self { config, state })
     }
@@ -340,6 +333,20 @@ impl TacacsClientService {
     }
 }
 
+fn enumerate_accounting_servers(config: &ServiceConfig) -> anyhow::Result<Vec<TacacsPlusServer>> {
+    let servers = tacacsrs_config::enumerate_servers(&config.tacacs_plus)?;
+    let accounting_servers = servers
+        .into_iter()
+        .filter(|server| server.supports_server_type(TacacsPlusServerType::ACCOUNTING))
+        .collect::<Vec<_>>();
+
+    if accounting_servers.is_empty() {
+        bail!("At least one accounting-capable TACACS+ server must be configured");
+    }
+
+    Ok(accounting_servers)
+}
+
 /// Waits for a process termination signal that should stop the service from
 /// accepting new IPC clients.
 ///
@@ -392,21 +399,83 @@ mod tests {
     use super::super::config::ServiceConfig;
     #[cfg(unix)]
     use super::super::test_support::{FakeConnection, FakeConnector, build_request};
-    #[cfg(unix)]
-    use crate::upstream::UpstreamConnectionOptions;
 
     #[cfg(unix)]
-    fn service_config(endpoint: IpcEndpoint, server_addresses: Vec<String>) -> ServiceConfig {
+    fn test_server(address: &str) -> tacacsrs_config::TacacsPlusServer {
+        let (host, port) = match address.rsplit_once(':') {
+            Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
+            None => (address.to_owned(), 49),
+        };
+        tacacsrs_config::TacacsPlusServer {
+            name: address.to_owned(),
+            server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
+            address: host,
+            port,
+            shared_secret: None,
+            timeout: 5,
+            single_connection: false,
+            domain_name: None,
+            sni_enabled: None,
+            client_identity: None,
+            server_authentication: None,
+            source_ip: None,
+            source_interface: None,
+            vrf_instance: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn service_config(
+        endpoint: IpcEndpoint,
+        servers: Vec<tacacsrs_config::TacacsPlusServer>,
+    ) -> ServiceConfig {
+        let tacacs_plus = servers
+            .into_iter()
+            .fold(
+                tacacsrs_config::TacacsPlusBuilder::new(),
+                tacacsrs_config::TacacsPlusBuilder::with_server,
+            )
+            .build();
         ServiceConfig {
             endpoint,
-            server_addresses,
-            upstream: UpstreamConnectionOptions {
-                connect_timeout: Duration::from_millis(50),
-                ..UpstreamConnectionOptions::default()
-            },
+            tacacs_plus,
             preferred_probe_interval: Duration::from_millis(50),
             socket_mode: 0o660,
+            disable_certificate_verification: false,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_uses_only_accounting_capable_servers() {
+        let endpoint = test_endpoint("tacacs-service-accounting-filter");
+        let mut auth_only = test_server("auth-only:49");
+        auth_only.server_type = tacacsrs_config::TacacsPlusServerType::AUTHENTICATION;
+        let accounting = test_server("accounting:49");
+        let config = service_config(endpoint, vec![auth_only, accounting]);
+
+        let connector = Arc::new(FakeConnector::new(HashMap::new()));
+        let service = TacacsClientService::new_with_connector(config, connector).unwrap();
+
+        assert_eq!(service.state.server_count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_rejects_config_without_accounting_server() {
+        let endpoint = test_endpoint("tacacs-service-no-accounting");
+        let mut auth_only = test_server("auth-only:49");
+        auth_only.server_type = tacacsrs_config::TacacsPlusServerType::AUTHENTICATION;
+        let config = service_config(endpoint, vec![auth_only]);
+
+        let connector = Arc::new(FakeConnector::new(HashMap::new()));
+        let Err(error) = TacacsClientService::new_with_connector(config, connector) else {
+            panic!("accounting-capable server should be required");
+        };
+
+        assert!(error
+            .to_string()
+            .contains("At least one accounting-capable TACACS+ server"));
     }
 
     #[cfg(unix)]
@@ -420,7 +489,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        IpcEndpoint::Unix(std::env::temp_dir().join(unique))
+        IpcEndpoint::Unix(std::path::PathBuf::from("/tmp").join(unique))
     }
 
     #[cfg(unix)]
@@ -445,7 +514,7 @@ mod tests {
         let endpoint = test_endpoint("tacacs-service-test");
         let config = service_config(
             endpoint.clone(),
-            vec![primary.address.clone(), secondary.address.clone()],
+            vec![test_server("primary:49"), test_server("secondary:49")],
         );
 
         let service = TacacsClientService::new_with_connector(config, connector).unwrap();
@@ -504,7 +573,7 @@ mod tests {
         };
 
         let existing_listener = tokio::net::UnixListener::bind(&path).unwrap();
-        let config = service_config(endpoint, vec![primary.address.clone()]);
+        let config = service_config(endpoint, vec![test_server("primary:49")]);
 
         let service = TacacsClientService::new_with_connector(config, connector).unwrap();
         let error = service.serve().await.unwrap_err();
@@ -537,7 +606,7 @@ mod tests {
         let stale_listener = tokio::net::UnixListener::bind(&path).unwrap();
         drop(stale_listener);
 
-        let config = service_config(endpoint, vec![primary.address.clone()]);
+        let config = service_config(endpoint, vec![test_server("primary:49")]);
 
         let service = TacacsClientService::new_with_connector(config, connector).unwrap();
         let listener = service.prepare_unix_listener(&path).await.unwrap();

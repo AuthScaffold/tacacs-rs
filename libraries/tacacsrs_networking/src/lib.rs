@@ -2,7 +2,8 @@
 //!
 //! Transport support is organized in [`transport`], with shared traits in
 //! [`transport::abstractions`] and protocol-specific implementations in
-//! [`transport::tcp`], [`transport::tls`], and (when enabled) [`transport::tls_psk`].
+//! [`transport::tcp`], [`transport::tls`], and the feature-gated
+//! `transport::tls_psk` module.
 
 pub mod sender;
 pub mod session;
@@ -17,6 +18,7 @@ pub mod packet_writer;
 pub mod single_connect_tracker;
 pub mod transport;
 pub mod connection;
+pub mod config_connect;
 pub mod dedicated_connection;
 
 pub use session_manager::SingleConnectionState;

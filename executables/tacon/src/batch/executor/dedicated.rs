@@ -1,10 +1,11 @@
 use anyhow::Context;
 use futures::future::join_all;
 
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::DedicatedConnection;
+use tacacsrs_networking::config_connect::ConnectOptions;
 
-use crate::cli::Cli;
 use crate::commands::accounting::build_accounting_request;
 use crate::connection::establish_stream;
 
@@ -14,13 +15,16 @@ use super::super::types::{BatchRequest, LoadTestConfig, RequestResult};
 /// Probes the server for single-connection support by sending a lightweight
 /// accounting record that logs tacon's invocation. Returns `true` if the
 /// server echoed `TAC_PLUS_SINGLE_CONNECT_FLAG`.
-pub(super) async fn probe_single_connect(cli: &Cli) -> bool {
+pub(super) async fn probe_single_connect(
+    server: &TacacsPlusServer,
+    options: &ConnectOptions,
+) -> bool {
     let result = async {
-        let stream = establish_stream(cli)
+        let stream = establish_stream(server, options)
             .await
             .context("Probe connection failed")?;
-        let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
-        let mut connection = DedicatedConnection::new(stream, obfuscation_key);
+        let obfuscation_key = server.obfuscation_key();
+        let mut connection = DedicatedConnection::new(stream, obfuscation_key.as_deref());
 
         let args =
             redact_secret_args(std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()));
@@ -49,7 +53,7 @@ pub(super) async fn probe_single_connect(cli: &Cli) -> bool {
     }
 }
 
-const SECRET_FLAGS: &[&str] = &["-k", "--obfuscation-key", "--psk-key"];
+const SECRET_FLAGS: &[&str] = &["-k", "--shared-secret", "--psk-key"];
 
 /// Replaces the value following any secret flag with `***`.
 fn redact_secret_args(args: impl Iterator<Item = String>) -> Vec<String> {
@@ -78,17 +82,18 @@ fn redact_secret_args(args: impl Iterator<Item = String>) -> Vec<String> {
 /// Executes a single batch request using a dedicated connection (no background
 /// tasks, no session multiplexing).
 async fn execute_single_request_dedicated(
-    cli: &Cli,
+    server: &TacacsPlusServer,
+    options: &ConnectOptions,
     request: &BatchRequest,
 ) -> Result<String, String> {
     match request {
         BatchRequest::Accounting(req) => {
-            let stream = establish_stream(cli)
+            let stream = establish_stream(server, options)
                 .await
                 .map_err(|error| format!("Connection failed: {error}"))?;
 
-            let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
-            let mut connection = DedicatedConnection::new(stream, obfuscation_key);
+            let obfuscation_key = server.obfuscation_key();
+            let mut connection = DedicatedConnection::new(stream, obfuscation_key.as_deref());
 
             let cmd_args = if req.cmd_args.is_empty() {
                 None
@@ -114,21 +119,23 @@ async fn execute_single_request_dedicated(
 }
 
 pub(super) async fn execute_requests_dedicated(
-    cli: &Cli,
+    server: &TacacsPlusServer,
     requests: &[BatchRequest],
     parallel: bool,
+    options: &ConnectOptions,
 ) -> Vec<RequestResult> {
     if parallel {
         let futures: Vec<_> = requests
             .iter()
             .enumerate()
             .map(|(index, request)| {
-                let cli = cli.clone();
+                let server = server.clone();
+                let options = options.clone();
                 async move {
                     RequestResult {
                         index,
                         request_type: request.type_name(),
-                        result: execute_single_request_dedicated(&cli, request).await,
+                        result: execute_single_request_dedicated(&server, &options, request).await,
                     }
                 }
             })
@@ -141,7 +148,7 @@ pub(super) async fn execute_requests_dedicated(
             results.push(RequestResult {
                 index,
                 request_type: request.type_name(),
-                result: execute_single_request_dedicated(cli, request).await,
+                result: execute_single_request_dedicated(server, options, request).await,
             });
         }
         results
@@ -149,19 +156,22 @@ pub(super) async fn execute_requests_dedicated(
 }
 
 pub(super) async fn run_dedicated_load_test(
-    cli: &Cli,
+    server: &TacacsPlusServer,
     requests: &[BatchRequest],
     load_config: &LoadTestConfig,
+    options: &ConnectOptions,
 ) -> super::super::types::LoadTestResult {
-    let cli = cli.clone();
+    let server = server.clone();
+    let options = options.clone();
     run_load_test(
         requests.len() * load_config.repetitions,
         load_test_iterations(requests, load_config.repetitions),
         load_config.max_parallel,
         move |rep, idx, request| {
-            let cli = cli.clone();
+            let server = server.clone();
+            let options = options.clone();
             async move {
-                execute_single_request_dedicated(&cli, request)
+                execute_single_request_dedicated(&server, &options, request)
                     .await
                     .map(|_| ())
                     .map_err(|error| {
@@ -192,8 +202,8 @@ mod tests {
     #[test]
     fn redacts_obfuscation_key_long_flag() {
         assert_eq!(
-            redact(&["tacon", "--obfuscation-key", "s3cret", "batch", "f.json"]),
-            ["tacon", "--obfuscation-key", "***", "batch", "f.json"],
+            redact(&["tacon", "--shared-secret", "s3cret", "batch", "f.json"]),
+            ["tacon", "--shared-secret", "***", "batch", "f.json"],
         );
     }
 
@@ -213,8 +223,8 @@ mod tests {
     #[test]
     fn redacts_equals_syntax() {
         assert_eq!(
-            redact(&["tacon", "--obfuscation-key=s3cret", "--psk-key=top"]),
-            ["tacon", "--obfuscation-key=***", "--psk-key=***"],
+            redact(&["tacon", "--shared-secret=s3cret", "--psk-key=top"]),
+            ["tacon", "--shared-secret=***", "--psk-key=***"],
         );
     }
 

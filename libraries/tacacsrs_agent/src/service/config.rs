@@ -6,8 +6,8 @@
 //!
 //! # Configuration flow
 //!
-//! The executable (e.g. `tacacsrs_agentd`) parses CLI flags or
-//! environment variables into a [`ServiceConfig`], passes it to
+//! The executable (e.g. `tacacsrs_agentd`) parses CLI flags or a YANG JSON
+//! config file into a [`ServiceConfig`], passes it to
 //! [`TacacsClientService::new`](crate::TacacsClientService::new) for
 //! validation, and then calls
 //! [`serve`](crate::TacacsClientService::serve) to start the runtime.
@@ -15,8 +15,7 @@
 use std::time::Duration;
 
 use tacacsrs_agent_client::IpcEndpoint;
-
-use crate::upstream::UpstreamConnectionOptions;
+use tacacsrs_config::TacacsPlus;
 
 /// Configuration for the long-lived TACACS+ client service process.
 ///
@@ -26,25 +25,10 @@ use crate::upstream::UpstreamConnectionOptions;
 ///
 /// # Required fields
 ///
-/// - **`server_addresses`** — at least one upstream TACACS+ server must be
-///   configured. The list order determines failover priority (index 0 is
-///   preferred).
-///
-/// # Example
-///
-/// ```rust
-/// # use std::time::Duration;
-/// # use tacacsrs_agent::{ServiceConfig, UpstreamConnectionOptions};
-/// # use tacacsrs_agent_client::IpcEndpoint;
-/// let config = ServiceConfig {
-///     endpoint: IpcEndpoint::default_local(),
-///     server_addresses: vec!["tacacs-primary:49".into(), "tacacs-backup:49".into()],
-///     upstream: UpstreamConnectionOptions::default(),
-///     preferred_probe_interval: Duration::from_secs(30),
-///     #[cfg(unix)]
-///     socket_mode: 0o660,
-/// };
-/// ```
+/// - **`tacacs_plus`** — the YANG-modelled root configuration. After
+///   credential-reference resolution, at least one upstream TACACS+ server
+///   must be present. The order of `tacacs_plus.server` determines failover
+///   priority (index 0 is preferred).
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
     /// Local IPC endpoint exposed to local consumers.
@@ -54,15 +38,16 @@ pub struct ServiceConfig {
     /// developer workflows. Empty strings are rejected instead of defaulting.
     pub endpoint: IpcEndpoint,
 
-    /// Ordered upstream TACACS+ servers. Index zero is the preferred server.
+    /// Root TACACS+ configuration including upstream servers and any shared
+    /// credential bundles.
     ///
-    /// The service attempts servers in order during failover and periodically
-    /// probes the preferred server (index 0) to route traffic back to it once
-    /// it recovers.
-    pub server_addresses: Vec<String>,
-
-    /// Shared options applied to each upstream TACACS+ connection.
-    pub upstream: UpstreamConnectionOptions,
+    /// The service resolves `client-credentials` / `server-credentials`
+    /// references at startup via
+    /// [`tacacsrs_config::enumerate_servers`]. In-process construction via
+    /// [`tacacsrs_config::TacacsPlusBuilder`] typically inlines all security
+    /// material directly on each server and leaves the credential bundles
+    /// empty.
+    pub tacacs_plus: TacacsPlus,
 
     /// How often the preferred server should be reprobed while failed over.
     ///
@@ -75,4 +60,11 @@ pub struct ServiceConfig {
     ///
     /// Typical values: `0o660` (owner + group) or `0o666` (world-accessible).
     pub socket_mode: u32,
+
+    /// Dangerously disable TLS certificate verification for upstream connections.
+    ///
+    /// This is intended for development and testing only. In production,
+    /// certificate verification should always be enabled.
+    #[doc(hidden)]
+    pub disable_certificate_verification: bool,
 }

@@ -32,7 +32,7 @@ tacacsrs-agentd \
     --server-addr tacacs1.example.com:49 \
     --server-addr tacacs2.example.com:49 \
     --listen-endpoint /run/tacacs.sock \
-    --obfuscation-key "shared_secret"
+    --shared-secret "shared_secret"
 ```
 
 Then from any client on the same host:
@@ -50,6 +50,7 @@ tacon --service-endpoint /run/tacacs.sock \
 | Flag | Description |
 |------|-------------|
 | `--server-addr <ADDR>` | TACACS+ server address (repeatable, ordered by preference). First entry is the preferred server. |
+| `--config <FILE>` | Load upstream server definitions from a YANG JSON config file |
 
 ### IPC Listener
 
@@ -62,13 +63,22 @@ tacon --service-endpoint /run/tacacs.sock \
 
 | Flag | Description |
 |------|-------------|
-| `-k, --obfuscation-key <KEY>` | Shared secret for TACACS+ packet obfuscation |
+| `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
 | `--use-tls` | Enable TLS 1.3 for upstream connections |
-| `--client-certificate <FILE>` | Client TLS certificate (requires `--client-key`) |
-| `--client-key <FILE>` | Client TLS private key (requires `--client-certificate`) |
+| `--client-certificate <FILE>` | PEM- or DER-encoded client TLS certificate (requires `--client-key`) |
+| `--client-key <FILE>` | PEM- or DER-encoded client TLS private key (requires `--client-certificate`) |
 | `--insecure-disable-certificate-verification` | Skip TLS cert verification |
 | `--psk-identity <ID>` | TLS 1.3 pre-shared key identity *(requires `psk` feature)* |
 | `--psk-key <KEY>` | TLS 1.3 pre-shared key *(requires `psk` feature)* |
+
+### TLS Client Certificates and Keys
+
+When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemon present a TLS client identity to upstream TACACS+ servers.
+
+- Provide both flags together.
+- Both files may be PEM or DER. PEM input is detected at runtime and normalized to DER internally before the daemon builds its runtime connection settings.
+- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags; provide PEM or DER certificate/key material instead.
+- This PEM-or-DER behavior applies only to the CLI flags. If upstream TLS material is loaded through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 
 ### Timeouts and Failover
 
@@ -157,7 +167,7 @@ ExecStart=/usr/local/bin/tacacsrs-agentd \
     --server-addr tacacs2.example.com:49 \
     --listen-endpoint /run/tacacs.sock \
     --socket-mode 660 \
-    --obfuscation-key "shared_secret" \
+    --shared-secret "shared_secret" \
     --preferred-probe-interval-seconds 30
 Restart=on-failure
 RestartSec=5
@@ -173,8 +183,20 @@ tacacsrs-agentd \
     --server-addr tacacs1.example.com:449 \
     --server-addr tacacs2.example.com:449 \
     --use-tls \
-    --client-certificate /etc/tacacs/client.crt \
-    --client-key /etc/tacacs/client.key \
+    --client-certificate /etc/tacacs/client.crt.pem \
+    --client-key /etc/tacacs/client.key.pem \
+    --listen-endpoint /run/tacacs.sock
+```
+
+DER input is also supported for the same flags:
+
+```bash
+tacacsrs-agentd \
+    --server-addr tacacs1.example.com:449 \
+    --server-addr tacacs2.example.com:449 \
+    --use-tls \
+    --client-certificate /etc/tacacs/client.crt.der \
+    --client-key /etc/tacacs/client.key.der \
     --listen-endpoint /run/tacacs.sock
 ```
 
@@ -187,10 +209,20 @@ tacacsrs-agentd \
     --server-addr primary.dc2.example.com:49 \
     --connect-timeout-seconds 3 \
     --preferred-probe-interval-seconds 15 \
-    --obfuscation-key "shared_secret" \
+    --shared-secret "shared_secret" \
     --listen-endpoint /run/tacacs.sock \
     -vv
 ```
+
+### Loading a YANG JSON config
+
+```bash
+tacacsrs-agentd \
+    --config /etc/tacacs/tacacs.json \
+    --listen-endpoint /run/tacacs.sock
+```
+
+When `--config` is used, upstream server definitions are loaded from the `ietf-system-tacacs-plus` RFC 7951 JSON document instead of repeated `--server-addr` flags.
 
 ## Connection Reuse
 

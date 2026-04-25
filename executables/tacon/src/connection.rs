@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use anyhow::Context;
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_networking::{
-    connection::TacacsConnection, helpers::tls_server_name, session::Session,
-    traits::SessionManagementTrait, transport::tls::TlsConfigurationBuilder, BoxedTransport,
+    BoxedTransport,
+    config_connect::{self, ConnectOptions},
+    connection::TacacsConnection,
+    session::Session,
+    traits::SessionManagementTrait,
 };
-#[cfg(feature = "psk")]
-use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
-
-use crate::cli::Cli;
 
 /// Represents an active TACACS+ connection (either plain TCP or TLS)
 pub struct Connection {
@@ -56,7 +56,7 @@ impl Connection {
     }
 }
 
-/// Establishes a connection to the TACACS+ server
+/// Establishes a multiplexed TACACS+ connection using the given server config.
 ///
 /// # Errors
 ///
@@ -64,11 +64,14 @@ impl Connection {
 /// - TCP connection cannot be established
 /// - TLS is requested but certificate/key are missing or invalid
 /// - TLS handshake fails
-pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
-    let obfuscation_key = cli.obfuscation_key.as_ref().map(String::as_bytes);
-    let stream = establish_stream(cli).await?;
+pub async fn establish_connection(
+    server: &TacacsPlusServer,
+    options: &ConnectOptions,
+) -> anyhow::Result<Connection> {
+    let obfuscation_key = server.obfuscation_key();
+    let stream = establish_stream(server, options).await?;
 
-    let connection = Arc::new(TacacsConnection::new(obfuscation_key));
+    let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
     connection
         .run(stream)
         .await
@@ -77,7 +80,7 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
     Ok(Connection { inner: connection })
 }
 
-/// Establishes a TCP or TLS stream to the TACACS+ server based on CLI options.
+/// Establishes a TCP or TLS stream based on the server config.
 ///
 /// This is the shared connection-setup logic used by both
 /// [`establish_connection`] (multiplexed sessions) and the dedicated
@@ -86,66 +89,12 @@ pub async fn establish_connection(cli: &Cli) -> anyhow::Result<Connection> {
 /// # Errors
 ///
 /// Returns an error if:
-/// - A server address is not provided
 /// - TCP connection cannot be established
 /// - TLS is requested but certificate/key are missing or invalid
 /// - TLS handshake fails
-pub async fn establish_stream(cli: &Cli) -> anyhow::Result<BoxedTransport> {
-    let server_addr = cli
-        .server_addr
-        .as_deref()
-        .context("A TACACS+ server address is required for direct mode")?;
-    let tcp_stream = tacacsrs_networking::helpers::connect_tcp(server_addr)
-        .await
-        .context("Failed to establish TCP connection")?;
-
-    if cli.use_tls {
-        #[cfg(feature = "psk")]
-        if let (Some(psk_identity), Some(psk_key)) =
-            (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
-        {
-            let psk = PskIdentity::new(psk_identity, psk_key.as_bytes())
-                .context("Invalid PSK credentials")?;
-
-            let tls_stream = PskConfigurationBuilder::new(psk)
-                .connect(tcp_stream)
-                .await
-                .context("Failed to establish TLS PSK connection")?;
-
-            return Ok(BoxedTransport::new(tls_stream));
-        }
-
-        let client_cert = cli
-            .client_certificate
-            .as_ref()
-            .context("TLS requires a client certificate or PSK credentials")?;
-        let client_key = cli
-            .client_key
-            .as_ref()
-            .context("TLS requires a client key or PSK credentials")?;
-
-        let tls_config = Arc::new(
-            TlsConfigurationBuilder::new()
-                .with_client_auth_cert_files(client_cert, client_key)
-                .await
-                .context("Failed to load TLS certificates")?
-                .with_certificate_verification_disabled(
-                    cli.insecure_disable_certificate_verification,
-                )
-                .build()
-                .context("Failed to build TLS configuration")?,
-        );
-
-        let tls_stream = tacacsrs_networking::transport::tls::connect_tls(
-            &tls_config,
-            tcp_stream,
-            tls_server_name(server_addr),
-        )
-        .await
-        .context("Failed to establish TLS connection")?;
-
-        Ok(BoxedTransport::new(tls_stream))
-    } else {
-        Ok(BoxedTransport::new(tcp_stream))
-    }
+pub async fn establish_stream(
+    server: &TacacsPlusServer,
+    options: &ConnectOptions,
+) -> anyhow::Result<BoxedTransport> {
+    config_connect::establish_stream(server, options).await
 }

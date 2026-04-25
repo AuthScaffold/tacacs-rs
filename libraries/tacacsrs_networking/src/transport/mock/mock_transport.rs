@@ -11,7 +11,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
-
 use tacacsrs_messages::packet::PacketTrait;
 
 use crate::packet_reader::{PacketReadResult, PacketReader, PacketReaderTrait};

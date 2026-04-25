@@ -100,7 +100,6 @@ impl AccountingSessionTrait for Session {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,7 +112,6 @@ mod tests {
     use crate::transport::mock::MockTransport;
     use crate::traits::SessionManagementTrait;
     use test_log::test;
-
 
     #[test(tokio::test)]
     async fn test_send_accounting_request() -> anyhow::Result<()> {
@@ -157,7 +155,6 @@ mod tests {
 
         assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
 
-
         let requests = mock_control
             .get_requests_for_session(session.session_id)
             .await?;
@@ -171,7 +168,6 @@ mod tests {
             0,
             "There was replies registered to session when they should have all been removed"
         );
-
 
         Ok(())
     }
