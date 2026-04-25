@@ -371,8 +371,14 @@ def _resolve_default(yang_default: str, rust_type: str) -> str | None:
     if "<" not in rust_type:
         return f"{rust_type}::{_yang_to_pascal(yang_default)}"
 
-    # Enum types — can't generate inline, needs a Default impl or helper fn
-    return f'/* YANG default: "{yang_default}" */'
+    # No mapping rule produced a compilable Rust expression. Returning a
+    # comment placeholder here would emit `fn default_xxx() -> T { /* ... */ }`
+    # with no return value, so fail the codegen instead and force a human to
+    # extend the resolver (or remove the YANG default).
+    raise NotImplementedError(
+        f"yang2rust: cannot resolve YANG default {yang_default!r} for "
+        f"Rust type {rust_type!r}; extend _resolve_default() to handle this case"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1019,7 +1025,13 @@ class RustEmitter:
 
         w(f"/// Types from `{mod.yang_name}`.\n")
         w(f"pub mod {mod.rust_name} {{\n")
-        w("    use serde::{Deserialize, Serialize};\n")
+        # Only import serde derive traits when there's a type that derives them.
+        # Identity sets emit fully qualified `serde::Serializer` references and
+        # don't rely on these imports.
+        emitted_use = False
+        if mod.structs or mod.enums or mod.bitflags:
+            w("    use serde::{Deserialize, Serialize};\n")
+            emitted_use = True
 
         # Compute which other modules we need to import
         imports = set()
@@ -1031,7 +1043,9 @@ class RustEmitter:
                         imports.add(foreign_mod)
         for imp in sorted(imports):
             w(f"    use super::{imp};\n")
-        w("\n")
+            emitted_use = True
+        if emitted_use:
+            w("\n")
 
         # Typedefs
         for name, rt in mod.typedefs.items():
