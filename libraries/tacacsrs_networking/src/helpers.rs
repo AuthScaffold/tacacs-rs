@@ -96,6 +96,15 @@ pub fn default_root_cert_store() -> rustls::RootCertStore {
     }
 }
 
+/// Returns whether `data` contains a PEM block marker.
+#[must_use]
+pub(crate) fn data_contains_pem_header(data: &[u8]) -> bool {
+    const PEM_HEADER: &[u8] = b"-----BEGIN";
+
+    data.windows(PEM_HEADER.len())
+        .any(|window| window == PEM_HEADER)
+}
+
 /// Parses a `host:port` string into its host and port components.
 ///
 /// Supports these formats:
@@ -133,7 +142,7 @@ pub fn parse_host_port(addr: &str, default_port: u16) -> (String, u16) {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_root_cert_store, parse_host_port, tls_server_name};
+    use super::{data_contains_pem_header, default_root_cert_store, parse_host_port, tls_server_name};
 
     #[test]
     fn test_tls_server_name_plain_hostname() {
@@ -187,6 +196,22 @@ mod tests {
     fn test_default_root_cert_store_is_not_empty() {
         let root_store = default_root_cert_store();
         assert!(!root_store.is_empty());
+    }
+
+    #[test]
+    fn test_data_contains_pem_header_accepts_plain_pem() {
+        assert!(data_contains_pem_header(b"-----BEGIN CERTIFICATE-----\n..."));
+    }
+
+    #[test]
+    fn test_data_contains_pem_header_finds_marker_after_leading_noise() {
+        assert!(data_contains_pem_header(b"\n\t \xEF\xBB\xBF-----BEGIN PRIVATE KEY-----\n..."));
+    }
+
+    #[test]
+    fn test_data_contains_pem_header_rejects_der_and_empty_data() {
+        assert!(!data_contains_pem_header(b"\x30\x82\x01\x00fake-der"));
+        assert!(!data_contains_pem_header(b"\n\t "));
     }
 
     #[test]

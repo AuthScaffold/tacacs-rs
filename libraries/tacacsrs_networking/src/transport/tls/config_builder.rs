@@ -172,7 +172,7 @@ impl TlsConfigurationBuilder {
 }
 
 fn reject_pem_input(data: &[u8], label: &str) -> anyhow::Result<()> {
-    if data.starts_with(b"-----BEGIN") {
+    if crate::helpers::data_contains_pem_header(data) {
         anyhow::bail!("PEM-encoded {label} data is not supported; provide DER bytes");
     }
 
@@ -255,6 +255,21 @@ mod tests {
             .await
             .err()
             .expect("PEM input should fail");
+
+        assert!(
+            err.to_string()
+                .contains("PEM-encoded certificate data is not supported; provide DER bytes"),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn reject_pem_input_ignores_leading_whitespace_and_bom() {
+        let err = super::reject_pem_input(
+            b"\n\t \xEF\xBB\xBF-----BEGIN CERTIFICATE-----\n...",
+            "certificate",
+        )
+        .expect_err("PEM input should fail");
 
         assert!(
             err.to_string()

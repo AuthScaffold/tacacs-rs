@@ -255,7 +255,7 @@ fn parse_certificate_data(data: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
         anyhow::bail!("certificate DER data is empty");
     }
 
-    if data.starts_with(b"-----BEGIN") {
+    if crate::helpers::data_contains_pem_header(data) {
         anyhow::bail!("PEM-encoded certificates are not supported; provide DER bytes");
     }
 
@@ -277,7 +277,7 @@ fn parse_private_key_data(
         anyhow::bail!("private key DER data is empty");
     }
 
-    if data.starts_with(b"-----BEGIN") {
+    if crate::helpers::data_contains_pem_header(data) {
         anyhow::bail!("PEM-encoded private keys are not supported; provide DER bytes");
     }
 
@@ -372,8 +372,31 @@ mod tests {
     }
 
     #[test]
+    fn parse_certificate_data_rejects_pem_after_leading_noise() {
+        let result = parse_certificate_data(b"\n\t \xEF\xBB\xBF-----BEGIN CERTIFICATE-----\n...");
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "PEM-encoded certificates are not supported; provide DER bytes",
+        );
+    }
+
+    #[test]
     fn parse_private_key_data_rejects_pem() {
         let result = parse_private_key_data(b"-----BEGIN PRIVATE KEY-----\n...", None);
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "PEM-encoded private keys are not supported; provide DER bytes",
+        );
+    }
+
+    #[test]
+    fn parse_private_key_data_rejects_pem_after_leading_noise() {
+        let result =
+            parse_private_key_data(b"\n\t \xEF\xBB\xBF-----BEGIN PRIVATE KEY-----\n...", None);
 
         assert!(result.is_err());
         assert_eq!(

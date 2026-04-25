@@ -17,6 +17,9 @@ license = "MIT"
 repository = "https://github.com/AuthScaffold/tacacs-rs"
 
 [workspace.lints.rust]
+# The `rpk` feature in `tacacsrs-networking` uses one tightly scoped OpenSSL
+# FFI module for APIs not yet exposed by the `openssl` crate. Keep unsafe code
+# denied by default so every exception requires an explicit local allowance.
 unsafe_code = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 

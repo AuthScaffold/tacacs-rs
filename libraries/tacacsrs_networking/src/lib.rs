@@ -2,7 +2,8 @@
 //!
 //! Transport support is organized in [`transport`], with shared traits in
 //! [`transport::abstractions`] and protocol-specific implementations in
-//! [`transport::tcp`], [`transport::tls`], and the feature-gated `transport::tls_psk` module.
+//! [`transport::tcp`], [`transport::tls`], and the feature-gated
+//! `transport::tls_psk` and `transport::tls_rpk` modules.
 
 pub mod sender;
 pub mod session;

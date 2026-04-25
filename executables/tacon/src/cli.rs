@@ -12,6 +12,10 @@ use clap::{ArgGroup, Parser, Subcommand};
         .required(true)
         .args(["server_addr", "service_endpoint", "config"])
 ))]
+#[command(group(
+    ArgGroup::new("certificate_verification_target")
+        .args(["use_tls", "config"])
+))]
 pub struct Cli {
     /// IP address and port of the TACACS+ server (e.g., "192.168.1.1:49")
     #[arg(short, long)]
@@ -21,7 +25,6 @@ pub struct Cli {
     #[arg(long, value_name = "FILE", conflicts_with_all = [
         "service_endpoint", "shared_secret", "use_tls",
         "client_certificate", "client_key",
-        "insecure_disable_certificate_verification",
     ])]
     pub config: Option<std::path::PathBuf>,
 
@@ -51,7 +54,7 @@ pub struct Cli {
     pub client_key: Option<String>,
 
     /// Dangerously disable TLS certificate verification for direct server connections.
-    #[arg(long, requires = "use_tls", conflicts_with = "service_endpoint")]
+    #[arg(long, requires = "certificate_verification_target", conflicts_with = "service_endpoint")]
     pub insecure_disable_certificate_verification: bool,
 
     /// PSK identity string sent to the server during the TLS 1.3 handshake
@@ -72,7 +75,7 @@ pub struct Cli {
     /// opens and closes its own direct TCP or TLS connection to the server,
     /// instead of using a reused or multiplexed connection. Useful for
     /// testing or simple one-off requests.
-    #[arg(long, requires = "server_addr", conflicts_with = "service_endpoint")]
+    #[arg(long, conflicts_with = "service_endpoint")]
     pub dedicated: bool,
 
     #[command(subcommand)]
@@ -247,6 +250,60 @@ mod tests {
             "--rem-addr",
             "192.168.1.100",
             "test_cmd",
+        ]);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_allows_insecure_certificate_verification_flag() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--config",
+            "config.json",
+            "--insecure-disable-certificate-verification",
+            "accounting",
+            "--user",
+            "testuser",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.168.1.100",
+            "test_cmd",
+        ]);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_insecure_certificate_verification_requires_tls_or_config() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--insecure-disable-certificate-verification",
+            "accounting",
+            "--user",
+            "testuser",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.168.1.100",
+            "test_cmd",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dedicated_mode_parses_with_config() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--config",
+            "config.json",
+            "--dedicated",
+            "batch",
+            "batch_file.txt",
         ]);
 
         assert!(result.is_ok());

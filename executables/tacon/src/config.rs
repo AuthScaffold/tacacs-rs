@@ -172,11 +172,13 @@ fn server_type_label(server_type: TacacsPlusServerType) -> String {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{select_first_server_for_type, tacacs_plus_from_file};
+    use super::{select_first_server_for_type, tacacs_plus_from_cli, tacacs_plus_from_file};
+    use crate::cli::Cli;
     use tacacsrs_config::TacacsPlusServerType;
 
     fn write_temp_config(contents: &str) -> PathBuf {
@@ -283,5 +285,27 @@ mod tests {
         assert!(error
             .to_string()
             .contains("No TACACS+ server configured for accounting"));
+    }
+
+    #[test]
+    fn tacacs_plus_from_cli_accepts_plain_text_shared_secret() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--shared-secret",
+            "secret123",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
+        assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret123"));
     }
 }

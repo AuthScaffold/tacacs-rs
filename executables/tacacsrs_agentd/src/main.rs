@@ -271,11 +271,12 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::tacacs_plus_from_config;
+    use super::{tacacs_plus_from_cli, tacacs_plus_from_config, Cli};
 
     fn write_temp_config(contents: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -318,6 +319,20 @@ mod tests {
         assert_eq!(root.server.len(), 2);
         assert_eq!(root.server[0].name, "primary");
         assert_eq!(root.server[1].name, "secondary");
+        assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
+    }
+
+    #[test]
+    fn tacacs_plus_from_cli_accepts_plain_text_shared_secret() {
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--shared-secret",
+            "secret1",
+        ]);
+
+        let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
         assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
     }
 }

@@ -5,6 +5,7 @@
 //! - [`tcp`] for plain TCP transport support
 //! - [`tls`] for TLS transport support
 //! - `tls_psk` for TLS-PSK transport support (feature-gated)
+//! - `tls_rpk` for TLS raw public key transport support (feature-gated)
 
 pub mod abstractions;
 pub mod boxed;

@@ -1710,7 +1710,6 @@ version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
  "console-subscriber",
  "env_logger",
  "futures",
