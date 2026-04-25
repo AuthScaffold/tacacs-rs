@@ -40,11 +40,11 @@ pub struct Cli {
     #[arg(long, conflicts_with = "service_endpoint")]
     pub use_tls: bool,
 
-    /// Path to a DER-encoded client certificate file for TLS authentication
+    /// Path to a PEM- or DER-encoded client certificate file for TLS authentication
     #[arg(long, value_name = "FILE", requires = "client_key", conflicts_with = "service_endpoint")]
     pub client_certificate: Option<String>,
 
-    /// Path to a DER-encoded client private key file for TLS authentication
+    /// Path to a PEM- or DER-encoded client private key file for TLS authentication
     #[arg(
         long,
         value_name = "FILE",

@@ -1,5 +1,5 @@
 use crate::{
-    ClientIdentityCertificate, EpskSupportedHash, TacacsPlus, TacacsPlusServer,
+    crypto_types, ClientIdentityCertificate, EpskSupportedHash, TacacsPlus, TacacsPlusServer,
     TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
     keystore,
 };
@@ -113,9 +113,20 @@ impl TacacsPlusServerBuilder {
     /// Selects TLS using a client certificate identity.
     #[must_use]
     pub fn with_tls_client_certificate(
+        self,
+        cert_data: Option<Vec<u8>>,
+        cleartext_private_key: Option<Vec<u8>>,
+    ) -> Self {
+        self.with_tls_client_certificate_with_key_format(cert_data, cleartext_private_key, None)
+    }
+
+    /// Selects TLS using a client certificate identity and private key format.
+    #[must_use]
+    pub fn with_tls_client_certificate_with_key_format(
         mut self,
         cert_data: Option<Vec<u8>>,
         cleartext_private_key: Option<Vec<u8>>,
+        private_key_format: Option<crypto_types::PrivateKeyFormat>,
     ) -> Self {
         self.server.shared_secret = None;
         self.server.client_identity = Some(TlsClientClientIdentity {
@@ -124,7 +135,7 @@ impl TacacsPlusServerBuilder {
                 inline_definition: Some(keystore::EndEntityCertWithKeyInlineDefinition {
                     public_key_format: None,
                     public_key: None,
-                    private_key_format: None,
+                    private_key_format,
                     cleartext_private_key,
                     cert_data,
                 }),

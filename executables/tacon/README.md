@@ -11,7 +11,7 @@ A command-line TACACS+ client for authentication, authorization, and accounting 
 - **Authentication** - Verify user credentials against a TACACS+ server
 - **Authorization** - Check if a user is permitted to execute specific commands
 - **Accounting** - Record user activity and command execution
-- **TLS Support** - Secure connections using TLS 1.3 with client certificates
+- **TLS Support** - Secure connections using TLS 1.3 with optional client certificate and key files
 - **Batch Mode** - Execute multiple requests from a JSON file (sequential or parallel)
 - **Configurable Verbosity** - Multiple logging levels for debugging
 
@@ -41,9 +41,18 @@ tacon --server-addr <HOST:PORT> [OPTIONS] <COMMAND>
 | `--config <FILE>` | Load direct connection settings from a YANG JSON config file |
 | `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
 | `--use-tls` | Enable TLS 1.3 for the connection |
-| `--client-certificate <FILE>` | Path to client certificate for TLS authentication |
-| `--client-key <FILE>` | Path to client private key for TLS authentication |
+| `--client-certificate <FILE>` | Path to a PEM- or DER-encoded client certificate for TLS authentication |
+| `--client-key <FILE>` | Path to a PEM- or DER-encoded client private key for TLS authentication |
 | `-v, --verbose` | Increase verbosity (`-v` warn, `-vv` info, `-vvv` debug, `-vvvv` trace) |
+
+### TLS Client Certificates and Keys
+
+When `--use-tls` is set, `--client-certificate` and `--client-key` let `tacon` present a TLS client identity to the upstream TACACS+ server.
+
+- Provide both flags together; the certificate flag requires the key flag, and the key flag requires the certificate flag.
+- Both files may be PEM or DER. PEM input is detected at runtime and normalized to DER internally before `tacon` builds its runtime connection settings.
+- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags; provide PEM or DER certificate/key material instead.
+- This PEM-or-DER behavior applies only to the CLI flags. If you load TLS material through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 
 ### Commands
 
@@ -127,6 +136,20 @@ tacon \
 ```
 
 #### Using TACACS+ over TLS 1.3
+
+```bash
+tacon \
+    --server-addr tacacsserver.local:449 \
+    --use-tls \
+    --client-certificate /path/to/client.crt.pem \
+    --client-key /path/to/client.key.pem \
+    --user testuser \
+    --port tty1 \
+    --rem-addr 192.168.1.100 \
+    accounting "show interfaces"
+```
+
+DER input works the same way:
 
 ```bash
 tacon \

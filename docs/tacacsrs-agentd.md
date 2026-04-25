@@ -65,11 +65,20 @@ tacon --service-endpoint /run/tacacs.sock \
 |------|-------------|
 | `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
 | `--use-tls` | Enable TLS 1.3 for upstream connections |
-| `--client-certificate <FILE>` | Client TLS certificate (requires `--client-key`) |
-| `--client-key <FILE>` | Client TLS private key (requires `--client-certificate`) |
+| `--client-certificate <FILE>` | PEM- or DER-encoded client TLS certificate (requires `--client-key`) |
+| `--client-key <FILE>` | PEM- or DER-encoded client TLS private key (requires `--client-certificate`) |
 | `--insecure-disable-certificate-verification` | Skip TLS cert verification |
 | `--psk-identity <ID>` | TLS 1.3 pre-shared key identity *(requires `psk` feature)* |
 | `--psk-key <KEY>` | TLS 1.3 pre-shared key *(requires `psk` feature)* |
+
+### TLS Client Certificates and Keys
+
+When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemon present a TLS client identity to upstream TACACS+ servers.
+
+- Provide both flags together.
+- Both files may be PEM or DER. PEM input is detected at runtime and normalized to DER internally before the daemon builds its runtime connection settings.
+- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags; provide PEM or DER certificate/key material instead.
+- This PEM-or-DER behavior applies only to the CLI flags. If upstream TLS material is loaded through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 
 ### Timeouts and Failover
 
@@ -168,6 +177,18 @@ WantedBy=multi-user.target
 ```
 
 ### With TLS
+
+```bash
+tacacsrs-agentd \
+    --server-addr tacacs1.example.com:449 \
+    --server-addr tacacs2.example.com:449 \
+    --use-tls \
+    --client-certificate /etc/tacacs/client.crt.pem \
+    --client-key /etc/tacacs/client.key.pem \
+    --listen-endpoint /run/tacacs.sock
+```
+
+DER input is also supported for the same flags:
 
 ```bash
 tacacsrs-agentd \

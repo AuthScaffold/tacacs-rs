@@ -10,6 +10,7 @@ use tacacsrs_config::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerExt,
     TacacsPlusServerType,
 };
+use tacacsrs_networking::helpers::{normalize_cli_certificate_data, normalize_cli_private_key_data};
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
@@ -50,11 +51,11 @@ struct Cli {
     #[arg(long)]
     use_tls: bool,
 
-    /// Path to a DER-encoded client certificate file for TLS authentication.
+    /// Path to a PEM- or DER-encoded client certificate file for TLS authentication.
     #[arg(long, value_name = "FILE", requires = "client_key")]
     client_certificate: Option<String>,
 
-    /// Path to a DER-encoded client private key file for TLS authentication.
+    /// Path to a PEM- or DER-encoded client private key file for TLS authentication.
     #[arg(long, value_name = "FILE", requires = "client_certificate")]
     client_key: Option<String>,
 
@@ -168,17 +169,27 @@ fn tls_cert_server_builders_from_cli(
         .client_certificate
         .as_ref()
         .map(|path| {
-            std::fs::read(path)
-                .with_context(|| format!("Failed to read client certificate: {path}"))
+            let cert_data = std::fs::read(path)
+                .with_context(|| format!("Failed to read client certificate: {path}"))?;
+            normalize_cli_certificate_data(&cert_data)
+                .with_context(|| format!("Failed to parse client certificate: {path}"))
         })
         .transpose()?;
-    let client_key_der = cli
+    let client_key = cli
         .client_key
         .as_ref()
         .map(|path| {
-            std::fs::read(path).with_context(|| format!("Failed to read client key: {path}"))
+            let key_data = std::fs::read(path)
+                .with_context(|| format!("Failed to read client key: {path}"))?;
+            normalize_cli_private_key_data(&key_data)
+                .with_context(|| format!("Failed to parse client key: {path}"))
         })
         .transpose()?;
+
+    let (client_key_der, client_key_format) = match client_key {
+        Some((der_bytes, private_key_format)) => (Some(der_bytes), Some(private_key_format)),
+        None => (None, None),
+    };
 
     Ok(cli
         .server_addresses
@@ -187,7 +198,11 @@ fn tls_cert_server_builders_from_cli(
         .map(|(i, addr)| {
             if client_cert_der.is_some() || client_key_der.is_some() {
                 base_server_builder_from_address(addr, i, timeout)
-                    .with_tls_client_certificate(client_cert_der.clone(), client_key_der.clone())
+                    .with_tls_client_certificate_with_key_format(
+                        client_cert_der.clone(),
+                        client_key_der.clone(),
+                        client_key_format,
+                    )
             } else {
                 base_server_builder_from_address(addr, i, timeout).with_tls_server_authentication()
             }
@@ -277,6 +292,18 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{tacacs_plus_from_cli, tacacs_plus_from_config, Cli};
+    use tacacsrs_config::crypto_types::PrivateKeyFormat;
+
+    fn sample_path(file_name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("libraries")
+            .join("tacacsrs_networking")
+            .join("examples")
+            .join("samples")
+            .join(file_name)
+    }
 
     fn write_temp_config(contents: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -334,5 +361,38 @@ mod tests {
 
         let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
         assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
+    }
+
+    #[test]
+    fn tacacs_plus_from_cli_accepts_pem_client_identity_files() {
+        let cert_path = sample_path("client.crt");
+        let key_path = sample_path("client.key");
+        let expected_cert_der =
+            fs::read(sample_path("client.crt.der")).expect("sample DER cert exists");
+        let expected_key_der =
+            fs::read(sample_path("client.key.der")).expect("sample DER key exists");
+
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--use-tls",
+            "--client-certificate",
+            cert_path.to_str().expect("path should be UTF-8"),
+            "--client-key",
+            key_path.to_str().expect("path should be UTF-8"),
+        ]);
+
+        let root = tacacs_plus_from_cli(&cli).expect("PEM client identity should load");
+        let inline = root.server[0]
+            .client_identity
+            .as_ref()
+            .and_then(|identity| identity.certificate.as_ref())
+            .and_then(|certificate| certificate.inline_definition.as_ref())
+            .expect("inline certificate definition should be present");
+
+        assert_eq!(inline.cert_data.as_deref(), Some(expected_cert_der.as_slice()));
+        assert_eq!(inline.cleartext_private_key.as_deref(), Some(expected_key_der.as_slice()));
+        assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat));
     }
 }

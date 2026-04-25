@@ -3,6 +3,7 @@ use tacacsrs_config::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerExt,
     TacacsPlusServerType,
 };
+use tacacsrs_networking::helpers::{normalize_cli_certificate_data, normalize_cli_private_key_data};
 
 use crate::cli::{Cli, Command};
 
@@ -46,21 +47,35 @@ fn populate_security_from_cli(
             .client_certificate
             .as_ref()
             .map(|path| {
-                std::fs::read(path)
-                    .with_context(|| format!("Failed to read client certificate: {path}"))
+                let cert_data = std::fs::read(path)
+                    .with_context(|| format!("Failed to read client certificate: {path}"))?;
+                normalize_cli_certificate_data(&cert_data)
+                    .with_context(|| format!("Failed to parse client certificate: {path}"))
             })
             .transpose()?;
-        let client_key_der = cli
+        let client_key = cli
             .client_key
             .as_ref()
             .map(|path| {
-                std::fs::read(path).with_context(|| format!("Failed to read client key: {path}"))
+                let key_data = std::fs::read(path)
+                    .with_context(|| format!("Failed to read client key: {path}"))?;
+                normalize_cli_private_key_data(&key_data)
+                    .with_context(|| format!("Failed to parse client key: {path}"))
             })
             .transpose()?;
 
+        let (client_key_der, client_key_format) = match client_key {
+            Some((der_bytes, private_key_format)) => (Some(der_bytes), Some(private_key_format)),
+            None => (None, None),
+        };
+
         if client_cert_der.is_some() || client_key_der.is_some() {
             Ok(builder
-                .with_tls_client_certificate(client_cert_der, client_key_der)
+                .with_tls_client_certificate_with_key_format(
+                    client_cert_der,
+                    client_key_der,
+                    client_key_format,
+                )
                 .build())
         } else {
             Ok(builder.with_tls_server_authentication().build())
@@ -179,7 +194,18 @@ mod tests {
 
     use super::{select_first_server_for_type, tacacs_plus_from_cli, tacacs_plus_from_file};
     use crate::cli::Cli;
-    use tacacsrs_config::TacacsPlusServerType;
+    use tacacsrs_config::{TacacsPlusServerType, crypto_types::PrivateKeyFormat};
+
+    fn sample_path(file_name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("libraries")
+            .join("tacacsrs_networking")
+            .join("examples")
+            .join("samples")
+            .join(file_name)
+    }
 
     fn write_temp_config(contents: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -307,5 +333,46 @@ mod tests {
 
         let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
         assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret123"));
+    }
+
+    #[test]
+    fn tacacs_plus_from_cli_accepts_pem_client_identity_files() {
+        let cert_path = sample_path("client.crt");
+        let key_path = sample_path("client.key");
+        let expected_cert_der =
+            fs::read(sample_path("client.crt.der")).expect("sample DER cert exists");
+        let expected_key_der =
+            fs::read(sample_path("client.key.der")).expect("sample DER key exists");
+
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--use-tls",
+            "--client-certificate",
+            cert_path.to_str().expect("path should be UTF-8"),
+            "--client-key",
+            key_path.to_str().expect("path should be UTF-8"),
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        let root = tacacs_plus_from_cli(&cli).expect("PEM client identity should load");
+        let inline = root.server[0]
+            .client_identity
+            .as_ref()
+            .and_then(|identity| identity.certificate.as_ref())
+            .and_then(|certificate| certificate.inline_definition.as_ref())
+            .expect("inline certificate definition should be present");
+
+        assert_eq!(inline.cert_data.as_deref(), Some(expected_cert_der.as_slice()));
+        assert_eq!(inline.cleartext_private_key.as_deref(), Some(expected_key_der.as_slice()));
+        assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat));
     }
 }

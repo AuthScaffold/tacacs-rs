@@ -64,7 +64,7 @@ tacacsrs-networking ──► tacacsrs-messages
 - **`tacacsrs-networking`** — Transport layer: `Transport` trait (TCP, TLS, PSK, mock), `TacacsConnection` (multiplexed sessions), `DedicatedConnection` (one-shot). TLS configured via `TlsConfigurationBuilder` (builder pattern, rustls + webpki-roots). Session multiplexing uses `SessionManager` to route packets by `session_id` over bidirectional `DuplexChannel`s.
 - **`tacacsrs-agent-client`** — Stateless gRPC client (`ServiceClient`) for IPC with the agent daemon. Protobuf schema in `proto/tacacsrs_agent.proto`, auto-generated via tonic/prost in `build.rs`. Uses Unix domain sockets on Linux, TCP on Windows.
 - **`tacacsrs-agent`** — Service coordinator with ordered upstream failover. `TacacsClientService` manages connections to TACACS+ servers, probes preferred server for recovery, and serializes reconnects per-server.
-- **`tacacsrs-config`** — Generated YANG JSON types plus validation/mapping helpers for the `ietf-system-tacacs-plus` model. Public entry points are `parse_yang_json`, `parse_yang_json_file`, and `to_connection_configs`.
+- **`tacacsrs-config`** — Generated YANG JSON types plus validation/mapping helpers for the `ietf-system-tacacs-plus` model. Public entry points include `parse_yang_json`, `parse_yang_json_file`, and server enumeration helpers.
 
 ### Executables
 
@@ -119,7 +119,7 @@ Uses `anyhow::Result<T>` with `.context()` / `.with_context()` for error chains.
 - Prefer borrowing (`&T`, `&str`) over cloning or taking ownership unless ownership transfer is required.
 - Use iterators over index-based loops.
 - Avoid `unwrap()`/`expect()` in library code — return `Result` instead.
-- Avoid `unsafe` — the workspace forbids it via `unsafe_code = "forbid"`.
+- Avoid `unsafe` — the workspace denies it by default; the only allowed exception is the feature-gated RPK OpenSSL FFI module.
 - Don't ignore compiler or clippy warnings — CI treats them as errors.
 - Prefer `&str` over `String` for function parameters when ownership is not needed.
 
