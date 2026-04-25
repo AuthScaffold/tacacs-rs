@@ -1715,7 +1715,6 @@ dependencies = [
  "futures",
  "log",
  "openssl",
- "openssl-sys",
  "parking_lot",
  "rand",
  "rustls-pki-types",

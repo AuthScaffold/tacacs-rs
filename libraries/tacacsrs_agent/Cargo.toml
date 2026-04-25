@@ -22,7 +22,6 @@ tonic = "0.14.5"
 [features]
 default = []
 psk = ["tacacsrs-networking/psk"]
-rpk = ["tacacsrs-networking/rpk"]
 
 [lints]
 workspace = true

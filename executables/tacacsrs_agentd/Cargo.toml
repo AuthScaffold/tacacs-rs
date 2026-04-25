@@ -22,7 +22,6 @@ tokio = { version = "1.52.1", features = ["full"] }
 default = []
 console = ["console-subscriber"]
 psk = ["tacacsrs-agent/psk"]
-rpk = ["tacacsrs-agent/rpk"]
 
 [lints]
 workspace = true

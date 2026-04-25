@@ -3,7 +3,7 @@
 //! Transport support is organized in [`transport`], with shared traits in
 //! [`transport::abstractions`] and protocol-specific implementations in
 //! [`transport::tcp`], [`transport::tls`], and the feature-gated
-//! `transport::tls_psk` and `transport::tls_rpk` modules.
+//! `transport::tls_psk` module.
 
 pub mod sender;
 pub mod session;
@@ -33,5 +33,3 @@ pub use transport::mock::MockTransport;
 pub use transport::tls;
 #[cfg(feature = "psk")]
 pub use transport::tls_psk;
-#[cfg(feature = "rpk")]
-pub use transport::tls_rpk;

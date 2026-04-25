@@ -17,7 +17,6 @@ log = "0.4.29"
 parking_lot = "0.12.5"
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "logging"] }
 rustls-pki-types = "1.14.0"
-openssl-sys = { version = "0.9.112", optional = true }
 webpki-roots = "1.0.7"
 openssl = { version = "0.10.78", optional = true }
 tokio-openssl = { version = "0.6.5", optional = true }
@@ -25,7 +24,6 @@ tokio-openssl = { version = "0.6.5", optional = true }
 [features]
 default = []
 psk = ["dep:openssl", "dep:tokio-openssl"]
-rpk = ["dep:openssl", "dep:openssl-sys", "dep:tokio-openssl"]
 
 [dev-dependencies]
 console-subscriber = "0.5.0"
