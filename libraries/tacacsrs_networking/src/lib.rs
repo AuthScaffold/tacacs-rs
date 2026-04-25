@@ -2,8 +2,13 @@
 //!
 //! Transport support is organized in [`transport`], with shared traits in
 //! [`transport::abstractions`] and protocol-specific implementations in
-//! [`transport::tcp`], [`transport::tls`], and the feature-gated
+//! `transport::tcp`, `transport::tls`, and the feature-gated
 //! `transport::tls_psk` module.
+//!
+//! TLS and TLS-PSK connections are constructed exclusively from the YANG
+//! configuration model via [`config_connect::establish_stream`]; the
+//! lower-level builder/handshake helpers in the TLS modules are internal to
+//! this crate.
 
 pub mod sender;
 pub mod session;
@@ -30,6 +35,3 @@ pub use dedicated_connection::{DedicatedConnection, ExchangeResult};
 pub use transport::Transport;
 pub use transport::BoxedTransport;
 pub use transport::mock::MockTransport;
-pub use transport::tls;
-#[cfg(feature = "psk")]
-pub use transport::tls_psk;

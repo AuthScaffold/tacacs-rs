@@ -1,15 +1,22 @@
+//! Demonstrates establishing a certificate-based TLS connection by
+//! constructing a [`TacacsPlusServer`] with [`TacacsPlusServerBuilder`] and
+//! letting the dispatcher in [`tacacsrs_networking::config_connect`] pick the
+//! correct transport.
+//!
+//! This is the only supported entry point for TLS connection construction —
+//! the lower-level builders inside `transport::tls` are crate-internal.
+
 use std::sync::Arc;
 
 use env_logger::Env;
+use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerExt, TacacsPlusServerType};
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
-    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationType,
-    TacacsAuthenticationService,
+    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
+    TacacsAuthenticationType,
 };
-use tacacsrs_networking::helpers::connect_tcp;
-use tacacsrs_networking::transport::tls::{connect_tls, TlsConfigurationBuilder};
 use tacacsrs_networking::TacacsConnection;
-
+use tacacsrs_networking::config_connect::{ConnectOptions, establish_stream};
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 
@@ -36,35 +43,39 @@ async fn main() -> anyhow::Result<()> {
         .join("tacacsrs_networking")
         .join("examples");
 
-    let client_certificate = examples_folder.join("samples").join("client.crt.der");
-    let client_key = examples_folder.join("samples").join("client.key.der");
+    let client_certificate_path = examples_folder.join("samples").join("client.crt.der");
+    let client_key_path = examples_folder.join("samples").join("client.key.der");
 
-    if !client_certificate.exists() || !client_key.exists() {
+    if !client_certificate_path.exists() || !client_key_path.exists() {
         println!(
             "Client certificate {} or key {} does not exist.",
-            client_certificate.display(),
-            client_key.display()
+            client_certificate_path.display(),
+            client_key_path.display()
         );
         return Err(anyhow::Error::msg("Client certificate or key does not exist."));
     }
 
-    let hostname = "tacacsserver.local:449";
-    //let obfuscation_key = Some(b"tac_plus_key".to_vec());
-    let obfuscation_key: Option<Vec<u8>> = None;
+    let cert_data = tokio::fs::read(&client_certificate_path).await?;
+    let key_data = tokio::fs::read(&client_key_path).await?;
 
-    let tls_config = Arc::new(
-        TlsConfigurationBuilder::new()
-            .with_client_auth_cert_files(&client_certificate, &client_key)
-            .await?
-            .with_certificate_verification_disabled(true)
-            .build()?,
-    );
+    let server = TacacsPlusServerBuilder::new(
+        "tacacs-tls-example",
+        TacacsPlusServerType::all(),
+        "tacacsserver.local",
+        449,
+    )
+    .with_tls_client_certificate(Some(cert_data), Some(key_data))
+    .build();
 
-    let tcp_stream = connect_tcp(hostname).await?;
-    let tls_stream = connect_tls(&tls_config, tcp_stream, "tacacsserver.local").await?;
+    let options = ConnectOptions {
+        disable_certificate_verification: true,
+        timeout: None,
+    };
 
+    let stream = establish_stream(&server, &options).await?;
+    let obfuscation_key = server.obfuscation_key();
     let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
-    connection.run(tls_stream).await?;
+    connection.run(stream).await?;
 
     let session = connection.create_session().await?;
 

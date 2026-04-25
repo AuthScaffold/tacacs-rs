@@ -16,7 +16,7 @@ rand = "0.10.1"
 log = "0.4.29"
 parking_lot = "0.12.5"
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "logging"] }
-rustls-pki-types = "1.14.0"
+rustls-pki-types = "1.14.1"
 webpki-roots = "1.0.7"
 openssl = { version = "0.10.78", optional = true }
 tokio-openssl = { version = "0.6.5", optional = true }

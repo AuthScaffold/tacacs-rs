@@ -54,6 +54,7 @@ jobs:
     with:
       include-fmt: false
       include-proto-compat: false
+      include-outdated: false
       versions: ${{ needs.compute-versions.outputs.versions || '{}' }}
     secrets: inherit
 
