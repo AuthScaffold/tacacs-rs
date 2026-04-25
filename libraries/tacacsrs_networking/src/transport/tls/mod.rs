@@ -21,10 +21,12 @@
 
 mod config_builder;
 mod danger;
+mod from_server;
 #[allow(clippy::module_inception)]
 mod tls;
 
 pub use config_builder::TlsConfigurationBuilder;
+pub use from_server::establish_from_server;
 
 use std::net::IpAddr;
 use std::sync::Arc;

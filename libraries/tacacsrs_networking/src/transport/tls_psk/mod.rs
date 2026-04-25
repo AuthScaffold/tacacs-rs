@@ -28,11 +28,13 @@
 //! ```
 
 mod config_builder;
+mod from_server;
 mod psk_identity;
 #[allow(clippy::module_inception)]
 mod tls_psk;
 
 pub use config_builder::PskConfigurationBuilder;
+pub use from_server::{establish_from_server, server_has_psk};
 pub use psk_identity::PskIdentity;
 
 use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
