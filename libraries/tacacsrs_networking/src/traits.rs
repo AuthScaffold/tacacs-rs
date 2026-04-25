@@ -3,7 +3,6 @@ use std::sync::Arc;
 use crate::session::Session;
 use crate::session_manager::SingleConnectionState;
 
-
 #[async_trait]
 pub trait SessionManagementTrait {
     async fn can_create_sessions(self: &Arc<Self>) -> bool;

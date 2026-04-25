@@ -13,7 +13,6 @@ use tacacsrs_networking::TacacsConnection;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
@@ -48,7 +47,6 @@ async fn main() -> anyhow::Result<()> {
         );
         return Err(anyhow::Error::msg("Client certificate or key does not exist."));
     }
-
 
     let hostname = "tacacsserver.local:449";
     //let obfuscation_key = Some(b"tac_plus_key".to_vec());

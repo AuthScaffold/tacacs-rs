@@ -11,7 +11,6 @@ use tacacsrs_networking::TacacsConnection;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = init_logging();
@@ -55,7 +54,6 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Received accounting response: {response:#?}");
 
-
     let session = connection.clone().create_session().await?;
 
     let response = match session
@@ -87,7 +85,6 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-
 
 use log::{Record, Level, Metadata};
 use log::{SetLoggerError, LevelFilter};

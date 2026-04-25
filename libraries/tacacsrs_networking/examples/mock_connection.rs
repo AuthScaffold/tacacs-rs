@@ -12,7 +12,6 @@ use tacacsrs_networking::transport::mock::MockTransport;
 use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = env_logger::builder().try_init();
@@ -57,7 +56,6 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     session.send_accounting_request(accounting_request).await?;
-
 
     Ok(())
 }

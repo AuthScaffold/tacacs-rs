@@ -51,7 +51,6 @@ pub enum LocalSingleConnectState {
     NotSupported,
 }
 
-
 impl LocalSingleConnectState {
     /// Process a packet and return the new state, notifying the session manager if needed.
     ///

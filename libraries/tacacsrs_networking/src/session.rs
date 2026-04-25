@@ -6,7 +6,6 @@ use tokio::sync::RwLock;
 use crate::duplex_channel::DuplexChannel;
 use crate::session_manager::SessionManager;
 
-
 pub struct Session {
     pub session_id: u32,
     pub duplex_channel: DuplexChannel,
@@ -15,7 +14,6 @@ pub struct Session {
     pub session_complete: AtomicBool,
     manager: Option<Arc<SessionManager>>,
 }
-
 
 impl Session {
     pub fn new(session_id: u32, duplex_channel: DuplexChannel) -> Self {
@@ -109,7 +107,6 @@ impl Drop for Session {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

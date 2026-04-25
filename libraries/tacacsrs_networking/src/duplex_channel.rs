@@ -6,7 +6,6 @@ pub struct DuplexChannel {
     pub receiver: RwLock<tokio::sync::mpsc::Receiver<Packet>>,
 }
 
-
 impl DuplexChannel {
     #[must_use]
     pub fn new(
