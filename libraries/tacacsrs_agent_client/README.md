@@ -110,7 +110,7 @@ use tacacsrs_agent_client::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let client = ServiceClient::new(IpcEndpoint::default_local());
+    let client = ServiceClient::connect(IpcEndpoint::default_local()).await?;
 
     let response = client
         .send_accounting(AccountingOperation {

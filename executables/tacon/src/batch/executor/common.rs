@@ -13,9 +13,11 @@ use crate::commands::accounting::send_accounting_request;
 use super::super::progress::{ProgressConfig, ProgressTracker};
 use super::super::types::{AccountingRequest, BatchRequest, LoadTestResult};
 
-pub(super) fn service_client(endpoint: &str) -> anyhow::Result<ServiceClient> {
+pub(super) async fn service_client(endpoint: &str) -> anyhow::Result<ServiceClient> {
     let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
-    Ok(ServiceClient::new(endpoint))
+    ServiceClient::connect(endpoint)
+        .await
+        .context("Failed to connect to TACACS+ service")
 }
 
 pub(super) fn to_service_accounting_request(request: &AccountingRequest) -> AccountingOperation {
