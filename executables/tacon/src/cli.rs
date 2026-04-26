@@ -1,4 +1,17 @@
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
+
+/// Validation relaxation that loosens a specific YANG constraint.
+///
+/// Relaxations are opt-in; default (strict) validation never applies them.
+#[derive(Debug, Clone, ValueEnum)]
+pub enum ValidationRelaxation {
+    /// Allow TLS and `shared-secret` to coexist on the same server.
+    ///
+    /// Intended as a migration aid for server implementations that have not
+    /// yet cleanly removed shared-secret handling after enabling TLS.
+    #[value(name = "allow-tls-with-shared-secret")]
+    AllowTlsWithSharedSecret,
+}
 
 /// TACACS+ Client CLI
 ///
@@ -70,6 +83,18 @@ pub struct Cli {
     /// Increase verbosity level (-v, -vv, -vvv, -vvvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
+
+    /// Apply a validation relaxation when loading or constructing configuration.
+    ///
+    /// May be repeated to enable multiple relaxations.
+    /// Valid values: allow-tls-with-shared-secret
+    #[arg(
+        long,
+        value_name = "RELAXATION",
+        action = clap::ArgAction::Append,
+        conflicts_with = "service_endpoint"
+    )]
+    pub validation_relaxation: Vec<ValidationRelaxation>,
 
     /// Use a minimal dedicated connection for each request. Each request
     /// opens and closes its own direct TCP or TLS connection to the server,
@@ -317,6 +342,91 @@ mod tests {
             "localhost:49",
             "--service-endpoint",
             "/run/tacacs.sock",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validation_relaxation_single_value_parses() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--validation-relaxation",
+            "allow-tls-with-shared-secret",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_ok());
+        let cli = result.unwrap();
+        assert_eq!(cli.validation_relaxation.len(), 1);
+        assert!(matches!(
+            cli.validation_relaxation[0],
+            ValidationRelaxation::AllowTlsWithSharedSecret
+        ));
+    }
+
+    #[test]
+    fn test_validation_relaxation_multiple_values_parse() {
+        // Currently only one relaxation exists; repeat the same one to
+        // verify the flag is truly repeatable.
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--validation-relaxation",
+            "allow-tls-with-shared-secret",
+            "--validation-relaxation",
+            "allow-tls-with-shared-secret",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().validation_relaxation.len(), 2);
+    }
+
+    #[test]
+    fn test_validation_relaxation_unknown_value_is_rejected() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--validation-relaxation",
+            "allow-everything",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validation_relaxation_absent_yields_empty_vec() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().validation_relaxation.is_empty());
+    }
+
+    #[test]
+    fn test_validation_relaxation_conflicts_with_service_endpoint() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--service-endpoint",
+            "/run/tacacs.sock",
+            "--validation-relaxation",
+            "allow-tls-with-shared-secret",
             "batch",
             "batch.txt",
         ]);

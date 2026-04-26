@@ -2376,3 +2376,234 @@ fn reject_invalid_symmetric_key_format_in_server_epsk() {
     let message = err.to_string();
     assert!(message.contains("unknown variant `bogus`"), "unexpected error: {message}");
 }
+
+// ---------------------------------------------------------------------------
+// Validation relaxation tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn strict_default_rejects_tls_with_shared_secret() {
+    // Default (strict) parse_yang_json must still reject TLS + shared-secret.
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "conflict",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "shared-secret": "a2V5",
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [{"name": "ca1", "cert-data": "dGVzdC1jZXJ0"}]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("security allows only one of [tls, obfuscation]"),
+        "strict default should reject TLS + shared-secret: {err}",
+    );
+}
+
+#[test]
+fn relaxed_allows_tls_with_shared_secret_via_parse_yang_json_with_options() {
+    use tacacsrs_config::{ValidationOptions, ValidationRelaxation, parse_yang_json_with_options};
+
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "migration",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "shared-secret": "a2V5",
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [{"name": "ca1", "cert-data": "dGVzdC1jZXJ0"}]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let options =
+        ValidationOptions::new().with_relaxation(ValidationRelaxation::AllowTlsWithSharedSecret);
+
+    let config = parse_yang_json_with_options(json, &options)
+        .expect("AllowTlsWithSharedSecret relaxation should permit TLS + shared-secret");
+
+    assert_eq!(config.server.len(), 1);
+    assert_eq!(config.server[0].name, "migration");
+    assert!(config.server[0].shared_secret.is_some());
+    assert!(config.server[0].server_authentication.is_some());
+}
+
+#[test]
+fn relaxed_parse_yang_json_file_with_options_allows_tls_with_shared_secret() {
+    use tacacsrs_config::{ValidationOptions, ValidationRelaxation, parse_yang_json_file_with_options};
+
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "file-migration",
+                    "server-type": "accounting",
+                    "address": "10.0.0.2",
+                    "port": 49,
+                    "shared-secret": "c2VjcmV0",
+                    "server-authentication": {
+                        "ca-certs": {
+                            "inline-definition": {
+                                "certificate": [{"name": "ca1", "cert-data": "dGVzdC1jZXJ0"}]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let path = write_temp_json_file(json);
+
+    let options =
+        ValidationOptions::new().with_relaxation(ValidationRelaxation::AllowTlsWithSharedSecret);
+
+    let result = parse_yang_json_file_with_options(&path, &options);
+    let _ = std::fs::remove_file(&path);
+
+    let config = result
+        .expect("AllowTlsWithSharedSecret relaxation should permit TLS + shared-secret from file");
+    assert_eq!(config.server[0].name, "file-migration");
+    assert!(config.server[0].shared_secret.is_some());
+    assert!(config.server[0].server_authentication.is_some());
+}
+
+#[test]
+fn relaxed_does_not_permit_no_security_mode() {
+    // The relaxation only loosens the "at most one" constraint, not the
+    // "at least one" mandatory requirement.
+    use tacacsrs_config::{ValidationOptions, ValidationRelaxation, parse_yang_json_with_options};
+
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bare",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49
+                }
+            ]
+        }
+    }"#;
+
+    let options =
+        ValidationOptions::new().with_relaxation(ValidationRelaxation::AllowTlsWithSharedSecret);
+
+    let err = parse_yang_json_with_options(json, &options).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("security requires one of [tls, obfuscation]"),
+        "relaxed mode should still require at least one security mode: {err}",
+    );
+}
+
+#[test]
+fn builder_build_with_options_allows_tls_with_shared_secret() {
+    use tacacsrs_config::{
+        TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType, ValidationOptions,
+        ValidationRelaxation,
+    };
+
+    let options =
+        ValidationOptions::new().with_relaxation(ValidationRelaxation::AllowTlsWithSharedSecret);
+
+    let server = TacacsPlusServerBuilder::new(
+        "migration",
+        TacacsPlusServerType::ACCOUNTING,
+        "192.0.2.10",
+        49,
+    )
+    .with_tls_server_authentication()
+    .with_shared_secret_alongside_tls("secret");
+
+    let config = TacacsPlusBuilder::new()
+        .with_server_builder(server)
+        .build_with_options(&options)
+        .expect("AllowTlsWithSharedSecret should permit TLS + shared-secret in builder");
+
+    assert_eq!(config.server[0].name, "migration");
+    assert!(config.server[0].shared_secret.is_some());
+    assert!(config.server[0].server_authentication.is_some());
+}
+
+#[test]
+fn builder_strict_build_rejects_tls_with_shared_secret() {
+    use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
+
+    let server = TacacsPlusServerBuilder::new(
+        "conflict",
+        TacacsPlusServerType::ACCOUNTING,
+        "192.0.2.10",
+        49,
+    )
+    .with_tls_server_authentication()
+    .with_shared_secret_alongside_tls("secret");
+
+    let err = TacacsPlusBuilder::new()
+        .with_server_builder(server)
+        .build()
+        .expect_err("strict build should reject TLS + shared-secret");
+
+    assert!(
+        err.to_string()
+            .contains("security allows only one of [tls, obfuscation]"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn with_shared_secret_alongside_tls_does_not_clear_tls_fields() {
+    use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerType};
+
+    let server =
+        TacacsPlusServerBuilder::new("s", TacacsPlusServerType::ACCOUNTING, "192.0.2.10", 49)
+            .with_tls_server_authentication()
+            .with_shared_secret_alongside_tls("secret")
+            .build();
+
+    assert!(server.server_authentication.is_some(), "TLS fields should be preserved");
+    assert_eq!(server.shared_secret.as_deref(), Some("secret"), "shared secret should be set");
+}
+
+#[test]
+fn validation_relaxation_from_str_roundtrip() {
+    use std::str::FromStr;
+    use tacacsrs_config::ValidationRelaxation;
+
+    let relaxation = ValidationRelaxation::from_str("allow-tls-with-shared-secret")
+        .expect("should parse allow-tls-with-shared-secret");
+    assert_eq!(relaxation, ValidationRelaxation::AllowTlsWithSharedSecret);
+    assert_eq!(relaxation.to_string(), "allow-tls-with-shared-secret");
+}
+
+#[test]
+fn validation_relaxation_from_str_rejects_unknown() {
+    use std::str::FromStr;
+    use tacacsrs_config::ValidationRelaxation;
+
+    let err = ValidationRelaxation::from_str("allow-everything").unwrap_err();
+    assert!(err.to_string().contains("unknown validation relaxation"), "unexpected error: {err}",);
+}

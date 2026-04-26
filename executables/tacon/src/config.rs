@@ -1,7 +1,7 @@
 use anyhow::Context;
 use tacacsrs_config::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerExt,
-    TacacsPlusServerType,
+    TacacsPlusServerType, ValidationOptions,
 };
 use tacacsrs_networking::helpers::{normalize_cli_certificate_data, normalize_cli_private_key_data};
 
@@ -13,6 +13,8 @@ use crate::cli::{Cli, Command};
 ///
 /// Returns an error if `--server-addr` is not provided or the address cannot be parsed.
 pub fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
+    let options = validation_options_from_cli(cli);
+
     let server_addr = cli
         .server_addr
         .as_deref()
@@ -24,23 +26,53 @@ pub fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
         cli,
         TacacsPlusServerBuilder::new("cli", TacacsPlusServerType::all(), host, port)
             .with_timeout(5),
+        &options,
     )?;
 
-    TacacsPlusBuilder::new().with_server(server).build()
+    TacacsPlusBuilder::new()
+        .with_server(server)
+        .build_with_options(&options)
+}
+
+fn validation_options_from_cli(cli: &Cli) -> ValidationOptions {
+    use crate::cli::ValidationRelaxation as CliRelaxation;
+    use tacacsrs_config::ValidationRelaxation;
+
+    cli.validation_relaxation
+        .iter()
+        .fold(ValidationOptions::new(), |opts, r| {
+            let relaxation = match r {
+                CliRelaxation::AllowTlsWithSharedSecret => {
+                    ValidationRelaxation::AllowTlsWithSharedSecret
+                }
+            };
+            opts.with_relaxation(relaxation)
+        })
 }
 
 fn populate_security_from_cli(
     cli: &Cli,
     builder: TacacsPlusServerBuilder,
+    options: &ValidationOptions,
 ) -> anyhow::Result<TacacsPlusServer> {
+    use tacacsrs_config::ValidationRelaxation;
+
     if cli.use_tls {
         #[cfg(feature = "psk")]
         if let (Some(psk_identity), Some(psk_key)) =
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
         {
-            return Ok(builder
-                .with_tls13_epsk(psk_identity.clone(), psk_key.as_bytes().to_vec())
-                .build());
+            let tls_builder =
+                builder.with_tls13_epsk(psk_identity.clone(), psk_key.as_bytes().to_vec());
+
+            if options.allows(&ValidationRelaxation::AllowTlsWithSharedSecret) {
+                if let Some(ref secret) = cli.shared_secret {
+                    return Ok(tls_builder
+                        .with_shared_secret_alongside_tls(secret.clone())
+                        .build());
+                }
+            }
+            return Ok(tls_builder.build());
         }
 
         let client_cert_der = cli
@@ -69,17 +101,25 @@ fn populate_security_from_cli(
             None => (None, None),
         };
 
-        if client_cert_der.is_some() || client_key_der.is_some() {
-            Ok(builder
-                .with_tls_client_certificate_with_key_format(
-                    client_cert_der,
-                    client_key_der,
-                    client_key_format,
-                )
-                .build())
+        let tls_builder = if client_cert_der.is_some() || client_key_der.is_some() {
+            builder.with_tls_client_certificate_with_key_format(
+                client_cert_der,
+                client_key_der,
+                client_key_format,
+            )
         } else {
-            Ok(builder.with_tls_server_authentication().build())
+            builder.with_tls_server_authentication()
+        };
+
+        if options.allows(&ValidationRelaxation::AllowTlsWithSharedSecret) {
+            if let Some(ref secret) = cli.shared_secret {
+                return Ok(tls_builder
+                    .with_shared_secret_alongside_tls(secret.clone())
+                    .build());
+            }
         }
+
+        Ok(tls_builder.build())
     } else {
         Ok(match cli.shared_secret.clone() {
             Some(shared_secret) => builder.with_shared_secret(shared_secret).build(),
@@ -88,26 +128,32 @@ fn populate_security_from_cli(
     }
 }
 
-/// Loads a [`TacacsPlus`] root from a YANG JSON string.
+/// Loads a [`TacacsPlus`] root from a YANG JSON string with the supplied validation options.
 ///
 /// # Errors
 ///
 /// Returns an error if the config cannot be parsed.
-pub fn tacacs_plus_from_str(contents: &str) -> anyhow::Result<TacacsPlus> {
-    tacacsrs_config::parse_yang_json(contents)
+pub fn tacacs_plus_from_str(
+    contents: &str,
+    options: &ValidationOptions,
+) -> anyhow::Result<TacacsPlus> {
+    tacacsrs_config::parse_yang_json_with_options(contents, options)
         .context("Failed to load config from provided YANG JSON")
 }
 
-/// Loads a [`TacacsPlus`] root from a YANG JSON config file.
+/// Loads a [`TacacsPlus`] root from a YANG JSON config file with the supplied validation options.
 ///
 /// # Errors
 ///
 /// Returns an error if the config file cannot be read or parsed.
-pub fn tacacs_plus_from_file(path: &std::path::Path) -> anyhow::Result<TacacsPlus> {
+pub fn tacacs_plus_from_file(
+    path: &std::path::Path,
+    options: &ValidationOptions,
+) -> anyhow::Result<TacacsPlus> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config from {}", path.display()))?;
 
-    tacacs_plus_from_str(&contents)
+    tacacs_plus_from_str(&contents, options)
         .with_context(|| format!("Failed to load config from {}", path.display()))
 }
 
@@ -117,8 +163,9 @@ pub fn tacacs_plus_from_file(path: &std::path::Path) -> anyhow::Result<TacacsPlu
 ///
 /// Returns an error if neither source provides valid configuration.
 pub fn resolve_tacacs_plus_config(cli: &Cli) -> anyhow::Result<TacacsPlus> {
+    let options = validation_options_from_cli(cli);
     if let Some(ref config_path) = cli.config {
-        tacacs_plus_from_file(config_path)
+        tacacs_plus_from_file(config_path, &options)
     } else {
         tacacs_plus_from_cli(cli)
     }
@@ -206,7 +253,7 @@ mod tests {
 
     use super::{select_first_server_for_type, tacacs_plus_from_cli, tacacs_plus_from_str};
     use crate::cli::Cli;
-    use tacacsrs_config::{TacacsPlusServerType, crypto_types::PrivateKeyFormat};
+    use tacacsrs_config::{TacacsPlusServerType, ValidationOptions, crypto_types::PrivateKeyFormat};
 
     fn sample_path(file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -242,6 +289,7 @@ mod tests {
                     ]
                 }
             }"#,
+            &ValidationOptions::default(),
         )
         .expect("config string should load");
 
@@ -275,6 +323,7 @@ mod tests {
                     ]
                 }
             }"#,
+            &ValidationOptions::default(),
         )
         .expect("config string should load");
 
@@ -299,6 +348,7 @@ mod tests {
                     ]
                 }
             }"#,
+            &ValidationOptions::default(),
         )
         .expect("config string should load");
 
@@ -370,5 +420,69 @@ mod tests {
         assert_eq!(inline.cert_data.as_deref(), Some(expected_cert_der.as_slice()));
         assert_eq!(inline.cleartext_private_key.as_deref(), Some(expected_key_der.as_slice()));
         assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat));
+    }
+
+    #[test]
+    fn tacacs_plus_from_cli_with_relaxation_allows_tls_and_shared_secret() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--use-tls",
+            "--shared-secret",
+            "migration-secret",
+            "--validation-relaxation",
+            "allow-tls-with-shared-secret",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        let root = tacacs_plus_from_cli(&cli).expect(
+            "AllowTlsWithSharedSecret relaxation should allow TLS + shared-secret from CLI",
+        );
+
+        assert!(root.server[0].server_authentication.is_some(), "TLS should be set");
+        assert_eq!(
+            root.server[0].shared_secret.as_deref(),
+            Some("migration-secret"),
+            "shared secret should be set alongside TLS",
+        );
+    }
+
+    #[test]
+    fn tacacs_plus_from_cli_without_relaxation_does_not_include_shared_secret_for_tls() {
+        // Without the relaxation, --use-tls ignores --shared-secret (TLS wins).
+        // This verifies that the default strict path continues to build a TLS-only server.
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--use-tls",
+            "--shared-secret",
+            "ignored-secret",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        let root = tacacs_plus_from_cli(&cli)
+            .expect("TLS-only server should build successfully without relaxation");
+
+        assert!(root.server[0].server_authentication.is_some(), "TLS should be set");
+        assert!(
+            root.server[0].shared_secret.is_none(),
+            "shared secret should not be set without relaxation",
+        );
     }
 }
