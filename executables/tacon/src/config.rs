@@ -35,6 +35,13 @@ pub fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
 }
 
 fn validation_options_from_cli(cli: &Cli) -> ValidationOptions {
+    // cli::ValidationRelaxation is a separate enum that mirrors
+    // tacacsrs_config::ValidationRelaxation.  The duplication is intentional:
+    // build.rs includes cli.rs via `include!` to auto-generate the man page, so
+    // cli.rs may only depend on crates listed in [build-dependencies] (currently
+    // just clap).  Introducing a tacacsrs_config dependency in cli.rs would
+    // break that constraint.  This function is the single mapping point, so
+    // adding a new relaxation requires one change here and one in cli.rs.
     use crate::cli::ValidationRelaxation as CliRelaxation;
     use tacacsrs_config::ValidationRelaxation;
 
