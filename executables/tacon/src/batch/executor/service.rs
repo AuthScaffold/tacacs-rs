@@ -37,7 +37,7 @@ pub async fn execute_batch_via_service(
     endpoint: &str,
     batch: &BatchFile,
 ) -> anyhow::Result<Vec<RequestResult>> {
-    let client = service_client(endpoint)?;
+    let client = service_client(endpoint).await?;
 
     if let Some(description) = &batch.metadata.description {
         log::info!("Executing batch: {description}");
@@ -91,7 +91,7 @@ async fn execute_batch_load_test_via_service(
     batch: &BatchFile,
     load_config: &LoadTestConfig,
 ) -> anyhow::Result<Vec<RequestResult>> {
-    let client = Arc::new(service_client(endpoint)?);
+    let client = Arc::new(service_client(endpoint).await?);
 
     log::info!(
         "Service load testing mode enabled: {} repetitions, max {} parallel",

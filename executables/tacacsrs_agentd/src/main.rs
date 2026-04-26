@@ -154,10 +154,10 @@ fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
             .collect()
     };
 
-    Ok(server_builders
+    server_builders
         .into_iter()
         .fold(TacacsPlusBuilder::new(), TacacsPlusBuilder::with_server_builder)
-        .build())
+        .build()
 }
 
 /// Build TLS certificate-based server builders from CLI flags.

@@ -3,9 +3,9 @@
 /// Local gRPC client helpers for talking to the central TACACS+ service.
 ///
 /// The [`ServiceClient`] type is the main entry point. Callers construct it
-/// with an [`IpcEndpoint`] and then issue unary accounting RPCs. Each call
-/// opens a fresh gRPC channel, converts between domain types and protobuf,
-/// and returns a typed result.
+/// with [`ServiceClient::connect`], passing an [`IpcEndpoint`], and then issue
+/// unary accounting RPCs over the persistent gRPC channel. Each call converts
+/// between domain types and protobuf and returns a typed result.
 pub mod client;
 
 mod endpoint;

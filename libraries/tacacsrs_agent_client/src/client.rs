@@ -11,9 +11,11 @@
 //! | Linux / macOS | Unix domain socket | Default: `/run/tacacs.sock` |
 //! | Windows / other | Loopback TCP | Default: `127.0.0.1:9049` |
 //!
-//! Each [`ServiceClient::send_accounting`] call opens a fresh gRPC channel.
-//! This matches the service's one-request-per-IPC-connection model and keeps
-//! the client stateless and cheap to construct.
+//! [`ServiceClient`] holds a persistent gRPC [`tonic::transport::Channel`] that
+//! is established once at construction time and reused for all subsequent
+//! requests. gRPC over HTTP/2 natively multiplexes concurrent RPCs on a single
+//! connection, so callers may issue many requests in parallel without per-request
+//! connection overhead.
 
 use anyhow::{Context, bail};
 #[cfg(unix)]
@@ -34,9 +36,13 @@ const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 
 /// Convenience wrapper for making local IPC calls to the central service.
 ///
-/// `ServiceClient` is intentionally stateless. Each call opens a new gRPC
-/// channel, issues exactly one unary RPC, and drops the channel. Construction
-/// is cheap and the type is both [`Clone`] and [`Send`].
+/// `ServiceClient` holds a persistent gRPC [`Channel`] that is established once
+/// at construction time and reused for all subsequent requests. gRPC over HTTP/2
+/// natively multiplexes concurrent RPCs on a single connection, so callers may
+/// issue many requests in parallel without per-request connection overhead.
+///
+/// The type is [`Clone`] and [`Send`]; cloning is cheap because [`Channel`] is
+/// reference-counted internally.
 ///
 /// # Connection flow
 ///
@@ -45,9 +51,6 @@ const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 ///   |                   |                   |                   |
 ///   | send_accounting() |                   |                   |
 ///   |------------------>|                   |                   |
-///   |                   | resolve endpoint  |                   |
-///   |                   |------------------>|                   |
-///   |                   |                   |                   |
 ///   |                   | gRPC Accounting(request)              |
 ///   |                   |-------------------------------------->|
 ///   |                   |                                       |
@@ -66,7 +69,7 @@ const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 /// #     AccountingOperation, IpcEndpoint, ServiceClient,
 /// # };
 /// # async fn example() -> anyhow::Result<()> {
-/// let client = ServiceClient::new(IpcEndpoint::default_local());
+/// let client = ServiceClient::connect(IpcEndpoint::default_local()).await?;
 ///
 /// let response = client
 ///     .send_accounting(AccountingOperation {
@@ -84,30 +87,62 @@ const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 /// ```
 #[derive(Debug, Clone)]
 pub struct ServiceClient {
-    /// The local IPC endpoint used when connecting to the central service.
-    endpoint: IpcEndpoint,
+    /// The persistent gRPC channel shared across all requests.
+    channel: Channel,
 }
 
 impl ServiceClient {
-    /// Creates a client targeting the given local IPC endpoint.
+    /// Establishes a gRPC channel to the given local IPC endpoint and returns
+    /// a [`ServiceClient`] that reuses it for all subsequent requests.
     ///
-    /// No connection is established until a request method is called.
-    #[must_use]
-    pub const fn new(endpoint: IpcEndpoint) -> Self {
-        Self { endpoint }
+    /// On Unix, this connects over a Unix domain socket using `tonic`'s
+    /// `connect_with_connector` to bridge `tokio::net::UnixStream` into the
+    /// HTTP/2 transport. On other platforms it connects over loopback TCP.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the IPC connection cannot be established (socket
+    /// missing, service not running, etc.).
+    pub async fn connect(endpoint: IpcEndpoint) -> anyhow::Result<Self> {
+        let channel = match &endpoint {
+            #[cfg(unix)]
+            IpcEndpoint::Unix(path) => {
+                let path = path.clone();
+                let connect_path = path.clone();
+                Endpoint::try_from(UDS_GRPC_CONNECT_URI)
+                    .context("Failed to build Unix IPC gRPC endpoint")?
+                    .connect_with_connector(service_fn(move |_: Uri| {
+                        let path = connect_path.clone();
+                        async move {
+                            tokio::net::UnixStream::connect(path)
+                                .await
+                                .map(TokioIo::new)
+                        }
+                    }))
+                    .await
+                    .with_context(|| {
+                        format!("Failed to connect to service socket {}", path.display())
+                    })?
+            }
+            IpcEndpoint::Tcp(address) => Endpoint::from_shared(format!("http://{address}"))
+                .context("Failed to build TCP IPC gRPC endpoint")?
+                .connect()
+                .await
+                .with_context(|| format!("Failed to connect to service endpoint {address}"))?,
+        };
+        Ok(Self { channel })
     }
 
     /// Sends a single accounting request to the local TACACS+ client service.
     ///
-    /// The call opens a fresh gRPC channel, converts the domain
-    /// [`AccountingOperation`] into a protobuf request, issues the unary RPC,
-    /// and converts the reply back into the domain response type.
+    /// Converts the domain [`AccountingOperation`] into a protobuf request,
+    /// issues the unary RPC over the persistent channel, and converts the reply
+    /// back into the domain response type. Concurrent calls are multiplexed on
+    /// the same underlying HTTP/2 connection.
     ///
     /// # Errors
     ///
     /// Returns an error if:
-    /// - The IPC connection cannot be established (socket missing, service not
-    ///   running, etc.).
     /// - The gRPC exchange fails at the transport level.
     /// - The service returns a structured [`ServiceError`] (e.g. all upstream
     ///   TACACS+ servers are unavailable). The error message includes the
@@ -116,7 +151,7 @@ impl ServiceClient {
         &self,
         request: AccountingOperation,
     ) -> anyhow::Result<AccountingOperationResponse> {
-        let mut client = self.connect().await?;
+        let mut client = TacacsAgentClient::new(self.channel.clone());
         let rpc_request: ipc::AccountingRequest = (&request).into();
         let reply = client
             .accounting(rpc_request)
@@ -140,44 +175,6 @@ impl ServiceClient {
                     .as_ref()
                     .map_or_else(String::new, |server| format!(" via {server}"));
                 bail!("{}{}{}", error.message, server_note, retry_note);
-            }
-        }
-    }
-
-    /// Opens a gRPC channel to the configured IPC endpoint.
-    ///
-    /// On Unix, this connects over a Unix domain socket using `tonic`'s
-    /// `connect_with_connector` to bridge `tokio::net::UnixStream` into the
-    /// HTTP/2 transport. On other platforms it connects over loopback TCP.
-    async fn connect(&self) -> anyhow::Result<TacacsAgentClient<Channel>> {
-        match &self.endpoint {
-            #[cfg(unix)]
-            IpcEndpoint::Unix(path) => {
-                let path = path.clone();
-                let connect_path = path.clone();
-                let channel = Endpoint::try_from(UDS_GRPC_CONNECT_URI)
-                    .context("Failed to build Unix IPC gRPC endpoint")?
-                    .connect_with_connector(service_fn(move |_: Uri| {
-                        let path = connect_path.clone();
-                        async move {
-                            tokio::net::UnixStream::connect(path)
-                                .await
-                                .map(TokioIo::new)
-                        }
-                    }))
-                    .await
-                    .with_context(|| {
-                        format!("Failed to connect to service socket {}", path.display())
-                    })?;
-                Ok(TacacsAgentClient::new(channel))
-            }
-            IpcEndpoint::Tcp(address) => {
-                let channel = Endpoint::from_shared(format!("http://{address}"))
-                    .context("Failed to build TCP IPC gRPC endpoint")?
-                    .connect()
-                    .await
-                    .with_context(|| format!("Failed to connect to service endpoint {address}"))?;
-                Ok(TacacsAgentClient::new(channel))
             }
         }
     }

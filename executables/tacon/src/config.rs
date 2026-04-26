@@ -26,7 +26,7 @@ pub fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
             .with_timeout(5),
     )?;
 
-    Ok(TacacsPlusBuilder::new().with_server(server).build())
+    TacacsPlusBuilder::new().with_server(server).build()
 }
 
 fn populate_security_from_cli(

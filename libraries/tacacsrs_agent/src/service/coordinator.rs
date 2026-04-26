@@ -411,7 +411,7 @@ mod tests {
             server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
             address: host,
             port,
-            shared_secret: None,
+            shared_secret: Some("test-secret".to_owned()),
             timeout: 5,
             single_connection: false,
             domain_name: None,
@@ -435,7 +435,8 @@ mod tests {
                 tacacsrs_config::TacacsPlusBuilder::new(),
                 tacacsrs_config::TacacsPlusBuilder::with_server,
             )
-            .build();
+            .build()
+            .expect("test config is valid");
         ServiceConfig {
             endpoint,
             tacacs_plus,
@@ -521,7 +522,7 @@ mod tests {
         let service_task = tokio::spawn(async move { service.serve().await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let client = ServiceClient::new(endpoint.clone());
+        let client = ServiceClient::connect(endpoint.clone()).await.unwrap();
         let request = build_request();
 
         let first = client.send_accounting(request.clone()).await.unwrap();
