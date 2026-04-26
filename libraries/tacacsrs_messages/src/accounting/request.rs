@@ -51,7 +51,8 @@ impl AccountingRequest {
     /// Returns an error if the packet body is too short or contains invalid fields.
     pub fn from_packet(packet: &Packet) -> Result<Self, anyhow::Error> {
         // Check if the packet the correct length
-        let expected_length = Self::size_from_bytes(packet.body());
+        let expected_length = Self::size_from_bytes(packet.body())
+            .with_context(|| "Unable to determine expected length of accounting request packet")?;
         if packet.body().len() < expected_length {
             return Err(anyhow::Error::msg(format!(
                 "Invalid body length. Expected: {}, Actual: {}",
@@ -73,7 +74,15 @@ impl AccountingRequest {
         Ok(accounting_request)
     }
 
-    fn size_from_bytes(data: &[u8]) -> usize {
+    fn size_from_bytes(data: &[u8]) -> Result<usize, anyhow::Error> {
+        if data.len() < TACACS_ACCOUNTING_REQUEST_MIN_LENGTH {
+            return Err(anyhow::Error::msg(format!(
+                "Body too short for fixed-field access. Expected at least: {}, Actual: {}",
+                TACACS_ACCOUNTING_REQUEST_MIN_LENGTH,
+                data.len()
+            )));
+        }
+
         let mut length = TACACS_ACCOUNTING_REQUEST_MIN_LENGTH;
 
         let user_len = data[5];
@@ -84,16 +93,23 @@ impl AccountingRequest {
         length += port_len as usize;
         length += rem_addr_len as usize;
 
-        // Calculate the length of the variable length arguments
-        // the sizes of the arguments are stored as an array in
-        // the data starting at the 9th byte.
+        // Calculate the length of the variable length arguments.
+        // The sizes of the arguments are stored as an array in
+        // the data starting at the 9th byte (TACACS_ACCOUNTING_ARG_SIZE_OFFSET).
         let arg_cnt = data[8];
+        let arg_sizes_end = TACACS_ACCOUNTING_ARG_SIZE_OFFSET + arg_cnt as usize;
+        if data.len() < arg_sizes_end {
+            return Err(anyhow::Error::msg(format!(
+                "Body too short for argument size fields. Expected at least: {arg_sizes_end}, Actual: {}",
+                data.len()
+            )));
+        }
         for i in 0..arg_cnt {
             let arg_len = data[TACACS_ACCOUNTING_ARG_SIZE_OFFSET + i as usize];
             length += arg_len as usize;
         }
 
-        length
+        Ok(length)
     }
 
     fn read_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<String, anyhow::Error> {
@@ -288,9 +304,44 @@ mod tests {
     }
 
     #[test]
+    fn test_size_from_bytes_too_short() {
+        let data: Vec<u8> = vec![0; TACACS_ACCOUNTING_REQUEST_MIN_LENGTH - 1];
+        let err = AccountingRequest::size_from_bytes(&data)
+            .expect_err("Short body should fail size calculation");
+        assert!(err.to_string().contains("Body too short"), "Error actual: {err}");
+    }
+
+    #[test]
+    fn test_size_from_bytes_missing_arg_size_fields() {
+        // arg_cnt = 3 but no arg size bytes follow
+        let data: Vec<u8> = vec![0, 0, 0, 0, 0, 0, 0, 0, 3]; // 9 bytes, arg_cnt=3 but no room
+        let err = AccountingRequest::size_from_bytes(&data)
+            .expect_err("Missing arg size fields should fail size calculation");
+        assert!(err.to_string().contains("Body too short"), "Error actual: {err}");
+    }
+
+    #[test]
+    fn test_from_packet_short_body_does_not_panic() {
+        // A packet with a body shorter than TACACS_ACCOUNTING_REQUEST_MIN_LENGTH must
+        // return an error, never panic.
+        let header = Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+            tacacs_type: TacacsType::TacPlusAccounting,
+            seq_no: 1,
+            flags: TacacsFlags::empty(),
+            session_id: 1,
+            length: 3,
+        };
+        let packet = Packet::new(header, vec![0x00, 0x00, 0x00]).unwrap();
+        let result = AccountingRequest::from_packet(&packet);
+        assert!(result.is_err(), "Short-body packet must not succeed");
+    }
+
+    #[test]
     fn test_size_from_bytes() {
         let data: Vec<u8> = vec![0; TACACS_ACCOUNTING_REQUEST_MIN_LENGTH];
-        let size = AccountingRequest::size_from_bytes(&data);
+        let size = AccountingRequest::size_from_bytes(&data).unwrap();
         assert_eq!(size, TACACS_ACCOUNTING_REQUEST_MIN_LENGTH);
     }
 
@@ -311,7 +362,7 @@ mod tests {
             6, // 9+2: arg_3_len
         ];
 
-        let size = AccountingRequest::size_from_bytes(&data);
+        let size = AccountingRequest::size_from_bytes(&data).unwrap();
         assert_eq!(size, TACACS_ACCOUNTING_REQUEST_MIN_LENGTH + 1 + 2 + 3 + 4 + 5 + 6);
     }
 

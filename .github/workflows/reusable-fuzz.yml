@@ -41,3 +41,7 @@ jobs:
       - name: Fuzz accounting reply parsing
         run: cargo +nightly fuzz run fuzz_accounting_reply_parse -- -max_total_time=${{ inputs.fuzz-seconds }}
         continue-on-error: ${{ inputs.continue-on-error }}
+
+      - name: Fuzz accounting request packet parsing
+        run: cargo +nightly fuzz run fuzz_accounting_request_packet_parse -- -max_total_time=${{ inputs.fuzz-seconds }}
+        continue-on-error: ${{ inputs.continue-on-error }}
