@@ -24,7 +24,7 @@ runs:
 
     - name: Upload coverage to Codecov
       if: inputs.upload-to-codecov == 'true'
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
       with:
         files: ${{ inputs.output-path }}
         fail_ci_if_error: ${{ inputs.fail-ci-on-codecov-error == 'true' }}

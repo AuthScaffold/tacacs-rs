@@ -5,6 +5,7 @@
 
 use serde::Deserialize;
 use std::time::Duration;
+use tacacsrs_config::TacacsPlusServerType;
 use tacacsrs_messages::enumerations::TacacsFlags;
 
 /// Custom flags that can be set on TACACS+ packet headers
@@ -44,6 +45,19 @@ pub struct BatchFile {
     pub requests: Vec<BatchRequest>,
 }
 
+impl BatchFile {
+    /// Returns the combined TACACS+ server type required to execute all requests.
+    #[must_use]
+    pub fn required_server_type(&self) -> Option<TacacsPlusServerType> {
+        let required_type = self
+            .requests
+            .iter()
+            .fold(TacacsPlusServerType::empty(), |acc, request| acc | request.server_type());
+
+        (!required_type.is_empty()).then_some(required_type)
+    }
+}
+
 /// Metadata controlling how the batch is executed
 #[derive(Debug, Deserialize, Default)]
 pub struct BatchMetadata {
@@ -71,7 +85,7 @@ pub struct LoadTestConfig {
     pub max_parallel: usize,
 }
 
-fn default_max_parallel() -> usize {
+const fn default_max_parallel() -> usize {
     10
 }
 
@@ -100,11 +114,20 @@ impl BatchRequest {
     }
 
     /// Returns the optional custom session ID for this request
-    pub fn session_id(&self) -> Option<u32> {
+    pub const fn session_id(&self) -> Option<u32> {
         match self {
             Self::Accounting(req) => req.session_id,
             Self::Authentication(req) => req.session_id,
             Self::Authorization(req) => req.session_id,
+        }
+    }
+
+    /// Returns the TACACS+ server type required to execute this request.
+    pub const fn server_type(&self) -> TacacsPlusServerType {
+        match self {
+            Self::Accounting(_) => TacacsPlusServerType::ACCOUNTING,
+            Self::Authentication(_) => TacacsPlusServerType::AUTHENTICATION,
+            Self::Authorization(_) => TacacsPlusServerType::AUTHORIZATION,
         }
     }
 }
@@ -238,7 +261,7 @@ pub struct LoadTestResult {
 
 impl LoadTestResult {
     /// Returns true if the load test completed without failures
-    pub fn is_success(&self) -> bool {
+    pub const fn is_success(&self) -> bool {
         self.first_failure.is_none()
     }
 }

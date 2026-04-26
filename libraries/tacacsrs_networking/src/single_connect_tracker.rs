@@ -9,12 +9,12 @@ use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_messages::packet::PacketTrait;
 use crate::session_manager::SessionManager;
 
-/// Represents whether the TAC_PLUS_SINGLE_CONNECT_FLAG is set in a packet.
+/// Represents whether the `TAC_PLUS_SINGLE_CONNECT_FLAG` is set in a packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SingleConnectFlag {
-    /// The TAC_PLUS_SINGLE_CONNECT_FLAG is set
+    /// The `TAC_PLUS_SINGLE_CONNECT_FLAG` is set
     Set,
-    /// The TAC_PLUS_SINGLE_CONNECT_FLAG is not set
+    /// The `TAC_PLUS_SINGLE_CONNECT_FLAG` is not set
     NotSet,
 }
 
@@ -26,9 +26,9 @@ impl SingleConnectFlag {
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG)
         {
-            SingleConnectFlag::Set
+            Self::Set
         } else {
-            SingleConnectFlag::NotSet
+            Self::NotSet
         }
     }
 }
@@ -50,7 +50,6 @@ pub enum LocalSingleConnectState {
     /// Server doesn't support single connection - terminal state, no more checks needed
     NotSupported,
 }
-
 
 impl LocalSingleConnectState {
     /// Process a packet and return the new state, notifying the session manager if needed.
@@ -80,25 +79,23 @@ impl LocalSingleConnectState {
         connection: &Arc<SessionManager>,
     ) -> Self {
         match (self, flag) {
-            (LocalSingleConnectState::AwaitingFirstPacket, SingleConnectFlag::Set) => {
+            (Self::AwaitingFirstPacket, SingleConnectFlag::Set) => {
                 connection.set_single_connection_state(true).await;
-                LocalSingleConnectState::Supported
+                Self::Supported
             }
-            (LocalSingleConnectState::AwaitingFirstPacket, SingleConnectFlag::NotSet) => {
+            (Self::AwaitingFirstPacket, SingleConnectFlag::NotSet) => {
                 connection.set_single_connection_state(false).await;
-                LocalSingleConnectState::NotSupported
+                Self::NotSupported
             }
-            (LocalSingleConnectState::Supported, SingleConnectFlag::Set) => {
-                LocalSingleConnectState::Supported
-            }
-            (LocalSingleConnectState::Supported, SingleConnectFlag::NotSet) => {
+            (Self::Supported, SingleConnectFlag::Set) => Self::Supported,
+            (Self::Supported, SingleConnectFlag::NotSet) => {
                 // Server removed flag - graceful shutdown signal
                 connection.set_single_connection_state(false).await;
-                LocalSingleConnectState::NotSupported
+                Self::NotSupported
             }
-            (LocalSingleConnectState::NotSupported, _) => {
+            (Self::NotSupported, _) => {
                 // Terminal state - no further transitions
-                LocalSingleConnectState::NotSupported
+                Self::NotSupported
             }
         }
     }

@@ -1,0 +1,42 @@
+name: Reusable Protobuf Compatibility
+
+on:
+  workflow_call:
+    inputs:
+      against-ref:
+        description: 'Git ref to check backward compatibility against'
+        required: false
+        default: 'main'
+        type: string
+      continue-on-error:
+        description: 'Whether to allow this check to fail without failing the workflow'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  proto-compat:
+    name: Protobuf Compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
+
+      - name: Ensure comparison ref exists locally
+        run: |
+          if git rev-parse --verify "${{ inputs.against-ref }}" >/dev/null 2>&1; then
+            echo "Ref '${{ inputs.against-ref }}' already exists locally"
+          elif git rev-parse --verify "origin/${{ inputs.against-ref }}" >/dev/null 2>&1; then
+            git branch "${{ inputs.against-ref }}" "origin/${{ inputs.against-ref }}"
+            echo "Created local branch '${{ inputs.against-ref }}' from 'origin/${{ inputs.against-ref }}'"
+          else
+            echo "::error::Ref '${{ inputs.against-ref }}' not found locally or on origin"
+            exit 1
+          fi
+
+      - name: Check protobuf backward compatibility
+        run: buf breaking --against '.git#branch=${{ inputs.against-ref }}'
+        continue-on-error: ${{ inputs.continue-on-error }}

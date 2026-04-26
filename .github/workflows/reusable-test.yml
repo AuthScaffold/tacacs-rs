@@ -23,10 +23,15 @@ on:
         required: false
         default: '1.75'
         type: string
+      release:
+        description: 'Run tests in release mode instead of debug'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   test:
-    name: Test (${{ matrix.os }} / ${{ matrix.rust }})
+    name: Test (${{ matrix.os }} - ${{ matrix.rust }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -35,7 +40,7 @@ jobs:
         rust: ${{ fromJson(inputs.rust-matrix) }}
         include: ${{ inputs.include-msrv && fromJson(format('[{{"os":"ubuntu-latest","rust":"{0}"}}]', inputs.msrv)) || fromJson('[]') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
@@ -44,4 +49,4 @@ jobs:
           cache-key: ${{ matrix.os }}-${{ matrix.rust }}
 
       - name: Run tests
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features ${{ inputs.release && '--release' || '' }}

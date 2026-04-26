@@ -3,11 +3,13 @@ use std::vec;
 
 use tacacsrs_flows::accounting::AccountingFlowTrait;
 use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::enumerations::*;
+use tacacsrs_messages::enumerations::{
+    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationType,
+    TacacsAuthenticationService,
+};
 
 use tacacsrs_networking::TacacsConnection;
 use tacacsrs_networking::traits::SessionManagementTrait;
-
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -45,13 +47,12 @@ async fn main() -> anyhow::Result<()> {
     let response = match session.send_accounting_request(accounting_request).await {
         Ok(response) => response,
         Err(e) => {
-            println!("Failed to send accounting request: {}", e);
+            println!("Failed to send accounting request: {e}");
             return Err(e);
         }
     };
 
-    println!("Received accounting response: {:#?}", response);
-
+    println!("Received accounting response: {response:#?}");
 
     let session = connection.clone().create_session().await?;
 
@@ -75,16 +76,15 @@ async fn main() -> anyhow::Result<()> {
     {
         Ok(response) => response,
         Err(e) => {
-            println!("Failed to send accounting request: {}", e);
+            println!("Failed to send accounting request: {e}");
             return Err(e);
         }
     };
 
-    println!("Received accounting response: {:#?}", response);
+    println!("Received accounting response: {response:#?}");
 
     Ok(())
 }
-
 
 use log::{Record, Level, Metadata};
 use log::{SetLoggerError, LevelFilter};
@@ -106,6 +106,8 @@ impl log::Log for SimpleLogger {
     fn flush(&self) {}
 }
 
+/// # Errors
+/// Returns an error if the logger has already been set.
 pub fn init_logging() -> Result<(), SetLoggerError> {
     log::set_logger(&LOGGER).map(|()| log::set_max_level(LevelFilter::Info))
 }

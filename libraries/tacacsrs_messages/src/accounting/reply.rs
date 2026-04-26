@@ -25,6 +25,8 @@ pub struct AccountingReply {
 }
 
 impl AccountingReply {
+    /// # Errors
+    /// Returns an error if the packet body is too short or contains invalid fields.
     pub fn from_packet(packet: &Packet) -> Result<Self, anyhow::Error> {
         let expected_length = Self::size_from_bytes(packet.body())
             .with_context(|| "Unable to determine expected length of packet")?;
@@ -47,48 +49,46 @@ impl AccountingReply {
     fn size_from_bytes(data: &[u8]) -> Result<usize, anyhow::Error> {
         let mut cursor = Cursor::new(data);
 
-        let server_msg_len = match cursor
-            .read_u16::<BigEndian>()
-            .with_context(|| "Unable to read server_msg_len")
-        {
-            Ok(len) => len as usize,
-            Err(err) => return Err(err),
+        let server_msg_len = {
+            let len = cursor
+                .read_u16::<BigEndian>()
+                .with_context(|| "Unable to read server_msg_len")?;
+            len as usize
         };
 
-        let data_len = match cursor
-            .read_u16::<BigEndian>()
-            .with_context(|| "Unable to read data_len")
-        {
-            Ok(len) => len as usize,
-            Err(err) => return Err(err),
+        let data_len = {
+            let len = cursor
+                .read_u16::<BigEndian>()
+                .with_context(|| "Unable to read data_len")?;
+            len as usize
         };
 
         Ok(TACACS_ACCOUNTING_REPLY_MIN_LENGTH + server_msg_len + data_len)
     }
 
+    /// # Errors
+    /// Returns an error if the data is too short or contains invalid field values.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         let mut cursor = Cursor::new(bytes);
 
-        let server_msg_len = match cursor
-            .read_u16::<BigEndian>()
-            .with_context(|| "Unable to read server_msg_len")
-        {
-            Ok(len) => len as usize,
-            Err(err) => return Err(err),
+        let server_msg_len = {
+            let len = cursor
+                .read_u16::<BigEndian>()
+                .with_context(|| "Unable to read server_msg_len")?;
+            len as usize
         };
 
-        let data_len = match cursor
-            .read_u16::<BigEndian>()
-            .with_context(|| "Unable to read data_len")
-        {
-            Ok(len) => len as usize,
-            Err(err) => return Err(err),
+        let data_len = {
+            let len = cursor
+                .read_u16::<BigEndian>()
+                .with_context(|| "Unable to read data_len")?;
+            len as usize
         };
 
-        let status = match cursor.read_u8().with_context(|| "Unable to read status") {
-            Ok(status) => TacacsAccountingStatus::try_from_primitive(status)
-                .with_context(|| "Unable to convert status to TacacsAccountingStatus")?,
-            Err(err) => return Err(err),
+        let status = {
+            let status = cursor.read_u8().with_context(|| "Unable to read status")?;
+            TacacsAccountingStatus::try_from_primitive(status)
+                .with_context(|| "Unable to convert status to TacacsAccountingStatus")?
         };
 
         let server_msg = read_string(&mut cursor, server_msg_len)
@@ -96,7 +96,7 @@ impl AccountingReply {
 
         let data = read_string(&mut cursor, data_len).with_context(|| "Unable to read data")?;
 
-        Ok(AccountingReply {
+        Ok(Self {
             status,
             server_msg,
             data,
@@ -106,15 +106,15 @@ impl AccountingReply {
 
 impl TacacsBodyTrait for AccountingReply {
     fn to_bytes(&self) -> Vec<u8> {
-        let bytes = vec![
-            (self.server_msg.len() >> 8) as u8,
-            self.server_msg.len() as u8,
-            (self.data.len() >> 8) as u8,
-            self.data.len() as u8,
-            self.status as u8,
-        ];
+        // TACACS+ protocol encodes these lengths as u16 BE.
+        let server_msg_len =
+            u16::try_from(self.server_msg.len()).expect("server_msg exceeds 65535 bytes");
+        let data_len = u16::try_from(self.data.len()).expect("data exceeds 65535 bytes");
 
-        let mut bytes = bytes;
+        let mut bytes = Vec::new();
+        bytes.extend(server_msg_len.to_be_bytes());
+        bytes.extend(data_len.to_be_bytes());
+        bytes.push(self.status as u8);
         bytes.extend(self.server_msg.as_bytes());
         bytes.extend(self.data.as_bytes());
         bytes
@@ -130,6 +130,7 @@ pub mod tests {
 
     use super::*;
 
+    #[allow(clippy::cast_possible_truncation)] // test data is small
     fn generate_accounting_reply_data() -> Vec<u8> {
         let server_message_string = "server_msg";
         let data_string = "data";
@@ -169,8 +170,7 @@ pub mod tests {
             error
                 .to_string()
                 .contains("Unable to convert status to TacacsAccountingStatus"),
-            "Actual Error: {}",
-            error
+            "Actual Error: {error}"
         );
     }
 
@@ -182,7 +182,7 @@ pub mod tests {
         assert!(reply.is_err());
 
         let error = reply.unwrap_err();
-        assert!(error.to_string().contains("Unable to read data"), "Actual Error: {}", error);
+        assert!(error.to_string().contains("Unable to read data"), "Actual Error: {error}");
     }
 
     #[test]
@@ -204,6 +204,7 @@ pub mod tests {
     #[test]
     fn test_reply_from_packet() {
         let data = generate_accounting_reply_data();
+        #[allow(clippy::cast_possible_truncation)] // test data is small
         let header = Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
             minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
@@ -227,6 +228,7 @@ pub mod tests {
         let mut data = generate_accounting_reply_data();
         data[0] = 0xff; // first byte of server_msg_len is set to 0xff
 
+        #[allow(clippy::cast_possible_truncation)] // test data is small
         let header = Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
             minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,

@@ -31,24 +31,30 @@ mod tests {
     use tokio_rustls::client::TlsStream;
 
     // Compile-time check that TcpStream implements Transport
-    fn _assert_transport(_: impl Transport) {}
-    fn _check_tcp(s: TcpStream) {
-        _assert_transport(s);
+    #[allow(dead_code)]
+    fn assert_transport(_: impl Transport) {}
+
+    #[allow(dead_code)]
+    fn check_tcp(s: TcpStream) {
+        assert_transport(s);
     }
 
     // Compile-time check that TlsStream implements Transport
-    fn _check_tls(s: TlsStream<TcpStream>) {
-        _assert_transport(s);
+    #[allow(dead_code)]
+    fn check_tls(s: TlsStream<TcpStream>) {
+        assert_transport(s);
     }
 
     // Compile-time check that MockTransport implements Transport
-    fn _check_mock(s: crate::transport::mock::MockTransport) {
-        _assert_transport(s);
+    #[allow(dead_code)]
+    fn check_mock(s: crate::transport::mock::MockTransport) {
+        assert_transport(s);
     }
 
-    // Compile-time check that SslStream (PSK) implements Transport
+    // Compile-time check that OpenSSL-backed SslStream implements Transport
     #[cfg(feature = "psk")]
-    fn _check_psk(s: tokio_openssl::SslStream<TcpStream>) {
-        _assert_transport(s);
+    #[allow(dead_code)]
+    fn check_openssl(s: tokio_openssl::SslStream<TcpStream>) {
+        assert_transport(s);
     }
 }

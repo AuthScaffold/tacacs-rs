@@ -16,6 +16,112 @@ use tacacsrs_messages::traits::TacacsBodyTrait;
 use crate::session::Session;
 use super::mock_state::{MockState, ReplyConfig};
 
+/// Builder for registering accounting reply packets on a [`MockTransportCoordinator`].
+///
+/// Created via [`MockTransportCoordinator::accounting_reply`] or
+/// [`MockTransportCoordinator::accounting_reply_for_id`]. Call [`send`](Self::send)
+/// to finalize construction and register the reply.
+///
+/// # Defaults
+///
+/// | Field | Default |
+/// |-------|---------|
+/// | `flags` | [`TAC_PLUS_UNENCRYPTED_FLAG`](TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG) |
+/// | `delay` | `None` (immediate) |
+/// | `obfuscation_key` | `None` (plaintext) |
+pub struct MockAccountingReplyBuilder<'a> {
+    coordinator: &'a MockTransportCoordinator,
+    session_id: u32,
+    seq_no: u8,
+    reply: &'a AccountingReply,
+    flags: TacacsFlags,
+    delay: Option<Duration>,
+    obfuscation_key: Option<&'a [u8]>,
+}
+
+impl<'a> MockAccountingReplyBuilder<'a> {
+    /// Overrides the default flags on the reply packet header.
+    ///
+    /// By default the builder uses [`TAC_PLUS_UNENCRYPTED_FLAG`](TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG).
+    /// Calling this **replaces** the flags entirely.
+    #[must_use]
+    pub const fn with_flags(mut self, flags: TacacsFlags) -> Self {
+        self.flags = flags;
+        self
+    }
+
+    /// Adds [`TAC_PLUS_SINGLE_CONNECT_FLAG`](TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG)
+    /// to the reply packet header flags.
+    #[must_use]
+    pub fn with_single_connect(mut self) -> Self {
+        self.flags |= TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
+        self
+    }
+
+    /// Delivers the reply after `delay` instead of immediately.
+    #[must_use]
+    pub const fn with_delay(mut self, delay: Duration) -> Self {
+        self.delay = Some(delay);
+        self
+    }
+
+    /// Obfuscates the reply packet before registering it.
+    ///
+    /// The mock transport replays raw bytes without deobfuscation, so
+    /// an obfuscated reply must be pre-obfuscated to match what a real
+    /// TACACS+ server would send.
+    #[must_use]
+    pub const fn with_obfuscation_key(mut self, key: &'a [u8]) -> Self {
+        self.obfuscation_key = Some(key);
+        self
+    }
+
+    /// Builds the accounting reply packet and registers it on the coordinator.
+    /// # Errors
+    /// Returns an error if the reply packet cannot be constructed.
+    pub async fn send(self) -> anyhow::Result<()> {
+        let coordinator = self.coordinator;
+        let delay = self.delay;
+        let packet = self.build()?;
+
+        if let Some(delay) = delay {
+            coordinator.add_reply_with_delay(packet, delay).await
+        } else {
+            coordinator.add_reply(packet).await
+        }
+    }
+
+    /// Builds the accounting reply packet and returns it without registering.
+    ///
+    /// This is useful when a test needs to register the packet under a
+    /// different session ID or sequence number than the one in the header
+    /// (e.g. to test header-mismatch error handling).
+    /// # Errors
+    /// Returns an error if the reply packet cannot be constructed.
+    #[allow(clippy::cast_possible_truncation)] // body length bounded by u16 field sizes
+    pub fn build(self) -> anyhow::Result<Packet> {
+        let data = self.reply.to_bytes();
+        let mut packet = Packet::new(
+            Header {
+                major_version: TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                tacacs_type: TacacsType::TacPlusAccounting,
+                seq_no: self.seq_no,
+                flags: self.flags,
+                session_id: self.session_id,
+                length: data.len() as u32,
+            },
+            data,
+        )?;
+
+        if let Some(key) = self.obfuscation_key {
+            packet = packet.to_obfuscated(key);
+        }
+
+        Ok(packet)
+    }
+}
+
 /// Control handle for configuring and inspecting a [`super::MockTransport`].
 ///
 /// Obtained via [`MockTransport::coordinator()`](super::MockTransport::coordinator).
@@ -28,7 +134,7 @@ use super::mock_state::{MockState, ReplyConfig};
 ///
 /// All methods acquire the shared async mutex, so it is safe to call these
 /// **while the connection is running** (e.g. to add a reply mid-conversation).
-/// The mutex is held only for the duration of the HashMap insert/lookup.
+/// The mutex is held only for the duration of the `HashMap` insert/lookup.
 #[derive(Clone, Debug)]
 pub struct MockTransportCoordinator {
     /// Shared state with the write processor task.
@@ -40,6 +146,8 @@ impl MockTransportCoordinator {
     /// receives a request for the same `session_id` with `seq_no - 1`.
     ///
     /// The session ID and sequence number are extracted from the packet header.
+    /// # Errors
+    /// Returns an error if the packet header cannot be read.
     pub async fn add_reply(&self, reply: Packet) -> anyhow::Result<()> {
         let session_id = reply.header().session_id;
         let seq_no = reply.header().seq_no;
@@ -59,6 +167,8 @@ impl MockTransportCoordinator {
     /// * `session_id` — the TACACS+ session ID the reply belongs to.
     /// * `seq_no` — the sequence number of the reply (must be `request_seq + 1`).
     /// * `reply_bytes` — the complete serialised packet bytes.
+    /// # Errors
+    /// This method is infallible but returns `Result` for API consistency.
     pub async fn add_reply_bytes(
         &self,
         session_id: u32,
@@ -78,6 +188,7 @@ impl MockTransportCoordinator {
                 delay: None,
             },
         );
+        drop(state);
         Ok(())
     }
 
@@ -85,6 +196,8 @@ impl MockTransportCoordinator {
     ///
     /// Useful for testing timeout behaviour — the write processor spawns a task
     /// that sleeps for `delay` before sending the reply bytes.
+    /// # Errors
+    /// This method is infallible but returns `Result` for API consistency.
     pub async fn add_reply_with_delay(&self, reply: Packet, delay: Duration) -> anyhow::Result<()> {
         log::info!(
             "mock coordinator: registering delayed reply ({delay:?}) for session {} seq_no {}",
@@ -100,80 +213,58 @@ impl MockTransportCoordinator {
                 delay: Some(delay),
             },
         );
+        drop(state);
         Ok(())
     }
 
-    /// Convenience method: builds and registers an accounting reply packet with
-    /// the default unencrypted flag.
+    /// Creates a [`MockAccountingReplyBuilder`] for registering an accounting
+    /// reply associated with the given session.
     ///
     /// # Arguments
     ///
-    /// * `session` — the session to associate the reply with (provides the session ID).
+    /// * `session` — provides the session ID for the reply.
     /// * `reply_sequence_number` — the sequence number for the reply.
     /// * `reply` — the accounting reply body.
-    pub async fn add_accounting_reply(
-        &self,
+    pub const fn accounting_reply<'a>(
+        &'a self,
         session: &Session,
         reply_sequence_number: u8,
-        reply: &AccountingReply,
-    ) -> anyhow::Result<()> {
-        self.add_accounting_reply_with_flags(
-            session,
-            reply_sequence_number,
+        reply: &'a AccountingReply,
+    ) -> MockAccountingReplyBuilder<'a> {
+        MockAccountingReplyBuilder {
+            coordinator: self,
+            session_id: session.session_id(),
+            seq_no: reply_sequence_number,
             reply,
-            TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-        )
-        .await
+            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            delay: None,
+            obfuscation_key: None,
+        }
     }
 
-    /// Same as [`add_accounting_reply`](Self::add_accounting_reply), but delivered
-    /// after a specified delay (see [`add_reply_with_delay`](Self::add_reply_with_delay)).
-    pub async fn add_accounting_reply_with_delay(
-        &self,
-        session: &Session,
+    /// Creates a [`MockAccountingReplyBuilder`] for registering an accounting
+    /// reply for a known `session_id`.
+    ///
+    /// This is the counterpart of [`accounting_reply`](Self::accounting_reply)
+    /// for callers that do not have a [`Session`] reference — e.g. when
+    /// testing [`DedicatedConnection`](crate::DedicatedConnection) with a
+    /// predetermined session ID.
+    #[must_use]
+    pub const fn accounting_reply_for_id<'a>(
+        &'a self,
+        session_id: u32,
         reply_sequence_number: u8,
-        reply: &AccountingReply,
-        delay: Duration,
-    ) -> anyhow::Result<()> {
-        let data = reply.to_bytes();
-        let packet = Packet::new(
-            Header {
-                major_version: TacacsMajorVersion::TacacsPlusMajor1,
-                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
-                tacacs_type: TacacsType::TacPlusAccounting,
-                seq_no: reply_sequence_number,
-                flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-                session_id: session.session_id(),
-                length: data.len() as u32,
-            },
-            data,
-        )?;
-        self.add_reply_with_delay(packet, delay).await
-    }
-
-    /// Builds and registers an accounting reply packet with caller-specified
-    /// TACACS+ flags (e.g. encrypted vs unencrypted).
-    pub async fn add_accounting_reply_with_flags(
-        &self,
-        session: &Session,
-        reply_sequence_number: u8,
-        reply: &AccountingReply,
-        flags: TacacsFlags,
-    ) -> anyhow::Result<()> {
-        let data = reply.to_bytes();
-        let packet = Packet::new(
-            Header {
-                major_version: TacacsMajorVersion::TacacsPlusMajor1,
-                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
-                tacacs_type: TacacsType::TacPlusAccounting,
-                seq_no: reply_sequence_number,
-                flags,
-                session_id: session.session_id(),
-                length: data.len() as u32,
-            },
-            data,
-        )?;
-        self.add_reply(packet).await
+        reply: &'a AccountingReply,
+    ) -> MockAccountingReplyBuilder<'a> {
+        MockAccountingReplyBuilder {
+            coordinator: self,
+            session_id,
+            seq_no: reply_sequence_number,
+            reply,
+            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            delay: None,
+            obfuscation_key: None,
+        }
     }
 
     /// Returns all request packets captured for the given `session_id`.
@@ -196,7 +287,9 @@ impl MockTransportCoordinator {
     ) -> anyhow::Result<HashMap<u8, Packet>> {
         let state = self.state.lock().await;
         let result = state.requests.get(&session_id).cloned();
-        let count = result.as_ref().map_or(0, |m| m.len());
+        drop(state);
+
+        let count = result.as_ref().map_or(0, std::collections::HashMap::len);
         log::debug!(
             "mock coordinator: get_requests_for_session({session_id}) → {count} request(s)"
         );
@@ -219,9 +312,17 @@ impl MockTransportCoordinator {
         session_id: u32,
     ) -> anyhow::Result<HashMap<u8, Packet>> {
         let state = self.state.lock().await;
-        let configured = state.replies.get(&session_id).ok_or_else(|| {
-            anyhow::anyhow!("No replies configured for session {session_id} (session not found)")
-        })?;
+        let configured = state
+            .replies
+            .get(&session_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No replies configured for session {session_id} (session not found)"
+                )
+            })?
+            .clone();
+        drop(state);
+
         log::debug!(
             "mock coordinator: get_replies_for_session({session_id}) → {} unconsumed reply(ies)",
             configured.len()

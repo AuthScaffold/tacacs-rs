@@ -1,37 +1,43 @@
 [package]
 name = "tacacsrs-networking"
-version.workspace = true
+version = "0.0.0-dev"
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TACACS+ transport layer with TCP, TLS, and PSK support"
 
 [dependencies]
-anyhow = { version = "1.0.100", features = ["backtrace"] }
-tokio = { version = "1.49.0", features = ["full"] }
+tacacsrs-config = { path = "../tacacsrs_config" }
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+tokio = { version = "1.52.1", features = ["full"] }
 tacacsrs-flow-abstractions = { path = "../tacacsrs_flow_abstractions" }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
 async-trait = "0.1.89"
-rand = "0.10.0"
+rand = "0.10.1"
 log = "0.4.29"
+parking_lot = "0.12.5"
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "logging"] }
-rustls-pki-types = "1.14.0"
-rustls-cert-file-reader = "0.4.2"
-openssl = { version = "0.10", optional = true }
-tokio-openssl = { version = "0.6", optional = true }
+rustls-pki-types = "1.14.1"
+webpki-roots = "1.0.7"
+openssl = { version = "0.10.78", optional = true }
+tokio-openssl = { version = "0.6.5", optional = true }
 
 [features]
 default = []
-psk = ["openssl", "tokio-openssl"]
+psk = ["dep:openssl", "dep:tokio-openssl"]
 
 [dev-dependencies]
-argh = "0.1.13"
 console-subscriber = "0.5.0"
-webpki-roots = "1.0.6"
-test-log = "0.2.19"
-env_logger = "0.11.8"
+test-log = "0.2.20"
+env_logger = "0.11.10"
 futures = "0.3"
 tacacsrs-flows = { path = "../tacacsrs_flows" }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+[lints]
+workspace = true
+
+[package.metadata.cargo-udeps.ignore]
+development = ["console-subscriber"]
 
 [[example]]
 name = "tls_psk_client"

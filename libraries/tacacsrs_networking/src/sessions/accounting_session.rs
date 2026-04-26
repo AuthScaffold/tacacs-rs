@@ -83,11 +83,12 @@ mod tests {
         let accounting_reply = AccountingReply {
             status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             server_msg: "Test".to_string(),
-            data: "".to_string(),
+            data: String::new(),
         };
 
         mock_control
-            .add_accounting_reply(&session, 2, &accounting_reply)
+            .accounting_reply(&session, 2, &accounting_reply)
+            .send()
             .await?;
 
         let reply = session.send_accounting_request(accounting_request).await?;
@@ -141,17 +142,14 @@ mod tests {
         let accounting_reply = AccountingReply {
             status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             server_msg: "Test".to_string(),
-            data: "".to_string(),
+            data: String::new(),
         };
 
         // Configure reply with a delay
         mock_control
-            .add_accounting_reply_with_delay(
-                &session,
-                2,
-                &accounting_reply,
-                Duration::from_millis(100),
-            )
+            .accounting_reply(&session, 2, &accounting_reply)
+            .with_delay(Duration::from_millis(100))
+            .send()
             .await?;
 
         let start = Instant::now();
@@ -161,8 +159,7 @@ mod tests {
         assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
         assert!(
             elapsed >= Duration::from_millis(100),
-            "Expected at least 100ms delay but got {:?}",
-            elapsed
+            "Expected at least 100ms delay but got {elapsed:?}"
         );
 
         Ok(())
@@ -195,25 +192,15 @@ mod tests {
         let accounting_reply1 = AccountingReply {
             status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             server_msg: "Reply1".to_string(),
-            data: "".to_string(),
+            data: String::new(),
         };
 
         // Configure first reply with single connect flag to enable multiple sessions
-        let data = accounting_reply1.to_bytes();
-        let reply_packet = Packet::new(
-            Header {
-                major_version: TacacsMajorVersion::TacacsPlusMajor1,
-                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
-                tacacs_type: TacacsType::TacPlusAccounting,
-                seq_no: 2,
-                flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG
-                    | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
-                session_id: session1.session_id,
-                length: data.len() as u32,
-            },
-            data,
-        )?;
-        mock_control.add_reply(reply_packet).await?;
+        mock_control
+            .accounting_reply(&session1, 2, &accounting_reply1)
+            .with_single_connect()
+            .send()
+            .await?;
 
         // Send first request - this will set single connection state to Supported
         let reply1 = session1
@@ -239,17 +226,14 @@ mod tests {
         let accounting_reply2 = AccountingReply {
             status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             server_msg: "Reply2".to_string(),
-            data: "".to_string(),
+            data: String::new(),
         };
 
         // Configure reply for second session with delay
         mock_control
-            .add_accounting_reply_with_delay(
-                &session2,
-                2,
-                &accounting_reply2,
-                Duration::from_millis(50),
-            )
+            .accounting_reply(&session2, 2, &accounting_reply2)
+            .with_delay(Duration::from_millis(50))
+            .send()
             .await?;
 
         // Send second request

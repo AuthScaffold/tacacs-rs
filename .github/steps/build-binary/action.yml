@@ -11,6 +11,10 @@ inputs:
   asset-name:
     description: 'Name for the uploaded asset'
     required: true
+  features:
+    description: 'Space-separated cargo features to enable for the build'
+    required: false
+    default: ''
   strip-binary:
     description: 'Strip the binary on Linux'
     required: false
@@ -34,13 +38,20 @@ runs:
       run: |
         # Use nightly's --artifact-dir to output binaries to a predictable location
         # Note: This uses an unstable feature. If builds break, consider pinning to a specific nightly version
+        FEATURE_ARGS=()
+        if [[ -n "${{ inputs.features }}" ]]; then
+          FEATURE_ARGS+=(--features "${{ inputs.features }}")
+        fi
+
         cargo +nightly build --release --target ${{ inputs.target }} --bin ${{ inputs.binary-name }} \
+          "${FEATURE_ARGS[@]}" \
           -Z unstable-options --artifact-dir=build-output
 
     - name: Discover and prepare artifacts
       shell: bash
       run: |
         mkdir -p artifacts
+        mkdir -p package
         
         # Determine the expected binary extension
         if [[ "${{ runner.os }}" == "Windows" ]]; then
@@ -62,10 +73,14 @@ runs:
         
         echo "Found binary: $BINARY_PATH"
         
-        # Copy and rename to asset name
-        cp "$BINARY_PATH" "artifacts/${{ inputs.asset-name }}"
-        # Set execute permission (no-op on Windows, but that's fine)
-        chmod +x "artifacts/${{ inputs.asset-name }}" || true
+        if [[ "${{ runner.os }}" == "Windows" && "${{ inputs.asset-name }}" =~ \.zip$ ]]; then
+          cp "$BINARY_PATH" "package/${BINARY_NAME}"
+        else
+          # Copy and rename to asset name
+          cp "$BINARY_PATH" "artifacts/${{ inputs.asset-name }}"
+          # Set execute permission (no-op on Windows, but that's fine)
+          chmod +x "artifacts/${{ inputs.asset-name }}" || true
+        fi
 
     - name: Strip binary (Linux only)
       if: runner.os == 'Linux' && inputs.strip-binary == 'true'
@@ -92,15 +107,56 @@ runs:
         # Try build-output first (if --artifact-dir copied them)
         $pdbFileBuildOutput = "build-output/${{ inputs.binary-name }}.pdb"
         $pdbFileTarget = "target/${{ inputs.target }}/release/${{ inputs.binary-name }}.pdb"
+        $bundleAsset = "${{ inputs.asset-name }}"
+        $pdbDestination = if ($bundleAsset.EndsWith(".zip")) {
+          "package/${{ inputs.binary-name }}.pdb"
+        } else {
+          "artifacts/${{ inputs.asset-name }}.pdb"
+        }
         
         if (Test-Path $pdbFileBuildOutput) {
-          Copy-Item $pdbFileBuildOutput "artifacts/${{ inputs.asset-name }}.pdb"
+          Copy-Item $pdbFileBuildOutput $pdbDestination
         } elseif (Test-Path $pdbFileTarget) {
-          Copy-Item $pdbFileTarget "artifacts/${{ inputs.asset-name }}.pdb"
+          Copy-Item $pdbFileTarget $pdbDestination
         }
 
+    - name: Bundle Windows release package
+      if: runner.os == 'Windows' && endsWith(inputs.asset-name, '.zip')
+      shell: pwsh
+      run: |
+        $packageDir = "package"
+        $opensslBinDir = Join-Path $env:OPENSSL_DIR "bin"
+
+        if (-not (Test-Path $opensslBinDir)) {
+          throw "OpenSSL bin directory not found: $opensslBinDir"
+        }
+
+        $libcryptoDlls = @(Get-ChildItem -Path $opensslBinDir -Filter "libcrypto-*.dll" -ErrorAction SilentlyContinue)
+        $libsslDlls = @(Get-ChildItem -Path $opensslBinDir -Filter "libssl-*.dll" -ErrorAction SilentlyContinue)
+
+        if ($libcryptoDlls.Count -ne 1) {
+          throw "Expected exactly one libcrypto runtime DLL in $opensslBinDir, found $($libcryptoDlls.Count)"
+        }
+
+        if ($libsslDlls.Count -ne 1) {
+          throw "Expected exactly one libssl runtime DLL in $opensslBinDir, found $($libsslDlls.Count)"
+        }
+
+        $dlls = $libcryptoDlls + $libsslDlls
+
+        foreach ($dll in $dlls) {
+          Copy-Item $dll.FullName (Join-Path $packageDir $dll.Name)
+        }
+
+        $destination = "artifacts/${{ inputs.asset-name }}"
+        if (Test-Path $destination) {
+          Remove-Item $destination
+        }
+
+        Compress-Archive -Path "$packageDir/*" -DestinationPath $destination
+
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: ${{ inputs.asset-name }}
         path: artifacts/*

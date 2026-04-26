@@ -4,10 +4,9 @@ on:
   pull_request:
     branches: ["main"]
 
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  BINARY_NAME: tacon
+permissions:
+  contents: read
+  packages: read
 
 # Cancel in-progress runs for the same PR
 concurrency:
@@ -15,116 +14,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ============================================
-  # Format Check - Fast fail on formatting issues
-  # ============================================
-  fmt:
-    name: Rustfmt
-    uses: ./.github/workflows/reusable-fmt.yml
+  compute-versions:
+    name: Compute Pre-release Versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      versions: ${{ steps.compute.outputs.versions }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
 
-  # ============================================
-  # Clippy Lints - Catch common mistakes
-  # ============================================
-  clippy:
-    name: Clippy
-    uses: ./.github/workflows/reusable-clippy.yml
+      - name: Compute versions
+        id: compute
+        uses: ./.github/steps/compute-versions
+        with:
+          binary-name: tacon
+          pre-release: dev
 
-  # ============================================
-  # Tests - Run on multiple platforms
-  # ============================================
-  test:
-    name: Test
-    uses: ./.github/workflows/reusable-test.yml
-
-  # ============================================
-  # Build Artifacts - Generate all compiled assets like release
-  # Uses reusable build workflow with artifact upload enabled
-  # ============================================
-  build-artifacts:
-    name: Build Artifacts
-    needs: [fmt, clippy]
-    uses: ./.github/workflows/reusable-build.yml
+  pipeline:
+    name: PR Pipeline
+    needs: [compute-versions]
+    uses: ./.github/workflows/reusable-pipeline.yml
+    permissions:
+      checks: write
+      contents: read
+      packages: read
     with:
-      build-release: true
-      upload-artifacts: true
-      binary-name: tacon
-
-  # ============================================
-  # Generate Software Bill of Materials (SBOM)
-  # ============================================
-  sbom:
-    name: Generate SBOM
-    needs: [fmt, clippy]
-    uses: ./.github/workflows/reusable-sbom.yml
-
-  # ============================================
-  # Build Debian Package
-  # ============================================
-  build-deb:
-    name: Build Debian Package
-    needs: [fmt, clippy, build-artifacts]
-    uses: ./.github/workflows/reusable-deb.yml
-    with:
-      package-name: tacon
-      upload-artifacts: true
-      binary-artifact-name: tacon-linux-gnu-x86_64
-
-  # ============================================
-  # Create checksums for all artifacts
-  # ============================================
-  checksums:
-    name: Generate Checksums
-    needs: [build-artifacts, build-deb]
-    uses: ./.github/workflows/reusable-checksums.yml
-
-  # ============================================
-  # Documentation - Ensure docs build without warnings
-  # ============================================
-  docs:
-    name: Documentation
-    uses: ./.github/workflows/reusable-docs.yml
-
-  # ============================================
-  # Code Coverage - Enforce minimum coverage threshold
-  # ============================================
-  coverage:
-    name: Code Coverage
-    uses: ./.github/workflows/reusable-coverage.yml
-
-  # ============================================
-  # Security Audit - Check for vulnerabilities
-  # Only runs when dependencies change
-  # ============================================
-  audit:
-    name: Security Audit
-    uses: ./.github/workflows/reusable-security-audit.yml
-    with:
-      skip-if-no-dep-changes: true
+      include-nightly-clippy: false
+      rust-test-matrix: '["stable", "beta"]'
+      skip-audit-if-no-dep-changes: true
+      versions: ${{ needs.compute-versions.outputs.versions || '{}' }}
     secrets: inherit
 
-  # ============================================
-  # Final Status - Gate for branch protection
-  # Require this single job in GitHub branch protection settings
-  # ============================================
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [fmt, clippy, test, build-artifacts, sbom, build-deb, checksums, docs, coverage, audit]
+    needs: [pipeline]
     if: always()
     steps:
-      - name: Check all jobs passed
-        run: |
-          if [[ "${{ needs.fmt.result }}" != "success" ]] || \
-             [[ "${{ needs.clippy.result }}" != "success" ]] || \
-             [[ "${{ needs.test.result }}" != "success" ]] || \
-             [[ "${{ needs.build-artifacts.result }}" != "success" ]] || \
-             [[ "${{ needs.sbom.result }}" != "success" ]] || \
-             [[ "${{ needs.build-deb.result }}" != "success" ]] || \
-             [[ "${{ needs.checksums.result }}" != "success" ]] || \
-             [[ "${{ needs.docs.result }}" != "success" ]] || \
-             [[ "${{ needs.coverage.result }}" != "success" ]] || \
-             [[ "${{ needs.audit.result }}" != "success" ]]; then
-            echo "One or more jobs failed"
-            exit 1
-          fi
-          echo "All jobs passed!"
+      - name: Check pipeline result
+        if: needs.pipeline.result != 'success'
+        run: exit 1

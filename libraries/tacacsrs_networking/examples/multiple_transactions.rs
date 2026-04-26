@@ -8,12 +8,11 @@ use tacacsrs_messages::enumerations::{
     TacacsAuthenticationType,
 };
 
-use tacacsrs_networking::helpers::*;
+use tacacsrs_networking::helpers::connect_tcp;
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::traits::SessionManagementTrait;
 use tacacsrs_networking::TacacsConnection;
 use tokio::task::JoinHandle;
-
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,13 +29,11 @@ async fn main() -> anyhow::Result<()> {
     let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
     connection.run(tcp_stream).await?;
 
-    // For TLS, use:
-    // let tcp_stream = connect_tcp(hostname).await?;
-    // let tls_stream = tacacsrs_networking::transport::tls::connect_tls(&tls_config, tcp_stream, "tacacsserver.local").await?;
-    // let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
-    // connection.run(tls_stream).await?;
+    // For TLS or TLS-PSK, build a TacacsPlusServer via TacacsPlusServerBuilder
+    // and call tacacsrs_networking::config_connect::establish_stream — see the
+    // tls_client.rs and tls_psk_client.rs examples in this directory.
 
-    let session_count = 100000;
+    let session_count = 100_000;
 
     let session_creation = (0..session_count).map(|_| {
         let conn = connection.clone();
@@ -48,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
         let session = match session.await? {
             Ok(session) => session,
             Err(e) => {
-                println!("Failed to create session: {}", e);
+                println!("Failed to create session: {e}");
                 return Err(e);
             }
         };
@@ -84,14 +81,13 @@ async fn send_test_request(session: Session) -> anyhow::Result<()> {
     let _response = match session.send_accounting_request(accounting_request).await {
         Ok(response) => response,
         Err(e) => {
-            println!("Failed to send accounting request: {}", e);
+            println!("Failed to send accounting request: {e}");
             return Err(e);
         }
     };
 
     Ok(())
 }
-
 
 use log::{Record, Level, Metadata};
 use log::{SetLoggerError, LevelFilter};
@@ -114,6 +110,8 @@ impl log::Log for SimpleLogger {
     fn flush(&self) {}
 }
 
+/// # Errors
+/// Returns an error if the logger has already been set.
 pub fn init_logging() -> Result<(), SetLoggerError> {
     log::set_logger(&LOGGER).map(|()| log::set_max_level(LevelFilter::Info))
 }

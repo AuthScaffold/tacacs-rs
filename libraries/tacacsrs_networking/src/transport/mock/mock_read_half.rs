@@ -26,7 +26,7 @@ pub struct MockReadHalf {
 
 impl MockReadHalf {
     /// Creates a new `MockReadHalf` backed by the given channel receiver.
-    pub(super) fn new(rx: mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
+    pub(super) const fn new(rx: mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
         Self {
             inner: ChannelReader::new(rx),
         }

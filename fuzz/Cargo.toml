@@ -1,0 +1,32 @@
+[package]
+name = "tacacsrs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tacacsrs-messages = { path = "../libraries/tacacsrs_messages" }
+
+[[bin]]
+name = "fuzz_header_parse"
+path = "fuzz_targets/fuzz_header_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_accounting_request_parse"
+path = "fuzz_targets/fuzz_accounting_request_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_accounting_reply_parse"
+path = "fuzz_targets/fuzz_accounting_reply_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_accounting_request_packet_parse"
+path = "fuzz_targets/fuzz_accounting_request_packet_parse.rs"
+doc = false

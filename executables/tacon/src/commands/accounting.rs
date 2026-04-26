@@ -33,19 +33,7 @@ pub async fn send_accounting_request(
     cmd_args: Option<&Vec<String>>,
     custom_flags: TacacsFlags,
 ) -> anyhow::Result<AccountingReply> {
-    let args = build_accounting_args(cmd, cmd_args);
-
-    let request = AccountingRequest {
-        flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
-        authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
-        priv_lvl: 0,
-        authen_type: TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
-        authen_service: TacacsAuthenticationService::TacPlusAuthenSvcNone,
-        user: user.to_owned(),
-        port: port.to_owned(),
-        rem_address: rem_address.to_owned(),
-        args,
-    };
+    let request = build_accounting_request(user, port, rem_address, cmd, cmd_args);
 
     let response = session
         .send_accounting_request_with_flags(request, custom_flags)
@@ -55,6 +43,27 @@ pub async fn send_accounting_request(
     log::info!("Received accounting response: {response:?}");
 
     Ok(response)
+}
+
+/// Constructs an [`AccountingRequest`] from CLI-level arguments.
+pub fn build_accounting_request(
+    user: &str,
+    port: &str,
+    rem_address: &str,
+    cmd: &str,
+    cmd_args: Option<&Vec<String>>,
+) -> AccountingRequest {
+    AccountingRequest {
+        flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
+        authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
+        priv_lvl: 0,
+        authen_type: TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
+        authen_service: TacacsAuthenticationService::TacPlusAuthenSvcNone,
+        user: user.to_owned(),
+        port: port.to_owned(),
+        rem_address: rem_address.to_owned(),
+        args: build_accounting_args(cmd, cmd_args),
+    }
 }
 
 /// Builds the argument list for an accounting request.

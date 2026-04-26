@@ -1,0 +1,18 @@
+[package]
+name = "tacacsrs-config"
+description = "YANG JSON configuration types for TACACS+ (ietf-system-tacacs-plus)"
+version = "0.0.0-dev"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+bitflags = { version = "2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_ignored = "0.1"
+serde_json = "1"
+
+[lints]
+workspace = true

@@ -1,0 +1,28 @@
+[package]
+name = "tacacsrs-agent"
+version = "0.0.0-dev"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reusable central TACACS+ client service components and IPC protocol"
+readme = "README.md"
+
+[dependencies]
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+async-trait = "0.1.89"
+log = "0.4.29"
+tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
+tacacsrs-config = { path = "../tacacsrs_config" }
+tacacsrs-flows = { path = "../tacacsrs_flows" }
+tacacsrs-messages = { path = "../tacacsrs_messages" }
+tacacsrs-networking = { path = "../tacacsrs_networking" }
+tokio = { version = "1.52.1", features = ["full"] }
+tokio-stream = { version = "0.1.18", features = ["net"] }
+tonic = "0.14.5"
+
+[features]
+default = []
+psk = ["tacacsrs-networking/psk"]
+
+[lints]
+workspace = true

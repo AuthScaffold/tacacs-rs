@@ -2,6 +2,12 @@ name: Reusable SBOM Generation
 
 on:
   workflow_call:
+    inputs:
+      versions:
+        description: 'JSON map of crate-name → version to inject into Cargo.toml files. Empty or {} is a no-op.'
+        required: false
+        default: '{}'
+        type: string
 
 jobs:
   sbom:
@@ -10,7 +16,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Inject versions
+        uses: ./.github/steps/inject-versions
+        with:
+          versions: ${{ inputs.versions }}
 
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
@@ -38,7 +49,7 @@ jobs:
           ls -lh sbom-output/
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom
           path: sbom-output/*

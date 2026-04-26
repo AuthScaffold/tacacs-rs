@@ -6,8 +6,8 @@ pub struct DuplexChannel {
     pub receiver: RwLock<tokio::sync::mpsc::Receiver<Packet>>,
 }
 
-
 impl DuplexChannel {
+    #[must_use]
     pub fn new(
         session_receiver: tokio::sync::mpsc::Receiver<Packet>,
         tcp_sender: tokio::sync::mpsc::Sender<Packet>,
@@ -18,7 +18,7 @@ impl DuplexChannel {
         }
     }
 
-    pub async fn sender_closed(&self) -> bool {
+    pub fn sender_closed(&self) -> bool {
         self.sender.is_closed()
     }
 

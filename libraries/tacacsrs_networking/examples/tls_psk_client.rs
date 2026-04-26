@@ -1,35 +1,45 @@
+//! Demonstrates establishing a TLS 1.3 PSK connection by constructing a
+//! [`TacacsPlusServer`] with [`TacacsPlusServerBuilder`] and letting the
+//! dispatcher in [`tacacsrs_networking::config_connect`] pick the correct
+//! transport.
+//!
+//! This is the only supported entry point for PSK connection construction —
+//! the lower-level builders inside `transport::tls_psk` are crate-internal.
+
 use std::sync::Arc;
 
 use env_logger::Env;
 use tacacsrs_flows::accounting::AccountingFlowTrait;
+use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerExt, TacacsPlusServerType};
 use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::enumerations::*;
-use tacacsrs_networking::helpers::connect_tcp;
-use tacacsrs_networking::transport::tls_psk::{PskConfigurationBuilder, PskIdentity};
+use tacacsrs_messages::enumerations::{
+    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
+    TacacsAuthenticationType,
+};
 use tacacsrs_networking::TacacsConnection;
-
+use tacacsrs_networking::config_connect::{ConnectOptions, establish_stream};
 use tacacsrs_networking::traits::SessionManagementTrait;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
 
-    let hostname = "tacacsserver.local:449";
-    let obfuscation_key: Option<Vec<u8>> = None;
+    // Configure a TACACS+ server that uses a TLS 1.3 externally provisioned PSK.
+    let server = TacacsPlusServerBuilder::new(
+        "tacacs-psk-example",
+        TacacsPlusServerType::all(),
+        "tacacsserver.local",
+        449,
+    )
+    .with_tls13_epsk("tacacs-client-01", b"my-pre-shared-key-material".to_vec())
+    .build();
 
-    // Configure the PSK identity and key for TLS 1.3 out-of-band PSK.
-    let psk_identity =
-        PskIdentity::new("tacacs-client-01".to_string(), b"my-pre-shared-key-material".to_vec())?;
+    let options = ConnectOptions::default();
 
-    let tcp_stream = connect_tcp(hostname).await?;
-
-    let tls_stream = PskConfigurationBuilder::new(psk_identity)
-        .with_server_name("tacacsserver.local")
-        .connect(tcp_stream)
-        .await?;
-
+    let stream = establish_stream(&server, &options).await?;
+    let obfuscation_key = server.obfuscation_key();
     let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
-    connection.run(tls_stream).await?;
+    connection.run(stream).await?;
 
     let session = connection.create_session().await?;
 
@@ -53,12 +63,12 @@ async fn main() -> anyhow::Result<()> {
     {
         Ok(response) => response,
         Err(e) => {
-            println!("Failed to send accounting request: {}", e);
+            println!("Failed to send accounting request: {e}");
             return Err(e);
         }
     };
 
-    println!("Received accounting response: {:#?}", response);
+    println!("Received accounting response: {response:#?}");
 
     Ok(())
 }
