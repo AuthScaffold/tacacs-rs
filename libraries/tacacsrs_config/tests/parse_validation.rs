@@ -2605,5 +2605,5 @@ fn validation_relaxation_from_str_rejects_unknown() {
     use tacacsrs_config::ValidationRelaxation;
 
     let err = ValidationRelaxation::from_str("allow-everything").unwrap_err();
-    assert!(err.to_string().contains("unknown validation relaxation"), "unexpected error: {err}",);
+    assert!(err.to_string().contains("unknown validation relaxation"), "unexpected error: {err}");
 }
