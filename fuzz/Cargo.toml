@@ -25,3 +25,8 @@ doc = false
 name = "fuzz_accounting_reply_parse"
 path = "fuzz_targets/fuzz_accounting_reply_parse.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_accounting_request_packet_parse"
+path = "fuzz_targets/fuzz_accounting_request_packet_parse.rs"
+doc = false
