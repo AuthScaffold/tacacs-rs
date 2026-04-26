@@ -1,13 +1,14 @@
 pub mod generated;
 pub mod extensions;
 pub mod builders;
+pub mod validation;
 mod enumeration;
 mod mapping;
 pub(crate) mod serde_helpers;
 mod statistics;
-mod validation;
 
 pub use enumeration::{enumerate_server, enumerate_servers, validate_credential_references};
+pub use validation::{ValidationOptions, ValidationRelaxation};
 
 // Re-export key types from generated module for convenience
 pub use generated::tacacs_plus::{
@@ -33,6 +34,7 @@ pub mod model {
         TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
     };
     pub use crate::generated::{crypto_types, keystore, truststore, YangConfigRoot};
+    pub use crate::validation::{ValidationOptions, ValidationRelaxation};
 }
 
 /// Step-by-step processing API for custom parse/validate flows.
@@ -119,10 +121,28 @@ pub mod stats {
 /// - The JSON is malformed or does not match the YANG schema
 /// - Validation constraints are violated
 pub fn parse_yang_json(json: &str) -> anyhow::Result<TacacsPlus> {
+    parse_yang_json_with_options(json, &ValidationOptions::default())
+}
+
+/// Parse a YANG JSON configuration string with the supplied validation options.
+///
+/// Behaves identically to [`parse_yang_json`] except that the supplied
+/// [`ValidationOptions`] are applied during validation, allowing callers to
+/// opt into specific [`ValidationRelaxation`]s.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The JSON is malformed or does not match the YANG schema
+/// - Validation constraints are violated (subject to `options`)
+pub fn parse_yang_json_with_options(
+    json: &str,
+    options: &ValidationOptions,
+) -> anyhow::Result<TacacsPlus> {
     let root: YangConfigRoot = pipeline::parse_root_json(json)?;
 
     let config = root.tacacs_plus;
-    validation::validate_config(&config)?;
+    validation::validate_config_with_options(&config, options)?;
 
     Ok(config)
 }
@@ -148,10 +168,29 @@ pub fn parse_yang_json(json: &str) -> anyhow::Result<TacacsPlus> {
 /// - The JSON is malformed or does not match the YANG schema
 /// - Validation constraints are violated
 pub fn parse_yang_json_file(path: &std::path::Path) -> anyhow::Result<TacacsPlus> {
+    parse_yang_json_file_with_options(path, &ValidationOptions::default())
+}
+
+/// Parse a YANG JSON config file with the supplied validation options.
+///
+/// Behaves identically to [`parse_yang_json_file`] except that the supplied
+/// [`ValidationOptions`] are applied during validation, allowing callers to
+/// opt into specific [`ValidationRelaxation`]s.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The file cannot be read
+/// - The JSON is malformed or does not match the YANG schema
+/// - Validation constraints are violated (subject to `options`)
+pub fn parse_yang_json_file_with_options(
+    path: &std::path::Path,
+    options: &ValidationOptions,
+) -> anyhow::Result<TacacsPlus> {
     let root: YangConfigRoot = pipeline::parse_root_json_file(path)?;
 
     let config = root.tacacs_plus;
-    validation::validate_config(&config)?;
+    validation::validate_config_with_options(&config, options)?;
 
     Ok(config)
 }

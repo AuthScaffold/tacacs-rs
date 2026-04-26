@@ -5,19 +5,122 @@ use crate::generated::tacacs_plus::{
     TacacsPlusServer, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
 };
 
+// ---------------------------------------------------------------------------
+// Validation options and relaxations
+// ---------------------------------------------------------------------------
+
+/// An optional relaxation that loosens a specific YANG validation constraint.
+///
+/// Relaxations are opt-in; default (strict) validation never applies them.
+/// They are designed as a migration aid and should be removed once the
+/// underlying configuration is updated to comply with strict YANG constraints.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ValidationRelaxation {
+    /// Allow TLS and `shared-secret` to coexist on the same server.
+    ///
+    /// By default the YANG `security` choice is strict: either TLS
+    /// (`client-identity` / `server-authentication`) **or** obfuscation
+    /// (`shared-secret`) may be configured, but not both.
+    ///
+    /// This relaxation permits the combination as a temporary migration state
+    /// for server implementations that cannot yet cleanly remove
+    /// shared-secret handling after enabling TLS.
+    AllowTlsWithSharedSecret,
+}
+
+impl std::fmt::Display for ValidationRelaxation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AllowTlsWithSharedSecret => write!(f, "allow-tls-with-shared-secret"),
+        }
+    }
+}
+
+impl std::str::FromStr for ValidationRelaxation {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "allow-tls-with-shared-secret" => Ok(Self::AllowTlsWithSharedSecret),
+            other => anyhow::bail!(
+                "unknown validation relaxation '{other}'; valid values: allow-tls-with-shared-secret"
+            ),
+        }
+    }
+}
+
+/// Options that control YANG validation behaviour.
+///
+/// By default all options are empty, producing the same strict behaviour as
+/// the original `validate_config` call. Individual [`ValidationRelaxation`]
+/// values can be opted into via [`ValidationOptions::with_relaxation`].
+///
+/// # Example
+///
+/// ```rust
+/// use tacacsrs_config::validation::{ValidationOptions, ValidationRelaxation};
+///
+/// let opts = ValidationOptions::new()
+///     .with_relaxation(ValidationRelaxation::AllowTlsWithSharedSecret);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct ValidationOptions {
+    relaxations: HashSet<ValidationRelaxation>,
+}
+
+impl ValidationOptions {
+    /// Creates a new `ValidationOptions` with no relaxations (strict mode).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a [`ValidationRelaxation`] to this options set.
+    #[must_use]
+    pub fn with_relaxation(mut self, relaxation: ValidationRelaxation) -> Self {
+        self.relaxations.insert(relaxation);
+        self
+    }
+
+    /// Returns `true` if the given relaxation is active.
+    #[must_use]
+    pub fn allows(&self, relaxation: &ValidationRelaxation) -> bool {
+        self.relaxations.contains(relaxation)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config validation entry points
+// ---------------------------------------------------------------------------
+
 /// Validate a parsed TACACS+ configuration against YANG model constraints.
+///
+/// This uses strict (default) validation. To opt into relaxations, call
+/// [`validate_config_with_options`] instead.
 ///
 /// # Errors
 ///
 /// Returns an error describing the first constraint violation found.
 pub fn validate_config(config: &TacacsPlus) -> anyhow::Result<()> {
+    validate_config_with_options(config, &ValidationOptions::default())
+}
+
+/// Validate a parsed TACACS+ configuration with the supplied validation options.
+///
+/// # Errors
+///
+/// Returns an error describing the first constraint violation found.
+pub fn validate_config_with_options(
+    config: &TacacsPlus,
+    options: &ValidationOptions,
+) -> anyhow::Result<()> {
     if config.server.is_empty() {
         anyhow::bail!("server list must contain at least one entry");
     }
 
     let mut seen_endpoints = HashSet::new();
     for server in &config.server {
-        validate_server(server, &mut seen_endpoints)?;
+        validate_server(server, &mut seen_endpoints, options)?;
     }
 
     validate_unique_ids(
@@ -44,6 +147,7 @@ pub fn validate_config(config: &TacacsPlus) -> anyhow::Result<()> {
 fn validate_server(
     server: &crate::generated::tacacs_plus::TacacsPlusServer,
     seen_endpoints: &mut HashSet<(String, u16)>,
+    options: &ValidationOptions,
 ) -> anyhow::Result<()> {
     validate_choice(
         &server.name,
@@ -65,7 +169,7 @@ fn validate_server(
         anyhow::bail!("server '{}': sni-enabled requires domain-name to be set", server.name);
     }
 
-    validate_security_choice(server)?;
+    validate_security_choice(server, options)?;
     validate_client_identity(server)?;
     validate_server_authentication(server)?;
 
@@ -78,9 +182,18 @@ fn validate_server(
 
 fn validate_security_choice(
     server: &crate::generated::tacacs_plus::TacacsPlusServer,
+    options: &ValidationOptions,
 ) -> anyhow::Result<()> {
     let has_tls = server.client_identity.is_some() || server.server_authentication.is_some();
     let has_obfuscation = server.shared_secret.is_some();
+
+    // When AllowTlsWithSharedSecret is active, permit both TLS and shared-secret
+    // simultaneously.  We still require at least one security mode.
+    if has_tls && has_obfuscation && options.allows(&ValidationRelaxation::AllowTlsWithSharedSecret)
+    {
+        return Ok(());
+    }
+
     validate_choice(
         &server.name,
         "security",

@@ -3,7 +3,7 @@ use crate::{
     TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
     keystore,
 };
-use crate::validation;
+use crate::validation::{self, ValidationOptions};
 
 /// Builder for constructing a [`TacacsPlus`] root configuration in code.
 ///
@@ -63,7 +63,21 @@ impl TacacsPlusBuilder {
     ///
     /// Returns an error if any validation constraint is violated.
     pub fn build(self) -> anyhow::Result<TacacsPlus> {
-        validation::validate_config(&self.root)?;
+        self.build_with_options(&ValidationOptions::default())
+    }
+
+    /// Validates and returns the constructed [`TacacsPlus`] root using the
+    /// supplied validation options.
+    ///
+    /// Behaves identically to [`Self::build`] except that the supplied
+    /// [`ValidationOptions`] are applied during validation, allowing callers
+    /// to opt into specific relaxations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any validation constraint is violated (subject to `options`).
+    pub fn build_with_options(self, options: &ValidationOptions) -> anyhow::Result<TacacsPlus> {
+        validation::validate_config_with_options(&self.root, options)?;
         Ok(self.root)
     }
 }
@@ -111,11 +125,30 @@ impl TacacsPlusServerBuilder {
     }
 
     /// Selects obfuscation mode using the supplied shared secret.
+    ///
+    /// This clears any previously configured TLS identity fields. To add a
+    /// shared secret alongside an already-configured TLS identity (for
+    /// migration purposes), use [`Self::with_shared_secret_alongside_tls`]
+    /// instead.
     #[must_use]
     pub fn with_shared_secret(mut self, shared_secret: impl Into<String>) -> Self {
         self.server.shared_secret = Some(shared_secret.into());
         self.server.client_identity = None;
         self.server.server_authentication = None;
+        self
+    }
+
+    /// Sets the shared secret without affecting any TLS configuration fields.
+    ///
+    /// Use this when constructing a server that has both TLS and a shared
+    /// secret configured simultaneously (e.g. during a migration from legacy
+    /// TACACS+ obfuscation to TLS).  The resulting configuration will only
+    /// pass validation when
+    /// [`ValidationRelaxation::AllowTlsWithSharedSecret`][crate::ValidationRelaxation::AllowTlsWithSharedSecret]
+    /// is active.
+    #[must_use]
+    pub fn with_shared_secret_alongside_tls(mut self, shared_secret: impl Into<String>) -> Self {
+        self.server.shared_secret = Some(shared_secret.into());
         self
     }
 
