@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use tacacsrs_messages::packet::Packet;
 
-/// Minimal client-side session I/O required by TACACS+ accounting flow logic.
+/// Minimal client-side session I/O contract required by TACACS+ client flows.
 #[async_trait]
 pub trait ClientSessionFlowIoTrait {
     async fn is_complete(&self) -> bool;

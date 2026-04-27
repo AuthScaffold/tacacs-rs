@@ -1,8 +1,8 @@
 use async_trait::async_trait;
+use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::packet::Packet;
-use tacacsrs_networking::session::Session;
 
-use crate::accounting::ClientSessionFlowIoTrait;
+use crate::session::Session;
 
 #[async_trait]
 impl ClientSessionFlowIoTrait for Session {

@@ -12,6 +12,7 @@
 
 pub mod sender;
 pub mod session;
+mod session_flow_adapter;
 mod session_id;
 pub mod duplex_channel;
 pub mod session_manager;

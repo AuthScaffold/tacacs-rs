@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use log::info;
-use tacacsrs_flow_abstractions::accounting::ClientSessionFlowIoTrait;
+use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
 use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
 use tacacsrs_messages::header::Header;
