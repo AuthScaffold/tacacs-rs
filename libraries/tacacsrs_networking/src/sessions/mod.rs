@@ -4,4 +4,4 @@
 //! `tacacsrs-flows`). This module wires networking [`crate::session::Session`]
 //! into shared flow I/O traits from `tacacsrs-flow-abstractions`.
 
-pub mod accounting_session;
+mod accounting_session;
