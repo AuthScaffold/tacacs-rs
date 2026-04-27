@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use tacacsrs_messages::packet::Packet;
 use tacacsrs_networking::session::Session;
 
-use crate::accounting::ClientAccountingFlowIo;
+use crate::accounting::ClientSessionFlowIoTrait;
 
 #[async_trait]
-impl ClientAccountingFlowIo for Session {
+impl ClientSessionFlowIoTrait for Session {
     async fn is_complete(&self) -> bool {
         self.is_complete().await
     }

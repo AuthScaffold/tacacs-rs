@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use log::info;
-use tacacsrs_flow_abstractions::accounting::ClientAccountingFlowIo;
+use tacacsrs_flow_abstractions::accounting::ClientSessionFlowIoTrait;
 use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
 use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
 use tacacsrs_messages::header::Header;
@@ -9,9 +9,9 @@ use tacacsrs_messages::traits::TacacsBodyTrait;
 
 /// Fixed TACACS+ client accounting flow.
 ///
-/// Implement this on any type that can provide [`ClientAccountingFlowIo`].
+/// Implement this on any type that can provide [`ClientSessionFlowIoTrait`].
 #[async_trait]
-pub trait AccountingFlowTrait: ClientAccountingFlowIo {
+pub trait AccountingFlowTrait: ClientSessionFlowIoTrait {
     /// Sends an accounting request with default flags (`TAC_PLUS_UNENCRYPTED_FLAG`)
     async fn send_accounting_request(
         &self,
@@ -76,7 +76,7 @@ pub trait AccountingFlowTrait: ClientAccountingFlowIo {
     }
 }
 
-impl<T> AccountingFlowTrait for T where T: ClientAccountingFlowIo + ?Sized {}
+impl<T> AccountingFlowTrait for T where T: ClientSessionFlowIoTrait + ?Sized {}
 
 #[cfg(test)]
 mod tests {
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ClientAccountingFlowIo for TestIo {
+    impl ClientSessionFlowIoTrait for TestIo {
         async fn is_complete(&self) -> bool {
             *self.complete.lock().await
         }
