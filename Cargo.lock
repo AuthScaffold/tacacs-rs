@@ -1712,6 +1712,7 @@ dependencies = [
  "log",
  "tacacsrs-flow-abstractions",
  "tacacsrs-messages",
+ "tacacsrs-networking",
  "tokio",
 ]
 
