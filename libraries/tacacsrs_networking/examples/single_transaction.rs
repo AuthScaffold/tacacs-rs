@@ -1,13 +1,17 @@
 use std::sync::Arc;
 use std::vec;
 
-use tacacsrs_flows::accounting::AccountingFlowTrait;
+use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
-    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationType,
-    TacacsAuthenticationService,
+    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
+    TacacsAuthenticationType, TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
 };
+use tacacsrs_messages::header::Header;
+use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_messages::traits::TacacsBodyTrait;
 
+use tacacsrs_networking::session::Session;
 use tacacsrs_networking::TacacsConnection;
 use tacacsrs_networking::traits::SessionManagementTrait;
 
@@ -44,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
         ],
     };
 
-    let response = match session.send_accounting_request(accounting_request).await {
+    let response = match send_accounting_request(&session, accounting_request).await {
         Ok(response) => response,
         Err(e) => {
             println!("Failed to send accounting request: {e}");
@@ -56,8 +60,9 @@ async fn main() -> anyhow::Result<()> {
 
     let session = connection.clone().create_session().await?;
 
-    let response = match session
-        .send_accounting_request(AccountingRequest {
+    let response = match send_accounting_request(
+        &session,
+        AccountingRequest {
             flags: TacacsAccountingFlags::STOP,
             authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
             priv_lvl: 0,
@@ -71,8 +76,9 @@ async fn main() -> anyhow::Result<()> {
                 "task_id=123".to_string(),
                 "cmd=test".to_string(),
             ],
-        })
-        .await
+        },
+    )
+    .await
     {
         Ok(response) => response,
         Err(e) => {
@@ -84,6 +90,39 @@ async fn main() -> anyhow::Result<()> {
     println!("Received accounting response: {response:#?}");
 
     Ok(())
+}
+
+async fn send_accounting_request(
+    session: &Session,
+    request: AccountingRequest,
+) -> anyhow::Result<AccountingReply> {
+    let sequence_number = session.next_sequence_number().await;
+    let data = request.to_bytes();
+    let length = u32::try_from(data.len())
+        .map_err(|_| anyhow::Error::msg("Accounting request payload exceeds u32 length"))?;
+
+    let packet = Packet::new(
+        Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+            tacacs_type: TacacsType::TacPlusAccounting,
+            seq_no: sequence_number,
+            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            session_id: session.session_id(),
+            length,
+        },
+        data,
+    )?;
+
+    session.duplex_channel.sender.send(packet).await?;
+    let mut reader_lock = session.duplex_channel.receiver.write().await;
+    let response = reader_lock
+        .recv()
+        .await
+        .ok_or_else(|| anyhow::Error::msg("Failed to receive response"))?;
+    let reply = AccountingReply::from_bytes(response.body())?;
+    session.complete().await;
+    Ok(reply)
 }
 
 use log::{Record, Level, Metadata};

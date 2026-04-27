@@ -12,7 +12,7 @@ use tacacsrs_messages::traits::TacacsBodyTrait;
 /// Implement this on any type that can provide [`ClientAccountingFlowIo`].
 #[async_trait]
 pub trait AccountingFlowTrait: ClientAccountingFlowIo {
-    /// Sends an accounting request with default flags (TAC_PLUS_UNENCRYPTED_FLAG)
+    /// Sends an accounting request with default flags (`TAC_PLUS_UNENCRYPTED_FLAG`)
     async fn send_accounting_request(
         &self,
         request: AccountingRequest,
@@ -38,6 +38,8 @@ pub trait AccountingFlowTrait: ClientAccountingFlowIo {
 
         let sequence_number = self.next_sequence_number().await;
         let data = request.to_bytes();
+        let length = u32::try_from(data.len())
+            .map_err(|_| anyhow::Error::msg("Accounting request payload exceeds u32 length"))?;
         let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | custom_flags;
 
         let packet = Packet::new(
@@ -48,7 +50,7 @@ pub trait AccountingFlowTrait: ClientAccountingFlowIo {
                 seq_no: sequence_number,
                 flags,
                 session_id: self.session_id(),
-                length: data.len() as u32,
+                length,
             },
             data,
         )?;
@@ -160,6 +162,9 @@ mod tests {
             server_msg: "Test".to_owned(),
             data: String::new(),
         };
+        let reply_bytes = accounting_reply.to_bytes();
+        let reply_length = u32::try_from(reply_bytes.len())
+            .map_err(|_| anyhow::Error::msg("Accounting reply payload exceeds u32 length"))?;
 
         let reply_packet = Packet::new(
             Header {
@@ -169,9 +174,9 @@ mod tests {
                 seq_no: 2,
                 flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
                 session_id: 42,
-                length: accounting_reply.to_bytes().len() as u32,
+                length: reply_length,
             },
-            accounting_reply.to_bytes(),
+            reply_bytes,
         )?;
 
         let io = TestIo::new(42, VecDeque::from([reply_packet]));

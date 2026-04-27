@@ -1701,6 +1701,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "tacacsrs-messages",
+ "tacacsrs-networking",
 ]
 
 [[package]]
@@ -1741,8 +1742,6 @@ dependencies = [
  "rand",
  "rustls-pki-types",
  "tacacsrs-config",
- "tacacsrs-flow-abstractions",
- "tacacsrs-flows",
  "tacacsrs-messages",
  "test-log",
  "tokio",

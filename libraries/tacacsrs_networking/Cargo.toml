@@ -10,7 +10,6 @@ description = "TACACS+ transport layer with TCP, TLS, and PSK support"
 tacacsrs-config = { path = "../tacacsrs_config" }
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 tokio = { version = "1.52.1", features = ["full"] }
-tacacsrs-flow-abstractions = { path = "../tacacsrs_flow_abstractions" }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
 async-trait = "0.1.89"
 rand = "0.10.1"
@@ -31,7 +30,6 @@ console-subscriber = "0.5.0"
 test-log = "0.2.20"
 env_logger = "0.11.10"
 futures = "0.3"
-tacacsrs-flows = { path = "../tacacsrs_flows" }
 
 [lints]
 workspace = true
