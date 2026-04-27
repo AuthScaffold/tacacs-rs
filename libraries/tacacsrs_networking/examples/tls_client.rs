@@ -119,6 +119,11 @@ async fn send_accounting_request(
     session: &Session,
     request: AccountingRequest,
 ) -> anyhow::Result<AccountingReply> {
+    if session.is_complete().await {
+        return Err(anyhow::Error::msg(
+            "Cannot send accounting request on a completed session",
+        ));
+    }
     let sequence_number = session.next_sequence_number().await;
     let data = request.to_bytes();
     let length = u32::try_from(data.len())
