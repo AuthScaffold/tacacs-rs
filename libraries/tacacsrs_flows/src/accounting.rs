@@ -81,8 +81,8 @@ impl<T> AccountingFlowTrait for T where T: ClientSessionFlowIoTrait + ?Sized {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::collections::VecDeque;
+    use std::sync::Arc;
     use tacacsrs_messages::enumerations::{
         TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
         TacacsAuthenticationService, TacacsAuthenticationType,
