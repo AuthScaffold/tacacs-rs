@@ -28,7 +28,7 @@ jobs:
           cache-key: fuzz
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo install cargo-fuzz
 
       - name: Fuzz header parsing
         run: cargo +nightly fuzz run fuzz_header_parse -- -max_total_time=${{ inputs.fuzz-seconds }}

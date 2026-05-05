@@ -16,7 +16,7 @@ tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
 tacacsrs-agent = { path = "../../libraries/tacacsrs_agent" }
 tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
-tokio = { version = "1.52.1", features = ["full"] }
+tokio = { version = "1.52.2", features = ["full"] }
 
 [features]
 default = []
