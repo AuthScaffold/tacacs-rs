@@ -22,7 +22,7 @@ tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
 tacacsrs-messages = { path = "../../libraries/tacacsrs_messages" }
 tacacsrs-flows = { path = "../../libraries/tacacsrs_flows" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
-tokio = { version = "1.52.1", features = ["full"] }
+tokio = { version = "1.52.2", features = ["full"] }
 
 [features]
 default = []
