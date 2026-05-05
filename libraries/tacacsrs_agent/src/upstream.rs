@@ -30,6 +30,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
+use tacacsrs_flows::accounting::AccountingFlowTrait;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
@@ -41,7 +42,6 @@ use tacacsrs_agent_client::{
 use tacacsrs_networking::SingleConnectionState;
 use tacacsrs_networking::config_connect::{self, ConnectOptions};
 use tacacsrs_networking::dedicated_connection::DedicatedConnection;
-use tacacsrs_networking::sessions::accounting_session::AccountingSessionTrait;
 use tacacsrs_networking::traits::SessionManagementTrait;
 use tacacsrs_networking::connection::TacacsConnection;
 

@@ -994,15 +994,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nu-ansi-term"
-version = "0.50.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
-dependencies = [
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1642,6 +1633,7 @@ dependencies = [
  "log",
  "tacacsrs-agent-client",
  "tacacsrs-config",
+ "tacacsrs-flows",
  "tacacsrs-messages",
  "tacacsrs-networking",
  "tokio",
@@ -1694,6 +1686,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "tacacsrs-flow-abstractions"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "tacacsrs-messages",
+]
+
+[[package]]
+name = "tacacsrs-flows"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "log",
+ "tacacsrs-flow-abstractions",
+ "tacacsrs-messages",
+ "tacacsrs-networking",
+ "tokio",
+]
+
+[[package]]
 name = "tacacsrs-messages"
 version = "0.0.0-dev"
 dependencies = [
@@ -1719,8 +1733,8 @@ dependencies = [
  "rand",
  "rustls-pki-types",
  "tacacsrs-config",
+ "tacacsrs-flow-abstractions",
  "tacacsrs-messages",
- "test-log",
  "tokio",
  "tokio-openssl",
  "tokio-rustls",
@@ -1741,6 +1755,7 @@ dependencies = [
  "serde_json",
  "tacacsrs-agent-client",
  "tacacsrs-config",
+ "tacacsrs-flows",
  "tacacsrs-messages",
  "tacacsrs-networking",
  "tokio",
@@ -1757,38 +1772,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "test-log"
-version = "0.2.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f46bf474f0a4afebf92f076d54fd5e63423d9438b8c278a3d2ccb0f47f7cdb3"
-dependencies = [
- "env_logger",
- "test-log-macros",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "test-log-core"
-version = "0.2.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37d4d41320b48bc4a211a9021678fcc0c99569b594ea31c93735b8e517102b4c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "test-log-macros"
-version = "0.2.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9beb9249a81e430dffd42400a49019bcf548444f1968ff23080a625de0d4d320"
-dependencies = [
- "syn",
- "test-log-core",
 ]
 
 [[package]]
@@ -2036,31 +2019,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-log"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
-dependencies = [
- "log",
- "once_cell",
- "tracing-core",
-]
-
-[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
  "matchers",
- "nu-ansi-term",
  "once_cell",
  "regex-automata",
  "sharded-slab",
  "thread_local",
  "tracing",
  "tracing-core",
- "tracing-log",
 ]
 
 [[package]]

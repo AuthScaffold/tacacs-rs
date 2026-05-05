@@ -11,6 +11,7 @@ tacacsrs-config = { path = "../tacacsrs_config" }
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 tokio = { version = "1.52.1", features = ["full"] }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
+tacacsrs-flow-abstractions = { path = "../tacacsrs_flow_abstractions" }
 async-trait = "0.1.89"
 rand = "0.10.1"
 log = "0.4.29"
@@ -27,7 +28,6 @@ psk = ["dep:openssl", "dep:tokio-openssl"]
 
 [dev-dependencies]
 console-subscriber = "0.5.0"
-test-log = "0.2.20"
 env_logger = "0.11.10"
 futures = "0.3"
 

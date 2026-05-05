@@ -1,0 +1,15 @@
+[package]
+name = "tacacsrs-flow-abstractions"
+version = "0.0.0-dev"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared I/O abstraction traits for TACACS+ flow crates"
+
+[dependencies]
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+async-trait = "0.1.89"
+tacacsrs-messages = { path = "../tacacsrs_messages" }
+
+[lints]
+workspace = true
