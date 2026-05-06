@@ -235,11 +235,13 @@ jobs:
       binary-artifact-name: ${{ inputs.binary-name }}-linux-gnu-x86_64
       versions: ${{ inputs.versions }}
 
-  checksums:
-    name: Generate Checksums
-    needs: [build-artifacts, build-deb]
+  package-release:
+    name: Package Release
+    needs: [build-artifacts, sbom, build-deb]
     if: ${{ !cancelled() && !failure() }}
-    uses: ./.github/workflows/reusable-checksums.yml
+    uses: ./.github/workflows/reusable-package-release.yml
+    with:
+      binary-name: ${{ inputs.binary-name }}
 
   # ── Final gate: all tiers must pass ─────────────────────
   ci-success:
@@ -253,7 +255,7 @@ jobs:
       - build-artifacts
       - sbom
       - build-deb
-      - checksums
+      - package-release
     steps:
       - name: Check all jobs passed
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

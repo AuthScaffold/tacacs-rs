@@ -1,0 +1,109 @@
+name: Reusable Package Release
+
+on:
+  workflow_call:
+    inputs:
+      binary-name:
+        description: 'Name of the binary being packaged'
+        required: false
+        default: 'tacon'
+        type: string
+
+jobs:
+  package-release:
+    name: Package Release Assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # ── Download raw build artifacts ──
+      - name: Download Windows artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.binary-name }}-windows-msvc-x86_64
+          path: raw/windows
+
+      - name: Download MUSL artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.binary-name }}-linux-musl-x86_64
+          path: raw/musl
+
+      - name: Download SBOM artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: raw/sbom
+
+      - name: Download Debian package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.binary-name }}.deb
+          path: raw/deb
+
+      - name: Download Debian debug symbols
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.binary-name }}-dbgsym.ddeb
+          path: raw/deb
+
+      # ── Stage and create archives ──
+      - name: Stage Windows archive
+        run: |
+          DIR="${{ inputs.binary-name }}-windows-msvc-x86_64"
+          mkdir -p "staging/${DIR}"
+          cp raw/windows/* "staging/${DIR}/"
+          cp "raw/sbom/${{ inputs.binary-name }}.cdx.json" "staging/${DIR}/"
+          echo "Contents of ${DIR}:"
+          ls -lh "staging/${DIR}/"
+
+      - name: Stage MUSL archive
+        run: |
+          DIR="${{ inputs.binary-name }}-linux-musl-x86_64"
+          mkdir -p "staging/${DIR}"
+          cp "raw/musl/${{ inputs.binary-name }}-linux-musl-x86_64" "staging/${DIR}/${{ inputs.binary-name }}"
+          chmod +x "staging/${DIR}/${{ inputs.binary-name }}"
+          cp "raw/sbom/${{ inputs.binary-name }}.cdx.json" "staging/${DIR}/"
+          echo "Contents of ${DIR}:"
+          ls -lh "staging/${DIR}/"
+
+      - name: Create release archives
+        run: |
+          mkdir -p release
+
+          # Windows zip
+          (cd staging && zip -r "../release/${{ inputs.binary-name }}-windows-msvc-x86_64.zip" \
+            "${{ inputs.binary-name }}-windows-msvc-x86_64/")
+
+          # MUSL tar.gz
+          tar -czf "release/${{ inputs.binary-name }}-linux-musl-x86_64.tar.gz" \
+            -C staging "${{ inputs.binary-name }}-linux-musl-x86_64/"
+
+      - name: Copy Debian packages
+        run: |
+          cp raw/deb/*.deb release/ 2>/dev/null || true
+          cp raw/deb/*.ddeb release/ 2>/dev/null || true
+
+      # ── Generate checksums ──
+      - name: Generate checksums
+        run: |
+          cd release
+
+          # SHA256 checksums of all release assets (excluding the checksum file itself)
+          find . -maxdepth 1 -type f ! -name 'checksums-sha256.txt' -exec sha256sum {} \; \
+            | sed 's|\./||' | sort > checksums-sha256.txt
+
+          echo "=== Release assets ==="
+          ls -lh
+          echo ""
+          echo "=== Checksums ==="
+          cat checksums-sha256.txt
+
+      # ── Upload final release bundle ──
+      - name: Upload release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: release/*
+          retention-days: 7

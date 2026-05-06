@@ -10,7 +10,7 @@ on:
           [
             {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "features": ""},
             {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-musl", "asset_name": "tacon-linux-musl-x86_64", "features": ""},
-            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64.zip", "features": "psk"}
+            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64", "features": "psk"}
           ]
         type: string
       build-release:
