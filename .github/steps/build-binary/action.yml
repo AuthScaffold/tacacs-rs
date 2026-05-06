@@ -51,35 +51,33 @@ runs:
       shell: bash
       run: |
         mkdir -p artifacts
-        mkdir -p package
-        
+
         # Determine the expected binary extension
         if [[ "${{ runner.os }}" == "Windows" ]]; then
           BINARY_EXT=".exe"
         else
           BINARY_EXT=""
         fi
-        
+
         # The artifact-dir output should contain the binary
         BINARY_NAME="${{ inputs.binary-name }}${BINARY_EXT}"
         BINARY_PATH="build-output/${BINARY_NAME}"
-        
+
         if [ ! -f "$BINARY_PATH" ]; then
           echo "Error: Expected binary not found at $BINARY_PATH"
           echo "Contents of build-output:"
           ls -la build-output/
           exit 1
         fi
-        
+
         echo "Found binary: $BINARY_PATH"
-        
-        if [[ "${{ runner.os }}" == "Windows" && "${{ inputs.asset-name }}" =~ \.zip$ ]]; then
-          cp "$BINARY_PATH" "package/${BINARY_NAME}"
+
+        # Copy binary to artifacts directory (preserving original name on Windows)
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          cp "$BINARY_PATH" "artifacts/${BINARY_NAME}"
         else
-          # Copy and rename to asset name
           cp "$BINARY_PATH" "artifacts/${{ inputs.asset-name }}"
-          # Set execute permission (no-op on Windows, but that's fine)
-          chmod +x "artifacts/${{ inputs.asset-name }}" || true
+          chmod +x "artifacts/${{ inputs.asset-name }}"
         fi
 
     - name: Strip binary (Linux only)
@@ -103,28 +101,20 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        # Debug symbols may be in build-output or target directory
-        # Try build-output first (if --artifact-dir copied them)
         $pdbFileBuildOutput = "build-output/${{ inputs.binary-name }}.pdb"
         $pdbFileTarget = "target/${{ inputs.target }}/release/${{ inputs.binary-name }}.pdb"
-        $bundleAsset = "${{ inputs.asset-name }}"
-        $pdbDestination = if ($bundleAsset.EndsWith(".zip")) {
-          "package/${{ inputs.binary-name }}.pdb"
-        } else {
-          "artifacts/${{ inputs.asset-name }}.pdb"
-        }
-        
+        $pdbDestination = "artifacts/${{ inputs.binary-name }}.pdb"
+
         if (Test-Path $pdbFileBuildOutput) {
           Copy-Item $pdbFileBuildOutput $pdbDestination
         } elseif (Test-Path $pdbFileTarget) {
           Copy-Item $pdbFileTarget $pdbDestination
         }
 
-    - name: Bundle Windows release package
-      if: runner.os == 'Windows' && endsWith(inputs.asset-name, '.zip')
+    - name: Collect OpenSSL runtime DLLs (Windows with psk feature)
+      if: runner.os == 'Windows' && contains(inputs.features, 'psk')
       shell: pwsh
       run: |
-        $packageDir = "package"
         $opensslBinDir = Join-Path $env:OPENSSL_DIR "bin"
 
         if (-not (Test-Path $opensslBinDir)) {
@@ -143,17 +133,9 @@ runs:
         }
 
         $dlls = $libcryptoDlls + $libsslDlls
-
         foreach ($dll in $dlls) {
-          Copy-Item $dll.FullName (Join-Path $packageDir $dll.Name)
+          Copy-Item $dll.FullName (Join-Path "artifacts" $dll.Name)
         }
-
-        $destination = "artifacts/${{ inputs.asset-name }}"
-        if (Test-Path $destination) {
-          Remove-Item $destination
-        }
-
-        Compress-Archive -Path "$packageDir/*" -DestinationPath $destination
 
     - name: Upload artifact
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
