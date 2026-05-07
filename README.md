@@ -38,19 +38,9 @@ tacacsrs-agent ────┬──► tacacsrs-agent-client
 - [Debian Packaging](DEBIAN_PACKAGING.md) — Building `.deb` packages
 - [Development Guide](DEVELOPMENT.md) — Building, testing, CI, project structure
 
-## Minimum Supported Rust Version (MSRV)
+## Rust Toolchain
 
-This project's Minimum Supported Rust Version (MSRV) is **Rust 1.85.0**.
-
-The MSRV is defined as the minimum Rust toolchain required to build the project and its resolved runtime dependency graph. This floor reflects the requirements of core runtime dependencies, including cryptographic and serialization libraries, and is intentionally aligned with the modern Rust ecosystem to avoid maintaining fragile dependency pinning or forks.
-
-The MSRV may be raised in the future as required by upstream dependencies or security considerations. Such changes will be documented explicitly.
-
-<details>
-<summary>If auditors ask "why not lower?"</summary>
-
-Lower Rust versions are not supported because upstream runtime dependencies have adopted newer language editions and MSRV requirements; supporting older toolchains would require extensive and fragile dependency pinning with no security or operational benefit.
-</details>
+This project targets the **current stable Rust release**. The `rust-version` field in `Cargo.toml` reflects the minimum toolchain required by the resolved dependency graph and is updated without ceremony when dependencies require it. Since no crates are published to crates.io, there is no MSRV stability guarantee.
 
 ## Quick Start
 

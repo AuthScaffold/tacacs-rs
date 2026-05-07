@@ -13,16 +13,6 @@ on:
         required: false
         default: '["stable"]'
         type: string
-      include-msrv:
-        description: 'Include MSRV test on Linux'
-        required: false
-        default: false
-        type: boolean
-      msrv:
-        description: 'Minimum Supported Rust Version'
-        required: false
-        default: '1.75'
-        type: string
       release:
         description: 'Run tests in release mode instead of debug'
         required: false
@@ -38,7 +28,7 @@ jobs:
       matrix:
         os: ${{ fromJson(inputs.os-matrix) }}
         rust: ${{ fromJson(inputs.rust-matrix) }}
-        include: ${{ inputs.include-msrv && fromJson(format('[{{"os":"ubuntu-latest","rust":"{0}"}}]', inputs.msrv)) || fromJson('[]') }}
+
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 

@@ -272,7 +272,7 @@ All jobs must pass before merging.
 
 After merging to `main`, additional checks run:
 
-- Extended test matrix (stable, beta, MSRV)
+- Extended test matrix (stable, beta)
 - Nightly compatibility check
 - Documentation link verification
 

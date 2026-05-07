@@ -38,16 +38,6 @@ on:
         required: false
         default: '["stable"]'
         type: string
-      include-msrv:
-        description: 'Include MSRV test on Linux'
-        required: false
-        default: true
-        type: boolean
-      msrv:
-        description: 'Minimum Supported Rust Version'
-        required: false
-        default: '1.85'
-        type: string
       proto-compat-ref:
         description: 'Git ref for protobuf backward compatibility check'
         required: false
@@ -123,8 +113,6 @@ jobs:
     uses: ./.github/workflows/reusable-test.yml
     with:
       rust-matrix: ${{ inputs.rust-test-matrix }}
-      include-msrv: ${{ inputs.include-msrv }}
-      msrv: ${{ inputs.msrv }}
       release: ${{ inputs.build-release }}
 
   coverage:
