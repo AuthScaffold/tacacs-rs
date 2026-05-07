@@ -40,7 +40,7 @@ jobs:
         if: steps.should-run.outputs.run == 'true'
         uses: ./.github/steps/setup-rust
         with:
-          cache-key: audit
+          cache-key: stable
 
       - name: Generate Cargo.lock
         if: steps.should-run.outputs.run == 'true'

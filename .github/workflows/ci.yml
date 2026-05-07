@@ -33,7 +33,7 @@ jobs:
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
         with:
-          cache-key: compute-versions
+          cache-key: stable
 
       - name: Compute versions
         id: compute

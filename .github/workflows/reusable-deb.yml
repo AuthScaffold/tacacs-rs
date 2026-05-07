@@ -57,7 +57,7 @@ jobs:
         uses: ./.github/steps/setup-rust
         with:
           targets: x86_64-unknown-linux-gnu
-          cache-key: debian-${{ inputs.package-name }}
+          cache-key: stable
 
       - name: Build release binary (from scratch)
         if: inputs.binary-artifact-name == ''

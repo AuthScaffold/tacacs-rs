@@ -28,7 +28,7 @@ jobs:
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
         with:
-          cache-key: docs-${{ matrix.os }}
+          cache-key: stable
 
       - name: Build documentation
         env:

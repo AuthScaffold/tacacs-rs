@@ -26,7 +26,7 @@ jobs:
         with:
           toolchain: nightly
           components: miri
-          cache-key: miri
+          cache-key: nightly
 
       - name: Run Miri
         run: cargo +nightly miri test --workspace -- ${{ inputs.skip-patterns }}

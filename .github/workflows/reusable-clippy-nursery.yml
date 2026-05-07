@@ -20,7 +20,7 @@ jobs:
         uses: ./.github/steps/setup-rust
         with:
           components: clippy
-          cache-key: clippy-nursery
+          cache-key: stable
 
       - name: Clippy nursery lints
         run: cargo clippy --workspace --all-targets --all-features -- -W clippy::nursery

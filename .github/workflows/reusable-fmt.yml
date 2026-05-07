@@ -30,7 +30,7 @@ jobs:
         with:
           toolchain: ${{ inputs.toolchain }}
           components: rustfmt
-          cache-key: fmt-${{ matrix.os }}
+          cache-key: ${{ inputs.toolchain }}
 
       - name: Check formatting
         run: cargo +${{ inputs.toolchain }} fmt --all -- --check

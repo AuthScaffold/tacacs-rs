@@ -35,7 +35,7 @@ jobs:
         with:
           toolchain: ${{ inputs.toolchain }}
           components: clippy
-          cache-key: clippy-${{ matrix.os }}
+          cache-key: ${{ inputs.toolchain }}
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features ${{ inputs.deny-warnings && '-- -D warnings' || '' }}

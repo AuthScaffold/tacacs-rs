@@ -56,7 +56,7 @@ jobs:
         uses: ./.github/steps/setup-rust
         with:
           targets: ${{ matrix.config.target }}
-          cache-key: ${{ matrix.config.target }}
+          cache-key: build-${{ matrix.config.target }}
           install-musl-tools: ${{ contains(matrix.config.target, 'musl') }}
 
       - name: Build (simple)

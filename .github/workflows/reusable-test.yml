@@ -36,7 +36,7 @@ jobs:
         uses: ./.github/steps/setup-rust
         with:
           toolchain: ${{ matrix.rust }}
-          cache-key: ${{ matrix.os }}-${{ matrix.rust }}
+          cache-key: ${{ matrix.rust }}
 
       - name: Run tests
         run: cargo test --workspace --all-features ${{ inputs.release && '--release' || '' }}

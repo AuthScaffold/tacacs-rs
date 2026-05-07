@@ -25,7 +25,7 @@ jobs:
         uses: ./.github/steps/setup-rust
         with:
           toolchain: nightly
-          cache-key: fuzz
+          cache-key: nightly
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz

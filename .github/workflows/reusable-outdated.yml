@@ -16,7 +16,7 @@ jobs:
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
         with:
-          cache-key: outdated
+          cache-key: stable
 
       - name: Install cargo-outdated
         run: cargo install cargo-outdated --locked

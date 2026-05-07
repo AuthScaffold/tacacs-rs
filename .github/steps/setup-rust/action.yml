@@ -15,7 +15,7 @@ inputs:
     required: false
     default: ''
   cache-key:
-    description: 'Additional cache key suffix for Swatinem/rust-cache'
+    description: 'Shared cache key for Swatinem/rust-cache (jobs with the same key share one cache slot)'
     required: false
     default: ''
   install-musl-tools:
@@ -67,4 +67,4 @@ runs:
     - name: Setup Rust cache
       uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
       with:
-        key: ${{ inputs.cache-key }}
+        shared-key: ${{ inputs.cache-key }}
