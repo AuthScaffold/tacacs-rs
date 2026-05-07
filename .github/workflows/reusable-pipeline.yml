@@ -69,23 +69,49 @@ permissions:
   packages: read
 
 jobs:
+  # ── Tier 0: Warm the Rust compilation cache ──────────────
+  warm-cache:
+    name: Warm Cache (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          cache-key: stable
+
+      - name: Build workspace (debug)
+        run: cargo build --workspace --all-features
+
+      - name: Build workspace (release)
+        run: cargo build --workspace --all-features --release
+
   # ── Tier 1: Cheapest, most likely to fail ────────────────
   fmt:
     name: Rustfmt
     if: ${{ inputs.include-fmt }}
+    needs: [warm-cache]
     uses: ./.github/workflows/reusable-fmt.yml
 
   clippy:
     name: Clippy
+    needs: [warm-cache]
     uses: ./.github/workflows/reusable-clippy.yml
 
   docs:
     name: Documentation
+    needs: [warm-cache]
     uses: ./.github/workflows/reusable-docs.yml
 
   proto-compat:
     name: Protobuf Compatibility
     if: ${{ inputs.include-proto-compat }}
+    needs: [warm-cache]
     uses: ./.github/workflows/reusable-proto-compat.yml
     with:
       against-ref: ${{ inputs.proto-compat-ref }}
