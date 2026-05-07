@@ -21,10 +21,30 @@ runs:
     - name: Generate text summary
       shell: bash
       run: |
+        JSON=$(cargo llvm-cov report --json 2>/dev/null)
+
+        # Extract totals
+        TOTAL_LINES=$(echo "$JSON" | jq -r '.data[0].totals.lines.percent | . * 100 | round | . / 100')
+        TOTAL_FUNCTIONS=$(echo "$JSON" | jq -r '.data[0].totals.functions.percent | . * 100 | round | . / 100')
+        TOTAL_REGIONS=$(echo "$JSON" | jq -r '.data[0].totals.regions.percent | . * 100 | round | . / 100')
+        TOTAL_LINES_COVERED=$(echo "$JSON" | jq -r '.data[0].totals.lines.covered')
+        TOTAL_LINES_COUNT=$(echo "$JSON" | jq -r '.data[0].totals.lines.count')
+
         echo '## Code Coverage' >> "$GITHUB_STEP_SUMMARY"
-        echo '```' >> "$GITHUB_STEP_SUMMARY"
-        cargo llvm-cov report --lcov --summary-only 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
-        echo '```' >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "**Total: ${TOTAL_LINES}% lines** (${TOTAL_LINES_COVERED}/${TOTAL_LINES_COUNT}) | ${TOTAL_FUNCTIONS}% functions | ${TOTAL_REGIONS}% regions" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo '| File | Lines | Line % | Functions | Fn % | Regions | Region % |' >> "$GITHUB_STEP_SUMMARY"
+        echo '|------|------:|-------:|----------:|-----:|--------:|---------:|' >> "$GITHUB_STEP_SUMMARY"
+        echo "$JSON" | jq -r '
+          .data[0].files[]
+          | select(.summary.lines.count > 0)
+          | "\(.filename | split("/") | .[-3:] | join("/")) | \(.summary.lines.covered)/\(.summary.lines.count) | \(.summary.lines.percent | . * 100 | round | . / 100)% | \(.summary.functions.covered)/\(.summary.functions.count) | \(.summary.functions.percent | . * 100 | round | . / 100)% | \(.summary.regions.covered)/\(.summary.regions.count) | \(.summary.regions.percent | . * 100 | round | . / 100)%"
+        ' | sort | while IFS= read -r line; do
+          echo "| ${line} |" >> "$GITHUB_STEP_SUMMARY"
+        done
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "| **TOTAL** | **${TOTAL_LINES_COVERED}/${TOTAL_LINES_COUNT}** | **${TOTAL_LINES}%** | | **${TOTAL_FUNCTIONS}%** | | **${TOTAL_REGIONS}%** |" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Generate HTML report
       shell: bash
