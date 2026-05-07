@@ -48,6 +48,39 @@ jobs:
           echo "Collected SBOM files:"
           ls -lh sbom-output/
 
+      - name: Sanitize local filesystem paths
+        run: |
+          # cargo-cyclonedx embeds the CI runner's absolute workspace path in bom-ref
+          # and purl fields for workspace path dependencies. Use $GITHUB_WORKSPACE to
+          # derive the prefix rather than hardcoding the runner's directory layout.
+          WORKSPACE_PATH="${GITHUB_WORKSPACE}"
+          REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
+
+          # ── JSON files: use jq for structural safety ──
+          for f in sbom-output/*.cdx.json; do
+            [ -f "$f" ] || continue
+            jq --arg ws "${WORKSPACE_PATH}/" \
+               --arg repo "$REPO_URL" \
+               '
+              walk(
+                if type == "string" then
+                  # Replace absolute workspace path with neutral /workspace/
+                  gsub($ws; "/workspace/") |
+                  # Replace relative file:// download URLs in purl with repo URL
+                  gsub("download_url=file://[^\"&]*"; "download_url=\($repo)")
+                else .
+                end
+              )
+              ' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+          done
+
+          # ── XML files: sed (xmlstarlet not guaranteed on runners) ──
+          for f in sbom-output/*.cdx.xml; do
+            [ -f "$f" ] || continue
+            sed -i "s|${WORKSPACE_PATH}/|/workspace/|g" "$f"
+            sed -i -E "s|download_url=file://[^\"&]*|download_url=${REPO_URL}|g" "$f"
+          done
+
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

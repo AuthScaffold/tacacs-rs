@@ -85,13 +85,12 @@ jobs:
         uses: ./.github/steps/setup-rust
         with:
           cache-key: stable
+          save-if: 'true'
 
       - name: Build workspace (debug)
-        if: steps.setup.outputs.cache-hit != 'true'
         run: cargo build --workspace --all-features
 
       - name: Build workspace (release)
-        if: steps.setup.outputs.cache-hit != 'true'
         run: cargo build --workspace --all-features --release
 
   # ── Tier 1: Cheapest, most likely to fail ────────────────
