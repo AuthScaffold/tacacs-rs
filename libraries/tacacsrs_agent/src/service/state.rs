@@ -700,6 +700,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
     async fn test_server_selection_wraps_to_later_server() {
         let first = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),
@@ -738,6 +739,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
     async fn test_warm_connections_stops_after_first_responsive_server() {
         let first = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),
@@ -783,6 +785,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
     async fn test_concurrent_failover_coalesces_connection_attempts() {
         let first = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),
@@ -828,6 +831,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
     async fn test_non_single_connection_is_reconnected_for_next_request() {
         let connector = Arc::new(SingleSessionConnector {
             address: "server-a:49".to_owned(),
@@ -857,6 +861,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
     async fn test_drain_returns_immediately_with_no_active_clients() {
         let release = Arc::new(Notify::new());
         let connector = Arc::new(BlockingConnector {
@@ -876,6 +881,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
     async fn test_drain_waits_for_in_flight_request_then_completes() {
         let release = Arc::new(Notify::new());
         let connector = Arc::new(BlockingConnector {
@@ -923,6 +929,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
     async fn test_drain_completes_when_guard_drops_between_check_and_await() {
         // Regression test for the lost-wakeup race: the guard drops (and
         // notifies) in the window between the load-check and the notified().await
@@ -972,6 +979,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
     async fn test_default_dedicated_connections_handle_concurrent_requests() {
         let connector = Arc::new(ExclusiveSessionConnector {
             address: "server:49".to_owned(),
@@ -1007,6 +1015,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
     async fn test_dedicated_exchange_upgrades_to_shared_connection() {
         let connection = Arc::new(FakeConnection {
             address: "server:49".to_owned(),

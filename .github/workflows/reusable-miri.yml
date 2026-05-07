@@ -3,11 +3,6 @@ name: Reusable Miri
 on:
   workflow_call:
     inputs:
-      skip-patterns:
-        description: 'Test name patterns to skip (Miri cannot run I/O-heavy tests)'
-        required: false
-        default: '--skip service --skip coordinator'
-        type: string
       continue-on-error:
         description: 'Whether to allow this check to fail without failing the workflow'
         required: false
@@ -29,7 +24,7 @@ jobs:
           cache-key: nightly
 
       - name: Run Miri
-        run: cargo +nightly miri test --workspace -- ${{ inputs.skip-patterns }}
+        run: cargo +nightly miri test --workspace --all-features
         continue-on-error: ${{ inputs.continue-on-error }}
         env:
           MIRIFLAGS: -Zmiri-disable-isolation

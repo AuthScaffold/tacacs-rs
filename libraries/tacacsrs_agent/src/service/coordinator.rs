@@ -495,6 +495,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // real Unix socket + gRPC I/O
     async fn test_unix_socket_failover_and_preferred_recovery() {
         let primary = Arc::new(FakeConnection {
             address: "primary:49".to_owned(),
@@ -555,6 +556,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // real Unix socket + filesystem I/O
     async fn test_existing_socket_path_is_not_unlinked() {
         let primary = Arc::new(FakeConnection {
             address: "primary:49".to_owned(),
@@ -586,6 +588,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // real Unix socket + filesystem I/O
     async fn test_stale_socket_path_is_replaced() {
         let primary = Arc::new(FakeConnection {
             address: "primary:49".to_owned(),
