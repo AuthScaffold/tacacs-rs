@@ -272,8 +272,7 @@ All jobs must pass before merging.
 
 After merging to `main`, additional checks run:
 
-- Extended test matrix (stable, beta, MSRV)
-- Nightly compatibility check
+- Test matrix (stable)
 - Documentation link verification
 
 The CI workflow also generates the same artifacts as the release workflow:

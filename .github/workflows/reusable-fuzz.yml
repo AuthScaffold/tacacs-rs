@@ -25,10 +25,12 @@ jobs:
         uses: ./.github/steps/setup-rust
         with:
           toolchain: nightly
-          cache-key: fuzz
+          cache-key: nightly
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
+        uses: taiki-e/install-action@eea29cff9a2b68892c0845ae3e4f45fc47ee9354 # v2.75.13
+        with:
+          tool: cargo-fuzz
 
       - name: Fuzz header parsing
         run: cargo +nightly fuzz run fuzz_header_parse -- -max_total_time=${{ inputs.fuzz-seconds }}

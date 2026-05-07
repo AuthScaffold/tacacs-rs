@@ -3,9 +3,9 @@ description: Install Rust with llvm-tools and cargo-llvm-cov for code coverage
 
 inputs:
   cache-key:
-    description: 'Additional cache key suffix'
+    description: 'Shared cache key for Swatinem/rust-cache'
     required: false
-    default: ''
+    default: 'stable'
 
 runs:
   using: composite
@@ -22,4 +22,4 @@ runs:
     - name: Setup Rust cache
       uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
       with:
-        key: ${{ inputs.cache-key }}
+        shared-key: ${{ inputs.cache-key }}

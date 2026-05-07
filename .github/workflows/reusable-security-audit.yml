@@ -13,8 +13,6 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
-    permissions:
-      checks: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -40,16 +38,21 @@ jobs:
         if: steps.should-run.outputs.run == 'true'
         uses: ./.github/steps/setup-rust
         with:
-          cache-key: audit
+          cache-key: stable
+
+      - name: Install cargo-audit
+        if: steps.should-run.outputs.run == 'true'
+        uses: taiki-e/install-action@eea29cff9a2b68892c0845ae3e4f45fc47ee9354 # v2.75.13
+        with:
+          tool: cargo-audit
 
       - name: Generate Cargo.lock
         if: steps.should-run.outputs.run == 'true'
         run: cargo generate-lockfile
 
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+      - name: Run security audit
         if: steps.should-run.outputs.run == 'true'
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo audit
 
       - name: Skip notice
         if: steps.should-run.outputs.run != 'true'

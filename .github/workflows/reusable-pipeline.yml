@@ -8,11 +8,6 @@ on:
         required: false
         default: true
         type: boolean
-      include-nightly-clippy:
-        description: 'Include a separate nightly clippy job'
-        required: false
-        default: true
-        type: boolean
       include-proto-compat:
         description: 'Include protobuf backward compatibility check'
         required: false
@@ -37,16 +32,6 @@ on:
         description: 'JSON array of Rust toolchains for test job'
         required: false
         default: '["stable"]'
-        type: string
-      include-msrv:
-        description: 'Include MSRV test on Linux'
-        required: false
-        default: true
-        type: boolean
-      msrv:
-        description: 'Minimum Supported Rust Version'
-        required: false
-        default: '1.85'
         type: string
       proto-compat-ref:
         description: 'Git ref for protobuf backward compatibility check'
@@ -84,23 +69,52 @@ permissions:
   packages: read
 
 jobs:
+  # ── Tier 0: Warm the Rust compilation cache ──────────────
+  warm-cache:
+    name: Warm Cache (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Rust
+        id: setup
+        uses: ./.github/steps/setup-rust
+        with:
+          cache-key: stable
+
+      - name: Build workspace (debug)
+        if: steps.setup.outputs.cache-hit != 'true'
+        run: cargo build --workspace --all-features
+
+      - name: Build workspace (release)
+        if: steps.setup.outputs.cache-hit != 'true'
+        run: cargo build --workspace --all-features --release
+
   # ── Tier 1: Cheapest, most likely to fail ────────────────
   fmt:
     name: Rustfmt
     if: ${{ inputs.include-fmt }}
+    needs: [warm-cache]
     uses: ./.github/workflows/reusable-fmt.yml
 
   clippy:
     name: Clippy
+    needs: [warm-cache]
     uses: ./.github/workflows/reusable-clippy.yml
 
   docs:
     name: Documentation
+    needs: [warm-cache]
     uses: ./.github/workflows/reusable-docs.yml
 
   proto-compat:
     name: Protobuf Compatibility
     if: ${{ inputs.include-proto-compat }}
+    needs: [warm-cache]
     uses: ./.github/workflows/reusable-proto-compat.yml
     with:
       against-ref: ${{ inputs.proto-compat-ref }}
@@ -123,8 +137,6 @@ jobs:
     uses: ./.github/workflows/reusable-test.yml
     with:
       rust-matrix: ${{ inputs.rust-test-matrix }}
-      include-msrv: ${{ inputs.include-msrv }}
-      msrv: ${{ inputs.msrv }}
       release: ${{ inputs.build-release }}
 
   coverage:
@@ -174,14 +186,6 @@ jobs:
     needs: [tier-2-gate]
     uses: ./.github/workflows/reusable-clippy-nursery.yml
 
-  nightly-clippy:
-    name: Nightly Rust Check
-    if: ${{ inputs.include-nightly-clippy && !cancelled() && !failure() }}
-    needs: [tier-2-gate]
-    uses: ./.github/workflows/reusable-clippy.yml
-    with:
-      toolchain: nightly
-
   miri:
     name: Miri
     if: ${{ inputs.include-miri && !cancelled() && !failure() }}
@@ -197,7 +201,7 @@ jobs:
   tier-3-gate:
     name: "Gate: Tier 3"
     runs-on: ubuntu-latest
-    needs: [clippy-nursery, nightly-clippy, miri, fuzz]
+    needs: [clippy-nursery, miri, fuzz]
     if: always()
     steps:
       - name: Check tier 3

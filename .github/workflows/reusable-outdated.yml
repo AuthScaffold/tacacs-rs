@@ -16,10 +16,12 @@ jobs:
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
         with:
-          cache-key: outdated
+          cache-key: stable
 
       - name: Install cargo-outdated
-        run: cargo install cargo-outdated --locked
+        uses: taiki-e/install-action@eea29cff9a2b68892c0845ae3e4f45fc47ee9354 # v2.75.13
+        with:
+          tool: cargo-outdated
 
       - name: Check for outdated dependencies
         run: cargo outdated --workspace --exit-code 1

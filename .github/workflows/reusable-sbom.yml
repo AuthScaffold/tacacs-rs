@@ -26,7 +26,7 @@ jobs:
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
         with:
-          cache-key: sbom
+          cache-key: stable
 
       - name: Generate SBOM (JSON)
         uses: ./.github/steps/generate-sbom

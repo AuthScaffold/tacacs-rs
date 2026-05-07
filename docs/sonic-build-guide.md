@@ -2,13 +2,13 @@
 
 SONiC (Software for Open Networking in the Cloud) runs on Linux and requires statically-linked binaries for easy deployment across switch platforms. This guide covers producing fully static executables using [musl](https://musl.libc.org/).
 
-## MSRV Note
+## Rust Toolchain
 
-For SONiC build environments that do not ship a Rust toolchain, or that ship an older version, the required Rust toolchain (1.85.0) should be provisioned using `rustup`. This provides the greatest level of reproducibility across supported SONiC versions.
+For SONiC build environments that do not ship a Rust toolchain, or that ship an older version, the current stable Rust toolchain should be provisioned using `rustup`. This provides the greatest level of reproducibility across supported SONiC versions.
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
-    --default-toolchain 1.85.0 -y
+    --default-toolchain stable -y
 ```
 
 ## Prerequisites
