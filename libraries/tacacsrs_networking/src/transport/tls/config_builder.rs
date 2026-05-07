@@ -129,6 +129,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // aws-lc-rs FFI in ClientConfig crypto provider
     fn with_client_auth_der_accepts_valid_der() {
         let (cert_chain, key_der) = sample_client_auth_der();
 
@@ -140,12 +141,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // aws-lc-rs FFI in ClientConfig crypto provider
     fn build_without_client_auth_succeeds() {
         let config = TlsConfigurationBuilder::new().build();
         assert!(config.is_ok(), "unexpected error: {config:?}");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // aws-lc-rs FFI in ClientConfig crypto provider
     fn build_with_disabled_verification_succeeds() {
         let config = TlsConfigurationBuilder::new()
             .with_certificate_verification_disabled(true)
