@@ -20,7 +20,9 @@ jobs:
           cache-key: nightly
 
       - name: Install cargo-udeps
-        run: cargo install cargo-udeps --locked
+        uses: taiki-e/install-action@eea29cff9a2b68892c0845ae3e4f45fc47ee9354 # v2.75.13
+        with:
+          tool: cargo-udeps
 
       - name: Check for unused dependencies
         run: cargo +nightly udeps --workspace --all-targets
