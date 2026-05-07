@@ -81,14 +81,17 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Rust
+        id: setup
         uses: ./.github/steps/setup-rust
         with:
           cache-key: stable
 
       - name: Build workspace (debug)
+        if: steps.setup.outputs.cache-hit != 'true'
         run: cargo build --workspace --all-features
 
       - name: Build workspace (release)
+        if: steps.setup.outputs.cache-hit != 'true'
         run: cargo build --workspace --all-features --release
 
   # ── Tier 1: Cheapest, most likely to fail ────────────────

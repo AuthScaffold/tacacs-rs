@@ -36,8 +36,18 @@ runs:
         fi
 
         cargo build --release --target ${{ inputs.target }} --bin ${{ inputs.binary-name }} \
-          "${FEATURE_ARGS[@]}" \
-          --artifact-dir=build-output
+          "${FEATURE_ARGS[@]}"
+
+        mkdir -p build-output
+
+        # Determine binary extension
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          BINARY_EXT=".exe"
+        else
+          BINARY_EXT=""
+        fi
+
+        cp "target/${{ inputs.target }}/release/${{ inputs.binary-name }}${BINARY_EXT}" build-output/
 
     - name: Discover and prepare artifacts
       shell: bash
@@ -81,11 +91,8 @@ runs:
       if: runner.os != 'Windows'
       shell: bash
       run: |
-        # Debug symbols may be in build-output or target directory
-        # Try build-output first (if --artifact-dir copied them)
-        if ls build-output/*.dwp 1> /dev/null 2>&1; then
-          cp build-output/*.dwp artifacts/${{ inputs.asset-name }}.dwp
-        elif ls target/${{ inputs.target }}/release/*.dwp 1> /dev/null 2>&1; then
+        # Debug symbols live in the target directory
+        if ls target/${{ inputs.target }}/release/*.dwp 1> /dev/null 2>&1; then
           cp target/${{ inputs.target }}/release/*.dwp artifacts/${{ inputs.asset-name }}.dwp
         fi
 
@@ -93,13 +100,10 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        $pdbFileBuildOutput = "build-output/${{ inputs.binary-name }}.pdb"
         $pdbFileTarget = "target/${{ inputs.target }}/release/${{ inputs.binary-name }}.pdb"
         $pdbDestination = "artifacts/${{ inputs.binary-name }}.pdb"
 
-        if (Test-Path $pdbFileBuildOutput) {
-          Copy-Item $pdbFileBuildOutput $pdbDestination
-        } elseif (Test-Path $pdbFileTarget) {
+        if (Test-Path $pdbFileTarget) {
           Copy-Item $pdbFileTarget $pdbDestination
         }
 

@@ -3,16 +3,11 @@ name: Reusable Code Coverage
 on:
   workflow_call:
     inputs:
-      upload-to-codecov:
-        description: 'Upload coverage to Codecov'
+      fail-under-lines:
+        description: 'Fail if line coverage is below this percentage (0 to disable)'
         required: false
-        default: true
-        type: boolean
-      fail-ci-on-codecov-error:
-        description: 'Fail CI if Codecov upload fails'
-        required: false
-        default: false
-        type: boolean
+        default: 0
+        type: number
 
 jobs:
   coverage:
@@ -27,5 +22,4 @@ jobs:
       - name: Generate Coverage
         uses: ./.github/steps/generate-coverage
         with:
-          upload-to-codecov: ${{ inputs.upload-to-codecov && 'true' || 'false' }}
-          fail-ci-on-codecov-error: ${{ inputs.fail-ci-on-codecov-error && 'true' || 'false' }}
+          fail-under-lines: ${{ inputs.fail-under-lines }}

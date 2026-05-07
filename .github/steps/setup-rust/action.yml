@@ -23,6 +23,11 @@ inputs:
     required: false
     default: 'false'
 
+outputs:
+  cache-hit:
+    description: 'Whether the Rust cache was restored'
+    value: ${{ steps.rust-cache.outputs.cache-hit }}
+
 runs:
   using: composite
   steps:
@@ -65,6 +70,7 @@ runs:
       uses: ./.github/steps/setup-openssl
 
     - name: Setup Rust cache
+      id: rust-cache
       uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
       with:
         shared-key: ${{ inputs.cache-key }}
