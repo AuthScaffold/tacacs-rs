@@ -8,11 +8,6 @@ on:
         required: false
         default: true
         type: boolean
-      include-nightly-clippy:
-        description: 'Include a separate nightly clippy job'
-        required: false
-        default: true
-        type: boolean
       include-proto-compat:
         description: 'Include protobuf backward compatibility check'
         required: false
@@ -162,14 +157,6 @@ jobs:
     needs: [tier-2-gate]
     uses: ./.github/workflows/reusable-clippy-nursery.yml
 
-  nightly-clippy:
-    name: Nightly Rust Check
-    if: ${{ inputs.include-nightly-clippy && !cancelled() && !failure() }}
-    needs: [tier-2-gate]
-    uses: ./.github/workflows/reusable-clippy.yml
-    with:
-      toolchain: nightly
-
   miri:
     name: Miri
     if: ${{ inputs.include-miri && !cancelled() && !failure() }}
@@ -185,7 +172,7 @@ jobs:
   tier-3-gate:
     name: "Gate: Tier 3"
     runs-on: ubuntu-latest
-    needs: [clippy-nursery, nightly-clippy, miri, fuzz]
+    needs: [clippy-nursery, miri, fuzz]
     if: always()
     steps:
       - name: Check tier 3

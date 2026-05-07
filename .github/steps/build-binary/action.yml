@@ -1,5 +1,5 @@
 name: Build Binary
-description: Build a release binary for a specific target with artifact upload using Rust nightly artifact-dir feature
+description: Build a release binary for a specific target with artifact upload
 
 inputs:
   target:
@@ -27,25 +27,17 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install nightly toolchain for artifact-dir feature
+    - name: Build release binary
       shell: bash
       run: |
-        # Install nightly (rustup will skip if already installed with this target)
-        rustup toolchain install nightly --profile minimal --target ${{ inputs.target }}
-
-    - name: Build release binary with artifact-dir
-      shell: bash
-      run: |
-        # Use nightly's --artifact-dir to output binaries to a predictable location
-        # Note: This uses an unstable feature. If builds break, consider pinning to a specific nightly version
         FEATURE_ARGS=()
         if [[ -n "${{ inputs.features }}" ]]; then
           FEATURE_ARGS+=(--features "${{ inputs.features }}")
         fi
 
-        cargo +nightly build --release --target ${{ inputs.target }} --bin ${{ inputs.binary-name }} \
+        cargo build --release --target ${{ inputs.target }} --bin ${{ inputs.binary-name }} \
           "${FEATURE_ARGS[@]}" \
-          -Z unstable-options --artifact-dir=build-output
+          --artifact-dir=build-output
 
     - name: Discover and prepare artifacts
       shell: bash

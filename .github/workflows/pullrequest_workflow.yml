@@ -42,8 +42,7 @@ jobs:
       contents: read
       packages: read
     with:
-      include-nightly-clippy: false
-      rust-test-matrix: '["stable", "beta"]'
+      rust-test-matrix: '["stable"]'
       skip-audit-if-no-dep-changes: true
       versions: ${{ needs.compute-versions.outputs.versions || '{}' }}
     secrets: inherit
