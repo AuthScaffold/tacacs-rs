@@ -24,6 +24,8 @@ jobs:
           fetch-depth: 0
 
       - uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
+        with:
+          github_token: ${{ github.token }}
 
       - name: Ensure comparison ref exists locally
         run: |
