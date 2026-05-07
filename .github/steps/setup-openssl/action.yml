@@ -10,27 +10,16 @@ inputs:
 runs:
   using: composite
   steps:
-    # ── Linux: cached apt install ──────────────────────────
-    - name: Restore OpenSSL apt cache (Linux)
+    # ── Linux ──────────────────────────────────────────────
+    - name: Install OpenSSL (Linux)
       if: runner.os == 'Linux'
-      id: apt-cache
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-      with:
-        path: /tmp/openssl-debs
-        key: apt-openssl-dev-linux-${{ runner.arch }}
-
-    - name: Install OpenSSL from cache (Linux)
-      if: runner.os == 'Linux' && steps.apt-cache.outputs.cache-hit == 'true'
-      shell: bash
-      run: sudo dpkg -i /tmp/openssl-debs/*.deb
-
-    - name: Install OpenSSL via apt (Linux)
-      if: runner.os == 'Linux' && steps.apt-cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
-        mkdir -p /tmp/openssl-debs
-        cp /var/cache/apt/archives/libssl-dev*.deb /var/cache/apt/archives/pkg-config*.deb /tmp/openssl-debs/ 2>/dev/null || true
+        if dpkg -s libssl-dev pkg-config &>/dev/null; then
+          echo "OpenSSL dev packages already installed"
+        else
+          sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+        fi
 
     # ── Windows: restore cached vcpkg install ─────────────
     - name: Restore vcpkg OpenSSL cache (Windows)
