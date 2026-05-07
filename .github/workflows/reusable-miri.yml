@@ -22,6 +22,7 @@ jobs:
           toolchain: nightly
           components: miri
           cache-key: nightly
+          save-if: 'true'
 
       - name: Run Miri
         run: cargo +nightly miri test --workspace --all-features
