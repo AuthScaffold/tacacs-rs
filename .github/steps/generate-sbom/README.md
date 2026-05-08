@@ -23,20 +23,28 @@ Generates SBOM files to comply with supply chain security requirements, includin
   uses: ./.github/steps/generate-sbom
   with:
     output-format: json  # or xml
-    all-features: 'true' # optional, default 'false'
+    manifest-path: executables/tacon/Cargo.toml
+    describe: binaries
+    target: x86_64-pc-windows-msvc
+    target-in-filename: 'true'
+    features: psk
 ```
 
 ## Inputs
 
 - `output-format` (optional): Output format, either `json` or `xml`. Default: `json`
+- `manifest-path` (optional): Path to the `Cargo.toml` to analyze. Default: unset
+- `describe` (optional): CycloneDX describe mode. Default: unset
+- `target` (optional): Rust target triple for dependency resolution. Default: host target
+- `target-in-filename` (optional): Include the target triple in the generated filename. Default: `false`
+- `features` (optional): Space-separated list of cargo features to enable. Default: unset
 - `all-features` (optional): Enable all features when analyzing dependencies. Default: `false`
 
 ## Output
 
-Generates SBOM files in the workspace directories:
-- `executables/tacon/tacon.cdx.<format>`
-- `libraries/tacacsrs_messages/tacacsrs-messages.cdx.<format>`
-- `libraries/tacacsrs_networking/tacacsrs-networking.cdx.<format>`
+Generates SBOM files in the workspace directories. For binary-targeted runs this includes files such as:
+- `executables/tacon/tacon_bin_x86_64-unknown-linux-gnu.cdx.<format>`
+- `executables/tacon/tacon_bin_x86_64-pc-windows-msvc.cdx.<format>`
 
 ## Tool
 

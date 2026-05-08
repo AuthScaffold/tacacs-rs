@@ -29,11 +29,12 @@ jobs:
           name: ${{ inputs.binary-name }}-linux-musl-x86_64
           path: raw/musl
 
-      - name: Download SBOM artifact
+      - name: Download SBOM artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: sbom
+          pattern: sbom-*
           path: raw/sbom
+          merge-multiple: true
 
       - name: Download Debian package
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -54,7 +55,7 @@ jobs:
           DIR="${{ inputs.binary-name }}-windows-msvc-x86_64"
           mkdir -p "staging/${DIR}"
           cp raw/windows/* "staging/${DIR}/"
-          cp "raw/sbom/${{ inputs.binary-name }}.cdx.json" "staging/${DIR}/"
+          cp "raw/sbom/sbom-windows-msvc-x86_64.json" "staging/${DIR}/"
           echo "Contents of ${DIR}:"
           ls -lh "staging/${DIR}/"
 
@@ -64,7 +65,7 @@ jobs:
           mkdir -p "staging/${DIR}"
           cp "raw/musl/${{ inputs.binary-name }}-linux-musl-x86_64" "staging/${DIR}/${{ inputs.binary-name }}"
           chmod +x "staging/${DIR}/${{ inputs.binary-name }}"
-          cp "raw/sbom/${{ inputs.binary-name }}.cdx.json" "staging/${DIR}/"
+          cp "raw/sbom/sbom-linux-musl-x86_64.json" "staging/${DIR}/"
           echo "Contents of ${DIR}:"
           ls -lh "staging/${DIR}/"
 
@@ -79,6 +80,10 @@ jobs:
           # MUSL tar.gz
           tar -czf "release/${{ inputs.binary-name }}-linux-musl-x86_64.tar.gz" \
             -C staging "${{ inputs.binary-name }}-linux-musl-x86_64/"
+
+      - name: Copy SBOM assets
+        run: |
+          cp raw/sbom/* release/
 
       - name: Copy Debian packages
         run: |

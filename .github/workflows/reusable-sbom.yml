@@ -3,6 +3,21 @@ name: Reusable SBOM Generation
 on:
   workflow_call:
     inputs:
+      targets:
+        description: 'JSON array of target configurations with os, target, asset_name, and optional features'
+        required: false
+        default: |
+          [
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "features": ""},
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-musl", "asset_name": "tacon-linux-musl-x86_64", "features": ""},
+            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64", "features": "psk"}
+          ]
+        type: string
+      binary-name:
+        description: 'Name of the binary to generate the SBOM for'
+        required: false
+        default: 'tacon'
+        type: string
       versions:
         description: 'JSON map of crate-name → version to inject into Cargo.toml files. Empty or {} is a no-op.'
         required: false
@@ -11,10 +26,14 @@ on:
 
 jobs:
   sbom:
-    name: Generate SBOM
-    runs-on: ubuntu-latest
+    name: Generate SBOM (${{ matrix.config.target }})
+    runs-on: ${{ matrix.config.os }}
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJson(inputs.targets) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -26,25 +45,54 @@ jobs:
       - name: Setup Rust
         uses: ./.github/steps/setup-rust
         with:
-          cache-key: stable
+          targets: ${{ matrix.config.target }}
+          cache-key: sbom-${{ matrix.config.target }}
+          install-musl-tools: ${{ contains(matrix.config.target, 'musl') }}
+
+      - name: Compute SBOM artifact names
+        id: names
+        shell: bash
+        run: |
+          ASSET_NAME="${{ matrix.config.asset_name }}"
+          BINARY_NAME="${{ inputs.binary-name }}"
+
+          if [[ "$ASSET_NAME" == "$BINARY_NAME-"* ]]; then
+            ASSET_SUFFIX="${ASSET_NAME#"$BINARY_NAME-"}"
+          else
+            ASSET_SUFFIX="$ASSET_NAME"
+          fi
+
+          echo "asset_suffix=$ASSET_SUFFIX" >> "$GITHUB_OUTPUT"
+          echo "sbom_basename=sbom-$ASSET_SUFFIX" >> "$GITHUB_OUTPUT"
 
       - name: Generate SBOM (JSON)
         uses: ./.github/steps/generate-sbom
         with:
           output-format: json
-          all-features: 'true'
+          manifest-path: executables/${{ inputs.binary-name }}/Cargo.toml
+          describe: binaries
+          target: ${{ matrix.config.target }}
+          target-in-filename: 'true'
+          features: ${{ matrix.config.features }}
 
       - name: Generate SBOM (XML)
         uses: ./.github/steps/generate-sbom
         with:
           output-format: xml
-          all-features: 'true'
+          manifest-path: executables/${{ inputs.binary-name }}/Cargo.toml
+          describe: binaries
+          target: ${{ matrix.config.target }}
+          target-in-filename: 'true'
+          features: ${{ matrix.config.features }}
 
       - name: Collect SBOM files
+        shell: bash
         run: |
           mkdir -p sbom-output
-          find . -name "*.cdx.json" -type f -exec cp {} sbom-output/ \;
-          find . -name "*.cdx.xml" -type f -exec cp {} sbom-output/ \;
+          cp "executables/${{ inputs.binary-name }}/${{ inputs.binary-name }}_bin_${{ matrix.config.target }}.cdx.json" \
+            "sbom-output/${{ steps.names.outputs.sbom_basename }}.json"
+          cp "executables/${{ inputs.binary-name }}/${{ inputs.binary-name }}_bin_${{ matrix.config.target }}.cdx.xml" \
+            "sbom-output/${{ steps.names.outputs.sbom_basename }}.xml"
           echo "Collected SBOM files:"
           ls -lh sbom-output/
 
@@ -57,7 +105,7 @@ jobs:
           REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
 
           # ── JSON files: use jq for structural safety ──
-          for f in sbom-output/*.cdx.json; do
+          for f in sbom-output/*.json; do
             [ -f "$f" ] || continue
             jq --arg ws "${WORKSPACE_PATH}/" \
                --arg repo "$REPO_URL" \
@@ -75,7 +123,7 @@ jobs:
           done
 
           # ── XML files: sed (xmlstarlet not guaranteed on runners) ──
-          for f in sbom-output/*.cdx.xml; do
+          for f in sbom-output/*.xml; do
             [ -f "$f" ] || continue
             sed -i "s|${WORKSPACE_PATH}/|/workspace/|g" "$f"
             sed -i -E "s|download_url=file://[^\"&]*|download_url=${REPO_URL}|g" "$f"
@@ -84,5 +132,5 @@ jobs:
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sbom
+          name: ${{ steps.names.outputs.sbom_basename }}
           path: sbom-output/*
