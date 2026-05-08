@@ -120,6 +120,9 @@ pub(crate) struct DedicatedAccountingResult {
     pub response: AccountingOperationResponse,
     /// Whether the server indicated support for single-connection mode.
     pub single_connect_supported: bool,
+    /// Upgraded reusable connection when the dedicated exchange confirmed
+    /// single-connection support and stream handoff succeeded.
+    pub upgraded_connection: Option<Arc<dyn UpstreamConnection>>,
 }
 
 /// Production connector backed by [`tacacsrs_networking`].
@@ -373,13 +376,33 @@ async fn send_dedicated_accounting(
         .await
         .map(|ex| to_dedicated_result(&address, ex))?;
 
+    let upgraded_connection = if exchange.single_connect_supported {
+        match conn.upgrade().await {
+            Ok(connection) => Some(Arc::new(TacacsUpstreamConnection {
+                server_address: address.clone(),
+                connection,
+            }) as Arc<dyn UpstreamConnection>),
+            Err(error) => {
+                log::warn!(
+                    "Dedicated accounting response from {address} confirmed single-connect, but stream upgrade failed: {error:#}"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     log::debug!(
         "Dedicated accounting response from {address}: status={:?}, single_connect={}",
         exchange.response.status,
         exchange.single_connect_supported,
     );
 
-    Ok(exchange)
+    Ok(DedicatedAccountingResult {
+        upgraded_connection,
+        ..exchange
+    })
 }
 
 fn to_dedicated_result(
@@ -394,6 +417,7 @@ fn to_dedicated_result(
             data: exchange.reply.data,
         },
         single_connect_supported: exchange.single_connect_supported,
+        upgraded_connection: None,
     }
 }
 

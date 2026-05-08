@@ -146,6 +146,10 @@ impl PacketWriter {
     pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
         Self { obfuscation_key }
     }
+
+    pub(crate) fn obfuscation_key(&self) -> Option<&[u8]> {
+        self.obfuscation_key.as_deref()
+    }
 }
 
 #[async_trait]

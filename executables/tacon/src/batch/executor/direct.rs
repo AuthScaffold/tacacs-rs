@@ -1,20 +1,20 @@
-use anyhow::Context;
-
 use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_networking::config_connect::ConnectOptions;
 
-use crate::connection::establish_connection;
+use crate::connection::Connection;
 
-use super::dedicated::{execute_requests_dedicated, probe_single_connect, run_dedicated_load_test};
+use super::dedicated::{
+    execute_requests_dedicated, probe_single_connect, probe_single_connect_supported,
+    run_dedicated_load_test,
+};
 use super::multiplexed::{
     execute_load_test_multiplexed, execute_parallel_multiplexed, execute_sequential_multiplexed,
 };
 use super::super::progress::print_load_test_summary;
 use super::super::types::{BatchFile, LoadTestConfig, RequestResult};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExecutionMode {
-    Multiplexed,
+    Multiplexed(Option<Connection>),
     Dedicated,
 }
 
@@ -23,10 +23,12 @@ enum ExecutionMode {
 /// When `dedicated` is `true`, the probe is skipped and dedicated mode is used
 /// unconditionally. Otherwise a lightweight accounting record is sent via a
 /// dedicated connection to check whether the server echoes
-/// `TAC_PLUS_SINGLE_CONNECT_FLAG`.
+/// `TAC_PLUS_SINGLE_CONNECT_FLAG`. Non-load batches reuse the successful
+/// probe stream by upgrading it into the multiplexed connection.
 async fn determine_execution_mode(
     server: &TacacsPlusServer,
     dedicated: bool,
+    upgrade_probe: bool,
     options: &ConnectOptions,
 ) -> ExecutionMode {
     if dedicated {
@@ -35,8 +37,14 @@ async fn determine_execution_mode(
     }
 
     log::info!("Probing server for single-connection support via dedicated connection");
-    if probe_single_connect(server, options).await {
-        ExecutionMode::Multiplexed
+    if upgrade_probe {
+        if let Some(connection) = probe_single_connect(server, options).await {
+            ExecutionMode::Multiplexed(Some(connection))
+        } else {
+            ExecutionMode::Dedicated
+        }
+    } else if probe_single_connect_supported(server, options).await {
+        ExecutionMode::Multiplexed(None)
     } else {
         ExecutionMode::Dedicated
     }
@@ -46,7 +54,8 @@ async fn determine_execution_mode(
 ///
 /// Unless `dedicated` is `true`, a lightweight probe is sent first to detect
 /// single-connection support. The result decides whether batch requests use
-/// multiplexed or dedicated connections.
+/// multiplexed or dedicated connections; normal multiplexed batches reuse the
+/// probe stream instead of reconnecting.
 pub async fn execute_batch(
     server: &TacacsPlusServer,
     dedicated: bool,
@@ -62,7 +71,9 @@ pub async fn execute_batch(
         return Ok(vec![]);
     }
 
-    let execution_mode = determine_execution_mode(server, dedicated, options).await;
+    let execution_mode =
+        determine_execution_mode(server, dedicated, batch.metadata.load_test.is_none(), options)
+            .await;
 
     if let Some(load_config) = &batch.metadata.load_test {
         return execute_batch_load_test(server, batch, load_config, execution_mode, options).await;
@@ -72,17 +83,14 @@ pub async fn execute_batch(
     log::info!("Processing {request_count} requests (parallel: {})", batch.metadata.parallel);
 
     let results = match execution_mode {
-        ExecutionMode::Multiplexed => {
-            let connection = establish_connection(server, options)
-                .await
-                .context("Failed to establish multiplexed connection after probe")?;
-
+        ExecutionMode::Multiplexed(Some(connection)) => {
             if batch.metadata.parallel {
                 execute_parallel_multiplexed(connection, &batch.requests).await?
             } else {
                 execute_sequential_multiplexed(connection, &batch.requests).await?
             }
         }
+        ExecutionMode::Multiplexed(None) => unreachable!("non-load multiplexed mode uses upgrade"),
         ExecutionMode::Dedicated => {
             log::info!(
                 "Executing {request_count} requests with dedicated connections (parallel: {})",
@@ -107,7 +115,7 @@ async fn execute_batch_load_test(
     options: &ConnectOptions,
 ) -> anyhow::Result<Vec<RequestResult>> {
     let mode_label = match execution_mode {
-        ExecutionMode::Multiplexed => "Multiplexed Connections",
+        ExecutionMode::Multiplexed(_) => "Multiplexed Connections",
         ExecutionMode::Dedicated => "Dedicated Connections",
     };
     log::info!(
@@ -123,7 +131,7 @@ async fn execute_batch_load_test(
     );
 
     let result = match execution_mode {
-        ExecutionMode::Multiplexed => {
+        ExecutionMode::Multiplexed(_) => {
             execute_load_test_multiplexed(server, &batch.requests, load_config, options).await?
         }
         ExecutionMode::Dedicated => {

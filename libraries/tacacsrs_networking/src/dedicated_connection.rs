@@ -9,16 +9,18 @@
 //! decide whether future requests to this server should use a shared
 //! [`TacacsConnection`](crate::connection::TacacsConnection) instead.
 
+use std::sync::Arc;
+
 use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_flow_abstractions::accounting::{build_accounting_packet, parse_accounting_reply};
 use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
-use tacacsrs_messages::header::Header;
+use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_messages::enumerations::{TacacsFlags, TacacsType};
 use tacacsrs_messages::packet::{Packet, PacketTrait};
-use tacacsrs_messages::traits::TacacsBodyTrait;
 
+use crate::connection::TacacsConnection;
 use crate::packet_reader::{PacketReadResult, PacketReader, PacketReaderTrait};
 use crate::packet_writer::{PacketWriteResult, PacketWriter, PacketWriterTrait};
 use crate::transport::Transport;
@@ -110,29 +112,17 @@ where
     /// can switch to a shared multiplexed connection for future requests.
     /// # Errors
     /// Returns an error if the exchange fails (write, read, header mismatch, or parse failure).
-    #[allow(clippy::cast_possible_truncation)] // body length bounded by u8 field sizes
     pub async fn send_accounting(
         &mut self,
         request: AccountingRequest,
         custom_flags: TacacsFlags,
     ) -> anyhow::Result<ExchangeResult> {
         let session_id: u32 = (self.session_id_fn)();
-        let body = request.to_bytes();
-        let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG
-            | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG
-            | custom_flags;
-
-        let packet = Packet::new(
-            Header {
-                major_version: TacacsMajorVersion::TacacsPlusMajor1,
-                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
-                tacacs_type: TacacsType::TacPlusAccounting,
-                seq_no: 1,
-                flags,
-                session_id,
-                length: body.len() as u32,
-            },
-            body,
+        let packet = build_accounting_packet(
+            session_id,
+            1,
+            &request,
+            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG | custom_flags,
         )?;
 
         let response = self
@@ -157,8 +147,8 @@ where
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
 
-        let reply = AccountingReply::from_bytes(response.body())
-            .context("failed to parse accounting reply")?;
+        let reply =
+            parse_accounting_reply(&response).context("failed to parse accounting reply")?;
 
         Ok(ExchangeResult {
             reply,
@@ -203,10 +193,33 @@ where
             }
         }
     }
+
+    /// Consumes this dedicated connection and upgrades it to a multiplexed connection.
+    ///
+    /// This reuses the same underlying read/write halves after a successful
+    /// dedicated probe has consumed its response. The returned connection starts
+    /// with single-connect support already confirmed.
+    /// # Errors
+    /// Returns an error if the multiplexed connection handler cannot be started.
+    pub async fn upgrade(self) -> anyhow::Result<Arc<TacacsConnection>>
+    where
+        R: 'static,
+        W: 'static,
+    {
+        let key = self.writer.obfuscation_key().map(<[u8]>::to_vec);
+        let connection = Arc::new(TacacsConnection::new_single_connect_confirmed(key.as_deref()));
+        connection
+            .run_with_halves(self.reader_half, self.writer_half)
+            .await?;
+        Ok(connection)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use tacacsrs_flow_abstractions::accounting::{build_accounting_packet, parse_accounting_reply};
     use tacacsrs_messages::accounting::reply::AccountingReply;
     use tacacsrs_messages::accounting::request::AccountingRequest;
     use tacacsrs_messages::enumerations::{
@@ -214,8 +227,11 @@ mod tests {
         TacacsAuthenticationService, TacacsAuthenticationType, TacacsFlags,
     };
     use tacacsrs_messages::packet::PacketTrait;
+    use tokio::time::timeout;
 
     use super::DedicatedConnection;
+    use crate::SingleConnectionState;
+    use crate::traits::SessionManagementTrait;
     use crate::transport::mock::MockTransport;
 
     const TEST_SESSION_ID: u32 = 0xDEAD_BEEF;
@@ -451,5 +467,64 @@ mod tests {
         assert!(flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1));
         assert!(flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2));
         assert!(flags.contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+    }
+
+    #[tokio::test]
+    async fn test_upgrade_reuses_stream_for_multiplexed_session() {
+        let mock = MockTransport::new();
+        let coordinator = mock.coordinator();
+
+        coordinator
+            .accounting_reply_for_id(TEST_SESSION_ID, 2, &test_reply())
+            .with_single_connect()
+            .send()
+            .await
+            .unwrap();
+
+        let mut dedicated =
+            DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
+        let probe = dedicated
+            .send_accounting(test_request(), TacacsFlags::empty())
+            .await
+            .unwrap();
+        assert!(probe.single_connect_supported);
+
+        let connection = dedicated.upgrade().await.unwrap();
+        assert_eq!(connection.single_connection_state().await, SingleConnectionState::Supported);
+
+        let session = connection.create_session().await.unwrap();
+        coordinator
+            .accounting_reply(&session, 2, &test_reply())
+            .with_single_connect()
+            .send()
+            .await
+            .unwrap();
+
+        let seq_no = session.next_sequence_number().await;
+        let packet = build_accounting_packet(
+            session.session_id(),
+            seq_no,
+            &test_request(),
+            TacacsFlags::empty(),
+        )
+        .unwrap();
+        session.duplex_channel.sender.send(packet).await.unwrap();
+
+        let mut receiver = session.duplex_channel.receiver.write().await;
+        let response = timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("upgraded multiplexed session should receive a reply")
+            .expect("response channel should remain open");
+        drop(receiver);
+
+        let reply = parse_accounting_reply(&response).unwrap();
+        assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+        session.complete().await;
+
+        let requests = coordinator
+            .get_requests_for_session(session.session_id())
+            .await
+            .unwrap();
+        assert!(requests.contains_key(&1));
     }
 }
