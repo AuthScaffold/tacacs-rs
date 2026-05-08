@@ -59,7 +59,7 @@ jobs:
           if [[ "$ASSET_NAME" == "$BINARY_NAME-"* ]]; then
             ASSET_SUFFIX="${ASSET_NAME#"$BINARY_NAME-"}"
           elif [[ "$ASSET_NAME" == "$BINARY_NAME" ]]; then
-            echo "Error: asset_name must include a platform suffix when generating per-platform SBOMs (for example: ${BINARY_NAME}-linux-gnu-x86_64)"
+            echo "Error: asset_name must be platform-specific when generating per-platform SBOMs (for example: ${BINARY_NAME}-linux-gnu-x86_64 or sbom-linux-gnu-x86_64)"
             exit 1
           else
             ASSET_SUFFIX="$ASSET_NAME"

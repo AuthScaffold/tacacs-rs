@@ -86,7 +86,7 @@ jobs:
           shopt -s nullglob
           sbom_files=(raw/sbom/*)
           if [ "${#sbom_files[@]}" -eq 0 ]; then
-            echo "Error: no SBOM files were downloaded into raw/sbom"
+            echo "Error: no SBOM files were downloaded into raw/sbom. Ensure the SBOM workflow completed successfully and uploaded artifacts matching sbom-*."
             exit 1
           fi
           cp "${sbom_files[@]}" release/

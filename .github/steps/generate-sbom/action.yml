@@ -50,6 +50,11 @@ runs:
         FEATURES="${{ inputs.features }}"
         ALL_FEATURES="${{ inputs.all-features }}"
 
+        if [ -n "$FEATURES" ] && [ "$ALL_FEATURES" = "true" ]; then
+          echo "Error: inputs 'features' and 'all-features' are mutually exclusive"
+          exit 1
+        fi
+
         CMD=(cargo cyclonedx --format "$OUTPUT_FORMAT")
 
         if [ -n "$MANIFEST_PATH" ]; then
