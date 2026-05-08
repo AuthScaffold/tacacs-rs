@@ -9,6 +9,11 @@ use tacacsrs_messages::traits::TacacsBodyTrait;
 ///
 /// The standard unencrypted flag is always set; callers can add protocol
 /// negotiation or custom flags through `custom_flags`.
+///
+/// # Errors
+///
+/// Returns an error if the serialized request is too large for a TACACS+
+/// header or if the packet cannot be constructed.
 pub fn build_accounting_packet(
     session_id: u32,
     seq_no: u8,
@@ -35,6 +40,10 @@ pub fn build_accounting_packet(
 }
 
 /// Parses an accounting reply from a response packet.
+///
+/// # Errors
+///
+/// Returns an error if the packet body is not a valid TACACS+ accounting reply.
 pub fn parse_accounting_reply(response: &Packet) -> anyhow::Result<AccountingReply> {
     AccountingReply::from_bytes(response.body())
 }

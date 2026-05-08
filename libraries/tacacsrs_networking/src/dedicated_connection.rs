@@ -7,7 +7,7 @@
 //! server's response reveals whether it would accept session multiplexing.
 //! Callers can inspect [`ExchangeResult::single_connect_supported`] to
 //! decide whether future requests to this server should use a shared
-//! [`TacacsConnection`](crate::connection::TacacsConnection) instead.
+//! [`TacacsConnection`] instead.
 
 use std::sync::Arc;
 
@@ -38,7 +38,7 @@ pub struct ExchangeResult {
 /// A minimal TACACS+ connection that carries exactly one request-response
 /// exchange over a [`Transport`].
 ///
-/// Unlike [`TacacsConnection`](crate::connection::TacacsConnection), this
+/// Unlike [`TacacsConnection`], this
 /// type spawns no background tasks and performs no session multiplexing.
 /// It writes one packet, reads one response, and reports whether the
 /// server supports single-connection mode.
