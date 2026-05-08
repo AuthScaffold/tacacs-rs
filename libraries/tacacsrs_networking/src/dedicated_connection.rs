@@ -205,8 +205,8 @@ where
         R: 'static,
         W: 'static,
     {
-        let key = self.writer.obfuscation_key().map(<[u8]>::to_vec);
-        let connection = Arc::new(TacacsConnection::new_single_connect_confirmed(key.as_deref()));
+        let connection =
+            Arc::new(TacacsConnection::new_single_connect_confirmed(self.writer.obfuscation_key()));
         connection.run_with_halves(self.reader_half, self.writer_half);
         connection
     }
