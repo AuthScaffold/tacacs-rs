@@ -2,6 +2,16 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
+#[cfg(unix)]
+pub type UserId = libc::uid_t;
+#[cfg(not(unix))]
+pub type UserId = libc::c_uint;
+
+#[cfg(unix)]
+pub type GroupId = libc::gid_t;
+#[cfg(not(unix))]
+pub type GroupId = libc::c_uint;
+
 /// Determines how the wrapper behaves when TACACS+ authorization cannot be completed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FailPolicy {
@@ -27,11 +37,11 @@ pub struct Cli {
 
     /// UID to drop to after forking the session process.
     #[arg(long)]
-    pub user_uid: libc::uid_t,
+    pub user_uid: UserId,
 
     /// GID to drop to after forking the session process.
     #[arg(long)]
-    pub user_gid: libc::gid_t,
+    pub user_gid: GroupId,
 
     /// IPC endpoint for the central TACACS+ client service.
     #[arg(long, default_value = "/run/tacacs.sock", value_name = "PATH_OR_ADDR")]
