@@ -90,7 +90,13 @@ pub async fn execute_batch(
                 execute_sequential_multiplexed(connection, &batch.requests).await?
             }
         }
-        ExecutionMode::Multiplexed(None) => unreachable!("non-load multiplexed mode uses upgrade"),
+        ExecutionMode::Multiplexed(None) => {
+            log::warn!(
+                "Multiplexed mode was selected without an upgraded probe connection; falling back to dedicated connections"
+            );
+            execute_requests_dedicated(server, &batch.requests, batch.metadata.parallel, options)
+                .await
+        }
         ExecutionMode::Dedicated => {
             log::info!(
                 "Executing {request_count} requests with dedicated connections (parallel: {})",
