@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Expand the ietf-system-tacacs-plus YANG module into a fully resolved tree.
 
-This script clones the required YANG module repositories (if not already
+This script clones the required YANG module repository (if not already
 cached), then runs pyang to produce the expanded tree with all grouping
 references from ietf-keystore, ietf-truststore, ietf-tls-client,
 ietf-crypto-types, etc. fully inlined.
@@ -45,10 +45,10 @@ from pyang import repository
 from pyang import syntax
 from pyang import util
 
-TACACS_YANG_REPO = "https://github.com/IETF-OPSAWG-WG/secure-tacacs-yang.git"
 YANG_MODELS_REPO = "https://github.com/YangModels/yang.git"
 
-TACACS_MODULE = "ietf-system-tacacs-plus.yang"
+TACACS_ROOT_MODULE = "ietf-system-tacacs-plus"
+TACACS_MODULE = "ietf-system-tacacs-plus@2026-03-31.yang"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE_DIR = SCRIPT_DIR / ".yang-cache"
@@ -354,26 +354,24 @@ def main() -> None:
 
     # Clone required repos
     print("Fetching YANG modules (cached after first run)...", file=sys.stderr)
-    tacacs_repo = ensure_repo(TACACS_YANG_REPO, "secure-tacacs-yang")
     yang_models = ensure_repo(YANG_MODELS_REPO, "yang-models", sparse_paths=["standard/ietf/RFC"])
 
     # Build search paths
-    tacacs_yang_dir = tacacs_repo / "yang"
     rfc_yang_dir = yang_models / "standard" / "ietf" / "RFC"
 
-    tacacs_module = tacacs_yang_dir / TACACS_MODULE
+    tacacs_module = rfc_yang_dir / TACACS_MODULE
     if not tacacs_module.exists():
         print(f"error: {tacacs_module} not found", file=sys.stderr)
         sys.exit(1)
 
-    search_paths = [rfc_yang_dir, tacacs_yang_dir]
+    search_paths = [rfc_yang_dir]
 
     if args.list_features:
         if args.features_ini is not None:
             print("error: --features-ini cannot be used with --list-features", file=sys.stderr)
             sys.exit(2)
 
-        root_module, loaded_modules, feature_index = _load_pyang_modules(tacacs_module.stem, search_paths)
+        root_module, loaded_modules, feature_index = _load_pyang_modules(TACACS_ROOT_MODULE, search_paths)
 
         pyang = find_pyang()
         tree_cmd = [
@@ -381,7 +379,6 @@ def main() -> None:
             "-f", "tree",
             "--tree-depth", str(args.depth),
             "-p", str(rfc_yang_dir),
-            "-p", str(tacacs_yang_dir),
             str(tacacs_module),
         ]
         if PLUGIN_DIR.exists():
@@ -415,7 +412,7 @@ def main() -> None:
             print("error: --features-ini cannot be combined with --features", file=sys.stderr)
             sys.exit(2)
 
-        _root_module, loaded_modules, _feature_index = _load_pyang_modules(tacacs_module.stem, search_paths)
+        _root_module, loaded_modules, _feature_index = _load_pyang_modules(TACACS_ROOT_MODULE, search_paths)
         try:
             ini_disabled_features = parse_feature_ini(args.features_ini, loaded_modules)
         except ValueError as exc:
@@ -428,7 +425,6 @@ def main() -> None:
         "-f", args.format,
         "--tree-depth", str(args.depth),
         "-p", str(rfc_yang_dir),
-        "-p", str(tacacs_yang_dir),
         str(tacacs_module),
     ]
     if PLUGIN_DIR.exists():
