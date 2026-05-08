@@ -199,19 +199,16 @@ where
     /// This reuses the same underlying read/write halves after a successful
     /// dedicated probe has consumed its response. The returned connection starts
     /// with single-connect support already confirmed.
-    /// # Errors
-    /// Returns an error if the multiplexed connection handler cannot be started.
-    pub async fn upgrade(self) -> anyhow::Result<Arc<TacacsConnection>>
+    #[must_use]
+    pub fn upgrade(self) -> Arc<TacacsConnection>
     where
         R: 'static,
         W: 'static,
     {
         let key = self.writer.obfuscation_key().map(<[u8]>::to_vec);
         let connection = Arc::new(TacacsConnection::new_single_connect_confirmed(key.as_deref()));
+        connection.run_with_halves(self.reader_half, self.writer_half);
         connection
-            .run_with_halves(self.reader_half, self.writer_half)
-            .await?;
-        Ok(connection)
     }
 }
 
@@ -489,7 +486,7 @@ mod tests {
             .unwrap();
         assert!(probe.single_connect_supported);
 
-        let connection = dedicated.upgrade().await.unwrap();
+        let connection = dedicated.upgrade();
         assert_eq!(connection.single_connection_state().await, SingleConnectionState::Supported);
 
         let session = connection.create_session().await.unwrap();

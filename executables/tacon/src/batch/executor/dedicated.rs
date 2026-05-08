@@ -47,15 +47,7 @@ pub(super) async fn probe_single_connect(
                 exchange.single_connect_supported
             );
             if exchange.single_connect_supported {
-                match connection.upgrade().await {
-                    Ok(connection) => Some(Connection::from_inner(connection)),
-                    Err(error) => {
-                        log::warn!(
-                            "Single-connect probe succeeded but stream upgrade failed, falling back to dedicated: {error}"
-                        );
-                        None
-                    }
-                }
+                Some(Connection::from_inner(connection.upgrade()))
             } else {
                 None
             }

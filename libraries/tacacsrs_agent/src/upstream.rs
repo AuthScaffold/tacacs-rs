@@ -377,18 +377,10 @@ async fn send_dedicated_accounting(
         .map(|ex| to_dedicated_result(&address, ex))?;
 
     let upgraded_connection = if exchange.single_connect_supported {
-        match conn.upgrade().await {
-            Ok(connection) => Some(Arc::new(TacacsUpstreamConnection {
-                server_address: address.clone(),
-                connection,
-            }) as Arc<dyn UpstreamConnection>),
-            Err(error) => {
-                log::warn!(
-                    "Dedicated accounting response from {address} confirmed single-connect, but stream upgrade failed: {error:#}"
-                );
-                None
-            }
-        }
+        Some(Arc::new(TacacsUpstreamConnection {
+            server_address: address.clone(),
+            connection: conn.upgrade(),
+        }) as Arc<dyn UpstreamConnection>)
     } else {
         None
     };

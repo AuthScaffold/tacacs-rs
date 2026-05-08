@@ -178,12 +178,7 @@ impl TacacsConnection {
         Ok(())
     }
 
-    #[allow(clippy::unused_async)]
-    pub(crate) async fn run_with_halves<R, W>(
-        self: &Arc<Self>,
-        reader: R,
-        writer: W,
-    ) -> anyhow::Result<()>
+    pub(crate) fn run_with_halves<R, W>(self: &Arc<Self>, reader: R, writer: W)
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
@@ -194,7 +189,6 @@ impl TacacsConnection {
                 .handle_connection_with_halves(reader, writer)
                 .await
         });
-        Ok(())
     }
 
     /// Internal handler for the connection lifecycle.
