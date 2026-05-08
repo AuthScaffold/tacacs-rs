@@ -58,6 +58,8 @@ jobs:
 
           if [[ "$ASSET_NAME" == "$BINARY_NAME-"* ]]; then
             ASSET_SUFFIX="${ASSET_NAME#"$BINARY_NAME-"}"
+          elif [[ "$ASSET_NAME" == "$BINARY_NAME" ]]; then
+            ASSET_SUFFIX="$BINARY_NAME"
           else
             ASSET_SUFFIX="$ASSET_NAME"
           fi

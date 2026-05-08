@@ -42,9 +42,16 @@ Generates SBOM files to comply with supply chain security requirements, includin
 
 ## Output
 
-Generates SBOM files in the workspace directories. For binary-targeted runs this includes files such as:
+Generates SBOM files in the workspace directories.
+
+For binary-targeted runs this includes files such as:
 - `executables/tacon/tacon_bin_x86_64-unknown-linux-gnu.cdx.<format>`
 - `executables/tacon/tacon_bin_x86_64-pc-windows-msvc.cdx.<format>`
+
+When `manifest-path` and `describe: binaries` are not set, cargo-cyclonedx uses its default crate/workspace behavior and may emit files such as:
+- `executables/tacon/tacon.cdx.<format>`
+- `libraries/tacacsrs_messages/tacacsrs-messages.cdx.<format>`
+- `libraries/tacacsrs_networking/tacacsrs-networking.cdx.<format>`
 
 ## Tool
 
