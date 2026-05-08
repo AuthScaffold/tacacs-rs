@@ -85,9 +85,11 @@ jobs:
         run: |
           shopt -s nullglob
           sbom_files=(raw/sbom/*)
-          if [ "${#sbom_files[@]}" -gt 0 ]; then
-            cp "${sbom_files[@]}" release/
+          if [ "${#sbom_files[@]}" -eq 0 ]; then
+            echo "Error: no SBOM files were downloaded into raw/sbom"
+            exit 1
           fi
+          cp "${sbom_files[@]}" release/
 
       - name: Copy Debian packages
         run: |
