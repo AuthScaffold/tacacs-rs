@@ -88,10 +88,10 @@ jobs:
           save-if: 'true'
 
       - name: Build workspace (debug)
-        run: cargo build --workspace --all-features
+        run: cargo build --workspace ${{ matrix.os == 'windows-latest' && '--exclude session-wrapper' || '' }} --all-features
 
       - name: Build workspace (release)
-        run: cargo build --workspace --all-features --release
+        run: cargo build --workspace ${{ matrix.os == 'windows-latest' && '--exclude session-wrapper' || '' }} --all-features --release
 
   # ── Tier 1: Cheapest, most likely to fail ────────────────
   fmt:
