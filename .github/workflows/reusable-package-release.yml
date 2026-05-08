@@ -83,7 +83,11 @@ jobs:
 
       - name: Copy SBOM assets
         run: |
-          cp raw/sbom/* release/
+          shopt -s nullglob
+          sbom_files=(raw/sbom/*)
+          if [ "${#sbom_files[@]}" -gt 0 ]; then
+            cp "${sbom_files[@]}" release/
+          fi
 
       - name: Copy Debian packages
         run: |
