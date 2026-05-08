@@ -6,6 +6,26 @@ inputs:
     description: 'Output format (json or xml)'
     required: false
     default: 'json'
+  manifest-path:
+    description: 'Optional path to the Cargo.toml to analyze'
+    required: false
+    default: ''
+  describe:
+    description: 'CycloneDX describe mode (crate, binaries, or all-cargo-targets)'
+    required: false
+    default: ''
+  target:
+    description: 'Optional Rust target triple for dependency resolution'
+    required: false
+    default: ''
+  target-in-filename:
+    description: 'Include the target triple in the generated filename'
+    required: false
+    default: 'false'
+  features:
+    description: 'Space-separated cargo features to enable'
+    required: false
+    default: ''
   all-features:
     description: 'Enable all features when generating SBOM'
     required: false
@@ -23,29 +43,55 @@ runs:
       shell: bash
       run: |
         OUTPUT_FORMAT="${{ inputs.output-format }}"
+        MANIFEST_PATH="${{ inputs.manifest-path }}"
+        DESCRIBE="${{ inputs.describe }}"
+        TARGET="${{ inputs.target }}"
+        TARGET_IN_FILENAME="${{ inputs.target-in-filename }}"
+        FEATURES="${{ inputs.features }}"
         ALL_FEATURES="${{ inputs.all-features }}"
-        
-        CMD="cargo cyclonedx --format $OUTPUT_FORMAT"
-        
-        # Add --all flag to include all dependencies (this is the default)
-        CMD="$CMD --all"
-        
-        # Add --all-features if requested
-        if [ "$ALL_FEATURES" = "true" ]; then
-          CMD="$CMD --all-features"
+
+        if [ -n "$FEATURES" ] && [ "$ALL_FEATURES" = "true" ]; then
+          echo "Error: inputs 'features' and 'all-features' are mutually exclusive"
+          exit 1
         fi
-        
-        echo "Generating SBOM with command: $CMD"
-        $CMD
-        
+
+        CMD=(cargo cyclonedx --format "$OUTPUT_FORMAT")
+
+        if [ -n "$MANIFEST_PATH" ]; then
+          CMD+=(--manifest-path "$MANIFEST_PATH")
+        fi
+
+        if [ -n "$DESCRIBE" ]; then
+          CMD+=(--describe "$DESCRIBE")
+        fi
+
+        if [ -n "$TARGET" ]; then
+          CMD+=(--target "$TARGET")
+        fi
+
+        if [ "$TARGET_IN_FILENAME" = "true" ]; then
+          CMD+=(--target-in-filename)
+        fi
+
+        if [ -n "$FEATURES" ]; then
+          CMD+=(--features "$FEATURES")
+        fi
+
+        if [ "$ALL_FEATURES" = "true" ]; then
+          CMD+=(--all-features)
+        fi
+
+        echo "Generating SBOM with command: ${CMD[*]}"
+        "${CMD[@]}"
+
         # Find all generated SBOM files
         SBOM_FILES=$(find . -name "*.cdx.$OUTPUT_FORMAT" -type f)
-        
+
         if [ -z "$SBOM_FILES" ]; then
           echo "Error: No SBOM files generated"
           exit 1
         fi
-        
+
         echo "Generated SBOM files:"
         for file in $SBOM_FILES; do
           echo "  - $file ($(stat -c%s "$file" 2>/dev/null || stat -f%z "$file") bytes)"
