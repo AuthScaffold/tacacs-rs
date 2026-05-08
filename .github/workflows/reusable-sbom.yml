@@ -100,6 +100,7 @@ jobs:
           ls -lh sbom-output/
 
       - name: Sanitize local filesystem paths
+        shell: bash
         run: |
           # cargo-cyclonedx embeds the CI runner's absolute workspace path in bom-ref
           # and purl fields for workspace path dependencies. Use $GITHUB_WORKSPACE to
