@@ -1,3 +1,10 @@
+//! Command line contract for `session-wrapper`.
+//!
+//! The options model the eventual login-wrapper integration: caller-supplied
+//! user identity, TACACS+ context, fail policy, and a trailing command vector
+//! to authorize. In the current allow-all implementation the executed program
+//! is still `--shell`; the command vector is retained as the authorization
+//! context that future IPC code will send to the agent.
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};

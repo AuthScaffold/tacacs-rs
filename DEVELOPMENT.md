@@ -7,6 +7,7 @@ This document covers development workflows, CI/CD, and release processes for tac
 - [Prerequisites](#prerequisites)
 - [Development Setup](#development-setup)
 - [Running Tests](#running-tests)
+- [Session Wrapper Smoke Tests](#session-wrapper-smoke-tests)
 - [Code Quality](#code-quality)
 - [YANG Code Generation](#yang-code-generation)
 - [CI/CD Overview](#cicd-overview)
@@ -156,6 +157,10 @@ cargo test test_name
 # Run tests for a specific crate
 cargo test -p tacacsrs-messages
 ```
+
+### Session Wrapper Smoke Tests
+
+The Linux `session-wrapper` has additional smoke and integration checks for seccomp notification handling, child lifecycle, descendant process coverage, and musl builds. See [Session Wrapper Testing](docs/session-wrapper-testing.md).
 
 ### Code Coverage
 
