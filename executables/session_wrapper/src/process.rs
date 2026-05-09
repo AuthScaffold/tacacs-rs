@@ -13,6 +13,9 @@ use anyhow::{bail, Context, Result};
 use super::seccomp;
 
 const READY_BYTE: u8 = b'R';
+const FD_MESSAGE: u8 = b'F';
+const ERROR_MESSAGE: u8 = b'E';
+const MAX_CHILD_ERROR_LEN: u32 = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ChildProcessConfig {
@@ -26,13 +29,41 @@ pub(crate) struct ChildProcessConfig {
 #[derive(Debug)]
 pub(crate) struct SessionProcess {
     child_pid: libc::pid_t,
+    child_process_group_id: libc::pid_t,
+    child_session_id: libc::pid_t,
     notification_fd: OwnedFd,
     control_socket: OwnedFd,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChildSetupStatus {
+    ControlClosed,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReapedProcess {
+    pub(crate) pid: libc::pid_t,
+    pub(crate) status: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReapStatus {
+    pub(crate) reaped: Vec<ReapedProcess>,
+    pub(crate) has_children: bool,
 }
 
 impl SessionProcess {
     pub(crate) fn child_pid(&self) -> libc::pid_t {
         self.child_pid
+    }
+
+    pub(crate) fn child_process_group_id(&self) -> libc::pid_t {
+        self.child_process_group_id
+    }
+
+    pub(crate) fn child_session_id(&self) -> libc::pid_t {
+        self.child_session_id
     }
 
     pub(crate) fn notification_fd(&self) -> RawFd {
@@ -43,14 +74,19 @@ impl SessionProcess {
         self.control_socket.as_raw_fd()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn signal_supervisor_ready(&self) -> Result<()> {
         write_all(self.control_socket.as_raw_fd(), &[READY_BYTE])
             .context("failed to signal child that supervisor is ready")
     }
+
+    pub(crate) fn read_child_setup_status(&self) -> Result<ChildSetupStatus> {
+        read_child_setup_status(self.control_socket.as_raw_fd())
+    }
 }
 
 pub(crate) fn spawn_session(config: ChildProcessConfig) -> Result<SessionProcess> {
+    enable_child_subreaper().context("failed to mark session-wrapper as child subreaper")?;
+
     let (parent_socket, child_socket) =
         socket_pair().context("failed to create control socketpair")?;
 
@@ -69,11 +105,17 @@ pub(crate) fn spawn_session(config: ChildProcessConfig) -> Result<SessionProcess
         }
         child_pid => {
             drop(child_socket);
-            let notification_fd = recv_fd(parent_socket.as_raw_fd())
+            let notification_fd = recv_initial_child_message(parent_socket.as_raw_fd())
                 .context("failed to receive seccomp notification fd from child")?;
+            let child_process_group_id =
+                process_group_id(child_pid).context("failed to read child process group id")?;
+            let child_session_id =
+                session_id(child_pid).context("failed to read child session id")?;
 
             Ok(SessionProcess {
                 child_pid,
+                child_process_group_id,
+                child_session_id,
                 notification_fd,
                 control_socket: parent_socket,
             })
@@ -84,6 +126,10 @@ pub(crate) fn spawn_session(config: ChildProcessConfig) -> Result<SessionProcess
 #[allow(clippy::needless_pass_by_value)]
 fn run_child_or_exit(control_socket: OwnedFd, config: ChildProcessConfig) -> ! {
     if let Err(error) = run_child(&control_socket, &config) {
+        if let Err(send_error) = send_child_error(control_socket.as_raw_fd(), &format!("{error:?}"))
+        {
+            eprintln!("session-wrapper child failed to report setup error: {send_error:?}");
+        }
         eprintln!("session-wrapper child error: {error:?}");
     }
 
@@ -96,6 +142,7 @@ fn run_child(control_socket: &OwnedFd, config: &ChildProcessConfig) -> Result<()
         .context("failed to install session-wrapper seccomp filter in child")?;
     send_fd(control_socket.as_raw_fd(), notification_fd)
         .context("failed to send seccomp notification fd to parent")?;
+    close_fd(notification_fd).context("failed to close child copy of seccomp notification fd")?;
 
     wait_for_ready(control_socket.as_raw_fd())
         .context("failed to receive supervisor ready byte")?;
@@ -141,7 +188,7 @@ fn socket_pair() -> Result<(OwnedFd, OwnedFd)> {
 
 #[allow(clippy::cast_ptr_alignment)]
 fn send_fd(socket: RawFd, fd_to_send: RawFd) -> Result<()> {
-    let payload = [0_u8];
+    let payload = [FD_MESSAGE];
     let mut iov = libc::iovec {
         iov_base: payload.as_ptr().cast_mut().cast(),
         iov_len: payload.len(),
@@ -152,7 +199,7 @@ fn send_fd(socket: RawFd, fd_to_send: RawFd) -> Result<()> {
     message.msg_iov = ptr::addr_of_mut!(iov);
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = control.len();
+    set_msg_controllen(&mut message, control.len())?;
 
     // SAFETY: message points to a valid iovec and control buffer sized with
     // CMSG_SPACE for one RawFd. The cmsg header is initialized before sendmsg.
@@ -167,19 +214,26 @@ fn send_fd(socket: RawFd, fd_to_send: RawFd) -> Result<()> {
         (*cmsg).cmsg_len = libc::CMSG_LEN(raw_fd_size_for_cmsg()) as _;
         ptr::write(libc::CMSG_DATA(cmsg).cast::<RawFd>(), fd_to_send);
 
-        let sent = libc::sendmsg(socket, ptr::addr_of!(message), libc::MSG_NOSIGNAL);
-        if sent == -1 {
-            bail!("sendmsg failed while passing fd: {}", io::Error::last_os_error());
-        }
-        if sent != 1 {
-            bail!("sendmsg wrote {sent} bytes while passing fd; expected 1");
+        loop {
+            let sent = libc::sendmsg(socket, ptr::addr_of!(message), libc::MSG_NOSIGNAL);
+            if sent == -1 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                bail!("sendmsg failed while passing fd: {error}");
+            }
+            if sent != 1 {
+                bail!("sendmsg wrote {sent} bytes while passing fd; expected 1");
+            }
+            break;
         }
     }
 
     Ok(())
 }
 
-fn recv_fd(socket: RawFd) -> Result<OwnedFd> {
+fn recv_initial_child_message(socket: RawFd) -> Result<OwnedFd> {
     let mut payload = [0_u8];
     let mut iov = libc::iovec {
         iov_base: payload.as_mut_ptr().cast(),
@@ -191,18 +245,34 @@ fn recv_fd(socket: RawFd) -> Result<OwnedFd> {
     message.msg_iov = ptr::addr_of_mut!(iov);
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = control.len();
+    set_msg_controllen(&mut message, control.len())?;
 
-    let received = {
-        // SAFETY: message points to valid payload and ancillary data buffers.
-        unsafe { libc::recvmsg(socket, ptr::addr_of_mut!(message), libc::MSG_CMSG_CLOEXEC) }
+    let received = loop {
+        let received = {
+            // SAFETY: message points to valid payload and ancillary data buffers.
+            unsafe { libc::recvmsg(socket, ptr::addr_of_mut!(message), libc::MSG_CMSG_CLOEXEC) }
+        };
+
+        if received == -1 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            bail!("recvmsg failed while receiving fd: {error}");
+        }
+        break received;
     };
-
-    if received == -1 {
-        bail!("recvmsg failed while receiving fd: {}", io::Error::last_os_error());
-    }
     if received == 0 {
         bail!("control socket closed before fd was received");
+    }
+
+    match payload[0] {
+        FD_MESSAGE => {}
+        ERROR_MESSAGE => {
+            let message = read_child_error(socket).context("failed to read child setup error")?;
+            bail!("child failed before sending notification fd: {message}");
+        }
+        byte => bail!("received unexpected child control message {byte}"),
     }
 
     let fd = extract_received_fd(&message).context("missing SCM_RIGHTS fd in control message")?;
@@ -246,7 +316,67 @@ fn wait_for_ready(socket: RawFd) -> Result<()> {
     Ok(())
 }
 
+fn read_child_setup_status(socket: RawFd) -> Result<ChildSetupStatus> {
+    let mut kind = [0_u8];
+    let read_count = loop {
+        let read_count = {
+            // SAFETY: kind points to valid writable memory for one byte.
+            unsafe { libc::read(socket, kind.as_mut_ptr().cast(), kind.len()) }
+        };
+
+        if read_count == -1 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            bail!("failed to read child setup status: {error}");
+        }
+
+        break read_count;
+    };
+    if read_count == 0 {
+        return Ok(ChildSetupStatus::ControlClosed);
+    }
+
+    match kind[0] {
+        ERROR_MESSAGE => Ok(ChildSetupStatus::Failed(
+            read_child_error(socket).context("failed to read child setup error")?,
+        )),
+        byte => bail!("received unexpected child setup status byte {byte}"),
+    }
+}
+
+fn send_child_error(socket: RawFd, message: &str) -> Result<()> {
+    let bytes = message.as_bytes();
+    let len = u32::try_from(bytes.len()).context("child setup error message is too large")?;
+    if len > MAX_CHILD_ERROR_LEN {
+        bail!("child setup error message exceeds maximum length");
+    }
+
+    write_all(socket, &[ERROR_MESSAGE])?;
+    write_all(socket, &len.to_be_bytes())?;
+    write_all(socket, bytes)
+}
+
+fn read_child_error(socket: RawFd) -> Result<String> {
+    let mut len = [0_u8; mem::size_of::<u32>()];
+    read_exact(socket, &mut len).context("failed to read child error length")?;
+    let len = u32::from_be_bytes(len);
+    if len > MAX_CHILD_ERROR_LEN {
+        bail!("child setup error length {len} exceeds maximum");
+    }
+
+    let len = usize::try_from(len).context("child setup error length does not fit usize")?;
+    let mut message = vec![0_u8; len];
+    read_exact(socket, &mut message).context("failed to read child error message")?;
+    String::from_utf8(message).context("child setup error message is not valid UTF-8")
+}
+
 fn drop_privileges(user: &str, gid: libc::gid_t, uid: libc::uid_t) -> Result<()> {
+    if current_effective_identity_matches(gid, uid) {
+        return Ok(());
+    }
+
     let username = CString::new(user).context("username contains an interior NUL byte")?;
 
     let setgid_result = {
@@ -275,6 +405,19 @@ fn drop_privileges(user: &str, gid: libc::gid_t, uid: libc::uid_t) -> Result<()>
     }
 
     Ok(())
+}
+
+fn current_effective_identity_matches(gid: libc::gid_t, uid: libc::uid_t) -> bool {
+    let running_uid = {
+        // SAFETY: geteuid has no preconditions.
+        unsafe { libc::geteuid() }
+    };
+    let running_primary_gid = {
+        // SAFETY: getegid has no preconditions.
+        unsafe { libc::getegid() }
+    };
+
+    running_uid == uid && running_primary_gid == gid
 }
 
 fn exec_shell(shell: &Path) -> Result<()> {
@@ -346,9 +489,29 @@ fn write_all(fd: RawFd, mut buffer: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn close_fd(fd: RawFd) -> Result<()> {
+    let result = {
+        // SAFETY: fd is the raw seccomp notification descriptor returned by libseccomp.
+        unsafe { libc::close(fd) }
+    };
+    if result == -1 {
+        bail!("close({fd}) failed: {}", io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
 fn cmsg_space_for_fd() -> usize {
     // SAFETY: CMSG_SPACE is a pure size calculation for one RawFd payload.
     unsafe { libc::CMSG_SPACE(raw_fd_size_for_cmsg()) as usize }
+}
+
+#[allow(clippy::useless_conversion)]
+fn set_msg_controllen(message: &mut libc::msghdr, len: usize) -> Result<()> {
+    message.msg_controllen = len
+        .try_into()
+        .context("control message buffer length does not fit msg_controllen")?;
+    Ok(())
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -363,9 +526,103 @@ fn zeroed_msghdr() -> libc::msghdr {
     unsafe { message.assume_init() }
 }
 
+fn enable_child_subreaper() -> Result<()> {
+    let result = {
+        // SAFETY: prctl is called with PR_SET_CHILD_SUBREAPER and integer
+        // arguments as documented by prctl(2).
+        unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) }
+    };
+    if result == -1 {
+        bail!("prctl(PR_SET_CHILD_SUBREAPER) failed: {}", io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn process_group_id(pid: libc::pid_t) -> Result<libc::pid_t> {
+    let process_group_id = {
+        // SAFETY: getpgid reads process metadata for the supplied pid.
+        unsafe { libc::getpgid(pid) }
+    };
+    if process_group_id == -1 {
+        bail!("getpgid({pid}) failed: {}", io::Error::last_os_error());
+    }
+    Ok(process_group_id)
+}
+
+fn session_id(pid: libc::pid_t) -> Result<libc::pid_t> {
+    let session_id = {
+        // SAFETY: getsid reads process metadata for the supplied pid.
+        unsafe { libc::getsid(pid) }
+    };
+    if session_id == -1 {
+        bail!("getsid({pid}) failed: {}", io::Error::last_os_error());
+    }
+    Ok(session_id)
+}
+
+pub(crate) fn reap_available_children() -> Result<ReapStatus> {
+    let mut reaped = Vec::new();
+
+    loop {
+        let mut status = 0;
+        let pid = {
+            // SAFETY: waitpid writes to status and uses WNOHANG to avoid blocking.
+            unsafe { libc::waitpid(-1, ptr::addr_of_mut!(status), libc::WNOHANG) }
+        };
+
+        if pid > 0 {
+            reaped.push(ReapedProcess { pid, status });
+            continue;
+        }
+        if pid == 0 {
+            return Ok(ReapStatus {
+                reaped,
+                has_children: true,
+            });
+        }
+
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ECHILD) {
+            return Ok(ReapStatus {
+                reaped,
+                has_children: false,
+            });
+        }
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        bail!("waitpid failed while reaping children: {error}");
+    }
+}
+
+pub(crate) fn process_exists(pid: libc::pid_t) -> Result<bool> {
+    if pid <= 0 {
+        return Ok(false);
+    }
+
+    let result = {
+        // SAFETY: kill(pid, 0) performs existence/permission checking only.
+        unsafe { libc::kill(pid, 0) }
+    };
+
+    if result == 0 {
+        return Ok(true);
+    }
+
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => bail!("kill({pid}, 0) failed: {error}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{path_to_cstring, recv_fd, send_fd, socket_pair};
+    use super::{
+        path_to_cstring, read_child_setup_status, recv_initial_child_message, send_child_error,
+        send_fd, socket_pair, ChildSetupStatus,
+    };
     use std::io::Error;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::path::PathBuf;
@@ -378,7 +635,8 @@ mod tests {
         let (pipe_reader, pipe_writer) = pipe().expect("pipe should be created");
 
         send_fd(sender.as_raw_fd(), pipe_reader.as_raw_fd()).expect("fd should be sent");
-        let received_reader = recv_fd(receiver.as_raw_fd()).expect("fd should be received");
+        let received_reader =
+            recv_initial_child_message(receiver.as_raw_fd()).expect("fd should be received");
 
         super::write_all(pipe_writer.as_raw_fd(), b"x").expect("pipe write should succeed");
         let mut byte = [0_u8];
@@ -401,6 +659,40 @@ mod tests {
 
         signal_ready_for_test(parent.as_raw_fd()).expect("ready byte should be written");
         super::wait_for_ready(child.as_raw_fd()).expect("ready byte should be accepted");
+    }
+
+    #[test]
+    fn pre_fd_child_error_is_reported_to_parent() {
+        let (parent, child) = socket_pair().expect("socketpair should be created");
+
+        send_child_error(child.as_raw_fd(), "setup failed").expect("error should be sent");
+        let error =
+            recv_initial_child_message(parent.as_raw_fd()).expect_err("fd receive should fail");
+
+        assert!(error.to_string().contains("setup failed"));
+    }
+
+    #[test]
+    fn post_ready_child_error_is_reported_to_parent() {
+        let (parent, child) = socket_pair().expect("socketpair should be created");
+
+        send_child_error(child.as_raw_fd(), "drop privileges failed")
+            .expect("error should be sent");
+        let status =
+            read_child_setup_status(parent.as_raw_fd()).expect("status should be readable");
+
+        assert_eq!(status, ChildSetupStatus::Failed("drop privileges failed".to_owned()));
+    }
+
+    #[test]
+    fn closed_control_socket_marks_exec_boundary() {
+        let (parent, child) = socket_pair().expect("socketpair should be created");
+
+        drop(child);
+        let status =
+            read_child_setup_status(parent.as_raw_fd()).expect("status should be readable");
+
+        assert_eq!(status, ChildSetupStatus::ControlClosed);
     }
 
     fn signal_ready_for_test(fd: RawFd) -> Result<()> {
