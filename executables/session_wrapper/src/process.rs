@@ -1,3 +1,21 @@
+//! Fork/exec lifecycle support for the Linux session wrapper.
+//!
+//! The important hand-off is:
+//!
+//! 1. The parent creates a Unix socketpair and forks.
+//! 2. The child installs the seccomp user-notification filter in its own
+//!    process, sends the resulting notification fd to the parent with
+//!    `SCM_RIGHTS`, and then waits for a one-byte "supervisor ready" signal.
+//! 3. The parent owns the notification fd, starts the supervisor path, and only
+//!    then releases the child.
+//! 4. The child drops privileges and `execv`s the configured shell.
+//!
+//! This is deliberately not implemented with `std::process::Command`: the
+//! parent must receive the seccomp listener before the child is allowed to run
+//! an `execve` that would otherwise block forever waiting for a supervisor.
+//! The control socket also gives the child a way to report setup failures after
+//! fork, where returning a normal Rust error to the parent is no longer
+//! possible.
 #![allow(unsafe_code)]
 
 use std::ffi::CString;
@@ -17,6 +35,10 @@ const FD_MESSAGE: u8 = b'F';
 const ERROR_MESSAGE: u8 = b'E';
 const MAX_CHILD_ERROR_LEN: u32 = 64 * 1024;
 
+/// Configuration copied into the forked child before it drops privileges.
+///
+/// These values are intentionally plain owned data so the child branch does not
+/// need to borrow parent state after `fork()`.
 #[derive(Debug, Clone)]
 pub(crate) struct ChildProcessConfig {
     pub(crate) shell: PathBuf,
@@ -26,6 +48,11 @@ pub(crate) struct ChildProcessConfig {
     pub(crate) intercept_fork: bool,
 }
 
+/// Owns the parent-side handles for a supervised child session.
+///
+/// Keeping this value alive keeps both the seccomp listener and the control
+/// socket alive. Dropping it is therefore a meaningful lifecycle event: the
+/// wrapper can no longer answer seccomp notifications for the child tree.
 #[derive(Debug)]
 pub(crate) struct SessionProcess {
     child_pid: libc::pid_t,
@@ -35,18 +62,30 @@ pub(crate) struct SessionProcess {
     control_socket: OwnedFd,
 }
 
+/// Messages the child can send after the parent has released it.
+///
+/// A clean `execv` closes the child's `SOCK_CLOEXEC` control socket, which the
+/// parent treats as the exec boundary. Failures before exec are sent as an
+/// explicit error frame so the top-level wrapper can fail loudly instead of
+/// hanging or reporting a generic child exit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ChildSetupStatus {
     ControlClosed,
     Failed(String),
 }
 
+/// One child or subreaped descendant collected by `waitpid`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReapedProcess {
     pub(crate) pid: libc::pid_t,
     pub(crate) status: i32,
 }
 
+/// Result of a non-blocking reap pass.
+///
+/// `has_children` preserves information that a plain `Vec<ReapedProcess>` would
+/// lose: `waitpid(..., WNOHANG)` returning 0 means at least one child or
+/// subreaped descendant still exists even if none exited during this pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReapStatus {
     pub(crate) reaped: Vec<ReapedProcess>,
@@ -54,37 +93,63 @@ pub(crate) struct ReapStatus {
 }
 
 impl SessionProcess {
+    /// Returns the PID of the initially forked child process.
     pub(crate) fn child_pid(&self) -> libc::pid_t {
         self.child_pid
     }
 
+    /// Returns the process group ID observed immediately after fork.
     pub(crate) fn child_process_group_id(&self) -> libc::pid_t {
         self.child_process_group_id
     }
 
+    /// Returns the session ID observed immediately after fork.
     pub(crate) fn child_session_id(&self) -> libc::pid_t {
         self.child_session_id
     }
 
+    /// Returns the parent-owned seccomp user notification listener fd.
+    ///
+    /// This fd is consumed by the supervisor loop. The child closes its own copy
+    /// before it is released, so this descriptor is the authoritative listener.
     pub(crate) fn notification_fd(&self) -> RawFd {
         self.notification_fd.as_raw_fd()
     }
 
+    /// Returns the parent side of the child setup control socket.
     pub(crate) fn control_socket_fd(&self) -> RawFd {
         self.control_socket.as_raw_fd()
     }
 
+    /// Releases the child after the parent has started its supervisor path.
+    ///
+    /// The child blocks on this byte after installing seccomp and sending the
+    /// notification fd. This prevents the child's first `execve` from being
+    /// notified before the parent is ready to respond.
     pub(crate) fn signal_supervisor_ready(&self) -> Result<()> {
         write_all(self.control_socket.as_raw_fd(), &[READY_BYTE])
             .context("failed to signal child that supervisor is ready")
     }
 
+    /// Reads the child's post-ready setup outcome from the control socket.
+    ///
+    /// EOF means the child reached `execv` and the close-on-exec control socket
+    /// closed. An error frame means setup failed after the parent had already
+    /// received the notification fd.
     pub(crate) fn read_child_setup_status(&self) -> Result<ChildSetupStatus> {
         read_child_setup_status(self.control_socket.as_raw_fd())
     }
 }
 
+/// Forks the wrapped session process and returns the parent-side supervision handles.
+///
+/// The returned session is not released yet. Callers must start whatever will
+/// answer seccomp notifications, then call `signal_supervisor_ready` before the
+/// child can drop privileges and exec the configured shell.
 pub(crate) fn spawn_session(config: ChildProcessConfig) -> Result<SessionProcess> {
+    // Descendants that outlive the initial shell are reparented to this process
+    // instead of PID 1. That gives the supervisor a reliable way to keep the
+    // notification fd alive until the whole wrapped process tree is gone.
     enable_child_subreaper().context("failed to mark session-wrapper as child subreaper")?;
 
     let (parent_socket, child_socket) =
@@ -105,6 +170,10 @@ pub(crate) fn spawn_session(config: ChildProcessConfig) -> Result<SessionProcess
         }
         child_pid => {
             drop(child_socket);
+            // This blocks until the child has installed seccomp and transferred
+            // the listener fd, or until it reports a setup error. The parent
+            // must not signal readiness before this point because the child
+            // would be able to hit a notified syscall with no listener running.
             let notification_fd = recv_initial_child_message(parent_socket.as_raw_fd())
                 .context("failed to receive seccomp notification fd from child")?;
             let child_process_group_id =
@@ -124,6 +193,11 @@ pub(crate) fn spawn_session(config: ChildProcessConfig) -> Result<SessionProcess
 }
 
 #[allow(clippy::needless_pass_by_value)]
+/// Runs child setup and exits without unwinding back into the forked process.
+///
+/// This function never returns. The child branch must avoid running parent-side
+/// destructors after fork, so it reports any setup error over the control socket
+/// and then calls `_exit`.
 fn run_child_or_exit(control_socket: OwnedFd, config: ChildProcessConfig) -> ! {
     if let Err(error) = run_child(&control_socket, &config) {
         if let Err(send_error) = send_child_error(control_socket.as_raw_fd(), &format!("{error:?}"))
@@ -137,13 +211,24 @@ fn run_child_or_exit(control_socket: OwnedFd, config: ChildProcessConfig) -> ! {
     unsafe { libc::_exit(1) }
 }
 
+/// Performs the child-side setup sequence before replacing the process image.
+///
+/// Setup order is security-critical: install seccomp first, transfer the
+/// listener fd, wait for parent readiness, drop privileges, then exec the shell.
 fn run_child(control_socket: &OwnedFd, config: &ChildProcessConfig) -> Result<()> {
+    // Install the filter before dropping privileges or execing the shell so the
+    // entire user session, including the first exec, is mediated.
     let notification_fd = seccomp::install_filter(config.intercept_fork)
         .context("failed to install session-wrapper seccomp filter in child")?;
     send_fd(control_socket.as_raw_fd(), notification_fd)
         .context("failed to send seccomp notification fd to parent")?;
+    // After SCM_RIGHTS transfer the child must not keep its copy open. The
+    // supervisor's lifetime should be controlled by the parent's OwnedFd, and
+    // no listener fd should leak into the user shell.
     close_fd(notification_fd).context("failed to close child copy of seccomp notification fd")?;
 
+    // The ready byte is the synchronization point that proves the parent has a
+    // notification loop ready to continue the child's first exec.
     wait_for_ready(control_socket.as_raw_fd())
         .context("failed to receive supervisor ready byte")?;
     drop_privileges(&config.user, config.gid, config.uid).with_context(|| {
@@ -156,6 +241,10 @@ fn run_child(control_socket: &OwnedFd, config: &ChildProcessConfig) -> Result<()
     exec_shell(&config.shell)
 }
 
+/// Creates the bidirectional control socket used across fork.
+///
+/// The socket is close-on-exec so the parent can distinguish successful exec
+/// from setup failure: successful exec closes the child end automatically.
 fn socket_pair() -> Result<(OwnedFd, OwnedFd)> {
     let mut fds = [-1; 2];
     let result = {
@@ -187,6 +276,10 @@ fn socket_pair() -> Result<(OwnedFd, OwnedFd)> {
 }
 
 #[allow(clippy::cast_ptr_alignment)]
+/// Sends a single file descriptor over a Unix domain socket.
+///
+/// The control payload is deliberately one byte so the receiver can tell an fd
+/// message from a child error frame before inspecting ancillary data.
 fn send_fd(socket: RawFd, fd_to_send: RawFd) -> Result<()> {
     let payload = [FD_MESSAGE];
     let mut iov = libc::iovec {
@@ -233,6 +326,11 @@ fn send_fd(socket: RawFd, fd_to_send: RawFd) -> Result<()> {
     Ok(())
 }
 
+/// Receives the child's first control message.
+///
+/// On success this returns the seccomp notification fd transferred with
+/// `SCM_RIGHTS`. If the child failed before installing seccomp, this reads and
+/// surfaces the child error message instead.
 fn recv_initial_child_message(socket: RawFd) -> Result<OwnedFd> {
     let mut payload = [0_u8];
     let mut iov = libc::iovec {
@@ -275,6 +373,8 @@ fn recv_initial_child_message(socket: RawFd) -> Result<OwnedFd> {
         byte => bail!("received unexpected child control message {byte}"),
     }
 
+    // `MSG_CMSG_CLOEXEC` protects the parent side from leaking the received fd
+    // through any future exec of the wrapper process itself.
     let fd = extract_received_fd(&message).context("missing SCM_RIGHTS fd in control message")?;
     let owned_fd = {
         // SAFETY: fd was received through SCM_RIGHTS and is now owned here.
@@ -285,6 +385,7 @@ fn recv_initial_child_message(socket: RawFd) -> Result<OwnedFd> {
 }
 
 #[allow(clippy::cast_ptr_alignment)]
+/// Extracts the first `SCM_RIGHTS` fd from a received control message.
 fn extract_received_fd(message: &libc::msghdr) -> Option<RawFd> {
     // SAFETY: message was filled by recvmsg and remains valid while inspecting
     // its control headers.
@@ -305,6 +406,7 @@ fn extract_received_fd(message: &libc::msghdr) -> Option<RawFd> {
     None
 }
 
+/// Blocks until the parent writes the supervisor-ready byte.
 fn wait_for_ready(socket: RawFd) -> Result<()> {
     let mut byte = [0_u8];
     read_exact(socket, &mut byte)?;
@@ -316,6 +418,7 @@ fn wait_for_ready(socket: RawFd) -> Result<()> {
     Ok(())
 }
 
+/// Reads a child setup status frame after the parent has released the child.
 fn read_child_setup_status(socket: RawFd) -> Result<ChildSetupStatus> {
     let mut kind = [0_u8];
     let read_count = loop {
@@ -335,6 +438,8 @@ fn read_child_setup_status(socket: RawFd) -> Result<ChildSetupStatus> {
         break read_count;
     };
     if read_count == 0 {
+        // The control socket is SOCK_CLOEXEC, so EOF after the ready signal is
+        // the expected success path: exec replaced the child image.
         return Ok(ChildSetupStatus::ControlClosed);
     }
 
@@ -346,6 +451,7 @@ fn read_child_setup_status(socket: RawFd) -> Result<ChildSetupStatus> {
     }
 }
 
+/// Sends a bounded UTF-8 child setup error over the control socket.
 fn send_child_error(socket: RawFd, message: &str) -> Result<()> {
     let bytes = message.as_bytes();
     let len = u32::try_from(bytes.len()).context("child setup error message is too large")?;
@@ -358,6 +464,7 @@ fn send_child_error(socket: RawFd, message: &str) -> Result<()> {
     write_all(socket, bytes)
 }
 
+/// Reads a bounded UTF-8 child setup error from the control socket.
 fn read_child_error(socket: RawFd) -> Result<String> {
     let mut len = [0_u8; mem::size_of::<u32>()];
     read_exact(socket, &mut len).context("failed to read child error length")?;
@@ -372,7 +479,15 @@ fn read_child_error(socket: RawFd) -> Result<String> {
     String::from_utf8(message).context("child setup error message is not valid UTF-8")
 }
 
+/// Drops from the wrapper's current credentials to the target login identity.
+///
+/// The wrapper normally starts privileged so it can set groups and UID for the
+/// target user. Non-root smoke tests may already be running as that identity,
+/// in which case there is nothing to drop.
 fn drop_privileges(user: &str, gid: libc::gid_t, uid: libc::uid_t) -> Result<()> {
+    // Non-root smoke tests often target the current user. Treat that as already
+    // dropped so local integration checks do not require sudo just to exercise
+    // the seccomp and lifecycle path.
     if current_effective_identity_matches(gid, uid) {
         return Ok(());
     }
@@ -407,6 +522,7 @@ fn drop_privileges(user: &str, gid: libc::gid_t, uid: libc::uid_t) -> Result<()>
     Ok(())
 }
 
+/// Returns true when the current effective UID/GID already match the target.
 fn current_effective_identity_matches(gid: libc::gid_t, uid: libc::uid_t) -> bool {
     let running_uid = {
         // SAFETY: geteuid has no preconditions.
@@ -420,6 +536,10 @@ fn current_effective_identity_matches(gid: libc::gid_t, uid: libc::uid_t) -> boo
     running_uid == uid && running_primary_gid == gid
 }
 
+/// Replaces the child process with the configured shell.
+///
+/// This uses `execv` directly because the child is already forked, filtered,
+/// and synchronized with the parent.
 fn exec_shell(shell: &Path) -> Result<()> {
     let shell_cstr = path_to_cstring(shell).context("shell path is not a valid C string")?;
     let argv = [shell_cstr.as_ptr(), ptr::null()];
@@ -433,10 +553,12 @@ fn exec_shell(shell: &Path) -> Result<()> {
     bail!("execv({}) failed: {}", shell.display(), io::Error::last_os_error());
 }
 
+/// Converts a filesystem path to a C string suitable for `execv`.
 fn path_to_cstring(path: &Path) -> Result<CString> {
     CString::new(path.as_os_str().as_bytes()).context("path contains an interior NUL byte")
 }
 
+/// Reads exactly `buffer.len()` bytes from a raw fd, retrying on interruption.
 fn read_exact(fd: RawFd, mut buffer: &mut [u8]) -> Result<()> {
     while !buffer.is_empty() {
         let read_count = {
@@ -463,6 +585,7 @@ fn read_exact(fd: RawFd, mut buffer: &mut [u8]) -> Result<()> {
     Ok(())
 }
 
+/// Writes the whole buffer to a raw fd, retrying on interruption.
 fn write_all(fd: RawFd, mut buffer: &[u8]) -> Result<()> {
     while !buffer.is_empty() {
         let written = {
@@ -489,6 +612,11 @@ fn write_all(fd: RawFd, mut buffer: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Closes a raw fd that is not wrapped in an `OwnedFd`.
+///
+/// The seccomp listener fd is returned by `libseccomp-rs` as a raw descriptor,
+/// then duplicated into the parent through `SCM_RIGHTS`. The child closes its
+/// original copy explicitly with this helper.
 fn close_fd(fd: RawFd) -> Result<()> {
     let result = {
         // SAFETY: fd is the raw seccomp notification descriptor returned by libseccomp.
@@ -501,13 +629,18 @@ fn close_fd(fd: RawFd) -> Result<()> {
     Ok(())
 }
 
+/// Returns the ancillary buffer size required to transfer one raw fd.
 fn cmsg_space_for_fd() -> usize {
     // SAFETY: CMSG_SPACE is a pure size calculation for one RawFd payload.
     unsafe { libc::CMSG_SPACE(raw_fd_size_for_cmsg()) as usize }
 }
 
 #[allow(clippy::useless_conversion)]
+/// Assigns `msghdr.msg_controllen` portably across libc implementations.
 fn set_msg_controllen(message: &mut libc::msghdr, len: usize) -> Result<()> {
+    // glibc exposes msg_controllen as usize, while musl exposes it as socklen_t
+    // (u32 on x86_64). The fallible conversion keeps one implementation working
+    // for both CI targets.
     message.msg_controllen = len
         .try_into()
         .context("control message buffer length does not fit msg_controllen")?;
@@ -515,10 +648,12 @@ fn set_msg_controllen(message: &mut libc::msghdr, len: usize) -> Result<()> {
 }
 
 #[allow(clippy::cast_possible_truncation)]
+/// Returns the raw fd payload size in the type expected by `CMSG_SPACE`.
 fn raw_fd_size_for_cmsg() -> libc::c_uint {
     mem::size_of::<RawFd>() as libc::c_uint
 }
 
+/// Creates an all-zero `msghdr` for later field-by-field initialization.
 fn zeroed_msghdr() -> libc::msghdr {
     let message = MaybeUninit::<libc::msghdr>::zeroed();
     // SAFETY: an all-zero msghdr is the standard initialization pattern before
@@ -526,6 +661,10 @@ fn zeroed_msghdr() -> libc::msghdr {
     unsafe { message.assume_init() }
 }
 
+/// Marks the wrapper as a child subreaper for this process tree.
+///
+/// This lets the wrapper reap descendants that outlive the initial shell,
+/// instead of losing visibility when they would otherwise be reparented to PID 1.
 fn enable_child_subreaper() -> Result<()> {
     let result = {
         // SAFETY: prctl is called with PR_SET_CHILD_SUBREAPER and integer
@@ -538,6 +677,7 @@ fn enable_child_subreaper() -> Result<()> {
     Ok(())
 }
 
+/// Reads the process group ID for a live process.
 fn process_group_id(pid: libc::pid_t) -> Result<libc::pid_t> {
     let process_group_id = {
         // SAFETY: getpgid reads process metadata for the supplied pid.
@@ -549,6 +689,7 @@ fn process_group_id(pid: libc::pid_t) -> Result<libc::pid_t> {
     Ok(process_group_id)
 }
 
+/// Reads the session ID for a live process.
 fn session_id(pid: libc::pid_t) -> Result<libc::pid_t> {
     let session_id = {
         // SAFETY: getsid reads process metadata for the supplied pid.
@@ -560,6 +701,11 @@ fn session_id(pid: libc::pid_t) -> Result<libc::pid_t> {
     Ok(session_id)
 }
 
+/// Reaps all currently exited child or subreaped descendant processes.
+///
+/// The return value also tells the supervisor whether any children remain. That
+/// signal is necessary because there may be live descendants even when no PIDs
+/// were reaped in this pass.
 pub(crate) fn reap_available_children() -> Result<ReapStatus> {
     let mut reaped = Vec::new();
 
@@ -575,6 +721,8 @@ pub(crate) fn reap_available_children() -> Result<ReapStatus> {
             continue;
         }
         if pid == 0 {
+            // No exits are pending, but waitpid tells us there is still at
+            // least one child/subreaped descendant to supervise.
             return Ok(ReapStatus {
                 reaped,
                 has_children: true,
@@ -583,6 +731,9 @@ pub(crate) fn reap_available_children() -> Result<ReapStatus> {
 
         let error = io::Error::last_os_error();
         if error.raw_os_error() == Some(libc::ECHILD) {
+            // No children remain. The supervisor may now close the notification
+            // fd without stranding a descendant that inherited the seccomp
+            // filter.
             return Ok(ReapStatus {
                 reaped,
                 has_children: false,
@@ -595,6 +746,10 @@ pub(crate) fn reap_available_children() -> Result<ReapStatus> {
     }
 }
 
+/// Checks whether a PID appears to still exist.
+///
+/// `EPERM` counts as alive because the process exists even if this wrapper does
+/// not currently have permission to signal it.
 pub(crate) fn process_exists(pid: libc::pid_t) -> Result<bool> {
     if pid <= 0 {
         return Ok(false);

@@ -1,3 +1,13 @@
+//! Seccomp policy construction for the session wrapper.
+//!
+//! The filter is intentionally narrow: default allow, notify on exec-family
+//! syscalls, optionally notify on fork-family syscalls, and deny ptrace. That
+//! gives the parent wrapper the decision points needed for command
+//! authorization without attempting to sandbox the entire session.
+//!
+//! `libseccomp-rs` owns the low-level BPF generation. This module only defines
+//! the policy in syscall terms and returns the user-notification listener fd to
+//! the process lifecycle code.
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -6,18 +16,31 @@ use libseccomp::{check_api, ScmpAction, ScmpFilterContext, ScmpSyscall, ScmpVers
 
 static FILTER_INSTALLED: AtomicBool = AtomicBool::new(false);
 
+/// Action applied to one syscall rule in the wrapper policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuleAction {
+    /// Route the syscall through seccomp user notification.
     Notify,
+
+    /// Fail the syscall immediately with the supplied errno.
     Errno(i32),
 }
 
+/// Declarative syscall policy entry before it is resolved by `libseccomp-rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SyscallRule {
+    /// Linux syscall name resolved through `libseccomp-rs`.
     name: &'static str,
+
+    /// Action to apply when this syscall is reached.
     action: RuleAction,
 }
 
+/// Builds the list of syscall rules for the requested supervision mode.
+///
+/// Exec-family notifications are always installed because they are the command
+/// authorization boundary. Fork-family notifications are optional and primarily
+/// support descendant lifecycle visibility and future richer policy.
 fn syscall_rules(intercept_fork: bool) -> Vec<SyscallRule> {
     let mut rules = vec![
         SyscallRule {
@@ -35,6 +58,10 @@ fn syscall_rules(intercept_fork: bool) -> Vec<SyscallRule> {
     ];
 
     if intercept_fork {
+        // Fork interception is optional because exec notifications alone are
+        // enough for command authorization. Enabling fork-family notifications
+        // gives the supervisor earlier visibility into process tree expansion,
+        // which is useful for lifecycle tests and future richer policy.
         rules.extend([
             SyscallRule {
                 name: "clone",
@@ -58,6 +85,10 @@ fn syscall_rules(intercept_fork: bool) -> Vec<SyscallRule> {
     rules
 }
 
+/// Builds, but does not load, the `libseccomp-rs` filter context.
+///
+/// Tests use this to inspect/export the generated policy without installing a
+/// filter into the test process.
 fn build_filter(intercept_fork: bool) -> Result<ScmpFilterContext> {
     let mut filter = ScmpFilterContext::new(ScmpAction::Allow)
         .context("failed to create libseccomp filter context")?;
@@ -81,6 +112,10 @@ fn build_filter(intercept_fork: bool) -> Result<ScmpFilterContext> {
     Ok(filter)
 }
 
+/// Verifies that the runtime `libseccomp` API can create user notifications.
+///
+/// User notification support requires both a recent enough library and API
+/// level. Checking this up front gives a clear error before the child is forked.
 fn ensure_user_notify_supported() -> Result<()> {
     let supported = check_api(6, ScmpVersion::from((2, 5, 0)))
         .context("failed to determine libseccomp API/version support")?;
@@ -92,7 +127,13 @@ fn ensure_user_notify_supported() -> Result<()> {
     Ok(())
 }
 
+/// Installs the wrapper seccomp filter and returns its notification listener fd.
+///
+/// The caller must transfer ownership of this fd to the parent supervisor before
+/// allowing the child to execute any syscall that can be notified.
 pub(crate) fn install_filter(intercept_fork: bool) -> Result<RawFd> {
+    // A process can only have one useful listener for this filter. Reinstalling
+    // would make ownership and notification routing ambiguous, so fail fast.
     if FILTER_INSTALLED
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_err()

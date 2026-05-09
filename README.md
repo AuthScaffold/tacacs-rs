@@ -9,6 +9,7 @@
 | **tacon** | CLI client for sending TACACS+ requests (accounting, authentication, authorization) |
 | **tacacsrs-agentd** | Central service daemon that manages persistent TACACS+ connections with automatic failover |
 | **tacacsrs-config** | YANG JSON configuration crate for `ietf-system-tacacs-plus` parsing, validation, and runtime mapping |
+| **session-wrapper** | Linux session wrapper POC for TACACS+ command authorization via seccomp user notifications |
 
 ## Workspace Architecture
 
@@ -34,6 +35,8 @@ tacacsrs-agent ────┬──► tacacsrs-agent-client
 - [tacon Usage Guide](docs/tacon.md) — CLI client reference, connection modes, batch execution
 - [tacacsrs-agentd Usage Guide](docs/tacacsrs-agentd.md) — Central service deployment, failover, IPC protocol
 - [tacacsrs-config README](libraries/tacacsrs_config/README.md) — YANG JSON schema support, codegen workflow, parsing APIs
+- [session-wrapper README](executables/session_wrapper/README.md) — Linux seccomp session wrapper architecture and current allow-all behavior
+- [Session Wrapper Testing](docs/session-wrapper-testing.md) — Linux smoke and integration checks for the session wrapper
 - [Building for SONiC](docs/sonic-build-guide.md) — Static musl binaries for network switches
 - [Debian Packaging](DEBIAN_PACKAGING.md) — Building `.deb` packages
 - [Development Guide](DEVELOPMENT.md) — Building, testing, CI, project structure
