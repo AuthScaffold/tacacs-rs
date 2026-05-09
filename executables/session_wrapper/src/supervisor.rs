@@ -397,7 +397,7 @@ fn log_or_propagate_send_error(err: anyhow::Error, notif_fd: ScmpFd, id: u64) ->
         // The notification expired: the target process already exited.
         // The respond() failure is therefore expected — nothing to do.
         log::debug!(
-            "notification {id} expired before response could be sent;              ignoring respond error: {err:#}"
+            "notification {id} expired before response could be sent; ignoring respond error: {err:#}"
         );
         Ok(())
     } else {

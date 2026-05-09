@@ -248,10 +248,10 @@ fn read_argv(
 ///
 /// # Return value
 ///
-/// Returns `(executable_path, argv_without_argv0)` where `argv_without_argv0`
-/// is the full argv array (including `argv[0]`, which may differ from the
-/// executable path).  Returns `(String::new(), Vec::new())` for non-exec
-/// syscalls (e.g. fork notifications when `--intercept-fork` is enabled).
+/// Returns `(executable_path, argv)` where `argv` is the full argument vector
+/// including `argv[0]` (which may differ from the executable path).
+/// Returns `(String::new(), Vec::new())` for non-exec syscalls
+/// (e.g. fork notifications when `--intercept-fork` is enabled).
 ///
 /// # TOCTOU mitigation
 ///
