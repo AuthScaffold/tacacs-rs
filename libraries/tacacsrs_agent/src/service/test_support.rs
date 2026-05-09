@@ -152,7 +152,6 @@ impl UpstreamConnector for FakeConnector {
         Ok(DedicatedAccountingResult {
             response,
             single_connect_supported: supported,
-            upgraded_connection: None,
         })
     }
 }
@@ -233,7 +232,6 @@ impl UpstreamConnector for SingleSessionConnector {
         Ok(DedicatedAccountingResult {
             response,
             single_connect_supported: supported,
-            upgraded_connection: None,
         })
     }
 }
@@ -303,7 +301,6 @@ impl UpstreamConnector for BlockingConnector {
         Ok(DedicatedAccountingResult {
             response,
             single_connect_supported: supported,
-            upgraded_connection: None,
         })
     }
 }
@@ -387,7 +384,6 @@ impl UpstreamConnector for ExclusiveSessionConnector {
         Ok(DedicatedAccountingResult {
             response,
             single_connect_supported: supported,
-            upgraded_connection: None,
         })
     }
 }

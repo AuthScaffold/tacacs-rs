@@ -417,12 +417,6 @@ impl ServiceState {
                          switching to shared connections for future requests",
                     );
                 }
-                if let Some(connection) = result.upgraded_connection {
-                    log::info!(
-                        "Caching upgraded single-connection stream for future requests to {address}"
-                    );
-                    *self.servers[index].connection.write().await = Some(connection);
-                }
                 Ok(result.response)
             }
             Err(error) => {

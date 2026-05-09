@@ -1,5 +1,6 @@
 use anyhow::Context;
 use futures::future::join_all;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_messages::enumerations::TacacsFlags;
@@ -7,18 +8,25 @@ use tacacsrs_networking::DedicatedConnection;
 use tacacsrs_networking::config_connect::ConnectOptions;
 
 use crate::commands::accounting::build_accounting_request;
-use crate::connection::{establish_stream, Connection};
+use crate::connection::establish_stream;
 
 use super::common::{load_test_iterations, run_load_test};
 use super::super::types::{BatchRequest, LoadTestConfig, RequestResult};
 
+pub(super) type ProbeConnection =
+    DedicatedConnection<Box<dyn AsyncRead + Unpin + Send>, Box<dyn AsyncWrite + Unpin + Send>>;
+
+pub(super) struct SingleConnectProbe {
+    pub single_connect_supported: bool,
+    pub connection: Option<ProbeConnection>,
+}
+
 /// Probes the server for single-connection support by sending a lightweight
-/// accounting record that logs tacon's invocation. Returns an upgraded
-/// multiplexed connection if the server echoed `TAC_PLUS_SINGLE_CONNECT_FLAG`.
+/// accounting record that logs tacon's invocation.
 pub(super) async fn probe_single_connect(
     server: &TacacsPlusServer,
     options: &ConnectOptions,
-) -> Option<Connection> {
+) -> Option<SingleConnectProbe> {
     let result = async {
         let stream = establish_stream(server, options)
             .await
@@ -46,53 +54,14 @@ pub(super) async fn probe_single_connect(
                 exchange.reply,
                 exchange.single_connect_supported
             );
-            if exchange.single_connect_supported {
-                Some(Connection::from_inner(connection.upgrade()))
-            } else {
-                None
-            }
+            Some(SingleConnectProbe {
+                single_connect_supported: exchange.single_connect_supported,
+                connection: exchange.single_connect_supported.then_some(connection),
+            })
         }
         Err(error) => {
             log::warn!("Single-connect probe failed, falling back to dedicated: {error}");
             None
-        }
-    }
-}
-
-pub(super) async fn probe_single_connect_supported(
-    server: &TacacsPlusServer,
-    options: &ConnectOptions,
-) -> bool {
-    let result = async {
-        let stream = establish_stream(server, options)
-            .await
-            .context("Probe connection failed")?;
-        let obfuscation_key = server.obfuscation_key();
-        let mut connection = DedicatedConnection::new(stream, obfuscation_key.as_deref());
-
-        let args =
-            redact_secret_args(std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()));
-        let request = build_accounting_request("tacon", "batch", "localhost", "tacon", Some(&args));
-
-        connection
-            .send_accounting(request, TacacsFlags::empty())
-            .await
-            .context("Probe accounting exchange failed")
-    }
-    .await;
-
-    match result {
-        Ok(exchange) => {
-            log::info!(
-                "Probe reply: {:?}, single_connect_supported: {}",
-                exchange.reply,
-                exchange.single_connect_supported
-            );
-            exchange.single_connect_supported
-        }
-        Err(error) => {
-            log::warn!("Single-connect probe failed, falling back to dedicated: {error}");
-            false
         }
     }
 }
