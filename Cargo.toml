@@ -9,6 +9,7 @@ members = [
     "libraries/tacacsrs_agent",
     "libraries/tacacsrs_config",
     "executables/tacon",
+    "executables/session_wrapper",
     "executables/tacacsrs_agentd"
 ]
 exclude = ["fuzz"]
