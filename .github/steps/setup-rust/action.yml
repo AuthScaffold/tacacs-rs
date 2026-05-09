@@ -102,7 +102,7 @@ runs:
     - name: Restore musl libseccomp cache
       id: musl-libseccomp-cache
       if: inputs.install-musl-tools == 'true' && runner.os == 'Linux'
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc6a0a # v4.3.0
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: ~/.cache/tacacs-rs/libseccomp-musl/${{ inputs.musl-libseccomp-version }}/x86_64-linux-musl
         key: libseccomp-musl-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.musl-libseccomp-version }}-x86_64-linux-musl
