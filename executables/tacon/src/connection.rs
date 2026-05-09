@@ -11,11 +11,16 @@ use tacacsrs_networking::{
 };
 
 /// Represents an active TACACS+ connection (either plain TCP or TLS)
+#[derive(Clone)]
 pub struct Connection {
     inner: Arc<TacacsConnection>,
 }
 
 impl Connection {
+    pub(crate) const fn from_inner(inner: Arc<TacacsConnection>) -> Self {
+        Self { inner }
+    }
+
     /// Creates a new session on this connection
     ///
     /// # Errors
@@ -77,7 +82,7 @@ pub async fn establish_connection(
         .await
         .context("Failed to start connection handler")?;
 
-    Ok(Connection { inner: connection })
+    Ok(Connection::from_inner(connection))
 }
 
 /// Establishes a TCP or TLS stream based on the server config.

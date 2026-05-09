@@ -1,11 +1,10 @@
 use async_trait::async_trait;
 use log::info;
+use tacacsrs_flow_abstractions::accounting::{build_accounting_packet, parse_accounting_reply};
 use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
-use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
-use tacacsrs_messages::header::Header;
-use tacacsrs_messages::packet::{Packet, PacketTrait};
-use tacacsrs_messages::traits::TacacsBodyTrait;
+use tacacsrs_messages::enumerations::TacacsFlags;
+use tacacsrs_messages::packet::PacketTrait;
 
 /// Fixed TACACS+ client accounting flow.
 ///
@@ -37,23 +36,9 @@ pub trait AccountingFlowTrait: ClientSessionFlowIoTrait {
         }
 
         let sequence_number = self.next_sequence_number().await;
-        let data = request.to_bytes();
-        let length = u32::try_from(data.len())
-            .map_err(|_| anyhow::Error::msg("Accounting request payload exceeds u32 length"))?;
-        let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | custom_flags;
-
-        let packet = Packet::new(
-            Header {
-                major_version: TacacsMajorVersion::TacacsPlusMajor1,
-                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
-                tacacs_type: TacacsType::TacPlusAccounting,
-                seq_no: sequence_number,
-                flags,
-                session_id: self.session_id(),
-                length,
-            },
-            data,
-        )?;
+        let packet =
+            build_accounting_packet(self.session_id(), sequence_number, &request, custom_flags)?;
+        let flags = packet.header().flags;
 
         info!(
             target: "tacacsrs_flows::accounting",
@@ -63,7 +48,7 @@ pub trait AccountingFlowTrait: ClientSessionFlowIoTrait {
 
         self.send_packet(packet).await?;
         let response = self.receive_packet().await?;
-        let reply = AccountingReply::from_bytes(response.body())?;
+        let reply = parse_accounting_reply(&response)?;
 
         self.complete().await;
 
@@ -85,8 +70,12 @@ mod tests {
     use std::sync::Arc;
     use tacacsrs_messages::enumerations::{
         TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
-        TacacsAuthenticationService, TacacsAuthenticationType,
+        TacacsAuthenticationService, TacacsAuthenticationType, TacacsMajorVersion,
+        TacacsMinorVersion, TacacsType,
     };
+    use tacacsrs_messages::header::Header;
+    use tacacsrs_messages::packet::Packet;
+    use tacacsrs_messages::traits::TacacsBodyTrait;
     use tacacsrs_networking::connection::TacacsConnection;
     use tacacsrs_networking::traits::SessionManagementTrait;
     use tacacsrs_networking::transport::mock::MockTransport;

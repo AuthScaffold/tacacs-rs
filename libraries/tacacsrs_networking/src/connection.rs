@@ -35,13 +35,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::task;
 
 use crate::packet_reader::{PacketReadResult, PacketReader, PacketReaderTrait};
 use crate::packet_writer::{PacketWriter, PacketWriterTrait};
 use crate::session::Session;
-use crate::session_manager::SessionManager;
+use crate::session_manager::{SessionManager, SingleConnectionState};
 use crate::single_connect_tracker::{LocalSingleConnectState, SingleConnectFlag};
 use crate::traits::SessionManagementTrait;
 use crate::transport::Transport;
@@ -87,6 +87,20 @@ impl TacacsConnection {
         let key = obfuscation_key.map(<[u8]>::to_vec);
         Self {
             session_manager: Arc::new(SessionManager::new()),
+            packet_reader: Arc::new(PacketReader::new(key.clone())),
+            packet_writer: Arc::new(PacketWriter::new(key)),
+        }
+    }
+
+    /// Creates a connection whose single-connect support has already been confirmed.
+    ///
+    /// Use this when taking over a stream from a dedicated probe exchange that
+    /// received `TAC_PLUS_SINGLE_CONNECT_FLAG` from the server.
+    #[must_use]
+    pub fn new_single_connect_confirmed(obfuscation_key: Option<&[u8]>) -> Self {
+        let key = obfuscation_key.map(<[u8]>::to_vec);
+        Self {
+            session_manager: Arc::new(SessionManager::with_state(SingleConnectionState::Supported)),
             packet_reader: Arc::new(PacketReader::new(key.clone())),
             packet_writer: Arc::new(PacketWriter::new(key)),
         }
@@ -164,12 +178,51 @@ impl TacacsConnection {
         Ok(())
     }
 
+    pub(crate) fn run_with_halves<R, W>(self: &Arc<Self>, reader: R, writer: W)
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let self_clone = Arc::clone(self);
+        task::spawn(async move {
+            self_clone
+                .handle_connection_with_halves(reader, writer)
+                .await
+        });
+    }
+
     /// Internal handler for the connection lifecycle.
     ///
     /// Splits the transport into read/write halves and runs concurrent
     /// read and write loops using `try_join!`.
     async fn handle_connection<T: Transport>(&self, transport: T) -> anyhow::Result<()> {
         let (mut reader, mut writer) = transport.split();
+        self.handle_connection_halves(&mut reader, &mut writer)
+            .await
+    }
+
+    async fn handle_connection_with_halves<R, W>(
+        &self,
+        mut reader: R,
+        mut writer: W,
+    ) -> anyhow::Result<()>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        self.handle_connection_halves(&mut reader, &mut writer)
+            .await
+    }
+
+    async fn handle_connection_halves<R, W>(
+        &self,
+        reader: &mut R,
+        writer: &mut W,
+    ) -> anyhow::Result<()>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
         let receiver = self.session_manager.receiver.lock().await.take().unwrap();
 
         // Use async blocks with try_join! instead of spawning tasks.
@@ -178,7 +231,7 @@ impl TacacsConnection {
         let write_future = async {
             match self
                 .packet_writer
-                .run_write_loop(receiver, &mut writer, Arc::clone(&self.session_manager))
+                .run_write_loop(receiver, writer, Arc::clone(&self.session_manager))
                 .await
             {
                 Ok(()) => Ok(()),
@@ -193,7 +246,7 @@ impl TacacsConnection {
         };
 
         let read_future = async {
-            match self.read_handler(&mut reader).await {
+            match self.read_handler(reader).await {
                 Ok(()) => Ok(()),
                 Err(e) => {
                     log::error!(

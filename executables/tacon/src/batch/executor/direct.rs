@@ -1,9 +1,7 @@
-use anyhow::Context;
-
 use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_networking::config_connect::ConnectOptions;
 
-use crate::connection::establish_connection;
+use crate::connection::Connection;
 
 use super::dedicated::{execute_requests_dedicated, probe_single_connect, run_dedicated_load_test};
 use super::multiplexed::{
@@ -12,7 +10,6 @@ use super::multiplexed::{
 use super::super::progress::print_load_test_summary;
 use super::super::types::{BatchFile, LoadTestConfig, RequestResult};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExecutionMode {
     Multiplexed,
     Dedicated,
@@ -21,21 +18,15 @@ enum ExecutionMode {
 /// Determines the execution mode for the batch.
 ///
 /// When `dedicated` is `true`, the probe is skipped and dedicated mode is used
-/// unconditionally. Otherwise a lightweight accounting record is sent via a
-/// dedicated connection to check whether the server echoes
-/// `TAC_PLUS_SINGLE_CONNECT_FLAG`.
-async fn determine_execution_mode(
-    server: &TacacsPlusServer,
-    dedicated: bool,
-    options: &ConnectOptions,
-) -> ExecutionMode {
+/// unconditionally. Otherwise the probe result decides whether the batch can
+/// use multiplexed mode.
+fn determine_execution_mode(dedicated: bool, single_connect_supported: bool) -> ExecutionMode {
     if dedicated {
         log::info!("Dedicated mode forced by CLI flag — skipping single-connection probe");
         return ExecutionMode::Dedicated;
     }
 
-    log::info!("Probing server for single-connection support via dedicated connection");
-    if probe_single_connect(server, options).await {
+    if single_connect_supported {
         ExecutionMode::Multiplexed
     } else {
         ExecutionMode::Dedicated
@@ -46,7 +37,8 @@ async fn determine_execution_mode(
 ///
 /// Unless `dedicated` is `true`, a lightweight probe is sent first to detect
 /// single-connection support. The result decides whether batch requests use
-/// multiplexed or dedicated connections.
+/// multiplexed or dedicated connections. Normal multiplexed batches explicitly
+/// upgrade the successful probe stream instead of reconnecting.
 pub async fn execute_batch(
     server: &TacacsPlusServer,
     dedicated: bool,
@@ -62,7 +54,16 @@ pub async fn execute_batch(
         return Ok(vec![]);
     }
 
-    let execution_mode = determine_execution_mode(server, dedicated, options).await;
+    let mut probe = if dedicated {
+        None
+    } else {
+        log::info!("Probing server for single-connection support via dedicated connection");
+        probe_single_connect(server, options).await
+    };
+    let execution_mode = determine_execution_mode(
+        dedicated,
+        probe.as_ref().is_some_and(|p| p.single_connect_supported),
+    );
 
     if let Some(load_config) = &batch.metadata.load_test {
         return execute_batch_load_test(server, batch, load_config, execution_mode, options).await;
@@ -73,10 +74,12 @@ pub async fn execute_batch(
 
     let results = match execution_mode {
         ExecutionMode::Multiplexed => {
-            let connection = establish_connection(server, options)
-                .await
-                .context("Failed to establish multiplexed connection after probe")?;
-
+            let Some(probe_connection) = probe.take().and_then(|probe| probe.connection) else {
+                anyhow::bail!(
+                    "internal error: multiplexed mode selected without an upgradeable probe connection"
+                );
+            };
+            let connection = Connection::from_inner(probe_connection.upgrade());
             if batch.metadata.parallel {
                 execute_parallel_multiplexed(connection, &batch.requests).await?
             } else {

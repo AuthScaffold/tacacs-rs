@@ -1,5 +1,6 @@
 use anyhow::Context;
 use futures::future::join_all;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_messages::enumerations::TacacsFlags;
@@ -12,13 +13,20 @@ use crate::connection::establish_stream;
 use super::common::{load_test_iterations, run_load_test};
 use super::super::types::{BatchRequest, LoadTestConfig, RequestResult};
 
+pub(super) type ProbeConnection =
+    DedicatedConnection<Box<dyn AsyncRead + Unpin + Send>, Box<dyn AsyncWrite + Unpin + Send>>;
+
+pub(super) struct SingleConnectProbe {
+    pub single_connect_supported: bool,
+    pub connection: Option<ProbeConnection>,
+}
+
 /// Probes the server for single-connection support by sending a lightweight
-/// accounting record that logs tacon's invocation. Returns `true` if the
-/// server echoed `TAC_PLUS_SINGLE_CONNECT_FLAG`.
+/// accounting record that logs tacon's invocation.
 pub(super) async fn probe_single_connect(
     server: &TacacsPlusServer,
     options: &ConnectOptions,
-) -> bool {
+) -> Option<SingleConnectProbe> {
     let result = async {
         let stream = establish_stream(server, options)
             .await
@@ -30,25 +38,30 @@ pub(super) async fn probe_single_connect(
             redact_secret_args(std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()));
         let request = build_accounting_request("tacon", "batch", "localhost", "tacon", Some(&args));
 
-        connection
+        let exchange = connection
             .send_accounting(request, TacacsFlags::empty())
             .await
-            .context("Probe accounting exchange failed")
+            .context("Probe accounting exchange failed")?;
+
+        Ok::<_, anyhow::Error>((connection, exchange))
     }
     .await;
 
     match result {
-        Ok(exchange) => {
+        Ok((connection, exchange)) => {
             log::info!(
                 "Probe reply: {:?}, single_connect_supported: {}",
                 exchange.reply,
                 exchange.single_connect_supported
             );
-            exchange.single_connect_supported
+            Some(SingleConnectProbe {
+                single_connect_supported: exchange.single_connect_supported,
+                connection: exchange.single_connect_supported.then_some(connection),
+            })
         }
         Err(error) => {
             log::warn!("Single-connect probe failed, falling back to dedicated: {error}");
-            false
+            None
         }
     }
 }

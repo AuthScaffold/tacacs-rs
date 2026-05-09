@@ -83,6 +83,10 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub(crate) fn new() -> Self {
+        Self::with_state(SingleConnectionState::Initial)
+    }
+
+    pub(crate) fn with_state(initial_state: SingleConnectionState) -> Self {
         let (sender, receiver) = mpsc::channel::<Packet>(32);
 
         Self {
@@ -91,7 +95,7 @@ impl SessionManager {
             receiver: Some(receiver).into(),
             session_id_allocator: SessionIdAllocator::new(),
             can_accept_new_sessions: true.into(),
-            single_connection_state: SingleConnectionState::Initial.into(),
+            single_connection_state: initial_state.into(),
             close_notify: Notify::new(),
         }
     }
