@@ -80,7 +80,7 @@ runs:
         PACKAGES=()
 
         if [ "${{ inputs.install-musl-tools }}" = "true" ]; then
-          for package in gcc gperf make musl-tools; do
+          for package in gcc gperf linux-libc-dev make musl-tools; do
             if ! dpkg -s "$package" &>/dev/null; then
               PACKAGES+=("$package")
             fi
@@ -99,14 +99,26 @@ runs:
         sudo apt-get update
         sudo apt-get install -y "${PACKAGES[@]}"
 
-    - name: Build libseccomp for musl
+    - name: Restore musl libseccomp cache
+      id: musl-libseccomp-cache
       if: inputs.install-musl-tools == 'true' && runner.os == 'Linux'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc6a0a # v4.3.0
+      with:
+        path: ~/.cache/tacacs-rs/libseccomp-musl/${{ inputs.musl-libseccomp-version }}/x86_64-linux-musl
+        key: libseccomp-musl-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.musl-libseccomp-version }}-x86_64-linux-musl
+
+    - name: Build libseccomp for musl
+      if: inputs.install-musl-tools == 'true' && runner.os == 'Linux' && steps.musl-libseccomp-cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         LIBSECCOMP_VERSION: ${{ inputs.musl-libseccomp-version }}
       run: |
-        LIBSECCOMP_PREFIX="$RUNNER_TEMP/libseccomp-musl"
+        LIBSECCOMP_PREFIX="$HOME/.cache/tacacs-rs/libseccomp-musl/${LIBSECCOMP_VERSION}/x86_64-linux-musl"
         LIBSECCOMP_TARBALL="$RUNNER_TEMP/libseccomp-${LIBSECCOMP_VERSION}.tar.gz"
+        DEB_HOST_MULTIARCH="$(gcc -print-multiarch)"
+        LIBSECCOMP_CPPFLAGS="-idirafter /usr/include -idirafter /usr/include/${DEB_HOST_MULTIARCH}"
+
+        rm -rf "$LIBSECCOMP_PREFIX"
 
         curl -fsSLo "$LIBSECCOMP_TARBALL" \
           "https://github.com/seccomp/libseccomp/releases/download/v${LIBSECCOMP_VERSION}/libseccomp-${LIBSECCOMP_VERSION}.tar.gz"
@@ -118,9 +130,21 @@ runs:
           --prefix="$LIBSECCOMP_PREFIX" \
           --enable-static \
           --disable-shared \
+          CPPFLAGS="$LIBSECCOMP_CPPFLAGS" \
           CC=musl-gcc
         make -j"$(nproc)"
         make install
+
+    - name: Configure musl libseccomp environment
+      if: inputs.install-musl-tools == 'true' && runner.os == 'Linux'
+      shell: bash
+      env:
+        LIBSECCOMP_VERSION: ${{ inputs.musl-libseccomp-version }}
+      run: |
+        LIBSECCOMP_PREFIX="$HOME/.cache/tacacs-rs/libseccomp-musl/${LIBSECCOMP_VERSION}/x86_64-linux-musl"
+
+        test -f "$LIBSECCOMP_PREFIX/lib/libseccomp.a"
+        test -f "$LIBSECCOMP_PREFIX/lib/pkgconfig/libseccomp.pc"
 
         echo "LIBSECCOMP_LIB_PATH=$LIBSECCOMP_PREFIX/lib" >> "$GITHUB_ENV"
         echo "LIBSECCOMP_LINK_TYPE=static" >> "$GITHUB_ENV"
