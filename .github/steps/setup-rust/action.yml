@@ -1,5 +1,5 @@
 name: Setup Rust
-description: Install Rust toolchain with optional components, targets, and caching
+description: Install Rust toolchain with Linux build dependencies, optional components, targets, and caching
 
 inputs:
   toolchain:
@@ -26,6 +26,14 @@ inputs:
     description: 'Install musl-tools on Linux (for musl targets)'
     required: false
     default: 'false'
+  install-libseccomp-dev:
+    description: 'Install libseccomp-dev on Linux (required by session-wrapper)'
+    required: false
+    default: 'true'
+  musl-libseccomp-version:
+    description: 'libseccomp version to build statically for musl targets'
+    required: false
+    default: '2.6.0'
 
 outputs:
   cache-hit:
@@ -65,10 +73,59 @@ runs:
         ${{ steps.rustup-cmd.outputs.cmd }}
         rustup default ${{ inputs.toolchain }}
 
-    - name: Install musl-tools
+    - name: Install Linux build dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        PACKAGES=()
+
+        if [ "${{ inputs.install-musl-tools }}" = "true" ]; then
+          for package in gcc gperf make musl-tools; do
+            if ! dpkg -s "$package" &>/dev/null; then
+              PACKAGES+=("$package")
+            fi
+          done
+        fi
+
+        if [ "${{ inputs.install-libseccomp-dev }}" = "true" ] && ! dpkg -s libseccomp-dev &>/dev/null; then
+          PACKAGES+=(libseccomp-dev)
+        fi
+
+        if [ ${#PACKAGES[@]} -eq 0 ]; then
+          echo "Linux build dependencies already installed"
+          exit 0
+        fi
+
+        sudo apt-get update
+        sudo apt-get install -y "${PACKAGES[@]}"
+
+    - name: Build libseccomp for musl
       if: inputs.install-musl-tools == 'true' && runner.os == 'Linux'
       shell: bash
-      run: sudo apt-get update && sudo apt-get install -y musl-tools
+      env:
+        LIBSECCOMP_VERSION: ${{ inputs.musl-libseccomp-version }}
+      run: |
+        LIBSECCOMP_PREFIX="$RUNNER_TEMP/libseccomp-musl"
+        LIBSECCOMP_TARBALL="$RUNNER_TEMP/libseccomp-${LIBSECCOMP_VERSION}.tar.gz"
+
+        curl -fsSLo "$LIBSECCOMP_TARBALL" \
+          "https://github.com/seccomp/libseccomp/releases/download/v${LIBSECCOMP_VERSION}/libseccomp-${LIBSECCOMP_VERSION}.tar.gz"
+        tar -xzf "$LIBSECCOMP_TARBALL" -C "$RUNNER_TEMP"
+
+        cd "$RUNNER_TEMP/libseccomp-${LIBSECCOMP_VERSION}"
+        ./configure \
+          --host=x86_64-linux-musl \
+          --prefix="$LIBSECCOMP_PREFIX" \
+          --enable-static \
+          --disable-shared \
+          CC=musl-gcc
+        make -j"$(nproc)"
+        make install
+
+        echo "LIBSECCOMP_LIB_PATH=$LIBSECCOMP_PREFIX/lib" >> "$GITHUB_ENV"
+        echo "LIBSECCOMP_LINK_TYPE=static" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$LIBSECCOMP_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
 
     - name: Setup OpenSSL
       uses: ./.github/steps/setup-openssl
