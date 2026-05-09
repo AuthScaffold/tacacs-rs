@@ -1,5 +1,6 @@
 #[path = "cli.rs"]
 mod cli;
+mod process;
 mod seccomp;
 
 use std::process::ExitCode;
@@ -47,9 +48,6 @@ fn try_run() -> anyhow::Result<()> {
         format!("Invalid service endpoint for session-wrapper: {}", cli.service_endpoint)
     })?;
 
-    let listener_fd = seccomp::install_filter(cli.intercept_fork)
-        .context("failed to install session-wrapper seccomp filter")?;
-    log::debug!("Installed seccomp filter with listener fd {listener_fd}");
     orchestrate_session(&cli, &service_endpoint)?;
 
     Ok(())
@@ -67,6 +65,22 @@ fn orchestrate_session(cli: &Cli, service_endpoint: &IpcEndpoint) -> anyhow::Res
         .context("missing command to authorize")?;
     authorization_stub(command, args, &cli.user, service_endpoint)?;
     log::debug!("Parsed session-wrapper arguments: {cli:?}");
+
+    let session = process::spawn_session(process::ChildProcessConfig {
+        shell: cli.shell.clone(),
+        user: cli.user.clone(),
+        uid: cli.user_uid,
+        gid: cli.user_gid,
+        intercept_fork: cli.intercept_fork,
+    })
+    .context("failed to spawn session process")?;
+
+    log::debug!(
+        "Spawned child {} with seccomp notification fd {} and control fd {}",
+        session.child_pid(),
+        session.notification_fd(),
+        session.control_socket_fd()
+    );
     Ok(())
 }
 
