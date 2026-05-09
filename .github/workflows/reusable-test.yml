@@ -39,4 +39,4 @@ jobs:
           cache-key: ${{ matrix.rust }}
 
       - name: Run tests
-        run: cargo test --workspace ${{ matrix.os == 'windows-latest' && '--exclude session-wrapper' || '' }} --all-features ${{ inputs.release && '--release' || '' }}
+        run: cargo test --workspace --all-features ${{ inputs.release && '--release' || '' }}
