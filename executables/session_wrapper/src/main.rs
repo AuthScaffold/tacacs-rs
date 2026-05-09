@@ -28,26 +28,16 @@ fn init_logger(verbose: u8) {
     }
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn run(cli: &Cli) -> anyhow::Result<()> {
     let service_endpoint = IpcEndpoint::from_str(&cli.service_endpoint).with_context(|| {
         format!("Invalid service endpoint for session-wrapper: {}", cli.service_endpoint)
     })?;
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    {
-        let listener_fd = seccomp::install_filter(cli.intercept_fork)
-            .context("failed to install session-wrapper seccomp filter")?;
-        log::debug!("Installed seccomp filter with listener fd {listener_fd}");
-        orchestrate_session(cli, &service_endpoint)?;
-    }
-
-    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    {
-        let _ = service_endpoint;
-        anyhow::bail!(
-            "session-wrapper seccomp listener is currently supported on Linux x86_64 only"
-        );
-    }
+    let listener_fd = seccomp::install_filter(cli.intercept_fork)
+        .context("failed to install session-wrapper seccomp filter")?;
+    log::debug!("Installed seccomp filter with listener fd {listener_fd}");
+    orchestrate_session(cli, &service_endpoint)?;
 
     Ok(())
 }
@@ -59,11 +49,11 @@ fn orchestrate_session(cli: &Cli, service_endpoint: &IpcEndpoint) -> anyhow::Res
         cli.user,
         service_endpoint
     );
-    if let Some((command, args)) = cli.command.split_first() {
-        authorization_stub(command, args, &cli.user, service_endpoint)?;
-    } else {
-        authorization_stub(&cli.shell.to_string_lossy(), &[], &cli.user, service_endpoint)?;
-    }
+    let (command, args) = cli
+        .command
+        .split_first()
+        .context("missing command to authorize")?;
+    authorization_stub(command, args, &cli.user, service_endpoint)?;
     log::debug!("Parsed session-wrapper arguments: {cli:?}");
     Ok(())
 }
@@ -82,6 +72,12 @@ fn authorization_stub(
     Ok(())
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+fn main() -> anyhow::Result<()> {
+    anyhow::bail!("session-wrapper seccomp listener is currently supported on Linux x86_64 only");
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_logger(cli.verbose);

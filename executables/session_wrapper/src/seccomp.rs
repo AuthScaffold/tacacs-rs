@@ -1,163 +1,194 @@
-use std::mem::offset_of;
 use std::os::fd::RawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use libseccomp::{check_api, ScmpAction, ScmpFilterContext, ScmpSyscall, ScmpVersion};
 
-const X86_64_NR_CLONE: u32 = 56;
-const X86_64_NR_FORK: u32 = 57;
-const X86_64_NR_VFORK: u32 = 58;
-const X86_64_NR_EXECVE: u32 = 59;
-const X86_64_NR_PTRACE: u32 = 101;
-const X86_64_NR_EXECVEAT: u32 = 322;
-const X86_64_NR_CLONE3: u32 = 435;
+static FILTER_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-const SECCOMP_SET_MODE_FILTER: libc::c_uint = 1;
-const SECCOMP_FILTER_FLAG_NEW_LISTENER: libc::c_uint = 1 << 3;
-const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
-const SECCOMP_RET_USER_NOTIF: u32 = 0x7fc0_0000;
-const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
-const BPF_LD_NR: libc::c_ushort = 0x20;
-const BPF_JEQ_K: libc::c_ushort = 0x15;
-const BPF_RET_K: libc::c_ushort = 0x06;
-
-fn syscall_nr_offset() -> u32 {
-    u32::try_from(offset_of!(libc::seccomp_data, nr))
-        .expect("seccomp_data.nr offset must fit in 32-bit cBPF k field")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuleAction {
+    Notify,
+    Errno(i32),
 }
 
-fn stmt(code: libc::c_ushort, k: u32) -> libc::sock_filter {
-    libc::sock_filter {
-        code,
-        jt: 0,
-        jf: 0,
-        k,
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SyscallRule {
+    name: &'static str,
+    action: RuleAction,
 }
 
-fn jump_eq(syscall_nr: u32) -> libc::sock_filter {
-    libc::sock_filter {
-        code: BPF_JEQ_K,
-        jt: 0,
-        jf: 1,
-        k: syscall_nr,
-    }
-}
-
-fn ret(action: u32) -> libc::sock_filter {
-    stmt(BPF_RET_K, action)
-}
-
-pub(crate) fn build_filter_program(intercept_fork: bool) -> Vec<libc::sock_filter> {
-    let mut filters = vec![stmt(BPF_LD_NR, syscall_nr_offset())];
-
-    filters.extend([
-        jump_eq(X86_64_NR_PTRACE),
-        ret(SECCOMP_RET_ERRNO | libc::EPERM as u32),
-        jump_eq(X86_64_NR_EXECVE),
-        ret(SECCOMP_RET_USER_NOTIF),
-        jump_eq(X86_64_NR_EXECVEAT),
-        ret(SECCOMP_RET_USER_NOTIF),
-    ]);
+fn syscall_rules(intercept_fork: bool) -> Vec<SyscallRule> {
+    let mut rules = vec![
+        SyscallRule {
+            name: "ptrace",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "execve",
+            action: RuleAction::Notify,
+        },
+        SyscallRule {
+            name: "execveat",
+            action: RuleAction::Notify,
+        },
+    ];
 
     if intercept_fork {
-        filters.extend([
-            jump_eq(X86_64_NR_CLONE),
-            ret(SECCOMP_RET_USER_NOTIF),
-            jump_eq(X86_64_NR_FORK),
-            ret(SECCOMP_RET_USER_NOTIF),
-            jump_eq(X86_64_NR_VFORK),
-            ret(SECCOMP_RET_USER_NOTIF),
-            jump_eq(X86_64_NR_CLONE3),
-            ret(SECCOMP_RET_USER_NOTIF),
+        rules.extend([
+            SyscallRule {
+                name: "clone",
+                action: RuleAction::Notify,
+            },
+            SyscallRule {
+                name: "fork",
+                action: RuleAction::Notify,
+            },
+            SyscallRule {
+                name: "vfork",
+                action: RuleAction::Notify,
+            },
+            SyscallRule {
+                name: "clone3",
+                action: RuleAction::Notify,
+            },
         ]);
     }
 
-    filters.push(ret(SECCOMP_RET_ALLOW));
-    filters
+    rules
 }
 
-#[allow(unsafe_code)]
+fn build_filter(intercept_fork: bool) -> Result<ScmpFilterContext> {
+    let mut filter = ScmpFilterContext::new(ScmpAction::Allow)
+        .context("failed to create libseccomp filter context")?;
+
+    filter
+        .set_ctl_nnp(true)
+        .context("failed to enable no_new_privs on seccomp filter")?;
+
+    for rule in syscall_rules(intercept_fork) {
+        let syscall = ScmpSyscall::from_name(rule.name)
+            .with_context(|| format!("failed to resolve syscall '{}'", rule.name))?;
+        let action = match rule.action {
+            RuleAction::Notify => ScmpAction::Notify,
+            RuleAction::Errno(errno) => ScmpAction::Errno(errno),
+        };
+        filter
+            .add_rule(action, syscall)
+            .with_context(|| format!("failed to add seccomp rule for '{}'", rule.name))?;
+    }
+
+    Ok(filter)
+}
+
+fn ensure_user_notify_supported() -> Result<()> {
+    let supported = check_api(6, ScmpVersion::from((2, 5, 0)))
+        .context("failed to determine libseccomp API/version support")?;
+
+    if !supported {
+        bail!("seccomp user notifications require libseccomp >= 2.5.0 and API level >= 6");
+    }
+
+    Ok(())
+}
+
 pub(crate) fn install_filter(intercept_fork: bool) -> Result<RawFd> {
-    let mut filters = build_filter_program(intercept_fork);
-    let program = libc::sock_fprog {
-        len: filters
-            .len()
-            .try_into()
-            .context("seccomp filter instruction count exceeds u16")?,
-        filter: filters.as_mut_ptr(),
-    };
-
-    // SAFETY: Calling into libc with valid primitive arguments.
-    let no_new_privs_result = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-    if no_new_privs_result != 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("failed to set PR_SET_NO_NEW_PRIVS before seccomp");
+    if FILTER_INSTALLED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        bail!("seccomp filter has already been installed in this process");
     }
 
-    // SAFETY: `program` points to valid in-scope sock_fprog and seccomp syscall arguments
-    // follow the kernel ABI for SECCOMP_SET_MODE_FILTER.
-    let listener_fd = unsafe {
-        libc::syscall(
-            libc::SYS_seccomp,
-            SECCOMP_SET_MODE_FILTER,
-            SECCOMP_FILTER_FLAG_NEW_LISTENER,
-            &raw const program,
-        )
-    };
-    if listener_fd < 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("failed to install seccomp filter with NEW_LISTENER");
+    ensure_user_notify_supported()?;
+
+    let result = (|| {
+        let filter = build_filter(intercept_fork)?;
+        filter
+            .load()
+            .context("failed to install seccomp filter with libseccomp")?;
+
+        let listener_fd = filter
+            .get_notify_fd()
+            .context("failed to obtain seccomp user notification file descriptor")?;
+
+        let _leaked_filter = Box::leak(Box::new(filter));
+        Ok(listener_fd)
+    })();
+
+    if result.is_err() {
+        FILTER_INSTALLED.store(false, Ordering::SeqCst);
     }
 
-    RawFd::try_from(listener_fd).context("kernel returned invalid seccomp listener fd")
+    result
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::io::{Read, Seek, SeekFrom};
 
-    fn assert_instr(instr: libc::sock_filter, code: u16, jt: u8, jf: u8, k: u32) {
-        assert_eq!(instr.code, code);
-        assert_eq!(instr.jt, jt);
-        assert_eq!(instr.jf, jf);
-        assert_eq!(instr.k, k);
-    }
+    use super::{build_filter, syscall_rules, RuleAction, SyscallRule};
 
     #[test]
-    fn builds_expected_filter_without_fork_interception() {
-        let program = build_filter_program(false);
-        assert_eq!(program.len(), 8);
-
-        assert_instr(
-            program[0],
-            BPF_LD_NR,
-            0,
-            0,
-            u32::try_from(std::mem::offset_of!(libc::seccomp_data, nr))
-                .expect("seccomp_data.nr offset must fit u32"),
+    fn rules_match_expected_base_policy() {
+        assert_eq!(
+            syscall_rules(false),
+            vec![
+                SyscallRule {
+                    name: "ptrace",
+                    action: RuleAction::Errno(libc::EPERM),
+                },
+                SyscallRule {
+                    name: "execve",
+                    action: RuleAction::Notify,
+                },
+                SyscallRule {
+                    name: "execveat",
+                    action: RuleAction::Notify,
+                },
+            ]
         );
-        assert_instr(program[1], BPF_JEQ_K, 0, 1, X86_64_NR_PTRACE);
-        assert_instr(program[2], BPF_RET_K, 0, 0, SECCOMP_RET_ERRNO | libc::EPERM as u32);
-        assert_instr(program[3], BPF_JEQ_K, 0, 1, X86_64_NR_EXECVE);
-        assert_instr(program[4], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
-        assert_instr(program[5], BPF_JEQ_K, 0, 1, X86_64_NR_EXECVEAT);
-        assert_instr(program[6], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
-        assert_instr(program[7], BPF_RET_K, 0, 0, SECCOMP_RET_ALLOW);
     }
 
     #[test]
-    fn builds_expected_filter_with_fork_interception() {
-        let program = build_filter_program(true);
-        assert_eq!(program.len(), 16);
+    fn rules_include_fork_family_when_requested() {
+        let rules = syscall_rules(true);
+        assert!(rules.iter().any(|rule| rule.name == "clone"));
+        assert!(rules.iter().any(|rule| rule.name == "fork"));
+        assert!(rules.iter().any(|rule| rule.name == "vfork"));
+        assert!(rules.iter().any(|rule| rule.name == "clone3"));
+    }
 
-        assert_instr(program[7], BPF_JEQ_K, 0, 1, X86_64_NR_CLONE);
-        assert_instr(program[8], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
-        assert_instr(program[9], BPF_JEQ_K, 0, 1, X86_64_NR_FORK);
-        assert_instr(program[10], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
-        assert_instr(program[11], BPF_JEQ_K, 0, 1, X86_64_NR_VFORK);
-        assert_instr(program[12], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
-        assert_instr(program[13], BPF_JEQ_K, 0, 1, X86_64_NR_CLONE3);
-        assert_instr(program[14], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
-        assert_instr(program[15], BPF_RET_K, 0, 0, SECCOMP_RET_ALLOW);
+    #[test]
+    fn generated_bpf_program_changes_when_fork_interception_is_enabled() {
+        let baseline_filter = build_filter(false).expect("baseline filter should build");
+        let with_fork_filter = build_filter(true).expect("fork-intercept filter should build");
+
+        let mut baseline_file = tempfile::tempfile().expect("tempfile should be created");
+        baseline_filter
+            .export_bpf(&baseline_file)
+            .expect("baseline filter should export BPF");
+        baseline_file
+            .seek(SeekFrom::Start(0))
+            .expect("seek should succeed");
+        let mut baseline = Vec::new();
+        baseline_file
+            .read_to_end(&mut baseline)
+            .expect("read should succeed");
+
+        let mut with_fork_file = tempfile::tempfile().expect("tempfile should be created");
+        with_fork_filter
+            .export_bpf(&with_fork_file)
+            .expect("fork-intercept filter should export BPF");
+        with_fork_file
+            .seek(SeekFrom::Start(0))
+            .expect("seek should succeed");
+        let mut with_fork = Vec::new();
+        with_fork_file
+            .read_to_end(&mut with_fork)
+            .expect("read should succeed");
+
+        assert!(!baseline.is_empty());
+        assert!(with_fork.len() > baseline.len());
     }
 }

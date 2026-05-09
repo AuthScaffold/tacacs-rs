@@ -61,8 +61,14 @@ pub struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Optional command and arguments to execute under the wrapped session.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "COMMAND [ARGS]...")]
+    /// Terminal command and arguments to execute under the wrapped session.
+    #[arg(
+        required = true,
+        num_args = 1..,
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "COMMAND [ARGS]..."
+    )]
     pub command: Vec<String>,
 }
 
@@ -89,6 +95,8 @@ mod tests {
             "1000",
             "--user-gid",
             "1000",
+            "--",
+            "/bin/bash",
         ]);
 
         assert_eq!(cli.shell, PathBuf::from("/bin/bash"));
@@ -99,7 +107,7 @@ mod tests {
         assert_eq!(cli.fail_policy, FailPolicy::Closed);
         assert_eq!(cli.verbose, 0);
         assert!(!cli.intercept_fork);
-        assert!(cli.command.is_empty());
+        assert_eq!(cli.command, vec!["/bin/bash".to_owned()]);
     }
 
     #[test]
@@ -150,8 +158,26 @@ mod tests {
             "1000",
             "--user-gid",
             "1000",
+            "--",
+            "/bin/bash",
         ])
         .expect_err("missing user should fail");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn command_is_required() {
+        let error = Cli::try_parse_from([
+            "session-wrapper",
+            "--user",
+            "alice",
+            "--user-uid",
+            "1000",
+            "--user-gid",
+            "1000",
+        ])
+        .expect_err("missing command should fail");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
