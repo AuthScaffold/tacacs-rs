@@ -313,7 +313,7 @@ fn read_exact(fd: RawFd, mut buffer: &mut [u8]) -> Result<()> {
         }
 
         let read_count = usize::try_from(read_count)
-            .context("read returned a negative byte count after success")?;
+            .context("internal error: read count negative after validation")?;
         buffer = &mut buffer[read_count..];
     }
 
@@ -339,7 +339,7 @@ fn write_all(fd: RawFd, mut buffer: &[u8]) -> Result<()> {
         }
 
         let written = usize::try_from(written)
-            .context("write returned a negative byte count after success")?;
+            .context("internal error: written count negative after validation")?;
         buffer = &buffer[written..];
     }
 
@@ -367,7 +367,7 @@ fn zeroed_msghdr() -> libc::msghdr {
 mod tests {
     use super::{path_to_cstring, recv_fd, send_fd, socket_pair};
     use std::io::Error;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::path::PathBuf;
 
     use anyhow::{bail, Result};
@@ -403,7 +403,7 @@ mod tests {
         super::wait_for_ready(child.as_raw_fd()).expect("ready byte should be accepted");
     }
 
-    fn signal_ready_for_test(fd: i32) -> Result<()> {
+    fn signal_ready_for_test(fd: RawFd) -> Result<()> {
         super::write_all(fd, &[super::READY_BYTE])
     }
 
