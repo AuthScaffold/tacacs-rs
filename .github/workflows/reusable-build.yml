@@ -68,7 +68,7 @@ jobs:
             FEATURE_ARGS+=(--features "${{ matrix.config.features }}")
           fi
 
-          cargo build --workspace ${{ inputs.build-release && '--release' || '' }} --target ${{ matrix.config.target }} "${FEATURE_ARGS[@]}"
+          cargo build --workspace ${{ matrix.config.os == 'windows-latest' && '--exclude session-wrapper' || '' }} ${{ inputs.build-release && '--release' || '' }} --target ${{ matrix.config.target }} "${FEATURE_ARGS[@]}"
 
       - name: Build Binary (with artifacts)
         if: inputs.upload-artifacts == true

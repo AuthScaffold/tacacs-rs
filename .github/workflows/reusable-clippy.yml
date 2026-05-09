@@ -38,4 +38,4 @@ jobs:
           cache-key: ${{ inputs.toolchain }}
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features ${{ inputs.deny-warnings && '-- -D warnings' || '' }}
+        run: cargo clippy --workspace ${{ matrix.os == 'windows-latest' && '--exclude session-wrapper' || '' }} --all-targets --all-features ${{ inputs.deny-warnings && '-- -D warnings' || '' }}

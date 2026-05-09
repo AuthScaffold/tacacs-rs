@@ -33,4 +33,4 @@ jobs:
       - name: Build documentation
         env:
           RUSTDOCFLAGS: ${{ inputs.deny-warnings && '-D warnings' || '' }}
-        run: cargo doc --workspace --no-deps --all-features --document-private-items
+        run: cargo doc --workspace ${{ matrix.os == 'windows-latest' && '--exclude session-wrapper' || '' }} --no-deps --all-features --document-private-items
