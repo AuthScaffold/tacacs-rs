@@ -38,7 +38,7 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         let listener_fd = seccomp::install_filter(cli.intercept_fork)
             .context("failed to install session-wrapper seccomp filter")?;
         log::debug!("Installed seccomp filter with listener fd {listener_fd}");
-        orchestrate_session(cli, &service_endpoint);
+        orchestrate_session(cli, &service_endpoint)?;
     }
 
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
@@ -53,25 +53,33 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn orchestrate_session(cli: &Cli, service_endpoint: &IpcEndpoint) {
+fn orchestrate_session(cli: &Cli, service_endpoint: &IpcEndpoint) -> anyhow::Result<()> {
     log::info!(
         "session-wrapper orchestration stub for user {} via {:?}",
         cli.user,
         service_endpoint
     );
     if let Some((command, args)) = cli.command.split_first() {
-        authorization_stub(command, args, &cli.user, service_endpoint);
+        authorization_stub(command, args, &cli.user, service_endpoint)?;
     } else {
-        authorization_stub(&cli.shell.to_string_lossy(), &[], &cli.user, service_endpoint);
+        authorization_stub(&cli.shell.to_string_lossy(), &[], &cli.user, service_endpoint)?;
     }
     log::debug!("Parsed session-wrapper arguments: {cli:?}");
+    Ok(())
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn authorization_stub(command: &str, args: &[String], user: &str, service_endpoint: &IpcEndpoint) {
+#[allow(clippy::unnecessary_wraps)]
+fn authorization_stub(
+    command: &str,
+    args: &[String],
+    user: &str,
+    service_endpoint: &IpcEndpoint,
+) -> anyhow::Result<()> {
     log::info!(
         "authorization stub: user={user} command={command} args={args:?} endpoint={service_endpoint:?}"
     );
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {

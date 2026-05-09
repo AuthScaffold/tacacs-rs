@@ -114,20 +114,10 @@ pub(crate) fn install_filter(intercept_fork: bool) -> Result<RawFd> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_filter_program, X86_64_NR_CLONE, X86_64_NR_CLONE3, X86_64_NR_EXECVE,
-        X86_64_NR_EXECVEAT, X86_64_NR_FORK, X86_64_NR_PTRACE, X86_64_NR_VFORK,
-    };
-
-    const BPF_LD_NR: u16 = 0x20;
-    const BPF_JEQ_K: u16 = 0x15;
-    const BPF_RET_K: u16 = 0x06;
-    const RET_ERRNO: u32 = 0x0005_0000;
-    const RET_ALLOW: u32 = 0x7fff_0000;
-    const RET_USER_NOTIF: u32 = 0x7fc0_0000;
+    use super::*;
 
     fn assert_instr(instr: libc::sock_filter, code: u16, jt: u8, jf: u8, k: u32) {
-        assert_eq!(instr.code, code as libc::c_ushort);
+        assert_eq!(instr.code, code);
         assert_eq!(instr.jt, jt);
         assert_eq!(instr.jf, jf);
         assert_eq!(instr.k, k);
@@ -147,12 +137,12 @@ mod tests {
                 .expect("seccomp_data.nr offset must fit u32"),
         );
         assert_instr(program[1], BPF_JEQ_K, 0, 1, X86_64_NR_PTRACE);
-        assert_instr(program[2], BPF_RET_K, 0, 0, RET_ERRNO | libc::EPERM as u32);
+        assert_instr(program[2], BPF_RET_K, 0, 0, SECCOMP_RET_ERRNO | libc::EPERM as u32);
         assert_instr(program[3], BPF_JEQ_K, 0, 1, X86_64_NR_EXECVE);
-        assert_instr(program[4], BPF_RET_K, 0, 0, RET_USER_NOTIF);
+        assert_instr(program[4], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
         assert_instr(program[5], BPF_JEQ_K, 0, 1, X86_64_NR_EXECVEAT);
-        assert_instr(program[6], BPF_RET_K, 0, 0, RET_USER_NOTIF);
-        assert_instr(program[7], BPF_RET_K, 0, 0, RET_ALLOW);
+        assert_instr(program[6], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
+        assert_instr(program[7], BPF_RET_K, 0, 0, SECCOMP_RET_ALLOW);
     }
 
     #[test]
@@ -161,13 +151,13 @@ mod tests {
         assert_eq!(program.len(), 16);
 
         assert_instr(program[7], BPF_JEQ_K, 0, 1, X86_64_NR_CLONE);
-        assert_instr(program[8], BPF_RET_K, 0, 0, RET_USER_NOTIF);
+        assert_instr(program[8], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
         assert_instr(program[9], BPF_JEQ_K, 0, 1, X86_64_NR_FORK);
-        assert_instr(program[10], BPF_RET_K, 0, 0, RET_USER_NOTIF);
+        assert_instr(program[10], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
         assert_instr(program[11], BPF_JEQ_K, 0, 1, X86_64_NR_VFORK);
-        assert_instr(program[12], BPF_RET_K, 0, 0, RET_USER_NOTIF);
+        assert_instr(program[12], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
         assert_instr(program[13], BPF_JEQ_K, 0, 1, X86_64_NR_CLONE3);
-        assert_instr(program[14], BPF_RET_K, 0, 0, RET_USER_NOTIF);
-        assert_instr(program[15], BPF_RET_K, 0, 0, RET_ALLOW);
+        assert_instr(program[14], BPF_RET_K, 0, 0, SECCOMP_RET_USER_NOTIF);
+        assert_instr(program[15], BPF_RET_K, 0, 0, SECCOMP_RET_ALLOW);
     }
 }
