@@ -94,7 +94,7 @@ fn ensure_user_notify_supported() -> Result<()> {
 
 pub(crate) fn install_filter(intercept_fork: bool) -> Result<RawFd> {
     if FILTER_INSTALLED
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_err()
     {
         bail!("seccomp filter has already been installed in this process");
@@ -112,12 +112,14 @@ pub(crate) fn install_filter(intercept_fork: bool) -> Result<RawFd> {
             .get_notify_fd()
             .context("failed to obtain seccomp user notification file descriptor")?;
 
+        // Keep the loaded filter context alive for process lifetime so the
+        // notification FD remains valid for the supervisor path.
         let _leaked_filter = Box::leak(Box::new(filter));
         Ok(listener_fd)
     })();
 
     if result.is_err() {
-        FILTER_INSTALLED.store(false, Ordering::SeqCst);
+        FILTER_INSTALLED.store(false, Ordering::Relaxed);
     }
 
     result
@@ -125,7 +127,7 @@ pub(crate) fn install_filter(intercept_fork: bool) -> Result<RawFd> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::{Read, Seek, SeekFrom, Write};
 
     use super::{build_filter, syscall_rules, RuleAction, SyscallRule};
 
@@ -168,6 +170,7 @@ mod tests {
         baseline_filter
             .export_bpf(&baseline_file)
             .expect("baseline filter should export BPF");
+        baseline_file.flush().expect("flush should succeed");
         baseline_file
             .seek(SeekFrom::Start(0))
             .expect("seek should succeed");
@@ -180,6 +183,7 @@ mod tests {
         with_fork_filter
             .export_bpf(&with_fork_file)
             .expect("fork-intercept filter should export BPF");
+        with_fork_file.flush().expect("flush should succeed");
         with_fork_file
             .seek(SeekFrom::Start(0))
             .expect("seek should succeed");
