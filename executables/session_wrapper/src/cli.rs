@@ -45,6 +45,10 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub allowlist: Option<PathBuf>,
 
+    /// Intercept fork-like syscalls (fork/vfork/clone/clone3) with seccomp user notifications.
+    #[arg(long)]
+    pub intercept_fork: bool,
+
     /// TACACS+ port context field, typically populated from the SSH environment.
     #[arg(long)]
     pub port: Option<String>,
@@ -56,6 +60,10 @@ pub struct Cli {
     /// Increase verbosity level (-v, -vv, -vvv, -vvvv).
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
+
+    /// Optional command and arguments to execute under the wrapped session.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "COMMAND [ARGS]...")]
+    pub command: Vec<String>,
 }
 
 #[cfg(test)]
@@ -90,6 +98,8 @@ mod tests {
         assert_eq!(cli.service_endpoint, "/run/tacacs.sock");
         assert_eq!(cli.fail_policy, FailPolicy::Closed);
         assert_eq!(cli.verbose, 0);
+        assert!(!cli.intercept_fork);
+        assert!(cli.command.is_empty());
     }
 
     #[test]
@@ -110,20 +120,26 @@ mod tests {
             "open",
             "--allowlist",
             "/etc/session-wrapper.allow",
+            "--intercept-fork",
             "--port",
             "ssh",
             "--rem-addr",
             "192.0.2.10",
             "-vv",
+            "--",
+            "show",
+            "version",
         ]);
 
         assert_eq!(cli.shell, PathBuf::from("/bin/zsh"));
         assert_eq!(cli.service_endpoint, "127.0.0.1:9049");
         assert_eq!(cli.fail_policy, FailPolicy::Open);
         assert_eq!(cli.allowlist, Some(PathBuf::from("/etc/session-wrapper.allow")));
+        assert!(cli.intercept_fork);
         assert_eq!(cli.port.as_deref(), Some("ssh"));
         assert_eq!(cli.rem_addr.as_deref(), Some("192.0.2.10"));
         assert_eq!(cli.verbose, 2);
+        assert_eq!(cli.command, vec!["show".to_owned(), "version".to_owned()]);
     }
 
     #[test]

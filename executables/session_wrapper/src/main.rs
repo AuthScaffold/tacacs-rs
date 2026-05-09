@@ -1,4 +1,6 @@
 mod cli;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod seccomp;
 
 use std::str::FromStr;
 
@@ -31,17 +33,45 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         format!("Invalid service endpoint for session-wrapper: {}", cli.service_endpoint)
     })?;
 
-    orchestrate_session(cli, &service_endpoint);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        let listener_fd = seccomp::install_filter(cli.intercept_fork)
+            .context("failed to install session-wrapper seccomp filter")?;
+        log::debug!("Installed seccomp filter with listener fd {listener_fd}");
+        orchestrate_session(cli, &service_endpoint);
+    }
+
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        let _ = service_endpoint;
+        anyhow::bail!(
+            "session-wrapper seccomp listener is currently supported on Linux x86_64 only"
+        );
+    }
+
     Ok(())
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn orchestrate_session(cli: &Cli, service_endpoint: &IpcEndpoint) {
     log::info!(
         "session-wrapper orchestration stub for user {} via {:?}",
         cli.user,
         service_endpoint
     );
+    if let Some((command, args)) = cli.command.split_first() {
+        authorization_stub(command, args, &cli.user, service_endpoint);
+    } else {
+        authorization_stub(&cli.shell.to_string_lossy(), &[], &cli.user, service_endpoint);
+    }
     log::debug!("Parsed session-wrapper arguments: {cli:?}");
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn authorization_stub(command: &str, args: &[String], user: &str, service_endpoint: &IpcEndpoint) {
+    log::info!(
+        "authorization stub: user={user} command={command} args={args:?} endpoint={service_endpoint:?}"
+    );
 }
 
 fn main() -> anyhow::Result<()> {
