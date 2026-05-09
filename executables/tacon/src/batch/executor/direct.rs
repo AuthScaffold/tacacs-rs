@@ -75,7 +75,9 @@ pub async fn execute_batch(
     let results = match execution_mode {
         ExecutionMode::Multiplexed => {
             let Some(probe_connection) = probe.take().and_then(|probe| probe.connection) else {
-                anyhow::bail!("Multiplexed mode selected without a successful probe connection");
+                anyhow::bail!(
+                    "internal error: multiplexed mode selected without an upgradeable probe connection"
+                );
             };
             let connection = Connection::from_inner(probe_connection.upgrade());
             if batch.metadata.parallel {
