@@ -1571,6 +1571,7 @@ dependencies = [
  "log",
  "tacacsrs-agent-client",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
