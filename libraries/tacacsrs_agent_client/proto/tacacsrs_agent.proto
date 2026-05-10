@@ -216,6 +216,8 @@ message AuthorizationResponse {
   AuthorizationStatus status = 2;
   string server_message = 3;
   repeated string args = 4;     // server-modified arguments (PASS_REPL)
+  string data = 5;              // client-specific display/log data
+  optional uint32 privilege_level = 6; // server-assigned privilege level
 }
 
 // Reply envelope for the Authorization RPC.

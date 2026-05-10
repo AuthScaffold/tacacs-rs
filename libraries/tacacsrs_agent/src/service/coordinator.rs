@@ -154,6 +154,8 @@ impl TacacsAgent for GrpcService {
             status: AuthorizationResponseStatus::PassAdd,
             server_message: "authorization allowed by temporary local stub; upstream TACACS+ authorization is not implemented yet".to_owned(),
             args: Vec::new(),
+            data: String::new(),
+            privilege_level: Some(request.privilege_level),
         };
 
         Ok(Response::new(ipc::AuthorizationReply {
@@ -632,6 +634,8 @@ mod tests {
         assert_eq!(response.status, AuthorizationResponseStatus::PassAdd);
         assert!(response.server_message.contains("temporary local stub"));
         assert!(response.args.is_empty());
+        assert!(response.data.is_empty());
+        assert_eq!(response.privilege_level, Some(0));
 
         service_task.abort();
         let _ = service_task.await;

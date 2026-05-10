@@ -111,11 +111,6 @@ use super::process_reader::read_exec_args;
 /// This safety interval catches any SIGCHLD signals that were coalesced or
 /// delivered while the process was not yet awaiting the signal.
 const CHILD_REAP_INTERVAL: Duration = Duration::from_millis(250);
-/// Maximum time to wait for a per-exec authorization decision from the local
-/// agent before treating IPC as unavailable and applying the configured fail
-/// policy. Five seconds keeps an interactive shell from hanging indefinitely
-/// while still allowing a briefly loaded local agent to respond.
-const IPC_AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ── low-level wrappers ───────────────────────────────────────────────────────
 
@@ -194,6 +189,10 @@ pub(crate) struct SupervisorConfig {
     pub(crate) fail_policy: FailPolicy,
     /// IPC endpoint of the local TACACS+ agent.
     pub(crate) service_endpoint: IpcEndpoint,
+    /// Maximum time to wait for one authorization IPC reply before applying fail policy.
+    pub(crate) authorization_timeout: Duration,
+    /// Current TACACS+ privilege level for this wrapped user.
+    pub(crate) privilege_level: u32,
 }
 
 // ── authorization primitives ─────────────────────────────────────────────────
@@ -230,7 +229,7 @@ async fn connect_ipc_client(endpoint: &IpcEndpoint) -> Option<ServiceClient> {
 /// | Status      | Decision |
 /// |-------------|----------|
 /// | `PassAdd`   | Allow    |
-/// | `PassRepl`  | Allow    |
+/// | `PassRepl`  | Deny until argv replacement is implemented |
 /// | `Fail`      | Deny     |
 /// | `Error`     | Deny     |
 /// | `Follow`    | Deny     |
@@ -249,10 +248,10 @@ async fn ipc_authorize(
         service: "shell".to_owned(),
         command: exec_path.to_owned(),
         command_arguments: exec_args.to_vec(),
-        privilege_level: 0,
+        privilege_level: config.privilege_level,
     };
 
-    match time::timeout(IPC_AUTHORIZATION_TIMEOUT, client.send_authorization(operation)).await {
+    match time::timeout(config.authorization_timeout, client.send_authorization(operation)).await {
         Err(_) => {
             log::warn!("IPC authorization call timed out for {exec_path:?}");
             None
@@ -268,9 +267,10 @@ async fn ipc_authorize(
                 response.server
             );
             match response.status {
-                AuthorizationResponseStatus::PassAdd | AuthorizationResponseStatus::PassRepl => {
-                    Some(AuthDecision::Allow)
-                }
+                AuthorizationResponseStatus::PassAdd => Some(AuthDecision::Allow),
+                AuthorizationResponseStatus::PassRepl => Some(AuthDecision::Deny(format!(
+                    "TACACS+ agent returned PASS_REPL for {exec_path:?}, but session-wrapper cannot safely replace frozen execve arguments yet"
+                ))),
                 AuthorizationResponseStatus::Fail
                 | AuthorizationResponseStatus::Error
                 | AuthorizationResponseStatus::Follow => {

@@ -34,6 +34,7 @@ mod supervisor;
 use std::process::ExitCode;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
@@ -134,6 +135,8 @@ fn orchestrate_session(cli: &Cli, service_endpoint: &IpcEndpoint) -> anyhow::Res
         rem_addr: cli.rem_addr.clone(),
         fail_policy: cli.fail_policy,
         service_endpoint: service_endpoint.clone(),
+        authorization_timeout: Duration::from_millis(cli.authorization_timeout_ms),
+        privilege_level: u32::from(cli.privilege_level),
     });
 
     // Build the tokio runtime AFTER the fork.  Two worker threads are enough

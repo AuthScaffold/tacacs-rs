@@ -141,6 +141,10 @@ pub struct AuthorizationOperationResponse {
     pub server_message: String,
     /// Server-modified TACACS+ argument list for `PASS_REPL`.
     pub args: Vec<String>,
+    /// Client-specific display or log data returned by the TACACS+ server.
+    pub data: String,
+    /// TACACS+ privilege level assigned by the server, if supplied.
+    pub privilege_level: Option<u32>,
 }
 
 /// Normalized TACACS+ accounting reply status values.
@@ -491,6 +495,8 @@ impl AuthorizationOperationResponse {
             status: self.status.into_proto(),
             server_message: self.server_message,
             args: self.args,
+            data: self.data,
+            privilege_level: self.privilege_level,
         }
     }
 
@@ -506,6 +512,8 @@ impl AuthorizationOperationResponse {
             status: AuthorizationResponseStatus::from_proto(proto.status)?,
             server_message: proto.server_message,
             args: proto.args,
+            data: proto.data,
+            privilege_level: proto.privilege_level,
         })
     }
 }
@@ -569,6 +577,8 @@ mod tests {
             status: AuthorizationResponseStatus::PassRepl,
             server_message: "replace arguments".to_owned(),
             args: vec!["cmd=show".to_owned(), "cmd-arg=users".to_owned()],
+            data: "display this".to_owned(),
+            privilege_level: Some(15),
         };
 
         let decoded =
