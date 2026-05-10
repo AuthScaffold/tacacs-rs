@@ -27,6 +27,8 @@
 //! | `ipc::AuthorizationResponse` | → [`AuthorizationOperationResponse`] | `from_proto()` |
 //! | [`ServiceError`] | ↔ `ipc::ServiceError` | `into_proto()` / `from_proto()` |
 
+use std::str::FromStr;
+
 use anyhow::{Context, bail};
 
 use crate::ipc;
@@ -106,8 +108,9 @@ pub struct AccountingOperationResponse {
 /// Client-supplied inputs for a TACACS+ authorization operation.
 ///
 /// This is the IPC-level contract used by local command mediation code. The
-/// service field is typically `"shell"` for exec supervision, and input command
-/// arguments are represented without the `cmd-arg=` TACACS+ wire prefix.
+/// fixed fields mirror the TACACS+ Authorization REQUEST header context, while
+/// [`args`](Self::args) carries the ordered RFC 8907 §8.2 authorization
+/// argument-value pairs such as `service`, `cmd`, `cmd-arg`, and `priv-lvl`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationOperation {
     /// TACACS+ username associated with the command being authorized.
@@ -116,21 +119,396 @@ pub struct AuthorizationOperation {
     pub port: String,
     /// Remote client address to report in the TACACS+ authorization request.
     pub remote_address: String,
-    /// TACACS+ service name, for example `"shell"`.
-    pub service: String,
-    /// Command name to authorize.
-    pub command: String,
-    /// Command arguments to authorize.
-    pub command_arguments: Vec<String>,
     /// TACACS+ privilege level for the command context.
     pub privilege_level: u32,
+    /// Ordered TACACS+ authorization arg-val pairs.
+    pub args: Vec<AuthorizationArg>,
+}
+
+impl AuthorizationOperation {
+    /// Creates a builder for an authorization operation.
+    #[must_use]
+    pub fn builder(user: impl Into<String>, privilege_level: u32) -> AuthorizationRequestBuilder {
+        AuthorizationRequestBuilder::new(user, privilege_level)
+    }
+
+    /// Returns all values for a well-known authorization key, preserving order.
+    pub fn values(&self, key: AuthorizationKey) -> impl Iterator<Item = &str> {
+        self.args
+            .iter()
+            .filter(move |arg| arg.name == key.as_str())
+            .map(|arg| arg.value.as_str())
+    }
+
+    /// Returns the first value for a well-known authorization key.
+    #[must_use]
+    pub fn first_value(&self, key: AuthorizationKey) -> Option<&str> {
+        self.values(key).next()
+    }
+
+    /// Returns the request service, if present.
+    #[must_use]
+    pub fn service(&self) -> Option<&str> {
+        self.first_value(AuthorizationKey::Service)
+    }
+
+    /// Returns the shell command value, if present.
+    #[must_use]
+    pub fn command(&self) -> Option<&str> {
+        self.first_value(AuthorizationKey::Cmd)
+    }
+
+    /// Returns command arguments in their RFC-defined order.
+    pub fn command_arguments(&self) -> impl Iterator<Item = &str> {
+        self.values(AuthorizationKey::CmdArg)
+    }
+
+    /// Validates RFC-required authorization arguments for the current request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `service` is missing, or if `service=shell` is used
+    /// without a `cmd` argument.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let service = self
+            .service()
+            .context("authorization request requires service key")?;
+        if service == "shell" && self.command().is_none() {
+            bail!("authorization request with service='shell' requires cmd key");
+        }
+        Ok(())
+    }
+}
+
+/// A single TACACS+ authorization argument-value pair from the server.
+///
+/// RFC 8907 §6.1 encodes authorization arguments as strings of the form
+/// `name=value` (mandatory) or `name*value` (optional). This struct decodes
+/// that encoding so callers can make policy decisions without re-parsing raw
+/// strings.
+///
+/// # Mandatory vs optional
+///
+/// - `mandatory = true` (`=` separator) — the receiving side **MUST** handle
+///   the argument, or treat the authorization as failed.
+/// - `mandatory = false` (`*` separator) — the receiving side **MAY** ignore
+///   the argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationArg {
+    /// Argument name (e.g. `"priv-lvl"`, `"cmd"`, `"service"`).
+    pub name: String,
+    /// `true` when the original separator was `=` (mandatory).
+    /// `false` when the original separator was `*` (optional).
+    pub mandatory: bool,
+    /// Argument value (everything after the first separator in the wire string).
+    pub value: String,
+}
+
+impl AuthorizationArg {
+    /// Creates a TACACS+ authorization argument-value pair.
+    #[must_use]
+    pub fn new(name: impl Into<String>, mandatory: bool, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            mandatory,
+            value: value.into(),
+        }
+    }
+
+    /// Creates a mandatory TACACS+ argument (`name=value`).
+    #[must_use]
+    pub fn mandatory(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::new(name, true, value)
+    }
+
+    /// Creates an optional TACACS+ argument (`name*value`).
+    #[must_use]
+    pub fn optional(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::new(name, false, value)
+    }
+
+    /// Creates a mandatory TACACS+ argument from a well-known key.
+    #[must_use]
+    pub fn mandatory_key(key: AuthorizationKey, value: impl Into<String>) -> Self {
+        Self::mandatory(key.as_str(), value)
+    }
+
+    /// Creates an optional TACACS+ argument from a well-known key.
+    #[must_use]
+    pub fn optional_key(key: AuthorizationKey, value: impl Into<String>) -> Self {
+        Self::optional(key.as_str(), value)
+    }
+
+    /// Parses this argument name as a well-known RFC 8907 §8.2 key.
+    #[must_use]
+    pub fn well_known_key(&self) -> Option<AuthorizationKey> {
+        AuthorizationKey::from_str(&self.name).ok()
+    }
+
+    /// Parses a raw TACACS+ arg-val string into an [`AuthorizationArg`].
+    ///
+    /// The separator is the first `=` or `*` found in the string. If both are
+    /// present, whichever appears first determines the separator. The name is
+    /// everything before the separator; the value is everything after.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the string contains neither `=` nor `*`.
+    pub fn parse(raw: &str) -> anyhow::Result<Self> {
+        let eq_pos = raw.find('=');
+        let ast_pos = raw.find('*');
+        let (sep_pos, mandatory) = match (eq_pos, ast_pos) {
+            (Some(e), Some(a)) => {
+                if e < a {
+                    (e, true)
+                } else {
+                    (a, false)
+                }
+            }
+            (Some(e), None) => (e, true),
+            (None, Some(a)) => (a, false),
+            (None, None) => {
+                anyhow::bail!("authorization arg {raw:?} has no separator ('=' or '*')")
+            }
+        };
+        if sep_pos == 0 {
+            anyhow::bail!("authorization arg {raw:?} has an empty name");
+        }
+        Ok(Self {
+            name: raw[..sep_pos].to_owned(),
+            mandatory,
+            value: raw[sep_pos + 1..].to_owned(),
+        })
+    }
+}
+
+/// RFC 8907 §8.2 well-known TACACS+ authorization argument names.
+///
+/// This enum documents the standard argument dictionary and provides a typed
+/// alternative to repeating string literals across callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AuthorizationKey {
+    Service,
+    Protocol,
+    Cmd,
+    CmdArg,
+    Acl,
+    InAcl,
+    OutAcl,
+    Addr,
+    AddrPool,
+    Timeout,
+    IdleTime,
+    AutoCmd,
+    NoEscape,
+    NoHangup,
+    PrivLvl,
+}
+
+impl AuthorizationKey {
+    /// Returns the RFC string name for this authorization key.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Service => "service",
+            Self::Protocol => "protocol",
+            Self::Cmd => "cmd",
+            Self::CmdArg => "cmd-arg",
+            Self::Acl => "acl",
+            Self::InAcl => "inacl",
+            Self::OutAcl => "outacl",
+            Self::Addr => "addr",
+            Self::AddrPool => "addr-pool",
+            Self::Timeout => "timeout",
+            Self::IdleTime => "idletime",
+            Self::AutoCmd => "autocmd",
+            Self::NoEscape => "noescape",
+            Self::NoHangup => "nohangup",
+            Self::PrivLvl => "priv-lvl",
+        }
+    }
+}
+
+impl FromStr for AuthorizationKey {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "service" => Ok(Self::Service),
+            "protocol" => Ok(Self::Protocol),
+            "cmd" => Ok(Self::Cmd),
+            "cmd-arg" => Ok(Self::CmdArg),
+            "acl" => Ok(Self::Acl),
+            "inacl" => Ok(Self::InAcl),
+            "outacl" => Ok(Self::OutAcl),
+            "addr" => Ok(Self::Addr),
+            "addr-pool" => Ok(Self::AddrPool),
+            "timeout" => Ok(Self::Timeout),
+            "idletime" => Ok(Self::IdleTime),
+            "autocmd" => Ok(Self::AutoCmd),
+            "noescape" => Ok(Self::NoEscape),
+            "nohangup" => Ok(Self::NoHangup),
+            "priv-lvl" => Ok(Self::PrivLvl),
+            _ => bail!("unrecognized authorization key {value:?}"),
+        }
+    }
+}
+
+/// Builder for creating an [`AuthorizationOperation`] from RFC arg-val pairs.
+#[derive(Debug, Clone)]
+pub struct AuthorizationRequestBuilder {
+    user: String,
+    port: String,
+    remote_address: String,
+    privilege_level: u32,
+    args: Vec<AuthorizationArg>,
+}
+
+impl AuthorizationRequestBuilder {
+    /// Creates a new authorization request builder.
+    #[must_use]
+    pub fn new(user: impl Into<String>, privilege_level: u32) -> Self {
+        Self {
+            user: user.into(),
+            port: String::new(),
+            remote_address: String::new(),
+            privilege_level,
+            args: Vec::new(),
+        }
+    }
+
+    /// Sets the request port value.
+    #[must_use]
+    pub fn port(mut self, port: impl Into<String>) -> Self {
+        self.port = port.into();
+        self
+    }
+
+    /// Sets the request remote-address value.
+    #[must_use]
+    pub fn remote_address(mut self, remote_address: impl Into<String>) -> Self {
+        self.remote_address = remote_address.into();
+        self
+    }
+
+    /// Adds one prebuilt authorization arg-val pair.
+    #[must_use]
+    pub fn arg(mut self, arg: AuthorizationArg) -> Self {
+        self.args.push(arg);
+        self
+    }
+
+    /// Adds one authorization arg-val pair using a typed key.
+    #[must_use]
+    pub fn key_value(
+        self,
+        key: AuthorizationKey,
+        mandatory: bool,
+        value: impl Into<String>,
+    ) -> Self {
+        self.arg(AuthorizationArg::new(key.as_str(), mandatory, value))
+    }
+
+    /// Adds a mandatory `service` key.
+    #[must_use]
+    pub fn service(self, value: impl Into<String>) -> Self {
+        self.key_value(AuthorizationKey::Service, true, value)
+    }
+
+    /// Adds a mandatory `cmd` key.
+    #[must_use]
+    pub fn command(self, value: impl Into<String>) -> Self {
+        self.key_value(AuthorizationKey::Cmd, true, value)
+    }
+
+    /// Adds a mandatory `cmd-arg` key in request order.
+    #[must_use]
+    pub fn command_arg(self, value: impl Into<String>) -> Self {
+        self.key_value(AuthorizationKey::CmdArg, true, value)
+    }
+
+    /// Adds mandatory `cmd-arg` keys in request order.
+    #[must_use]
+    pub fn command_args<I, S>(mut self, values: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for value in values {
+            self = self.command_arg(value);
+        }
+        self
+    }
+
+    /// Adds an optional `protocol` key.
+    #[must_use]
+    pub fn protocol(self, value: impl Into<String>) -> Self {
+        self.key_value(AuthorizationKey::Protocol, false, value)
+    }
+
+    /// Adds a mandatory `priv-lvl` arg-val pair.
+    #[must_use]
+    pub fn assigned_privilege_level(self, value: u8) -> Self {
+        self.key_value(AuthorizationKey::PrivLvl, true, value.to_string())
+    }
+
+    /// Adds a mandatory `timeout` key, in minutes.
+    #[must_use]
+    pub fn timeout_minutes(self, value: u32) -> Self {
+        self.key_value(AuthorizationKey::Timeout, true, value.to_string())
+    }
+
+    /// Adds a mandatory `idletime` key, in minutes.
+    #[must_use]
+    pub fn idle_time_minutes(self, value: u32) -> Self {
+        self.key_value(AuthorizationKey::IdleTime, true, value.to_string())
+    }
+
+    /// Adds a mandatory `autocmd` key.
+    #[must_use]
+    pub fn auto_command(self, value: impl Into<String>) -> Self {
+        self.key_value(AuthorizationKey::AutoCmd, true, value)
+    }
+
+    /// Adds a mandatory `noescape` key.
+    #[must_use]
+    pub fn no_escape(self, value: bool) -> Self {
+        self.key_value(AuthorizationKey::NoEscape, true, value.to_string())
+    }
+
+    /// Adds a mandatory `nohangup` key.
+    #[must_use]
+    pub fn no_hangup(self, value: bool) -> Self {
+        self.key_value(AuthorizationKey::NoHangup, true, value.to_string())
+    }
+
+    /// Builds a typed authorization operation from the provided arg-val pairs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when:
+    /// - no `service` arg is provided
+    /// - `service` is `shell` but no `cmd` arg is provided
+    pub fn build(self) -> anyhow::Result<AuthorizationOperation> {
+        let operation = AuthorizationOperation {
+            user: self.user,
+            port: self.port,
+            remote_address: self.remote_address,
+            privilege_level: self.privilege_level,
+            args: self.args,
+        };
+        operation.validate()?;
+        Ok(operation)
+    }
 }
 
 /// RFC-aware service response for a TACACS+ authorization operation.
 ///
 /// Returned by [`ServiceClient::send_authorization`](crate::ServiceClient::send_authorization)
-/// on success. For `PASS_REPL`, [`args`](Self::args) contains the replacement
-/// argument list supplied by the service.
+/// on success. For `PASS_ADD`, [`args`](Self::args) contains the server-supplied
+/// arguments that must be merged per RFC 8907 §6.2. For `PASS_REPL`, they
+/// replace the request arguments entirely. Empty when the server returned
+/// `arg_cnt = 0` (approved with no modifications).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationOperationResponse {
     /// Upstream TACACS+ server that handled the request, or a local stub marker.
@@ -139,12 +517,11 @@ pub struct AuthorizationOperationResponse {
     pub status: AuthorizationResponseStatus,
     /// Human-readable message returned by the TACACS+ server or local service.
     pub server_message: String,
-    /// Server-modified TACACS+ argument list for `PASS_REPL`.
-    pub args: Vec<String>,
+    /// Server-supplied arg-val pairs for `PASS_ADD` (merge) and `PASS_REPL` (replace).
+    /// Empty when the server returned `arg_cnt = 0` (approved with no modifications).
+    pub args: Vec<AuthorizationArg>,
     /// Client-specific display or log data returned by the TACACS+ server.
     pub data: String,
-    /// TACACS+ privilege level assigned by the server, if supplied.
-    pub privilege_level: Option<u32>,
 }
 
 /// Normalized TACACS+ accounting reply status values.
@@ -412,10 +789,12 @@ impl From<AuthorizationOperation> for ipc::AuthorizationRequest {
             user: value.user,
             port: value.port,
             remote_address: value.remote_address,
-            service: value.service,
-            command: value.command,
-            command_arguments: value.command_arguments,
             privilege_level: value.privilege_level,
+            args: value
+                .args
+                .into_iter()
+                .map(ipc::AuthorizationArg::from)
+                .collect(),
         }
     }
 }
@@ -426,10 +805,13 @@ impl From<&AuthorizationOperation> for ipc::AuthorizationRequest {
             user: value.user.clone(),
             port: value.port.clone(),
             remote_address: value.remote_address.clone(),
-            service: value.service.clone(),
-            command: value.command.clone(),
-            command_arguments: value.command_arguments.clone(),
             privilege_level: value.privilege_level,
+            args: value
+                .args
+                .iter()
+                .cloned()
+                .map(ipc::AuthorizationArg::from)
+                .collect(),
         }
     }
 }
@@ -438,15 +820,15 @@ impl TryFrom<ipc::AuthorizationRequest> for AuthorizationOperation {
     type Error = anyhow::Error;
 
     fn try_from(value: ipc::AuthorizationRequest) -> Result<Self, Self::Error> {
-        Ok(Self {
+        let operation = Self {
             user: value.user,
             port: value.port,
             remote_address: value.remote_address,
-            service: value.service,
-            command: value.command,
-            command_arguments: value.command_arguments,
             privilege_level: value.privilege_level,
-        })
+            args: value.args.into_iter().map(AuthorizationArg::from).collect(),
+        };
+        operation.validate()?;
+        Ok(operation)
     }
 }
 
@@ -494,9 +876,12 @@ impl AuthorizationOperationResponse {
             server: self.server,
             status: self.status.into_proto(),
             server_message: self.server_message,
-            args: self.args,
+            args: self
+                .args
+                .into_iter()
+                .map(ipc::AuthorizationArg::from)
+                .collect(),
             data: self.data,
-            privilege_level: self.privilege_level,
         }
     }
 
@@ -511,10 +896,29 @@ impl AuthorizationOperationResponse {
             server: proto.server,
             status: AuthorizationResponseStatus::from_proto(proto.status)?,
             server_message: proto.server_message,
-            args: proto.args,
+            args: proto.args.into_iter().map(AuthorizationArg::from).collect(),
             data: proto.data,
-            privilege_level: proto.privilege_level,
         })
+    }
+}
+
+impl From<AuthorizationArg> for ipc::AuthorizationArg {
+    fn from(arg: AuthorizationArg) -> Self {
+        Self {
+            name: arg.name,
+            mandatory: arg.mandatory,
+            value: arg.value,
+        }
+    }
+}
+
+impl From<ipc::AuthorizationArg> for AuthorizationArg {
+    fn from(arg: ipc::AuthorizationArg) -> Self {
+        Self {
+            name: arg.name,
+            mandatory: arg.mandatory,
+            value: arg.value,
+        }
     }
 }
 
@@ -555,19 +959,69 @@ mod tests {
 
     #[test]
     fn test_authorization_operation_proto_round_trip() {
-        let request = AuthorizationOperation {
-            user: "admin".to_owned(),
-            port: "tty0".to_owned(),
-            remote_address: "127.0.0.1".to_owned(),
-            service: "shell".to_owned(),
-            command: "show".to_owned(),
-            command_arguments: vec!["users".to_owned()],
-            privilege_level: 15,
-        };
+        let request = AuthorizationOperation::builder("admin", 15)
+            .port("tty0")
+            .remote_address("127.0.0.1")
+            .service("shell")
+            .command("show")
+            .command_args(vec!["users".to_owned()])
+            .build()
+            .unwrap();
 
         let encoded: ipc::AuthorizationRequest = (&request).into();
         let decoded = AuthorizationOperation::try_from(encoded).unwrap();
         assert_eq!(decoded, request);
+        assert_eq!(decoded.service(), Some("shell"));
+        assert_eq!(decoded.command(), Some("show"));
+        assert_eq!(decoded.command_arguments().collect::<Vec<_>>(), vec!["users"]);
+    }
+
+    #[test]
+    fn test_authorization_builder_adds_command_args_in_order() {
+        let request = AuthorizationOperation::builder("admin", 15)
+            .service("shell")
+            .command("show")
+            .command_args(vec!["interfaces".to_owned(), "status".to_owned()])
+            .build()
+            .unwrap();
+
+        assert_eq!(request.command_arguments().collect::<Vec<_>>(), vec!["interfaces", "status"]);
+    }
+
+    #[test]
+    fn test_authorization_arg_parse_and_key_helpers() {
+        let mandatory = AuthorizationArg::parse("priv-lvl=15").unwrap();
+        assert_eq!(mandatory.well_known_key(), Some(AuthorizationKey::PrivLvl));
+        assert!(mandatory.mandatory);
+        assert_eq!(mandatory.value, "15");
+
+        let empty_value = AuthorizationArg::parse("cmd=").unwrap();
+        assert_eq!(empty_value.name, "cmd");
+        assert!(empty_value.mandatory);
+        assert_eq!(empty_value.value, "");
+
+        let optional = AuthorizationArg::parse("protocol*ssh").unwrap();
+        assert_eq!(optional.well_known_key(), Some(AuthorizationKey::Protocol));
+        assert!(!optional.mandatory);
+        assert_eq!(optional.value, "ssh");
+    }
+
+    #[test]
+    fn test_authorization_arg_parse_rejects_empty_name() {
+        let mandatory_error = AuthorizationArg::parse("=15").unwrap_err();
+        assert!(mandatory_error.to_string().contains("empty name"));
+
+        let optional_error = AuthorizationArg::parse("*ssh").unwrap_err();
+        assert!(optional_error.to_string().contains("empty name"));
+    }
+
+    #[test]
+    fn test_authorization_builder_rejects_shell_without_cmd() {
+        let error = AuthorizationOperation::builder("admin", 15)
+            .service("shell")
+            .build()
+            .unwrap_err();
+        assert!(error.to_string().contains("requires cmd"));
     }
 
     #[test]
@@ -576,9 +1030,19 @@ mod tests {
             server: "server-a:49".to_owned(),
             status: AuthorizationResponseStatus::PassRepl,
             server_message: "replace arguments".to_owned(),
-            args: vec!["cmd=show".to_owned(), "cmd-arg=users".to_owned()],
+            args: vec![
+                AuthorizationArg {
+                    name: "cmd".to_owned(),
+                    mandatory: true,
+                    value: "show".to_owned(),
+                },
+                AuthorizationArg {
+                    name: "cmd-arg".to_owned(),
+                    mandatory: true,
+                    value: "users".to_owned(),
+                },
+            ],
             data: "display this".to_owned(),
-            privilege_level: Some(15),
         };
 
         let decoded =

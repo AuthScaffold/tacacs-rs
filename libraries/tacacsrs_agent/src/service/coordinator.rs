@@ -145,8 +145,8 @@ impl TacacsAgent for GrpcService {
         log::debug!(
             "Received IPC authorization request: user={}, service={}, cmd={}",
             request.user,
-            request.service,
-            request.command,
+            request.service().unwrap_or("<missing>"),
+            request.command().unwrap_or("<missing>"),
         );
 
         let response = AuthorizationOperationResponse {
@@ -155,7 +155,6 @@ impl TacacsAgent for GrpcService {
             server_message: "authorization allowed by temporary local stub; upstream TACACS+ authorization is not implemented yet".to_owned(),
             args: Vec::new(),
             data: String::new(),
-            privilege_level: Some(request.privilege_level),
         };
 
         Ok(Response::new(ipc::AuthorizationReply {
@@ -617,25 +616,21 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let client = ServiceClient::connect(endpoint.clone()).await.unwrap();
-        let response = client
-            .send_authorization(AuthorizationOperation {
-                user: "admin".to_owned(),
-                port: "pts/1".to_owned(),
-                remote_address: "127.0.0.1".to_owned(),
-                service: "shell".to_owned(),
-                command: "/bin/echo".to_owned(),
-                command_arguments: vec!["hello".to_owned()],
-                privilege_level: 0,
-            })
-            .await
+        let request = AuthorizationOperation::builder("admin", 0)
+            .port("pts/1")
+            .remote_address("127.0.0.1")
+            .service("shell")
+            .command("/bin/echo")
+            .command_arg("hello")
+            .build()
             .unwrap();
+        let response = client.send_authorization(request).await.unwrap();
 
         assert_eq!(response.server, "stub");
         assert_eq!(response.status, AuthorizationResponseStatus::PassAdd);
         assert!(response.server_message.contains("temporary local stub"));
         assert!(response.args.is_empty());
         assert!(response.data.is_empty());
-        assert_eq!(response.privilege_level, Some(0));
 
         service_task.abort();
         let _ = service_task.await;

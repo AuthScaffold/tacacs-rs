@@ -189,15 +189,20 @@ message AccountingReply {
 // Client-supplied inputs for a TACACS+ authorization operation.
 //
 // The service translates these fields into a TAC_PLUS_AUTHOR request body
-// (RFC 8907 §6) once upstream authorization forwarding is implemented.
+// (RFC 8907 §6) once upstream authorization forwarding is implemented. The
+// fixed fields map to the Authorization REQUEST header fields; the variable
+// authorization request arguments are carried in `args` using the same
+// structured arg-val representation as AuthorizationResponse.
 message AuthorizationRequest {
   string user = 1;
   string port = 2;
   string remote_address = 3;
-  string service = 4;          // e.g., "shell"
-  string command = 5;
-  repeated string command_arguments = 6;
-  uint32 privilege_level = 7;
+  uint32 privilege_level = 4;
+
+  // RFC 8907 §8.2 authorization arg-val pairs, in order.
+  // `service` MUST be included. When service is `shell`, `cmd` MUST be
+  // included; multiple `cmd-arg` values are order-dependent.
+  repeated AuthorizationArg args = 5;
 }
 
 // TACACS+ authorization reply status values from RFC 8907 §6.2.
@@ -210,14 +215,42 @@ enum AuthorizationStatus {
   AUTHORIZATION_STATUS_FOLLOW = 33;
 }
 
+// A single TACACS+ authorization argument-value pair.
+//
+// TACACS+ authorization arguments (RFC 8907 §6.1) carry a name, a separator,
+// and a value in a single string. The separator encodes whether the argument
+// is mandatory or optional:
+//   mandatory ('=') — the receiving side MUST handle it or treat authorization as failed.
+//   optional  ('*') — the receiving side MAY disregard it.
+//
+// This message decodes that wire encoding for both AuthorizationRequest and
+// AuthorizationResponse so callers can make policy decisions without
+// re-parsing raw strings.
+message AuthorizationArg {
+  // Argument name (e.g. "priv-lvl", "cmd", "service").
+  string name = 1;
+
+  // True when the original separator was '=' (mandatory).
+  // False when the original separator was '*' (optional).
+  bool mandatory = 2;
+
+  // Argument value (everything after the first separator in the wire string).
+  string value = 3;
+}
+
 // Successful authorization response from the service.
 message AuthorizationResponse {
   string server = 1;
   AuthorizationStatus status = 2;
   string server_message = 3;
-  repeated string args = 4;     // server-modified arguments (PASS_REPL)
+
+  // Server-supplied arg-val pairs for PASS_ADD (merge) and PASS_REPL (replace).
+  // Empty when the server returned arg_cnt = 0 (approved with no modifications).
+  // Privilege changes are represented as args (for example `priv-lvl=15`),
+  // matching RFC 8907 arg-val semantics.
+  repeated AuthorizationArg args = 4;
+
   string data = 5;              // client-specific display/log data
-  optional uint32 privilege_level = 6; // server-assigned privilege level
 }
 
 // Reply envelope for the Authorization RPC.

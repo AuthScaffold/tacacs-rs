@@ -92,7 +92,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use libseccomp::{ScmpFd, ScmpNotifReq, ScmpNotifResp, ScmpNotifRespFlags, notify_id_valid};
 use tacacsrs_agent_client::{
-    AuthorizationOperation, AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
+    AuthorizationArg, AuthorizationOperation, AuthorizationOperationResponse,
+    AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
 };
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
@@ -228,8 +229,8 @@ async fn connect_ipc_client(endpoint: &IpcEndpoint) -> Option<ServiceClient> {
 ///
 /// | Status      | Decision |
 /// |-------------|----------|
-/// | `PassAdd`   | Allow    |
-/// | `PassRepl`  | Deny until argv replacement is implemented |
+/// | `PassAdd`   | Allow if no mandatory response args must be applied |
+/// | `PassRepl`  | Allow if no mandatory replacement args must be applied |
 /// | `Fail`      | Deny     |
 /// | `Error`     | Deny     |
 /// | `Follow`    | Deny     |
@@ -241,14 +242,18 @@ async fn ipc_authorize(
     exec_path: &str,
     exec_args: &[String],
 ) -> Option<AuthDecision> {
-    let operation = AuthorizationOperation {
-        user: config.user.clone(),
-        port: config.port.clone().unwrap_or_default(),
-        remote_address: config.rem_addr.clone().unwrap_or_default(),
-        service: "shell".to_owned(),
-        command: exec_path.to_owned(),
-        command_arguments: exec_args.to_vec(),
-        privilege_level: config.privilege_level,
+    let mut builder = AuthorizationOperation::builder(config.user.clone(), config.privilege_level)
+        .port(config.port.clone().unwrap_or_default())
+        .remote_address(config.rem_addr.clone().unwrap_or_default())
+        .service("shell")
+        .command(exec_path.to_owned())
+        .command_args(exec_args.iter().cloned());
+    let operation = match builder.build() {
+        Ok(operation) => operation,
+        Err(err) => {
+            log::warn!("failed to build IPC authorization request for {exec_path:?}: {err:#}");
+            return None;
+        }
     };
 
     match time::timeout(config.authorization_timeout, client.send_authorization(operation)).await {
@@ -266,19 +271,142 @@ async fn ipc_authorize(
                 response.status,
                 response.server
             );
-            match response.status {
-                AuthorizationResponseStatus::PassAdd => Some(AuthDecision::Allow),
-                AuthorizationResponseStatus::PassRepl => Some(AuthDecision::Deny(format!(
-                    "TACACS+ agent returned PASS_REPL for {exec_path:?}, but session-wrapper cannot safely replace arguments already submitted in the seccomp execve notification yet"
-                ))),
-                AuthorizationResponseStatus::Fail
-                | AuthorizationResponseStatus::Error
-                | AuthorizationResponseStatus::Follow => {
-                    let reason =
-                        format!("TACACS+ agent denied {exec_path:?}: status={:?}", response.status);
-                    Some(AuthDecision::Deny(reason))
-                }
-            }
+            Some(map_authorization_response(&response, exec_path))
+        }
+    }
+}
+
+/// Maps an authorization response into the local seccomp decision.
+///
+/// Seccomp user notification can either continue the original frozen `execve`
+/// or deny it; it cannot inject additional argv values or replace the submitted
+/// argv. RFC 8907 lets clients ignore optional response args, but mandatory
+/// response args must be applied or authorization fails.
+fn map_authorization_response(
+    response: &AuthorizationOperationResponse,
+    exec_path: &str,
+) -> AuthDecision {
+    match response.status {
+        AuthorizationResponseStatus::PassAdd => {
+            map_pass_with_args("PASS_ADD", "response", response.args.as_slice(), exec_path)
+        }
+        AuthorizationResponseStatus::PassRepl => {
+            map_pass_with_args("PASS_REPL", "replacement", response.args.as_slice(), exec_path)
+        }
+        AuthorizationResponseStatus::Fail
+        | AuthorizationResponseStatus::Error
+        | AuthorizationResponseStatus::Follow => {
+            let reason =
+                format!("TACACS+ agent denied {exec_path:?}: status={:?}", response.status);
+            AuthDecision::Deny(reason)
+        }
+    }
+}
+
+fn map_pass_with_args(
+    status_name: &str,
+    arg_kind: &str,
+    args: &[AuthorizationArg],
+    exec_path: &str,
+) -> AuthDecision {
+    if args.is_empty() {
+        return AuthDecision::Allow;
+    }
+
+    let arg_names: Vec<&str> = args.iter().map(|a| a.name.as_str()).collect();
+    let mandatory_names: Vec<&str> = args
+        .iter()
+        .filter(|a| a.mandatory)
+        .map(|a| a.name.as_str())
+        .collect();
+
+    if mandatory_names.is_empty() {
+        log::warn!(
+            "IPC authorization {status_name} for {exec_path:?} returned optional {arg_kind} \
+             args {arg_names:?} that cannot be applied in seccomp notify mode; ignoring them"
+        );
+        AuthDecision::Allow
+    } else {
+        log::warn!(
+            "IPC authorization {status_name} for {exec_path:?} returned mandatory {arg_kind} \
+             args {mandatory_names:?} (all args: {arg_names:?}) that cannot be applied in seccomp \
+             notify mode; treating as failed per RFC 8907 §6.2"
+        );
+        AuthDecision::Deny(format!(
+            "TACACS+ agent returned {status_name} for {exec_path:?} with mandatory {arg_kind} \
+             arg(s) that cannot be applied: {mandatory_names:?}"
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn authorization_response(
+        status: AuthorizationResponseStatus,
+        args: Vec<AuthorizationArg>,
+    ) -> AuthorizationOperationResponse {
+        AuthorizationOperationResponse {
+            server: "test-server".to_owned(),
+            status,
+            server_message: String::new(),
+            args,
+            data: String::new(),
+        }
+    }
+
+    #[test]
+    fn pass_add_with_only_optional_response_args_is_allowed() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassAdd,
+            vec![AuthorizationArg::optional("priv-lvl", "15")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        assert!(matches!(decision, AuthDecision::Allow));
+    }
+
+    #[test]
+    fn pass_repl_with_only_optional_replacement_args_is_allowed() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassRepl,
+            vec![AuthorizationArg::optional("cmd-arg", "ignored")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        assert!(matches!(decision, AuthDecision::Allow));
+    }
+
+    #[test]
+    fn pass_add_with_mandatory_response_arg_is_denied() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassAdd,
+            vec![AuthorizationArg::mandatory("priv-lvl", "15")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        match decision {
+            AuthDecision::Deny(reason) => assert!(reason.contains("priv-lvl")),
+            AuthDecision::Allow => panic!("mandatory PASS_ADD response arg was allowed"),
+        }
+    }
+
+    #[test]
+    fn pass_repl_with_mandatory_replacement_arg_is_denied() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassRepl,
+            vec![AuthorizationArg::mandatory("cmd", "/bin/date")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        match decision {
+            AuthDecision::Deny(reason) => assert!(reason.contains("cmd")),
+            AuthDecision::Allow => panic!("mandatory PASS_REPL replacement arg was allowed"),
         }
     }
 }
