@@ -1,7 +1,7 @@
 //! Linux implementation of the `session-wrapper` binary.
 //!
 //! This module glues together CLI parsing, the process lifecycle code, the
-//! allowlist, and the real TACACS+-backed seccomp notification supervisor.
+//! allowlist, and the async TACACS+-backed seccomp notification supervisor.
 //!
 //! # Module layout
 //!
@@ -12,7 +12,15 @@
 //! | [`seccomp`]        | BPF filter construction.                              |
 //! | [`allowlist`]      | Fast-path allow set (O(1) path lookup).               |
 //! | [`process_reader`] | Read exec args from `/proc/[pid]/mem` via `pread`.   |
-//! | [`supervisor`]     | Notification loop, IPC authorization, kernel responses|
+//! | [`supervisor`]     | Async notification loop, IPC authorization.           |
+//!
+//! # Fork safety and the tokio runtime
+//!
+//! Linux `fork(2)` is not safe to call while a multi-threaded runtime is
+//! running because only the calling thread survives in the child, leaving
+//! other threads' locks permanently acquired.  This module creates the tokio
+//! runtime **after** `spawn_session` returns (i.e. after the fork has already
+//! happened and the child has exec'd).  The child never sees the runtime.
 #![allow(unsafe_code)]
 
 #[path = "cli.rs"]
@@ -25,6 +33,7 @@ mod supervisor;
 
 use std::process::ExitCode;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
@@ -79,19 +88,28 @@ fn try_run() -> anyhow::Result<()> {
 
 /// Wires together allowlist loading, child process creation, and supervision.
 ///
-/// This is the top-level entry point that converts CLI options into the
-/// runtime configuration consumed by the supervisor loop.
+/// # Execution order
+///
+/// 1. Load (or default) the exec allowlist.
+/// 2. Fork the child via `spawn_session` — no tokio runtime must exist here.
+/// 3. Build the tokio runtime **after** the fork.
+/// 4. Run the async supervisor inside `block_on`.
+///
+/// The runtime is created after the fork so that the child process never
+/// inherits tokio's thread pool or I/O driver state (see module-level note on
+/// fork safety).
 fn orchestrate_session(cli: &Cli, service_endpoint: &IpcEndpoint) -> anyhow::Result<()> {
     log::info!("session-wrapper starting for user {} via {:?}", cli.user, service_endpoint);
 
-    // Build the allowlist. If the operator supplied a config file, load it
-    // (merging with the built-in defaults). Otherwise, use built-ins only.
-    let allowlist = match &cli.allowlist {
+    // Build the allowlist before forking.  Reading a file is safe here and
+    // avoids doing I/O in the supervisor's async context.
+    let allowlist = Arc::new(match &cli.allowlist {
         Some(path) => Allowlist::load(path)
             .with_context(|| format!("failed to load allowlist from {}", path.display()))?,
         None => Allowlist::default_only(),
-    };
+    });
 
+    // Fork the session child.  No tokio runtime must be alive at this point.
     let session = process::spawn_session(process::ChildProcessConfig {
         shell: cli.shell.clone(),
         user: cli.user.clone(),
@@ -110,13 +128,24 @@ fn orchestrate_session(cli: &Cli, service_endpoint: &IpcEndpoint) -> anyhow::Res
         session.control_socket_fd()
     );
 
-    let config = SupervisorConfig {
+    let config = Arc::new(SupervisorConfig {
         user: cli.user.clone(),
         port: cli.port.clone(),
         rem_addr: cli.rem_addr.clone(),
         fail_policy: cli.fail_policy,
         service_endpoint: service_endpoint.clone(),
-    };
+    });
 
-    run_supervisor(&session, &allowlist, &config).context("session supervisor failed")
+    // Build the tokio runtime AFTER the fork.  Two worker threads are enough
+    // because the main async work is: (a) the dispatch loop and (b) concurrent
+    // per-notification handler tasks.  The blocking notification receiver runs
+    // in a dedicated OS thread (not in the tokio thread pool).
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .context("failed to create tokio runtime for supervisor")?;
+
+    rt.block_on(run_supervisor(&session, allowlist, config))
+        .context("session supervisor failed")
 }

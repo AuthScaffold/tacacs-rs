@@ -21,10 +21,21 @@
 //! 2. Are utilities so fundamental that denying them would break basic shell
 //!    operation (e.g. `/bin/bash` when bash is the configured shell).
 //!
-//! # File format
+//! # Built-in defaults
 //!
-//! The optional user-supplied config file contains one absolute path per line.
-//! Blank lines and lines beginning with `#` are ignored.
+//! The built-in defaults are loaded at **compile time** from
+//! `src/builtin_allowlist.txt` via [`include_str!`]. This means:
+//!
+//! - The list is embedded in the binary (no runtime file dependency).
+//! - Changes to the file trigger a recompile, keeping it version-tracked
+//!   alongside the code but in a dedicated, operator-readable file.
+//! - Security reviewers can audit the list independently of the surrounding
+//!   Rust code.
+//!
+//! # Operator config file format
+//!
+//! The optional user-supplied config file uses the same format as
+//! `builtin_allowlist.txt`:
 //!
 //! ```text
 //! # Allow additional vendor utilities
@@ -32,8 +43,9 @@
 //! /opt/vendor/bin/status
 //! ```
 //!
-//! Built-in defaults are always active and cannot be removed via the config
-//! file.
+//! Blank lines and lines beginning with `#` are ignored. Only absolute paths
+//! (starting with `/`) are accepted. Built-in defaults are always active and
+//! cannot be removed via the config file.
 
 use std::collections::HashSet;
 use std::fs;
@@ -41,40 +53,41 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-/// Paths that are always permitted to execute, regardless of TACACS+ policy.
+/// Built-in allowlist source, embedded at compile time from `builtin_allowlist.txt`.
 ///
-/// These entries exist because bash (and compatible shells) `exec` these
-/// binaries as part of ordinary shell operation — for example, to check the
-/// current user identity, resolve command paths, or launch sub-shells. Denying
-/// them would make an interactive session unusable before any real command runs.
+/// The file uses the same format as the operator config file: one absolute
+/// path per line, `#` comments, blank lines ignored. Embedding it with
+/// [`include_str!`] means any edit to the file forces a recompile, keeping
+/// the policy data version-tracked separately from the surrounding Rust code.
+const BUILTIN_ALLOWLIST_SRC: &str = include_str!("builtin_allowlist.txt");
+
+/// Parses a plain-text allowlist source into a set of absolute paths.
 ///
-/// Keep this list **minimal**. Every entry is a potential bypass if the binary
-/// at that path can be manipulated.
-const BUILTIN_PATHS: &[&str] = &[
-    // The shell itself. Without this, `bash` forking a sub-shell would trigger
-    // an authorization round-trip for every subshell invocation.
-    "/bin/bash",
-    // POSIX-mandated `sh` location, often a symlink to bash or dash.
-    "/bin/sh",
-    // bash uses env(1) for the `env` builtin and for shebang lines like
-    // `#!/usr/bin/env python3`.
-    "/usr/bin/env",
-    // Shells check user/group identity at startup (PS1 construction, etc.).
-    "/usr/bin/id",
-    "/usr/bin/groups",
-    // Common `sh` locations on Debian/Ubuntu (dash is the default /bin/sh).
-    "/usr/bin/dash",
-    "/bin/dash",
-    // bash completion and prompts commonly run `uname` for PS1 decoration.
-    "/bin/uname",
-    "/usr/bin/uname",
-    // Needed for `type`, `command -v`, and shebang resolution.
-    "/usr/bin/which",
-    // tty/stty are checked by interactive login shells.
-    "/usr/bin/tty",
-    "/bin/stty",
-    "/usr/bin/stty",
-];
+/// Lines that are blank or begin with `#` are skipped. Lines that do not
+/// start with `/` are skipped with a warning (they are not absolute paths).
+///
+/// This function is used both for the built-in compile-time source and for
+/// operator-supplied config files so that the parsing logic is consistent.
+fn parse_allowlist_source(src: &str, source_label: &str) -> HashSet<String> {
+    let mut paths = HashSet::new();
+
+    for line in src.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if !trimmed.starts_with('/') {
+            log::warn!("allowlist: skipping non-absolute path: {trimmed:?} (from {source_label})");
+            continue;
+        }
+
+        paths.insert(trimmed.to_owned());
+    }
+
+    paths
+}
 
 /// Fast-path lookup table for exec authorization.
 ///
@@ -96,9 +109,12 @@ pub(crate) struct Allowlist {
 impl Allowlist {
     /// Builds an allowlist containing only the built-in default paths.
     ///
+    /// The built-in paths are parsed from [`BUILTIN_ALLOWLIST_SRC`], which is
+    /// embedded at compile time from `src/builtin_allowlist.txt`.
+    ///
     /// This is the fallback when the operator has not supplied a config file.
     pub(crate) fn default_only() -> Self {
-        let paths = BUILTIN_PATHS.iter().map(|&s| s.to_owned()).collect();
+        let paths = parse_allowlist_source(BUILTIN_ALLOWLIST_SRC, "builtin_allowlist.txt");
         Self { paths }
     }
 
@@ -121,31 +137,15 @@ impl Allowlist {
         let content = fs::read_to_string(config_path)
             .with_context(|| format!("failed to read allowlist from {}", config_path.display()))?;
 
-        for line in content.lines() {
-            let trimmed = line.trim();
-
-            // Skip blank lines and comment lines.
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-
-            // Only accept absolute paths to prevent relative-path confusion.
-            if !trimmed.starts_with('/') {
-                log::warn!(
-                    "allowlist: skipping non-absolute path: {trimmed:?} (from {})",
-                    config_path.display()
-                );
-                continue;
-            }
-
-            allowlist.paths.insert(trimmed.to_owned());
-        }
+        let user_paths = parse_allowlist_source(&content, &config_path.display().to_string());
+        let user_count = user_paths.len();
+        allowlist.paths.extend(user_paths);
 
         log::debug!(
-            "allowlist loaded {} entries from {} (including {} built-in defaults)",
-            allowlist.paths.len(),
+            "allowlist loaded {} user entries from {} (total {} entries including built-ins)",
+            user_count,
             config_path.display(),
-            BUILTIN_PATHS.len(),
+            allowlist.paths.len(),
         );
 
         Ok(allowlist)
@@ -167,14 +167,24 @@ mod tests {
 
     use tempfile::NamedTempFile;
 
-    use super::{Allowlist, BUILTIN_PATHS};
+    use super::{Allowlist, BUILTIN_ALLOWLIST_SRC};
+
+    /// Returns the built-in paths parsed from the embedded source, mirroring
+    /// the logic in `default_only()`. Tests use this instead of a hard-coded
+    /// list so they stay in sync with `builtin_allowlist.txt` automatically.
+    fn builtin_paths() -> impl Iterator<Item = &'static str> {
+        BUILTIN_ALLOWLIST_SRC
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    }
 
     // ── default_only ────────────────────────────────────────────────────────
 
     #[test]
     fn default_only_contains_all_builtin_paths() {
         let al = Allowlist::default_only();
-        for path in BUILTIN_PATHS {
+        for path in builtin_paths() {
             assert!(
                 al.is_allowed(path),
                 "built-in path {path:?} should be in the default allowlist"
@@ -211,7 +221,7 @@ mod tests {
 
         let al = Allowlist::load(tmp.path()).expect("load should succeed");
 
-        for path in BUILTIN_PATHS {
+        for path in builtin_paths() {
             assert!(al.is_allowed(path), "builtin {path:?} must survive loading a config file");
         }
     }
@@ -249,6 +259,19 @@ mod tests {
     fn load_returns_error_for_missing_file() {
         let result = Allowlist::load(std::path::Path::new("/nonexistent/path/to/allowlist"));
         assert!(result.is_err(), "missing file should return an error");
+    }
+
+    // ── builtin_allowlist.txt content ────────────────────────────────────────
+
+    #[test]
+    fn builtin_allowlist_contains_required_shell_infrastructure() {
+        // These paths are required for a minimal interactive bash session.
+        // This test pins the minimum set; builtin_allowlist.txt may contain more.
+        let required = ["/bin/bash", "/bin/sh", "/usr/bin/env", "/usr/bin/id"];
+        let al = Allowlist::default_only();
+        for path in required {
+            assert!(al.is_allowed(path), "required shell path {path:?} must be in builtins");
+        }
     }
 
     // ── is_allowed ──────────────────────────────────────────────────────────

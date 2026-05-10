@@ -1,92 +1,122 @@
-//! Seccomp user-notification supervisor loop for exec authorization.
+//! Seccomp user-notification supervisor — async cooperative task design.
 //!
-//! # Architecture overview
+//! # Why go async?
+//!
+//! The original design used a blocking poll loop with `block_on` for IPC calls.
+//! While simple, it serialized notification handling: one exec had to complete
+//! its TACACS+ round-trip before the next notification was even received. In a
+//! busy shell session with many concurrent descendants (pipelines, background
+//! jobs, nested scripts), this introduces unnecessary head-of-line blocking.
+//!
+//! The async design uses Tokio's cooperative scheduler to handle notifications
+//! concurrently:
+//!
+//! - A dedicated OS thread runs the blocking `ScmpNotifReq::receive` loop and
+//!   feeds notifications into a Tokio `mpsc` channel.  This decouples reception
+//!   (inherently blocking, indefinite wait) from processing.
+//! - Each notification spawns its own `tokio::task`.  While one task awaits a
+//!   TACACS+ IPC response, other tasks can handle unrelated execs from sibling
+//!   processes concurrently.
+//! - Child reaping is driven by SIGCHLD plus a safety polling interval — no
+//!   busy-wait, no fixed timeout penalty for each loop iteration.
+//! - The control socket watcher runs in `spawn_blocking` (a short-lived
+//!   blocking call) rather than in the poll loop, removing one manual fd from
+//!   the poll array.
+//!
+//! # Architecture
 //!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────┐
-//! │  Parent (session-wrapper supervisor)                     │
-//! │                                                          │
-//! │  ┌────────────────┐     ┌──────────────┐                │
-//! │  │ seccomp notif  │     │ TACACS+      │                │
-//! │  │ fd (blocking)  │     │ agent (gRPC) │                │
-//! │  └───────┬────────┘     └──────┬───────┘                │
-//! │          │ recv_notification()  │ block_on(send_acct)    │
-//! │          ▼                     │                         │
-//! │  ┌───────────────────────────────────────────────────┐  │
-//! │  │            run_supervisor() loop                  │  │
-//! │  │                                                   │  │
-//! │  │  1. poll(notif_fd, control_socket)               │  │
-//! │  │  2. recv_notification() → ScmpNotifReq           │  │
-//! │  │  3. read_exec_args() ← /proc/[pid]/mem           │  │
-//! │  │  4. allowlist check  → CONTINUE (fast path)      │  │
-//! │  │  5. IPC accounting   → allow or deny             │  │
-//! │  │  6. send_response()                              │  │
-//! │  └───────────────────────────────────────────────────┘  │
-//! └─────────────────────────────────────────────────────────┘
-//!
-//! ┌─────────────────────────────────────────────────────────┐
-//! │  Child / descendants (frozen at execve boundary)        │
-//! │                                                          │
-//! │  bash ──fork──► sub-bash ──fork──► script child ...     │
-//! │   │               │                   │                  │
-//! │   execve          execve              execve             │
-//! │   (frozen)        (frozen)            (frozen)           │
-//! └─────────────────────────────────────────────────────────┘
+//! ┌──────────────────────────────────────────────────────────────────────┐
+//! │  OS thread  (std::thread::spawn — long-lived blocker)               │
+//! │                                                                       │
+//! │  loop { ScmpNotifReq::receive(fd) }                                  │
+//! │            │                                                          │
+//! │            └──── mpsc::Sender<ScmpNotifReq> ───────────────────────► │
+//! └──────────────────────────────────────────────────────────────────────┘
+//!                                                                │
+//!                                                       channel  │
+//!                                                                ▼
+//! ┌──────────────────────────────────────────────────────────────────────┐
+//! │  Tokio runtime  (multi-thread, 2 worker threads)                     │
+//! │                                                                       │
+//! │  dispatch_loop (main async task)                                     │
+//! │  ┌───────────────────────────────────────────────────────────────┐   │
+//! │  │  tokio::select! {                                             │   │
+//! │  │    req = notif_rx.recv()  ──► tokio::spawn(handle_one(...))  │   │
+//! │  │    _ = sigchld.recv()     ──► reap_available_children()      │   │
+//! │  │    _ = reap_interval.tick() ► reap_available_children()      │   │
+//! │  │    Some(_) = tasks.join_next() ──► (task completed)          │   │
+//! │  │    result = &mut ctrl_rx  ──► propagate child setup error    │   │
+//! │  │  }                                                            │   │
+//! │  └───────────────────────────────────────────────────────────────┘   │
+//! │                │                                                      │
+//! │         spawn  │ per notification                                     │
+//! │                ▼                                                      │
+//! │  ┌─────────────────────────────────────────────────────────────┐     │
+//! │  │  handle_one_notification  (concurrent Tokio tasks)          │     │
+//! │  │                                                             │     │
+//! │  │  read_exec_args()          ← /proc/[pid]/mem  (fast pread) │     │
+//! │  │  allowlist.is_allowed()    ← HashSet O(1)                  │     │
+//! │  │  client.send_accounting().await  ← async gRPC IPC          │     │
+//! │  │  send_response()           ← kernel ioctl  (fast)          │     │
+//! │  └─────────────────────────────────────────────────────────────┘     │
+//! └──────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! # Single-threaded blocking design
+//! # Concurrency safety of the notification fd
 //!
-//! The supervisor runs in the parent process's main thread and blocks on
-//! `ScmpNotifReq::receive`.  No async runtime is needed for the notification
-//! loop itself.  TACACS+ IPC calls (which are async) are driven via
-//! `tokio::runtime::Runtime::block_on`, with a single-threaded tokio runtime
-//! created once at supervisor startup and reused for the lifetime of the
-//! session.
+//! The seccomp notification fd supports concurrent use from multiple threads:
+//! `seccomp_notify_respond` uses the notification ID to route responses in the
+//! kernel, so two tasks responding to different notifications simultaneously is
+//! safe.  `seccomp_notify_receive` is only ever called from the single OS
+//! receiver thread, so no locking is needed there.
 //!
 //! # Descendant coverage
 //!
 //! The seccomp filter is inherited across `fork`/`clone` and preserved across
-//! `exec`, so every process in the supervised tree — nested shells, subshells,
-//! background jobs, shell scripts — hits the same notification fd.  The
-//! supervisor loop stays alive until `waitpid` confirms that the process tree
-//! is empty (the subreaper role ensures descendants are reparented to us, not
-//! to PID 1, when their parent exits).
+//! `exec`.  Every process in the supervised tree — nested shells, subshells,
+//! background jobs, shell scripts — sends notifications through the same fd.
+//! The supervisor does not need to track which PID sent a notification; it
+//! authorizes each exec on its own merits using the PID embedded in the request.
 //!
 //! # Fail policy
-//!
-//! When the TACACS+ agent is unreachable (network partition, service restart),
-//! the supervisor applies the configured fail policy:
 //!
 //! | Policy             | Behaviour on IPC failure          |
 //! |--------------------|-----------------------------------|
 //! | [`FailPolicy::Closed`] | Deny the exec with `EPERM`    |
 //! | [`FailPolicy::Open`]   | Allow the exec (continue)     |
 
-use std::collections::HashSet;
-use std::io;
-use std::thread;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use libseccomp::{ScmpFd, ScmpNotifReq, ScmpNotifResp, ScmpNotifRespFlags, notify_id_valid};
 use tacacsrs_agent_client::{AccountingOperation, AccountingResponseStatus, IpcEndpoint, ServiceClient};
-use tokio::runtime::Runtime;
+use tokio::signal::unix::{signal, SignalKind};
+use tokio::sync::mpsc;
+use tokio::task::{JoinSet, spawn_blocking};
+use tokio::time;
 
 use super::allowlist::Allowlist;
 use super::cli::FailPolicy;
-use super::process::{ChildSetupStatus, SessionProcess, reap_available_children, process_exists};
+use super::process::{
+    ChildSetupStatus, SessionProcess, read_child_setup_status_fd, reap_available_children,
+};
 use super::process_reader::read_exec_args;
 
-const SUPERVISOR_POLL_TIMEOUT_MS: i32 = 250;
-const SUPERVISOR_IDLE_SLEEP: Duration = Duration::from_millis(250);
+/// How often the dispatch loop polls for reaped children in addition to SIGCHLD.
+///
+/// This safety interval catches any SIGCHLD signals that were coalesced or
+/// delivered while the process was not yet awaiting the signal.
+const CHILD_REAP_INTERVAL: Duration = Duration::from_millis(250);
 
 // ── low-level wrappers ───────────────────────────────────────────────────────
 
 /// Blocks until the next seccomp user notification arrives on `notif_fd`.
 ///
 /// This is a thin wrapper around [`ScmpNotifReq::receive`] that converts the
-/// libseccomp error type to [`anyhow::Error`].  The call retries automatically
-/// on `EINTR` (handled inside libseccomp-rs).
+/// libseccomp error type to [`anyhow::Error`]. It retries automatically on
+/// `EINTR` (handled inside libseccomp-rs).
 ///
 /// Returns the received notification request, which contains the PID of the
 /// process that triggered the filter and the syscall arguments.
@@ -119,8 +149,8 @@ pub(crate) fn send_response(notif_fd: ScmpFd, resp: ScmpNotifResp) -> Result<()>
 /// sends a response, the target process can be:
 ///
 /// - Killed by a signal.
-/// - Have the syscall cancelled by a signal (EINTR).
-/// - Replaced entirely if the process is traced with ptrace.
+/// - Have the syscall cancelled by a signal (`EINTR`).
+/// - Replaced entirely if the process is traced with `ptrace`.
 ///
 /// Sending a response to an invalid notification returns `ENOENT`. Calling
 /// this function between expensive operations (e.g. IPC round-trips) lets the
@@ -138,12 +168,13 @@ pub(crate) fn check_notification_valid(notif_fd: ScmpFd, id: u64) -> Result<()> 
     notify_id_valid(notif_fd, id).context("seccomp notification is no longer valid")
 }
 
-// ── IPC helpers ──────────────────────────────────────────────────────────────
+// ── configuration ─────────────────────────────────────────────────────────────
 
-/// Configuration passed from the CLI into the supervisor loop.
+/// Configuration passed from the CLI into the supervisor.
 ///
-/// Collects all the context that comes from the operator-controlled CLI flags
-/// so that the supervisor does not need to parse arguments itself.
+/// Collects all operator-controlled CLI flags so the supervisor does not need
+/// to parse arguments itself. Wrapped in `Arc` so it can be cheaply shared
+/// across concurrent notification-handler tasks.
 #[derive(Debug)]
 pub(crate) struct SupervisorConfig {
     /// TACACS+ username for the wrapped session.
@@ -158,6 +189,8 @@ pub(crate) struct SupervisorConfig {
     pub(crate) service_endpoint: IpcEndpoint,
 }
 
+// ── authorization primitives ─────────────────────────────────────────────────
+
 /// Outcome of an authorization decision for one exec notification.
 #[derive(Debug)]
 enum AuthDecision {
@@ -167,11 +200,11 @@ enum AuthDecision {
     Deny(String),
 }
 
-/// Attempts to connect to the TACACS+ agent and returns a usable client.
+/// Connects to the TACACS+ agent and returns a usable client.
 ///
-/// Returns `None` if the connection fails (the caller applies fail policy).
-fn connect_ipc_client(rt: &Runtime, endpoint: &IpcEndpoint) -> Option<ServiceClient> {
-    match rt.block_on(ServiceClient::connect(endpoint.clone())) {
+/// Returns `None` if the connection fails; the caller applies the fail policy.
+async fn connect_ipc_client(endpoint: &IpcEndpoint) -> Option<ServiceClient> {
+    match ServiceClient::connect(endpoint.clone()).await {
         Ok(client) => {
             log::debug!("connected to TACACS+ agent at {endpoint:?}");
             Some(client)
@@ -183,14 +216,13 @@ fn connect_ipc_client(rt: &Runtime, endpoint: &IpcEndpoint) -> Option<ServiceCli
     }
 }
 
-/// Sends an accounting record to the TACACS+ agent and interprets the response
-/// as an authorization decision.
+/// Sends an accounting record and maps the reply to an allow/deny decision.
 ///
-/// # Mapping accounting status to allow/deny
+/// # Mapping accounting status → allow/deny
 ///
-/// TACACS+ accounting (`TAC_PLUS_ACCT`) is the available IPC operation in the
-/// current implementation. The server's `status` field in the accounting reply
-/// is used as a proxy for authorization:
+/// TACACS+ accounting (`TAC_PLUS_ACCT`) is the currently available IPC
+/// operation. The server's `status` field in the reply is used as a proxy for
+/// authorization until a dedicated `TAC_PLUS_AUTHOR` RPC is implemented:
 ///
 /// | Status    | Decision |
 /// |-----------|----------|
@@ -198,15 +230,8 @@ fn connect_ipc_client(rt: &Runtime, endpoint: &IpcEndpoint) -> Option<ServiceCli
 /// | `Error`   | Deny     |
 /// | `Follow`  | Deny     |
 ///
-/// A proper `TAC_PLUS_AUTHOR` authorization operation will replace this when
-/// the command-authorization RPC is implemented in the agent.
-///
-/// # IPC failure
-///
-/// If the call fails (transport error, agent unavailable), `None` is returned
-/// so the caller can apply the configured fail policy.
-fn ipc_authorize(
-    rt: &Runtime,
+/// Returns `None` if the IPC call fails so the caller can apply the fail policy.
+async fn ipc_authorize(
     client: &ServiceClient,
     config: &SupervisorConfig,
     exec_path: &str,
@@ -220,7 +245,7 @@ fn ipc_authorize(
         command_arguments: exec_args.to_vec(),
     };
 
-    match rt.block_on(client.send_accounting(operation)) {
+    match client.send_accounting(operation).await {
         Ok(response) => {
             log::debug!(
                 "IPC accounting for {exec_path:?}: status={:?} server={:?}",
@@ -238,7 +263,7 @@ fn ipc_authorize(
         }
         Err(err) => {
             log::warn!("IPC accounting call failed for {exec_path:?}: {err:#}");
-            None // caller applies fail policy
+            None
         }
     }
 }
@@ -258,48 +283,51 @@ fn fail_policy_decision(policy: FailPolicy, exec_path: &str) -> AuthDecision {
     }
 }
 
-// ── notification handler ─────────────────────────────────────────────────────
+// ── per-notification handler ─────────────────────────────────────────────────
 
 /// Authorizes one exec notification and sends the kernel response.
+///
+/// This function runs as an independent Tokio task so that concurrent execs
+/// from different descendant processes are authorized in parallel — one task's
+/// TACACS+ round-trip does not block another task from starting.
 ///
 /// # Steps
 ///
 /// 1. Read the executable path and argv from the target process's memory.
 /// 2. Check the allowlist — if matched, respond immediately with CONTINUE.
-/// 3. Send a TACACS+ accounting record and interpret the response as
-///    allow/deny. On IPC failure, apply the configured fail policy.
-/// 4. Send the final response to the kernel.
+/// 3. Send a TACACS+ accounting record (`await`) and interpret the response.
+/// 4. Send the kernel the allow or deny response.
 ///
 /// # Notification invalidity
 ///
-/// If the notification becomes invalid at any point (target process killed),
-/// this function returns `Ok(())` after logging. The kernel has already
+/// If the notification becomes invalid (target process killed) at any step,
+/// this function returns `Ok(())` after logging — the kernel has already
 /// cleaned up the frozen syscall, so no response is needed.
-fn handle_exec_notification(
+async fn handle_one_notification(
     notif_fd: ScmpFd,
-    req: &ScmpNotifReq,
-    allowlist: &Allowlist,
-    config: &SupervisorConfig,
-    ipc_client: Option<&ServiceClient>,
-    rt: &Runtime,
+    req: ScmpNotifReq,
+    allowlist: Arc<Allowlist>,
+    config: Arc<SupervisorConfig>,
+    client: Option<Arc<ServiceClient>>,
 ) -> Result<()> {
     let pid = req.pid;
 
-    // Step 1: Read the executable path and argv from the target process.
-    let exec_info = match read_exec_args(notif_fd, pid, req) {
+    // Step 1: Read exec path and argv from /proc/[pid]/mem.
+    //
+    // `read_exec_args` uses pread(2) on /proc/[pid]/mem.  Each individual
+    // pread is bounded (max 4096 bytes, max 256 argv entries) and typically
+    // completes in microseconds — fast enough to run synchronously in an async
+    // task without spawn_blocking.
+    let exec_info = match read_exec_args(notif_fd, pid, &req) {
         Ok(Some(info)) => info,
         Ok(None) => {
             // Non-exec syscall (fork/clone/etc.) — always continue.
             log::trace!("non-exec syscall from pid {pid}: allowing");
             let resp = ScmpNotifResp::new_continue(req.id, ScmpNotifRespFlags::empty());
-            // Ignore ENOENT here: if the notification is already invalid, there
-            // is nothing to respond to.
             let _ = send_response(notif_fd, resp);
             return Ok(());
         }
         Err(err) => {
-            // Reading failed — either the notification became invalid (process
-            // was killed) or a genuine I/O error.  Check validity to distinguish.
             if check_notification_valid(notif_fd, req.id).is_err() {
                 log::debug!(
                     "notification {id} from pid {pid} became invalid before memory read; skipping",
@@ -307,17 +335,16 @@ fn handle_exec_notification(
                 );
                 return Ok(());
             }
-            // Some other I/O error — apply fail policy.
             log::warn!("failed to read exec args from pid {pid}: {err:#}");
             let decision = fail_policy_decision(config.fail_policy, "<unreadable>");
-            return apply_decision(notif_fd, req, "<unreadable>", &decision);
+            return apply_decision(notif_fd, &req, "<unreadable>", &decision);
         }
     };
 
     let (exec_path, exec_args) = exec_info;
     log::debug!("pid {pid} exec: {exec_path:?} args={exec_args:?}");
 
-    // Step 2: Fast-path allowlist check.
+    // Step 2: Fast-path allowlist check (O(1) HashSet lookup).
     if allowlist.is_allowed(&exec_path) {
         log::debug!("allowlist hit for {exec_path:?}: allowing without IPC");
         let resp = ScmpNotifResp::new_continue(req.id, ScmpNotifRespFlags::empty());
@@ -325,25 +352,22 @@ fn handle_exec_notification(
         return Ok(());
     }
 
-    // Step 3: IPC authorization.
-    let decision = match ipc_client {
-        Some(client) => {
-            // Skip argv[0] in the arguments — it is conventionally a copy of
-            // the executable name and redundant with exec_path.
+    // Step 3: IPC authorization (async — this is where concurrency pays off).
+    let decision = match client.as_deref() {
+        Some(c) => {
+            // Skip argv[0] — it is conventionally a copy of the executable
+            // name and redundant with exec_path.
             let args_without_argv0 = exec_args.get(1..).unwrap_or(&[]);
-            match ipc_authorize(rt, client, config, &exec_path, args_without_argv0) {
+            match ipc_authorize(c, &config, &exec_path, args_without_argv0).await {
                 Some(decision) => decision,
                 None => fail_policy_decision(config.fail_policy, &exec_path),
             }
         }
-        None => {
-            // IPC client was never established (agent unreachable at startup).
-            fail_policy_decision(config.fail_policy, &exec_path)
-        }
+        None => fail_policy_decision(config.fail_policy, &exec_path),
     };
 
-    // Step 4: Send the kernel response.
-    apply_decision(notif_fd, req, &exec_path, &decision)
+    // Step 4: Respond to the kernel.
+    apply_decision(notif_fd, &req, &exec_path, &decision)
 }
 
 /// Sends the allow or deny kernel response for a seccomp notification.
@@ -361,10 +385,9 @@ fn apply_decision(
         AuthDecision::Allow => {
             log::debug!("allowing exec of {exec_path:?} for pid {}", req.pid);
             let resp = ScmpNotifResp::new_continue(req.id, ScmpNotifRespFlags::empty());
-            // `SECCOMP_USER_NOTIF_FLAG_CONTINUE` tells the kernel: proceed with
-            // the original execve as if no filter existed.  This is the only
-            // correct "allow" response for a user-notification filter — there is
-            // no way to return a meaningful success value from execve otherwise.
+            // `SECCOMP_USER_NOTIF_FLAG_CONTINUE` tells the kernel to proceed with
+            // the original execve as if no filter existed — the only correct
+            // "allow" response for a user-notification filter.
             if let Err(err) = send_response(notif_fd, resp) {
                 log_or_propagate_send_error(err, notif_fd, req.id)?;
             }
@@ -372,8 +395,7 @@ fn apply_decision(
         AuthDecision::Deny(ref reason) => {
             log::info!("denying exec of {exec_path:?} for pid {}: {reason}", req.pid);
             eprintln!("session-wrapper: exec denied: {exec_path}");
-            // `-libc::EPERM` is the negative errno value the kernel will return
-            // as the result of the blocked execve call.
+            // `-libc::EPERM` is the negative errno returned to the blocked execve.
             let resp = ScmpNotifResp::new_error(req.id, -libc::EPERM, ScmpNotifRespFlags::empty());
             if let Err(err) = send_response(notif_fd, resp) {
                 log_or_propagate_send_error(err, notif_fd, req.id)?;
@@ -383,322 +405,272 @@ fn apply_decision(
     Ok(())
 }
 
-/// Handles an error from [`send_response`] by checking whether the notification
-/// has expired in the meantime.
+/// Handles a `send_response` error by re-checking notification validity.
 ///
-/// When the target process exits between our IPC call and our response, the
-/// kernel discards the notification and `respond()` returns `ENOENT`. This is
-/// an expected race — not an error the supervisor should propagate.
-///
-/// If the notification is still valid but `send_response` failed for some other
-/// reason, the original error is returned.
+/// When the target process exits between our IPC call and our `respond()` call,
+/// the kernel discards the notification and returns `ENOENT`. This is an
+/// expected race — not an error the supervisor should propagate.
 fn log_or_propagate_send_error(err: anyhow::Error, notif_fd: ScmpFd, id: u64) -> Result<()> {
     if check_notification_valid(notif_fd, id).is_err() {
-        // The notification expired: the target process already exited.
-        // The respond() failure is therefore expected — nothing to do.
         log::debug!(
             "notification {id} expired before response could be sent; ignoring respond error: {err:#}"
         );
         Ok(())
     } else {
-        // Notification is still valid, so the send error is genuine.
         Err(err)
     }
 }
 
-// ── poll helpers ─────────────────────────────────────────────────────────────
+// ── notification receiver thread ─────────────────────────────────────────────
 
-/// Polls the provided file descriptors and returns when at least one has an
-/// event (or the timeout expires).
+/// Runs the blocking `ScmpNotifReq::receive` loop in a dedicated OS thread.
 ///
-/// Retries automatically on `EINTR` (e.g. from a signal handler).
-fn poll_fds(fds: &mut [libc::pollfd], timeout_ms: i32) -> Result<()> {
-    let nfds = libc::nfds_t::try_from(fds.len()).context("too many poll fds")?;
-
+/// # Why a dedicated OS thread?
+///
+/// `ScmpNotifReq::receive` is a blocking syscall that can wait indefinitely
+/// for the next notification.  Tokio tasks must not block their worker threads
+/// for long periods; `spawn_blocking` is intended for short-lived blocking
+/// work.  A dedicated `std::thread` is the right tool for a long-running
+/// blocking loop that feeds a channel.
+///
+/// When the notification fd is closed (all supervised processes exited), the
+/// receive call returns an error and this function exits, dropping the sender.
+/// The `mpsc::Receiver` on the tokio side sees the channel close and knows
+/// no more notifications will arrive.
+// The sender must be owned (not borrowed) so it is dropped when this function
+// exits, signalling the channel receiver that no more notifications are coming.
+// Clippy flags this as "needless pass by value" because `blocking_send` takes
+// `&self`, but ownership here is intentional for the drop signal.
+#[allow(clippy::needless_pass_by_value)]
+fn notification_receiver(notif_fd: ScmpFd, tx: mpsc::Sender<ScmpNotifReq>) {
     loop {
-        // SAFETY: fds points to a valid pollfd slice and nfds matches its length.
-        let result = unsafe { libc::poll(fds.as_mut_ptr(), nfds, timeout_ms) };
-
-        if result >= 0 {
-            return Ok(());
+        match recv_notification(notif_fd) {
+            Ok(req) => {
+                if tx.blocking_send(req).is_err() {
+                    // Channel closed: supervisor is shutting down.
+                    break;
+                }
+            }
+            Err(err) => {
+                log::debug!("notification receiver exiting (fd closed or error): {err:#}");
+                break;
+            }
         }
-
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
-
-        bail!("poll failed: {error}");
     }
 }
 
-/// Removes PIDs that no longer exist from the notification-observed PID set.
+// ── control socket watcher ───────────────────────────────────────────────────
+
+/// Reads child setup status frames from the control socket until it closes.
 ///
-/// This is a secondary liveness cleanup on top of the subreaper `waitpid` loop.
-/// The authoritative "any descendants still alive?" signal is the subreaper
-/// state returned by `reap_available_children`; this function only prunes the
-/// supplemental PID set used for debug logging.
-fn retain_live_processes(tracked_pids: &mut HashSet<libc::pid_t>) -> Result<()> {
-    let mut dead = Vec::new();
-    for &pid in tracked_pids.iter() {
-        if !process_exists(pid)? {
-            dead.push(pid);
+/// Runs in `tokio::task::spawn_blocking` so it does not occupy a Tokio worker
+/// thread while blocking.  The control socket closes when the child reaches
+/// `execv` (success path) or when the child sends an error frame (failure path).
+///
+/// Returns `Ok(())` on the success path (`ControlClosed`), or an error if the
+/// child reported a setup failure.
+fn watch_control_socket(control_fd: ScmpFd) -> Result<()> {
+    // The control socket protocol is single-shot after the ready signal:
+    // the child either closes the socket (exec boundary = success) or sends
+    // an error frame (setup failure). No multi-message loop is needed.
+    match read_child_setup_status_fd(control_fd).context("failed to read child setup status")? {
+        ChildSetupStatus::ControlClosed => {
+            log::debug!("child setup control socket closed (exec boundary reached)");
+            Ok(())
+        }
+        ChildSetupStatus::Failed(message) => {
+            bail!("child setup failed after supervisor ready: {message}")
         }
     }
-    for pid in dead {
-        tracked_pids.remove(&pid);
-    }
-    Ok(())
 }
 
-// ── public supervisor loop ───────────────────────────────────────────────────
+// ── child reaping ─────────────────────────────────────────────────────────────
 
-/// Runs the seccomp notification supervisor loop for the lifetime of a session.
+/// Reaps all currently exited children and returns whether any remain.
+///
+/// Logs each reaped PID at debug level. Uses `waitpid(-1, WNOHANG)` internally
+/// so this function is non-blocking and safe to call from an async context.
+fn reap_children() -> Result<bool> {
+    let status = reap_available_children()?;
+    for reaped in &status.reaped {
+        log::debug!("reaped child process {} status {}", reaped.pid, reaped.status);
+    }
+    Ok(status.has_children)
+}
+
+// ── public supervisor entry point ────────────────────────────────────────────
+
+/// Runs the seccomp notification supervisor for the lifetime of a session.
 ///
 /// # Overview
 ///
-/// The supervisor:
-///
-/// 1. Creates a single-threaded tokio runtime for IPC accounting calls.
-/// 2. Tries to connect to the TACACS+ agent (failure is not fatal — fail policy
-///    governs what happens when the agent is unavailable).
-/// 3. Releases the child process (signals the child that the supervisor is
-///    ready to answer seccomp notifications).
-/// 4. Enters a poll loop over the seccomp notification fd and the child setup
-///    control socket.
-/// 5. For each notification: reads exec args, checks the allowlist, optionally
-///    calls the TACACS+ agent, and sends the kernel an allow or deny response.
-/// 6. Exits when the subreaper has no more children (the entire process tree
-///    spawned under the session has exited).
-///
-/// # Descendant notifications
-///
-/// Because the seccomp filter is inherited across `fork`/`clone` and preserved
-/// across `exec`, every descendant of the initial shell — nested bash sessions,
-/// subshells, background jobs, shell scripts — sends notifications through the
-/// same `notif_fd`.  The supervisor does not track which PID triggered each
-/// notification beyond logging; it authorizes each exec on its own merits.
-///
-/// The loop terminates based on the subreaper's child count, **not** on the
-/// exit of the initial shell PID, so the notification fd stays alive until the
-/// last descendant has exited.
+/// 1. Connects to the TACACS+ agent (failure is non-fatal; fail policy applies).
+/// 2. Signals the child that the supervisor is ready to answer notifications.
+/// 3. Spawns a dedicated OS thread to run the blocking receive loop.
+/// 4. Registers a SIGCHLD handler for child reaping.
+/// 5. Starts the control socket watcher in `spawn_blocking`.
+/// 6. Runs the async dispatch loop until all supervised processes have exited.
 ///
 /// # Arguments
 ///
-/// * `session`   – Supervision handles for the child (PID, notification fd,
-///   control socket).
+/// * `session`   – Parent-side supervision handles (PID, fds, control socket).
 /// * `allowlist` – Paths that bypass IPC and are always allowed.
-/// * `config`    – Session context and fail policy.
-pub(crate) fn run_supervisor(
+/// * `config`    – Session context (user, port, fail policy) and IPC endpoint.
+pub(crate) async fn run_supervisor(
     session: &SessionProcess,
-    allowlist: &Allowlist,
-    config: &SupervisorConfig,
+    allowlist: Arc<Allowlist>,
+    config: Arc<SupervisorConfig>,
 ) -> Result<()> {
     log::info!(
         "starting supervisor for child {} (fail-policy={:?})",
         session.child_pid(),
-        config.fail_policy
+        config.fail_policy,
     );
 
-    // Create the tokio runtime used for IPC accounting calls. A single-thread
-    // runtime is sufficient because we never issue concurrent RPCs.
-    let rt = Runtime::new().context("failed to create tokio runtime for IPC")?;
-
-    // Attempt to connect to the TACACS+ agent. Failure here is not fatal —
-    // the fail policy determines what happens when IPC is unavailable.
-    let ipc_client = connect_ipc_client(&rt, &config.service_endpoint);
+    // Connect to the TACACS+ agent.  Failure is non-fatal: the fail policy
+    // determines what happens for each notification when IPC is unavailable.
+    let client = connect_ipc_client(&config.service_endpoint)
+        .await
+        .map(Arc::new);
 
     // Signal the child that the supervisor is ready to answer notifications.
     // The child has been waiting for this byte since installing the seccomp
-    // filter. Without this signal, the child's first execve would block forever
-    // with no supervisor to respond.
+    // filter.  Without this signal, the child's first execve would block
+    // forever with no supervisor to respond.
     session
         .signal_supervisor_ready()
         .context("failed to release child after supervisor setup")?;
 
-    run_supervisor_loop(session, allowlist, config, &rt, ipc_client.as_ref())
+    // Channel from the dedicated receiver thread to the dispatch loop.
+    // Buffer capacity of 64 lets the receiver outpace the dispatcher during
+    // a brief burst without blocking the receiver thread.
+    let (notif_tx, notif_rx) = mpsc::channel::<ScmpNotifReq>(64);
+
+    let notif_fd = session.notification_fd();
+
+    // Spawn the blocking notification receive loop in a dedicated OS thread.
+    // `std::thread::spawn` is appropriate here because this is a long-lived
+    // blocking loop, not a short-lived blocking operation (which would use
+    // spawn_blocking).
+    std::thread::Builder::new()
+        .name("notif-receiver".to_owned())
+        .spawn(move || notification_receiver(notif_fd, notif_tx))
+        .context("failed to spawn notification receiver thread")?;
+
+    // SIGCHLD handler: fires whenever a child or subreaped descendant exits.
+    // Registered before signal_supervisor_ready so we never miss a child exit.
+    let sigchld = signal(SignalKind::child()).context("failed to register SIGCHLD handler")?;
+
+    // Control socket watcher: runs in spawn_blocking because read(2) on the
+    // control socket is briefly blocking (waits for the child to exec or fail).
+    let control_fd = session.control_socket_fd();
+    let ctrl_handle = spawn_blocking(move || watch_control_socket(control_fd));
+
+    dispatch_loop(notif_fd, notif_rx, allowlist, config, client, sigchld, ctrl_handle).await
 }
 
-/// State for one iteration of the supervisor poll loop.
-struct LoopState {
-    has_child_processes: bool,
-    notification_fd_open: bool,
-    control_socket_open: bool,
-    tracked_pids: HashSet<libc::pid_t>,
-}
+// ── dispatch loop ─────────────────────────────────────────────────────────────
 
-/// Runs the supervisor event loop until the supervised process tree exits.
+/// Drives the async dispatch loop until the supervised process tree exits.
 ///
-/// Extracted from [`run_supervisor`] so the outer function stays under the
-/// clippy function-length limit while keeping the loop logic together.
-fn run_supervisor_loop(
-    session: &SessionProcess,
-    allowlist: &Allowlist,
-    config: &SupervisorConfig,
-    rt: &Runtime,
-    ipc_client: Option<&ServiceClient>,
+/// The loop runs four concurrent logical streams via `tokio::select!`:
+///
+/// 1. **Notifications** — received from the OS-thread channel; each spawns a
+///    handler task.
+/// 2. **SIGCHLD** — triggers a `waitpid(WNOHANG)` reap pass.
+/// 3. **Reap interval** — a 250 ms safety net for coalesced or missed SIGCHLDs.
+/// 4. **Control socket** — propagates a child setup failure as an error.
+///
+/// The loop exits when:
+/// - The notification receiver thread exits (channel closed).
+/// - All spawned handler tasks have completed.
+/// - `waitpid` reports no remaining children (`ECHILD`).
+///
+/// Extracted from [`run_supervisor`] to keep function sizes within clippy
+/// limits while keeping the full control flow visible in one place.
+async fn dispatch_loop(
+    notif_fd: ScmpFd,
+    mut notif_rx: mpsc::Receiver<ScmpNotifReq>,
+    allowlist: Arc<Allowlist>,
+    config: Arc<SupervisorConfig>,
+    client: Option<Arc<ServiceClient>>,
+    mut sigchld: tokio::signal::unix::Signal,
+    mut ctrl_handle: tokio::task::JoinHandle<Result<()>>,
 ) -> Result<()> {
-    let mut state = LoopState {
-        has_child_processes: true,
-        notification_fd_open: true,
-        control_socket_open: true,
-        // `tracked_pids` records PIDs seen in notifications, but fork
-        // notifications identify the caller, not the newly-created child.
-        // The subreaper `waitpid` loop is the authoritative "any descendants
-        // alive?" signal; this set is supplemental for debug logging.
-        tracked_pids: HashSet::from([session.child_pid()]),
-    };
+    let mut handler_tasks: JoinSet<()> = JoinSet::new();
+    let mut notifications_open = true;
+    let mut has_children = true;
+    let mut ctrl_done = false;
 
-    while state.has_child_processes || !state.tracked_pids.is_empty() {
-        poll_loop_iteration(session, allowlist, config, rt, ipc_client, &mut state)?;
+    // Safety-net reap interval: catches any SIGCHLD that was coalesced or
+    // delivered before the signal handler was registered.
+    let mut reap_interval = time::interval(CHILD_REAP_INTERVAL);
+    reap_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            // ── Incoming notification ───────────────────────────────────────
+            req = notif_rx.recv(), if notifications_open => {
+                if let Some(req) = req {
+                    let pid = req.pid;
+                    let al = allowlist.clone();
+                    let cfg = config.clone();
+                    let cl = client.clone();
+                    handler_tasks.spawn(async move {
+                        if let Err(e) =
+                            handle_one_notification(notif_fd, req, al, cfg, cl).await
+                        {
+                            log::warn!("notification handler for pid {pid} failed: {e:#}");
+                        }
+                    });
+                } else {
+                    // Receiver thread exited: notification fd is closed.
+                    // All processes holding the filter have exited.
+                    notifications_open = false;
+                    log::debug!(
+                        "notification receiver channel closed \
+                         (all supervised processes exited)"
+                    );
+                }
+            }
+
+            // ── SIGCHLD: a child or descendant exited ───────────────────────
+            _ = sigchld.recv() => {
+                has_children = reap_children()
+                    .context("failed to reap children on SIGCHLD")?;
+            }
+
+            // ── Periodic safety reap ────────────────────────────────────────
+            _ = reap_interval.tick() => {
+                has_children = reap_children()
+                    .context("failed to reap children in periodic reap")?;
+            }
+
+            // ── Handler task completed ──────────────────────────────────────
+            Some(result) = handler_tasks.join_next() => {
+                if let Err(e) = result {
+                    log::warn!("notification handler task panicked: {e}");
+                }
+            }
+
+            // ── Control socket: child setup status ──────────────────────────
+            res = &mut ctrl_handle, if !ctrl_done => {
+                ctrl_done = true;
+                match res {
+                    Ok(Ok(())) => {} // ControlClosed: child exec'd the shell
+                    Ok(Err(e)) => return Err(e),
+                    Err(e) => bail!("control socket watcher task panicked: {e}"),
+                }
+            }
+        }
+
+        // Exit when: no more notifications will arrive, all in-flight handlers
+        // have finished, and all child processes have been reaped.
+        if !notifications_open && handler_tasks.is_empty() && !has_children {
+            break;
+        }
     }
 
     log::info!("supervisor exiting: all supervised processes have exited");
-    Ok(())
-}
-
-/// Runs one iteration of the supervisor poll loop.
-///
-/// Polls the seccomp notification fd and the child control socket, dispatches
-/// any pending events, and reaps exited children.
-fn poll_loop_iteration(
-    session: &SessionProcess,
-    allowlist: &Allowlist,
-    config: &SupervisorConfig,
-    rt: &Runtime,
-    ipc_client: Option<&ServiceClient>,
-    state: &mut LoopState,
-) -> Result<()> {
-    let mut fds = build_poll_fds(session, state);
-
-    if state.notification_fd_open || state.control_socket_open {
-        poll_fds(&mut fds, SUPERVISOR_POLL_TIMEOUT_MS)?;
-    } else {
-        // Both fds are closed; sleep briefly to avoid a busy-wait while
-        // waiting for the last descendant to exit.
-        thread::sleep(SUPERVISOR_IDLE_SLEEP);
-    }
-
-    handle_control_socket_event(session, &fds, state)?;
-    handle_notification_event(session, allowlist, config, rt, ipc_client, &fds, state)?;
-
-    // ── Reap exited children ─────────────────────────────────────────────
-    let reap_status = reap_available_children()?;
-    state.has_child_processes = reap_status.has_children;
-    for reaped in reap_status.reaped {
-        state.tracked_pids.remove(&reaped.pid);
-        log::debug!("reaped child process {} status {}", reaped.pid, reaped.status);
-    }
-    retain_live_processes(&mut state.tracked_pids)?;
-    Ok(())
-}
-
-/// Builds the `pollfd` array for the current loop iteration.
-///
-/// Descriptors that are already closed are set to `-1` so `poll(2)` ignores
-/// them without returning an error.
-fn build_poll_fds(session: &SessionProcess, state: &LoopState) -> [libc::pollfd; 2] {
-    [
-        libc::pollfd {
-            fd: if state.notification_fd_open {
-                session.notification_fd()
-            } else {
-                -1
-            },
-            events: libc::POLLIN,
-            revents: 0,
-        },
-        libc::pollfd {
-            fd: if state.control_socket_open {
-                session.control_socket_fd()
-            } else {
-                -1
-            },
-            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
-            revents: 0,
-        },
-    ]
-}
-
-/// Processes any pending event on the child setup control socket.
-fn handle_control_socket_event(
-    session: &SessionProcess,
-    fds: &[libc::pollfd; 2],
-    state: &mut LoopState,
-) -> Result<()> {
-    if !state.control_socket_open
-        || fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) == 0
-    {
-        return Ok(());
-    }
-    match session
-        .read_child_setup_status()
-        .context("failed to read child setup status")?
-    {
-        ChildSetupStatus::ControlClosed => {
-            state.control_socket_open = false;
-            log::debug!(
-                "child {} closed setup control socket at exec boundary",
-                session.child_pid()
-            );
-        }
-        ChildSetupStatus::Failed(message) => {
-            bail!("child setup failed after supervisor ready: {message}");
-        }
-    }
-    Ok(())
-}
-
-/// Processes any pending seccomp notification event.
-fn handle_notification_event(
-    session: &SessionProcess,
-    allowlist: &Allowlist,
-    config: &SupervisorConfig,
-    rt: &Runtime,
-    ipc_client: Option<&ServiceClient>,
-    fds: &[libc::pollfd; 2],
-    state: &mut LoopState,
-) -> Result<()> {
-    let events = fds[0].revents;
-    if !state.notification_fd_open {
-        return Ok(());
-    }
-
-    if events & (libc::POLLERR | libc::POLLNVAL) != 0 {
-        bail!("seccomp notification fd reported unexpected poll events: {events:#x}");
-    }
-
-    if events & libc::POLLIN != 0 {
-        match recv_notification(session.notification_fd()) {
-            Ok(req) => {
-                let pid = libc::pid_t::try_from(req.pid).unwrap_or_else(|_| session.child_pid());
-                state.tracked_pids.insert(pid);
-                log::trace!("notification from pid {pid}: syscall={:?}", req.data.syscall);
-                handle_exec_notification(
-                    session.notification_fd(),
-                    &req,
-                    allowlist,
-                    config,
-                    ipc_client,
-                    rt,
-                )
-                .with_context(|| format!("failed to handle exec notification from pid {pid}"))?;
-            }
-            Err(err) => {
-                // Error typically means the fd was closed concurrently.
-                // The POLLHUP branch below will pick this up on the next poll.
-                log::debug!("recv_notification error (likely fd closed): {err:#}");
-            }
-        }
-    }
-
-    if events & libc::POLLHUP != 0 {
-        // All processes holding the seccomp filter have exited. No more
-        // notifications will arrive. The supervisor keeps the loop alive
-        // until the subreaper confirms all descendants have been reaped.
-        state.notification_fd_open = false;
-        log::debug!("seccomp notification fd closed (all supervised processes exited)");
-    }
-
     Ok(())
 }
