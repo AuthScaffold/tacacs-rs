@@ -1,0 +1,67 @@
+# Built-in exec allowlist for session-wrapper.
+#
+# This file is embedded into the binary at compile time via include_str! in
+# allowlist.rs. Any change to this file triggers a recompile, which keeps the
+# policy data version-tracked separately from the surrounding Rust code.
+#
+# FORMAT
+# ------
+# One absolute path per line.
+# Lines beginning with '#' and blank lines are ignored.
+# Only absolute paths (starting with '/') are accepted; others are silently
+# skipped with a warning logged at startup (runtime, not build time).
+#
+# SECURITY GUIDANCE
+# -----------------
+# Every entry is a potential authorization bypass if the binary at that path
+# can be modified by the session user. Entries should be limited to paths
+# that are:
+#   1. Root-owned and not writable by the session user.
+#   2. So fundamental to basic shell operation that denying them would prevent
+#      an interactive session from starting at all.
+#
+# Do NOT add general-purpose utilities here — those should go through the
+# normal TACACS+ authorization path. The allowlist is for the minimum set of
+# binaries that bash executes *internally* before any user command runs.
+#
+# WHY EACH ENTRY IS HERE
+# ----------------------
+
+# The shell itself. bash forks sub-shells for command substitution, pipelines,
+# and process groups. Without this entry, every sub-shell invocation triggers
+# a TACACS+ round-trip, breaking prompt display and completion.
+/bin/bash
+
+# POSIX-mandated sh location. Often a symlink to bash or dash.
+/bin/sh
+
+# bash uses env(1) to locate interpreters for shebang lines such as
+# #!/usr/bin/env python3 and for the built-in 'env' command.
+/usr/bin/env
+
+# Shells call id(1) during PS1 construction and login scripts to check the
+# current user's numeric identity.
+/usr/bin/id
+
+# groups(1) is called by login scripts and shell initialization to display
+# the group membership of the current user.
+/usr/bin/groups
+
+# Common sh locations on Debian/Ubuntu, where dash is the default /bin/sh.
+/usr/bin/dash
+/bin/dash
+
+# uname(1) is commonly read by PS1 decorations, shell completion scripts,
+# and login banners to display the operating system name or kernel version.
+/bin/uname
+/usr/bin/uname
+
+# which(1) is used by bash's 'type' and 'command -v' builtins to locate
+# executables on the PATH.
+/usr/bin/which
+
+# tty(1) and stty(1) are queried by interactive login shells to determine
+# whether stdin is a terminal and to configure terminal settings.
+/usr/bin/tty
+/bin/stty
+/usr/bin/stty

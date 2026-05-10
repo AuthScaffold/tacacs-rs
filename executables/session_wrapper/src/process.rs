@@ -130,15 +130,6 @@ impl SessionProcess {
         write_all(self.control_socket.as_raw_fd(), &[READY_BYTE])
             .context("failed to signal child that supervisor is ready")
     }
-
-    /// Reads the child's post-ready setup outcome from the control socket.
-    ///
-    /// EOF means the child reached `execv` and the close-on-exec control socket
-    /// closed. An error frame means setup failed after the parent had already
-    /// received the notification fd.
-    pub(crate) fn read_child_setup_status(&self) -> Result<ChildSetupStatus> {
-        read_child_setup_status(self.control_socket.as_raw_fd())
-    }
 }
 
 /// Forks the wrapped session process and returns the parent-side supervision handles.
@@ -419,7 +410,11 @@ fn wait_for_ready(socket: RawFd) -> Result<()> {
 }
 
 /// Reads a child setup status frame after the parent has released the child.
-fn read_child_setup_status(socket: RawFd) -> Result<ChildSetupStatus> {
+///
+/// This free function is `pub(crate)` so the async supervisor can call it from
+/// a `tokio::task::spawn_blocking` closure using only the raw fd, without
+/// needing to borrow the full `SessionProcess`.
+pub(crate) fn read_child_setup_status_fd(socket: RawFd) -> Result<ChildSetupStatus> {
     let mut kind = [0_u8];
     let read_count = loop {
         let read_count = {
@@ -746,36 +741,10 @@ pub(crate) fn reap_available_children() -> Result<ReapStatus> {
     }
 }
 
-/// Checks whether a PID appears to still exist.
-///
-/// `EPERM` counts as alive because the process exists even if this wrapper does
-/// not currently have permission to signal it.
-pub(crate) fn process_exists(pid: libc::pid_t) -> Result<bool> {
-    if pid <= 0 {
-        return Ok(false);
-    }
-
-    let result = {
-        // SAFETY: kill(pid, 0) performs existence/permission checking only.
-        unsafe { libc::kill(pid, 0) }
-    };
-
-    if result == 0 {
-        return Ok(true);
-    }
-
-    let error = io::Error::last_os_error();
-    match error.raw_os_error() {
-        Some(libc::ESRCH) => Ok(false),
-        Some(libc::EPERM) => Ok(true),
-        _ => bail!("kill({pid}, 0) failed: {error}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        path_to_cstring, read_child_setup_status, recv_initial_child_message, send_child_error,
+        path_to_cstring, read_child_setup_status_fd, recv_initial_child_message, send_child_error,
         send_fd, socket_pair, ChildSetupStatus,
     };
     use std::io::Error;
@@ -834,7 +803,7 @@ mod tests {
         send_child_error(child.as_raw_fd(), "drop privileges failed")
             .expect("error should be sent");
         let status =
-            read_child_setup_status(parent.as_raw_fd()).expect("status should be readable");
+            read_child_setup_status_fd(parent.as_raw_fd()).expect("status should be readable");
 
         assert_eq!(status, ChildSetupStatus::Failed("drop privileges failed".to_owned()));
     }
@@ -845,7 +814,7 @@ mod tests {
 
         drop(child);
         let status =
-            read_child_setup_status(parent.as_raw_fd()).expect("status should be readable");
+            read_child_setup_status_fd(parent.as_raw_fd()).expect("status should be readable");
 
         assert_eq!(status, ChildSetupStatus::ControlClosed);
     }
