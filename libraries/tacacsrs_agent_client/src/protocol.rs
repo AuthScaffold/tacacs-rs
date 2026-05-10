@@ -170,6 +170,15 @@ impl AuthorizationOperation {
     /// Returns an error if `service` is missing, or if `service=shell` is used
     /// without a `cmd` argument.
     pub fn validate(&self) -> anyhow::Result<()> {
+        if self.privilege_level > 15 {
+            bail!(
+                "authorization privilege level {} is outside the TACACS+ range 0-15",
+                self.privilege_level
+            );
+        }
+        for arg in &self.args {
+            arg.validate()?;
+        }
         let service = self
             .service()
             .context("authorization request requires service key")?;
@@ -245,6 +254,24 @@ impl AuthorizationArg {
         AuthorizationKey::from_str(&self.name).ok()
     }
 
+    /// Validates this arg-val pair before it is accepted across the IPC boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name is empty or contains TACACS+ separators.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.name.is_empty() {
+            anyhow::bail!("authorization arg has an empty name");
+        }
+        if self.name.contains('=') || self.name.contains('*') {
+            anyhow::bail!(
+                "authorization arg name {:?} contains a separator ('=' or '*')",
+                self.name
+            );
+        }
+        Ok(())
+    }
+
     /// Parses a raw TACACS+ arg-val string into an [`AuthorizationArg`].
     ///
     /// The separator is the first `=` or `*` found in the string. If both are
@@ -271,14 +298,13 @@ impl AuthorizationArg {
                 anyhow::bail!("authorization arg {raw:?} has no separator ('=' or '*')")
             }
         };
-        if sep_pos == 0 {
-            anyhow::bail!("authorization arg {raw:?} has an empty name");
-        }
-        Ok(Self {
+        let arg = Self {
             name: raw[..sep_pos].to_owned(),
             mandatory,
             value: raw[sep_pos + 1..].to_owned(),
-        })
+        };
+        arg.validate()?;
+        Ok(arg)
     }
 }
 
@@ -889,16 +915,21 @@ impl AuthorizationOperationResponse {
     ///
     /// # Errors
     ///
-    /// Returns an error if the protobuf status code is missing, out of range, or
-    /// not one of the supported TACACS+ authorization reply status values.
+    /// Returns an error if the protobuf status code is missing, out of range,
+    /// not one of the supported TACACS+ authorization reply status values, or
+    /// any returned arg-val pair is malformed.
     pub fn from_proto(proto: ipc::AuthorizationResponse) -> anyhow::Result<Self> {
-        Ok(Self {
+        let response = Self {
             server: proto.server,
             status: AuthorizationResponseStatus::from_proto(proto.status)?,
             server_message: proto.server_message,
             args: proto.args.into_iter().map(AuthorizationArg::from).collect(),
             data: proto.data,
-        })
+        };
+        for arg in &response.args {
+            arg.validate()?;
+        }
+        Ok(response)
     }
 }
 
@@ -1016,6 +1047,54 @@ mod tests {
     }
 
     #[test]
+    fn test_authorization_arg_validate_rejects_separator_in_name() {
+        let error = AuthorizationArg::mandatory("bad=name", "value")
+            .validate()
+            .unwrap_err();
+        assert!(error.to_string().contains("contains a separator"));
+    }
+
+    #[test]
+    fn test_authorization_operation_rejects_invalid_proto_arg_name() {
+        let request = ipc::AuthorizationRequest {
+            user: "admin".to_owned(),
+            port: "tty0".to_owned(),
+            remote_address: "127.0.0.1".to_owned(),
+            privilege_level: 15,
+            args: vec![
+                ipc::AuthorizationArg {
+                    name: "service".to_owned(),
+                    mandatory: true,
+                    value: "shell".to_owned(),
+                },
+                ipc::AuthorizationArg {
+                    name: "cmd".to_owned(),
+                    mandatory: true,
+                    value: "show".to_owned(),
+                },
+                ipc::AuthorizationArg {
+                    name: "bad=name".to_owned(),
+                    mandatory: true,
+                    value: "value".to_owned(),
+                },
+            ],
+        };
+
+        let error = AuthorizationOperation::try_from(request).unwrap_err();
+        assert!(error.to_string().contains("contains a separator"));
+    }
+
+    #[test]
+    fn test_authorization_builder_rejects_privilege_level_above_max() {
+        let error = AuthorizationOperation::builder("admin", 16)
+            .service("shell")
+            .command("show")
+            .build()
+            .unwrap_err();
+        assert!(error.to_string().contains("range 0-15"));
+    }
+
+    #[test]
     fn test_authorization_builder_rejects_shell_without_cmd() {
         let error = AuthorizationOperation::builder("admin", 15)
             .service("shell")
@@ -1048,6 +1127,24 @@ mod tests {
         let decoded =
             AuthorizationOperationResponse::from_proto(response.clone().into_proto()).unwrap();
         assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn test_authorization_response_rejects_invalid_proto_arg_name() {
+        let response = ipc::AuthorizationResponse {
+            server: "server-a:49".to_owned(),
+            status: AuthorizationResponseStatus::PassAdd.into_proto(),
+            server_message: String::new(),
+            args: vec![ipc::AuthorizationArg {
+                name: "bad*name".to_owned(),
+                mandatory: false,
+                value: "value".to_owned(),
+            }],
+            data: String::new(),
+        };
+
+        let error = AuthorizationOperationResponse::from_proto(response).unwrap_err();
+        assert!(error.to_string().contains("contains a separator"));
     }
 
     #[test]

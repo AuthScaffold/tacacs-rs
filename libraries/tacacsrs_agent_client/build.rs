@@ -6,7 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Prost emits `PartialEq` (without `Eq`) for some composite message shapes.
     // Keep clippy strict elsewhere and suppress only on the affected generated
-    // authorization reply envelope types.
+    // authorization protobuf message and oneof types.
     let allow_partial_eq = "#[allow(clippy::derive_partial_eq_without_eq)]";
     tonic_prost_build::configure()
         .type_attribute("tacacsrs.agent.v1.AuthorizationRequest", allow_partial_eq)

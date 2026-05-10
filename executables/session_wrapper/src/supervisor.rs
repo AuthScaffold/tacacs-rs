@@ -96,7 +96,7 @@ use tacacsrs_agent_client::{
     AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
 };
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::{JoinSet, spawn_blocking};
 use tokio::time;
 
@@ -112,6 +112,8 @@ use super::process_reader::read_exec_args;
 /// This safety interval catches any SIGCHLD signals that were coalesced or
 /// delivered while the process was not yet awaiting the signal.
 const CHILD_REAP_INTERVAL: Duration = Duration::from_millis(250);
+
+type SharedIpcClient = Arc<Mutex<Option<Arc<ServiceClient>>>>;
 
 // ── low-level wrappers ───────────────────────────────────────────────────────
 
@@ -220,6 +222,36 @@ async fn connect_ipc_client(endpoint: &IpcEndpoint) -> Option<ServiceClient> {
             log::warn!("failed to connect to TACACS+ agent: {err:#}");
             None
         }
+    }
+}
+
+/// Returns a cached IPC client, reconnecting on demand when none is available.
+async fn get_or_connect_ipc_client(
+    client: &SharedIpcClient,
+    endpoint: &IpcEndpoint,
+) -> Option<Arc<ServiceClient>> {
+    {
+        let cached = client.lock().await;
+        if let Some(existing) = cached.as_ref() {
+            return Some(existing.clone());
+        }
+    }
+
+    let connected = Arc::new(connect_ipc_client(endpoint).await?);
+    let mut cached = client.lock().await;
+    if let Some(existing) = cached.as_ref() {
+        Some(existing.clone())
+    } else {
+        *cached = Some(connected.clone());
+        Some(connected)
+    }
+}
+
+/// Drops the cached IPC client so the next notification attempts a fresh connection.
+async fn clear_cached_ipc_client(client: &SharedIpcClient) {
+    let mut cached = client.lock().await;
+    if cached.take().is_some() {
+        log::debug!("cleared cached TACACS+ agent IPC client after authorization failure");
     }
 }
 
@@ -451,7 +483,7 @@ async fn handle_one_notification(
     req: ScmpNotifReq,
     allowlist: Arc<Allowlist>,
     config: Arc<SupervisorConfig>,
-    client: Option<Arc<ServiceClient>>,
+    client: SharedIpcClient,
 ) -> Result<()> {
     let pid = req.pid;
 
@@ -500,14 +532,17 @@ async fn handle_one_notification(
     }
 
     // Step 3: IPC authorization (async — this is where concurrency pays off).
-    let decision = match client.as_deref() {
+    let decision = match get_or_connect_ipc_client(&client, &config.service_endpoint).await {
         Some(c) => {
             // Skip argv[0] — it is conventionally a copy of the executable
             // name and redundant with exec_path.
             let args_without_argv0 = exec_args.get(1..).unwrap_or(&[]);
-            match ipc_authorize(c, &config, &exec_path, args_without_argv0).await {
+            match ipc_authorize(c.as_ref(), &config, &exec_path, args_without_argv0).await {
                 Some(decision) => decision,
-                None => fail_policy_decision(config.fail_policy, &exec_path),
+                None => {
+                    clear_cached_ipc_client(&client).await;
+                    fail_policy_decision(config.fail_policy, &exec_path)
+                }
             }
         }
         None => fail_policy_decision(config.fail_policy, &exec_path),
@@ -651,7 +686,8 @@ fn reap_children() -> Result<bool> {
 ///
 /// # Overview
 ///
-/// 1. Connects to the TACACS+ agent (failure is non-fatal; fail policy applies).
+/// 1. Creates a cached TACACS+ agent IPC client (failure is non-fatal; later
+///    notifications reconnect on demand and fail policy applies while unavailable).
 /// 2. Signals the child that the supervisor is ready to answer notifications.
 /// 3. Spawns a dedicated OS thread to run the blocking receive loop.
 /// 4. Registers a SIGCHLD handler for child reaping.
@@ -674,11 +710,13 @@ pub(crate) async fn run_supervisor(
         config.fail_policy,
     );
 
-    // Connect to the TACACS+ agent.  Failure is non-fatal: the fail policy
-    // determines what happens for each notification when IPC is unavailable.
-    let client = connect_ipc_client(&config.service_endpoint)
-        .await
-        .map(Arc::new);
+    // Connect to the TACACS+ agent. Failure is non-fatal: the shared cache
+    // reconnects on demand, and fail policy applies while IPC is unavailable.
+    let client = Arc::new(Mutex::new(
+        connect_ipc_client(&config.service_endpoint)
+            .await
+            .map(Arc::new),
+    ));
 
     // Register the SIGCHLD handler before releasing the child.  A child that
     // exits immediately after being released would be missed if we registered
@@ -741,7 +779,7 @@ async fn dispatch_loop(
     mut notif_rx: mpsc::Receiver<ScmpNotifReq>,
     allowlist: Arc<Allowlist>,
     config: Arc<SupervisorConfig>,
-    client: Option<Arc<ServiceClient>>,
+    client: SharedIpcClient,
     mut sigchld: tokio::signal::unix::Signal,
     mut ctrl_handle: tokio::task::JoinHandle<Result<()>>,
 ) -> Result<()> {
