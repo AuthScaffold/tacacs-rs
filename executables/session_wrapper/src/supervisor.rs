@@ -269,7 +269,7 @@ async fn ipc_authorize(
             match response.status {
                 AuthorizationResponseStatus::PassAdd => Some(AuthDecision::Allow),
                 AuthorizationResponseStatus::PassRepl => Some(AuthDecision::Deny(format!(
-                    "TACACS+ agent returned PASS_REPL for {exec_path:?}, but session-wrapper cannot safely replace frozen execve arguments yet"
+                    "TACACS+ agent returned PASS_REPL for {exec_path:?}, but session-wrapper cannot safely replace arguments already submitted in the seccomp execve notification yet"
                 ))),
                 AuthorizationResponseStatus::Fail
                 | AuthorizationResponseStatus::Error
