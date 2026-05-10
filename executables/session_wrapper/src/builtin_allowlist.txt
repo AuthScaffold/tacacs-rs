@@ -9,7 +9,7 @@
 # One absolute path per line.
 # Lines beginning with '#' and blank lines are ignored.
 # Only absolute paths (starting with '/') are accepted; others are silently
-# skipped with a warning logged at build time.
+# skipped with a warning logged at startup (runtime, not build time).
 #
 # SECURITY GUIDANCE
 # -----------------

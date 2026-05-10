@@ -324,7 +324,9 @@ async fn handle_one_notification(
             // Non-exec syscall (fork/clone/etc.) — always continue.
             log::trace!("non-exec syscall from pid {pid}: allowing");
             let resp = ScmpNotifResp::new_continue(req.id, ScmpNotifRespFlags::empty());
-            let _ = send_response(notif_fd, resp);
+            if let Err(err) = send_response(notif_fd, resp) {
+                log_or_propagate_send_error(err, notif_fd, req.id)?;
+            }
             return Ok(());
         }
         Err(err) => {
@@ -348,7 +350,9 @@ async fn handle_one_notification(
     if allowlist.is_allowed(&exec_path) {
         log::debug!("allowlist hit for {exec_path:?}: allowing without IPC");
         let resp = ScmpNotifResp::new_continue(req.id, ScmpNotifRespFlags::empty());
-        let _ = send_response(notif_fd, resp);
+        if let Err(err) = send_response(notif_fd, resp) {
+            log_or_propagate_send_error(err, notif_fd, req.id)?;
+        }
         return Ok(());
     }
 
@@ -533,6 +537,11 @@ pub(crate) async fn run_supervisor(
         .await
         .map(Arc::new);
 
+    // Register the SIGCHLD handler before releasing the child.  A child that
+    // exits immediately after being released would be missed if we registered
+    // the handler after signal_supervisor_ready().
+    let sigchld = signal(SignalKind::child()).context("failed to register SIGCHLD handler")?;
+
     // Signal the child that the supervisor is ready to answer notifications.
     // The child has been waiting for this byte since installing the seccomp
     // filter.  Without this signal, the child's first execve would block
@@ -556,10 +565,6 @@ pub(crate) async fn run_supervisor(
         .name("notif-receiver".to_owned())
         .spawn(move || notification_receiver(notif_fd, notif_tx))
         .context("failed to spawn notification receiver thread")?;
-
-    // SIGCHLD handler: fires whenever a child or subreaped descendant exits.
-    // Registered before signal_supervisor_ready so we never miss a child exit.
-    let sigchld = signal(SignalKind::child()).context("failed to register SIGCHLD handler")?;
 
     // Control socket watcher: runs in spawn_blocking because read(2) on the
     // control socket is briefly blocking (waits for the child to exec or fail).

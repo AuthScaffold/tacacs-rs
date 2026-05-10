@@ -63,16 +63,17 @@ const MAX_ARGV_ENTRIES: usize = 256;
 fn pread(fd: RawFd, buf: &mut [u8], offset: u64) -> io::Result<usize> {
     // SAFETY: `buf` is a valid mutable slice for the duration of the call.
     // `fd` is a valid file descriptor owned by the caller. The offset is cast
-    // to `off_t`; on x86_64 Linux, `off_t` is i64, which has enough range for
-    // 64-bit virtual addresses used here.
-    let result = unsafe {
-        libc::pread(
-            fd,
-            buf.as_mut_ptr().cast::<libc::c_void>(),
-            buf.len(),
-            i64::try_from(offset).unwrap_or(i64::MAX),
+    // to `off_t`; on x86_64 Linux, `off_t` is i64.  We return an error if the
+    // address overflows i64 so we never read from an unintended location.
+    let offset_i64 = i64::try_from(offset).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("virtual address {offset:#x} overflows off_t (i64)"),
         )
-    };
+    })?;
+
+    let result =
+        unsafe { libc::pread(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len(), offset_i64) };
 
     if result < 0 {
         Err(io::Error::last_os_error())
@@ -110,6 +111,8 @@ fn open_proc_mem(pid: u32) -> Result<File> {
 /// # Errors
 ///
 /// - I/O errors from `open` or `pread`.
+/// - EOF reached before a NUL terminator (the string is not NUL-terminated,
+///   which is structurally invalid for a C string argument to execve).
 /// - Strings longer than [`MAX_STRING_LEN`].
 /// - Bytes that are not valid UTF-8 (exec paths should always be valid UTF-8
 ///   on modern Linux; we reject anything else to keep the rest of the code
@@ -124,11 +127,17 @@ pub(crate) fn read_string_from_process(pid: u32, addr: u64) -> Result<String> {
 
     loop {
         let n = pread(fd, &mut chunk, offset)
-            .with_context(|| format!("pread /proc/{pid}/mem at {addr:#x}"))?;
+            .with_context(|| format!("pread /proc/{pid}/mem at {offset:#x}"))?;
 
         if n == 0 {
-            // Reached EOF of the mapping — string was not NUL-terminated.
-            break;
+            // EOF before finding a NUL terminator.  This is a structural error:
+            // a C string argument to execve must be NUL-terminated.  Treating
+            // the truncated bytes as the path would risk misidentifying the
+            // executable (e.g. an allowlisted prefix of a longer path).
+            bail!(
+                "pread /proc/{pid}/mem at {offset:#x}: EOF before NUL terminator \
+                 (string starting at {addr:#x} is not NUL-terminated)"
+            );
         }
 
         for &byte in &chunk[..n] {
@@ -149,10 +158,6 @@ pub(crate) fn read_string_from_process(pid: u32, addr: u64) -> Result<String> {
 
         offset += n as u64;
     }
-
-    // EOF without NUL — treat everything read so far as the string.
-    String::from_utf8(result)
-        .with_context(|| format!("string in process {pid} at {addr:#x} is not valid UTF-8"))
 }
 
 // ── argv reader ──────────────────────────────────────────────────────────────
@@ -248,10 +253,10 @@ fn read_argv(
 ///
 /// # Return value
 ///
-/// Returns `(executable_path, argv)` where `argv` is the full argument vector
-/// including `argv[0]` (which may differ from the executable path).
-/// Returns `(String::new(), Vec::new())` for non-exec syscalls
-/// (e.g. fork notifications when `--intercept-fork` is enabled).
+/// Returns `Ok(Some((executable_path, argv)))` where `argv` is the full
+/// argument vector including `argv[0]` (which may differ from the executable
+/// path). Returns `Ok(None)` for non-exec syscalls (e.g. fork notifications
+/// when `--intercept-fork` is enabled).
 ///
 /// # TOCTOU mitigation
 ///
