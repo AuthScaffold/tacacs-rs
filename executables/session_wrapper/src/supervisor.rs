@@ -111,6 +111,10 @@ use super::process_reader::read_exec_args;
 /// This safety interval catches any SIGCHLD signals that were coalesced or
 /// delivered while the process was not yet awaiting the signal.
 const CHILD_REAP_INTERVAL: Duration = Duration::from_millis(250);
+/// Maximum time to wait for a per-exec authorization decision from the local
+/// agent before treating IPC as unavailable and applying the configured fail
+/// policy. Five seconds keeps an interactive shell from hanging indefinitely
+/// while still allowing a briefly loaded local agent to respond.
 const IPC_AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ── low-level wrappers ───────────────────────────────────────────────────────

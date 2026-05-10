@@ -106,7 +106,7 @@ pub struct AccountingOperationResponse {
 /// Client-supplied inputs for a TACACS+ authorization operation.
 ///
 /// This is the IPC-level contract used by local command mediation code. The
-/// service field is typically `"shell"` for exec supervision, and command
+/// service field is typically `"shell"` for exec supervision, and input command
 /// arguments are represented without the `cmd-arg=` TACACS+ wire prefix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationOperation {
@@ -139,7 +139,7 @@ pub struct AuthorizationOperationResponse {
     pub status: AuthorizationResponseStatus,
     /// Human-readable message returned by the TACACS+ server or local service.
     pub server_message: String,
-    /// Server-modified argument list for `PASS_REPL`.
+    /// Server-modified TACACS+ argument list for `PASS_REPL`.
     pub args: Vec<String>,
 }
 
