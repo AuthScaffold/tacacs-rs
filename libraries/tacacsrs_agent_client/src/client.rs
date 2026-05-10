@@ -167,7 +167,7 @@ impl ServiceClient {
                 AccountingOperationResponse::from_proto(response)
             }
             ipc::accounting_reply::Result::Error(error) => {
-                Err(service_error_to_anyhow(ServiceError::from_proto(error)))
+                Err(service_error_to_anyhow(&ServiceError::from_proto(error)))
             }
         }
     }
@@ -203,13 +203,13 @@ impl ServiceClient {
                 AuthorizationOperationResponse::from_proto(response)
             }
             ipc::authorization_reply::Result::Error(error) => {
-                Err(service_error_to_anyhow(ServiceError::from_proto(error)))
+                Err(service_error_to_anyhow(&ServiceError::from_proto(error)))
             }
         }
     }
 }
 
-fn service_error_to_anyhow(error: ServiceError) -> anyhow::Error {
+fn service_error_to_anyhow(error: &ServiceError) -> anyhow::Error {
     let retry_note = if error.retriable {
         " (retriable)"
     } else {
