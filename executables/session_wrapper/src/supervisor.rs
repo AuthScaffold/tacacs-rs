@@ -274,7 +274,7 @@ async fn ipc_authorize(
     exec_path: &str,
     exec_args: &[String],
 ) -> Option<AuthDecision> {
-    let mut builder = AuthorizationOperation::builder(config.user.clone(), config.privilege_level)
+    let builder = AuthorizationOperation::builder(config.user.clone(), config.privilege_level)
         .port(config.port.clone().unwrap_or_default())
         .remote_address(config.rem_addr.clone().unwrap_or_default())
         .service("shell")
@@ -371,78 +371,6 @@ fn map_pass_with_args(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn authorization_response(
-        status: AuthorizationResponseStatus,
-        args: Vec<AuthorizationArg>,
-    ) -> AuthorizationOperationResponse {
-        AuthorizationOperationResponse {
-            server: "test-server".to_owned(),
-            status,
-            server_message: String::new(),
-            args,
-            data: String::new(),
-        }
-    }
-
-    #[test]
-    fn pass_add_with_only_optional_response_args_is_allowed() {
-        let response = authorization_response(
-            AuthorizationResponseStatus::PassAdd,
-            vec![AuthorizationArg::optional("priv-lvl", "15")],
-        );
-
-        let decision = map_authorization_response(&response, "/bin/echo");
-
-        assert!(matches!(decision, AuthDecision::Allow));
-    }
-
-    #[test]
-    fn pass_repl_with_only_optional_replacement_args_is_allowed() {
-        let response = authorization_response(
-            AuthorizationResponseStatus::PassRepl,
-            vec![AuthorizationArg::optional("cmd-arg", "ignored")],
-        );
-
-        let decision = map_authorization_response(&response, "/bin/echo");
-
-        assert!(matches!(decision, AuthDecision::Allow));
-    }
-
-    #[test]
-    fn pass_add_with_mandatory_response_arg_is_denied() {
-        let response = authorization_response(
-            AuthorizationResponseStatus::PassAdd,
-            vec![AuthorizationArg::mandatory("priv-lvl", "15")],
-        );
-
-        let decision = map_authorization_response(&response, "/bin/echo");
-
-        match decision {
-            AuthDecision::Deny(reason) => assert!(reason.contains("priv-lvl")),
-            AuthDecision::Allow => panic!("mandatory PASS_ADD response arg was allowed"),
-        }
-    }
-
-    #[test]
-    fn pass_repl_with_mandatory_replacement_arg_is_denied() {
-        let response = authorization_response(
-            AuthorizationResponseStatus::PassRepl,
-            vec![AuthorizationArg::mandatory("cmd", "/bin/date")],
-        );
-
-        let decision = map_authorization_response(&response, "/bin/echo");
-
-        match decision {
-            AuthDecision::Deny(reason) => assert!(reason.contains("cmd")),
-            AuthDecision::Allow => panic!("mandatory PASS_REPL replacement arg was allowed"),
-        }
-    }
-}
-
 /// Maps a fail policy to an [`AuthDecision`] for when IPC is unavailable.
 fn fail_policy_decision(policy: FailPolicy, exec_path: &str) -> AuthDecision {
     match policy {
@@ -532,21 +460,22 @@ async fn handle_one_notification(
     }
 
     // Step 3: IPC authorization (async — this is where concurrency pays off).
-    let decision = match get_or_connect_ipc_client(&client, &config.service_endpoint).await {
-        Some(c) => {
+    let decision =
+        if let Some(c) = get_or_connect_ipc_client(&client, &config.service_endpoint).await {
             // Skip argv[0] — it is conventionally a copy of the executable
             // name and redundant with exec_path.
             let args_without_argv0 = exec_args.get(1..).unwrap_or(&[]);
-            match ipc_authorize(c.as_ref(), &config, &exec_path, args_without_argv0).await {
-                Some(decision) => decision,
-                None => {
-                    clear_cached_ipc_client(&client).await;
-                    fail_policy_decision(config.fail_policy, &exec_path)
-                }
+            if let Some(decision) =
+                ipc_authorize(c.as_ref(), &config, &exec_path, args_without_argv0).await
+            {
+                decision
+            } else {
+                clear_cached_ipc_client(&client).await;
+                fail_policy_decision(config.fail_policy, &exec_path)
             }
-        }
-        None => fail_policy_decision(config.fail_policy, &exec_path),
-    };
+        } else {
+            fail_policy_decision(config.fail_policy, &exec_path)
+        };
 
     // Step 4: Respond to the kernel.
     apply_decision(notif_fd, &req, &exec_path, &decision)
@@ -859,4 +788,76 @@ async fn dispatch_loop(
 
     log::info!("supervisor exiting: all supervised processes have exited");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn authorization_response(
+        status: AuthorizationResponseStatus,
+        args: Vec<AuthorizationArg>,
+    ) -> AuthorizationOperationResponse {
+        AuthorizationOperationResponse {
+            server: "test-server".to_owned(),
+            status,
+            server_message: String::new(),
+            args,
+            data: String::new(),
+        }
+    }
+
+    #[test]
+    fn pass_add_with_only_optional_response_args_is_allowed() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassAdd,
+            vec![AuthorizationArg::optional("priv-lvl", "15")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        assert!(matches!(decision, AuthDecision::Allow));
+    }
+
+    #[test]
+    fn pass_repl_with_only_optional_replacement_args_is_allowed() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassRepl,
+            vec![AuthorizationArg::optional("cmd-arg", "ignored")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        assert!(matches!(decision, AuthDecision::Allow));
+    }
+
+    #[test]
+    fn pass_add_with_mandatory_response_arg_is_denied() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassAdd,
+            vec![AuthorizationArg::mandatory("priv-lvl", "15")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        match decision {
+            AuthDecision::Deny(reason) => assert!(reason.contains("priv-lvl")),
+            AuthDecision::Allow => panic!("mandatory PASS_ADD response arg was allowed"),
+        }
+    }
+
+    #[test]
+    fn pass_repl_with_mandatory_replacement_arg_is_denied() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassRepl,
+            vec![AuthorizationArg::mandatory("cmd", "/bin/date")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        match decision {
+            AuthDecision::Deny(reason) => assert!(reason.contains("cmd")),
+            AuthDecision::Allow => panic!("mandatory PASS_REPL replacement arg was allowed"),
+        }
+    }
 }
