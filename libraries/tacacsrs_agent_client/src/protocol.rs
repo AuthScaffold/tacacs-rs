@@ -21,6 +21,10 @@
 //! | `ipc::AccountingRequest` | → [`AccountingOperation`] | `TryFrom` |
 //! | [`AccountingOperationResponse`] | → `ipc::AccountingResponse` | `into_proto()` |
 //! | `ipc::AccountingResponse` | → [`AccountingOperationResponse`] | `from_proto()` |
+//! | [`AuthorizationOperation`] | → `ipc::AuthorizationRequest` | `From` / `Into` |
+//! | `ipc::AuthorizationRequest` | → [`AuthorizationOperation`] | `TryFrom` |
+//! | [`AuthorizationOperationResponse`] | → `ipc::AuthorizationResponse` | `into_proto()` |
+//! | `ipc::AuthorizationResponse` | → [`AuthorizationOperationResponse`] | `from_proto()` |
 //! | [`ServiceError`] | ↔ `ipc::ServiceError` | `into_proto()` / `from_proto()` |
 
 use anyhow::{Context, bail};
@@ -99,6 +103,46 @@ pub struct AccountingOperationResponse {
     pub data: String,
 }
 
+/// Client-supplied inputs for a TACACS+ authorization operation.
+///
+/// This is the IPC-level contract used by local command mediation code. The
+/// service field is typically `"shell"` for exec supervision, and command
+/// arguments are represented without the `cmd-arg=` TACACS+ wire prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationOperation {
+    /// TACACS+ username associated with the command being authorized.
+    pub user: String,
+    /// NAS or tty/port identifier reported to the TACACS+ server.
+    pub port: String,
+    /// Remote client address to report in the TACACS+ authorization request.
+    pub remote_address: String,
+    /// TACACS+ service name, for example `"shell"`.
+    pub service: String,
+    /// Command name to authorize.
+    pub command: String,
+    /// Command arguments to authorize.
+    pub command_arguments: Vec<String>,
+    /// TACACS+ privilege level for the command context.
+    pub privilege_level: u32,
+}
+
+/// RFC-aware service response for a TACACS+ authorization operation.
+///
+/// Returned by [`ServiceClient::send_authorization`](crate::ServiceClient::send_authorization)
+/// on success. For `PASS_REPL`, [`args`](Self::args) contains the replacement
+/// argument list supplied by the service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationOperationResponse {
+    /// Upstream TACACS+ server that handled the request, or a local stub marker.
+    pub server: String,
+    /// TACACS+ authorization reply status.
+    pub status: AuthorizationResponseStatus,
+    /// Human-readable message returned by the TACACS+ server or local service.
+    pub server_message: String,
+    /// Server-modified argument list for `PASS_REPL`.
+    pub args: Vec<String>,
+}
+
 /// Normalized TACACS+ accounting reply status values.
 ///
 /// These directly correspond to the status octets defined in
@@ -115,6 +159,76 @@ pub enum AccountingResponseStatus {
     /// `TAC_PLUS_ACCT_STATUS_FOLLOW` (`0x21`) — the client should continue
     /// with a follow-up action defined by the server deployment.
     Follow,
+}
+
+/// Normalized TACACS+ authorization reply status values.
+///
+/// These directly correspond to the status octets defined in
+/// [RFC 8907 §6.2](https://www.rfc-editor.org/rfc/rfc8907#section-6.2) for the
+/// `TAC_PLUS_AUTHOR` reply body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorizationResponseStatus {
+    /// `TAC_PLUS_AUTHOR_STATUS_PASS_ADD` (`0x01`) — request is accepted and
+    /// returned arguments should be appended.
+    PassAdd,
+    /// `TAC_PLUS_AUTHOR_STATUS_PASS_REPL` (`0x02`) — request is accepted and
+    /// returned arguments replace the submitted arguments.
+    PassRepl,
+    /// `TAC_PLUS_AUTHOR_STATUS_FAIL` (`0x10`) — authorization is denied.
+    Fail,
+    /// `TAC_PLUS_AUTHOR_STATUS_ERROR` (`0x11`) — authorization could not be
+    /// completed due to an error.
+    Error,
+    /// `TAC_PLUS_AUTHOR_STATUS_FOLLOW` (`0x21`) — follow-up handling is needed.
+    Follow,
+}
+
+impl AuthorizationResponseStatus {
+    /// Returns the RFC 8907 status code carried in the TACACS+ authorization reply.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tacacsrs_agent_client::AuthorizationResponseStatus;
+    /// assert_eq!(AuthorizationResponseStatus::PassAdd.code(), 0x01);
+    /// assert_eq!(AuthorizationResponseStatus::PassRepl.code(), 0x02);
+    /// assert_eq!(AuthorizationResponseStatus::Fail.code(), 0x10);
+    /// assert_eq!(AuthorizationResponseStatus::Error.code(), 0x11);
+    /// assert_eq!(AuthorizationResponseStatus::Follow.code(), 0x21);
+    /// ```
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::PassAdd => 0x01,
+            Self::PassRepl => 0x02,
+            Self::Fail => 0x10,
+            Self::Error => 0x11,
+            Self::Follow => 0x21,
+        }
+    }
+
+    /// Converts this status into the protobuf `i32` representation.
+    fn into_proto(self) -> i32 {
+        i32::from(self.code())
+    }
+
+    /// Converts a protobuf `i32` status value back into the typed enum.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value is out of `u8` range, is the
+    /// `UNSPECIFIED` sentinel (`0`), or does not match a known status code.
+    fn from_proto(value: i32) -> anyhow::Result<Self> {
+        match u8::try_from(value).context("IPC authorization status value is out of u8 range")? {
+            0 => bail!("IPC authorization status must not be unspecified"),
+            0x01 => Ok(Self::PassAdd),
+            0x02 => Ok(Self::PassRepl),
+            0x10 => Ok(Self::Fail),
+            0x11 => Ok(Self::Error),
+            0x21 => Ok(Self::Follow),
+            _ => bail!("IPC authorization status value is not recognized"),
+        }
+    }
 }
 
 impl AccountingResponseStatus {
@@ -285,6 +399,54 @@ impl TryFrom<ipc::AccountingRequest> for AccountingOperation {
 }
 
 // ---------------------------------------------------------------------------
+// Protobuf ↔ domain conversions for AuthorizationOperation
+// ---------------------------------------------------------------------------
+
+impl From<AuthorizationOperation> for ipc::AuthorizationRequest {
+    fn from(value: AuthorizationOperation) -> Self {
+        Self {
+            user: value.user,
+            port: value.port,
+            remote_address: value.remote_address,
+            service: value.service,
+            command: value.command,
+            command_arguments: value.command_arguments,
+            privilege_level: value.privilege_level,
+        }
+    }
+}
+
+impl From<&AuthorizationOperation> for ipc::AuthorizationRequest {
+    fn from(value: &AuthorizationOperation) -> Self {
+        Self {
+            user: value.user.clone(),
+            port: value.port.clone(),
+            remote_address: value.remote_address.clone(),
+            service: value.service.clone(),
+            command: value.command.clone(),
+            command_arguments: value.command_arguments.clone(),
+            privilege_level: value.privilege_level,
+        }
+    }
+}
+
+impl TryFrom<ipc::AuthorizationRequest> for AuthorizationOperation {
+    type Error = anyhow::Error;
+
+    fn try_from(value: ipc::AuthorizationRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            user: value.user,
+            port: value.port,
+            remote_address: value.remote_address,
+            service: value.service,
+            command: value.command,
+            command_arguments: value.command_arguments,
+            privilege_level: value.privilege_level,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Protobuf ↔ domain conversions for AccountingOperationResponse
 // ---------------------------------------------------------------------------
 
@@ -316,6 +478,38 @@ impl AccountingOperationResponse {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Protobuf ↔ domain conversions for AuthorizationOperationResponse
+// ---------------------------------------------------------------------------
+
+impl AuthorizationOperationResponse {
+    /// Converts this domain response into its protobuf representation.
+    #[must_use]
+    pub fn into_proto(self) -> ipc::AuthorizationResponse {
+        ipc::AuthorizationResponse {
+            server: self.server,
+            status: self.status.into_proto(),
+            server_message: self.server_message,
+            args: self.args,
+        }
+    }
+
+    /// Converts a protobuf authorization response into the typed domain response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the protobuf status code is missing, out of range, or
+    /// not one of the supported TACACS+ authorization reply status values.
+    pub fn from_proto(proto: ipc::AuthorizationResponse) -> anyhow::Result<Self> {
+        Ok(Self {
+            server: proto.server,
+            status: AuthorizationResponseStatus::from_proto(proto.status)?,
+            server_message: proto.server_message,
+            args: proto.args,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +519,15 @@ mod tests {
         assert_eq!(AccountingResponseStatus::Success.code(), 0x01);
         assert_eq!(AccountingResponseStatus::Error.code(), 0x02);
         assert_eq!(AccountingResponseStatus::Follow.code(), 0x21);
+    }
+
+    #[test]
+    fn test_authorization_response_status_codes_match_rfc_values() {
+        assert_eq!(AuthorizationResponseStatus::PassAdd.code(), 0x01);
+        assert_eq!(AuthorizationResponseStatus::PassRepl.code(), 0x02);
+        assert_eq!(AuthorizationResponseStatus::Fail.code(), 0x10);
+        assert_eq!(AuthorizationResponseStatus::Error.code(), 0x11);
+        assert_eq!(AuthorizationResponseStatus::Follow.code(), 0x21);
     }
 
     #[test]
@@ -340,6 +543,37 @@ mod tests {
         let encoded: ipc::AccountingRequest = (&request).into();
         let decoded = AccountingOperation::try_from(encoded).unwrap();
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn test_authorization_operation_proto_round_trip() {
+        let request = AuthorizationOperation {
+            user: "admin".to_owned(),
+            port: "tty0".to_owned(),
+            remote_address: "127.0.0.1".to_owned(),
+            service: "shell".to_owned(),
+            command: "show".to_owned(),
+            command_arguments: vec!["users".to_owned()],
+            privilege_level: 15,
+        };
+
+        let encoded: ipc::AuthorizationRequest = (&request).into();
+        let decoded = AuthorizationOperation::try_from(encoded).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn test_authorization_response_proto_round_trip() {
+        let response = AuthorizationOperationResponse {
+            server: "server-a:49".to_owned(),
+            status: AuthorizationResponseStatus::PassRepl,
+            server_message: "replace arguments".to_owned(),
+            args: vec!["cmd=show".to_owned(), "cmd-arg=users".to_owned()],
+        };
+
+        let decoded =
+            AuthorizationOperationResponse::from_proto(response.clone().into_proto()).unwrap();
+        assert_eq!(decoded, response);
     }
 
     #[test]

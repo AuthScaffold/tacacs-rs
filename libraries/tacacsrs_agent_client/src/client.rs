@@ -17,7 +17,7 @@
 //! connection, so callers may issue many requests in parallel without per-request
 //! connection overhead.
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow};
 #[cfg(unix)]
 use http::Uri;
 #[cfg(unix)]
@@ -28,7 +28,10 @@ use tower::service_fn;
 
 use crate::ipc;
 use crate::ipc::tacacs_agent_client::TacacsAgentClient;
-use crate::protocol::{AccountingOperation, AccountingOperationResponse, ServiceError};
+use crate::protocol::{
+    AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
+    AuthorizationOperationResponse, ServiceError,
+};
 use crate::IpcEndpoint;
 
 #[cfg(unix)]
@@ -164,18 +167,57 @@ impl ServiceClient {
                 AccountingOperationResponse::from_proto(response)
             }
             ipc::accounting_reply::Result::Error(error) => {
-                let error = ServiceError::from_proto(error);
-                let retry_note = if error.retriable {
-                    " (retriable)"
-                } else {
-                    ""
-                };
-                let server_note = error
-                    .server
-                    .as_ref()
-                    .map_or_else(String::new, |server| format!(" via {server}"));
-                bail!("{}{}{}", error.message, server_note, retry_note);
+                Err(service_error_to_anyhow(ServiceError::from_proto(error)))
             }
         }
     }
+
+    /// Sends a single authorization request to the local TACACS+ client service.
+    ///
+    /// Converts the domain [`AuthorizationOperation`] into a protobuf request,
+    /// issues the unary RPC over the persistent channel, and converts the reply
+    /// back into the domain response type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The gRPC exchange fails at the transport level.
+    /// - The service returns a structured [`ServiceError`].
+    pub async fn send_authorization(
+        &self,
+        request: AuthorizationOperation,
+    ) -> anyhow::Result<AuthorizationOperationResponse> {
+        let mut client = TacacsAgentClient::new(self.channel.clone());
+        let rpc_request: ipc::AuthorizationRequest = (&request).into();
+        let reply = client
+            .authorization(rpc_request)
+            .await
+            .context("Failed to execute authorization RPC")?
+            .into_inner();
+
+        match reply
+            .result
+            .context("Authorization RPC returned no result")?
+        {
+            ipc::authorization_reply::Result::Response(response) => {
+                AuthorizationOperationResponse::from_proto(response)
+            }
+            ipc::authorization_reply::Result::Error(error) => {
+                Err(service_error_to_anyhow(ServiceError::from_proto(error)))
+            }
+        }
+    }
+}
+
+fn service_error_to_anyhow(error: ServiceError) -> anyhow::Error {
+    let retry_note = if error.retriable {
+        " (retriable)"
+    } else {
+        ""
+    };
+    let server_note = error
+        .server
+        .as_ref()
+        .map_or_else(String::new, |server| format!(" via {server}"));
+    anyhow!("{}{}{}", error.message, server_note, retry_note)
 }

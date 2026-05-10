@@ -93,9 +93,13 @@ provide ergonomic, type-safe wrappers:
 |-----------------------|---------------------------------|----------------|
 | `AccountingRequest`   | `AccountingOperation`           | Client → Service |
 | `AccountingResponse`  | `AccountingOperationResponse`   | Service → Client |
+| `AuthorizationRequest` | `AuthorizationOperation`       | Client → Service |
+| `AuthorizationResponse` | `AuthorizationOperationResponse` | Service → Client |
 | `ServiceError`        | `ServiceError`                  | Service → Client |
 | `AccountingReply`     | *(oneof envelope)*              | Service → Client |
+| `AuthorizationReply`  | *(oneof envelope)*              | Service → Client |
 | `AccountingStatus`    | `AccountingResponseStatus`      | Service → Client |
+| `AuthorizationStatus` | `AuthorizationResponseStatus`   | Service → Client |
 
 Conversions between protobuf and domain types are implemented via `From`,
 `TryFrom`, and explicit `into_proto` / `from_proto` methods. Round-trip

@@ -57,7 +57,7 @@
 //! │  │                                                             │     │
 //! │  │  read_exec_args()          ← /proc/[pid]/mem  (fast pread) │     │
 //! │  │  allowlist.is_allowed()    ← HashSet O(1)                  │     │
-//! │  │  client.send_accounting().await  ← async gRPC IPC          │     │
+//! │  │  client.send_authorization().await  ← async gRPC IPC       │     │
 //! │  │  send_response()           ← kernel ioctl  (fast)          │     │
 //! │  └─────────────────────────────────────────────────────────────┘     │
 //! └──────────────────────────────────────────────────────────────────────┘
@@ -91,7 +91,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use libseccomp::{ScmpFd, ScmpNotifReq, ScmpNotifResp, ScmpNotifRespFlags, notify_id_valid};
-use tacacsrs_agent_client::{AccountingOperation, AccountingResponseStatus, IpcEndpoint, ServiceClient};
+use tacacsrs_agent_client::{
+    AuthorizationOperation, AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
+};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 use tokio::task::{JoinSet, spawn_blocking};
@@ -109,6 +111,7 @@ use super::process_reader::read_exec_args;
 /// This safety interval catches any SIGCHLD signals that were coalesced or
 /// delivered while the process was not yet awaiting the signal.
 const CHILD_REAP_INTERVAL: Duration = Duration::from_millis(250);
+const IPC_AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ── low-level wrappers ───────────────────────────────────────────────────────
 
@@ -179,9 +182,9 @@ pub(crate) fn check_notification_valid(notif_fd: ScmpFd, id: u64) -> Result<()> 
 pub(crate) struct SupervisorConfig {
     /// TACACS+ username for the wrapped session.
     pub(crate) user: String,
-    /// Optional port context for TACACS+ accounting records (e.g. `"ssh"`).
+    /// Optional port context for TACACS+ authorization requests (e.g. `"ssh"`).
     pub(crate) port: Option<String>,
-    /// Optional remote address for TACACS+ accounting records.
+    /// Optional remote address for TACACS+ authorization requests.
     pub(crate) rem_addr: Option<String>,
     /// What to do when the TACACS+ agent cannot be reached.
     pub(crate) fail_policy: FailPolicy,
@@ -216,19 +219,17 @@ async fn connect_ipc_client(endpoint: &IpcEndpoint) -> Option<ServiceClient> {
     }
 }
 
-/// Sends an accounting record and maps the reply to an allow/deny decision.
+/// Sends an authorization request and maps the reply to an allow/deny decision.
 ///
-/// # Mapping accounting status → allow/deny
+/// # Mapping authorization status → allow/deny
 ///
-/// TACACS+ accounting (`TAC_PLUS_ACCT`) is the currently available IPC
-/// operation. The server's `status` field in the reply is used as a proxy for
-/// authorization until a dedicated `TAC_PLUS_AUTHOR` RPC is implemented:
-///
-/// | Status    | Decision |
-/// |-----------|----------|
-/// | `Success` | Allow    |
-/// | `Error`   | Deny     |
-/// | `Follow`  | Deny     |
+/// | Status      | Decision |
+/// |-------------|----------|
+/// | `PassAdd`   | Allow    |
+/// | `PassRepl`  | Allow    |
+/// | `Fail`      | Deny     |
+/// | `Error`     | Deny     |
+/// | `Follow`    | Deny     |
 ///
 /// Returns `None` if the IPC call fails so the caller can apply the fail policy.
 async fn ipc_authorize(
@@ -237,33 +238,43 @@ async fn ipc_authorize(
     exec_path: &str,
     exec_args: &[String],
 ) -> Option<AuthDecision> {
-    let operation = AccountingOperation {
+    let operation = AuthorizationOperation {
         user: config.user.clone(),
         port: config.port.clone().unwrap_or_default(),
         remote_address: config.rem_addr.clone().unwrap_or_default(),
+        service: "shell".to_owned(),
         command: exec_path.to_owned(),
         command_arguments: exec_args.to_vec(),
+        privilege_level: 0,
     };
 
-    match client.send_accounting(operation).await {
-        Ok(response) => {
+    match time::timeout(IPC_AUTHORIZATION_TIMEOUT, client.send_authorization(operation)).await {
+        Err(_) => {
+            log::warn!("IPC authorization call timed out for {exec_path:?}");
+            None
+        }
+        Ok(Err(err)) => {
+            log::warn!("IPC authorization call failed for {exec_path:?}: {err:#}");
+            None
+        }
+        Ok(Ok(response)) => {
             log::debug!(
-                "IPC accounting for {exec_path:?}: status={:?} server={:?}",
+                "IPC authorization for {exec_path:?}: status={:?} server={:?}",
                 response.status,
                 response.server
             );
             match response.status {
-                AccountingResponseStatus::Success => Some(AuthDecision::Allow),
-                AccountingResponseStatus::Error | AccountingResponseStatus::Follow => {
+                AuthorizationResponseStatus::PassAdd | AuthorizationResponseStatus::PassRepl => {
+                    Some(AuthDecision::Allow)
+                }
+                AuthorizationResponseStatus::Fail
+                | AuthorizationResponseStatus::Error
+                | AuthorizationResponseStatus::Follow => {
                     let reason =
                         format!("TACACS+ agent denied {exec_path:?}: status={:?}", response.status);
                     Some(AuthDecision::Deny(reason))
                 }
             }
-        }
-        Err(err) => {
-            log::warn!("IPC accounting call failed for {exec_path:?}: {err:#}");
-            None
         }
     }
 }
@@ -295,7 +306,7 @@ fn fail_policy_decision(policy: FailPolicy, exec_path: &str) -> AuthDecision {
 ///
 /// 1. Read the executable path and argv from the target process's memory.
 /// 2. Check the allowlist — if matched, respond immediately with CONTINUE.
-/// 3. Send a TACACS+ accounting record (`await`) and interpret the response.
+/// 3. Send a TACACS+ authorization request (`await`) and interpret the response.
 /// 4. Send the kernel the allow or deny response.
 ///
 /// # Notification invalidity

@@ -19,8 +19,12 @@
 //! | `AccountingRequest` | request message |
 //! | `AccountingResponse` | response message |
 //! | `AccountingReply` | oneof reply envelope |
+//! | `AuthorizationRequest` | request message |
+//! | `AuthorizationResponse` | response message |
+//! | `AuthorizationReply` | oneof reply envelope |
 //! | `ServiceError` | structured error |
 //! | `AccountingStatus` | status enum |
+//! | `AuthorizationStatus` | status enum |
 //! | `TacacsAgent` | server/client trait + stubs |
 //!
 //! > **Note:** All clippy lints are suppressed in this module because the code

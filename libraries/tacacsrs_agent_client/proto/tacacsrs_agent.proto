@@ -16,8 +16,9 @@
 //      - Non-Unix / dev fallback: loopback TCP at 127.0.0.1:9049
 //    The endpoint is configurable by the service operator.
 //
-// 3. Issue a unary Accounting RPC. The service handles upstream server
-//    selection, connection pooling, TLS, and failover transparently.
+// 3. Issue a unary Accounting or Authorization RPC. The service handles
+//    upstream server selection, connection pooling, TLS, and failover
+//    transparently for operations that contact TACACS+ servers.
 //
 // 4. Inspect the AccountingReply oneof:
 //      - "response" on success, containing the TACACS+ server's reply.
@@ -48,9 +49,9 @@ package tacacsrs.agent.v1;
 // never need to handle TACACS+ packet framing, session multiplexing, or
 // upstream server selection directly.
 //
-// Currently the only supported operation is command accounting. Future
-// operations (authentication, authorization) may be added as new RPCs
-// without breaking the existing Accounting call.
+// Currently supported operations are command accounting and command
+// authorization. Future operations (authentication) may be added as new RPCs
+// without breaking existing calls.
 service TacacsAgent {
   // Records a shell command execution against the configured TACACS+ server
   // pool.
@@ -63,6 +64,14 @@ service TacacsAgent {
   // returns a ServiceError with retriable=true so the caller can decide
   // whether to retry.
   rpc Accounting(AccountingRequest) returns (AccountingReply);
+
+  // Authorizes a shell command execution observed by a local session wrapper.
+  //
+  // The request captures the user/session context plus the command and
+  // arguments that are about to be executed. The service returns an
+  // AuthorizationReply envelope containing either an authorization decision or
+  // a structured service error.
+  rpc Authorization(AuthorizationRequest) returns (AuthorizationReply);
 }
 
 // Client-supplied inputs for a TACACS+ accounting operation.
@@ -173,6 +182,46 @@ message AccountingReply {
     AccountingResponse response = 1;
 
     // Set on failure: contains a structured error with retry guidance.
+    ServiceError error = 2;
+  }
+}
+
+// Client-supplied inputs for a TACACS+ authorization operation.
+//
+// The service translates these fields into a TAC_PLUS_AUTHOR request body
+// (RFC 8907 §6) once upstream authorization forwarding is implemented.
+message AuthorizationRequest {
+  string user = 1;
+  string port = 2;
+  string remote_address = 3;
+  string service = 4;          // e.g., "shell"
+  string command = 5;
+  repeated string command_arguments = 6;
+  uint32 privilege_level = 7;
+}
+
+// TACACS+ authorization reply status values from RFC 8907 §6.2.
+enum AuthorizationStatus {
+  AUTHORIZATION_STATUS_UNSPECIFIED = 0;
+  AUTHORIZATION_STATUS_PASS_ADD = 1;
+  AUTHORIZATION_STATUS_PASS_REPL = 2;
+  AUTHORIZATION_STATUS_FAIL = 16;
+  AUTHORIZATION_STATUS_ERROR = 17;
+  AUTHORIZATION_STATUS_FOLLOW = 33;
+}
+
+// Successful authorization response from the service.
+message AuthorizationResponse {
+  string server = 1;
+  AuthorizationStatus status = 2;
+  string server_message = 3;
+  repeated string args = 4;     // server-modified arguments (PASS_REPL)
+}
+
+// Reply envelope for the Authorization RPC.
+message AuthorizationReply {
+  oneof result {
+    AuthorizationResponse response = 1;
     ServiceError error = 2;
   }
 }
