@@ -167,8 +167,10 @@ impl ServiceClient {
                 AccountingOperationResponse::from_proto(response)
             }
             ipc::accounting_reply::Result::Error(error) => {
-                Err(service_error_as_anyhow(&ServiceError::from_proto(error)))
-                    .context("Accounting RPC returned service error")
+                Err(service_error_as_anyhow(
+                    "Accounting",
+                    &ServiceError::from_proto(error),
+                ))
             }
         }
     }
@@ -204,14 +206,16 @@ impl ServiceClient {
                 AuthorizationOperationResponse::from_proto(response)
             }
             ipc::authorization_reply::Result::Error(error) => {
-                Err(service_error_as_anyhow(&ServiceError::from_proto(error)))
-                    .context("Authorization RPC returned service error")
+                Err(service_error_as_anyhow(
+                    "Authorization",
+                    &ServiceError::from_proto(error),
+                ))
             }
         }
     }
 }
 
-fn service_error_as_anyhow(error: &ServiceError) -> anyhow::Error {
+fn service_error_as_anyhow(rpc_name: &str, error: &ServiceError) -> anyhow::Error {
     let retry_note = if error.retriable {
         " (retriable)"
     } else {
@@ -221,5 +225,10 @@ fn service_error_as_anyhow(error: &ServiceError) -> anyhow::Error {
         .server
         .as_ref()
         .map_or_else(String::new, |server| format!(" via {server}"));
-    anyhow!("{}{}{}", error.message, server_note, retry_note)
+    anyhow!(
+        "{rpc_name} RPC returned service error: {}{}{}",
+        error.message,
+        server_note,
+        retry_note
+    )
 }
