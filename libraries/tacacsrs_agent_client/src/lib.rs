@@ -4,7 +4,7 @@
 ///
 /// The [`ServiceClient`] type is the main entry point. Callers construct it
 /// with [`ServiceClient::connect`], passing an [`IpcEndpoint`], and then issue
-/// unary accounting RPCs over the persistent gRPC channel. Each call converts
+/// unary accounting or authorization RPCs over the persistent gRPC channel. Each call converts
 /// between domain types and protobuf and returns a typed result.
 pub mod client;
 
@@ -33,5 +33,7 @@ pub mod protocol;
 pub use client::ServiceClient;
 pub use endpoint::IpcEndpoint;
 pub use protocol::{
-    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus, ServiceError,
+    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus, AuthorizationArg,
+    AuthorizationKey, AuthorizationOperation, AuthorizationOperationResponse,
+    AuthorizationRequestBuilder, AuthorizationResponseStatus, ServiceError,
 };

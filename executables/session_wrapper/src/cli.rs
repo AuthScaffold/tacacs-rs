@@ -48,6 +48,14 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = FailPolicy::Closed)]
     pub fail_policy: FailPolicy,
 
+    /// Maximum milliseconds to wait for an authorization IPC reply.
+    #[arg(long, default_value_t = 5_000, value_parser = clap::value_parser!(u64).range(1..))]
+    pub authorization_timeout_ms: u64,
+
+    /// Current TACACS+ privilege level for the wrapped user (0-15).
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(0..=15))]
+    pub privilege_level: u8,
+
     /// Path to a file listing executables that are always allowed.
     #[arg(long, value_name = "FILE")]
     pub allowlist: Option<PathBuf>,
@@ -112,6 +120,8 @@ mod tests {
         assert_eq!(cli.user_gid, 1000);
         assert_eq!(cli.service_endpoint, "/run/tacacs.sock");
         assert_eq!(cli.fail_policy, FailPolicy::Closed);
+        assert_eq!(cli.authorization_timeout_ms, 5_000);
+        assert_eq!(cli.privilege_level, 1);
         assert_eq!(cli.verbose, 0);
         assert!(!cli.intercept_fork);
         assert_eq!(cli.command, vec!["/bin/bash".to_owned()]);
@@ -133,6 +143,10 @@ mod tests {
             "127.0.0.1:9049",
             "--fail-policy",
             "open",
+            "--authorization-timeout-ms",
+            "2500",
+            "--privilege-level",
+            "15",
             "--allowlist",
             "/etc/session-wrapper.allow",
             "--intercept-fork",
@@ -149,6 +163,8 @@ mod tests {
         assert_eq!(cli.shell, PathBuf::from("/bin/zsh"));
         assert_eq!(cli.service_endpoint, "127.0.0.1:9049");
         assert_eq!(cli.fail_policy, FailPolicy::Open);
+        assert_eq!(cli.authorization_timeout_ms, 2_500);
+        assert_eq!(cli.privilege_level, 15);
         assert_eq!(cli.allowlist, Some(PathBuf::from("/etc/session-wrapper.allow")));
         assert!(cli.intercept_fork);
         assert_eq!(cli.port.as_deref(), Some("ssh"));

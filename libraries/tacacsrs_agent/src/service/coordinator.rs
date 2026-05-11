@@ -29,7 +29,10 @@ use std::sync::Arc;
 use anyhow::{Context, bail};
 use tacacsrs_agent_client::ipc;
 use tacacsrs_agent_client::ipc::tacacs_agent_server::{TacacsAgent, TacacsAgentServer};
-use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint};
+use tacacsrs_agent_client::{
+    AccountingOperation, AuthorizationOperation, AuthorizationOperationResponse,
+    AuthorizationResponseStatus, IpcEndpoint,
+};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
@@ -123,6 +126,40 @@ impl TacacsAgent for GrpcService {
             }
         };
         Ok(Response::new(result))
+    }
+
+    /// Handles one unary authorization RPC from a local IPC client.
+    ///
+    /// This is a deliberately temporary allow-all stub so session-wrapper can
+    /// build and test command mediation over the dedicated authorization IPC
+    /// contract. Future work should replace this method body with real RFC 8907
+    /// TACACS+ authorization forwarding behind the same protobuf contract.
+    async fn authorization(
+        &self,
+        request: Request<ipc::AuthorizationRequest>,
+    ) -> Result<Response<ipc::AuthorizationReply>, Status> {
+        let request = AuthorizationOperation::try_from(request.into_inner()).map_err(|error| {
+            log::warn!("Invalid IPC authorization request: {error}");
+            Status::invalid_argument(error.to_string())
+        })?;
+        log::debug!(
+            "Received IPC authorization request: user={}, service={}, cmd={}",
+            request.user,
+            request.service().unwrap_or("<missing>"),
+            request.command().unwrap_or("<missing>"),
+        );
+
+        let response = AuthorizationOperationResponse {
+            server: "stub".to_owned(),
+            status: AuthorizationResponseStatus::PassAdd,
+            server_message: "authorization allowed by temporary local stub; upstream TACACS+ authorization is not implemented yet".to_owned(),
+            args: Vec::new(),
+            data: String::new(),
+        };
+
+        Ok(Response::new(ipc::AuthorizationReply {
+            result: Some(ipc::authorization_reply::Result::Response(response.into_proto())),
+        }))
     }
 }
 
@@ -391,7 +428,9 @@ mod tests {
     use std::time::Duration;
 
     #[cfg(unix)]
-    use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+    use tacacsrs_agent_client::{
+        AuthorizationOperation, AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
+    };
 
     #[cfg(unix)]
     use super::TacacsClientService;
@@ -545,6 +584,53 @@ mod tests {
 
         let third = client.send_accounting(request).await.unwrap();
         assert_eq!(third.server, "primary:49");
+
+        service_task.abort();
+        let _ = service_task.await;
+
+        if let IpcEndpoint::Unix(path) = endpoint {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // real Unix socket + gRPC I/O
+    async fn test_authorization_rpc_returns_temporary_allow_stub() {
+        let primary = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            primary.address.clone(),
+            Arc::clone(&primary),
+        )])));
+
+        let endpoint = test_endpoint("tacacs-service-authorization-stub");
+        let config = service_config(endpoint.clone(), vec![test_server("primary:49")]);
+
+        let service = TacacsClientService::new_with_connector(config, connector).unwrap();
+        let service_task = tokio::spawn(async move { service.serve().await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let client = ServiceClient::connect(endpoint.clone()).await.unwrap();
+        let request = AuthorizationOperation::builder("admin", 0)
+            .port("pts/1")
+            .remote_address("127.0.0.1")
+            .service("shell")
+            .command("/bin/echo")
+            .command_arg("hello")
+            .build()
+            .unwrap();
+        let response = client.send_authorization(request).await.unwrap();
+
+        assert_eq!(response.server, "stub");
+        assert_eq!(response.status, AuthorizationResponseStatus::PassAdd);
+        assert!(response.server_message.contains("temporary local stub"));
+        assert!(response.args.is_empty());
+        assert!(response.data.is_empty());
 
         service_task.abort();
         let _ = service_task.await;

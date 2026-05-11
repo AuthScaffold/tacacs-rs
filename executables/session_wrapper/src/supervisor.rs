@@ -57,7 +57,7 @@
 //! │  │                                                             │     │
 //! │  │  read_exec_args()          ← /proc/[pid]/mem  (fast pread) │     │
 //! │  │  allowlist.is_allowed()    ← HashSet O(1)                  │     │
-//! │  │  client.send_accounting().await  ← async gRPC IPC          │     │
+//! │  │  client.send_authorization().await  ← async gRPC IPC       │     │
 //! │  │  send_response()           ← kernel ioctl  (fast)          │     │
 //! │  └─────────────────────────────────────────────────────────────┘     │
 //! └──────────────────────────────────────────────────────────────────────┘
@@ -91,9 +91,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use libseccomp::{ScmpFd, ScmpNotifReq, ScmpNotifResp, ScmpNotifRespFlags, notify_id_valid};
-use tacacsrs_agent_client::{AccountingOperation, AccountingResponseStatus, IpcEndpoint, ServiceClient};
+use tacacsrs_agent_client::{
+    AuthorizationArg, AuthorizationOperation, AuthorizationOperationResponse,
+    AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
+};
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::{JoinSet, spawn_blocking};
 use tokio::time;
 
@@ -109,6 +112,8 @@ use super::process_reader::read_exec_args;
 /// This safety interval catches any SIGCHLD signals that were coalesced or
 /// delivered while the process was not yet awaiting the signal.
 const CHILD_REAP_INTERVAL: Duration = Duration::from_millis(250);
+
+type SharedIpcClient = Arc<Mutex<Option<Arc<ServiceClient>>>>;
 
 // ── low-level wrappers ───────────────────────────────────────────────────────
 
@@ -179,14 +184,18 @@ pub(crate) fn check_notification_valid(notif_fd: ScmpFd, id: u64) -> Result<()> 
 pub(crate) struct SupervisorConfig {
     /// TACACS+ username for the wrapped session.
     pub(crate) user: String,
-    /// Optional port context for TACACS+ accounting records (e.g. `"ssh"`).
+    /// Optional port context for TACACS+ authorization requests (e.g. `"ssh"`).
     pub(crate) port: Option<String>,
-    /// Optional remote address for TACACS+ accounting records.
+    /// Optional remote address for TACACS+ authorization requests.
     pub(crate) rem_addr: Option<String>,
     /// What to do when the TACACS+ agent cannot be reached.
     pub(crate) fail_policy: FailPolicy,
     /// IPC endpoint of the local TACACS+ agent.
     pub(crate) service_endpoint: IpcEndpoint,
+    /// Maximum time to wait for one authorization IPC reply before applying fail policy.
+    pub(crate) authorization_timeout: Duration,
+    /// Current TACACS+ privilege level for this wrapped user.
+    pub(crate) privilege_level: u32,
 }
 
 // ── authorization primitives ─────────────────────────────────────────────────
@@ -216,19 +225,47 @@ async fn connect_ipc_client(endpoint: &IpcEndpoint) -> Option<ServiceClient> {
     }
 }
 
-/// Sends an accounting record and maps the reply to an allow/deny decision.
+/// Returns a cached IPC client, reconnecting on demand when none is available.
+async fn get_or_connect_ipc_client(
+    client: &SharedIpcClient,
+    endpoint: &IpcEndpoint,
+) -> Option<Arc<ServiceClient>> {
+    {
+        let cached = client.lock().await;
+        if let Some(existing) = cached.as_ref() {
+            return Some(existing.clone());
+        }
+    }
+
+    let connected = Arc::new(connect_ipc_client(endpoint).await?);
+    let mut cached = client.lock().await;
+    if let Some(existing) = cached.as_ref() {
+        Some(existing.clone())
+    } else {
+        *cached = Some(connected.clone());
+        Some(connected)
+    }
+}
+
+/// Drops the cached IPC client so the next notification attempts a fresh connection.
+async fn clear_cached_ipc_client(client: &SharedIpcClient) {
+    let mut cached = client.lock().await;
+    if cached.take().is_some() {
+        log::debug!("cleared cached TACACS+ agent IPC client after authorization failure");
+    }
+}
+
+/// Sends an authorization request and maps the reply to an allow/deny decision.
 ///
-/// # Mapping accounting status → allow/deny
+/// # Mapping authorization status → allow/deny
 ///
-/// TACACS+ accounting (`TAC_PLUS_ACCT`) is the currently available IPC
-/// operation. The server's `status` field in the reply is used as a proxy for
-/// authorization until a dedicated `TAC_PLUS_AUTHOR` RPC is implemented:
-///
-/// | Status    | Decision |
-/// |-----------|----------|
-/// | `Success` | Allow    |
-/// | `Error`   | Deny     |
-/// | `Follow`  | Deny     |
+/// | Status      | Decision |
+/// |-------------|----------|
+/// | `PassAdd`   | Allow if no mandatory response args must be applied |
+/// | `PassRepl`  | Allow if no mandatory replacement args must be applied |
+/// | `Fail`      | Deny     |
+/// | `Error`     | Deny     |
+/// | `Follow`    | Deny     |
 ///
 /// Returns `None` if the IPC call fails so the caller can apply the fail policy.
 async fn ipc_authorize(
@@ -237,34 +274,100 @@ async fn ipc_authorize(
     exec_path: &str,
     exec_args: &[String],
 ) -> Option<AuthDecision> {
-    let operation = AccountingOperation {
-        user: config.user.clone(),
-        port: config.port.clone().unwrap_or_default(),
-        remote_address: config.rem_addr.clone().unwrap_or_default(),
-        command: exec_path.to_owned(),
-        command_arguments: exec_args.to_vec(),
+    let builder = AuthorizationOperation::builder(config.user.clone(), config.privilege_level)
+        .port(config.port.clone().unwrap_or_default())
+        .remote_address(config.rem_addr.clone().unwrap_or_default())
+        .service("shell")
+        .command(exec_path.to_owned())
+        .command_args(exec_args.iter().cloned());
+    let operation = match builder.build() {
+        Ok(operation) => operation,
+        Err(err) => {
+            log::warn!("failed to build IPC authorization request for {exec_path:?}: {err:#}");
+            return None;
+        }
     };
 
-    match client.send_accounting(operation).await {
-        Ok(response) => {
+    match time::timeout(config.authorization_timeout, client.send_authorization(operation)).await {
+        Err(_) => {
+            log::warn!("IPC authorization call timed out for {exec_path:?}");
+            None
+        }
+        Ok(Err(err)) => {
+            log::warn!("IPC authorization call failed for {exec_path:?}: {err:#}");
+            None
+        }
+        Ok(Ok(response)) => {
             log::debug!(
-                "IPC accounting for {exec_path:?}: status={:?} server={:?}",
+                "IPC authorization for {exec_path:?}: status={:?} server={:?}",
                 response.status,
                 response.server
             );
-            match response.status {
-                AccountingResponseStatus::Success => Some(AuthDecision::Allow),
-                AccountingResponseStatus::Error | AccountingResponseStatus::Follow => {
-                    let reason =
-                        format!("TACACS+ agent denied {exec_path:?}: status={:?}", response.status);
-                    Some(AuthDecision::Deny(reason))
-                }
-            }
+            Some(map_authorization_response(&response, exec_path))
         }
-        Err(err) => {
-            log::warn!("IPC accounting call failed for {exec_path:?}: {err:#}");
-            None
+    }
+}
+
+/// Maps an authorization response into the local seccomp decision.
+///
+/// Seccomp user notification can either continue the original frozen `execve`
+/// or deny it; it cannot inject additional argv values or replace the submitted
+/// argv. RFC 8907 lets clients ignore optional response args, but mandatory
+/// response args must be applied or authorization fails.
+fn map_authorization_response(
+    response: &AuthorizationOperationResponse,
+    exec_path: &str,
+) -> AuthDecision {
+    match response.status {
+        AuthorizationResponseStatus::PassAdd => {
+            map_pass_with_args("PASS_ADD", "response", response.args.as_slice(), exec_path)
         }
+        AuthorizationResponseStatus::PassRepl => {
+            map_pass_with_args("PASS_REPL", "replacement", response.args.as_slice(), exec_path)
+        }
+        AuthorizationResponseStatus::Fail
+        | AuthorizationResponseStatus::Error
+        | AuthorizationResponseStatus::Follow => {
+            let reason =
+                format!("TACACS+ agent denied {exec_path:?}: status={:?}", response.status);
+            AuthDecision::Deny(reason)
+        }
+    }
+}
+
+fn map_pass_with_args(
+    status_name: &str,
+    arg_kind: &str,
+    args: &[AuthorizationArg],
+    exec_path: &str,
+) -> AuthDecision {
+    if args.is_empty() {
+        return AuthDecision::Allow;
+    }
+
+    let arg_names: Vec<&str> = args.iter().map(|a| a.name.as_str()).collect();
+    let mandatory_names: Vec<&str> = args
+        .iter()
+        .filter(|a| a.mandatory)
+        .map(|a| a.name.as_str())
+        .collect();
+
+    if mandatory_names.is_empty() {
+        log::warn!(
+            "IPC authorization {status_name} for {exec_path:?} returned optional {arg_kind} \
+             args {arg_names:?} that cannot be applied in seccomp notify mode; ignoring them"
+        );
+        AuthDecision::Allow
+    } else {
+        log::warn!(
+            "IPC authorization {status_name} for {exec_path:?} returned mandatory {arg_kind} \
+             args {mandatory_names:?} (all args: {arg_names:?}) that cannot be applied in seccomp \
+             notify mode; treating as failed per RFC 8907 §6.2"
+        );
+        AuthDecision::Deny(format!(
+            "TACACS+ agent returned {status_name} for {exec_path:?} with mandatory {arg_kind} \
+             arg(s) that cannot be applied: {mandatory_names:?}"
+        ))
     }
 }
 
@@ -295,7 +398,7 @@ fn fail_policy_decision(policy: FailPolicy, exec_path: &str) -> AuthDecision {
 ///
 /// 1. Read the executable path and argv from the target process's memory.
 /// 2. Check the allowlist — if matched, respond immediately with CONTINUE.
-/// 3. Send a TACACS+ accounting record (`await`) and interpret the response.
+/// 3. Send a TACACS+ authorization request (`await`) and interpret the response.
 /// 4. Send the kernel the allow or deny response.
 ///
 /// # Notification invalidity
@@ -308,7 +411,7 @@ async fn handle_one_notification(
     req: ScmpNotifReq,
     allowlist: Arc<Allowlist>,
     config: Arc<SupervisorConfig>,
-    client: Option<Arc<ServiceClient>>,
+    client: SharedIpcClient,
 ) -> Result<()> {
     let pid = req.pid;
 
@@ -357,18 +460,22 @@ async fn handle_one_notification(
     }
 
     // Step 3: IPC authorization (async — this is where concurrency pays off).
-    let decision = match client.as_deref() {
-        Some(c) => {
+    let decision =
+        if let Some(c) = get_or_connect_ipc_client(&client, &config.service_endpoint).await {
             // Skip argv[0] — it is conventionally a copy of the executable
             // name and redundant with exec_path.
             let args_without_argv0 = exec_args.get(1..).unwrap_or(&[]);
-            match ipc_authorize(c, &config, &exec_path, args_without_argv0).await {
-                Some(decision) => decision,
-                None => fail_policy_decision(config.fail_policy, &exec_path),
+            if let Some(decision) =
+                ipc_authorize(c.as_ref(), &config, &exec_path, args_without_argv0).await
+            {
+                decision
+            } else {
+                clear_cached_ipc_client(&client).await;
+                fail_policy_decision(config.fail_policy, &exec_path)
             }
-        }
-        None => fail_policy_decision(config.fail_policy, &exec_path),
-    };
+        } else {
+            fail_policy_decision(config.fail_policy, &exec_path)
+        };
 
     // Step 4: Respond to the kernel.
     apply_decision(notif_fd, &req, &exec_path, &decision)
@@ -508,7 +615,8 @@ fn reap_children() -> Result<bool> {
 ///
 /// # Overview
 ///
-/// 1. Connects to the TACACS+ agent (failure is non-fatal; fail policy applies).
+/// 1. Creates a cached TACACS+ agent IPC client (failure is non-fatal; later
+///    notifications reconnect on demand and fail policy applies while unavailable).
 /// 2. Signals the child that the supervisor is ready to answer notifications.
 /// 3. Spawns a dedicated OS thread to run the blocking receive loop.
 /// 4. Registers a SIGCHLD handler for child reaping.
@@ -531,11 +639,13 @@ pub(crate) async fn run_supervisor(
         config.fail_policy,
     );
 
-    // Connect to the TACACS+ agent.  Failure is non-fatal: the fail policy
-    // determines what happens for each notification when IPC is unavailable.
-    let client = connect_ipc_client(&config.service_endpoint)
-        .await
-        .map(Arc::new);
+    // Connect to the TACACS+ agent. Failure is non-fatal: the shared cache
+    // reconnects on demand, and fail policy applies while IPC is unavailable.
+    let client = Arc::new(Mutex::new(
+        connect_ipc_client(&config.service_endpoint)
+            .await
+            .map(Arc::new),
+    ));
 
     // Register the SIGCHLD handler before releasing the child.  A child that
     // exits immediately after being released would be missed if we registered
@@ -598,7 +708,7 @@ async fn dispatch_loop(
     mut notif_rx: mpsc::Receiver<ScmpNotifReq>,
     allowlist: Arc<Allowlist>,
     config: Arc<SupervisorConfig>,
-    client: Option<Arc<ServiceClient>>,
+    client: SharedIpcClient,
     mut sigchld: tokio::signal::unix::Signal,
     mut ctrl_handle: tokio::task::JoinHandle<Result<()>>,
 ) -> Result<()> {
@@ -678,4 +788,76 @@ async fn dispatch_loop(
 
     log::info!("supervisor exiting: all supervised processes have exited");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn authorization_response(
+        status: AuthorizationResponseStatus,
+        args: Vec<AuthorizationArg>,
+    ) -> AuthorizationOperationResponse {
+        AuthorizationOperationResponse {
+            server: "test-server".to_owned(),
+            status,
+            server_message: String::new(),
+            args,
+            data: String::new(),
+        }
+    }
+
+    #[test]
+    fn pass_add_with_only_optional_response_args_is_allowed() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassAdd,
+            vec![AuthorizationArg::optional("priv-lvl", "15")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        assert!(matches!(decision, AuthDecision::Allow));
+    }
+
+    #[test]
+    fn pass_repl_with_only_optional_replacement_args_is_allowed() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassRepl,
+            vec![AuthorizationArg::optional("cmd-arg", "ignored")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        assert!(matches!(decision, AuthDecision::Allow));
+    }
+
+    #[test]
+    fn pass_add_with_mandatory_response_arg_is_denied() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassAdd,
+            vec![AuthorizationArg::mandatory("priv-lvl", "15")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        match decision {
+            AuthDecision::Deny(reason) => assert!(reason.contains("priv-lvl")),
+            AuthDecision::Allow => panic!("mandatory PASS_ADD response arg was allowed"),
+        }
+    }
+
+    #[test]
+    fn pass_repl_with_mandatory_replacement_arg_is_denied() {
+        let response = authorization_response(
+            AuthorizationResponseStatus::PassRepl,
+            vec![AuthorizationArg::mandatory("cmd", "/bin/date")],
+        );
+
+        let decision = map_authorization_response(&response, "/bin/echo");
+
+        match decision {
+            AuthDecision::Deny(reason) => assert!(reason.contains("cmd")),
+            AuthDecision::Allow => panic!("mandatory PASS_REPL replacement arg was allowed"),
+        }
+    }
 }
