@@ -124,7 +124,7 @@ pub struct CapturedIpcRequest {
 }
 
 impl CapturedIpcRequest {
-    pub(crate) fn request_json(&self) -> anyhow::Result<String> {
+    fn request_json(&self) -> anyhow::Result<String> {
         serde_json::to_string(&self.fields).context("Failed to encode captured IPC request")
     }
 }

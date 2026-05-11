@@ -6,7 +6,7 @@ mod emulator;
 mod protocol;
 mod scenario;
 mod service;
-pub(crate) mod state;
+mod state;
 
 #[cfg(test)]
 mod tests;
