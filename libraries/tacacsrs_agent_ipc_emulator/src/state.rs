@@ -5,6 +5,11 @@ use tonic::Status;
 
 use crate::scenario::{CapturedIpcRequest, EmulatorResponse, EmulatorScenario, IpcRpc, RuleHitCount};
 
+/// Mutable emulator state shared by the emulated agent service and mock
+/// controller.
+///
+/// Stores the active scenario, every captured IPC request, and the per-rule hit
+/// counts used by tests to assert matching behavior.
 pub(crate) struct EmulatorState {
     scenario: EmulatorScenario,
     captured_requests: Vec<CapturedIpcRequest>,
@@ -80,6 +85,11 @@ impl EmulatorState {
     }
 }
 
+/// Result of matching an incoming IPC request against the ordered transaction
+/// rules.
+///
+/// Carries the configured response and optional delay outside the state lock so
+/// RPC handlers can wait asynchronously without blocking controller operations.
 pub(crate) struct MatchedRule {
     pub(crate) response: EmulatorResponse,
     pub(crate) delay_ms: Option<u64>,

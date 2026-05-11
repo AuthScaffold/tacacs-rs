@@ -18,6 +18,11 @@ use crate::scenario::{EmulatorResponse, EmulatorScenario, IpcRpc};
 use crate::state::{EmulatorState, MatchedRule};
 
 #[derive(Clone)]
+/// Emulated implementation of the TACACS+ agent gRPC service.
+///
+/// Each RPC captures the incoming request, applies the active scenario's
+/// ordered transaction rules, and returns the configured response or gRPC
+/// status error.
 pub(crate) struct AgentService {
     pub(crate) state: Arc<Mutex<EmulatorState>>,
 }
@@ -86,6 +91,10 @@ impl TacacsAgent for AgentService {
 }
 
 #[derive(Clone)]
+/// Mock-controller gRPC service used by external integration test runners.
+///
+/// Provides runtime scenario replacement, state reset, request inspection, rule
+/// hit inspection, and graceful shutdown for the same in-memory emulator state.
 pub(crate) struct ControllerService {
     pub(crate) state: Arc<Mutex<EmulatorState>>,
     pub(crate) shutdown_sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
