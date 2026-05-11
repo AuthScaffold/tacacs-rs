@@ -32,6 +32,8 @@ use tonic::{Request, Response, Status};
 use tower::service_fn;
 
 pub mod controller {
+    #![allow(clippy::all, clippy::cargo, clippy::nursery, clippy::pedantic)]
+
     tonic::include_proto!("tacacsrs.agent.mock.v1");
 }
 
@@ -52,11 +54,21 @@ pub struct IpcEmulator {
 
 impl IpcEmulator {
     /// Loads a JSON scenario file and binds on an ephemeral loopback TCP port.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read, the JSON cannot be parsed,
+    /// or the emulator listener cannot be started.
     pub async fn from_file(path: impl AsRef<Path>) -> anyhow::Result<(Self, IpcEndpoint)> {
         Self::from_scenario(EmulatorScenario::from_file(path)?).await
     }
 
     /// Loads a JSON scenario file and binds on the provided endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read, the JSON cannot be parsed,
+    /// or the provided endpoint cannot be bound.
     pub async fn from_file_at_endpoint(
         path: impl AsRef<Path>,
         endpoint: IpcEndpoint,
@@ -65,6 +77,10 @@ impl IpcEmulator {
     }
 
     /// Starts an emulator on an ephemeral loopback TCP port.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the emulator listener cannot be started.
     pub async fn from_scenario(scenario: EmulatorScenario) -> anyhow::Result<(Self, IpcEndpoint)> {
         Self::from_scenario_at_endpoint(
             scenario,
@@ -74,6 +90,11 @@ impl IpcEmulator {
     }
 
     /// Starts an emulator on the provided IPC endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the endpoint cannot be bound or is not a supported
+    /// local IPC endpoint.
     pub async fn from_scenario_at_endpoint(
         scenario: EmulatorScenario,
         endpoint: IpcEndpoint,
@@ -92,6 +113,11 @@ impl IpcEmulator {
     }
 
     /// Waits until the server exits without requesting shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the server task panics or the gRPC server exits with
+    /// an error.
     pub async fn wait(self) -> anyhow::Result<()> {
         self.server_task
             .await
@@ -124,7 +150,9 @@ impl IpcEmulator {
         let listener = tokio::net::TcpListener::bind(address)
             .await
             .with_context(|| format!("Failed to bind TCP IPC emulator endpoint {address}"))?;
-        let local_addr = listener.local_addr().context("Failed to inspect bound TCP endpoint")?;
+        let local_addr = listener
+            .local_addr()
+            .context("Failed to inspect bound TCP endpoint")?;
         let incoming = TcpListenerStream::new(listener);
         let (emulator, shutdown_rx) = Self::new_with_shutdown(scenario);
         let agent = AgentService {
@@ -163,8 +191,9 @@ impl IpcEmulator {
                 format!("Failed to remove stale IPC emulator socket {}", path.display())
             })?;
         }
-        let listener = tokio::net::UnixListener::bind(&path)
-            .with_context(|| format!("Failed to bind Unix IPC emulator socket {}", path.display()))?;
+        let listener = tokio::net::UnixListener::bind(&path).with_context(|| {
+            format!("Failed to bind Unix IPC emulator socket {}", path.display())
+        })?;
         let incoming = UnixListenerStream::new(listener);
         let cleanup_path = path.clone();
         let (emulator, shutdown_rx) = Self::new_with_shutdown(scenario);
@@ -216,6 +245,10 @@ pub struct MockControllerClient {
 
 impl MockControllerClient {
     /// Connects to the mock-controller service at an emulator endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the gRPC channel cannot be established.
     pub async fn connect(endpoint: IpcEndpoint) -> anyhow::Result<Self> {
         Ok(Self {
             inner: GeneratedControllerClient::new(connect_channel(endpoint).await?),
@@ -223,12 +256,21 @@ impl MockControllerClient {
     }
 
     /// Replaces the active scenario and clears request/hit state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scenario cannot be encoded or the controller RPC
+    /// fails.
     pub async fn load_scenario(&mut self, scenario: &EmulatorScenario) -> anyhow::Result<()> {
         let scenario_json = serde_json::to_string(scenario).context("Failed to encode scenario")?;
         self.load_scenario_json(scenario_json).await
     }
 
     /// Replaces the active scenario from raw JSON and clears request/hit state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the controller rejects the JSON or the RPC fails.
     pub async fn load_scenario_json(&mut self, scenario_json: String) -> anyhow::Result<()> {
         self.inner
             .load_scenario(controller::LoadScenarioRequest { scenario_json })
@@ -238,6 +280,10 @@ impl MockControllerClient {
     }
 
     /// Clears captured requests and resets hit counts to zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the controller RPC fails.
     pub async fn reset_state(&mut self) -> anyhow::Result<()> {
         self.inner
             .reset_state(controller::ResetStateRequest {})
@@ -247,6 +293,10 @@ impl MockControllerClient {
     }
 
     /// Fetches captured requests through the controller service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the controller RPC fails or returns malformed data.
     pub async fn captured_requests(&mut self) -> anyhow::Result<Vec<CapturedIpcRequest>> {
         self.inner
             .get_captured_requests(controller::GetCapturedRequestsRequest {})
@@ -260,6 +310,10 @@ impl MockControllerClient {
     }
 
     /// Fetches per-rule hit counts through the controller service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the controller RPC fails or returns malformed data.
     pub async fn rule_hits(&mut self) -> anyhow::Result<Vec<RuleHitCount>> {
         self.inner
             .get_rule_hit_counts(controller::GetRuleHitCountsRequest {})
@@ -273,6 +327,10 @@ impl MockControllerClient {
     }
 
     /// Requests graceful emulator shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the controller RPC fails.
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
         self.inner
             .shutdown(controller::ShutdownRequest {})
@@ -289,6 +347,10 @@ pub struct EmulatorScenario {
 
 impl EmulatorScenario {
     /// Reads and parses a JSON scenario file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or parsed.
     pub fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
         let data = std::fs::read_to_string(path)
@@ -494,7 +556,7 @@ impl EmulatorState {
     fn record_and_match(
         &mut self,
         rpc: IpcRpc,
-        fields: BTreeMap<String, Value>,
+        fields: &BTreeMap<String, Value>,
     ) -> Result<MatchedRule, Status> {
         self.captured_requests.push(CapturedIpcRequest {
             rpc,
@@ -505,9 +567,9 @@ impl EmulatorState {
             .transactions
             .iter()
             .enumerate()
-            .find(|(_, rule)| rule.rpc == rpc && rule.match_fields.matches(&fields))
+            .find(|(_, rule)| rule.rpc == rpc && rule.match_fields.matches(fields))
         else {
-            let request_json = serde_json::to_string(&fields).unwrap_or_else(|_| "{}".to_owned());
+            let request_json = serde_json::to_string(fields).unwrap_or_else(|_| "{}".to_owned());
             return Err(Status::not_found(format!(
                 "IPC emulator has no {rpc} transaction rule matching {request_json}"
             )));
@@ -541,7 +603,7 @@ impl AgentService {
                 .state
                 .lock()
                 .map_err(|_| Status::internal("IPC emulator state lock is poisoned"))?;
-            state.record_and_match(rpc, fields)?
+            state.record_and_match(rpc, &fields)?
         };
         if let Some(delay_ms) = matched.delay_ms {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
@@ -689,7 +751,11 @@ async fn connect_channel(endpoint: IpcEndpoint) -> anyhow::Result<Channel> {
                 .context("Failed to build Unix IPC emulator controller endpoint")?
                 .connect_with_connector(service_fn(move |_: Uri| {
                     let path = connect_path.clone();
-                    async move { tokio::net::UnixStream::connect(path).await.map(TokioIo::new) }
+                    async move {
+                        tokio::net::UnixStream::connect(path)
+                            .await
+                            .map(TokioIo::new)
+                    }
                 }))
                 .await
                 .with_context(|| {
@@ -721,10 +787,7 @@ fn accounting_fields(request: &ipc::AccountingRequest) -> BTreeMap<String, Value
         ("port".to_owned(), json!(request.port)),
         ("remote_address".to_owned(), json!(request.remote_address)),
         ("command".to_owned(), json!(request.command)),
-        (
-            "command_arguments".to_owned(),
-            json!(request.command_arguments),
-        ),
+        ("command_arguments".to_owned(), json!(request.command_arguments)),
     ])
 }
 
@@ -786,7 +849,9 @@ fn accounting_response(response: ResponseBody) -> Result<AccountingOperationResp
     })
 }
 
-fn authorization_response(response: ResponseBody) -> Result<AuthorizationOperationResponse, Status> {
+fn authorization_response(
+    response: ResponseBody,
+) -> Result<AuthorizationOperationResponse, Status> {
     let status = match response.status.as_str() {
         "PassAdd" => AuthorizationResponseStatus::PassAdd,
         "PassRepl" => AuthorizationResponseStatus::PassRepl,
@@ -904,11 +969,9 @@ mod tests {
             ],
         });
 
+        let fields = BTreeMap::from([("user".to_owned(), json!("admin"))]);
         let matched = state
-            .record_and_match(
-                IpcRpc::Accounting,
-                BTreeMap::from([("user".to_owned(), json!("admin"))]),
-            )
+            .record_and_match(IpcRpc::Accounting, &fields)
             .expect("rule should match");
 
         match matched.response {
@@ -986,7 +1049,9 @@ mod tests {
             .await
             .expect_err("unmatched request should fail");
 
-        assert!(error.to_string().contains("Failed to execute accounting RPC"));
+        assert!(error
+            .to_string()
+            .contains("Failed to execute accounting RPC"));
         assert_eq!(emulator.captured_requests().len(), 1);
         assert_eq!(emulator.rule_hits()[0].hits, 0);
         emulator.shutdown().await;
@@ -1055,7 +1120,10 @@ mod tests {
             .expect("request should succeed");
         assert_eq!(controller.rule_hits().await.expect("hits should load")[0].hits, 1);
 
-        controller.reset_state().await.expect("reset should succeed");
+        controller
+            .reset_state()
+            .await
+            .expect("reset should succeed");
         assert!(controller
             .captured_requests()
             .await
