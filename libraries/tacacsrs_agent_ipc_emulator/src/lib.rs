@@ -3,13 +3,13 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 #[cfg(unix)]
 use http::Uri;
 #[cfg(unix)]
@@ -569,7 +569,11 @@ impl EmulatorState {
             .enumerate()
             .find(|(_, rule)| rule.rpc == rpc && rule.match_fields.matches(fields))
         else {
-            let request_json = serde_json::to_string(fields).unwrap_or_else(|_| "{}".to_owned());
+            let request_json = serde_json::to_string(fields).map_err(|error| {
+                Status::internal(format!(
+                    "Failed to encode unmatched IPC request for diagnostics: {error}"
+                ))
+            })?;
             return Err(Status::not_found(format!(
                 "IPC emulator has no {rpc} transaction rule matching {request_json}"
             )));
@@ -796,8 +800,7 @@ fn authorization_fields(request: &ipc::AuthorizationRequest) -> BTreeMap<String,
         .args
         .iter()
         .find(|arg| arg.name == "cmd")
-        .map(|arg| arg.value.clone())
-        .unwrap_or_default();
+        .map(|arg| arg.value.as_str());
     let command_arguments = request
         .args
         .iter()
@@ -809,7 +812,7 @@ fn authorization_fields(request: &ipc::AuthorizationRequest) -> BTreeMap<String,
         ("port".to_owned(), json!(request.port)),
         ("remote_address".to_owned(), json!(request.remote_address)),
         ("privilege_level".to_owned(), json!(request.privilege_level)),
-        ("command".to_owned(), json!(command)),
+        ("command".to_owned(), command.map_or(Value::Null, |value| json!(value))),
         ("command_arguments".to_owned(), json!(command_arguments)),
         (
             "args".to_owned(),
