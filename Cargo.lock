@@ -1690,6 +1690,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "tacacsrs-agent-ipc-emulator"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "http",
+ "hyper-util",
+ "prost",
+ "protoc-bin-vendored",
+ "serde",
+ "serde_json",
+ "tacacsrs-agent-client",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tower",
+]
+
+[[package]]
+name = "tacacsrs-agent-ipc-emulatord"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "log",
+ "tacacsrs-agent-client",
+ "tacacsrs-agent-ipc-emulator",
+ "tokio",
+]
+
+[[package]]
 name = "tacacsrs-agentd"
 version = "0.0.0-dev"
 dependencies = [

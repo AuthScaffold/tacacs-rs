@@ -1,0 +1,19 @@
+[package]
+name = "tacacsrs-agent-ipc-emulatord"
+version = "0.0.0-dev"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Standalone JSON-driven TACACS+ agent IPC emulator"
+
+[dependencies]
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+clap = { version = "4.6.1", features = ["derive"] }
+env_logger = "0.11.10"
+log = "0.4"
+tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
+tacacsrs-agent-ipc-emulator = { path = "../../libraries/tacacsrs_agent_ipc_emulator" }
+tokio = { version = "1.52.2", features = ["full"] }
+
+[lints]
+workspace = true

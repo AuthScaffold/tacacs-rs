@@ -1,0 +1,44 @@
+{
+  "transactions": [
+    {
+      "rpc": "Accounting",
+      "match": {
+        "user": "admin",
+        "command": "show"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "Success",
+        "server_message": "",
+        "data": ""
+      },
+      "delay_ms": 50
+    },
+    {
+      "rpc": "Accounting",
+      "match": {},
+      "respond": {
+        "type": "error",
+        "message": "No responsive TACACS+ servers are currently available",
+        "server": "",
+        "retriable": true
+      }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "user": "admin",
+        "command": "show"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "PassAdd",
+        "server_message": "",
+        "args": [],
+        "data": ""
+      }
+    }
+  ]
+}
