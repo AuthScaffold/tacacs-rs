@@ -168,6 +168,7 @@ impl ServiceClient {
             }
             ipc::accounting_reply::Result::Error(error) => {
                 Err(service_error_as_anyhow(&ServiceError::from_proto(error)))
+                    .context("Accounting RPC returned service error")
             }
         }
     }
@@ -204,6 +205,7 @@ impl ServiceClient {
             }
             ipc::authorization_reply::Result::Error(error) => {
                 Err(service_error_as_anyhow(&ServiceError::from_proto(error)))
+                    .context("Authorization RPC returned service error")
             }
         }
     }
