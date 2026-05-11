@@ -42,7 +42,7 @@ jobs:
 
       - name: Install cargo-audit
         if: steps.should-run.outputs.run == 'true'
-        uses: taiki-e/install-action@eea29cff9a2b68892c0845ae3e4f45fc47ee9354 # v2.75.13
+        uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8 # v2.77.5
         with:
           tool: cargo-audit
 
