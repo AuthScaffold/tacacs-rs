@@ -15,7 +15,7 @@ tacacsrs-messages = { path = "../tacacsrs_messages" }
 
 [dev-dependencies]
 tacacsrs-networking = { path = "../tacacsrs_networking" }
-tokio = { version = "1.52.2", features = ["full"] }
+tokio = { version = "1.52.3", features = ["full"] }
 
 [lints]
 workspace = true
