@@ -167,10 +167,7 @@ impl ServiceClient {
                 AccountingOperationResponse::from_proto(response)
             }
             ipc::accounting_reply::Result::Error(error) => {
-                Err(service_error_as_anyhow(
-                    "Accounting",
-                    &ServiceError::from_proto(error),
-                ))
+                Err(service_error_as_anyhow("Accounting", &ServiceError::from_proto(error)))
             }
         }
     }
@@ -206,10 +203,7 @@ impl ServiceClient {
                 AuthorizationOperationResponse::from_proto(response)
             }
             ipc::authorization_reply::Result::Error(error) => {
-                Err(service_error_as_anyhow(
-                    "Authorization",
-                    &ServiceError::from_proto(error),
-                ))
+                Err(service_error_as_anyhow("Authorization", &ServiceError::from_proto(error)))
             }
         }
     }
@@ -225,10 +219,5 @@ fn service_error_as_anyhow(rpc_name: &str, error: &ServiceError) -> anyhow::Erro
         .server
         .as_ref()
         .map_or_else(String::new, |server| format!(" via {server}"));
-    anyhow!(
-        "{rpc_name} RPC returned service error: {}{}{}",
-        error.message,
-        server_note,
-        retry_note
-    )
+    anyhow!("{rpc_name} RPC returned service error: {}{}{}", error.message, server_note, retry_note)
 }
