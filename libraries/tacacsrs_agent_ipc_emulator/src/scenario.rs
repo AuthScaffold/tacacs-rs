@@ -26,6 +26,20 @@ impl EmulatorScenario {
         serde_json::from_str(&data)
             .with_context(|| format!("Failed to parse IPC emulator scenario {}", path.display()))
     }
+
+    /// Reads and parses a JSON scenario file without blocking the async runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or parsed.
+    pub async fn from_file_async(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let data = tokio::fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("Failed to read IPC emulator scenario {}", path.display()))?;
+        serde_json::from_str(&data)
+            .with_context(|| format!("Failed to parse IPC emulator scenario {}", path.display()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

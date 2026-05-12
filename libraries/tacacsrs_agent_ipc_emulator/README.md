@@ -52,7 +52,7 @@ let (emulator, endpoint) = IpcEmulator::from_scenario(scenario).await?;
 let client = ServiceClient::connect(endpoint).await?;
 
 // use client normally, then assert on captured requests or hit counts
-let _captured = emulator.captured_requests();
+let _captured = emulator.captured_requests().await;
 emulator.shutdown().await;
 # Ok(())
 # }

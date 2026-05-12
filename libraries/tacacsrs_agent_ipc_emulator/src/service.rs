@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
 use tacacsrs_agent_client::ipc;
 use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
 use tonic::{Request, Response, Status};
 
 use crate::controller;
@@ -34,10 +34,7 @@ impl AgentService {
         fields: BTreeMap<String, Value>,
     ) -> Result<MatchedRule, Status> {
         let matched = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| Status::internal("IPC emulator state lock is poisoned"))?;
+            let mut state = self.state.lock().await;
             state.record_and_match(rpc, &fields)?
         };
         if let Some(delay_ms) = matched.delay_ms {
@@ -108,10 +105,7 @@ impl TacacsAgentMockController for ControllerService {
     ) -> Result<Response<controller::LoadScenarioReply>, Status> {
         let scenario: EmulatorScenario = serde_json::from_str(&request.into_inner().scenario_json)
             .map_err(|error| Status::invalid_argument(format!("Invalid scenario JSON: {error}")))?;
-        self.state
-            .lock()
-            .map_err(|_| Status::internal("IPC emulator state lock is poisoned"))?
-            .replace_scenario(scenario);
+        self.state.lock().await.replace_scenario(scenario);
         Ok(Response::new(controller::LoadScenarioReply {}))
     }
 
@@ -119,10 +113,7 @@ impl TacacsAgentMockController for ControllerService {
         &self,
         _request: Request<controller::ResetStateRequest>,
     ) -> Result<Response<controller::ResetStateReply>, Status> {
-        self.state
-            .lock()
-            .map_err(|_| Status::internal("IPC emulator state lock is poisoned"))?
-            .reset();
+        self.state.lock().await.reset();
         Ok(Response::new(controller::ResetStateReply {}))
     }
 
@@ -133,7 +124,7 @@ impl TacacsAgentMockController for ControllerService {
         let requests = self
             .state
             .lock()
-            .map_err(|_| Status::internal("IPC emulator state lock is poisoned"))?
+            .await
             .captured_requests()
             .iter()
             .map(controller::CapturedIpcRequest::try_from)
@@ -149,7 +140,7 @@ impl TacacsAgentMockController for ControllerService {
         let hit_counts = self
             .state
             .lock()
-            .map_err(|_| Status::internal("IPC emulator state lock is poisoned"))?
+            .await
             .rule_hit_counts()
             .iter()
             .map(controller::RuleHitCount::try_from)
@@ -162,7 +153,7 @@ impl TacacsAgentMockController for ControllerService {
         &self,
         _request: Request<controller::ShutdownRequest>,
     ) -> Result<Response<controller::ShutdownReply>, Status> {
-        send_shutdown(&self.shutdown_sender);
+        send_shutdown(&self.shutdown_sender).await;
         Ok(Response::new(controller::ShutdownReply {}))
     }
 }
@@ -171,10 +162,9 @@ pub(crate) async fn shutdown_signal(shutdown_rx: oneshot::Receiver<()>) {
     let _ = shutdown_rx.await;
 }
 
-pub(crate) fn send_shutdown(shutdown_sender: &Arc<Mutex<Option<oneshot::Sender<()>>>>) {
-    if let Ok(mut sender) = shutdown_sender.lock() {
-        if let Some(sender) = sender.take() {
-            let _ = sender.send(());
-        }
+pub(crate) async fn send_shutdown(shutdown_sender: &Arc<Mutex<Option<oneshot::Sender<()>>>>) {
+    let sender = shutdown_sender.lock().await.take();
+    if let Some(sender) = sender {
+        let _ = sender.send(());
     }
 }

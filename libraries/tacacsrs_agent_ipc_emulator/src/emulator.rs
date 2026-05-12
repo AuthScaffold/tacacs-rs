@@ -1,13 +1,15 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgentServer;
 use tacacsrs_agent_client::IpcEndpoint;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -33,7 +35,7 @@ impl IpcEmulator {
     /// Returns an error if the file cannot be read, the JSON cannot be parsed,
     /// or the emulator listener cannot be started.
     pub async fn from_file(path: impl AsRef<Path>) -> anyhow::Result<(Self, IpcEndpoint)> {
-        Self::from_scenario(EmulatorScenario::from_file(path)?).await
+        Self::from_scenario(EmulatorScenario::from_file_async(path).await?).await
     }
 
     /// Loads a JSON scenario file and binds on the provided endpoint.
@@ -46,7 +48,8 @@ impl IpcEmulator {
         path: impl AsRef<Path>,
         endpoint: IpcEndpoint,
     ) -> anyhow::Result<(Self, IpcEndpoint)> {
-        Self::from_scenario_at_endpoint(EmulatorScenario::from_file(path)?, endpoint).await
+        Self::from_scenario_at_endpoint(EmulatorScenario::from_file_async(path).await?, endpoint)
+            .await
     }
 
     /// Starts an emulator on an ephemeral loopback TCP port.
@@ -81,7 +84,7 @@ impl IpcEmulator {
 
     /// Requests graceful shutdown and waits until the server exits.
     pub async fn shutdown(self) {
-        send_shutdown(&self.shutdown_sender);
+        send_shutdown(&self.shutdown_sender).await;
         let _ = self.server_task.await;
     }
 
@@ -99,18 +102,14 @@ impl IpcEmulator {
 
     /// Returns a snapshot of requests received by the emulator.
     #[must_use]
-    pub fn captured_requests(&self) -> Vec<CapturedIpcRequest> {
-        self.state
-            .lock()
-            .map_or_else(|_| Vec::new(), |state| state.captured_requests())
+    pub async fn captured_requests(&self) -> Vec<CapturedIpcRequest> {
+        self.state.lock().await.captured_requests()
     }
 
     /// Returns a snapshot of per-rule hit counts.
     #[must_use]
-    pub fn rule_hits(&self) -> Vec<RuleHitCount> {
-        self.state
-            .lock()
-            .map_or_else(|_| Vec::new(), |state| state.rule_hit_counts())
+    pub async fn rule_hits(&self) -> Vec<RuleHitCount> {
+        self.state.lock().await.rule_hit_counts()
     }
 
     async fn serve_tcp(
@@ -167,6 +166,14 @@ impl IpcEmulator {
         let listener = tokio::net::UnixListener::bind(&path).with_context(|| {
             format!("Failed to bind Unix IPC emulator socket {}", path.display())
         })?;
+        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to restrict Unix IPC emulator socket permissions for {}",
+                    path.display()
+                )
+            })?;
         let incoming = UnixListenerStream::new(listener);
         let cleanup_path = path.clone();
         let (emulator, shutdown_rx) = Self::new_with_shutdown(scenario);

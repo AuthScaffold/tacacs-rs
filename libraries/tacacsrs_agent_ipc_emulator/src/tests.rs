@@ -6,6 +6,7 @@ use tacacsrs_agent_client::{
     AccountingOperation, AuthorizationKey, AuthorizationOperation, AuthorizationResponseStatus,
     ServiceClient,
 };
+use tonic::Code;
 
 use crate::state::EmulatorState;
 use crate::{
@@ -142,11 +143,11 @@ async fn captures_requests_and_hit_counts() {
         .await
         .expect("request should succeed");
 
-    let captured = emulator.captured_requests();
+    let captured = emulator.captured_requests().await;
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].rpc, IpcRpc::Accounting);
     assert_eq!(captured[0].fields["user"], json!("admin"));
-    assert_eq!(emulator.rule_hits()[0].hits, 1);
+    assert_eq!(emulator.rule_hits().await[0].hits, 1);
     emulator.shutdown().await;
 }
 
@@ -167,11 +168,16 @@ async fn unmatched_request_returns_grpc_error() {
         .await
         .expect_err("unmatched request should fail");
 
-    assert!(error
-        .to_string()
-        .contains("Failed to execute accounting RPC"));
-    assert_eq!(emulator.captured_requests().len(), 1);
-    assert_eq!(emulator.rule_hits()[0].hits, 0);
+    let grpc_status = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<tonic::Status>())
+        .expect("error should include tonic status");
+    assert_eq!(grpc_status.code(), Code::NotFound);
+    assert!(grpc_status
+        .message()
+        .contains("IPC emulator has no Accounting transaction rule matching"));
+    assert_eq!(emulator.captured_requests().await.len(), 1);
+    assert_eq!(emulator.rule_hits().await[0].hits, 0);
     emulator.shutdown().await;
 }
 
@@ -213,7 +219,7 @@ async fn authorization_response_works_with_service_client() {
         .expect("authorization request should succeed");
 
     assert_eq!(response.status, AuthorizationResponseStatus::PassAdd);
-    assert_eq!(emulator.rule_hits()[0].hits, 1);
+    assert_eq!(emulator.rule_hits().await[0].hits, 1);
     emulator.shutdown().await;
 }
 
