@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "TACACS+ controlled login session wrapper POC"
+build = "build.rs"
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }

@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package tacacsrs.agent.mock.v1;
+
+service TacacsAgentMockController {
+  rpc LoadScenario(LoadScenarioRequest) returns (LoadScenarioReply);
+  rpc ResetState(ResetStateRequest) returns (ResetStateReply);
+  rpc GetCapturedRequests(GetCapturedRequestsRequest) returns (GetCapturedRequestsReply);
+  rpc GetRuleHitCounts(GetRuleHitCountsRequest) returns (GetRuleHitCountsReply);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownReply);
+}
+
+message LoadScenarioRequest {
+  string scenario_json = 1;
+}
+
+message LoadScenarioReply {}
+
+message ResetStateRequest {}
+
+message ResetStateReply {}
+
+message GetCapturedRequestsRequest {}
+
+message GetCapturedRequestsReply {
+  repeated CapturedIpcRequest requests = 1;
+}
+
+message CapturedIpcRequest {
+  string rpc = 1;
+  string request_json = 2;
+}
+
+message GetRuleHitCountsRequest {}
+
+message GetRuleHitCountsReply {
+  repeated RuleHitCount hit_counts = 1;
+}
+
+message RuleHitCount {
+  uint32 index = 1;
+  string rpc = 2;
+  uint64 hits = 3;
+}
+
+message ShutdownRequest {}
+
+message ShutdownReply {}

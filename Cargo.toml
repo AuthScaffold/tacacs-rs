@@ -6,11 +6,13 @@ members = [
     "libraries/tacacsrs_flow_abstractions",
     "libraries/tacacsrs_flows",
     "libraries/tacacsrs_agent_client",
+    "libraries/tacacsrs_agent_ipc_emulator",
     "libraries/tacacsrs_agent",
     "libraries/tacacsrs_config",
     "executables/tacon",
     "executables/session_wrapper",
-    "executables/tacacsrs_agentd"
+    "executables/tacacsrs_agentd",
+    "executables/tacacsrs_agent_ipc_emulatord"
 ]
 exclude = ["fuzz"]
 

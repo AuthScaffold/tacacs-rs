@@ -135,7 +135,7 @@ cargo clippy -p session-wrapper --target x86_64-unknown-linux-musl --all-targets
 cargo test -p session-wrapper --target x86_64-unknown-linux-musl
 ```
 
-See [Session Wrapper Smoke and Integration Testing](../../docs/session-wrapper-testing.md) for detailed smoke tests and expected results.
+See [Session Wrapper Smoke and Integration Testing](../../docs/session-wrapper-testing.md) for detailed smoke tests and expected results. Native Alpine builds have a separate [Alpine Linux technical note](README.alpine.md).
 
 ## Future work
 
