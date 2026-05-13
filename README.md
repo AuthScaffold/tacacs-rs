@@ -41,6 +41,7 @@ tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
 - [tacacsrs-agent-ipc-emulator README](libraries/tacacsrs_agent_ipc_emulator/README.md) — JSON scenario format and in-process/out-of-process IPC emulator usage
 - [tacacsrs-config README](libraries/tacacsrs_config/README.md) — YANG JSON schema support, codegen workflow, parsing APIs
 - [session-wrapper README](executables/session_wrapper/README.md) — Linux seccomp session wrapper architecture and current allow-all behavior
+- [Session Wrapper Deployment Guide](docs/session-wrapper.md) — SSH `ForceCommand` integration, configuration examples, security notes, troubleshooting
 - [Session Wrapper Testing](docs/session-wrapper-testing.md) — Linux smoke and integration checks for the session wrapper
 - [Building for SONiC](docs/sonic-build-guide.md) — Static musl binaries for network switches
 - [Debian Packaging](DEBIAN_PACKAGING.md) — Building `.deb` packages
