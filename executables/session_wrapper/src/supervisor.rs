@@ -433,7 +433,7 @@ async fn handle_one_notification(
             }
             log::warn!("failed to read exec args from pid {pid}: {err:#}");
             let decision = fail_policy_decision(config.fail_policy, "<unreadable>");
-            return apply_decision(notif_fd, &req, pid, 0, "<unreadable>", &decision);
+            return apply_decision(notif_fd, &req, pid, None, "<unreadable>", &decision);
         }
     };
 
@@ -482,7 +482,22 @@ async fn handle_one_notification(
         };
 
     // Step 4: Respond to the kernel.
-    apply_decision(notif_fd, &req, pid, filename_addr, &exec_path, &decision)
+    apply_decision(notif_fd, &req, pid, Some(filename_addr), &exec_path, &decision)
+}
+
+fn verify_exec_path_if_available(
+    pid: u32,
+    filename_addr: Option<u64>,
+    exec_path: &str,
+) -> Result<()> {
+    if let Some(filename_addr) = filename_addr {
+        verify_exec_path_unchanged(pid, filename_addr, exec_path)
+    } else {
+        log::warn!(
+            "allowing exec of {exec_path:?} for pid {pid} without TOCTOU verification: filename address unknown"
+        );
+        Ok(())
+    }
 }
 
 /// Sends the allow or deny kernel response for a seccomp notification.
@@ -491,6 +506,8 @@ async fn handle_one_notification(
 /// from `/proc/[pid]/mem` immediately before sending `CONTINUE`. If the path
 /// has changed since the original read (indicating a racing thread swapped it),
 /// the exec is denied with `EPERM` instead.
+/// If the exec path could not be read in the first place and fail-open chose
+/// `Allow`, the filename address is unknown and verification is skipped.
 ///
 /// If sending fails because the notification has expired (the target process
 /// exited during our IPC call), the function logs the race and returns `Ok(())`.
@@ -499,7 +516,7 @@ fn apply_decision(
     notif_fd: ScmpFd,
     req: &ScmpNotifReq,
     pid: u32,
-    filename_addr: u64,
+    filename_addr: Option<u64>,
     exec_path: &str,
     decision: &AuthDecision,
 ) -> Result<()> {
@@ -509,7 +526,7 @@ fn apply_decision(
             // thread between the initial read and this response. This is the
             // critical mitigation — it shrinks the TOCTOU window from the full
             // IPC round-trip to just pread + ioctl.
-            if let Err(err) = verify_exec_path_unchanged(pid, filename_addr, exec_path) {
+            if let Err(err) = verify_exec_path_if_available(pid, filename_addr, exec_path) {
                 log::warn!("{err:#}");
                 eprintln!("session-wrapper: exec denied (TOCTOU): {exec_path}");
                 let resp =
@@ -891,5 +908,11 @@ mod tests {
             AuthDecision::Deny(reason) => assert!(reason.contains("cmd")),
             AuthDecision::Allow => panic!("mandatory PASS_REPL replacement arg was allowed"),
         }
+    }
+
+    #[test]
+    fn unknown_filename_address_skips_exec_path_verification() {
+        verify_exec_path_if_available(1234, None, "<unreadable>")
+            .expect("unknown filename address should not fail TOCTOU verification");
     }
 }
