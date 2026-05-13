@@ -12,8 +12,10 @@ const MAX_COMMAND_DISPLAY_CHARS: usize = 256;
 pub(crate) fn command_display(exec_path: &str, exec_args: &[String]) -> String {
     let joined = if exec_args.is_empty() {
         exec_path.to_owned()
-    } else {
+    } else if exec_args.first().is_some_and(|arg| arg == exec_path) {
         exec_args.join(" ")
+    } else {
+        format!("{exec_path} {}", exec_args.join(" "))
     };
 
     truncate_display(&joined, MAX_COMMAND_DISPLAY_CHARS)
@@ -67,7 +69,7 @@ fn truncate_display(input: &str, max_chars: usize) -> String {
     truncated
 }
 
-fn non_empty(value: Option<&str>) -> Option<&str> {
+pub(crate) fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 

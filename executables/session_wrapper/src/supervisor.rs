@@ -104,7 +104,7 @@ use tokio::time;
 use super::allowlist::Allowlist;
 use super::cli::FailPolicy;
 use super::deny::{
-    authorization_denied_message, command_display, fail_closed_unavailable_message,
+    authorization_denied_message, command_display, fail_closed_unavailable_message, non_empty,
     write_process_stderr,
 };
 use super::process::{
@@ -340,8 +340,8 @@ fn map_authorization_response(
     response: &AuthorizationOperationResponse,
     exec_path: &str,
 ) -> AuthDecision {
-    let server = non_empty_string(response.server.as_str());
-    let server_message = non_empty_string(response.server_message.as_str());
+    let server = non_empty(Some(response.server.as_str())).map(str::to_owned);
+    let server_message = non_empty(Some(response.server_message.as_str())).map(str::to_owned);
 
     match response.status {
         AuthorizationResponseStatus::PassAdd => map_pass_with_args(
@@ -620,15 +620,6 @@ fn log_or_propagate_send_error(err: anyhow::Error, notif_fd: ScmpFd, id: u64) ->
         Ok(())
     } else {
         Err(err)
-    }
-}
-
-fn non_empty_string(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_owned())
     }
 }
 
