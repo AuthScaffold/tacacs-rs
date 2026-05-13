@@ -47,6 +47,8 @@ pub struct TransactionRule {
     pub rpc: IpcRpc,
     #[serde(rename = "match")]
     pub match_fields: MatchFields,
+    #[serde(default, rename = "match_any", skip_serializing_if = "Option::is_none")]
+    pub match_any_fields: Option<MatchFields>,
     pub respond: EmulatorResponse,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delay_ms: Option<u64>,
@@ -65,6 +67,24 @@ impl MatchFields {
         self.fields
             .iter()
             .all(|(key, value)| request_fields.get(key) == Some(value))
+    }
+
+    /// Returns true when every configured field has matching elements in the
+    /// corresponding request array.
+    ///
+    /// - Scalar value: the request array must contain that value.
+    /// - Array value: the request array must contain **all** of the values.
+    #[must_use]
+    pub fn matches_any(&self, request_fields: &BTreeMap<String, Value>) -> bool {
+        self.fields.iter().all(|(key, value)| {
+            let Some(request_array) = request_fields.get(key).and_then(Value::as_array) else {
+                return false;
+            };
+            match value {
+                Value::Array(required) => required.iter().all(|v| request_array.contains(v)),
+                scalar => request_array.contains(scalar),
+            }
+        })
     }
 }
 

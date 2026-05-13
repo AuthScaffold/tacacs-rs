@@ -59,6 +59,102 @@
       "match": {
         "command": "/usr/bin/git"
       },
+      "match_any": {
+        "command_arguments": "--force"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "Fail",
+        "server_message": "force push is not allowed",
+        "args": [],
+        "data": ""
+      }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/usr/bin/git"
+      },
+      "match_any": {
+        "command_arguments": ["reset", "--hard"]
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "Fail",
+        "server_message": "destructive git reset is not allowed",
+        "args": [],
+        "data": ""
+      }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/bin/rm"
+      },
+      "match_any": {
+        "command_arguments": "-rf"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "Fail",
+        "server_message": "recursive force delete is not allowed",
+        "args": [],
+        "data": ""
+      }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/bin/rm"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "PassAdd",
+        "server_message": "",
+        "args": [],
+        "data": ""
+      }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/usr/bin/chmod"
+      },
+      "match_any": {
+        "command_arguments": "777"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "Fail",
+        "server_message": "world-writable permissions are not allowed",
+        "args": [],
+        "data": ""
+      }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/usr/bin/chmod"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "PassAdd",
+        "server_message": "",
+        "args": [],
+        "data": ""
+      }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/usr/bin/git"
+      },
       "respond": {
         "type": "response",
         "server": "tacacs-primary:49",
@@ -106,6 +202,23 @@
         "server": "tacacs-primary:49",
         "status": "PassAdd",
         "server_message": "",
+        "args": [],
+        "data": ""
+      }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/bin/echo"
+      },
+      "match_any": {
+        "command_arguments": "trigger-error"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "Error",
+        "server_message": "temporary server-side failure, please retry",
         "args": [],
         "data": ""
       }

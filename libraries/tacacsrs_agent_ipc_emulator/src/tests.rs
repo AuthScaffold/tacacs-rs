@@ -30,6 +30,7 @@ fn accounting_success_rule(user: &str, server: &str) -> TransactionRule {
         match_fields: MatchFields {
             fields: BTreeMap::from([("user".to_owned(), json!(user))]),
         },
+        match_any_fields: None,
         respond: EmulatorResponse::Response(ResponseBody {
             server: server.to_owned(),
             status: "Success".to_owned(),
@@ -189,6 +190,7 @@ async fn authorization_response_works_with_service_client() {
             match_fields: MatchFields {
                 fields: BTreeMap::from([("command".to_owned(), json!("show"))]),
             },
+            match_any_fields: None,
             respond: EmulatorResponse::Response(ResponseBody {
                 server: "primary".to_owned(),
                 status: "PassAdd".to_owned(),
@@ -267,4 +269,153 @@ async fn controller_can_reset_and_replace_state() {
         .expect("new scenario should match");
     assert_eq!(controller.rule_hits().await.expect("hits should load")[0].hits, 1);
     emulator.shutdown().await;
+}
+
+#[test]
+fn match_any_matches_when_array_contains_value() {
+    let match_any = MatchFields {
+        fields: BTreeMap::from([("command_arguments".to_owned(), json!("--force"))]),
+    };
+    let request_fields = BTreeMap::from([
+        ("command".to_owned(), json!("/usr/bin/git")),
+        (
+            "command_arguments".to_owned(),
+            json!(["push", "--force", "origin"]),
+        ),
+    ]);
+
+    assert!(match_any.matches_any(&request_fields));
+}
+
+#[test]
+fn match_any_rejects_when_array_does_not_contain_value() {
+    let match_any = MatchFields {
+        fields: BTreeMap::from([("command_arguments".to_owned(), json!("--force"))]),
+    };
+    let request_fields = BTreeMap::from([
+        ("command".to_owned(), json!("/usr/bin/git")),
+        (
+            "command_arguments".to_owned(),
+            json!(["push", "origin", "main"]),
+        ),
+    ]);
+
+    assert!(!match_any.matches_any(&request_fields));
+}
+
+#[test]
+fn match_any_requires_all_values_when_array() {
+    let match_any = MatchFields {
+        fields: BTreeMap::from([(
+            "command_arguments".to_owned(),
+            json!(["push", "--force"]),
+        )]),
+    };
+
+    // Contains both "push" and "--force" → matches.
+    let with_both = BTreeMap::from([(
+        "command_arguments".to_owned(),
+        json!(["push", "--force", "origin"]),
+    )]);
+    assert!(match_any.matches_any(&with_both));
+
+    // Contains "push" but not "--force" → no match.
+    let missing_force = BTreeMap::from([(
+        "command_arguments".to_owned(),
+        json!(["push", "origin"]),
+    )]);
+    assert!(!match_any.matches_any(&missing_force));
+
+    // Contains "--force" but not "push" → no match.
+    let missing_push = BTreeMap::from([(
+        "command_arguments".to_owned(),
+        json!(["commit", "--force"]),
+    )]);
+    assert!(!match_any.matches_any(&missing_push));
+}
+
+#[test]
+fn match_any_rejects_when_field_is_not_array() {
+    let match_any = MatchFields {
+        fields: BTreeMap::from([("command".to_owned(), json!("git"))]),
+    };
+    let request_fields = BTreeMap::from([("command".to_owned(), json!("/usr/bin/git"))]);
+
+    assert!(!match_any.matches_any(&request_fields));
+}
+
+#[test]
+fn match_any_combined_with_match_fields() {
+    let mut state = EmulatorState::new(EmulatorScenario {
+        transactions: vec![TransactionRule {
+            rpc: IpcRpc::Authorization,
+            match_fields: MatchFields {
+                fields: BTreeMap::from([("command".to_owned(), json!("/usr/bin/git"))]),
+            },
+            match_any_fields: Some(MatchFields {
+                fields: BTreeMap::from([("command_arguments".to_owned(), json!("--force"))]),
+            }),
+            respond: EmulatorResponse::Response(ResponseBody {
+                server: "primary".to_owned(),
+                status: "Fail".to_owned(),
+                server_message: String::new(),
+                data: String::new(),
+                args: Vec::new(),
+            }),
+            delay_ms: None,
+        }],
+    });
+
+    // Should match: command matches and --force is in args.
+    let fields_with_force = BTreeMap::from([
+        ("command".to_owned(), json!("/usr/bin/git")),
+        (
+            "command_arguments".to_owned(),
+            json!(["push", "--force", "origin"]),
+        ),
+    ]);
+    assert!(state
+        .record_and_match(IpcRpc::Authorization, &fields_with_force)
+        .is_ok());
+
+    // Should not match: command matches but --force is absent.
+    let fields_without_force = BTreeMap::from([
+        ("command".to_owned(), json!("/usr/bin/git")),
+        (
+            "command_arguments".to_owned(),
+            json!(["push", "origin", "main"]),
+        ),
+    ]);
+    assert!(state
+        .record_and_match(IpcRpc::Authorization, &fields_without_force)
+        .is_err());
+}
+
+#[test]
+fn match_any_round_trips_through_json() {
+    let rule_json = r#"{
+        "rpc": "Authorization",
+        "match": { "command": "/usr/bin/git" },
+        "match_any": { "command_arguments": "--force" },
+        "respond": {
+            "type": "response",
+            "server": "primary",
+            "status": "Fail",
+            "server_message": "",
+            "args": [],
+            "data": ""
+        }
+    }"#;
+    let rule: TransactionRule =
+        serde_json::from_str(rule_json).expect("rule with match_any should parse");
+    assert!(rule.match_any_fields.is_some());
+    assert_eq!(
+        rule.match_any_fields.as_ref().unwrap().fields["command_arguments"],
+        json!("--force")
+    );
+
+    let serialized = serde_json::to_string(&rule).expect("should serialize");
+    let deserialized: TransactionRule =
+        serde_json::from_str(&serialized).expect("should round-trip");
+    assert_eq!(rule, deserialized);
 }
