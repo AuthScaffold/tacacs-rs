@@ -86,6 +86,7 @@
 //! | [`FailPolicy::Closed`] | Deny the exec with `EPERM`    |
 //! | [`FailPolicy::Open`]   | Allow the exec (continue)     |
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -102,6 +103,10 @@ use tokio::time;
 
 use super::allowlist::Allowlist;
 use super::cli::FailPolicy;
+use super::deny::{
+    authorization_denied_message, command_display, fail_closed_unavailable_message,
+    write_process_stderr,
+};
 use super::process::{
     ChildSetupStatus, SessionProcess, read_child_setup_status_fd, reap_available_children,
 };
@@ -206,7 +211,24 @@ enum AuthDecision {
     /// Allow the exec to proceed (`SECCOMP_USER_NOTIF_FLAG_CONTINUE`).
     Allow,
     /// Deny the exec; the process receives `EPERM`.
-    Deny(String),
+    Deny(DenyDecision),
+}
+
+/// Rich context for deny decisions.
+#[derive(Debug)]
+struct DenyDecision {
+    source: DenySource,
+    reason: String,
+    server: Option<String>,
+    server_message: Option<String>,
+    fail_policy: Option<FailPolicy>,
+}
+
+/// Source of a deny decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DenySource {
+    AuthorizationDenied,
+    ServiceUnavailableFailClosed,
 }
 
 /// Connects to the TACACS+ agent and returns a usable client.
@@ -318,19 +340,42 @@ fn map_authorization_response(
     response: &AuthorizationOperationResponse,
     exec_path: &str,
 ) -> AuthDecision {
+    let server = non_empty_string(response.server.as_str());
+    let server_message = non_empty_string(response.server_message.as_str());
+
     match response.status {
-        AuthorizationResponseStatus::PassAdd => {
-            map_pass_with_args("PASS_ADD", "response", response.args.as_slice(), exec_path)
-        }
-        AuthorizationResponseStatus::PassRepl => {
-            map_pass_with_args("PASS_REPL", "replacement", response.args.as_slice(), exec_path)
-        }
+        AuthorizationResponseStatus::PassAdd => map_pass_with_args(
+            "PASS_ADD",
+            "response",
+            response.args.as_slice(),
+            exec_path,
+            server,
+            server_message,
+        ),
+        AuthorizationResponseStatus::PassRepl => map_pass_with_args(
+            "PASS_REPL",
+            "replacement",
+            response.args.as_slice(),
+            exec_path,
+            server,
+            server_message,
+        ),
         AuthorizationResponseStatus::Fail
         | AuthorizationResponseStatus::Error
         | AuthorizationResponseStatus::Follow => {
-            let reason =
+            let mut reason =
                 format!("TACACS+ agent denied {exec_path:?}: status={:?}", response.status);
-            AuthDecision::Deny(reason)
+            if let Some(message) = server_message.as_deref() {
+                let _ = write!(reason, ", server_message={message:?}");
+            }
+
+            AuthDecision::Deny(DenyDecision {
+                source: DenySource::AuthorizationDenied,
+                reason,
+                server,
+                server_message,
+                fail_policy: None,
+            })
         }
     }
 }
@@ -340,6 +385,8 @@ fn map_pass_with_args(
     arg_kind: &str,
     args: &[AuthorizationArg],
     exec_path: &str,
+    server: Option<String>,
+    server_message: Option<String>,
 ) -> AuthDecision {
     if args.is_empty() {
         return AuthDecision::Allow;
@@ -364,10 +411,16 @@ fn map_pass_with_args(
              args {mandatory_names:?} (all args: {arg_names:?}) that cannot be applied in seccomp \
              notify mode; treating as failed per RFC 8907 §6.2"
         );
-        AuthDecision::Deny(format!(
-            "TACACS+ agent returned {status_name} for {exec_path:?} with mandatory {arg_kind} \
-             arg(s) that cannot be applied: {mandatory_names:?}"
-        ))
+        AuthDecision::Deny(DenyDecision {
+            source: DenySource::AuthorizationDenied,
+            reason: format!(
+                "TACACS+ agent returned {status_name} for {exec_path:?} with mandatory {arg_kind} \
+                 arg(s) that cannot be applied: {mandatory_names:?}"
+            ),
+            server,
+            server_message,
+            fail_policy: None,
+        })
     }
 }
 
@@ -381,7 +434,13 @@ fn fail_policy_decision(policy: FailPolicy, exec_path: &str) -> AuthDecision {
         FailPolicy::Closed => {
             let reason = format!("IPC unavailable, fail-closed: denying {exec_path:?}");
             log::warn!("{reason}");
-            AuthDecision::Deny(reason)
+            AuthDecision::Deny(DenyDecision {
+                source: DenySource::ServiceUnavailableFailClosed,
+                reason,
+                server: None,
+                server_message: None,
+                fail_policy: Some(FailPolicy::Closed),
+            })
         }
     }
 }
@@ -442,7 +501,7 @@ async fn handle_one_notification(
             }
             log::warn!("failed to read exec args from pid {pid}: {err:#}");
             let decision = fail_policy_decision(config.fail_policy, "<unreadable>");
-            return apply_decision(notif_fd, &req, "<unreadable>", &decision);
+            return apply_decision(notif_fd, &req, "<unreadable>", &[], &decision, &config);
         }
     };
 
@@ -478,7 +537,7 @@ async fn handle_one_notification(
         };
 
     // Step 4: Respond to the kernel.
-    apply_decision(notif_fd, &req, &exec_path, &decision)
+    apply_decision(notif_fd, &req, &exec_path, &exec_args, &decision, &config)
 }
 
 /// Sends the allow or deny kernel response for a seccomp notification.
@@ -490,7 +549,9 @@ fn apply_decision(
     notif_fd: ScmpFd,
     req: &ScmpNotifReq,
     exec_path: &str,
+    exec_args: &[String],
     decision: &AuthDecision,
+    config: &SupervisorConfig,
 ) -> Result<()> {
     match decision {
         AuthDecision::Allow => {
@@ -503,9 +564,39 @@ fn apply_decision(
                 log_or_propagate_send_error(err, notif_fd, req.id)?;
             }
         }
-        AuthDecision::Deny(ref reason) => {
-            log::info!("denying exec of {exec_path:?} for pid {}: {reason}", req.pid);
-            eprintln!("session-wrapper: exec denied: {exec_path}");
+        AuthDecision::Deny(ref deny) => {
+            log::warn!(
+                "deny event: user={:?} command={:?} args={:?} server={:?} server_response={:?} \
+                 fail_policy={:?} reason={}",
+                config.user,
+                exec_path,
+                exec_args,
+                deny.server,
+                deny.server_message,
+                deny.fail_policy,
+                deny.reason,
+            );
+
+            let command = command_display(exec_path, exec_args);
+            let stderr_message = match deny.source {
+                DenySource::AuthorizationDenied => authorization_denied_message(
+                    &command,
+                    &config.user,
+                    deny.server.as_deref().unwrap_or("<unknown>"),
+                    deny.server_message.as_deref(),
+                ),
+                DenySource::ServiceUnavailableFailClosed => {
+                    fail_closed_unavailable_message(&command)
+                }
+            };
+
+            if let Err(err) = write_process_stderr(req.pid, &stderr_message) {
+                log::warn!(
+                    "failed to write deny message to target stderr for pid {}: {err:#}",
+                    req.pid
+                );
+            }
+
             // `-libc::EPERM` is the negative errno returned to the blocked execve.
             let resp = ScmpNotifResp::new_error(req.id, -libc::EPERM, ScmpNotifRespFlags::empty());
             if let Err(err) = send_response(notif_fd, resp) {
@@ -529,6 +620,15 @@ fn log_or_propagate_send_error(err: anyhow::Error, notif_fd: ScmpFd, id: u64) ->
         Ok(())
     } else {
         Err(err)
+    }
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_owned())
     }
 }
 
@@ -841,7 +941,7 @@ mod tests {
         let decision = map_authorization_response(&response, "/bin/echo");
 
         match decision {
-            AuthDecision::Deny(reason) => assert!(reason.contains("priv-lvl")),
+            AuthDecision::Deny(deny) => assert!(deny.reason.contains("priv-lvl")),
             AuthDecision::Allow => panic!("mandatory PASS_ADD response arg was allowed"),
         }
     }
@@ -856,7 +956,7 @@ mod tests {
         let decision = map_authorization_response(&response, "/bin/echo");
 
         match decision {
-            AuthDecision::Deny(reason) => assert!(reason.contains("cmd")),
+            AuthDecision::Deny(deny) => assert!(deny.reason.contains("cmd")),
             AuthDecision::Allow => panic!("mandatory PASS_REPL replacement arg was allowed"),
         }
     }
