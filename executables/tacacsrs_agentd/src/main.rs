@@ -1,16 +1,22 @@
+#![allow(clippy::doc_markdown)]
+
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use clap::{ArgGroup, Parser};
+use futures_util::StreamExt;
 use tacacsrs_agent::{ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerExt,
     TacacsPlusServerType,
 };
+use tacacsrs_datastore::{ConfigDatastore, StaticDatastore};
 use tacacsrs_networking::helpers::{normalize_cli_certificate_data, normalize_cli_private_key_data};
+use tacacsrs_sonic::{SonicConfigDb, SonicConnection, DEFAULT_REDIS_URL};
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
@@ -19,7 +25,7 @@ use tacacsrs_networking::helpers::{normalize_cli_certificate_data, normalize_cli
 #[command(group(
     ArgGroup::new("config-source")
         .required(true)
-        .args(["config", "server_addresses"])
+        .args(["config", "server_addresses", "sonic"])
 ))]
 struct Cli {
     /// Path to a YANG JSON configuration file (ietf-system-tacacs-plus).
@@ -27,12 +33,28 @@ struct Cli {
         "server_addresses", "shared_secret", "use_tls",
         "client_certificate", "client_key",
         "insecure_disable_certificate_verification",
+        "sonic", "sonic_redis_url", "sonic_redis_db",
     ])]
     config: Option<PathBuf>,
 
     /// Ordered list of TACACS+ upstream servers. The first server is preferred.
-    #[arg(long = "server-addr")]
+    #[arg(long = "server-addr", conflicts_with_all = ["sonic", "sonic_redis_url", "sonic_redis_db"])]
     server_addresses: Vec<String>,
+
+    /// Source TACACS+ configuration from SONiC ConfigDB (`TACPLUS` /
+    /// `TACPLUS_SERVER` Redis tables).
+    #[arg(long)]
+    sonic: bool,
+
+    /// Override the SONiC ConfigDB Redis connection URL (default:
+    /// `unix:///var/run/redis/redis.sock?db=4`).
+    #[arg(long, value_name = "URL", requires = "sonic")]
+    sonic_redis_url: Option<String>,
+
+    /// Override the SONiC ConfigDB Redis database index used for keyspace
+    /// notifications (default: `4`).
+    #[arg(long, value_name = "INDEX", requires = "sonic")]
+    sonic_redis_db: Option<i64>,
 
     /// Local IPC endpoint. Use a Unix socket path on Linux (default: /run/tacacs.sock).
     #[arg(long)]
@@ -226,6 +248,76 @@ fn tacacs_plus_from_config(path: &std::path::Path) -> anyhow::Result<TacacsPlus>
         .with_context(|| format!("Failed to load config from {}", path.display()))
 }
 
+/// Construct the [`ConfigDatastore`] selected by the operator on the CLI.
+///
+/// File and CLI flag inputs are wrapped in a [`StaticDatastore`] so the rest
+/// of the daemon code path is identical regardless of where the config came
+/// from. `--sonic` selects the SONiC ConfigDB-backed datastore.
+fn build_datastore(cli: &Cli) -> anyhow::Result<Arc<dyn ConfigDatastore>> {
+    if cli.sonic {
+        let mut settings = SonicConnection::default();
+        if let Some(url) = cli.sonic_redis_url.clone() {
+            settings.url = url;
+        } else {
+            settings.url = DEFAULT_REDIS_URL.to_string();
+        }
+        if let Some(db) = cli.sonic_redis_db {
+            settings.db_index = db;
+        }
+        log::info!(
+            "Configured SONiC ConfigDB datastore: url='{}', db={}",
+            settings.url,
+            settings.db_index,
+        );
+        return Ok(Arc::new(SonicConfigDb::new(settings)));
+    }
+
+    if let Some(ref config_path) = cli.config {
+        log::info!("Loading YANG JSON configuration from {}", config_path.display());
+        let config = tacacs_plus_from_config(config_path)?;
+        return Ok(Arc::new(StaticDatastore::with_label(config, "file")));
+    }
+
+    let config = tacacs_plus_from_cli(cli)?;
+    Ok(Arc::new(StaticDatastore::with_label(config, "cli")))
+}
+
+/// Spawn a background task that consumes [`ConfigDatastore::subscribe`]
+/// events.
+///
+/// The current agent runtime does not yet support hot-swapping the upstream
+/// server set without a restart. Until that work lands, this task records
+/// every observed change and emits a clear operator-facing message indicating
+/// that an agent restart is required to apply the new configuration. The
+/// plumbing is shaped so that a future implementation can replace the body
+/// with an atomic [`ServiceState`](tacacsrs_agent::TacacsClientService) reload
+/// without changing the surrounding lifecycle.
+fn spawn_change_listener(datastore: Arc<dyn ConfigDatastore>) {
+    tokio::spawn(async move {
+        let label = datastore.label();
+        let mut stream = match datastore.subscribe().await {
+            Ok(stream) => stream,
+            Err(error) => {
+                log::warn!("Datastore '{label}' does not support change notifications: {error:#}");
+                return;
+            }
+        };
+        log::info!("Subscribed to '{label}' configuration change notifications");
+        while let Some(change) = stream.next().await {
+            log::warn!(
+                "Datastore '{label}' reports configuration change: {} server(s); added={:?} removed={:?} modified={:?} root_metadata_changed={}. \
+                Hot reload is not yet implemented; restart tacacsrs-agentd to apply the new configuration.",
+                change.config.server.len(),
+                change.delta.added_servers,
+                change.delta.removed_servers,
+                change.delta.modified_servers,
+                change.delta.root_metadata_changed,
+            );
+        }
+        log::debug!("Datastore '{label}' change stream ended");
+    });
+}
+
 /// Starts the central TACACS+ client service process.
 ///
 /// The service listens on the configured local IPC endpoint, maintains
@@ -250,11 +342,14 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Linux deployments must use a Unix domain socket endpoint");
     }
 
-    let tacacs_plus = if let Some(ref config_path) = cli.config {
-        log::info!("Loading YANG JSON configuration from {}", config_path.display());
-        tacacs_plus_from_config(config_path)?
-    } else {
-        tacacs_plus_from_cli(&cli)?
+    let tacacs_plus = {
+        let datastore = build_datastore(&cli)?;
+        let initial = datastore.load().await.with_context(|| {
+            format!("Failed to load configuration from datastore '{}'", datastore.label())
+        })?;
+        log::info!("Initial configuration loaded from datastore '{}'", datastore.label());
+        spawn_change_listener(Arc::clone(&datastore));
+        initial
     };
 
     log::info!(

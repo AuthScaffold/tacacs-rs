@@ -9,6 +9,8 @@ members = [
     "libraries/tacacsrs_agent_ipc_emulator",
     "libraries/tacacsrs_agent",
     "libraries/tacacsrs_config",
+    "libraries/tacacsrs_datastore",
+    "libraries/tacacsrs_sonic",
     "executables/tacon",
     "executables/session_wrapper",
     "executables/tacacsrs_agentd",

@@ -1,0 +1,15 @@
+{
+  "FEATURE": {
+    "tacacsrs-agentd": {
+      "auto_restart": "enabled",
+      "delayed": "False",
+      "has_global_scope": "True",
+      "has_per_asic_scope": "False",
+      "has_timer": "False",
+      "high_mem_alert": "disabled",
+      "set_owner": "local",
+      "state": "enabled",
+      "support_syslog_rate_limit": "true"
+    }
+  }
+}
