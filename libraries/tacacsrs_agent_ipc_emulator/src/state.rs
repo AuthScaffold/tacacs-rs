@@ -61,19 +61,19 @@ impl EmulatorState {
             rpc,
             fields: fields.clone(),
         });
-        let Some((index, rule)) = self
-            .scenario
-            .transactions
-            .iter()
-            .enumerate()
-            .find(|(_, rule)| {
-                rule.rpc == rpc
-                    && rule.match_fields.matches(fields)
-                    && rule
-                        .match_any_fields
-                        .as_ref()
-                        .is_none_or(|m| m.matches_any(fields))
-            })
+        let Some((index, rule)) =
+            self.scenario
+                .transactions
+                .iter()
+                .enumerate()
+                .find(|(_, rule)| {
+                    rule.rpc == rpc
+                        && rule.match_fields.matches(fields)
+                        && rule
+                            .match_any_fields
+                            .as_ref()
+                            .is_none_or(|m| m.matches_any(fields))
+                })
         else {
             let request_json = serde_json::to_string(fields).map_err(|error| {
                 Status::internal(format!(

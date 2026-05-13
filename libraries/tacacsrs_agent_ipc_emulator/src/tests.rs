@@ -278,10 +278,7 @@ fn match_any_matches_when_array_contains_value() {
     };
     let request_fields = BTreeMap::from([
         ("command".to_owned(), json!("/usr/bin/git")),
-        (
-            "command_arguments".to_owned(),
-            json!(["push", "--force", "origin"]),
-        ),
+        ("command_arguments".to_owned(), json!(["push", "--force", "origin"])),
     ]);
 
     assert!(match_any.matches_any(&request_fields));
@@ -294,10 +291,7 @@ fn match_any_rejects_when_array_does_not_contain_value() {
     };
     let request_fields = BTreeMap::from([
         ("command".to_owned(), json!("/usr/bin/git")),
-        (
-            "command_arguments".to_owned(),
-            json!(["push", "origin", "main"]),
-        ),
+        ("command_arguments".to_owned(), json!(["push", "origin", "main"])),
     ]);
 
     assert!(!match_any.matches_any(&request_fields));
@@ -306,31 +300,22 @@ fn match_any_rejects_when_array_does_not_contain_value() {
 #[test]
 fn match_any_requires_all_values_when_array() {
     let match_any = MatchFields {
-        fields: BTreeMap::from([(
-            "command_arguments".to_owned(),
-            json!(["push", "--force"]),
-        )]),
+        fields: BTreeMap::from([("command_arguments".to_owned(), json!(["push", "--force"]))]),
     };
 
     // Contains both "push" and "--force" → matches.
-    let with_both = BTreeMap::from([(
-        "command_arguments".to_owned(),
-        json!(["push", "--force", "origin"]),
-    )]);
+    let with_both =
+        BTreeMap::from([("command_arguments".to_owned(), json!(["push", "--force", "origin"]))]);
     assert!(match_any.matches_any(&with_both));
 
     // Contains "push" but not "--force" → no match.
-    let missing_force = BTreeMap::from([(
-        "command_arguments".to_owned(),
-        json!(["push", "origin"]),
-    )]);
+    let missing_force =
+        BTreeMap::from([("command_arguments".to_owned(), json!(["push", "origin"]))]);
     assert!(!match_any.matches_any(&missing_force));
 
     // Contains "--force" but not "push" → no match.
-    let missing_push = BTreeMap::from([(
-        "command_arguments".to_owned(),
-        json!(["commit", "--force"]),
-    )]);
+    let missing_push =
+        BTreeMap::from([("command_arguments".to_owned(), json!(["commit", "--force"]))]);
     assert!(!match_any.matches_any(&missing_push));
 }
 
@@ -369,10 +354,7 @@ fn match_any_combined_with_match_fields() {
     // Should match: command matches and --force is in args.
     let fields_with_force = BTreeMap::from([
         ("command".to_owned(), json!("/usr/bin/git")),
-        (
-            "command_arguments".to_owned(),
-            json!(["push", "--force", "origin"]),
-        ),
+        ("command_arguments".to_owned(), json!(["push", "--force", "origin"])),
     ]);
     assert!(state
         .record_and_match(IpcRpc::Authorization, &fields_with_force)
@@ -381,10 +363,7 @@ fn match_any_combined_with_match_fields() {
     // Should not match: command matches but --force is absent.
     let fields_without_force = BTreeMap::from([
         ("command".to_owned(), json!("/usr/bin/git")),
-        (
-            "command_arguments".to_owned(),
-            json!(["push", "origin", "main"]),
-        ),
+        ("command_arguments".to_owned(), json!(["push", "origin", "main"])),
     ]);
     assert!(state
         .record_and_match(IpcRpc::Authorization, &fields_without_force)

@@ -157,12 +157,6 @@ pub struct CapturedIpcRequest {
     pub fields: BTreeMap<String, Value>,
 }
 
-impl CapturedIpcRequest {
-    fn request_json(&self) -> anyhow::Result<String> {
-        serde_json::to_string(&self.fields).context("Failed to encode captured IPC request")
-    }
-}
-
 impl TryFrom<controller::CapturedIpcRequest> for CapturedIpcRequest {
     type Error = anyhow::Error;
 
@@ -181,7 +175,8 @@ impl TryFrom<&CapturedIpcRequest> for controller::CapturedIpcRequest {
     fn try_from(value: &CapturedIpcRequest) -> Result<Self, Self::Error> {
         Ok(Self {
             rpc: value.rpc.to_string(),
-            request_json: value.request_json()?,
+            request_json: serde_json::to_string(&value.fields)
+                .context("Failed to encode captured IPC request")?,
         })
     }
 }

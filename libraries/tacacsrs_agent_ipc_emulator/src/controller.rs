@@ -1,5 +1,5 @@
 mod generated {
-    #![allow(clippy::all, clippy::cargo, clippy::nursery, clippy::pedantic)]
+    #![allow(clippy::all, clippy::pedantic)]
 
     tonic::include_proto!("tacacsrs.agent.mock.v1");
 }

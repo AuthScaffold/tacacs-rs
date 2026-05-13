@@ -21,10 +21,14 @@ use crate::service::{send_shutdown, shutdown_signal, AgentService, ControllerSer
 use crate::state::EmulatorState;
 
 /// JSON-driven emulator for the local TACACS+ agent IPC service.
+///
+/// Call [`shutdown()`](Self::shutdown) for clean teardown. Dropping the
+/// emulator without shutting down detaches the server task, which will
+/// continue running until the Tokio runtime exits.
 pub struct IpcEmulator {
     state: Arc<Mutex<EmulatorState>>,
     shutdown_sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-    server_task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    server_task: Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
 }
 
 impl IpcEmulator {
@@ -85,7 +89,9 @@ impl IpcEmulator {
     /// Requests graceful shutdown and waits until the server exits.
     pub async fn shutdown(self) {
         send_shutdown(&self.shutdown_sender).await;
-        let _ = self.server_task.await;
+        if let Some(task) = self.server_task {
+            let _ = task.await;
+        }
     }
 
     /// Waits until the server exits without requesting shutdown.
@@ -96,6 +102,7 @@ impl IpcEmulator {
     /// an error.
     pub async fn wait(self) -> anyhow::Result<()> {
         self.server_task
+            .context("IPC emulator has no server task")?
             .await
             .context("IPC emulator server task panicked")?
     }
@@ -126,7 +133,7 @@ impl IpcEmulator {
             .local_addr()
             .context("Failed to inspect bound TCP endpoint")?;
         let incoming = TcpListenerStream::new(listener);
-        let (emulator, shutdown_rx) = Self::new_with_shutdown(scenario);
+        let (mut emulator, shutdown_rx) = Self::new_with_shutdown(scenario);
         let agent = AgentService {
             state: Arc::clone(&emulator.state),
         };
@@ -134,15 +141,15 @@ impl IpcEmulator {
             state: Arc::clone(&emulator.state),
             shutdown_sender: Arc::clone(&emulator.shutdown_sender),
         };
-        let server_task = tokio::spawn(async move {
+        emulator.server_task = Some(tokio::spawn(async move {
             Server::builder()
                 .add_service(TacacsAgentServer::new(agent))
                 .add_service(TacacsAgentMockControllerServer::new(controller))
                 .serve_with_incoming_shutdown(incoming, shutdown_signal(shutdown_rx))
                 .await
                 .context("TCP IPC emulator server failed")
-        });
-        Ok((emulator.with_task(server_task), IpcEndpoint::Tcp(local_addr)))
+        }));
+        Ok((emulator, IpcEndpoint::Tcp(local_addr)))
     }
 
     #[cfg(unix)]
@@ -176,7 +183,7 @@ impl IpcEmulator {
             })?;
         let incoming = UnixListenerStream::new(listener);
         let cleanup_path = path.clone();
-        let (emulator, shutdown_rx) = Self::new_with_shutdown(scenario);
+        let (mut emulator, shutdown_rx) = Self::new_with_shutdown(scenario);
         let agent = AgentService {
             state: Arc::clone(&emulator.state),
         };
@@ -184,7 +191,7 @@ impl IpcEmulator {
             state: Arc::clone(&emulator.state),
             shutdown_sender: Arc::clone(&emulator.shutdown_sender),
         };
-        let server_task = tokio::spawn(async move {
+        emulator.server_task = Some(tokio::spawn(async move {
             let result = Server::builder()
                 .add_service(TacacsAgentServer::new(agent))
                 .add_service(TacacsAgentMockControllerServer::new(controller))
@@ -193,28 +200,21 @@ impl IpcEmulator {
                 .context("Unix IPC emulator server failed");
             remove_unix_socket(&cleanup_path).await?;
             result
-        });
-        Ok((emulator.with_task(server_task), IpcEndpoint::Unix(path)))
+        }));
+        Ok((emulator, IpcEndpoint::Unix(path)))
     }
 
     fn new_with_shutdown(scenario: EmulatorScenario) -> (Self, oneshot::Receiver<()>) {
         let state = Arc::new(Mutex::new(EmulatorState::new(scenario)));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let server_task = tokio::spawn(async { Ok(()) });
         (
             Self {
                 state,
                 shutdown_sender: Arc::new(Mutex::new(Some(shutdown_tx))),
-                server_task,
+                server_task: None,
             },
             shutdown_rx,
         )
-    }
-
-    fn with_task(mut self, server_task: tokio::task::JoinHandle<anyhow::Result<()>>) -> Self {
-        self.server_task.abort();
-        self.server_task = server_task;
-        self
     }
 }
 
