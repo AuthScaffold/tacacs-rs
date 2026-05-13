@@ -31,9 +31,8 @@ cat <<EOF
 EOF
 
 exec target/debug/session-wrapper \
-  --intercept-fork \
-  --shell "$shell_path" \
   --user "$(id -un)" \
   --user-uid "$(id -u)" \
   --user-gid "$(id -g)" \
+  --fail-policy open \
   -- "$shell_path"

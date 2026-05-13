@@ -253,10 +253,9 @@ fn read_argv(
 ///
 /// # Return value
 ///
-/// Returns `Ok(Some((executable_path, argv)))` where `argv` is the full
+/// Returns `(executable_path, argv, filename_addr)` where `argv` is the full
 /// argument vector including `argv[0]` (which may differ from the executable
-/// path). Returns `Ok(None)` for non-exec syscalls (e.g. fork notifications
-/// when `--intercept-fork` is enabled).
+/// path).
 ///
 /// # TOCTOU mitigation
 ///
@@ -278,7 +277,7 @@ pub(crate) fn read_exec_args(
     notif_fd: ScmpFd,
     pid: u32,
     req: &ScmpNotifReq,
-) -> Result<Option<(String, Vec<String>, u64)>> {
+) -> Result<(String, Vec<String>, u64)> {
     // Resolve syscall names to their numeric IDs once.  `from_name` resolves
     // against the running kernel's syscall table, so this is always correct
     // for the current architecture.
@@ -296,9 +295,7 @@ pub(crate) fn read_exec_args(
         //                     args[1]               args[2]
         (req.data.args[1], req.data.args[2])
     } else {
-        // This is a fork-family or other non-exec syscall. There are no exec
-        // arguments to read; the caller should just continue the syscall.
-        return Ok(None);
+        bail!("unexpected non-exec syscall notification: {}", req.data.syscall);
     };
 
     // Bracket the filename read between two validity checks. If the target
@@ -316,7 +313,7 @@ pub(crate) fn read_exec_args(
 
     let argv = read_argv(notif_fd, req.id, pid, argv_addr)?;
 
-    Ok(Some((filename, argv, filename_addr)))
+    Ok((filename, argv, filename_addr))
 }
 
 /// Re-reads the exec path from process memory and verifies it has not changed.

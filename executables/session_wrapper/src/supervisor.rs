@@ -422,16 +422,7 @@ async fn handle_one_notification(
     // completes in microseconds — fast enough to run synchronously in an async
     // task without spawn_blocking.
     let exec_info = match read_exec_args(notif_fd, pid, &req) {
-        Ok(Some(info)) => info,
-        Ok(None) => {
-            // Non-exec syscall (fork/clone/etc.) — always continue.
-            log::trace!("non-exec syscall from pid {pid}: allowing");
-            let resp = ScmpNotifResp::new_continue(req.id, ScmpNotifRespFlags::empty());
-            if let Err(err) = send_response(notif_fd, resp) {
-                log_or_propagate_send_error(err, notif_fd, req.id)?;
-            }
-            return Ok(());
-        }
+        Ok(info) => info,
         Err(err) => {
             if check_notification_valid(notif_fd, req.id).is_err() {
                 log::debug!(
@@ -732,9 +723,13 @@ pub(crate) async fn run_supervisor(
 /// 4. **Control socket** — propagates a child setup failure as an error.
 ///
 /// The loop exits when:
-/// - The notification receiver thread exits (channel closed).
-/// - All spawned handler tasks have completed.
 /// - `waitpid` reports no remaining children (`ECHILD`).
+/// - All spawned handler tasks have completed.
+///
+/// The notification receiver can still be blocked on the listener fd at that
+/// point because the parent owns the fd until the supervisor returns. Once no
+/// children or subreaped descendants remain, no future exec notifications can
+/// arrive, so child reaping is the authoritative shutdown signal.
 ///
 /// Extracted from [`run_supervisor`] to keep function sizes within clippy
 /// limits while keeping the full control flow visible in one place.
@@ -807,16 +802,18 @@ async fn dispatch_loop(
             res = &mut ctrl_handle, if !ctrl_done => {
                 ctrl_done = true;
                 match res {
-                    Ok(Ok(())) => {} // ControlClosed: child exec'd the shell
+                    Ok(Ok(())) => {} // ControlClosed: child exec'd the command
                     Ok(Err(e)) => return Err(e),
                     Err(e) => bail!("control socket watcher task panicked: {e}"),
                 }
             }
         }
 
-        // Exit when: no more notifications will arrive, all in-flight handlers
-        // have finished, and all child processes have been reaped.
-        if !notifications_open && handler_tasks.is_empty() && !has_children {
+        // Exit when all child processes have been reaped and all in-flight
+        // notification handlers have finished. The receiver thread may still
+        // be blocked on the listener fd owned by `SessionProcess`; returning
+        // lets that owner close the fd.
+        if !has_children && handler_tasks.is_empty() {
             break;
         }
     }
