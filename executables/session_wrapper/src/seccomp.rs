@@ -47,6 +47,67 @@ fn syscall_rules(intercept_fork: bool) -> Vec<SyscallRule> {
             name: "ptrace",
             action: RuleAction::Errno(libc::EPERM),
         },
+        // Cross-process memory access (ptrace equivalents): deterministic
+        // TOCTOU exploitation via a cooperating process overwriting the
+        // frozen process's execve filename after the supervisor reads it.
+        SyscallRule {
+            name: "process_vm_writev",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "process_vm_readv",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        // pidfd_getfd can steal the seccomp notification fd from the
+        // supervisor, subverting the entire authorization model.
+        SyscallRule {
+            name: "pidfd_getfd",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        // userfaultfd makes the inherent seccomp unotify TOCTOU race
+        // deterministic by controlling page-fault resolution timing.
+        // Without it the race is probabilistic and hard to exploit.
+        SyscallRule {
+            name: "userfaultfd",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        // Namespace creation: user + mount namespaces allow bind-mounting
+        // a malicious binary over an allowlisted path, making path-based
+        // checks meaningless.
+        SyscallRule {
+            name: "unshare",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "setns",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        // Mount operations (legacy and new APIs): bind mounts can shadow
+        // any path in the filesystem.
+        SyscallRule {
+            name: "mount",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "umount2",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "mount_setattr",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "fsopen",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "fsmount",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "move_mount",
+            action: RuleAction::Errno(libc::EPERM),
+        },
         SyscallRule {
             name: "execve",
             action: RuleAction::Notify,
@@ -170,27 +231,44 @@ pub(crate) fn install_filter(intercept_fork: bool) -> Result<RawFd> {
 mod tests {
     use std::io::{Read, Seek, SeekFrom, Write};
 
-    use super::{build_filter, syscall_rules, RuleAction, SyscallRule};
+    use super::{build_filter, syscall_rules, RuleAction};
 
     #[test]
     fn rules_match_expected_base_policy() {
+        let rules = syscall_rules(false);
+
+        // All deny rules must use Errno(EPERM).
+        let deny_names: Vec<&str> = rules
+            .iter()
+            .filter(|r| r.action == RuleAction::Errno(libc::EPERM))
+            .map(|r| r.name)
+            .collect();
         assert_eq!(
-            syscall_rules(false),
+            deny_names,
             vec![
-                SyscallRule {
-                    name: "ptrace",
-                    action: RuleAction::Errno(libc::EPERM),
-                },
-                SyscallRule {
-                    name: "execve",
-                    action: RuleAction::Notify,
-                },
-                SyscallRule {
-                    name: "execveat",
-                    action: RuleAction::Notify,
-                },
+                "ptrace",
+                "process_vm_writev",
+                "process_vm_readv",
+                "pidfd_getfd",
+                "userfaultfd",
+                "unshare",
+                "setns",
+                "mount",
+                "umount2",
+                "mount_setattr",
+                "fsopen",
+                "fsmount",
+                "move_mount",
             ]
         );
+
+        // Exec-family rules must use Notify.
+        let notify_names: Vec<&str> = rules
+            .iter()
+            .filter(|r| r.action == RuleAction::Notify)
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(notify_names, vec!["execve", "execveat"]);
     }
 
     #[test]
