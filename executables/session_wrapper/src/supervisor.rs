@@ -105,7 +105,7 @@ use super::cli::FailPolicy;
 use super::process::{
     ChildSetupStatus, SessionProcess, read_child_setup_status_fd, reap_available_children,
 };
-use super::process_reader::read_exec_args;
+use super::process_reader::{read_exec_args, verify_exec_path_unchanged};
 
 /// How often the dispatch loop polls for reaped children in addition to SIGCHLD.
 ///
@@ -442,16 +442,29 @@ async fn handle_one_notification(
             }
             log::warn!("failed to read exec args from pid {pid}: {err:#}");
             let decision = fail_policy_decision(config.fail_policy, "<unreadable>");
-            return apply_decision(notif_fd, &req, "<unreadable>", &decision);
+            return apply_decision(notif_fd, &req, pid, 0, "<unreadable>", &decision);
         }
     };
 
-    let (exec_path, exec_args) = exec_info;
+    let (exec_path, exec_args, filename_addr) = exec_info;
     log::debug!("pid {pid} exec: {exec_path:?} args={exec_args:?}");
 
     // Step 2: Fast-path allowlist check (O(1) HashSet lookup).
     if allowlist.is_allowed(&exec_path) {
         log::debug!("allowlist hit for {exec_path:?}: allowing without IPC");
+
+        // TOCTOU re-read: verify the path hasn't been swapped by a racing
+        // thread between the initial read and this response.
+        if let Err(err) = verify_exec_path_unchanged(pid, filename_addr, &exec_path) {
+            log::warn!("{err:#}");
+            eprintln!("session-wrapper: exec denied (TOCTOU): {exec_path}");
+            let resp = ScmpNotifResp::new_error(req.id, -libc::EPERM, ScmpNotifRespFlags::empty());
+            if let Err(err) = send_response(notif_fd, resp) {
+                log_or_propagate_send_error(err, notif_fd, req.id)?;
+            }
+            return Ok(());
+        }
+
         let resp = ScmpNotifResp::new_continue(req.id, ScmpNotifRespFlags::empty());
         if let Err(err) = send_response(notif_fd, resp) {
             log_or_propagate_send_error(err, notif_fd, req.id)?;
@@ -478,10 +491,15 @@ async fn handle_one_notification(
         };
 
     // Step 4: Respond to the kernel.
-    apply_decision(notif_fd, &req, &exec_path, &decision)
+    apply_decision(notif_fd, &req, pid, filename_addr, &exec_path, &decision)
 }
 
 /// Sends the allow or deny kernel response for a seccomp notification.
+///
+/// When the decision is `Allow`, performs a TOCTOU re-read of the exec path
+/// from `/proc/[pid]/mem` immediately before sending `CONTINUE`. If the path
+/// has changed since the original read (indicating a racing thread swapped it),
+/// the exec is denied with `EPERM` instead.
 ///
 /// If sending fails because the notification has expired (the target process
 /// exited during our IPC call), the function logs the race and returns `Ok(())`.
@@ -489,11 +507,28 @@ async fn handle_one_notification(
 fn apply_decision(
     notif_fd: ScmpFd,
     req: &ScmpNotifReq,
+    pid: u32,
+    filename_addr: u64,
     exec_path: &str,
     decision: &AuthDecision,
 ) -> Result<()> {
     match decision {
         AuthDecision::Allow => {
+            // TOCTOU re-read: verify the path hasn't been swapped by a racing
+            // thread between the initial read and this response. This is the
+            // critical mitigation — it shrinks the TOCTOU window from the full
+            // IPC round-trip to just pread + ioctl.
+            if let Err(err) = verify_exec_path_unchanged(pid, filename_addr, exec_path) {
+                log::warn!("{err:#}");
+                eprintln!("session-wrapper: exec denied (TOCTOU): {exec_path}");
+                let resp =
+                    ScmpNotifResp::new_error(req.id, -libc::EPERM, ScmpNotifRespFlags::empty());
+                if let Err(err) = send_response(notif_fd, resp) {
+                    log_or_propagate_send_error(err, notif_fd, req.id)?;
+                }
+                return Ok(());
+            }
+
             log::debug!("allowing exec of {exec_path:?} for pid {}", req.pid);
             let resp = ScmpNotifResp::new_continue(req.id, ScmpNotifRespFlags::empty());
             // `SECCOMP_USER_NOTIF_FLAG_CONTINUE` tells the kernel to proceed with

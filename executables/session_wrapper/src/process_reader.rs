@@ -270,11 +270,15 @@ fn read_argv(
 ///
 /// I/O failures reading from `/proc/[pid]/mem`, oversized strings, and
 /// notification invalidity all produce errors.
+///
+/// On success, returns `(exec_path, argv, filename_addr)`. The caller can
+/// use `filename_addr` with [`verify_exec_path_unchanged`] to re-read the
+/// path just before sending `CONTINUE`, shrinking the TOCTOU window.
 pub(crate) fn read_exec_args(
     notif_fd: ScmpFd,
     pid: u32,
     req: &ScmpNotifReq,
-) -> Result<Option<(String, Vec<String>)>> {
+) -> Result<Option<(String, Vec<String>, u64)>> {
     // Resolve syscall names to their numeric IDs once.  `from_name` resolves
     // against the running kernel's syscall table, so this is always correct
     // for the current architecture.
@@ -312,7 +316,44 @@ pub(crate) fn read_exec_args(
 
     let argv = read_argv(notif_fd, req.id, pid, argv_addr)?;
 
-    Ok(Some((filename, argv)))
+    Ok(Some((filename, argv, filename_addr)))
+}
+
+/// Re-reads the exec path from process memory and verifies it has not changed.
+///
+/// This is the primary TOCTOU mitigation for `SECCOMP_USER_NOTIF_FLAG_CONTINUE`.
+/// The supervisor calls this **immediately before** sending the `CONTINUE`
+/// response, after the authorization decision has been made. If the path has
+/// changed between the original read (used for authorization) and this re-read,
+/// a racing thread in the child process has swapped the filename buffer and the
+/// exec must be denied.
+///
+/// This does not eliminate the TOCTOU window entirely — there is still a small
+/// gap between this re-read and the kernel's resume of the syscall — but it
+/// shrinks it from the full authorization round-trip (potentially milliseconds)
+/// to a single `pread` + `ioctl` (microseconds). Combined with the `userfaultfd`
+/// deny rule (which prevents deterministic control of the race), this makes
+/// exploitation extremely difficult in practice.
+///
+/// Returns `Ok(())` if the path is unchanged, or an error describing the
+/// mismatch.
+pub(crate) fn verify_exec_path_unchanged(
+    pid: u32,
+    filename_addr: u64,
+    expected_path: &str,
+) -> Result<()> {
+    let current_path = read_string_from_process(pid, filename_addr).with_context(|| {
+        format!("TOCTOU re-read: failed to read exec path from process {pid} at {filename_addr:#x}")
+    })?;
+
+    if current_path != expected_path {
+        bail!(
+            "TOCTOU detected: exec path changed between authorization and response \
+             (was {expected_path:?}, now {current_path:?}) in pid {pid}"
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
