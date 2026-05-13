@@ -39,6 +39,35 @@
         "args": [],
         "data": ""
       }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/bin/ls"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "PassAdd",
+        "server_message": "",
+        "args": [],
+        "data": ""
+      }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/usr/bin/git"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "PassAdd",
+        "server_message": "",
+        "args": [],
+        "data": ""
+      }
     }
+
   ]
 }

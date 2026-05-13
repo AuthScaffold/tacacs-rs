@@ -165,8 +165,9 @@ pub(crate) fn spawn_session(config: ChildProcessConfig) -> Result<SessionProcess
             // the listener fd, or until it reports a setup error. The parent
             // must not signal readiness before this point because the child
             // would be able to hit a notified syscall with no listener running.
-            let notification_fd = recv_initial_child_message(parent_socket.as_raw_fd())
-                .context("failed to receive seccomp notification fd from child")?;
+            let notification_fd =
+                recv_initial_child_message(parent_socket.as_raw_fd(), Some(child_pid))
+                    .context("failed to receive seccomp notification fd from child")?;
             let child_process_group_id =
                 process_group_id(child_pid).context("failed to read child process group id")?;
             let child_session_id =
@@ -322,7 +323,7 @@ fn send_fd(socket: RawFd, fd_to_send: RawFd) -> Result<()> {
 /// On success this returns the seccomp notification fd transferred with
 /// `SCM_RIGHTS`. If the child failed before installing seccomp, this reads and
 /// surfaces the child error message instead.
-fn recv_initial_child_message(socket: RawFd) -> Result<OwnedFd> {
+fn recv_initial_child_message(socket: RawFd, child_pid: Option<libc::pid_t>) -> Result<OwnedFd> {
     let mut payload = [0_u8];
     let mut iov = libc::iovec {
         iov_base: payload.as_mut_ptr().cast(),
@@ -352,6 +353,18 @@ fn recv_initial_child_message(socket: RawFd) -> Result<OwnedFd> {
         break received;
     };
     if received == 0 {
+        if let Some(child_pid) = child_pid {
+            if let Some(status) = child_exit_summary(child_pid)
+                .with_context(|| format!("failed to read child {child_pid} exit status"))?
+            {
+                bail!("control socket closed before fd was received; child {child_pid} {status}");
+            }
+
+            bail!(
+                "control socket closed before fd was received; child {child_pid} is still running"
+            );
+        }
+
         bail!("control socket closed before fd was received");
     }
 
@@ -373,6 +386,68 @@ fn recv_initial_child_message(socket: RawFd) -> Result<OwnedFd> {
     };
 
     Ok(owned_fd)
+}
+
+/// Reads a setup child exit status without blocking, if it is already available.
+fn child_exit_summary(child_pid: libc::pid_t) -> Result<Option<String>> {
+    let mut status = 0;
+
+    loop {
+        let waited_pid = {
+            // SAFETY: waitpid writes to status and uses WNOHANG to avoid blocking.
+            unsafe { libc::waitpid(child_pid, ptr::addr_of_mut!(status), libc::WNOHANG) }
+        };
+
+        if waited_pid == child_pid {
+            return Ok(Some(describe_wait_status(status)));
+        }
+        if waited_pid == 0 {
+            return Ok(None);
+        }
+
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        if error.raw_os_error() == Some(libc::ECHILD) {
+            return Ok(Some("is no longer waitable".to_owned()));
+        }
+
+        bail!("waitpid({child_pid}) failed: {error}");
+    }
+}
+
+/// Converts a raw wait status into a human-readable child outcome.
+fn describe_wait_status(status: i32) -> String {
+    if libc::WIFEXITED(status) {
+        return format!("exited with status {}", libc::WEXITSTATUS(status));
+    }
+
+    if libc::WIFSIGNALED(status) {
+        let signal = libc::WTERMSIG(status);
+        if let Some(name) = signal_name(signal) {
+            return format!("terminated by signal {signal} ({name})");
+        }
+
+        return format!("terminated by signal {signal}");
+    }
+
+    format!("changed state with wait status {status}")
+}
+
+/// Names the signals most likely to explain early child setup failure.
+fn signal_name(signal: i32) -> Option<&'static str> {
+    match signal {
+        libc::SIGABRT => Some("SIGABRT"),
+        libc::SIGBUS => Some("SIGBUS"),
+        libc::SIGFPE => Some("SIGFPE"),
+        libc::SIGILL => Some("SIGILL"),
+        libc::SIGKILL => Some("SIGKILL"),
+        libc::SIGSEGV => Some("SIGSEGV"),
+        libc::SIGSYS => Some("SIGSYS"),
+        libc::SIGTERM => Some("SIGTERM"),
+        _ => None,
+    }
 }
 
 #[allow(clippy::cast_ptr_alignment)]
@@ -744,8 +819,8 @@ pub(crate) fn reap_available_children() -> Result<ReapStatus> {
 #[cfg(test)]
 mod tests {
     use super::{
-        path_to_cstring, read_child_setup_status_fd, recv_initial_child_message, send_child_error,
-        send_fd, socket_pair, ChildSetupStatus,
+        describe_wait_status, path_to_cstring, read_child_setup_status_fd,
+        recv_initial_child_message, send_child_error, send_fd, socket_pair, ChildSetupStatus,
     };
     use std::io::Error;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -760,7 +835,7 @@ mod tests {
 
         send_fd(sender.as_raw_fd(), pipe_reader.as_raw_fd()).expect("fd should be sent");
         let received_reader =
-            recv_initial_child_message(receiver.as_raw_fd()).expect("fd should be received");
+            recv_initial_child_message(receiver.as_raw_fd(), None).expect("fd should be received");
 
         super::write_all(pipe_writer.as_raw_fd(), b"x").expect("pipe write should succeed");
         let mut byte = [0_u8];
@@ -790,10 +865,17 @@ mod tests {
         let (parent, child) = socket_pair().expect("socketpair should be created");
 
         send_child_error(child.as_raw_fd(), "setup failed").expect("error should be sent");
-        let error =
-            recv_initial_child_message(parent.as_raw_fd()).expect_err("fd receive should fail");
+        let error = recv_initial_child_message(parent.as_raw_fd(), None)
+            .expect_err("fd receive should fail");
 
         assert!(error.to_string().contains("setup failed"));
+    }
+
+    #[test]
+    fn wait_status_describes_signal_death() {
+        let signal_status = libc::SIGSEGV;
+
+        assert_eq!(describe_wait_status(signal_status), "terminated by signal 11 (SIGSEGV)");
     }
 
     #[test]

@@ -47,6 +47,8 @@ export PKG_CONFIG_ALLOW_CROSS=1
 export PKG_CONFIG_PATH=/path/to/libseccomp-musl/lib/pkgconfig
 ```
 
+Native Alpine builds have one extra `libseccomp`/musl linking caveat. See the crate-local [Alpine Linux technical note](../executables/session_wrapper/README.alpine.md).
+
 ## Compile-time integration checks
 
 Run these on Linux x86_64:
