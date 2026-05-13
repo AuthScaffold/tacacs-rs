@@ -112,11 +112,10 @@ fn orchestrate_session(cli: &Cli, service_endpoint: &IpcEndpoint) -> anyhow::Res
 
     // Fork the session child.  No tokio runtime must be alive at this point.
     let session = process::spawn_session(process::ChildProcessConfig {
-        shell: cli.shell.clone(),
+        command: cli.command.clone(),
         user: cli.user.clone(),
         uid: cli.user_uid,
         gid: cli.user_gid,
-        intercept_fork: cli.intercept_fork,
     })
     .context("failed to spawn session process")?;
 

@@ -1,9 +1,9 @@
 //! Seccomp policy construction for the session wrapper.
 //!
 //! The filter is intentionally narrow: default allow, notify on exec-family
-//! syscalls, optionally notify on fork-family syscalls, and deny ptrace. That
-//! gives the parent wrapper the decision points needed for command
-//! authorization without attempting to sandbox the entire session.
+//! syscalls, and deny known syscall families that can undermine command
+//! authorization. That gives the parent wrapper the decision points needed for
+//! command authorization without attempting to sandbox the entire session.
 //!
 //! `libseccomp-rs` owns the low-level BPF generation. This module only defines
 //! the policy in syscall terms and returns the user-notification listener fd to
@@ -36,15 +36,77 @@ struct SyscallRule {
     action: RuleAction,
 }
 
-/// Builds the list of syscall rules for the requested supervision mode.
+/// Builds the list of syscall rules for the wrapper policy.
 ///
 /// Exec-family notifications are always installed because they are the command
-/// authorization boundary. Fork-family notifications are optional and primarily
-/// support descendant lifecycle visibility and future richer policy.
-fn syscall_rules(intercept_fork: bool) -> Vec<SyscallRule> {
-    let mut rules = vec![
+/// authorization boundary. Fork-like syscalls are not notified because they do
+/// not carry command material; descendants inherit this filter and are mediated
+/// when they later call `execve` or `execveat`.
+fn syscall_rules() -> Vec<SyscallRule> {
+    vec![
         SyscallRule {
             name: "ptrace",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        // Cross-process memory access (ptrace equivalents): deterministic
+        // TOCTOU exploitation via a cooperating process overwriting the
+        // frozen process's execve filename after the supervisor reads it.
+        SyscallRule {
+            name: "process_vm_writev",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "process_vm_readv",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        // pidfd_getfd can steal the seccomp notification fd from the
+        // supervisor, subverting the entire authorization model.
+        SyscallRule {
+            name: "pidfd_getfd",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        // userfaultfd makes the inherent seccomp unotify TOCTOU race
+        // deterministic by controlling page-fault resolution timing.
+        // Without it the race is probabilistic and hard to exploit.
+        SyscallRule {
+            name: "userfaultfd",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        // Namespace creation: user + mount namespaces allow bind-mounting
+        // a malicious binary over an allowlisted path, making path-based
+        // checks meaningless.
+        SyscallRule {
+            name: "unshare",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "setns",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        // Mount operations (legacy and new APIs): bind mounts can shadow
+        // any path in the filesystem.
+        SyscallRule {
+            name: "mount",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "umount2",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "mount_setattr",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "fsopen",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "fsmount",
+            action: RuleAction::Errno(libc::EPERM),
+        },
+        SyscallRule {
+            name: "move_mount",
             action: RuleAction::Errno(libc::EPERM),
         },
         SyscallRule {
@@ -55,41 +117,14 @@ fn syscall_rules(intercept_fork: bool) -> Vec<SyscallRule> {
             name: "execveat",
             action: RuleAction::Notify,
         },
-    ];
-
-    if intercept_fork {
-        // Fork interception is optional because exec notifications alone are
-        // enough for command authorization. Enabling fork-family notifications
-        // gives the supervisor earlier visibility into process tree expansion,
-        // which is useful for lifecycle tests and future richer policy.
-        rules.extend([
-            SyscallRule {
-                name: "clone",
-                action: RuleAction::Notify,
-            },
-            SyscallRule {
-                name: "fork",
-                action: RuleAction::Notify,
-            },
-            SyscallRule {
-                name: "vfork",
-                action: RuleAction::Notify,
-            },
-            SyscallRule {
-                name: "clone3",
-                action: RuleAction::Notify,
-            },
-        ]);
-    }
-
-    rules
+    ]
 }
 
 /// Builds, but does not load, the `libseccomp-rs` filter context.
 ///
 /// Tests use this to inspect/export the generated policy without installing a
 /// filter into the test process.
-fn build_filter(intercept_fork: bool) -> Result<ScmpFilterContext> {
+fn build_filter() -> Result<ScmpFilterContext> {
     let mut filter = ScmpFilterContext::new(ScmpAction::Allow)
         .context("failed to create libseccomp filter context")?;
 
@@ -97,7 +132,7 @@ fn build_filter(intercept_fork: bool) -> Result<ScmpFilterContext> {
         .set_ctl_nnp(true)
         .context("failed to enable no_new_privs on seccomp filter")?;
 
-    for rule in syscall_rules(intercept_fork) {
+    for rule in syscall_rules() {
         let syscall = ScmpSyscall::from_name(rule.name)
             .with_context(|| format!("failed to resolve syscall '{}'", rule.name))?;
         let action = match rule.action {
@@ -131,7 +166,7 @@ fn ensure_user_notify_supported() -> Result<()> {
 ///
 /// The caller must transfer ownership of this fd to the parent supervisor before
 /// allowing the child to execute any syscall that can be notified.
-pub(crate) fn install_filter(intercept_fork: bool) -> Result<RawFd> {
+pub(crate) fn install_filter() -> Result<RawFd> {
     // A process can only have one useful listener for this filter. Reinstalling
     // would make ownership and notification routing ambiguous, so fail fast.
     if FILTER_INSTALLED
@@ -144,7 +179,7 @@ pub(crate) fn install_filter(intercept_fork: bool) -> Result<RawFd> {
     ensure_user_notify_supported()?;
 
     let result = (|| {
-        let filter = build_filter(intercept_fork)?;
+        let filter = build_filter()?;
         filter
             .load()
             .context("failed to install seccomp filter with libseccomp")?;
@@ -170,70 +205,63 @@ pub(crate) fn install_filter(intercept_fork: bool) -> Result<RawFd> {
 mod tests {
     use std::io::{Read, Seek, SeekFrom, Write};
 
-    use super::{build_filter, syscall_rules, RuleAction, SyscallRule};
+    use super::{build_filter, syscall_rules, RuleAction};
 
     #[test]
     fn rules_match_expected_base_policy() {
+        let rules = syscall_rules();
+
+        // All deny rules must use Errno(EPERM).
+        let deny_names: Vec<&str> = rules
+            .iter()
+            .filter(|r| r.action == RuleAction::Errno(libc::EPERM))
+            .map(|r| r.name)
+            .collect();
         assert_eq!(
-            syscall_rules(false),
+            deny_names,
             vec![
-                SyscallRule {
-                    name: "ptrace",
-                    action: RuleAction::Errno(libc::EPERM),
-                },
-                SyscallRule {
-                    name: "execve",
-                    action: RuleAction::Notify,
-                },
-                SyscallRule {
-                    name: "execveat",
-                    action: RuleAction::Notify,
-                },
+                "ptrace",
+                "process_vm_writev",
+                "process_vm_readv",
+                "pidfd_getfd",
+                "userfaultfd",
+                "unshare",
+                "setns",
+                "mount",
+                "umount2",
+                "mount_setattr",
+                "fsopen",
+                "fsmount",
+                "move_mount",
             ]
         );
+
+        // Exec-family rules must use Notify.
+        let notify_names: Vec<&str> = rules
+            .iter()
+            .filter(|r| r.action == RuleAction::Notify)
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(notify_names, vec!["execve", "execveat"]);
     }
 
     #[test]
-    fn rules_include_fork_family_when_requested() {
-        let rules = syscall_rules(true);
-        assert!(rules.iter().any(|rule| rule.name == "clone"));
-        assert!(rules.iter().any(|rule| rule.name == "fork"));
-        assert!(rules.iter().any(|rule| rule.name == "vfork"));
-        assert!(rules.iter().any(|rule| rule.name == "clone3"));
-    }
+    fn generated_bpf_program_is_not_empty() {
+        let filter = build_filter().expect("filter should build");
 
-    #[test]
-    fn generated_bpf_program_changes_when_fork_interception_is_enabled() {
-        let baseline_filter = build_filter(false).expect("baseline filter should build");
-        let with_fork_filter = build_filter(true).expect("fork-intercept filter should build");
-
-        let mut baseline_file = tempfile::tempfile().expect("tempfile should be created");
-        baseline_filter
-            .export_bpf(&baseline_file)
-            .expect("baseline filter should export BPF");
-        baseline_file.flush().expect("flush should succeed");
-        baseline_file
+        let mut filter_file = tempfile::tempfile().expect("tempfile should be created");
+        filter
+            .export_bpf(&filter_file)
+            .expect("filter should export BPF");
+        filter_file.flush().expect("flush should succeed");
+        filter_file
             .seek(SeekFrom::Start(0))
             .expect("seek should succeed");
-        let mut baseline = Vec::new();
-        baseline_file
-            .read_to_end(&mut baseline)
+        let mut bpf = Vec::new();
+        filter_file
+            .read_to_end(&mut bpf)
             .expect("read should succeed");
 
-        let mut with_fork_file = tempfile::tempfile().expect("tempfile should be created");
-        with_fork_filter
-            .export_bpf(&with_fork_file)
-            .expect("fork-intercept filter should export BPF");
-        with_fork_file.flush().expect("flush should succeed");
-        with_fork_file
-            .seek(SeekFrom::Start(0))
-            .expect("seek should succeed");
-        let mut with_fork = Vec::new();
-        with_fork_file
-            .read_to_end(&mut with_fork)
-            .expect("read should succeed");
-
-        assert!(!baseline.is_empty());
-        assert!(with_fork.len() > baseline.len());
+        assert!(!bpf.is_empty());
     }
 }

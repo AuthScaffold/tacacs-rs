@@ -1,6 +1,6 @@
 # session-wrapper
 
-`session-wrapper` is a Linux `x86_64` proof-of-concept login/session wrapper for TACACS+ command authorization. It starts a user shell under a seccomp user-notification filter so the parent wrapper process can observe every `execve` crossing and decide — in real time — whether to allow or deny command execution.
+`session-wrapper` is a Linux `x86_64` proof-of-concept login/session wrapper for TACACS+ command authorization. It starts a command under a seccomp user-notification filter so the parent wrapper process can observe every `execve` crossing and decide — in real time — whether to allow or deny command execution.
 
 ## Platform support
 
@@ -13,11 +13,11 @@ The wrapper:
 1. Parses login/session context from CLI arguments.
 2. Optionally loads an exec allowlist (one path per line; built-in defaults always active).
 3. Forks a child process.
-4. Installs a seccomp user-notification filter in the child (notify on `execve`/`execveat`; optionally `clone`/`fork`).
+4. Installs a seccomp user-notification filter in the child (notify on `execve`/`execveat`).
 5. Sends the seccomp notification listener fd from child to parent over a Unix socketpair.
 6. Connects to the TACACS+ IPC agent and starts the supervisor in the parent.
 7. Releases the child once the supervisor is ready.
-8. Drops the child to the requested UID/GID and execs the configured `--shell`.
+8. Drops the child to the requested UID/GID and execs `COMMAND [ARGS]...`.
 9. For each intercepted exec:
    - Checks the exec path against the **allowlist** — if matched, responds CONTINUE immediately.
    - Otherwise, sends a TACACS+ **accounting** record to the agent and interprets the response status as allow/deny.
@@ -68,7 +68,6 @@ The policy is intentionally narrow — not a general sandbox:
 | Syscall family | Action | Purpose |
 |----------------|--------|---------|
 | `execve`, `execveat` | Notify parent | Command execution authorization boundary |
-| `clone`, `fork`, `vfork`, `clone3` | Optional notify (`--intercept-fork`) | Descendant visibility |
 | `ptrace` | `EPERM` | Prevent ptrace tampering |
 | Everything else | Allow | Keep normal shell behavior working |
 
@@ -80,7 +79,6 @@ Minimal local smoke-test invocation:
 cargo build -p session-wrapper
 
 target/debug/session-wrapper \
-  --shell /bin/bash \
   --user "$(id -un)" \
   --user-uid "$(id -u)" \
   --user-gid "$(id -g)" \
@@ -91,16 +89,14 @@ Useful options:
 
 | Option | Meaning |
 |--------|---------|
-| `--shell <PATH>` | Program execed in the child after privilege drop |
 | `--user <NAME>` | Target username for TACACS+ accounting context |
 | `--user-uid <UID>` | Target UID |
 | `--user-gid <GID>` | Target primary GID |
 | `--service-endpoint <PATH_OR_ADDR>` | TACACS+ IPC endpoint (default `/run/tacacs.sock`) |
 | `--fail-policy <closed\|open>` | What to do when the IPC agent is unreachable |
 | `--allowlist <FILE>` | Additional exec allowlist file |
-| `--intercept-fork` | Also notify fork-like syscalls |
 | `--port`, `--rem-addr` | TACACS+ context fields, typically from SSH environment |
-| `COMMAND [ARGS]...` | Authorization context sent in the accounting record |
+| `COMMAND [ARGS]...` | Program and arguments execed in the child after privilege drop |
 
 ## Demo scripts
 

@@ -15,7 +15,7 @@ cargo build -p session-wrapper
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-cat >"$tmp/allow-all-basic-shell" <<'EOF'
+cat >"$tmp/allow-all-basic-command" <<'EOF'
 #!/bin/sh
 set -eu
 
@@ -23,16 +23,16 @@ echo "[wrapped] running as user=$(id -un) uid=$(id -u) gid=$(id -g)"
 echo "[wrapped] every execve is being continued by the current allow-all supervisor"
 printf 'allow-all-basic-ok\n' > "$SESSION_WRAPPER_DEMO_MARKER"
 EOF
-chmod +x "$tmp/allow-all-basic-shell"
+chmod +x "$tmp/allow-all-basic-command"
 
-echo "[demo] starting wrapped non-interactive shell"
+echo "[demo] starting wrapped non-interactive command"
 SESSION_WRAPPER_DEMO_MARKER="$tmp/marker" \
 timeout 10s target/debug/session-wrapper \
-  --shell "$tmp/allow-all-basic-shell" \
   --user "$(id -un)" \
   --user-uid "$(id -u)" \
   --user-gid "$(id -g)" \
-  -- "$tmp/allow-all-basic-shell" "demo-command-context"
+  --fail-policy open \
+  -- "$tmp/allow-all-basic-command" "demo-command-context"
 
 if [[ "$(cat "$tmp/marker")" != "allow-all-basic-ok" ]]; then
   echo "[demo] marker was not written by the wrapped process" >&2

@@ -8,7 +8,7 @@
 //!    `SCM_RIGHTS`, and then waits for a one-byte "supervisor ready" signal.
 //! 3. The parent owns the notification fd, starts the supervisor path, and only
 //!    then releases the child.
-//! 4. The child drops privileges and `execv`s the configured shell.
+//! 4. The child drops privileges and `execv`s the requested command.
 //!
 //! This is deliberately not implemented with `std::process::Command`: the
 //! parent must receive the seccomp listener before the child is allowed to run
@@ -22,8 +22,6 @@ use std::ffi::CString;
 use std::io;
 use std::mem::{self, MaybeUninit};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
 use std::ptr;
 
 use anyhow::{bail, Context, Result};
@@ -41,11 +39,10 @@ const MAX_CHILD_ERROR_LEN: u32 = 64 * 1024;
 /// need to borrow parent state after `fork()`.
 #[derive(Debug, Clone)]
 pub(crate) struct ChildProcessConfig {
-    pub(crate) shell: PathBuf,
+    pub(crate) command: Vec<String>,
     pub(crate) user: String,
     pub(crate) uid: libc::uid_t,
     pub(crate) gid: libc::gid_t,
-    pub(crate) intercept_fork: bool,
 }
 
 /// Owns the parent-side handles for a supervised child session.
@@ -136,9 +133,9 @@ impl SessionProcess {
 ///
 /// The returned session is not released yet. Callers must start whatever will
 /// answer seccomp notifications, then call `signal_supervisor_ready` before the
-/// child can drop privileges and exec the configured shell.
+/// child can drop privileges and exec the requested command.
 pub(crate) fn spawn_session(config: ChildProcessConfig) -> Result<SessionProcess> {
-    // Descendants that outlive the initial shell are reparented to this process
+    // Descendants that outlive the initial command are reparented to this process
     // instead of PID 1. That gives the supervisor a reliable way to keep the
     // notification fd alive until the whole wrapped process tree is gone.
     enable_child_subreaper().context("failed to mark session-wrapper as child subreaper")?;
@@ -206,17 +203,17 @@ fn run_child_or_exit(control_socket: OwnedFd, config: ChildProcessConfig) -> ! {
 /// Performs the child-side setup sequence before replacing the process image.
 ///
 /// Setup order is security-critical: install seccomp first, transfer the
-/// listener fd, wait for parent readiness, drop privileges, then exec the shell.
+/// listener fd, wait for parent readiness, drop privileges, then exec the command.
 fn run_child(control_socket: &OwnedFd, config: &ChildProcessConfig) -> Result<()> {
-    // Install the filter before dropping privileges or execing the shell so the
+    // Install the filter before dropping privileges or execing the command so the
     // entire user session, including the first exec, is mediated.
-    let notification_fd = seccomp::install_filter(config.intercept_fork)
+    let notification_fd = seccomp::install_filter()
         .context("failed to install session-wrapper seccomp filter in child")?;
     send_fd(control_socket.as_raw_fd(), notification_fd)
         .context("failed to send seccomp notification fd to parent")?;
     // After SCM_RIGHTS transfer the child must not keep its copy open. The
     // supervisor's lifetime should be controlled by the parent's OwnedFd, and
-    // no listener fd should leak into the user shell.
+    // no listener fd should leak into the user command.
     close_fd(notification_fd).context("failed to close child copy of seccomp notification fd")?;
 
     // The ready byte is the synchronization point that proves the parent has a
@@ -230,7 +227,7 @@ fn run_child(control_socket: &OwnedFd, config: &ChildProcessConfig) -> Result<()
         )
     })?;
 
-    exec_shell(&config.shell)
+    exec_command(&config.command)
 }
 
 /// Creates the bidirectional control socket used across fork.
@@ -582,7 +579,7 @@ fn drop_privileges(user: &str, gid: libc::gid_t, uid: libc::uid_t) -> Result<()>
     }
 
     let setuid_result = {
-        // SAFETY: setuid is called last so a failure prevents shell exec as root.
+        // SAFETY: setuid is called last so a failure prevents command exec as root.
         unsafe { libc::setuid(uid) }
     };
     if setuid_result == -1 {
@@ -606,26 +603,33 @@ fn current_effective_identity_matches(gid: libc::gid_t, uid: libc::uid_t) -> boo
     running_uid == uid && running_primary_gid == gid
 }
 
-/// Replaces the child process with the configured shell.
+/// Replaces the child process with the requested command.
 ///
 /// This uses `execv` directly because the child is already forked, filtered,
 /// and synchronized with the parent.
-fn exec_shell(shell: &Path) -> Result<()> {
-    let shell_cstr = path_to_cstring(shell).context("shell path is not a valid C string")?;
-    let argv = [shell_cstr.as_ptr(), ptr::null()];
+fn exec_command(command: &[String]) -> Result<()> {
+    let program = command
+        .first()
+        .context("command vector must contain at least one entry")?;
+    let cstrings: Vec<CString> = command
+        .iter()
+        .map(|arg| string_to_cstring(arg))
+        .collect::<Result<_>>()?;
+    let mut argv: Vec<*const libc::c_char> = cstrings.iter().map(|arg| arg.as_ptr()).collect();
+    argv.push(ptr::null());
 
     let result = {
-        // SAFETY: shell_cstr and argv are NUL-terminated and live until execv
+        // SAFETY: cstrings and argv are NUL-terminated and live until execv
         // either replaces this process image or returns an error.
-        unsafe { libc::execv(shell_cstr.as_ptr(), argv.as_ptr()) }
+        unsafe { libc::execv(cstrings[0].as_ptr(), argv.as_ptr()) }
     };
     debug_assert_eq!(result, -1);
-    bail!("execv({}) failed: {}", shell.display(), io::Error::last_os_error());
+    bail!("execv({program}) failed: {}", io::Error::last_os_error());
 }
 
-/// Converts a filesystem path to a C string suitable for `execv`.
-fn path_to_cstring(path: &Path) -> Result<CString> {
-    CString::new(path.as_os_str().as_bytes()).context("path contains an interior NUL byte")
+/// Converts a command argument to a C string suitable for `execv`.
+fn string_to_cstring(arg: &str) -> Result<CString> {
+    CString::new(arg).context("command argument contains an interior NUL byte")
 }
 
 /// Reads exactly `buffer.len()` bytes from a raw fd, retrying on interruption.
@@ -733,7 +737,7 @@ fn zeroed_msghdr() -> libc::msghdr {
 
 /// Marks the wrapper as a child subreaper for this process tree.
 ///
-/// This lets the wrapper reap descendants that outlive the initial shell,
+/// This lets the wrapper reap descendants that outlive the initial command,
 /// instead of losing visibility when they would otherwise be reparented to PID 1.
 fn enable_child_subreaper() -> Result<()> {
     let result = {
@@ -819,12 +823,11 @@ pub(crate) fn reap_available_children() -> Result<ReapStatus> {
 #[cfg(test)]
 mod tests {
     use super::{
-        describe_wait_status, path_to_cstring, read_child_setup_status_fd,
+        describe_wait_status, string_to_cstring, read_child_setup_status_fd,
         recv_initial_child_message, send_child_error, send_fd, socket_pair, ChildSetupStatus,
     };
     use std::io::Error;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-    use std::path::PathBuf;
 
     use anyhow::{bail, Result};
 
@@ -846,10 +849,10 @@ mod tests {
     }
 
     #[test]
-    fn path_to_cstring_rejects_nul_bytes() {
-        let path = PathBuf::from("bad\0path");
+    fn string_to_cstring_rejects_nul_bytes() {
+        let arg = "bad\0arg";
 
-        assert!(path_to_cstring(&path).is_err());
+        assert!(string_to_cstring(arg).is_err());
     }
 
     #[test]

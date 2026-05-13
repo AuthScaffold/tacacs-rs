@@ -15,7 +15,7 @@ cargo build -p session-wrapper
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-cat >"$tmp/allow-all-descendant-shell" <<'EOF'
+cat >"$tmp/allow-all-descendant-command" <<'EOF'
 #!/bin/sh
 set -eu
 
@@ -28,17 +28,16 @@ echo "[wrapped] initial shell pid=$$"
 echo "[wrapped] exiting initial shell while descendant continues"
 exit 0
 EOF
-chmod +x "$tmp/allow-all-descendant-shell"
+chmod +x "$tmp/allow-all-descendant-command"
 
-echo "[demo] starting wrapped shell with fork interception enabled"
+echo "[demo] starting wrapped command with descendant supervision"
 SESSION_WRAPPER_DESCENDANT_MARKER="$tmp/descendant-marker" \
 timeout 10s target/debug/session-wrapper \
-  --intercept-fork \
-  --shell "$tmp/allow-all-descendant-shell" \
   --user "$(id -un)" \
   --user-uid "$(id -u)" \
   --user-gid "$(id -g)" \
-  -- "$tmp/allow-all-descendant-shell" "demo-command-context"
+  --fail-policy open \
+  -- "$tmp/allow-all-descendant-command" "demo-command-context"
 
 if [[ "$(cat "$tmp/descendant-marker")" != "allow-all-descendant-ok" ]]; then
   echo "[demo] descendant marker was not written" >&2

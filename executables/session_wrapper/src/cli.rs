@@ -1,10 +1,9 @@
 //! Command line contract for `session-wrapper`.
 //!
 //! The options model the eventual login-wrapper integration: caller-supplied
-//! user identity, TACACS+ context, fail policy, and a trailing command vector
-//! to authorize. In the current allow-all implementation the executed program
-//! is still `--shell`; the command vector is retained as the authorization
-//! context that future IPC code will send to the agent.
+//! user identity, TACACS+ context, fail policy, and the command vector to run
+//! under supervision.
+
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
@@ -24,10 +23,6 @@ pub enum FailPolicy {
 #[command(name = "session-wrapper", version, author)]
 #[command(about = "TACACS+ controlled login session wrapper", long_about = None)]
 pub struct Cli {
-    /// Shell to exec for the user.
-    #[arg(long, default_value = "/bin/bash")]
-    pub shell: PathBuf,
-
     /// Target username for the wrapped session.
     #[arg(long)]
     pub user: String,
@@ -59,10 +54,6 @@ pub struct Cli {
     /// Path to a file listing executables that are always allowed.
     #[arg(long, value_name = "FILE")]
     pub allowlist: Option<PathBuf>,
-
-    /// Intercept fork-like syscalls (fork/vfork/clone/clone3) with seccomp user notifications.
-    #[arg(long)]
-    pub intercept_fork: bool,
 
     /// TACACS+ port context field, typically populated from the SSH environment.
     #[arg(long)]
@@ -114,7 +105,6 @@ mod tests {
             "/bin/bash",
         ]);
 
-        assert_eq!(cli.shell, PathBuf::from("/bin/bash"));
         assert_eq!(cli.user, "alice");
         assert_eq!(cli.user_uid, 1000);
         assert_eq!(cli.user_gid, 1000);
@@ -123,7 +113,6 @@ mod tests {
         assert_eq!(cli.authorization_timeout_ms, 5_000);
         assert_eq!(cli.privilege_level, 1);
         assert_eq!(cli.verbose, 0);
-        assert!(!cli.intercept_fork);
         assert_eq!(cli.command, vec!["/bin/bash".to_owned()]);
     }
 
@@ -131,8 +120,6 @@ mod tests {
     fn optional_context_and_fail_policy_parse() {
         let cli = Cli::parse_from([
             "session-wrapper",
-            "--shell",
-            "/bin/zsh",
             "--user",
             "bob",
             "--user-uid",
@@ -149,7 +136,6 @@ mod tests {
             "15",
             "--allowlist",
             "/etc/session-wrapper.allow",
-            "--intercept-fork",
             "--port",
             "ssh",
             "--rem-addr",
@@ -160,13 +146,11 @@ mod tests {
             "version",
         ]);
 
-        assert_eq!(cli.shell, PathBuf::from("/bin/zsh"));
         assert_eq!(cli.service_endpoint, "127.0.0.1:9049");
         assert_eq!(cli.fail_policy, FailPolicy::Open);
         assert_eq!(cli.authorization_timeout_ms, 2_500);
         assert_eq!(cli.privilege_level, 15);
         assert_eq!(cli.allowlist, Some(PathBuf::from("/etc/session-wrapper.allow")));
-        assert!(cli.intercept_fork);
         assert_eq!(cli.port.as_deref(), Some("ssh"));
         assert_eq!(cli.rem_addr.as_deref(), Some("192.0.2.10"));
         assert_eq!(cli.verbose, 2);
