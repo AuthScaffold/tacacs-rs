@@ -67,7 +67,48 @@
         "args": [],
         "data": ""
       }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/usr/libexec/git-core/git"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "PassAdd",
+        "server_message": "",
+        "args": [],
+        "data": ""
+      }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/usr/bin/gh"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "PassAdd",
+        "server_message": "",
+        "args": [],
+        "data": ""
+      }
+    },
+    {
+      "rpc": "Authorization",
+      "match": {
+        "command": "/usr/libexec/git-core/git-remote-https"
+      },
+      "respond": {
+        "type": "response",
+        "server": "tacacs-primary:49",
+        "status": "PassAdd",
+        "server_message": "",
+        "args": [],
+        "data": ""
+      }
     }
-
   ]
 }
