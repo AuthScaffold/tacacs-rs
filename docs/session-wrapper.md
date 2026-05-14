@@ -232,13 +232,19 @@ genuinely uninteresting helpers.
 ### TOCTOU (time-of-check / time-of-use)
 
 When a notification fires, the supervisor reads the target process's argv
-from `/proc/[pid]/mem` while the kernel holds it at the syscall boundary. The
-process is frozen, so its memory is stable. Before and during the read the
-supervisor calls `check_notification_valid()` against the kernel — if the
-process was killed or reaped between freeze and read, the notification is
-discarded rather than acted on. This closes the classic seccomp-notify TOCTOU
-window where a sibling thread could rewrite argv before the supervisor reads
-it.
+from `/proc/[pid]/mem` while the notifying thread is held at the syscall
+boundary. That does **not** make the process address space immutable: another
+thread in the same process can still rewrite the exec path after the supervisor
+reads it and before the kernel resumes the syscall. `check_notification_valid()`
+only confirms that the notification is still pending, for example because the
+target process was not killed or reaped mid-read; it does not prove that argv
+memory is unchanged.
+
+This TOCTOU window is inherent to seccomp user notifications and cannot be
+completely eliminated inside the seccomp authorization path. Practical mitigations
+can reduce exploitability, such as denying `userfaultfd` and `process_vm_writev`,
+but complete protection requires a kernel-enforced execution boundary such as
+Landlock, AppArmor, SELinux, or an equivalent LSM policy.
 
 ### `ptrace` is blocked
 
