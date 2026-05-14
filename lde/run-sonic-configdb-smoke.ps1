@@ -11,6 +11,8 @@
     Redis image to run.
 .PARAMETER RedisPort
     Host TCP port mapped to the Redis container.
+.PARAMETER RedisTransport
+    Redis connection transport used by the example. UnixSocket requires Linux or WSL.
 .PARAMETER KeepContainer
     Leave the Redis container running after the smoke test completes.
 .EXAMPLE
@@ -28,6 +30,9 @@ param(
     [ValidateRange(1, 65535)]
     [int]$RedisPort = 6379,
 
+    [ValidateSet('Tcp', 'UnixSocket')]
+    [string]$RedisTransport = 'Tcp',
+
     [ValidateRange(0, 15)]
     [int]$RedisDb = 4,
 
@@ -44,8 +49,16 @@ $repoRoot = Resolve-Path (Join-Path $scriptDir '..')
 $tmpDir = Join-Path $repoRoot 'target\tmp'
 $stdoutPath = Join-Path $tmpDir 'sonic-configdb-watch.out'
 $stderrPath = Join-Path $tmpDir 'sonic-configdb-watch.err'
+$isLinuxHost = Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue
+$useTcpTransport = $RedisTransport -eq 'Tcp'
+$useUnixSocketTransport = $RedisTransport -eq 'UnixSocket'
+$usePodmanHostNetwork = $ContainerRuntime -eq 'podman' -and $isLinuxHost -and $useTcpTransport
+$socketDir = if ($useUnixSocketTransport) { Join-Path ([IO.Path]::GetTempPath()) "tacacsrs-sonic-configdb-smoke-$PID" } else { $null }
+$socketPath = if ($useUnixSocketTransport) { Join-Path $socketDir 'redis.sock' } else { $null }
+$containerSocketDir = '/run/redis'
+$containerSocketPath = "$containerSocketDir/redis.sock"
 
-function Require-Command {
+function Test-RequiredCommand {
     param([string]$Name)
 
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -59,7 +72,11 @@ function Invoke-Redis {
         [string[]]$RedisArgs
     )
 
-    $output = & $ContainerRuntime exec $ContainerName redis-cli -n $RedisDb @RedisArgs
+    if ($useUnixSocketTransport) {
+        $output = & $ContainerRuntime exec $ContainerName redis-cli -s $containerSocketPath -n $RedisDb @RedisArgs
+    } else {
+        $output = & $ContainerRuntime exec $ContainerName redis-cli -n $RedisDb @RedisArgs
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "redis-cli failed: $($RedisArgs -join ' ')"
     }
@@ -71,7 +88,11 @@ function Wait-ForRedis {
 
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
-        $output = & $ContainerRuntime exec $ContainerName redis-cli PING 2>$null
+        if ($useUnixSocketTransport) {
+            $output = & $ContainerRuntime exec $ContainerName redis-cli -s $containerSocketPath PING 2>$null
+        } else {
+            $output = & $ContainerRuntime exec $ContainerName redis-cli PING 2>$null
+        }
         if ($LASTEXITCODE -eq 0 -and ($output -contains 'PONG')) {
             return
         }
@@ -79,6 +100,31 @@ function Wait-ForRedis {
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
 
     throw 'Timed out waiting for Redis to accept commands.'
+}
+
+function Wait-ForTcpEndpoint {
+    param(
+        [string]$HostName,
+        [int]$Port,
+        [int]$TimeoutSeconds = 60
+    )
+
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $client = [System.Net.Sockets.TcpClient]::new()
+        try {
+            $connect = $client.ConnectAsync($HostName, $Port)
+            if ($connect.Wait(500) -and $client.Connected) {
+                return
+            }
+        }
+        finally {
+            $client.Dispose()
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+
+    throw "Timed out waiting for Redis TCP endpoint ${HostName}:${Port}."
 }
 
 function Wait-ForOutputText {
@@ -113,29 +159,59 @@ function Assert-Contains {
 Push-Location $repoRoot
 
 try {
-    Require-Command cargo
-    Require-Command $ContainerRuntime
+    if ($useUnixSocketTransport -and -not $isLinuxHost) {
+        throw 'UnixSocket Redis transport requires Linux or WSL.'
+    }
+
+    Test-RequiredCommand cargo
+    Test-RequiredCommand $ContainerRuntime
 
     New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
     Remove-Item -Force -ErrorAction SilentlyContinue $stdoutPath, $stderrPath
+    if ($useUnixSocketTransport) {
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $socketDir
+        New-Item -ItemType Directory -Force -Path $socketDir | Out-Null
+        & chmod 0777 $socketDir
+        if ($LASTEXITCODE -ne 0) { throw "Failed to make Redis socket directory writable: $socketDir" }
+    }
 
     Write-Host "Starting Redis container with $ContainerRuntime..."
+    $redisCommand = @()
+    if ($useUnixSocketTransport) {
+        $redisCommand = @('redis-server', '--port', '0', '--unixsocket', $containerSocketPath, '--unixsocketperm', '777')
+    }
+
     if ($ContainerRuntime -eq 'podman') {
-        & $ContainerRuntime run --detach --replace --name $ContainerName --publish "${RedisPort}:6379" $RedisImage | Out-Null
+        if ($useUnixSocketTransport) {
+            & $ContainerRuntime run --detach --replace --name $ContainerName --volume "${socketDir}:${containerSocketDir}:Z" $RedisImage @redisCommand | Out-Null
+        } elseif ($usePodmanHostNetwork) {
+            & $ContainerRuntime run --detach --replace --name $ContainerName --network host $RedisImage @redisCommand | Out-Null
+        } else {
+            & $ContainerRuntime run --detach --replace --name $ContainerName --publish "${RedisPort}:6379" $RedisImage @redisCommand | Out-Null
+        }
     } else {
         & $ContainerRuntime rm --force $ContainerName 2>$null | Out-Null
-        & $ContainerRuntime run --detach --name $ContainerName --publish "${RedisPort}:6379" $RedisImage | Out-Null
+        if ($useUnixSocketTransport) {
+            & $ContainerRuntime run --detach --name $ContainerName --volume "${socketDir}:${containerSocketDir}" $RedisImage @redisCommand | Out-Null
+        } else {
+            & $ContainerRuntime run --detach --name $ContainerName --publish "${RedisPort}:6379" $RedisImage @redisCommand | Out-Null
+        }
     }
     if ($LASTEXITCODE -ne 0) { throw 'Failed to start Redis container.' }
 
     Wait-ForRedis
+    if ($useTcpTransport) {
+        Wait-ForTcpEndpoint -HostName '127.0.0.1' -Port $RedisPort
+    } elseif (-not (Test-Path $socketPath)) {
+        throw "Redis Unix socket was not created at $socketPath."
+    }
 
     Write-Host 'Building configdb_watch example...'
     cargo build -p tacacsrs-sonic --example configdb_watch
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed.' }
 
-    $exampleExe = Join-Path $repoRoot 'target\debug\examples\configdb_watch.exe'
-    if (-not (Test-Path $exampleExe)) {
+    $exampleExe = if ($isLinuxHost) { Join-Path $repoRoot 'target\debug\examples\configdb_watch' } else { Join-Path $repoRoot 'target\debug\examples\configdb_watch.exe' }
+    if (-not (Test-Path $exampleExe) -and -not $isLinuxHost) {
         $exampleExe = Join-Path $repoRoot 'target\debug\examples\configdb_watch'
     }
     if (-not (Test-Path $exampleExe)) {
@@ -168,8 +244,9 @@ try {
     ) | Out-Null
 
     Write-Host 'Starting configdb_watch example...'
+    $redisUrl = if ($useUnixSocketTransport) { "unix://${socketPath}?db=$RedisDb" } else { "redis://127.0.0.1:$RedisPort" }
     $exampleArgs = @(
-        '--redis-url', "redis://127.0.0.1:$RedisPort",
+        '--redis-url', $redisUrl,
         '--redis-db', "$RedisDb",
         '--debounce-ms', "$DebounceMs",
         '--max-events', '3'
@@ -237,6 +314,9 @@ try {
 finally {
     if (-not $KeepContainer) {
         & $ContainerRuntime rm --force $ContainerName 2>$null | Out-Null
+    }
+    if ($useUnixSocketTransport -and -not $KeepContainer) {
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $socketDir
     }
     Pop-Location
 }

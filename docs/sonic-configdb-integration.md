@@ -67,15 +67,15 @@ Operators and SONiC schema maintainers can experiment with TLS-aware fields
 ahead of upstream ConfigDB schema work by adding the following keys to
 `TACPLUS_SERVER|<addr>`:
 
-| Key                 | YANG field         | Notes                            |
-|---------------------|--------------------|----------------------------------|
-| `domain_name`       | `domain-name`      | Used as SNI hostname             |
-| `sni_enabled`       | `sni-enabled`      | `true`/`false`/`yes`/`no`/`1`/`0`|
-| `single_connection` | `single-connection`| Boolean                          |
-| `vrf_name`          | `vrf-instance`     | VRF name for outbound traffic    |
-| `src_ip`            | `source-ip`        | Mutually exclusive with `src_intf`|
-| `src_intf`          | `source-interface` | Falls back to `TACPLUS|global`   |
-| `server_type`       | `server-type`      | Defaults to `all`; tokens accept `authentication`, `authorization`, `accounting`, or `all` |
+| Key                 | YANG field          | Notes                                                                                          |
+|---------------------|---------------------|------------------------------------------------------------------------------------------------|
+| `domain_name`       | `domain-name`       | Used as SNI hostname                                                                           |
+| `sni_enabled`       | `sni-enabled`       | `true`/`false`/`yes`/`no`/`1`/`0`                                                              |
+| `single_connection` | `single-connection` | Boolean                                                                                        |
+| `vrf_name`          | `vrf-instance`      | VRF name for outbound traffic                                                                  |
+| `src_ip`            | `source-ip`         | Mutually exclusive with `src_intf`                                                             |
+| `src_intf`          | `source-interface`  | Falls back to `TACPLUS\|global`                                                               |
+| `server_type`       | `server-type`       | Defaults to `all`; tokens accept `authentication`, `authorization`, `accounting`, or `all`     |
 
 Unknown fields are logged at `warn` level and ignored, so legacy operator
 annotations on TACPLUS rows do not break the agent.
@@ -162,6 +162,13 @@ mutations, and output assertions:
 
 ```powershell
 .\lde\run-sonic-configdb-smoke.ps1
+```
+
+From WSL, make sure Cargo is on the PowerShell process path:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+pwsh -NoLogo -NoProfile -File ./lde/run-sonic-configdb-smoke.ps1
 ```
 
 To run the same flow manually, start Redis first:
