@@ -74,7 +74,7 @@ ahead of upstream ConfigDB schema work by adding the following keys to
 | `single_connection` | `single-connection` | Boolean                                                                                        |
 | `vrf_name`          | `vrf-instance`      | VRF name for outbound traffic                                                                  |
 | `src_ip`            | `source-ip`         | Mutually exclusive with `src_intf`                                                             |
-| `src_intf`          | `source-interface`  | Falls back to `TACPLUS\|global`                                                               |
+| `src_intf`          | `source-interface`  | Falls back to the global TACPLUS row                                                           |
 | `server_type`       | `server-type`       | Defaults to `all`; tokens accept `authentication`, `authorization`, `accounting`, or `all`     |
 
 Unknown fields are logged at `warn` level and ignored, so legacy operator
@@ -169,6 +169,14 @@ From WSL, make sure Cargo is on the PowerShell process path:
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
 pwsh -NoLogo -NoProfile -File ./lde/run-sonic-configdb-smoke.ps1
+```
+
+To validate the SONiC-style Unix-domain socket path instead of TCP, run the
+same helper from WSL with `-RedisTransport UnixSocket`:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+pwsh -NoLogo -NoProfile -File ./lde/run-sonic-configdb-smoke.ps1 -RedisTransport UnixSocket
 ```
 
 To run the same flow manually, start Redis first:
