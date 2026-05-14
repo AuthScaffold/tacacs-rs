@@ -24,6 +24,16 @@ fn accounting_request(user: &str, command: &str) -> AccountingOperation {
     }
 }
 
+fn authorization_request(command: &str) -> AuthorizationOperation {
+    AuthorizationOperation::builder("admin", 15)
+        .port("tty0")
+        .remote_address("127.0.0.1")
+        .key_value(AuthorizationKey::Service, true, "shell")
+        .key_value(AuthorizationKey::Cmd, true, command)
+        .build()
+        .expect("authorization operation should build")
+}
+
 fn accounting_success_rule(user: &str, server: &str) -> TransactionRule {
     TransactionRule {
         rpc: IpcRpc::Accounting,
@@ -207,13 +217,7 @@ async fn authorization_response_works_with_service_client() {
     let client = ServiceClient::connect(endpoint)
         .await
         .expect("client should connect");
-    let request = AuthorizationOperation::builder("admin", 15)
-        .port("tty0")
-        .remote_address("127.0.0.1")
-        .key_value(AuthorizationKey::Service, true, "shell")
-        .key_value(AuthorizationKey::Cmd, true, "show")
-        .build()
-        .expect("authorization operation should build");
+    let request = authorization_request("show");
 
     let response = client
         .send_authorization(request)
@@ -221,6 +225,85 @@ async fn authorization_response_works_with_service_client() {
         .expect("authorization request should succeed");
 
     assert_eq!(response.status, AuthorizationResponseStatus::PassAdd);
+    assert_eq!(emulator.rule_hits().await[0].hits, 1);
+    emulator.shutdown().await;
+}
+
+#[tokio::test]
+async fn unmatched_authorization_request_returns_fail_response() {
+    let scenario = EmulatorScenario {
+        transactions: vec![TransactionRule {
+            rpc: IpcRpc::Authorization,
+            match_fields: MatchFields {
+                fields: BTreeMap::from([("command".to_owned(), json!("show"))]),
+            },
+            match_any_fields: None,
+            respond: EmulatorResponse::Response(ResponseBody {
+                server: "primary".to_owned(),
+                status: "PassAdd".to_owned(),
+                server_message: String::new(),
+                data: String::new(),
+                args: Vec::new(),
+            }),
+            delay_ms: None,
+        }],
+    };
+    let (emulator, endpoint) = IpcEmulator::from_scenario(scenario)
+        .await
+        .expect("emulator should start");
+    let client = ServiceClient::connect(endpoint)
+        .await
+        .expect("client should connect");
+
+    let response = client
+        .send_authorization(authorization_request("/usr/bin/htop"))
+        .await
+        .expect("authorization no-match should be a TACACS+ response");
+
+    assert_eq!(response.status, AuthorizationResponseStatus::Fail);
+    assert_eq!(response.server, "ipc-emulator");
+    assert!(response
+        .server_message
+        .starts_with("no authorization rule matched request"));
+    assert!(response.server_message.contains("/usr/bin/htop"));
+    assert_eq!(emulator.captured_requests().await.len(), 1);
+    assert_eq!(emulator.rule_hits().await[0].hits, 0);
+    emulator.shutdown().await;
+}
+
+#[tokio::test]
+async fn authorization_error_status_returns_authorization_response() {
+    let scenario = EmulatorScenario {
+        transactions: vec![TransactionRule {
+            rpc: IpcRpc::Authorization,
+            match_fields: MatchFields {
+                fields: BTreeMap::from([("command".to_owned(), json!("show"))]),
+            },
+            match_any_fields: None,
+            respond: EmulatorResponse::Response(ResponseBody {
+                server: "primary".to_owned(),
+                status: "Error".to_owned(),
+                server_message: "authorization policy evaluation failed".to_owned(),
+                data: String::new(),
+                args: Vec::new(),
+            }),
+            delay_ms: None,
+        }],
+    };
+    let (emulator, endpoint) = IpcEmulator::from_scenario(scenario)
+        .await
+        .expect("emulator should start");
+    let client = ServiceClient::connect(endpoint)
+        .await
+        .expect("client should connect");
+
+    let response = client
+        .send_authorization(authorization_request("show"))
+        .await
+        .expect("authorization Error status should be a TACACS+ response");
+
+    assert_eq!(response.status, AuthorizationResponseStatus::Error);
+    assert_eq!(response.server_message, "authorization policy evaluation failed");
     assert_eq!(emulator.rule_hits().await[0].hits, 1);
     emulator.shutdown().await;
 }
