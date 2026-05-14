@@ -29,6 +29,7 @@ mod allowlist;
 mod process;
 mod process_reader;
 mod seccomp;
+mod deny;
 mod supervisor;
 
 use std::process::ExitCode;

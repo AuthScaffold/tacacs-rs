@@ -14,8 +14,8 @@ use crate::protocol::{
     accounting_fields, accounting_response, authorization_fields, authorization_response,
     service_error,
 };
-use crate::scenario::{EmulatorResponse, EmulatorScenario, IpcRpc};
-use crate::state::{EmulatorState, MatchedRule};
+use crate::scenario::{EmulatorResponse, EmulatorScenario, IpcRpc, ResponseBody};
+use crate::state::{EmulatorState, MatchResult, MatchedRule};
 
 #[derive(Clone)]
 /// Emulated implementation of the TACACS+ agent gRPC service.
@@ -39,6 +39,23 @@ impl AgentService {
         };
         if let Some(delay_ms) = matched.delay_ms {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        Ok(matched)
+    }
+
+    async fn match_request_result(
+        &self,
+        rpc: IpcRpc,
+        fields: BTreeMap<String, Value>,
+    ) -> Result<MatchResult, Status> {
+        let matched = {
+            let mut state = self.state.lock().await;
+            state.record_and_match_result(rpc, &fields)?
+        };
+        if let MatchResult::Matched(matched_rule) = &matched {
+            if let Some(delay_ms) = matched_rule.delay_ms {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
         }
         Ok(matched)
     }
@@ -71,8 +88,20 @@ impl TacacsAgent for AgentService {
         request: Request<ipc::AuthorizationRequest>,
     ) -> Result<Response<ipc::AuthorizationReply>, Status> {
         let fields = authorization_fields(&request.into_inner());
-        let matched = self.match_request(IpcRpc::Authorization, fields).await?;
-        match matched.response {
+        let matched = self
+            .match_request_result(IpcRpc::Authorization, fields)
+            .await?;
+        let response = match matched {
+            MatchResult::Matched(matched) => matched.response,
+            MatchResult::Unmatched { request_json } => EmulatorResponse::Response(ResponseBody {
+                server: "ipc-emulator".to_owned(),
+                status: "Fail".to_owned(),
+                server_message: format!("no authorization rule matched request {request_json}"),
+                data: String::new(),
+                args: Vec::new(),
+            }),
+        };
+        match response {
             EmulatorResponse::Response(response) => Ok(Response::new(ipc::AuthorizationReply {
                 result: Some(ipc::authorization_reply::Result::Response(
                     authorization_response(response)?.into_proto(),
