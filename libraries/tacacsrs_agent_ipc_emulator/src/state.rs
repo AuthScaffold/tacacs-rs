@@ -57,6 +57,19 @@ impl EmulatorState {
         rpc: IpcRpc,
         fields: &BTreeMap<String, Value>,
     ) -> Result<MatchedRule, Status> {
+        match self.record_and_match_result(rpc, fields)? {
+            MatchResult::Matched(matched) => Ok(matched),
+            MatchResult::Unmatched { request_json } => Err(Status::not_found(format!(
+                "IPC emulator has no {rpc} transaction rule matching {request_json}"
+            ))),
+        }
+    }
+
+    pub(crate) fn record_and_match_result(
+        &mut self,
+        rpc: IpcRpc,
+        fields: &BTreeMap<String, Value>,
+    ) -> Result<MatchResult, Status> {
         self.captured_requests.push(CapturedIpcRequest {
             rpc,
             fields: fields.clone(),
@@ -80,16 +93,19 @@ impl EmulatorState {
                     "Failed to encode unmatched IPC request for diagnostics: {error}"
                 ))
             })?;
-            return Err(Status::not_found(format!(
-                "IPC emulator has no {rpc} transaction rule matching {request_json}"
-            )));
+            return Ok(MatchResult::Unmatched { request_json });
         };
         self.hit_counts[index] += 1;
-        Ok(MatchedRule {
+        Ok(MatchResult::Matched(MatchedRule {
             response: rule.respond.clone(),
             delay_ms: rule.delay_ms,
-        })
+        }))
     }
+}
+
+pub(crate) enum MatchResult {
+    Matched(MatchedRule),
+    Unmatched { request_json: String },
 }
 
 /// Result of matching an incoming IPC request against the ordered transaction

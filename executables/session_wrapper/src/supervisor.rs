@@ -951,4 +951,44 @@ mod tests {
             AuthDecision::Allow => panic!("mandatory PASS_REPL replacement arg was allowed"),
         }
     }
+
+    #[test]
+    fn authorization_fail_status_is_denied_without_fail_policy() {
+        let mut response = authorization_response(AuthorizationResponseStatus::Fail, Vec::new());
+        response.server_message = "no authorization rule matched request".to_owned();
+
+        let decision = map_authorization_response(&response, "/usr/bin/htop");
+
+        match decision {
+            AuthDecision::Deny(deny) => {
+                assert_eq!(deny.source, DenySource::AuthorizationDenied);
+                assert_eq!(deny.fail_policy, None);
+                assert_eq!(
+                    deny.server_message.as_deref(),
+                    Some("no authorization rule matched request")
+                );
+            }
+            AuthDecision::Allow => panic!("authorization Fail status was allowed"),
+        }
+    }
+
+    #[test]
+    fn authorization_error_status_is_denied_without_fail_policy() {
+        let mut response = authorization_response(AuthorizationResponseStatus::Error, Vec::new());
+        response.server_message = "authorization policy evaluation failed".to_owned();
+
+        let decision = map_authorization_response(&response, "/usr/bin/htop");
+
+        match decision {
+            AuthDecision::Deny(deny) => {
+                assert_eq!(deny.source, DenySource::AuthorizationDenied);
+                assert_eq!(deny.fail_policy, None);
+                assert_eq!(
+                    deny.server_message.as_deref(),
+                    Some("authorization policy evaluation failed")
+                );
+            }
+            AuthDecision::Allow => panic!("authorization Error status was allowed"),
+        }
+    }
 }

@@ -2,6 +2,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
@@ -10,15 +11,27 @@ const MAX_COMMAND_DISPLAY_CHARS: usize = 256;
 
 /// Builds a user-facing command display string and truncates very long command lines.
 pub(crate) fn command_display(exec_path: &str, exec_args: &[String]) -> String {
-    let joined = if exec_args.is_empty() {
+    let display_args = match exec_args.first() {
+        Some(argv0) if argv0 == exec_path || argv0_is_exec_basename(argv0, exec_path) => {
+            &exec_args[1..]
+        }
+        _ => exec_args,
+    };
+
+    let joined = if display_args.is_empty() {
         exec_path.to_owned()
-    } else if exec_args.first().is_some_and(|arg| arg == exec_path) {
-        exec_args.join(" ")
     } else {
-        format!("{exec_path} {}", exec_args.join(" "))
+        format!("{exec_path} {}", display_args.join(" "))
     };
 
     truncate_display(&joined, MAX_COMMAND_DISPLAY_CHARS)
+}
+
+fn argv0_is_exec_basename(argv0: &str, exec_path: &str) -> bool {
+    Path::new(exec_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some(argv0)
 }
 
 /// Formats a user-facing deny message for TACACS+ authorization deny decisions.
@@ -83,6 +96,21 @@ mod tests {
         let display = command_display("/bin/echo", &[long]);
         assert!(display.ends_with('…'));
         assert_eq!(display.chars().count(), 256);
+    }
+
+    #[test]
+    fn command_display_omits_basename_argv0() {
+        let display = command_display("/usr/bin/htop", &["htop".to_owned()]);
+        assert_eq!(display, "/usr/bin/htop");
+    }
+
+    #[test]
+    fn command_display_preserves_arguments_after_argv0() {
+        let display = command_display(
+            "/bin/rm",
+            &["rm".to_owned(), "-rf".to_owned(), "/tmp/example".to_owned()],
+        );
+        assert_eq!(display, "/bin/rm -rf /tmp/example");
     }
 
     #[test]
