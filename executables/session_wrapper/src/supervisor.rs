@@ -110,7 +110,7 @@ use super::deny::{
 use super::process::{
     ChildSetupStatus, SessionProcess, read_child_setup_status_fd, reap_available_children,
 };
-use super::process_reader::read_exec_args;
+use super::process_reader::{read_exec_args, verify_exec_path_unchanged};
 
 /// How often the dispatch loop polls for reaped children in addition to SIGCHLD.
 ///
@@ -481,16 +481,7 @@ async fn handle_one_notification(
     // completes in microseconds — fast enough to run synchronously in an async
     // task without spawn_blocking.
     let exec_info = match read_exec_args(notif_fd, pid, &req) {
-        Ok(Some(info)) => info,
-        Ok(None) => {
-            // Non-exec syscall (fork/clone/etc.) — always continue.
-            log::trace!("non-exec syscall from pid {pid}: allowing");
-            let resp = ScmpNotifResp::new_continue(req.id, ScmpNotifRespFlags::empty());
-            if let Err(err) = send_response(notif_fd, resp) {
-                log_or_propagate_send_error(err, notif_fd, req.id)?;
-            }
-            return Ok(());
-        }
+        Ok(info) => info,
         Err(err) => {
             if check_notification_valid(notif_fd, req.id).is_err() {
                 log::debug!(
@@ -501,16 +492,40 @@ async fn handle_one_notification(
             }
             log::warn!("failed to read exec args from pid {pid}: {err:#}");
             let decision = fail_policy_decision(config.fail_policy, "<unreadable>");
-            return apply_decision(notif_fd, &req, "<unreadable>", &[], &decision, &config);
+            return apply_decision(
+                DecisionContext {
+                    notif_fd,
+                    req: &req,
+                    pid,
+                    filename_addr: None,
+                    exec_path: "<unreadable>",
+                    exec_args: &[],
+                    config: &config,
+                },
+                &decision,
+            );
         }
     };
 
-    let (exec_path, exec_args) = exec_info;
+    let (exec_path, exec_args, filename_addr) = exec_info;
     log::debug!("pid {pid} exec: {exec_path:?} args={exec_args:?}");
 
     // Step 2: Fast-path allowlist check (O(1) HashSet lookup).
     if allowlist.is_allowed(&exec_path) {
         log::debug!("allowlist hit for {exec_path:?}: allowing without IPC");
+
+        // TOCTOU re-read: verify the path hasn't been swapped by a racing
+        // thread between the initial read and this response.
+        if let Err(err) = verify_exec_path_unchanged(pid, filename_addr, &exec_path) {
+            log::warn!("{err:#}");
+            eprintln!("session-wrapper: exec denied (TOCTOU): {exec_path}");
+            let resp = ScmpNotifResp::new_error(req.id, -libc::EPERM, ScmpNotifRespFlags::empty());
+            if let Err(err) = send_response(notif_fd, resp) {
+                log_or_propagate_send_error(err, notif_fd, req.id)?;
+            }
+            return Ok(());
+        }
+
         let resp = ScmpNotifResp::new_continue(req.id, ScmpNotifRespFlags::empty());
         if let Err(err) = send_response(notif_fd, resp) {
             log_or_propagate_send_error(err, notif_fd, req.id)?;
@@ -537,51 +552,108 @@ async fn handle_one_notification(
         };
 
     // Step 4: Respond to the kernel.
-    apply_decision(notif_fd, &req, &exec_path, &exec_args, &decision, &config)
+    apply_decision(
+        DecisionContext {
+            notif_fd,
+            req: &req,
+            pid,
+            filename_addr: Some(filename_addr),
+            exec_path: &exec_path,
+            exec_args: &exec_args,
+            config: &config,
+        },
+        &decision,
+    )
+}
+
+fn verify_exec_path_if_available(
+    pid: u32,
+    filename_addr: Option<u64>,
+    exec_path: &str,
+) -> Result<()> {
+    if let Some(filename_addr) = filename_addr {
+        verify_exec_path_unchanged(pid, filename_addr, exec_path)
+    } else {
+        log::warn!(
+            "allowing exec of {exec_path:?} for pid {pid} without TOCTOU verification: filename address unknown"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DecisionContext<'a> {
+    notif_fd: ScmpFd,
+    req: &'a ScmpNotifReq,
+    pid: u32,
+    filename_addr: Option<u64>,
+    exec_path: &'a str,
+    exec_args: &'a [String],
+    config: &'a SupervisorConfig,
 }
 
 /// Sends the allow or deny kernel response for a seccomp notification.
 ///
+/// When the decision is `Allow`, performs a TOCTOU re-read of the exec path
+/// from `/proc/[pid]/mem` immediately before sending `CONTINUE`. If the path
+/// has changed since the original read (indicating a racing thread swapped it),
+/// the exec is denied with `EPERM` instead.
+/// If the exec path could not be read in the first place and fail-open chose
+/// `Allow`, the filename address is unknown and verification is skipped.
+///
 /// If sending fails because the notification has expired (the target process
 /// exited during our IPC call), the function logs the race and returns `Ok(())`.
 /// This is correct behaviour — there is no process left to deny or allow.
-fn apply_decision(
-    notif_fd: ScmpFd,
-    req: &ScmpNotifReq,
-    exec_path: &str,
-    exec_args: &[String],
-    decision: &AuthDecision,
-    config: &SupervisorConfig,
-) -> Result<()> {
+fn apply_decision(context: DecisionContext<'_>, decision: &AuthDecision) -> Result<()> {
     match decision {
         AuthDecision::Allow => {
-            log::debug!("allowing exec of {exec_path:?} for pid {}", req.pid);
-            let resp = ScmpNotifResp::new_continue(req.id, ScmpNotifRespFlags::empty());
+            // TOCTOU re-read: verify the path hasn't been swapped by a racing
+            // thread between the initial read and this response. This is the
+            // critical mitigation — it shrinks the TOCTOU window from the full
+            // IPC round-trip to just pread + ioctl.
+            if let Err(err) =
+                verify_exec_path_if_available(context.pid, context.filename_addr, context.exec_path)
+            {
+                log::warn!("{err:#}");
+                eprintln!("session-wrapper: exec denied (TOCTOU): {}", context.exec_path);
+                let resp = ScmpNotifResp::new_error(
+                    context.req.id,
+                    -libc::EPERM,
+                    ScmpNotifRespFlags::empty(),
+                );
+                if let Err(err) = send_response(context.notif_fd, resp) {
+                    log_or_propagate_send_error(err, context.notif_fd, context.req.id)?;
+                }
+                return Ok(());
+            }
+
+            log::debug!("allowing exec of {:?} for pid {}", context.exec_path, context.req.pid);
+            let resp = ScmpNotifResp::new_continue(context.req.id, ScmpNotifRespFlags::empty());
             // `SECCOMP_USER_NOTIF_FLAG_CONTINUE` tells the kernel to proceed with
             // the original execve as if no filter existed — the only correct
             // "allow" response for a user-notification filter.
-            if let Err(err) = send_response(notif_fd, resp) {
-                log_or_propagate_send_error(err, notif_fd, req.id)?;
+            if let Err(err) = send_response(context.notif_fd, resp) {
+                log_or_propagate_send_error(err, context.notif_fd, context.req.id)?;
             }
         }
         AuthDecision::Deny(ref deny) => {
             log::warn!(
                 "deny event: user={:?} command={:?} args={:?} server={:?} server_response={:?} \
                  fail_policy={:?} reason={}",
-                config.user,
-                exec_path,
-                exec_args,
+                context.config.user,
+                context.exec_path,
+                context.exec_args,
                 deny.server,
                 deny.server_message,
                 deny.fail_policy,
                 deny.reason,
             );
 
-            let command = command_display(exec_path, exec_args);
+            let command = command_display(context.exec_path, context.exec_args);
             let stderr_message = match deny.source {
                 DenySource::AuthorizationDenied => authorization_denied_message(
                     &command,
-                    &config.user,
+                    &context.config.user,
                     deny.server.as_deref().unwrap_or("<unknown>"),
                     deny.server_message.as_deref(),
                 ),
@@ -590,17 +662,18 @@ fn apply_decision(
                 }
             };
 
-            if let Err(err) = write_process_stderr(req.pid, &stderr_message) {
+            if let Err(err) = write_process_stderr(context.req.pid, &stderr_message) {
                 log::warn!(
                     "failed to write deny message to target stderr for pid {}: {err:#}",
-                    req.pid
+                    context.req.pid
                 );
             }
 
             // `-libc::EPERM` is the negative errno returned to the blocked execve.
-            let resp = ScmpNotifResp::new_error(req.id, -libc::EPERM, ScmpNotifRespFlags::empty());
-            if let Err(err) = send_response(notif_fd, resp) {
-                log_or_propagate_send_error(err, notif_fd, req.id)?;
+            let resp =
+                ScmpNotifResp::new_error(context.req.id, -libc::EPERM, ScmpNotifRespFlags::empty());
+            if let Err(err) = send_response(context.notif_fd, resp) {
+                log_or_propagate_send_error(err, context.notif_fd, context.req.id)?;
             }
         }
     }
@@ -788,9 +861,13 @@ pub(crate) async fn run_supervisor(
 /// 4. **Control socket** — propagates a child setup failure as an error.
 ///
 /// The loop exits when:
-/// - The notification receiver thread exits (channel closed).
-/// - All spawned handler tasks have completed.
 /// - `waitpid` reports no remaining children (`ECHILD`).
+/// - All spawned handler tasks have completed.
+///
+/// The notification receiver can still be blocked on the listener fd at that
+/// point because the parent owns the fd until the supervisor returns. Once no
+/// children or subreaped descendants remain, no future exec notifications can
+/// arrive, so child reaping is the authoritative shutdown signal.
 ///
 /// Extracted from [`run_supervisor`] to keep function sizes within clippy
 /// limits while keeping the full control flow visible in one place.
@@ -863,16 +940,18 @@ async fn dispatch_loop(
             res = &mut ctrl_handle, if !ctrl_done => {
                 ctrl_done = true;
                 match res {
-                    Ok(Ok(())) => {} // ControlClosed: child exec'd the shell
+                    Ok(Ok(())) => {} // ControlClosed: child exec'd the command
                     Ok(Err(e)) => return Err(e),
                     Err(e) => bail!("control socket watcher task panicked: {e}"),
                 }
             }
         }
 
-        // Exit when: no more notifications will arrive, all in-flight handlers
-        // have finished, and all child processes have been reaped.
-        if !notifications_open && handler_tasks.is_empty() && !has_children {
+        // Exit when all child processes have been reaped and all in-flight
+        // notification handlers have finished. The receiver thread may still
+        // be blocked on the listener fd owned by `SessionProcess`; returning
+        // lets that owner close the fd.
+        if !has_children && handler_tasks.is_empty() {
             break;
         }
     }
@@ -990,5 +1069,11 @@ mod tests {
             }
             AuthDecision::Allow => panic!("authorization Error status was allowed"),
         }
+    }
+
+    #[test]
+    fn unknown_filename_address_skips_exec_path_verification() {
+        verify_exec_path_if_available(1234, None, "<unreadable>")
+            .expect("unknown filename address should not fail TOCTOU verification");
     }
 }

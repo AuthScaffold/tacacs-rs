@@ -8,7 +8,7 @@ For architecture, CLI shape, and current implementation scope, see the [session-
 
 The session wrapper currently verifies process lifecycle and seccomp user notification wiring. TACACS+ authorization decisioning is intentionally stubbed as allow-all for now, so these smoke tests do not require a running `tacacsrs-agentd` service or TACACS+ server.
 
-The trailing `COMMAND [ARGS]...` is still required because it is the authorization context. The process that is executed today is `--shell`, so smoke tests use small temporary scripts as the shell.
+The trailing `COMMAND [ARGS]...` is the process that is executed under supervision. Smoke tests use small temporary scripts as the wrapped command.
 
 ## Demo scripts
 
@@ -17,7 +17,7 @@ Runnable allow-all demos live in `executables/session_wrapper/demo/`:
 | Script | Purpose |
 |--------|---------|
 | `allow-all-basic.sh` | Builds `session-wrapper`, runs a short wrapped script, and verifies the wrapped process wrote a marker file |
-| `allow-all-descendants.sh` | Runs a wrapped script that exits while a descendant continues, with `--intercept-fork` enabled |
+| `allow-all-descendants.sh` | Runs a wrapped script that exits while a descendant continues |
 | `allow-all-interactive-bash.sh` | Starts an interactive Bash session under the current allow-all supervisor for manual exploration |
 
 Run them from anywhere inside a Linux x86_64 checkout:
@@ -85,10 +85,10 @@ chmod +x "$tmp/exit-zero"
 
 SESSION_WRAPPER_SMOKE_MARKER="$tmp/marker" \
 timeout 10s target/debug/session-wrapper \
-  --shell "$tmp/exit-zero" \
   --user "$(id -un)" \
   --user-uid "$(id -u)" \
   --user-gid "$(id -g)" \
+  --fail-policy open \
   -- "$tmp/exit-zero"
 
 test "$(cat "$tmp/marker")" = "ok"
@@ -107,12 +107,12 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 if timeout 10s target/debug/session-wrapper \
-  --shell "$tmp/does-not-exist" \
   --user "$(id -un)" \
   --user-uid "$(id -u)" \
   --user-gid "$(id -g)" \
+  --fail-policy open \
   -- "$tmp/does-not-exist" 2>"$tmp/error"; then
-  echo "expected session-wrapper to fail for a missing shell" >&2
+  echo "expected session-wrapper to fail for a missing command" >&2
   exit 1
 fi
 
@@ -143,11 +143,10 @@ chmod +x "$tmp/descendant"
 
 SESSION_WRAPPER_DESCENDANT_MARKER="$tmp/descendant-marker" \
 timeout 10s target/debug/session-wrapper \
-  --intercept-fork \
-  --shell "$tmp/descendant" \
   --user "$(id -un)" \
   --user-uid "$(id -u)" \
   --user-gid "$(id -g)" \
+  --fail-policy open \
   -- "$tmp/descendant"
 
 test "$(cat "$tmp/descendant-marker")" = "descendant-ok"
@@ -177,10 +176,10 @@ target_gid=$(id -g)
 
 sudo env SESSION_WRAPPER_IDENTITY_MARKER="$tmp/identity-marker" \
   target/debug/session-wrapper \
-  --shell "$tmp/identity" \
   --user "$target_user" \
   --user-uid "$target_uid" \
   --user-gid "$target_gid" \
+  --fail-policy open \
   -- "$tmp/identity"
 
 test "$(cat "$tmp/identity-marker")" = "$target_uid:$target_gid"
