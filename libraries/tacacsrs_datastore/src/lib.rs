@@ -237,21 +237,25 @@ pub fn watch_to_change_stream(
     receiver: watch::Receiver<Option<Arc<TacacsPlus>>>,
 ) -> ConfigChangeStream {
     let mut previous: Option<Arc<TacacsPlus>> = receiver.borrow().clone();
-    let stream = WatchStream::new(receiver).filter_map(move |snapshot| {
-        let snapshot = snapshot?;
-        let delta = ConfigDelta::diff(previous.as_deref(), &snapshot);
-        let change = ConfigChange {
-            config: Arc::clone(&snapshot),
-            delta,
-        };
-        previous = Some(snapshot);
-        Some(change)
-    });
+    let stream = WatchStream::new(receiver)
+        .skip(1)
+        .filter_map(move |snapshot| {
+            let snapshot = snapshot?;
+            let delta = ConfigDelta::diff(previous.as_deref(), &snapshot);
+            let change = ConfigChange {
+                config: Arc::clone(&snapshot),
+                delta,
+            };
+            previous = Some(snapshot);
+            Some(change)
+        });
     Box::pin(stream)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
 
@@ -322,6 +326,10 @@ mod tests {
         let mut stream = watch_to_change_stream(rx);
 
         // No update yet — initial value is the baseline, not a change.
+        assert!(tokio::time::timeout(Duration::from_millis(25), stream.next())
+            .await
+            .is_err());
+
         let mut updated = sample_config("192.0.2.1");
         updated.server[0].timeout = 7;
         let updated_arc = Arc::new(updated);

@@ -47,3 +47,47 @@ YANG model without waiting for SONiC ConfigDB updates:
 
 Unknown keys are ignored with a `warn!` log so legacy SONiC builds with extra
 operator-specific keys do not cause the bridge to fail at startup.
+
+## Example watcher
+
+The `configdb_watch` example demonstrates the crate's runtime contract: it
+loads the current TACACS+ snapshot from Redis and then prints every
+`ConfigChange` emitted by the keyspace-notification subscription. The example
+defaults to a local TCP Redis instance so it works with Docker or WSL; production
+SONiC deployments normally use the Unix socket default from `SonicConnection`.
+
+From the repository root, the full local smoke test can be run with Podman:
+
+```powershell
+.\lde\run-sonic-configdb-smoke.ps1
+```
+
+The manual equivalent is:
+
+```bash
+docker run --rm -p 6379:6379 redis
+redis-cli -n 4 CONFIG SET notify-keyspace-events KEA
+
+redis-cli -n 4 HSET 'TACPLUS|global' \
+   timeout 5 passkey shared-secret auth_type pap src_intf Management0
+redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' \
+   priority 1 tcp_port 49 timeout 10 passkey server-secret \
+   domain_name tacacs-a.example.test sni_enabled true single_connection true
+
+cargo run -p tacacsrs-sonic --example configdb_watch -- \
+   --redis-url redis://127.0.0.1:6379 \
+   --redis-db 4
+```
+
+In another terminal, mutate the Redis rows and watch the example print the
+computed delta:
+
+```bash
+redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.20' \
+   priority 2 tcp_port 49 passkey backup-secret
+redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' timeout 20
+redis-cli -n 4 DEL 'TACPLUS_SERVER|192.0.2.20'
+```
+
+The example intentionally reports only whether a shared secret is configured;
+it never prints secret values.

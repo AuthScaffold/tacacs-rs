@@ -59,10 +59,16 @@ impl SonicConnection {
     pub async fn connect(&self) -> anyhow::Result<MultiplexedConnection> {
         let client = redis::Client::open(self.url.as_str())
             .with_context(|| format!("Invalid Redis URL '{}'", self.url))?;
-        client
+        let mut conn = client
             .get_multiplexed_async_connection()
             .await
-            .with_context(|| format!("Failed to connect to SONiC ConfigDB at '{}'", self.url))
+            .with_context(|| format!("Failed to connect to SONiC ConfigDB at '{}'", self.url))?;
+        redis::cmd("SELECT")
+            .arg(self.db_index)
+            .query_async::<()>(&mut conn)
+            .await
+            .with_context(|| format!("Failed to select SONiC ConfigDB index {}", self.db_index))?;
+        Ok(conn)
     }
 
     /// The keyspace-notification pattern that covers TACPLUS / TACPLUS_SERVER.
