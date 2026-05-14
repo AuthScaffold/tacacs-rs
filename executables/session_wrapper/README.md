@@ -59,7 +59,13 @@ Pass the file with `--allowlist /path/to/file`.
 
 ## Reading exec arguments
 
-When a notification arrives, the supervisor reads the executable path and argv from the target process's virtual memory via `/proc/[pid]/mem` and `pread(2)`. The process is frozen at the syscall boundary, so its memory is stable. `check_notification_valid()` is called before and during the read to detect if the process was killed mid-read (TOCTOU mitigation).
+When a notification arrives, the supervisor reads the executable path and argv
+from the target process's virtual memory via `/proc/[pid]/mem` and `pread(2)`.
+The notifying thread is held at the syscall boundary, but sibling threads in
+the same process can still modify that memory before the kernel resumes the
+syscall. `check_notification_valid()` is called before and during the read to
+detect whether the notification is still pending, for example because the
+process was not killed mid-read; it does not prove argv memory is unchanged.
 
 ## Seccomp policy
 
@@ -131,7 +137,7 @@ cargo clippy -p session-wrapper --target x86_64-unknown-linux-musl --all-targets
 cargo test -p session-wrapper --target x86_64-unknown-linux-musl
 ```
 
-See [Session Wrapper Smoke and Integration Testing](../../docs/session-wrapper-testing.md) for detailed smoke tests and expected results. Native Alpine builds have a separate [Alpine Linux technical note](README.alpine.md).
+See [Session Wrapper Smoke and Integration Testing](../../docs/session-wrapper-testing.md) for detailed smoke tests and expected results. Native Alpine builds have a separate [Alpine Linux technical note](README.alpine.md). For SSH integration (`ForceCommand`, login-shell pattern, SSH environment-variable mapping), configuration examples, security considerations, and troubleshooting, see the [Session Wrapper Deployment Guide](../../docs/session-wrapper.md).
 
 ## Future work
 
