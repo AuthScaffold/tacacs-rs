@@ -2012,7 +2012,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures-core",
- "log",
  "serde",
  "serde_json",
  "tacacsrs-config",
