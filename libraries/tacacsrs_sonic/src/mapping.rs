@@ -113,8 +113,8 @@ pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Re
     });
 
     let mut builder = TacacsPlusBuilder::new();
-    for (index, row) in rows.iter().enumerate() {
-        let server = row.to_server(index, &global)?;
+    for row in &rows {
+        let server = row.to_server(&global)?;
         builder = builder.with_server(server);
     }
 
@@ -275,11 +275,7 @@ impl SonicServerRow {
         Ok(row)
     }
 
-    fn to_server(
-        &self,
-        index: usize,
-        global: &SonicGlobal,
-    ) -> anyhow::Result<tacacsrs_config::TacacsPlusServer> {
+    fn to_server(&self, global: &SonicGlobal) -> anyhow::Result<tacacsrs_config::TacacsPlusServer> {
         let timeout = self
             .timeout
             .or(global.timeout)
@@ -298,7 +294,7 @@ impl SonicServerRow {
             })?;
 
         let mut server = TacacsPlusServerBuilder::new(
-            sonic_server_name(index, &self.address),
+            sonic_server_name(&self.address),
             self.server_type,
             self.address.clone(),
             self.tcp_port,
@@ -331,10 +327,12 @@ impl SonicServerRow {
 ///
 /// SONiC stores upstream servers indexed by address (its primary key) with no
 /// dedicated human-friendly name. The YANG model requires a unique `name`, so
-/// the bridge synthesizes one as `sonic-server-<index>-<address>`.
+/// the bridge synthesizes one from the stable ConfigDB key. It intentionally
+/// does not include priority or sorted position so deltas remain stable when a
+/// higher-priority server is inserted.
 #[must_use]
-pub fn sonic_server_name(index: usize, address: &str) -> String {
-    format!("sonic-server-{index}-{address}")
+pub fn sonic_server_name(address: &str) -> String {
+    format!("sonic-server-{address}")
 }
 
 /// Parse SONiC boolean strings.
@@ -382,6 +380,7 @@ fn parse_server_type(value: &str) -> anyhow::Result<TacacsPlusServerType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tacacsrs_datastore::ConfigDelta;
 
     fn h(pairs: &[(&str, &str)]) -> SonicHash {
         pairs
@@ -532,5 +531,30 @@ mod tests {
             .map(|s| s.address.clone())
             .collect::<Vec<_>>();
         assert_eq!(order, vec!["192.0.2.10", "192.0.2.30", "192.0.2.20"]);
+    }
+
+    #[test]
+    fn inserting_higher_priority_server_keeps_existing_server_names_stable() {
+        let mut previous_servers = BTreeMap::new();
+        previous_servers
+            .insert("192.0.2.20".to_string(), h(&[("priority", "5"), ("passkey", "x")]));
+        let previous = map_sonic_tables_to_tacacs_plus(&SonicTacacsTables::new(
+            SonicHash::new(),
+            previous_servers,
+        ))
+        .expect("previous mapping succeeds");
+
+        let mut new_servers = BTreeMap::new();
+        new_servers.insert("192.0.2.10".to_string(), h(&[("priority", "1"), ("passkey", "x")]));
+        new_servers.insert("192.0.2.20".to_string(), h(&[("priority", "5"), ("passkey", "x")]));
+        let new =
+            map_sonic_tables_to_tacacs_plus(&SonicTacacsTables::new(SonicHash::new(), new_servers))
+                .expect("new mapping succeeds");
+
+        let delta = ConfigDelta::diff(Some(&previous), &new);
+        assert_eq!(delta.added_servers, vec!["sonic-server-192.0.2.10"]);
+        assert!(delta.removed_servers.is_empty());
+        assert!(delta.modified_servers.is_empty());
+        assert_eq!(new.server[1].name, "sonic-server-192.0.2.20");
     }
 }

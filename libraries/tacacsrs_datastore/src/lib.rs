@@ -13,11 +13,10 @@ use tokio_stream::StreamExt;
 
 /// Description of how the configuration changed between two snapshots.
 ///
-/// Backends compute these deltas on a best-effort basis so that consumers can
-/// reason about which servers were added, removed, or modified without
-/// re-deriving the diff themselves. The deltas are advisory: a consumer may
-/// always choose to fall back to "rebuild everything from the new
-/// [`TacacsPlus`]" semantics if it is simpler than handling the deltas.
+/// Each [`ConfigChange`] carries the complete new [`TacacsPlus`] snapshot.
+/// Consumers should treat that snapshot as authoritative and use this delta as
+/// a decision aid: apply an incremental update when the delta is simple enough,
+/// or rebuild from the full snapshot when that is safer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigDelta {
     /// Server names present in the new snapshot but not in the previous one.
@@ -118,10 +117,9 @@ fn slice_structurally_equal<T: serde::Serialize>(a: &[T], b: &[T]) -> bool {
 /// Event broadcast by a [`ConfigDatastore`] when the upstream configuration
 /// changes.
 ///
-/// Each event carries the full validated [`TacacsPlus`] snapshot so that
-/// consumers do not have to re-query the datastore. The optional `delta`
-/// describes what the backend believes changed; consumers may use it as a hint
-/// or ignore it entirely and rebuild from the snapshot.
+/// Each event carries the full validated [`TacacsPlus`] snapshot so consumers
+/// receive monitor-style notifications: the payload is the latest complete
+/// configuration, and `delta` is a decision aid for incremental handling.
 #[derive(Debug, Clone)]
 pub struct ConfigChange {
     /// The new validated configuration.
@@ -159,10 +157,11 @@ pub trait ConfigDatastore: Send + Sync + 'static {
     /// Subscribe to configuration change events.
     ///
     /// The returned stream emits a [`ConfigChange`] each time the backend
-    /// observes a relevant change in the underlying store. Backends that
-    /// cannot deliver change notifications return an empty stream — callers
-    /// must still tolerate dropped or coalesced events and treat each
-    /// notification as authoritative.
+    /// observes a relevant change in the underlying store. Every event carries
+    /// the complete latest snapshot; callers may use the delta to choose an
+    /// incremental update path but should fall back to rebuilding from the
+    /// snapshot whenever the delta is not sufficient. Backends that cannot
+    /// deliver change notifications return an empty stream.
     ///
     /// # Errors
     ///
@@ -237,18 +236,16 @@ pub fn watch_to_change_stream(
     receiver: watch::Receiver<Option<Arc<TacacsPlus>>>,
 ) -> ConfigChangeStream {
     let mut previous: Option<Arc<TacacsPlus>> = receiver.borrow().clone();
-    let stream = WatchStream::new(receiver)
-        .skip(1)
-        .filter_map(move |snapshot| {
-            let snapshot = snapshot?;
-            let delta = ConfigDelta::diff(previous.as_deref(), &snapshot);
-            let change = ConfigChange {
-                config: Arc::clone(&snapshot),
-                delta,
-            };
-            previous = Some(snapshot);
-            Some(change)
-        });
+    let stream = WatchStream::from_changes(receiver).filter_map(move |snapshot| {
+        let snapshot = snapshot?;
+        let delta = ConfigDelta::diff(previous.as_deref(), &snapshot);
+        let change = ConfigChange {
+            config: Arc::clone(&snapshot),
+            delta,
+        };
+        previous = Some(snapshot);
+        Some(change)
+    });
     Box::pin(stream)
 }
 
@@ -339,5 +336,23 @@ mod tests {
         let change = stream.next().await.expect("should receive change");
         assert_eq!(change.delta.modified_servers, vec!["primary"]);
         assert_eq!(change.config.server[0].timeout, 7);
+    }
+
+    #[tokio::test]
+    async fn watch_stream_keeps_update_sent_before_first_poll() {
+        let initial = Arc::new(sample_config("192.0.2.1"));
+        let (tx, rx) = watch::channel(Some(Arc::clone(&initial)));
+        let mut stream = watch_to_change_stream(rx);
+
+        let mut updated = sample_config("192.0.2.1");
+        updated.server[0].timeout = 9;
+        tx.send(Some(Arc::new(updated))).expect("send update");
+
+        let change = stream
+            .next()
+            .await
+            .expect("should receive first real update");
+        assert_eq!(change.delta.modified_servers, vec!["primary"]);
+        assert_eq!(change.config.server[0].timeout, 9);
     }
 }

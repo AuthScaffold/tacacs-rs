@@ -146,9 +146,93 @@ environments:
 
 ```bash
 tacacsrs-agentd --sonic \
-    --sonic-redis-url tcp://127.0.0.1:6379 \
+    --sonic-redis-url redis://127.0.0.1:6379 \
     --sonic-redis-db 4
 ```
+
+## Local Redis smoke test
+
+For branch validation on a development machine, run Redis locally over TCP and
+seed database `4` with SONiC-style TACACS+ rows. On Windows, Docker Desktop or
+WSL Redis is usually the simplest path.
+
+The repository includes a PowerShell helper that runs the whole proof with
+Podman, including Redis startup, seed data, example execution, ConfigDB
+mutations, and output assertions:
+
+```powershell
+.\lde\run-sonic-configdb-smoke.ps1
+```
+
+To run the same flow manually, start Redis first:
+
+```bash
+docker run --rm -p 6379:6379 redis
+```
+
+In a second terminal, prepare the CONFIG_DB-like database:
+
+```bash
+redis-cli -n 4 CONFIG SET notify-keyspace-events KEA
+
+redis-cli -n 4 DEL 'TACPLUS|global'
+for key in $(redis-cli -n 4 --raw KEYS 'TACPLUS_SERVER|*'); do
+    redis-cli -n 4 DEL "$key"
+done
+
+redis-cli -n 4 HSET 'TACPLUS|global' \
+    timeout 5 passkey shared-secret auth_type pap src_intf Management0
+redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' \
+    priority 1 tcp_port 49 timeout 10 passkey server-secret \
+    domain_name tacacs-a.example.test sni_enabled true single_connection true
+```
+
+Run the `tacacsrs-sonic` watcher example to validate the datastore contract
+directly:
+
+```bash
+cargo run -p tacacsrs-sonic --example configdb_watch -- \
+    --redis-url redis://127.0.0.1:6379 \
+    --redis-db 4
+```
+
+Then mutate ConfigDB rows and confirm the example emits a `ConfigChange` with
+the expected delta:
+
+```bash
+redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.20' \
+    priority 2 tcp_port 49 passkey backup-secret
+redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' timeout 20
+redis-cli -n 4 DEL 'TACPLUS_SERVER|192.0.2.20'
+redis-cli -n 4 HSET 'TACPLUS|global' timeout 7
+```
+
+Expected results:
+
+1. The initial load prints one server synthesized from
+   `TACPLUS_SERVER|192.0.2.10`.
+2. Adding `TACPLUS_SERVER|192.0.2.20` reports an added server.
+3. Changing `TACPLUS_SERVER|192.0.2.10.timeout` reports a modified server.
+4. Deleting `TACPLUS_SERVER|192.0.2.20` reports a removed server.
+5. Updating `TACPLUS|global` emits a change event after the debounce window;
+   the exact delta depends on whether the global value changes the effective
+   validated YANG snapshot.
+
+To validate the daemon path, start `tacacsrs-agentd` against the same Redis
+instance:
+
+```bash
+cargo run -p tacacsrs-agentd -- \
+    --sonic \
+    --sonic-redis-url redis://127.0.0.1:6379 \
+    --sonic-redis-db 4 \
+    --listen-endpoint /tmp/tacacs.sock \
+    -vv
+```
+
+Mutating the Redis rows should produce the documented configuration-change log
+message. The current daemon observes changes but does not hot-swap upstream
+connections in place; restart `tacacsrs-agentd` to apply a changed server set.
 
 ## Hot reload behaviour
 

@@ -9,8 +9,10 @@ It defines:
 
 - [`ConfigDatastore`] — an `async` trait with `load` and `subscribe` methods.
 - [`ConfigChange`] — the event emitted when the upstream configuration is
-  reloaded; it carries the new `TacacsPlus` snapshot and a list of deltas
-  computed against the previous snapshot.
+  reloaded; it carries the new complete `TacacsPlus` snapshot plus a delta
+  computed against the previous snapshot. Consumers should treat the snapshot
+  as authoritative and use the delta to decide whether incremental handling is
+  sufficient or a full rebuild is clearer.
 - [`StaticDatastore`] — an in-memory backend used for CLI / file / test
   workflows. `subscribe` returns a stream that never emits, since the
   configuration cannot change after construction.

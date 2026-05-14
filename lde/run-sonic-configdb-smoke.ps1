@@ -213,7 +213,7 @@ try {
     $stderr = if (Test-Path $stderrPath) { Get-Content $stderrPath -Raw } else { '' }
 
     Assert-Contains $stdout 'initial_server_count: 1'
-    Assert-Contains $stdout 'server: sonic-server-0-192.0.2.10'
+    Assert-Contains $stdout 'server: sonic-server-192.0.2.10'
     Assert-Contains $stdout 'domain_name: tacacs-a.example.test'
     Assert-Contains $stdout 'sni_enabled: true'
     Assert-Contains $stdout 'single_connection: true'
@@ -221,9 +221,9 @@ try {
     Assert-Contains $stdout 'change_event: 1'
     Assert-Contains $stdout 'change_event: 2'
     Assert-Contains $stdout 'change_event: 3'
-    Assert-Contains $stdout 'added_servers: ["sonic-server-1-192.0.2.20"]'
-    Assert-Contains $stdout 'modified_servers: ["sonic-server-0-192.0.2.10"]'
-    Assert-Contains $stdout 'removed_servers: ["sonic-server-1-192.0.2.20"]'
+    Assert-Contains $stdout 'added_servers: ["sonic-server-192.0.2.20"]'
+    Assert-Contains $stdout 'modified_servers: ["sonic-server-192.0.2.10"]'
+    Assert-Contains $stdout 'removed_servers: ["sonic-server-192.0.2.20"]'
 
     Write-Host ''
     Write-Host 'configdb_watch stdout:' -ForegroundColor Cyan

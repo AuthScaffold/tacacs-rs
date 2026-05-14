@@ -52,9 +52,11 @@ operator-specific keys do not cause the bridge to fail at startup.
 
 The `configdb_watch` example demonstrates the crate's runtime contract: it
 loads the current TACACS+ snapshot from Redis and then prints every
-`ConfigChange` emitted by the keyspace-notification subscription. The example
-defaults to a local TCP Redis instance so it works with Docker or WSL; production
-SONiC deployments normally use the Unix socket default from `SonicConnection`.
+`ConfigChange` emitted by the keyspace-notification subscription. Each change
+event carries the complete latest TACACS+ snapshot plus a delta that consumers
+can use to decide whether an incremental update is enough. The example defaults
+to a local TCP Redis instance so it works with Docker or WSL; production SONiC
+deployments normally use the Unix socket default from `SonicConnection`.
 
 From the repository root, the full local smoke test can be run with Podman:
 
