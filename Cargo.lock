@@ -1947,6 +1947,7 @@ dependencies = [
  "anyhow",
  "http",
  "hyper-util",
+ "log",
  "prost",
  "protoc-bin-vendored",
  "serde",
@@ -1990,6 +1991,16 @@ dependencies = [
  "tacacsrs-datastore",
  "tacacsrs-networking",
  "tacacsrs-sonic",
+ "tokio",
+]
+
+[[package]]
+name = "tacacsrs-bash-plugin"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "libc",
+ "tacacsrs-agent-client",
  "tokio",
 ]
 

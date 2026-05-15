@@ -97,6 +97,7 @@ impl EmulatorState {
         };
         self.hit_counts[index] += 1;
         Ok(MatchResult::Matched(MatchedRule {
+            rule_index: index,
             response: rule.respond.clone(),
             delay_ms: rule.delay_ms,
         }))
@@ -113,7 +114,9 @@ pub(crate) enum MatchResult {
 ///
 /// Carries the configured response and optional delay outside the state lock so
 /// RPC handlers can wait asynchronously without blocking controller operations.
+#[derive(Clone)]
 pub(crate) struct MatchedRule {
+    pub(crate) rule_index: usize,
     pub(crate) response: EmulatorResponse,
     pub(crate) delay_ms: Option<u64>,
 }
