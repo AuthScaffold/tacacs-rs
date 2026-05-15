@@ -1,2 +1,5 @@
 *.img
+*.img.gz
+*.img.extracting
+*.img.gz.download
 *.qcow2

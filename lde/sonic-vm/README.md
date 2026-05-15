@@ -19,6 +19,16 @@ mounts `/data`. Pass `-PublicKeyPath` to use a different key. The copied key is
 normalized before appending to `authorized_keys`, so Windows CRLF line endings do
 not leave a trailing `^M` in the guest.
 
+By default, `sonic-vm.ps1` keeps VM assets next to the script:
+`sonic-vs.img`, `sonic-vs.img.gz`, `overlay.qcow2`, and `data.qcow2`. Relative
+path parameters are resolved against the script folder, so the helper works the
+same whether it is run from `lde\sonic-vm` or from the repository root. If
+`sonic-vs.img` is missing, `Start` and `Up` download `sonic-vs.img.gz` and
+extract it before launching QEMU. `-ImageUrl` can be the `format=zip` artifact
+URL copied from the ADO pipeline; the script rewrites it to `format=file` with
+`-ImageArtifactSubPath /target/sonic-vs.img.gz` when starting the download. The
+download can take a while.
+
 For day-to-day testing, prefer the helpers below.
 
 ## Run Commands

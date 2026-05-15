@@ -4,9 +4,10 @@
 
 .DESCRIPTION
     Wraps qemu-system-x86_64 to run the SONiC virtual switch image. Boots from
-    a qcow2 overlay over the read-only base image, attaches a second qcow2 disk
-    for persistent user data (mounted in-guest at /data), and forwards host
-    port 2222 -> guest 22 for SSH.
+    a qcow2 overlay over the read-only base image, downloading and extracting
+    that image if it is missing. Attaches a second qcow2 disk for persistent
+    user data (mounted in-guest at /data), and forwards host port 2222 -> guest
+    22 for SSH.
 
     Move files between Windows and the guest via scp/sftp on port 2222.
 
@@ -25,8 +26,11 @@ param(
 
     [string]$QemuExe       = 'C:\Program Files\qemu\qemu-system-x86_64.exe',
     [string]$QemuImgExe    = 'C:\Program Files\qemu\qemu-img.exe',
-    [string]$ImagePath     = 'X:\tacacs-rs-2\lde\sonic-vm\sonic-vs.img',
-    [string]$OverlayPath   = 'X:\tacacs-rs-2\lde\sonic-vm\overlay.qcow2',
+    [string]$ImagePath     = 'sonic-vs.img',
+    [string]$CompressedImagePath = 'sonic-vs.img.gz',
+    [string]$ImageUrl      = 'https://artprodcus3.artifacts.visualstudio.com/Af91412a5-a906-4990-9d7c-f697b81fc04d/be1b070f-be15-4154-aade-b1d3bfb17054/_apis/artifact/cGlwZWxpbmVhcnRpZmFjdDovL21zc29uaWMvcHJvamVjdElkL2JlMWIwNzBmLWJlMTUtNDE1NC1hYWRlLWIxZDNiZmIxNzA1NC9idWlsZElkLzEwNjQ4NDEvYXJ0aWZhY3ROYW1lL3NvbmljLWJ1aWxkaW1hZ2UudnM1/content?format=zip',
+    [string]$ImageArtifactSubPath = '/target/sonic-vs.img.gz',
+    [string]$OverlayPath   = 'overlay.qcow2',
     [bool]  $UseOverlay    = $true,
     [string]$SnapshotName,
     [string]$VmName        = 'sonic-simulator_1',
@@ -37,7 +41,7 @@ param(
     [int]   $MonitorPort   = 44001,
     [int]   $SerialPort    = 5001,
 
-    [string]$DataDiskPath  = 'X:\tacacs-rs-2\lde\sonic-vm\data.qcow2',
+    [string]$DataDiskPath  = 'data.qcow2',
     [int]   $DataDiskSizeGB = 10,
     [string]$DataMount     = '/data',
     [string]$DataLabel     = 'sonicdata',
@@ -50,6 +54,21 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Resolve-ScriptRelativePath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if ([IO.Path]::IsPathRooted($Path)) {
+        return [IO.Path]::GetFullPath($Path)
+    }
+
+    [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $Path))
+}
+
+$ImagePath = Resolve-ScriptRelativePath -Path $ImagePath
+$CompressedImagePath = Resolve-ScriptRelativePath -Path $CompressedImagePath
+$OverlayPath = Resolve-ScriptRelativePath -Path $OverlayPath
+$DataDiskPath = Resolve-ScriptRelativePath -Path $DataDiskPath
 
 function Test-Tool($name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
@@ -260,6 +279,122 @@ function Test-Admin {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Expand-GzipFile {
+    param(
+        [Parameter(Mandatory)][string]$SourcePath,
+        [Parameter(Mandatory)][string]$DestinationPath
+    )
+
+    $destinationDirectory = Split-Path $DestinationPath
+    if (-not (Test-Path $destinationDirectory)) {
+        New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+    }
+
+    $temporaryDestinationPath = "$DestinationPath.extracting"
+    if (Test-Path $temporaryDestinationPath) {
+        Remove-Item -Force $temporaryDestinationPath
+    }
+
+    try {
+        $sourceStream = [IO.File]::OpenRead($SourcePath)
+        try {
+            $gzipStream = [IO.Compression.GZipStream]::new($sourceStream, [IO.Compression.CompressionMode]::Decompress)
+            try {
+                $destinationStream = [IO.File]::Create($temporaryDestinationPath)
+                try {
+                    $gzipStream.CopyTo($destinationStream)
+                } finally {
+                    $destinationStream.Dispose()
+                }
+            } finally {
+                $gzipStream.Dispose()
+            }
+        } finally {
+            $sourceStream.Dispose()
+        }
+
+        Move-Item -Force $temporaryDestinationPath $DestinationPath
+    } catch {
+        if (Test-Path $temporaryDestinationPath) {
+            Remove-Item -Force $temporaryDestinationPath
+        }
+        throw
+    }
+}
+
+function Get-ImageDownloadUrl {
+    param(
+        [Parameter(Mandatory)][string]$Url,
+        [Parameter(Mandatory)][string]$SubPath
+    )
+
+    $builder = [UriBuilder]::new($Url)
+    $query = $builder.Query
+    if ($query.StartsWith('?')) {
+        $query = $query.Substring(1)
+    }
+
+    $queryParts = @()
+    if (-not [string]::IsNullOrWhiteSpace($query)) {
+        foreach ($part in ($query -split '&')) {
+            if ([string]::IsNullOrWhiteSpace($part)) { continue }
+
+            $namePart = $part
+            $equalsIndex = $part.IndexOf('=')
+            if ($equalsIndex -ge 0) {
+                $namePart = $part.Substring(0, $equalsIndex)
+            }
+
+            $name = [Uri]::UnescapeDataString($namePart)
+            if ($name -ieq 'format' -or $name -ieq 'subPath') { continue }
+            $queryParts += $part
+        }
+    }
+
+    $encodedSubPath = [Uri]::EscapeDataString($SubPath).Replace('%2F', '/')
+    $queryParts += 'format=file'
+    $queryParts += "subPath=$encodedSubPath"
+    $builder.Query = $queryParts -join '&'
+    $builder.Uri.AbsoluteUri
+}
+
+function Ensure-BaseImage {
+    if (Test-Path $ImagePath) { return }
+    if ([string]::IsNullOrWhiteSpace($ImageUrl)) {
+        throw "Base image not found at $ImagePath and -ImageUrl is empty."
+    }
+
+    $imageDirectory = Split-Path $ImagePath
+    if (-not (Test-Path $imageDirectory)) {
+        New-Item -ItemType Directory -Path $imageDirectory -Force | Out-Null
+    }
+
+    $compressedDirectory = Split-Path $CompressedImagePath
+    if (-not (Test-Path $compressedDirectory)) {
+        New-Item -ItemType Directory -Path $compressedDirectory -Force | Out-Null
+    }
+
+    if (-not (Test-Path $CompressedImagePath)) {
+        $temporaryDownloadPath = "$CompressedImagePath.download"
+        if (Test-Path $temporaryDownloadPath) {
+            Remove-Item -Force $temporaryDownloadPath
+        }
+
+        Write-Host "Base image missing: $ImagePath"
+        Write-Host "Downloading SONiC image to $CompressedImagePath"
+        Write-Host "This can take a while."
+        $downloadUrl = Get-ImageDownloadUrl -Url $ImageUrl -SubPath $ImageArtifactSubPath
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $temporaryDownloadPath -UseBasicParsing
+        Move-Item -Force $temporaryDownloadPath $CompressedImagePath
+    } else {
+        Write-Host "Base image missing: $ImagePath"
+        Write-Host "Using existing compressed image: $CompressedImagePath"
+    }
+
+    Write-Host "Extracting $CompressedImagePath to $ImagePath"
+    Expand-GzipFile -SourcePath $CompressedImagePath -DestinationPath $ImagePath
+}
+
 function Ensure-DataDisk {
     if (-not (Test-Path $QemuImgExe)) { throw "qemu-img not found at $QemuImgExe" }
     if (-not (Test-Path $DataDiskPath)) {
@@ -286,6 +421,7 @@ function Get-ImageFormat {
 
 function Ensure-Overlay {
     if (-not (Test-Path $QemuImgExe)) { throw "qemu-img not found at $QemuImgExe" }
+    Ensure-BaseImage
     if (-not (Test-Path $ImagePath))  { throw "Base image not found at $ImagePath" }
     Ensure-BaseReadOnly
     if (-not (Test-Path $OverlayPath)) {
@@ -346,12 +482,14 @@ function Get-QemuProc {
 
 function Start-Vm {
     if (-not (Test-Path $QemuExe))   { throw "QEMU not found at $QemuExe" }
-    if (-not (Test-Path $ImagePath)) { throw "Image not found at $ImagePath" }
 
     if (Get-QemuProc) {
         Write-Host "VM '$VmName' already running."
         return
     }
+
+    Ensure-BaseImage
+    if (-not (Test-Path $ImagePath)) { throw "Image not found at $ImagePath" }
 
     if ($UseOverlay) { Ensure-Overlay }
     Ensure-DataDisk
