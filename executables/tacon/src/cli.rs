@@ -10,11 +10,15 @@ pub enum ValidationRelaxation {
     /// Intended as a migration aid for server implementations that have not
     /// yet cleanly removed shared-secret handling after enabling TLS.
     #[value(name = "allow-tls-with-shared-secret")]
-    AllowTlsWithSharedSecret,
+    TlsWithSharedSecret,
 
     /// Allow plain TCP without TLS or TACACS+ shared-secret obfuscation.
     #[value(name = "allow-plain-tcp-without-shared-secret")]
-    AllowPlainTcpWithoutSharedSecret,
+    PlainTcpWithoutSharedSecret,
+
+    /// Allow a configuration with no TACACS+ servers.
+    #[value(name = "allow-empty-server-list")]
+    EmptyServerList,
 }
 
 /// TACACS+ Client CLI
@@ -91,7 +95,8 @@ pub struct Cli {
     /// Apply a validation relaxation when loading or constructing configuration.
     ///
     /// May be repeated to enable multiple relaxations.
-    /// Valid values: allow-tls-with-shared-secret, allow-plain-tcp-without-shared-secret
+    /// Valid values: allow-tls-with-shared-secret, allow-plain-tcp-without-shared-secret,
+    /// allow-empty-server-list
     #[arg(
         long,
         value_name = "RELAXATION",
@@ -368,10 +373,7 @@ mod tests {
         assert!(result.is_ok());
         let cli = result.unwrap();
         assert_eq!(cli.validation_relaxation.len(), 1);
-        assert!(matches!(
-            cli.validation_relaxation[0],
-            ValidationRelaxation::AllowTlsWithSharedSecret
-        ));
+        assert!(matches!(cli.validation_relaxation[0], ValidationRelaxation::TlsWithSharedSecret));
     }
 
     #[test]
@@ -384,21 +386,21 @@ mod tests {
             "allow-tls-with-shared-secret",
             "--validation-relaxation",
             "allow-plain-tcp-without-shared-secret",
+            "--validation-relaxation",
+            "allow-empty-server-list",
             "batch",
             "batch.txt",
         ]);
 
         assert!(result.is_ok());
         let cli = result.unwrap();
-        assert_eq!(cli.validation_relaxation.len(), 2);
-        assert!(matches!(
-            cli.validation_relaxation[0],
-            ValidationRelaxation::AllowTlsWithSharedSecret
-        ));
+        assert_eq!(cli.validation_relaxation.len(), 3);
+        assert!(matches!(cli.validation_relaxation[0], ValidationRelaxation::TlsWithSharedSecret));
         assert!(matches!(
             cli.validation_relaxation[1],
-            ValidationRelaxation::AllowPlainTcpWithoutSharedSecret
+            ValidationRelaxation::PlainTcpWithoutSharedSecret
         ));
+        assert!(matches!(cli.validation_relaxation[2], ValidationRelaxation::EmptyServerList));
     }
 
     #[test]

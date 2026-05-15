@@ -89,8 +89,11 @@ redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.20' \
    priority 2 tcp_port 49
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' timeout 20
 redis-cli -n 4 DEL 'TACPLUS_SERVER|192.0.2.20'
+redis-cli -n 4 DEL 'TACPLUS_SERVER|192.0.2.10'
 ```
 
 The example intentionally reports only whether a shared secret is configured;
 it never prints secret values. Rows without a per-server or global `passkey`
-are treated as plain TCP without TACACS+ body obfuscation.
+are treated as plain TCP without TACACS+ body obfuscation. An empty
+`TACPLUS_SERVER` table is reported as a zero-server snapshot so consumers can
+observe deletion of the final TACACS+ server.

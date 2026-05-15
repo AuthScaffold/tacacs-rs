@@ -33,6 +33,13 @@ pub enum ValidationRelaxation {
     /// relaxation permits legacy deployments that intentionally send TACACS+
     /// packets without TLS and without TACACS+ body obfuscation.
     AllowPlainTcpWithoutSharedSecret,
+
+    /// Allow a TACACS+ configuration with no server entries.
+    ///
+    /// Strict validation requires at least one server. This relaxation is for
+    /// datastore/watch workflows that need to report an operator removing the
+    /// last configured server without treating the snapshot as unreadable.
+    AllowEmptyServerList,
 }
 
 impl std::fmt::Display for ValidationRelaxation {
@@ -42,6 +49,7 @@ impl std::fmt::Display for ValidationRelaxation {
             Self::AllowPlainTcpWithoutSharedSecret => {
                 write!(f, "allow-plain-tcp-without-shared-secret")
             }
+            Self::AllowEmptyServerList => write!(f, "allow-empty-server-list"),
         }
     }
 }
@@ -53,9 +61,11 @@ impl std::str::FromStr for ValidationRelaxation {
         match s {
             "allow-tls-with-shared-secret" => Ok(Self::AllowTlsWithSharedSecret),
             "allow-plain-tcp-without-shared-secret" => Ok(Self::AllowPlainTcpWithoutSharedSecret),
+            "allow-empty-server-list" => Ok(Self::AllowEmptyServerList),
             other => anyhow::bail!(
                 "unknown validation relaxation '{other}'; valid values: \
-                 allow-tls-with-shared-secret, allow-plain-tcp-without-shared-secret"
+                 allow-tls-with-shared-secret, allow-plain-tcp-without-shared-secret, \
+                 allow-empty-server-list"
             ),
         }
     }
@@ -126,7 +136,7 @@ pub fn validate_config_with_options(
     config: &TacacsPlus,
     options: &ValidationOptions,
 ) -> anyhow::Result<()> {
-    if config.server.is_empty() {
+    if config.server.is_empty() && !options.allows(&ValidationRelaxation::AllowEmptyServerList) {
         anyhow::bail!("server list must contain at least one entry");
     }
 

@@ -266,6 +266,14 @@ mod tests {
             .expect("sample config should validate")
     }
 
+    fn empty_config() -> TacacsPlus {
+        TacacsPlus {
+            client_credentials: Vec::new(),
+            server_credentials: Vec::new(),
+            server: Vec::new(),
+        }
+    }
+
     #[tokio::test]
     async fn static_datastore_returns_config_and_empty_stream() {
         let config = sample_config("192.0.2.1");
@@ -312,6 +320,19 @@ mod tests {
         let delta = ConfigDelta::diff(None, &new);
         assert_eq!(delta.added_servers, vec!["primary"]);
         assert!(delta.removed_servers.is_empty());
+        assert!(delta.modified_servers.is_empty());
+        assert!(!delta.root_metadata_changed);
+    }
+
+    #[test]
+    fn delta_detects_all_servers_removed() {
+        let previous = sample_config("192.0.2.1");
+        let new = empty_config();
+
+        let delta = ConfigDelta::diff(Some(&previous), &new);
+
+        assert!(delta.added_servers.is_empty());
+        assert_eq!(delta.removed_servers, vec!["primary"]);
         assert!(delta.modified_servers.is_empty());
         assert!(!delta.root_metadata_changed);
     }

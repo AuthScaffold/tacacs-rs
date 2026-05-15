@@ -247,7 +247,7 @@ try {
         '--redis-url', $redisUrl,
         '--redis-db', "$RedisDb",
         '--debounce-ms', "$DebounceMs",
-        '--max-events', '3'
+        '--max-events', '4'
     )
     $process = Start-Process -FilePath $exampleExe -ArgumentList $exampleArgs `
         -WorkingDirectory $repoRoot -RedirectStandardOutput $stdoutPath `
@@ -268,6 +268,9 @@ try {
         Start-Sleep -Milliseconds ($DebounceMs + 500)
 
         Invoke-Redis @('DEL', 'TACPLUS_SERVER|192.0.2.20') | Out-Null
+        Start-Sleep -Milliseconds ($DebounceMs + 500)
+
+        Invoke-Redis @('DEL', 'TACPLUS_SERVER|192.0.2.10') | Out-Null
 
         if (-not $process.WaitForExit(60000)) {
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
@@ -295,9 +298,12 @@ try {
     Assert-Contains $stdout 'change_event: 1'
     Assert-Contains $stdout 'change_event: 2'
     Assert-Contains $stdout 'change_event: 3'
+    Assert-Contains $stdout 'change_event: 4'
     Assert-Contains $stdout 'added_servers: ["sonic-server-192.0.2.20"]'
     Assert-Contains $stdout 'modified_servers: ["sonic-server-192.0.2.10"]'
     Assert-Contains $stdout 'removed_servers: ["sonic-server-192.0.2.20"]'
+    Assert-Contains $stdout 'removed_servers: ["sonic-server-192.0.2.10"]'
+    Assert-Contains $stdout 'current_server_count: 0'
 
     Write-Host ''
     Write-Host 'configdb_watch stdout:' -ForegroundColor Cyan

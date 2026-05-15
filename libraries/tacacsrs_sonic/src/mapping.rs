@@ -88,17 +88,11 @@ impl SonicTacacsTables {
 ///
 /// # Errors
 ///
-/// Returns an error if no servers are configured, if a row has an invalid
-/// numeric value (priority/port/timeout), or if the resulting configuration
-/// fails validation.
+/// Returns an error if a row has an invalid numeric value
+/// (priority/port/timeout), or if the resulting configuration fails
+/// validation. An empty `TACPLUS_SERVER` table maps to an empty server list so
+/// watchers can report deletion of the final configured TACACS+ server.
 pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Result<TacacsPlus> {
-    if tables.servers.is_empty() {
-        bail!(
-            "SONiC ConfigDB has no TACPLUS_SERVER rows; configure at least one upstream server \
-             via `config tacacs add` before starting the agent"
-        );
-    }
-
     let global = SonicGlobal::from_hash(&tables.global)?;
 
     let mut rows = tables
@@ -122,7 +116,8 @@ pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Re
     }
 
     let validation_options = ValidationOptions::new()
-        .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret);
+        .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret)
+        .with_relaxation(ValidationRelaxation::AllowEmptyServerList);
 
     builder
         .build_with_options(&validation_options)
@@ -428,10 +423,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_servers_table_is_an_error() {
+    fn empty_servers_table_maps_to_empty_config() {
         let tables = SonicTacacsTables::default();
-        let err = map_sonic_tables_to_tacacs_plus(&tables).unwrap_err();
-        assert!(format!("{err:#}").contains("TACPLUS_SERVER"));
+        let cfg = map_sonic_tables_to_tacacs_plus(&tables).expect("empty mapping succeeds");
+        assert!(cfg.server.is_empty());
     }
 
     #[test]

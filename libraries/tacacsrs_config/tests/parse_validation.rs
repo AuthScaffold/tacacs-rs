@@ -2550,6 +2550,25 @@ fn relaxed_allows_plain_tcp_without_shared_secret() {
 }
 
 #[test]
+fn relaxed_allows_empty_server_list() {
+    use tacacsrs_config::{ValidationOptions, ValidationRelaxation, parse_yang_json_with_options};
+
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": []
+        }
+    }"#;
+
+    let options =
+        ValidationOptions::new().with_relaxation(ValidationRelaxation::AllowEmptyServerList);
+
+    let config = parse_yang_json_with_options(json, &options)
+        .expect("AllowEmptyServerList should permit no server entries");
+
+    assert!(config.server.is_empty());
+}
+
+#[test]
 fn builder_build_with_options_allows_tls_with_shared_secret() {
     use tacacsrs_config::{
         TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType, ValidationOptions,
@@ -2600,6 +2619,20 @@ fn builder_build_with_options_allows_plain_tcp_without_shared_secret() {
     assert!(config.server[0].shared_secret.is_none());
     assert!(config.server[0].client_identity.is_none());
     assert!(config.server[0].server_authentication.is_none());
+}
+
+#[test]
+fn builder_build_with_options_allows_empty_server_list() {
+    use tacacsrs_config::{TacacsPlusBuilder, ValidationOptions, ValidationRelaxation};
+
+    let options =
+        ValidationOptions::new().with_relaxation(ValidationRelaxation::AllowEmptyServerList);
+
+    let config = TacacsPlusBuilder::new()
+        .build_with_options(&options)
+        .expect("AllowEmptyServerList should permit an empty root server list");
+
+    assert!(config.server.is_empty());
 }
 
 #[test]
@@ -2656,6 +2689,11 @@ fn validation_relaxation_from_str_roundtrip() {
             .expect("should parse allow-plain-tcp-without-shared-secret");
     assert_eq!(plain_tcp_relaxation, ValidationRelaxation::AllowPlainTcpWithoutSharedSecret,);
     assert_eq!(plain_tcp_relaxation.to_string(), "allow-plain-tcp-without-shared-secret",);
+
+    let empty_server_relaxation = ValidationRelaxation::from_str("allow-empty-server-list")
+        .expect("should parse allow-empty-server-list");
+    assert_eq!(empty_server_relaxation, ValidationRelaxation::AllowEmptyServerList,);
+    assert_eq!(empty_server_relaxation.to_string(), "allow-empty-server-list");
 }
 
 #[test]

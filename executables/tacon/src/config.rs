@@ -49,12 +49,13 @@ fn validation_options_from_cli(cli: &Cli) -> ValidationOptions {
         .iter()
         .fold(ValidationOptions::new(), |opts, r| {
             let relaxation = match r {
-                CliRelaxation::AllowTlsWithSharedSecret => {
+                CliRelaxation::TlsWithSharedSecret => {
                     ValidationRelaxation::AllowTlsWithSharedSecret
                 }
-                CliRelaxation::AllowPlainTcpWithoutSharedSecret => {
+                CliRelaxation::PlainTcpWithoutSharedSecret => {
                     ValidationRelaxation::AllowPlainTcpWithoutSharedSecret
                 }
+                CliRelaxation::EmptyServerList => ValidationRelaxation::AllowEmptyServerList,
             };
             opts.with_relaxation(relaxation)
         })
