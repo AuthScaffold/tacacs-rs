@@ -52,6 +52,9 @@ fn validation_options_from_cli(cli: &Cli) -> ValidationOptions {
                 CliRelaxation::AllowTlsWithSharedSecret => {
                     ValidationRelaxation::AllowTlsWithSharedSecret
                 }
+                CliRelaxation::AllowPlainTcpWithoutSharedSecret => {
+                    ValidationRelaxation::AllowPlainTcpWithoutSharedSecret
+                }
             };
             opts.with_relaxation(relaxation)
         })
@@ -386,6 +389,31 @@ mod tests {
 
         let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
         assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret123"));
+    }
+
+    #[test]
+    fn tacacs_plus_from_cli_with_relaxation_allows_plain_tcp_without_shared_secret() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--validation-relaxation",
+            "allow-plain-tcp-without-shared-secret",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        let root = tacacs_plus_from_cli(&cli)
+            .expect("plain TCP without shared-secret should load with relaxation");
+        assert!(root.server[0].shared_secret.is_none());
+        assert!(root.server[0].client_identity.is_none());
+        assert!(root.server[0].server_authentication.is_none());
     }
 
     #[test]

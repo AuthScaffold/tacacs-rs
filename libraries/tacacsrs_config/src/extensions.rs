@@ -19,7 +19,7 @@ pub trait TacacsPlusServerExt {
     /// Returns true when the server uses any TLS-based configuration.
     fn is_tls(&self) -> bool;
 
-    /// Returns true when the server uses TACACS+ obfuscation instead of TLS.
+    /// Returns true when the server uses TACACS+ shared-secret obfuscation.
     fn is_obfuscation(&self) -> bool;
 
     /// Returns true when SNI is explicitly enabled.
@@ -53,7 +53,7 @@ impl TacacsPlusServerExt for TacacsPlusServer {
     }
 
     fn is_obfuscation(&self) -> bool {
-        !self.is_tls()
+        self.shared_secret.is_some()
     }
 
     fn sni_enabled(&self) -> bool {
@@ -106,7 +106,7 @@ mod tests {
     fn tls_and_obfuscation_helpers_reflect_security_shape() {
         let mut server = base_server();
         assert!(!server.is_tls());
-        assert!(server.is_obfuscation());
+        assert!(!server.is_obfuscation());
         assert_eq!(server.obfuscation_key(), None);
 
         server.shared_secret = Some("secret".to_owned());
