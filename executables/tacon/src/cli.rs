@@ -11,6 +11,10 @@ pub enum ValidationRelaxation {
     /// yet cleanly removed shared-secret handling after enabling TLS.
     #[value(name = "allow-tls-with-shared-secret")]
     AllowTlsWithSharedSecret,
+
+    /// Allow plain TCP without TLS or TACACS+ shared-secret obfuscation.
+    #[value(name = "allow-plain-tcp-without-shared-secret")]
+    AllowPlainTcpWithoutSharedSecret,
 }
 
 /// TACACS+ Client CLI
@@ -87,7 +91,7 @@ pub struct Cli {
     /// Apply a validation relaxation when loading or constructing configuration.
     ///
     /// May be repeated to enable multiple relaxations.
-    /// Valid values: allow-tls-with-shared-secret
+    /// Valid values: allow-tls-with-shared-secret, allow-plain-tcp-without-shared-secret
     #[arg(
         long,
         value_name = "RELAXATION",
@@ -372,8 +376,6 @@ mod tests {
 
     #[test]
     fn test_validation_relaxation_multiple_values_parse() {
-        // Currently only one relaxation exists; repeat the same one to
-        // verify the flag is truly repeatable.
         let result = Cli::try_parse_from([
             "tacon",
             "--server-addr",
@@ -381,13 +383,22 @@ mod tests {
             "--validation-relaxation",
             "allow-tls-with-shared-secret",
             "--validation-relaxation",
-            "allow-tls-with-shared-secret",
+            "allow-plain-tcp-without-shared-secret",
             "batch",
             "batch.txt",
         ]);
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().validation_relaxation.len(), 2);
+        let cli = result.unwrap();
+        assert_eq!(cli.validation_relaxation.len(), 2);
+        assert!(matches!(
+            cli.validation_relaxation[0],
+            ValidationRelaxation::AllowTlsWithSharedSecret
+        ));
+        assert!(matches!(
+            cli.validation_relaxation[1],
+            ValidationRelaxation::AllowPlainTcpWithoutSharedSecret
+        ));
     }
 
     #[test]

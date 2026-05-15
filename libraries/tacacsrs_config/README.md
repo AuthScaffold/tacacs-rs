@@ -181,7 +181,7 @@ Validation checks include:
 - At least one server is configured
 - Server addresses and ports are unique
 - SNI-enabled servers have domain names
-- Security choice constraints (TLS vs obfuscation, not both)
+- Security choice constraints (TLS vs obfuscation, not both; strict mode also requires one of them)
 - YANG choice constraints across all credential subtrees
 - Key format identity values (`private-key-format`, `public-key-format`, `key-format`) are valid RFC 7951 identityref strings
 - Inline key material (`cleartext-private-key`, `public-key`, `cert-data`, `cleartext-symmetric-key`) is valid base64-encoded binary data; certificates and private keys are carried internally as DER bytes

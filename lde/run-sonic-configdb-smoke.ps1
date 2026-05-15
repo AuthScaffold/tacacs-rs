@@ -228,7 +228,6 @@ try {
     Invoke-Redis @(
         'HSET', 'TACPLUS|global',
         'timeout', '5',
-        'passkey', 'shared-secret',
         'auth_type', 'pap',
         'src_intf', 'Management0'
     ) | Out-Null
@@ -237,7 +236,6 @@ try {
         'priority', '1',
         'tcp_port', '49',
         'timeout', '10',
-        'passkey', 'server-secret',
         'domain_name', 'tacacs-a.example.test',
         'sni_enabled', 'true',
         'single_connection', 'true'
@@ -262,8 +260,7 @@ try {
         Invoke-Redis @(
             'HSET', 'TACPLUS_SERVER|192.0.2.20',
             'priority', '2',
-            'tcp_port', '49',
-            'passkey', 'backup-secret'
+            'tcp_port', '49'
         ) | Out-Null
         Start-Sleep -Milliseconds ($DebounceMs + 500)
 
@@ -294,7 +291,7 @@ try {
     Assert-Contains $stdout 'domain_name: tacacs-a.example.test'
     Assert-Contains $stdout 'sni_enabled: true'
     Assert-Contains $stdout 'single_connection: true'
-    Assert-Contains $stdout 'shared_secret_configured: true'
+    Assert-Contains $stdout 'shared_secret_configured: false'
     Assert-Contains $stdout 'change_event: 1'
     Assert-Contains $stdout 'change_event: 2'
     Assert-Contains $stdout 'change_event: 3'

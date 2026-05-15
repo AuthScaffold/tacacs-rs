@@ -25,9 +25,9 @@ SONiC's existing TACACS+ ConfigDB schema does not yet expose the full
 TLS-related fields that the YANG `ietf-system-tacacs-plus` model supports
 (client identity certificates, server authentication trust anchors, TLS 1.3
 ePSKs, SNI, etc.). The mapping documents what would have to be added to
-ConfigDB to enable the richer YANG features; today the bridge supports the
-shared-secret / obfuscation-key path only and leaves the TLS-related YANG
-fields unset on the resulting [`tacacsrs_config::TacacsPlusServer`].
+ConfigDB to enable the richer YANG features; today the bridge supports plain
+TCP with an optional shared-secret / obfuscation key and leaves the TLS-related
+YANG fields unset on the resulting [`tacacsrs_config::TacacsPlusServer`].
 
 ## Schema extensions
 
@@ -71,9 +71,9 @@ docker run --rm -p 6379:6379 redis
 redis-cli -n 4 CONFIG SET notify-keyspace-events KEA
 
 redis-cli -n 4 HSET 'TACPLUS|global' \
-   timeout 5 passkey shared-secret auth_type pap src_intf Management0
+   timeout 5 auth_type pap src_intf Management0
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' \
-   priority 1 tcp_port 49 timeout 10 passkey server-secret \
+   priority 1 tcp_port 49 timeout 10 \
    domain_name tacacs-a.example.test sni_enabled true single_connection true
 
 cargo run -p tacacsrs-sonic --example configdb_watch -- \
@@ -86,10 +86,11 @@ computed delta:
 
 ```bash
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.20' \
-   priority 2 tcp_port 49 passkey backup-secret
+   priority 2 tcp_port 49
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' timeout 20
 redis-cli -n 4 DEL 'TACPLUS_SERVER|192.0.2.20'
 ```
 
 The example intentionally reports only whether a shared secret is configured;
-it never prints secret values.
+it never prints secret values. Rows without a per-server or global `passkey`
+are treated as plain TCP without TACACS+ body obfuscation.

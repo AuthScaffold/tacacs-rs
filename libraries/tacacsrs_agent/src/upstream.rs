@@ -13,6 +13,7 @@
 //! | Security | Transport |
 //! |----------|-----------|
 //! | `shared-secret` only | Plain TCP |
+//! | no TLS fields and no `shared-secret` | Plain TCP without TACACS+ obfuscation |
 //! | `client-identity` / `server-authentication` (certificate) | mTLS (X.509) |
 //! | `client-identity` with `tls13-epsk` | TLS-PSK (feature-gated) |
 //!
@@ -288,11 +289,7 @@ async fn connect_upstream(
     let address = server.socket_address();
     let timeout_duration = server.timeout_duration();
 
-    let security_label = if server.is_tls() {
-        "tls"
-    } else {
-        "obfuscation"
-    };
+    let security_label = security_label(server);
     log::debug!(
         "Connecting to upstream TACACS+ server {address} (security: {security_label}, timeout: {timeout_duration:?})",
     );
@@ -346,11 +343,7 @@ async fn send_dedicated_accounting(
     let address = server.socket_address();
     let timeout_duration = server.timeout_duration();
 
-    let security_label = if server.is_tls() {
-        "tls"
-    } else {
-        "obfuscation"
-    };
+    let security_label = security_label(server);
     log::debug!(
         "Dedicated accounting request to {address} (security: {security_label}, timeout: {timeout_duration:?})",
     );
@@ -380,6 +373,16 @@ async fn send_dedicated_accounting(
     );
 
     Ok(exchange)
+}
+
+fn security_label(server: &TacacsPlusServer) -> &'static str {
+    if server.is_tls() {
+        "tls"
+    } else if server.is_obfuscation() {
+        "obfuscation"
+    } else {
+        "plain-tcp"
+    }
 }
 
 fn to_dedicated_result(

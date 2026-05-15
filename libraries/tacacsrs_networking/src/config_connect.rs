@@ -43,6 +43,7 @@ pub struct ConnectOptions {
 /// | `client-identity.tls13-epsk` | TLS 1.3 PSK (feature-gated) |
 /// | `client-identity.certificate` or `server-authentication` | mTLS / TLS |
 /// | `shared-secret` only | Plain TCP |
+/// | no TLS fields and no `shared-secret` | Plain TCP without TACACS+ obfuscation |
 ///
 /// The actual interpretation of the TLS / PSK fields lives in the owning
 /// transport backend — this function only routes between them.
@@ -59,11 +60,7 @@ pub async fn establish_stream(
 ) -> Result<BoxedTransport> {
     let address = server.socket_address();
 
-    let security_label = if server.is_tls() {
-        "tls"
-    } else {
-        "obfuscation"
-    };
+    let security_label = security_label(server);
     log::debug!(
         "Connecting to TACACS+ server {address} (security: {security_label}, timeout: {:?})",
         options.timeout,
@@ -101,6 +98,16 @@ pub async fn establish_stream(
         return Ok(BoxedTransport::new(stream));
     }
 
-    // Plain TCP (obfuscation mode)
+    // Plain TCP, with optional TACACS+ body obfuscation handled by the packet layer.
     Ok(BoxedTransport::new(tcp_stream))
+}
+
+fn security_label(server: &TacacsPlusServer) -> &'static str {
+    if server.is_tls() {
+        "tls"
+    } else if server.is_obfuscation() {
+        "obfuscation"
+    } else {
+        "plain-tcp"
+    }
 }

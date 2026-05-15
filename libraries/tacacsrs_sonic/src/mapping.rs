@@ -12,13 +12,13 @@
 //! ```text
 //! TACPLUS|global                                    auth_type "pap"
 //!                                                   timeout   "5"
-//!                                                   passkey   "shared-secret-here"
+//!                                                   passkey   "optional-shared-secret"
 //!                                                   src_intf  "Management0"
 //!
 //! TACPLUS_SERVER|192.0.2.10                         priority  "1"
 //!                                                   tcp_port  "49"
 //!                                                   timeout   "10"
-//!                                                   passkey   "per-server-secret"
+//!                                                   passkey   "optional-per-server-secret"
 //! ```
 //!
 //! See [`crate`] documentation for the schema extensions that the bridge
@@ -26,8 +26,11 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{anyhow, bail, Context};
-use tacacsrs_config::{TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
+use anyhow::{bail, Context};
+use tacacsrs_config::{
+    TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType,
+    ValidationOptions, ValidationRelaxation,
+};
 
 /// Default TCP port used by TACACS+ when `tcp_port` is missing.
 pub const DEFAULT_TACACS_TCP_PORT: u16 = 49;
@@ -86,8 +89,8 @@ impl SonicTacacsTables {
 /// # Errors
 ///
 /// Returns an error if no servers are configured, if a row has an invalid
-/// numeric value (priority/port/timeout), if a server is missing a usable
-/// shared secret, or if the resulting configuration fails YANG validation.
+/// numeric value (priority/port/timeout), or if the resulting configuration
+/// fails validation.
 pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Result<TacacsPlus> {
     if tables.servers.is_empty() {
         bail!(
@@ -114,12 +117,15 @@ pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Re
 
     let mut builder = TacacsPlusBuilder::new();
     for row in &rows {
-        let server = row.to_server(&global)?;
+        let server = row.to_server(&global);
         builder = builder.with_server(server);
     }
 
+    let validation_options = ValidationOptions::new()
+        .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret);
+
     builder
-        .build()
+        .build_with_options(&validation_options)
         .context("SONiC ConfigDB rows produced an invalid TACACS+ configuration")
 }
 
@@ -275,33 +281,25 @@ impl SonicServerRow {
         Ok(row)
     }
 
-    fn to_server(&self, global: &SonicGlobal) -> anyhow::Result<tacacsrs_config::TacacsPlusServer> {
+    fn to_server(&self, global: &SonicGlobal) -> tacacsrs_config::TacacsPlusServer {
         let timeout = self
             .timeout
             .or(global.timeout)
             .unwrap_or(DEFAULT_TIMEOUT_SECONDS);
 
-        let passkey = self
-            .passkey
-            .clone()
-            .or_else(|| global.passkey.clone())
-            .ok_or_else(|| {
-                anyhow!(
-                    "TACPLUS_SERVER|{} has no per-server `passkey` and TACPLUS|global has no \
-                     default `passkey`; configure a shared secret before starting the agent",
-                    self.address
-                )
-            })?;
-
-        let mut server = TacacsPlusServerBuilder::new(
+        let mut builder = TacacsPlusServerBuilder::new(
             sonic_server_name(&self.address),
             self.server_type,
             self.address.clone(),
             self.tcp_port,
         )
-        .with_timeout(timeout)
-        .with_shared_secret(passkey)
-        .build();
+        .with_timeout(timeout);
+
+        if let Some(passkey) = self.passkey.clone().or_else(|| global.passkey.clone()) {
+            builder = builder.with_shared_secret(passkey);
+        }
+
+        let mut server = builder.build();
 
         server.domain_name.clone_from(&self.domain_name);
         server.sni_enabled = self.sni_enabled;
@@ -319,7 +317,7 @@ impl SonicServerRow {
             server.source_interface = Some(intf.clone());
         }
 
-        Ok(server)
+        server
     }
 }
 
@@ -419,13 +417,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_passkey_and_no_global_default_is_an_error() {
+    fn missing_passkey_and_no_global_default_maps_unobfuscated_plain_tcp() {
         let mut servers = BTreeMap::new();
         servers.insert("192.0.2.50".to_string(), h(&[("priority", "1")]));
         let tables = SonicTacacsTables::new(SonicHash::new(), servers);
-        let err = map_sonic_tables_to_tacacs_plus(&tables).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("passkey"), "error should mention passkey: {msg}");
+        let cfg = map_sonic_tables_to_tacacs_plus(&tables).expect("mapping succeeds");
+        assert_eq!(cfg.server.len(), 1);
+        assert_eq!(cfg.server[0].address, "192.0.2.50");
+        assert_eq!(cfg.server[0].shared_secret, None);
     }
 
     #[test]

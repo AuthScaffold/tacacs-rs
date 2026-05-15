@@ -26,12 +26,22 @@ pub enum ValidationRelaxation {
     /// for server implementations that cannot yet cleanly remove
     /// shared-secret handling after enabling TLS.
     AllowTlsWithSharedSecret,
+
+    /// Allow a plain TCP TACACS+ server with neither TLS nor `shared-secret`.
+    ///
+    /// Strict YANG validation treats the `security` choice as mandatory. This
+    /// relaxation permits legacy deployments that intentionally send TACACS+
+    /// packets without TLS and without TACACS+ body obfuscation.
+    AllowPlainTcpWithoutSharedSecret,
 }
 
 impl std::fmt::Display for ValidationRelaxation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AllowTlsWithSharedSecret => write!(f, "allow-tls-with-shared-secret"),
+            Self::AllowPlainTcpWithoutSharedSecret => {
+                write!(f, "allow-plain-tcp-without-shared-secret")
+            }
         }
     }
 }
@@ -42,8 +52,10 @@ impl std::str::FromStr for ValidationRelaxation {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "allow-tls-with-shared-secret" => Ok(Self::AllowTlsWithSharedSecret),
+            "allow-plain-tcp-without-shared-secret" => Ok(Self::AllowPlainTcpWithoutSharedSecret),
             other => anyhow::bail!(
-                "unknown validation relaxation '{other}'; valid values: allow-tls-with-shared-secret"
+                "unknown validation relaxation '{other}'; valid values: \
+                 allow-tls-with-shared-secret, allow-plain-tcp-without-shared-secret"
             ),
         }
     }
@@ -186,6 +198,13 @@ fn validate_security_choice(
 ) -> anyhow::Result<()> {
     let has_tls = server.client_identity.is_some() || server.server_authentication.is_some();
     let has_obfuscation = server.shared_secret.is_some();
+
+    if !has_tls
+        && !has_obfuscation
+        && options.allows(&ValidationRelaxation::AllowPlainTcpWithoutSharedSecret)
+    {
+        return Ok(());
+    }
 
     // When AllowTlsWithSharedSecret is active, permit both TLS and shared-secret
     // simultaneously.  We still require at least one security mode.

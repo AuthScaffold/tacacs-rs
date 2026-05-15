@@ -2491,7 +2491,7 @@ fn relaxed_parse_yang_json_file_with_options_allows_tls_with_shared_secret() {
 }
 
 #[test]
-fn relaxed_does_not_permit_no_security_mode() {
+fn tls_shared_secret_relaxation_does_not_permit_no_security_mode() {
     // The relaxation only loosens the "at most one" constraint, not the
     // "at least one" mandatory requirement.
     use tacacsrs_config::{ValidationOptions, ValidationRelaxation, parse_yang_json_with_options};
@@ -2516,8 +2516,37 @@ fn relaxed_does_not_permit_no_security_mode() {
     assert!(
         err.to_string()
             .contains("security requires one of [tls, obfuscation]"),
-        "relaxed mode should still require at least one security mode: {err}",
+        "TLS/shared-secret relaxation should still require at least one security mode: {err}",
     );
+}
+
+#[test]
+fn relaxed_allows_plain_tcp_without_shared_secret() {
+    use tacacsrs_config::{ValidationOptions, ValidationRelaxation, parse_yang_json_with_options};
+
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "bare",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49
+                }
+            ]
+        }
+    }"#;
+
+    let options = ValidationOptions::new()
+        .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret);
+
+    let config = parse_yang_json_with_options(json, &options)
+        .expect("AllowPlainTcpWithoutSharedSecret should permit no security choice");
+
+    assert_eq!(config.server[0].name, "bare");
+    assert!(config.server[0].shared_secret.is_none());
+    assert!(config.server[0].client_identity.is_none());
+    assert!(config.server[0].server_authentication.is_none());
 }
 
 #[test]
@@ -2547,6 +2576,30 @@ fn builder_build_with_options_allows_tls_with_shared_secret() {
     assert_eq!(config.server[0].name, "migration");
     assert!(config.server[0].shared_secret.is_some());
     assert!(config.server[0].server_authentication.is_some());
+}
+
+#[test]
+fn builder_build_with_options_allows_plain_tcp_without_shared_secret() {
+    use tacacsrs_config::{
+        TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType, ValidationOptions,
+        ValidationRelaxation,
+    };
+
+    let options = ValidationOptions::new()
+        .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret);
+
+    let server =
+        TacacsPlusServerBuilder::new("bare", TacacsPlusServerType::ACCOUNTING, "192.0.2.10", 49);
+
+    let config = TacacsPlusBuilder::new()
+        .with_server_builder(server)
+        .build_with_options(&options)
+        .expect("AllowPlainTcpWithoutSharedSecret should permit plain TCP without shared-secret");
+
+    assert_eq!(config.server[0].name, "bare");
+    assert!(config.server[0].shared_secret.is_none());
+    assert!(config.server[0].client_identity.is_none());
+    assert!(config.server[0].server_authentication.is_none());
 }
 
 #[test]
@@ -2593,10 +2646,16 @@ fn validation_relaxation_from_str_roundtrip() {
     use std::str::FromStr;
     use tacacsrs_config::ValidationRelaxation;
 
-    let relaxation = ValidationRelaxation::from_str("allow-tls-with-shared-secret")
+    let tls_relaxation = ValidationRelaxation::from_str("allow-tls-with-shared-secret")
         .expect("should parse allow-tls-with-shared-secret");
-    assert_eq!(relaxation, ValidationRelaxation::AllowTlsWithSharedSecret);
-    assert_eq!(relaxation.to_string(), "allow-tls-with-shared-secret");
+    assert_eq!(tls_relaxation, ValidationRelaxation::AllowTlsWithSharedSecret);
+    assert_eq!(tls_relaxation.to_string(), "allow-tls-with-shared-secret");
+
+    let plain_tcp_relaxation =
+        ValidationRelaxation::from_str("allow-plain-tcp-without-shared-secret")
+            .expect("should parse allow-plain-tcp-without-shared-secret");
+    assert_eq!(plain_tcp_relaxation, ValidationRelaxation::AllowPlainTcpWithoutSharedSecret,);
+    assert_eq!(plain_tcp_relaxation.to_string(), "allow-plain-tcp-without-shared-secret",);
 }
 
 #[test]
