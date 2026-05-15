@@ -8,9 +8,16 @@ Use the VM manager only for lifecycle tasks:
 
 ```powershell
 .\lde\sonic-vm\sonic-vm.ps1 -Action Up
+.\lde\sonic-vm\sonic-vm.ps1 -Action InstallKey
 .\lde\sonic-vm\sonic-vm.ps1 -Action Status
 .\lde\sonic-vm\sonic-vm.ps1 -Action Stop
 ```
+
+`Up` installs the first available Windows OpenSSH public key from
+`%USERPROFILE%\.ssh\id_ed25519.pub`, `id_rsa.pub`, or `id_ecdsa.pub` before it
+mounts `/data`. Pass `-PublicKeyPath` to use a different key. The copied key is
+normalized before appending to `authorized_keys`, so Windows CRLF line endings do
+not leave a trailing `^M` in the guest.
 
 For day-to-day testing, prefer the helpers below.
 
