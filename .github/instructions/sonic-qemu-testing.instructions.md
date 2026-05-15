@@ -22,6 +22,14 @@ applyTo: "libraries/tacacsrs_sonic/**,executables/tacacsrs_agentd/**,docs/sonic-
 .\lde\sonic-vm\Publish-SonicExample.ps1 -Package tacacsrs-sonic -Example configdb_watch
 ```
 
+- For normal Cargo binaries such as `tacon`, use the binary publisher:
+
+```powershell
+.\lde\sonic-vm\Publish-SonicBinary.ps1 -Package tacon
+```
+
+	The binary publisher defaults `-Bin` to the package name; specify `-Bin` only for packages whose binary name differs.
+
 - If doing the WSL build manually from PowerShell, build from the repository root through WSL. For this workspace, `x:/tacacs-rs-2` maps to `/mnt/x/tacacs-rs-2`:
 
 ```powershell

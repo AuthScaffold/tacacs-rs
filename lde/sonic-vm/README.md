@@ -45,7 +45,9 @@ Copy guest output back to the repo:
 ## Build Linux Artifacts Under WSL
 
 Windows `cargo build` produces Windows binaries. SONiC needs Linux ELF
-artifacts, so build examples through WSL and then copy the Linux artifact:
+artifacts, so build through WSL and then copy the Linux artifact.
+
+Publish an example binary:
 
 ```powershell
 .\lde\sonic-vm\Publish-SonicExample.ps1 `
@@ -53,7 +55,16 @@ artifacts, so build examples through WSL and then copy the Linux artifact:
   -Example configdb_watch
 ```
 
-The default remote destination is `/data/<example-name>`.
+Publish a standard Cargo binary such as `tacon`:
+
+```powershell
+.\lde\sonic-vm\Publish-SonicBinary.ps1 `
+  -Package tacon
+```
+
+By default, the binary name is the package name. Use `-Bin` only when a package
+produces a differently named binary. The default remote destination is
+`/data/<example-or-binary-name>`.
 
 ## Run The ConfigDB Watcher Scenario
 
