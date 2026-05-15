@@ -71,3 +71,10 @@ cargo run -p tacacsrs-agent-ipc-emulatord -- \
 The process prints the bound endpoint to stdout. Use the mock-controller client
 or protobuf service to load/replace scenarios, reset state, fetch captured
 requests, fetch per-rule hit counts, and trigger graceful shutdown.
+
+Diagnostics are written to stderr in a compact timestamped format while stdout
+stays reserved for the endpoint. By default the process logs emulator lifecycle,
+incoming Accounting/Authorization requests, matched rule indexes, configured
+delays, responses, unmatched requests, and controller operations. Use `-vv` for
+full request-field JSON and controller inspection calls, `-vvv` for trace-level
+emulator details, or `--quiet` when a test harness needs endpoint-only output.

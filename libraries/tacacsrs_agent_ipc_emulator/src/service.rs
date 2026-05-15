@@ -37,7 +37,9 @@ impl AgentService {
             let mut state = self.state.lock().await;
             state.record_and_match(rpc, &fields)?
         };
+        log_match(rpc, &fields, &MatchResult::Matched(matched.clone()));
         if let Some(delay_ms) = matched.delay_ms {
+            log::info!("{rpc} delaying response by {delay_ms} ms");
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
         Ok(matched)
@@ -52,8 +54,10 @@ impl AgentService {
             let mut state = self.state.lock().await;
             state.record_and_match_result(rpc, &fields)?
         };
+        log_match(rpc, &fields, &matched);
         if let MatchResult::Matched(matched_rule) = &matched {
             if let Some(delay_ms) = matched_rule.delay_ms {
+                log::info!("{rpc} delaying response by {delay_ms} ms");
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
         }
@@ -68,18 +72,25 @@ impl TacacsAgent for AgentService {
         request: Request<ipc::AccountingRequest>,
     ) -> Result<Response<ipc::AccountingReply>, Status> {
         let fields = accounting_fields(&request.into_inner());
+        log_request(IpcRpc::Accounting, &fields);
         let matched = self.match_request(IpcRpc::Accounting, fields).await?;
         match matched.response {
-            EmulatorResponse::Response(response) => Ok(Response::new(ipc::AccountingReply {
-                result: Some(ipc::accounting_reply::Result::Response(
-                    accounting_response(response)?.into_proto(),
-                )),
-            })),
-            EmulatorResponse::Error(error) => Ok(Response::new(ipc::AccountingReply {
-                result: Some(ipc::accounting_reply::Result::Error(
-                    service_error(error).into_proto(),
-                )),
-            })),
+            EmulatorResponse::Response(response) => {
+                log_response(IpcRpc::Accounting, &response);
+                Ok(Response::new(ipc::AccountingReply {
+                    result: Some(ipc::accounting_reply::Result::Response(
+                        accounting_response(response)?.into_proto(),
+                    )),
+                }))
+            }
+            EmulatorResponse::Error(error) => {
+                log_error_response(IpcRpc::Accounting, &error);
+                Ok(Response::new(ipc::AccountingReply {
+                    result: Some(ipc::accounting_reply::Result::Error(
+                        service_error(error).into_proto(),
+                    )),
+                }))
+            }
         }
     }
 
@@ -88,6 +99,7 @@ impl TacacsAgent for AgentService {
         request: Request<ipc::AuthorizationRequest>,
     ) -> Result<Response<ipc::AuthorizationReply>, Status> {
         let fields = authorization_fields(&request.into_inner());
+        log_request(IpcRpc::Authorization, &fields);
         let matched = self
             .match_request_result(IpcRpc::Authorization, fields)
             .await?;
@@ -102,17 +114,134 @@ impl TacacsAgent for AgentService {
             }),
         };
         match response {
-            EmulatorResponse::Response(response) => Ok(Response::new(ipc::AuthorizationReply {
-                result: Some(ipc::authorization_reply::Result::Response(
-                    authorization_response(response)?.into_proto(),
-                )),
-            })),
-            EmulatorResponse::Error(error) => Ok(Response::new(ipc::AuthorizationReply {
-                result: Some(ipc::authorization_reply::Result::Error(
-                    service_error(error).into_proto(),
-                )),
-            })),
+            EmulatorResponse::Response(response) => {
+                log_response(IpcRpc::Authorization, &response);
+                Ok(Response::new(ipc::AuthorizationReply {
+                    result: Some(ipc::authorization_reply::Result::Response(
+                        authorization_response(response)?.into_proto(),
+                    )),
+                }))
+            }
+            EmulatorResponse::Error(error) => {
+                log_error_response(IpcRpc::Authorization, &error);
+                Ok(Response::new(ipc::AuthorizationReply {
+                    result: Some(ipc::authorization_reply::Result::Error(
+                        service_error(error).into_proto(),
+                    )),
+                }))
+            }
         }
+    }
+}
+
+fn log_request(rpc: IpcRpc, fields: &BTreeMap<String, Value>) {
+    log::info!("{rpc} request {}", request_summary(fields));
+    log::debug!("{rpc} request fields {}", json_object(fields));
+}
+
+fn log_match(rpc: IpcRpc, fields: &BTreeMap<String, Value>, matched: &MatchResult) {
+    match matched {
+        MatchResult::Matched(rule) => {
+            log::info!(
+                "{rpc} matched rule #{} {}",
+                rule.rule_index,
+                response_summary(&rule.response)
+            );
+        }
+        MatchResult::Unmatched { request_json } => {
+            log::warn!("{rpc} no matching rule for {}", request_summary(fields));
+            log::debug!("{rpc} unmatched request fields {request_json}");
+        }
+    }
+}
+
+fn log_response(rpc: IpcRpc, response: &ResponseBody) {
+    log::info!(
+        "{rpc} reply response status={} server={} message={}",
+        response.status,
+        display_text(&response.server),
+        display_text(&response.server_message)
+    );
+    if !response.args.is_empty() {
+        log::debug!("{rpc} reply authorization args {}", authorization_args_summary(response));
+    }
+}
+
+fn log_error_response(rpc: IpcRpc, error: &crate::scenario::ErrorBody) {
+    log::warn!(
+        "{rpc} reply service-error retriable={} server={} message={}",
+        error.retriable,
+        display_text(&error.server),
+        display_text(&error.message)
+    );
+}
+
+fn request_summary(fields: &BTreeMap<String, Value>) -> String {
+    [
+        "user",
+        "port",
+        "remote_address",
+        "privilege_level",
+        "command",
+        "command_arguments",
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        fields
+            .get(key)
+            .map(|value| format!("{key}={}", json_value(value)))
+    })
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+fn response_summary(response: &EmulatorResponse) -> String {
+    match response {
+        EmulatorResponse::Response(body) => {
+            format!("response status={} server={}", body.status, display_text(&body.server))
+        }
+        EmulatorResponse::Error(body) => format!(
+            "service-error retriable={} server={} message={}",
+            body.retriable,
+            display_text(&body.server),
+            display_text(&body.message)
+        ),
+    }
+}
+
+fn authorization_args_summary(response: &ResponseBody) -> String {
+    response
+        .args
+        .iter()
+        .map(|arg| {
+            format!(
+                "{}{}={}",
+                if arg.mandatory {
+                    "!"
+                } else {
+                    ""
+                },
+                arg.name,
+                display_text(&arg.value)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn json_object(fields: &BTreeMap<String, Value>) -> String {
+    serde_json::to_string(fields).unwrap_or_else(|error| format!("<json encode failed: {error}>"))
+}
+
+fn json_value(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|error| format!("<json encode failed: {error}>"))
+}
+
+fn display_text(value: &str) -> String {
+    if value.is_empty() {
+        "<empty>".to_owned()
+    } else {
+        json_value(&Value::String(value.to_owned()))
     }
 }
 
@@ -134,6 +263,10 @@ impl TacacsAgentMockController for ControllerService {
     ) -> Result<Response<controller::LoadScenarioReply>, Status> {
         let scenario: EmulatorScenario = serde_json::from_str(&request.into_inner().scenario_json)
             .map_err(|error| Status::invalid_argument(format!("Invalid scenario JSON: {error}")))?;
+        log::info!(
+            "controller loaded scenario with {} transaction rule(s)",
+            scenario.transactions.len()
+        );
         self.state.lock().await.replace_scenario(scenario);
         Ok(Response::new(controller::LoadScenarioReply {}))
     }
@@ -142,6 +275,7 @@ impl TacacsAgentMockController for ControllerService {
         &self,
         _request: Request<controller::ResetStateRequest>,
     ) -> Result<Response<controller::ResetStateReply>, Status> {
+        log::info!("controller reset captured requests and rule hit counts");
         self.state.lock().await.reset();
         Ok(Response::new(controller::ResetStateReply {}))
     }
@@ -159,6 +293,7 @@ impl TacacsAgentMockController for ControllerService {
             .map(controller::CapturedIpcRequest::try_from)
             .collect::<anyhow::Result<Vec<_>>>()
             .map_err(|error| Status::internal(error.to_string()))?;
+        log::debug!("controller returned {} captured request(s)", requests.len());
         Ok(Response::new(controller::GetCapturedRequestsReply { requests }))
     }
 
@@ -175,6 +310,7 @@ impl TacacsAgentMockController for ControllerService {
             .map(controller::RuleHitCount::try_from)
             .collect::<anyhow::Result<Vec<_>>>()
             .map_err(|error| Status::internal(error.to_string()))?;
+        log::debug!("controller returned {} rule hit count(s)", hit_counts.len());
         Ok(Response::new(controller::GetRuleHitCountsReply { hit_counts }))
     }
 
@@ -182,6 +318,7 @@ impl TacacsAgentMockController for ControllerService {
         &self,
         _request: Request<controller::ShutdownRequest>,
     ) -> Result<Response<controller::ShutdownReply>, Status> {
+        log::info!("controller requested graceful shutdown");
         send_shutdown(&self.shutdown_sender).await;
         Ok(Response::new(controller::ShutdownReply {}))
     }

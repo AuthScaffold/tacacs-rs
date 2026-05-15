@@ -1,0 +1,20 @@
+[package]
+name = "tacacsrs-bash-plugin"
+version = "0.0.0-dev"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SONiC bash execve plugin backed by tacacsrs-agentd IPC"
+
+[lib]
+name = "tacacsrs_bash_plugin"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = "1.0.102"
+libc = "0.2"
+tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
+tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
+
+[lints.rust]
+unsafe_code = "allow"
