@@ -1,6 +1,6 @@
-# Debian Packaging for Tacon
+# Debian Packaging
 
-This document describes how to build and publish Debian packages for the Tacon executable.
+This document describes how to build and publish Debian packages for the TACACS-rs executables.
 
 ## Overview
 
@@ -8,13 +8,15 @@ Tacon uses [cargo-deb](https://github.com/kornelski/cargo-deb) to generate Debia
 
 ## Package Details
 
-- **Package Name**: `tacon`
-- **Section**: `net`
-- **Priority**: `optional`
-- **Maintainer**: AuthScaffold <support@authscaffold.com>
-- **Dependencies**: Automatically detected (libc6 >= 2.38)
-- **Architecture**: amd64
-- **Installation Path**: `/usr/bin/tacon`
+| Package | Section | Priority | Installation path | Runtime dependencies |
+|---------|---------|----------|-------------------|----------------------|
+| `tacon` | `net` | `optional` | `/usr/bin/tacon` | `$auto` from `cargo-deb` (for example `libc6`; no OpenSSL dependency for default rustls builds) |
+| `tacon-psk` | `net` | `optional` | `/usr/bin/tacon` | `$auto` from a `psk` feature build, including the distribution's OpenSSL runtime package when dynamically linked |
+| `tacacsrs-agentd` | `net` | `optional` | `/usr/sbin/tacacsrs-agentd` | `$auto` from `cargo-deb` (for example `libc6`; no OpenSSL dependency for default rustls builds) |
+| `tacacsrs-agentd-psk` | `net` | `optional` | `/usr/sbin/tacacsrs-agentd` | `$auto` from a `psk` feature build, including the distribution's OpenSSL runtime package when dynamically linked |
+| `session-wrapper` | `admin` | `optional` | `/usr/bin/session-wrapper` | `$auto` from `cargo-deb`, including `libseccomp2` for dynamically linked Linux `amd64` builds |
+
+OpenSSL is only required for packages built with the `psk` feature because the default TLS path uses rustls. Build PSK packages with the `psk` cargo-deb variant so the binary and generated dependency metadata are derived from the OpenSSL-enabled build.
 
 ## Prerequisites
 
@@ -91,6 +93,17 @@ The `.deb` file will be created in `target/debian/`:
 ```
 target/debian/tacon_0.1.1-1_amd64.deb
 ```
+
+### Feature variants
+
+The `psk` cargo-deb variant enables the Rust `psk` feature and produces a variant package name such as `tacon-psk` or `tacacsrs-agentd-psk`. Use it whenever the packaged binary was built with OpenSSL-backed TLS PSK support:
+
+```bash
+cargo deb --package tacon --variant psk
+cargo deb --package tacacsrs-agentd --variant psk
+```
+
+The default package metadata intentionally does not declare OpenSSL directly; `cargo-deb` resolves the appropriate runtime package for the build distribution through `$auto` when the OpenSSL-linked binary is packaged.
 
 ### Single Command
 
@@ -230,6 +243,10 @@ assets = [
     ["../../LICENSE", "usr/share/doc/tacon/", "644"],
     ["debian/changelog.gz", "usr/share/doc/tacon/changelog.Debian.gz", "644"],
 ]
+
+[package.metadata.deb.variants.psk]
+features = ["psk"]
+depends = "$auto"
 ```
 
 ### debian/changelog
@@ -366,8 +383,9 @@ The package is automatically stripped. If size is still an issue:
 
 ### Dependency Issues
 
-If automatic dependency detection fails:
-- Manually specify in `Cargo.toml`: `depends = "libc6 (>= 2.38)"`
+- Confirm the package uses `depends = "$auto"` so `cargo-deb` can resolve dynamic library dependencies with `dpkg-shlibdeps`.
+- For `session-wrapper`, verify that `$auto` resolves `libseccomp2` for dynamically linked Linux `amd64` builds.
+- For PSK builds, use the `psk` cargo-deb variant so OpenSSL is linked into the binary before `$auto` resolves dependencies.
 - Test on target system before publishing
 
 ### Lintian Errors
