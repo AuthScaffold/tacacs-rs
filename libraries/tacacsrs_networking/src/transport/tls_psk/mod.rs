@@ -93,7 +93,7 @@ fn create_psk_ssl_context(
     if let Some(groups) = psk_dhe_ke_groups {
         ctx_builder
             .set_groups_list(groups.as_openssl_list())
-            .map_err(|error| groups.unsupported_error(error))?;
+            .map_err(|error| groups.unsupported_error(&error))?;
     }
 
     Ok(ctx_builder.build())

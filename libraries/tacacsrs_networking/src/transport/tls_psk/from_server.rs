@@ -39,7 +39,7 @@ impl PskDheKeGroups {
         &self.openssl_list
     }
 
-    pub(crate) fn unsupported_error(&self, error: openssl::error::ErrorStack) -> anyhow::Error {
+    pub(crate) fn unsupported_error(&self, error: &openssl::error::ErrorStack) -> anyhow::Error {
         anyhow::anyhow!(
             "unsupported TLS PSK DHE group list `{}`; ensure the configured psk-dhe-ke-groups are supported by the linked OpenSSL library: {error}",
             self.openssl_list
