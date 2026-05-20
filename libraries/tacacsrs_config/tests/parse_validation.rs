@@ -1463,7 +1463,7 @@ fn accept_tls13_epsk_with_psk_dhe_groups() {
                                 "cleartext-symmetric-key": "dG9wc2VjcmV0"
                             },
                             "external-identity": "client@example.com",
-                            "tacacsrs-tls-psk-dhe:groups": [
+                            "tacacsrs:psk-dhe-ke-groups": [
                                 "x25519",
                                 "secp256r1"
                             ]
@@ -1480,7 +1480,7 @@ fn accept_tls13_epsk_with_psk_dhe_groups() {
         .as_ref()
         .and_then(|identity| identity.tls13_epsk.as_ref())
         .expect("tls13-epsk should be present")
-        .groups;
+        .psk_dhe_ke_groups;
     assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::X25519)));
     assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp256r1)));
 }
@@ -1497,7 +1497,7 @@ fn accept_client_credentials_tls13_epsk_with_psk_dhe_groups() {
                             "cleartext-symmetric-key": "dG9wc2VjcmV0"
                         },
                         "external-identity": "client@example.com",
-                        "tacacsrs-tls-psk-dhe:groups": [
+                        "tacacsrs:psk-dhe-ke-groups": [
                             "secp256r1",
                             "secp384r1"
                         ]
@@ -1523,7 +1523,7 @@ fn accept_client_credentials_tls13_epsk_with_psk_dhe_groups() {
         .tls13_epsk
         .as_ref()
         .expect("tls13-epsk should be present")
-        .groups;
+        .psk_dhe_ke_groups;
     assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::Secp256r1)));
     assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp384r1)));
 }
@@ -1544,7 +1544,7 @@ fn reject_unknown_psk_dhe_group_in_groups() {
                                 "cleartext-symmetric-key": "dG9wc2VjcmV0"
                             },
                             "external-identity": "client@example.com",
-                            "tacacsrs-tls-psk-dhe:groups": [
+                            "tacacsrs:psk-dhe-ke-groups": [
                                 "x25519",
                                 "secp224r1"
                             ]
@@ -1557,7 +1557,7 @@ fn reject_unknown_psk_dhe_group_in_groups() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert!(
-        err.to_string().contains("secp224r1") || err.to_string().contains("groups"),
+        err.to_string().contains("secp224r1") || err.to_string().contains("psk-dhe-ke-groups"),
         "unexpected error: {err}",
     );
 }

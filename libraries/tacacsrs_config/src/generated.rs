@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub mod tacacs_plus {
     use serde::{Deserialize, Serialize};
     use super::keystore;
-    use super::tacacsrs_tls_psk_dhe;
+    use super::tacacsrs;
     use super::truststore;
 
     pub type ClientCredentialsRef = String;
@@ -150,9 +150,9 @@ pub mod tacacs_plus {
         pub target_kdf: Option<u16>,
         /// Supported groups to offer, in preference order, in
         /// ClientHello key_share when using TLS 1.3 PSK psk_dhe_ke.
-        #[serde(rename = "tacacsrs-tls-psk-dhe:groups")]
+        #[serde(rename = "tacacsrs:psk-dhe-ke-groups")]
         #[serde(default)]
-        pub groups: Vec<tacacsrs_tls_psk_dhe::PskDheKeSupportedGroup>,
+        pub psk_dhe_ke_groups: Vec<tacacsrs::PskDheKeSupportedGroup>,
     }
 
     /// Choice constraints for [`Tls13Epsk`].
@@ -790,8 +790,8 @@ pub mod crypto_types {
     }
 }
 
-/// Types from `tacacsrs-tls-psk-dhe`.
-pub mod tacacsrs_tls_psk_dhe {
+/// Types from `tacacsrs`.
+pub mod tacacsrs {
     use serde::{Deserialize, Serialize};
 
     /// TLS 1.3 supported groups that tacacs-rs may use for

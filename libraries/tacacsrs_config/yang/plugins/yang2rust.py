@@ -82,8 +82,11 @@ _MODULE_MAP = {
     "ietf-tls-client": "tls_client",
     "ietf-system-tacacs-plus": "tacacs_plus",
     "ietf-netconf-acm": "nacm",
-    "tacacsrs-tls-psk-dhe": "tacacsrs_tls_psk_dhe",
+    "tacacsrs": "tacacsrs",
 }
+
+_PROJECT_MODULE_NAMES = frozenset({"tacacsrs"})
+_PROJECT_MODULE_PREFIX = "tacacsrs-"
 
 # Modules whose types we skip entirely (just primitives/typedefs)
 _SKIP_MODULES = frozenset({
@@ -911,11 +914,13 @@ class Collector:
     def _serde_name(stmt, field_mod: ModuleTypes) -> str:
         src = _source_module(stmt)
         # Project-owned augment leaves come from separate modules and therefore
-        # use module-qualified RFC 7951 JSON member names.  The generator treats
-        # `tacacsrs-` as the project module namespace prefix; upstream grouping
-        # internals are intentionally left as parent-local field names to match
-        # the existing generated model.
-        if src and src.startswith("tacacsrs-") and src != field_mod.yang_name:
+        # use module-qualified RFC 7951 JSON member names.  The qualifier is the
+        # source YANG module name, not the module prefix.
+        if (
+            src
+            and (src in _PROJECT_MODULE_NAMES or src.startswith(_PROJECT_MODULE_PREFIX))
+            and src != field_mod.yang_name
+        ):
             return f"{src}:{stmt.arg}"
         return stmt.arg
 

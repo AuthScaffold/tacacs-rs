@@ -209,7 +209,7 @@ impl TacacsPlusServerBuilder {
                 context: None,
                 target_protocol: None,
                 target_kdf: None,
-                groups: vec![],
+                psk_dhe_ke_groups: vec![],
             }),
         });
         self.server.server_authentication = None;

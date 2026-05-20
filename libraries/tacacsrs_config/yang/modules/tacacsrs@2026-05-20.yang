@@ -1,7 +1,7 @@
-module tacacsrs-tls-psk-dhe {
+module tacacsrs {
   yang-version 1.1;
-  namespace "urn:authscaffold:tacacs-rs:yang:tacacsrs-tls-psk-dhe";
-  prefix trs-psk-dhe;
+  namespace "urn:authscaffold:tacacs-rs:yang:tacacsrs";
+  prefix trs;
 
   import ietf-system {
     prefix sys;
@@ -21,7 +21,7 @@ module tacacsrs-tls-psk-dhe {
   contact
     "Project Web: <https://github.com/AuthScaffold/tacacs-rs>";
   description
-    "Project-owned TACACS+/TLS configuration extensions for tacacs-rs.";
+    "Project-owned TACACS+ configuration extensions for tacacs-rs.";
 
   revision 2026-05-20 {
     description
@@ -95,7 +95,7 @@ module tacacsrs-tls-psk-dhe {
       "Configuration for TLS 1.3 PSK psk_dhe_ke ClientHello
        supported group and key share parameters.";
 
-    leaf-list groups {
+    leaf-list psk-dhe-ke-groups {
       if-feature "psk-dhe-ke-hello-params";
       type psk-dhe-ke-supported-group;
       ordered-by user;

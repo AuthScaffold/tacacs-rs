@@ -243,7 +243,7 @@ python expand_yang_tree.py \
 cp generated_types.rs ../src/generated.rs
 ```
 
-`expand_yang_tree.py` fetches the upstream IETF YANG modules and passes local project modules from `libraries/tacacsrs_config/yang/modules/` to `pyang`. The `feature-flags.ini` file controls both upstream features and project features such as `tacacsrs-tls-psk-dhe:psk-dhe-ke-hello-params`.
+`expand_yang_tree.py` fetches the upstream IETF YANG modules and passes local project modules from `libraries/tacacsrs_config/yang/modules/` to `pyang`. The `feature-flags.ini` file controls both upstream features and project features such as `tacacsrs:psk-dhe-ke-hello-params`.
 
 After regenerating, run the workspace formatting, clippy, build, and test commands before committing to ensure the emitted code still matches repository expectations.
 

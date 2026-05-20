@@ -31,7 +31,7 @@ module: ietf-system-tacacs-plus
        |           +--rw context?                   string
        |           +--rw target-protocol?           uint16
        |           +--rw target-kdf?                uint16
-       |           +--rw trs-psk-dhe:groups*        psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
+       |           +--rw trs:psk-dhe-ke-groups*     psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
        +--rw server-credentials* [id] {credential-reference}?
        |  +--rw id             string
        |  +--rw ca-certs!
@@ -90,7 +90,7 @@ module: ietf-system-tacacs-plus
           |  |  |                 +--rw context?                   string
           |  |  |                 +--rw target-protocol?           uint16
           |  |  |                 +--rw target-kdf?                uint16
-          |  |  |                 +--rw trs-psk-dhe:groups*        psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
+          |  |  |                 +--rw trs:psk-dhe-ke-groups*     psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
           |  |  +--rw server-authentication
           |  |     +--rw (ref-or-explicit)?
           |  |        +--:(ref)
@@ -133,5 +133,4 @@ module: ietf-system-tacacs-plus
              +--ro errors-received?       yang:counter64
              +--ro sessions?              yang:counter64
              +--ro cert-errors?           yang:counter64
-
 
