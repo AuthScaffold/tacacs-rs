@@ -16,7 +16,7 @@ mod psk_identity;
 mod tls_psk;
 
 pub(crate) use config_builder::PskConfigurationBuilder;
-pub(crate) use from_server::{establish_from_server, server_has_psk};
+pub(crate) use from_server::{PskDheKeGroups, establish_from_server, server_has_psk};
 pub(crate) use psk_identity::PskIdentity;
 
 use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
@@ -33,6 +33,7 @@ use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
 fn create_psk_ssl_context(
     psk: &PskIdentity,
     ciphersuites: Option<&str>,
+    psk_dhe_ke_groups: Option<&PskDheKeGroups>,
 ) -> anyhow::Result<SslContext> {
     let mut ctx_builder = SslContext::builder(SslMethod::tls_client())?;
 
@@ -88,6 +89,12 @@ fn create_psk_ssl_context(
     // Set TLS 1.3 ciphersuites compatible with PSK
     let ciphersuites = ciphersuites.unwrap_or("TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256");
     ctx_builder.set_ciphersuites(ciphersuites)?;
+
+    if let Some(groups) = psk_dhe_ke_groups {
+        ctx_builder
+            .set_groups_list(groups.as_openssl_list())
+            .map_err(|error| groups.unsupported_error(error))?;
+    }
 
     Ok(ctx_builder.build())
 }
