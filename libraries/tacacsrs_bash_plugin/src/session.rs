@@ -1,12 +1,15 @@
 use std::env;
 use std::os::raw::c_char;
-#[cfg(unix)]
+#[cfg(all(unix, not(target_env = "musl")))]
 use std::ptr;
 
 use crate::c_strings::c_string;
 
 #[cfg(unix)]
 const REMOTE_USER_GECOS_PREFIX: &str = "remote_user";
+
+#[cfg(all(unix, target_env = "musl"))]
+static PASSWD_ITERATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn get_user_name(user: *mut c_char) -> String {
     let user = c_string(user);
@@ -97,7 +100,7 @@ fn user_name_from_uid(uid: libc::uid_t) -> Option<String> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_env = "musl")))]
 fn unix_is_remote_user(user: &str) -> bool {
     unsafe {
         libc::setpwent();
@@ -122,4 +125,31 @@ fn unix_is_remote_user(user: &str) -> bool {
         libc::endpwent();
     }
     false
+}
+
+#[cfg(all(unix, target_env = "musl"))]
+fn unix_is_remote_user(user: &str) -> bool {
+    let _guard = PASSWD_ITERATION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut is_remote = false;
+
+    unsafe {
+        libc::setpwent();
+        loop {
+            let passwd = libc::getpwent();
+            if passwd.is_null() {
+                break;
+            }
+
+            if c_string((*passwd).pw_name) == user {
+                let gecos = c_string((*passwd).pw_gecos);
+                is_remote = gecos.starts_with(REMOTE_USER_GECOS_PREFIX);
+                break;
+            }
+        }
+        libc::endpwent();
+    }
+
+    is_remote
 }
