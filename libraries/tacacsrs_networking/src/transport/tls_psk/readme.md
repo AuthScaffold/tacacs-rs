@@ -88,13 +88,18 @@ container tls13-epsk {
   leaf context { type string; }
   leaf target-protocol { type uint16; }
   leaf target-kdf { type uint16; }
+  leaf-list tacacsrs:psk-dhe-ke-groups { type tacacsrs:psk-dhe-ke-supported-group; }
 }
 ```
 
 This configures the actual EPSK tuple `(Base Key, External Identity, Hash)` that
 the client offers in the TLS handshake. The `external-identity` is the label
 sent in the `pre_shared_key` ClientHello extension; the base key is the shared
-secret.
+secret. The repository's `tacacsrs` augmentation adds
+`tacacsrs:psk-dhe-ke-groups`; when this leaf-list is present, the ordered values
+are translated into OpenSSL supported-group names and used to send TLS 1.3
+`psk_dhe_ke` key shares. When the leaf-list is empty, the transport leaves the
+OpenSSL group list unchanged and preserves the existing PSK-only behaviour.
 
 ### `server-authentication/tls13-epsks` — The Trust Policy
 
@@ -151,19 +156,26 @@ Adding `key_share` alongside `pre_shared_key` means traffic keys incorporate an
 ephemeral Diffie-Hellman exchange, so if the PSK later leaks, past sessions with
 unique DH keys remain protected. But the authentication mechanism is unchanged.
 
-Our implementation currently uses PSK-only mode (no `key_share`), so there is no
-forward secrecy. This is noted in the Security Considerations table below.
+By default, the implementation preserves PSK-only mode for existing
+configurations. To request forward secrecy, configure one or more
+`tacacsrs:psk-dhe-ke-groups` values under `client-identity/tls13-epsk`; the
+client passes those groups to OpenSSL in the same order. Supported mappings are:
 
-The YANG configuration model (RFC 9645 / RFC 9950) provides **no knob** to
-control this. The `hello-params-grouping` from `ietf-tls-common` contains only
-`tls-versions` (min/max) and `cipher-suites` (ordered list) — there is no
-`psk_key_exchange_modes`, `supported_groups`, or `key_share` configuration. The
-`psk-key-exchange-mode` typedef exists in `iana-tls-profile@2025-04-18.yang` but
-is only consumed by the MUD/ACL traffic-matching model, not by the TLS client
-configuration model. Therefore, the choice between `psk_ke` (PSK-only) and
-`psk_dhe_ke` (PSK + (EC)DHE) is entirely an implementation decision, invisible
-to the YANG configuration layer. If forward secrecy is desired in the future, it
-can be hardcoded in the OpenSSL context setup without any YANG model changes.
+| YANG value | OpenSSL group name |
+|------------|--------------------|
+| `x25519` | `X25519` |
+| `secp256r1` | `P-256` |
+| `secp384r1` | `P-384` |
+| `secp521r1` | `P-521` |
+| `ffdhe2048` | `ffdhe2048` |
+| `ffdhe3072` | `ffdhe3072` |
+| `ffdhe4096` | `ffdhe4096` |
+| `ffdhe6144` | `ffdhe6144` |
+| `ffdhe8192` | `ffdhe8192` |
+
+If the linked OpenSSL library rejects the configured list, connection setup fails
+with an error that includes the OpenSSL group list and points at
+`psk-dhe-ke-groups`.
 
 ### Practical Guidance
 
@@ -197,10 +209,11 @@ PskIdentity::new(identity, key)
         │  validates: non-empty, no NUL, key ≥ 16 bytes
         ▼
 PskConfigurationBuilder::new(psk)
+        │  applies psk-dhe-ke OpenSSL group list when configured
         │
         ▼
 create_psk_ssl_context()
-        │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK callback
+        │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK callback, optional groups
         ▼
 SslStream::connect(tcp_stream)
         │  OpenSSL performs TLS 1.3 PSK handshake
@@ -235,8 +248,9 @@ because `SslStream` does not support owned splitting.
 |---------|-----------|
 | Key length | `PskIdentity::new()` rejects keys shorter than 16 bytes (128 bits) per RFC 9257 §6 |
 | Identity injection | NUL bytes in identity are rejected (OpenSSL uses C strings) |
-| Forward secrecy | Current implementation uses PSK-only mode (no `key_share`). Traffic keys are only as secure as the PSK. If the PSK is compromised, all past sessions using it can be decrypted. |
-| Certificate verification | Explicitly set to `SslVerifyMode::NONE` — intentional for PSK-only, where authentication comes from the shared secret, not certificates |
+| Forward secrecy | Existing configs remain PSK-only. Configure `tacacsrs:psk-dhe-ke-groups` to negotiate `psk_dhe_ke` and add ephemeral (EC)DHE key material. |
+| Unsupported groups | OpenSSL group-list setup errors are surfaced before the handshake with the configured group list in the message. |
+| Certificate verification | Explicitly set to `SslVerifyMode::NONE` — intentional for PSK, where authentication comes from the shared secret, not certificates |
 | Key logging | `PskIdentity` implements a custom `Debug` that redacts the key bytes |
 | Ciphersuites | Restricted to `TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256` (AEAD-only, no CBC) |
 
