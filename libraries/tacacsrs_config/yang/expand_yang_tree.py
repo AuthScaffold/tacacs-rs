@@ -2,9 +2,10 @@
 """Expand the ietf-system-tacacs-plus YANG module into a fully resolved tree.
 
 This script clones the required YANG module repository (if not already
-cached), then runs pyang to produce the expanded tree with all grouping
-references from ietf-keystore, ietf-truststore, ietf-tls-client,
-ietf-crypto-types, etc. fully inlined.
+cached), includes project-owned YANG modules from ``modules/``, then runs
+pyang to produce the expanded tree with all grouping references from
+ietf-keystore, ietf-truststore, ietf-tls-client, ietf-crypto-types, etc.
+fully inlined.
 
 It can also emit a pyang-compatible feature vector for the TACACS+ module
 and the imported TLS modules it depends on, which is useful when pruning the
@@ -13,7 +14,7 @@ public key support.
 
 Prerequisites:
     Install pyang either in an activated virtual environment or globally:
-        python -m pip install pyang
+        python -m pip install -r requirements.txt
 
 Usage:
     python expand_yang_tree.py                  # prints to stdout
@@ -53,6 +54,7 @@ TACACS_MODULE = "ietf-system-tacacs-plus@2026-03-31.yang"
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE_DIR = SCRIPT_DIR / ".yang-cache"
 PLUGIN_DIR = SCRIPT_DIR / "plugins"
+LOCAL_YANG_DIR = SCRIPT_DIR / "modules"
 
 TREE_FEATURE_GROUP_RE = re.compile(r"\{([^{}]+)\}\?")
 
@@ -61,10 +63,24 @@ def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
 
 
-def _load_pyang_modules(root_module_name: str, search_paths: list[Path]) -> tuple[object, dict[str, object], dict[str, set[str]]]:
+def _local_yang_modules() -> list[Path]:
+    if not LOCAL_YANG_DIR.exists():
+        return []
+    return sorted(LOCAL_YANG_DIR.glob("*.yang"))
+
+
+def _load_pyang_modules(root_module_name: str, search_paths: list[Path], module_paths: list[Path]) -> tuple[object, dict[str, object], dict[str, set[str]]]:
     repository_path = os.pathsep.join(str(path) for path in search_paths)
     repo = repository.FileRepository(repository_path)
     ctx = context.Context(repo)
+
+    for module_path in module_paths:
+        try:
+            module_text = module_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise OSError(f"failed to read local YANG module {module_path}") from exc
+        ctx.add_module(str(module_path), module_text)
+
     root_module = ctx.search_module(None, root_module_name)
     if root_module is None:
         raise ValueError(f"failed to load root module '{root_module_name}'")
@@ -309,6 +325,11 @@ def find_pyang() -> str:
     return pyang
 
 
+def _append_search_path_args(cmd: list[str], search_paths: list[Path]) -> None:
+    for search_path in search_paths:
+        cmd.extend(["-p", str(search_path)])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-o", "--output", type=Path, default=None, help="Write output to file instead of stdout")
@@ -364,23 +385,31 @@ def main() -> None:
         print(f"error: {tacacs_module} not found", file=sys.stderr)
         sys.exit(1)
 
+    local_yang_modules = _local_yang_modules()
     search_paths = [rfc_yang_dir]
+    if local_yang_modules:
+        search_paths.append(LOCAL_YANG_DIR)
+    input_modules = [tacacs_module] + local_yang_modules
 
     if args.list_features:
         if args.features_ini is not None:
             print("error: --features-ini cannot be used with --list-features", file=sys.stderr)
             sys.exit(2)
 
-        root_module, loaded_modules, feature_index = _load_pyang_modules(TACACS_ROOT_MODULE, search_paths)
+        root_module, loaded_modules, feature_index = _load_pyang_modules(
+            TACACS_ROOT_MODULE,
+            search_paths,
+            local_yang_modules,
+        )
 
         pyang = find_pyang()
         tree_cmd = [
             pyang,
             "-f", "tree",
             "--tree-depth", str(args.depth),
-            "-p", str(rfc_yang_dir),
-            str(tacacs_module),
         ]
+        _append_search_path_args(tree_cmd, search_paths)
+        tree_cmd.extend(str(module_path) for module_path in input_modules)
         if PLUGIN_DIR.exists():
             tree_cmd.extend(["--plugindir", str(PLUGIN_DIR)])
         tree_result = subprocess.run(tree_cmd, capture_output=True, text=True)
@@ -412,7 +441,11 @@ def main() -> None:
             print("error: --features-ini cannot be combined with --features", file=sys.stderr)
             sys.exit(2)
 
-        _root_module, loaded_modules, _feature_index = _load_pyang_modules(TACACS_ROOT_MODULE, search_paths)
+        _root_module, loaded_modules, _feature_index = _load_pyang_modules(
+            TACACS_ROOT_MODULE,
+            search_paths,
+            local_yang_modules,
+        )
         try:
             ini_disabled_features = parse_feature_ini(args.features_ini, loaded_modules)
         except ValueError as exc:
@@ -424,9 +457,9 @@ def main() -> None:
         pyang,
         "-f", args.format,
         "--tree-depth", str(args.depth),
-        "-p", str(rfc_yang_dir),
-        str(tacacs_module),
     ]
+    _append_search_path_args(cmd, search_paths)
+    cmd.extend(str(module_path) for module_path in input_modules)
     if PLUGIN_DIR.exists():
         cmd.extend(["--plugindir", str(PLUGIN_DIR)])
 

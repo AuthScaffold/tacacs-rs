@@ -1,5 +1,5 @@
 use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
-use tacacsrs_config::{parse_yang_json, TacacsPlusServerType};
+use tacacsrs_config::{parse_yang_json, PskDheKeSupportedGroup, TacacsPlusServerType};
 
 // ---------------------------------------------------------------------------
 // PublicKeyFormat identity enum
@@ -281,4 +281,46 @@ fn epsk_hash_sha384_explicit() {
         .as_ref()
         .unwrap();
     assert!(matches!(epsk.hash, tacacsrs_config::EpskSupportedHash::Sha384));
+}
+
+// ---------------------------------------------------------------------------
+// PSK DHE supported groups augmentation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn psk_dhe_groups_deserializes_rfc7951_augmented_leaf_list() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "dhe-group",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "cleartext-symmetric-key": "dG9wc2VjcmV0"
+                            },
+                            "external-identity": "id@example.com",
+                            "tacacsrs:psk-dhe-ke-groups": [
+                                "x25519",
+                                "ffdhe3072"
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let config = parse_yang_json(json).expect("PSK DHE groups should deserialize");
+    let groups = &config.server[0]
+        .client_identity
+        .as_ref()
+        .and_then(|identity| identity.tls13_epsk.as_ref())
+        .expect("tls13-epsk should be present")
+        .psk_dhe_ke_groups;
+    assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::X25519)));
+    assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Ffdhe3072)));
 }

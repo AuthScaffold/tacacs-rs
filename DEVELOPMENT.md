@@ -212,10 +212,11 @@ The `libraries/tacacsrs_config` crate contains generated Rust types that mirror 
 
 ### Prerequisites
 
-Install `pyang` before regenerating the checked-in artifacts:
+Install the checked-in generator requirements before regenerating artifacts:
 
 ```bash
-python -m pip install pyang
+cd libraries/tacacsrs_config/yang
+python -m pip install -r requirements.txt
 ```
 
 ### Regenerate the expanded tree reference
@@ -224,10 +225,10 @@ From the repository root:
 
 ```bash
 cd libraries/tacacsrs_config/yang
-python expand_yang_tree.py > expanded-tree.txt
+python expand_yang_tree.py --features-ini feature-flags.ini > expanded-tree.txt
 ```
 
-This refreshes `expanded-tree.txt`, the checked-in reference used to inspect the fully expanded YANG data tree after all `uses` statements are resolved.
+This refreshes `expanded-tree.txt`, the checked-in reference used to inspect the fully expanded YANG data tree after all `uses` statements and repo-local YANG augmentations under `modules/` are resolved.
 
 ### Regenerate Rust types
 
@@ -235,18 +236,14 @@ From the same directory:
 
 ```bash
 cd libraries/tacacsrs_config/yang
-pyang \
+python expand_yang_tree.py \
   -f rust \
-  --plugindir . \
-  ietf-system-tacacs-plus.yang \
-  ietf-keystore.yang \
-  ietf-truststore.yang \
-  ietf-crypto-types.yang \
-  ietf-tls-common.yang \
-  > generated_types.rs
-
+  --features-ini feature-flags.ini \
+  -o generated_types.rs
 cp generated_types.rs ../src/generated.rs
 ```
+
+`expand_yang_tree.py` fetches the upstream IETF YANG modules and passes local project modules from `libraries/tacacsrs_config/yang/modules/` to `pyang`. The `feature-flags.ini` file controls both upstream features and project features such as `tacacsrs:psk-dhe-ke-hello-params`.
 
 After regenerating, run the workspace formatting, clippy, build, and test commands before committing to ensure the emitted code still matches repository expectations.
 

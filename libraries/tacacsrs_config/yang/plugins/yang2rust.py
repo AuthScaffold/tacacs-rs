@@ -82,7 +82,11 @@ _MODULE_MAP = {
     "ietf-tls-client": "tls_client",
     "ietf-system-tacacs-plus": "tacacs_plus",
     "ietf-netconf-acm": "nacm",
+    "tacacsrs": "tacacsrs",
 }
+
+_PROJECT_MODULE_NAMES = frozenset({"tacacsrs"})
+_PROJECT_MODULE_PREFIX = "tacacsrs-"
 
 # Modules whose types we skip entirely (just primitives/typedefs)
 _SKIP_MODULES = frozenset({
@@ -387,10 +391,10 @@ def _resolve_default(yang_default: str, rust_type: str) -> str | None:
 
 class Field:
     __slots__ = ("yang_name", "rust_name", "rust_type", "optional",
-                 "is_vec", "doc", "default_value")
+                 "is_vec", "doc", "default_value", "serde_name")
 
     def __init__(self, yang_name, rust_type, *, optional=False,
-                 is_vec=False, doc=None, default_value=None):
+                 is_vec=False, doc=None, default_value=None, serde_name=None):
         self.yang_name = yang_name
         self.rust_name = _yang_to_snake(yang_name)
         self.rust_type = rust_type
@@ -399,6 +403,7 @@ class Field:
         self.doc = doc
         # (yang_default_str, rust_expr) or None
         self.default_value: tuple[str, str] | None = default_value
+        self.serde_name = serde_name or yang_name
 
     def type_string(self) -> str:
         t = self.rust_type
@@ -830,8 +835,14 @@ class Collector:
             else:
                 default_value = (default_stmt.arg, "")
 
-        return Field(stmt.arg, rust_type, optional=optional,
-                     doc=_get_desc(stmt), default_value=default_value)
+        return Field(
+            stmt.arg,
+            rust_type,
+            optional=optional,
+            doc=_get_desc(stmt),
+            default_value=default_value,
+            serde_name=self._serde_name(stmt, field_mod),
+        )
 
     def _process_leaf_list(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field:
         type_stmt = stmt.search_one("type")
@@ -891,7 +902,27 @@ class Collector:
                     rust_type = f"{target_mod.rust_name}::{set_name}"
             else:
                 rust_type = "String"
-        return Field(stmt.arg, rust_type, is_vec=True, doc=_get_desc(stmt))
+        return Field(
+            stmt.arg,
+            rust_type,
+            is_vec=True,
+            doc=_get_desc(stmt),
+            serde_name=self._serde_name(stmt, field_mod),
+        )
+
+    @staticmethod
+    def _serde_name(stmt, field_mod: ModuleTypes) -> str:
+        src = _source_module(stmt)
+        # Project-owned augment leaves come from separate modules and therefore
+        # use module-qualified RFC 7951 JSON member names.  The qualifier is the
+        # source YANG module name, not the module prefix.
+        if (
+            src
+            and (src in _PROJECT_MODULE_NAMES or src.startswith(_PROJECT_MODULE_PREFIX))
+            and src != field_mod.yang_name
+        ):
+            return f"{src}:{stmt.arg}"
+        return stmt.arg
 
     def _flatten_choice(self, choice_stmt, parent_prefix: str, current_mod: ModuleTypes) -> tuple[list[Field], ChoiceGroup]:
         """Flatten all case branches into ``Option<T>`` fields and record choice metadata."""
@@ -1266,8 +1297,8 @@ class RustEmitter:
         w = self.fd.write
         self._doc(f.doc, "        ")
 
-        if _needs_rename(f.yang_name):
-            w(f'        #[serde(rename = "{f.yang_name}")]\n')
+        if f.serde_name != f.rust_name or _needs_rename(f.serde_name):
+            w(f'        #[serde(rename = "{f.serde_name}")]\n')
 
         if f.rust_type == "Vec<u8>":
             if f.is_vec:
