@@ -148,11 +148,11 @@ pub mod tacacs_plus {
         #[serde(rename = "target-kdf")]
         #[serde(default)]
         pub target_kdf: Option<u16>,
-        /// The supported group to offer in ClientHello key_share when
-        /// using TLS 1.3 PSK psk_dhe_ke.
-        #[serde(rename = "tacacsrs-tls-psk-dhe:psk-dhe-ke-group")]
+        /// Supported groups to offer, in preference order, in
+        /// ClientHello key_share when using TLS 1.3 PSK psk_dhe_ke.
+        #[serde(rename = "tacacsrs-tls-psk-dhe:psk-dhe-ke-groups")]
         #[serde(default)]
-        pub psk_dhe_ke_group: Option<tacacsrs_tls_psk_dhe::PskDheKeSupportedGroup>,
+        pub psk_dhe_ke_groups: Vec<tacacsrs_tls_psk_dhe::PskDheKeSupportedGroup>,
     }
 
     /// Choice constraints for [`Tls13Epsk`].

@@ -1448,7 +1448,7 @@ fn accept_tls13_epsk_when_present() {
 }
 
 #[test]
-fn accept_tls13_epsk_with_psk_dhe_group() {
+fn accept_tls13_epsk_with_psk_dhe_groups() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
             "server": [
@@ -1463,7 +1463,10 @@ fn accept_tls13_epsk_with_psk_dhe_group() {
                                 "cleartext-symmetric-key": "dG9wc2VjcmV0"
                             },
                             "external-identity": "client@example.com",
-                            "tacacsrs-tls-psk-dhe:psk-dhe-ke-group": "x25519"
+                            "tacacsrs-tls-psk-dhe:psk-dhe-ke-groups": [
+                                "x25519",
+                                "secp256r1"
+                            ]
                         }
                     }
                 }
@@ -1471,17 +1474,19 @@ fn accept_tls13_epsk_with_psk_dhe_group() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("psk_dhe_ke group should parse");
-    let group = config.server[0]
+    let config = parse_yang_json(json).expect("psk_dhe_ke groups should parse");
+    let groups = &config.server[0]
         .client_identity
         .as_ref()
         .and_then(|identity| identity.tls13_epsk.as_ref())
-        .and_then(|epsk| epsk.psk_dhe_ke_group.as_ref());
-    assert!(matches!(group, Some(PskDheKeSupportedGroup::X25519)));
+        .expect("tls13-epsk should be present")
+        .psk_dhe_ke_groups;
+    assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::X25519)));
+    assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp256r1)));
 }
 
 #[test]
-fn accept_client_credentials_tls13_epsk_with_psk_dhe_group() {
+fn accept_client_credentials_tls13_epsk_with_psk_dhe_groups() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
             "client-credentials": [
@@ -1492,7 +1497,10 @@ fn accept_client_credentials_tls13_epsk_with_psk_dhe_group() {
                             "cleartext-symmetric-key": "dG9wc2VjcmV0"
                         },
                         "external-identity": "client@example.com",
-                        "tacacsrs-tls-psk-dhe:psk-dhe-ke-group": "secp256r1"
+                        "tacacsrs-tls-psk-dhe:psk-dhe-ke-groups": [
+                            "secp256r1",
+                            "secp384r1"
+                        ]
                     }
                 }
             ],
@@ -1510,16 +1518,18 @@ fn accept_client_credentials_tls13_epsk_with_psk_dhe_group() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("credential-bundle psk_dhe_ke group should parse");
-    let group = config.client_credentials[0]
+    let config = parse_yang_json(json).expect("credential-bundle psk_dhe_ke groups should parse");
+    let groups = &config.client_credentials[0]
         .tls13_epsk
         .as_ref()
-        .and_then(|epsk| epsk.psk_dhe_ke_group.as_ref());
-    assert!(matches!(group, Some(PskDheKeSupportedGroup::Secp256r1)));
+        .expect("tls13-epsk should be present")
+        .psk_dhe_ke_groups;
+    assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::Secp256r1)));
+    assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp384r1)));
 }
 
 #[test]
-fn reject_unknown_psk_dhe_group() {
+fn reject_unknown_psk_dhe_group_in_groups() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
             "server": [
@@ -1534,7 +1544,10 @@ fn reject_unknown_psk_dhe_group() {
                                 "cleartext-symmetric-key": "dG9wc2VjcmV0"
                             },
                             "external-identity": "client@example.com",
-                            "tacacsrs-tls-psk-dhe:psk-dhe-ke-group": "secp224r1"
+                            "tacacsrs-tls-psk-dhe:psk-dhe-ke-groups": [
+                                "x25519",
+                                "secp224r1"
+                            ]
                         }
                     }
                 }
@@ -1544,7 +1557,7 @@ fn reject_unknown_psk_dhe_group() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert!(
-        err.to_string().contains("secp224r1") || err.to_string().contains("psk-dhe-ke-group"),
+        err.to_string().contains("secp224r1") || err.to_string().contains("psk-dhe-ke-groups"),
         "unexpected error: {err}",
     );
 }

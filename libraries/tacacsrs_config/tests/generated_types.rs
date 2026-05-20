@@ -284,11 +284,11 @@ fn epsk_hash_sha384_explicit() {
 }
 
 // ---------------------------------------------------------------------------
-// PSK DHE supported group augmentation
+// PSK DHE supported groups augmentation
 // ---------------------------------------------------------------------------
 
 #[test]
-fn psk_dhe_group_deserializes_rfc7951_augmented_leaf() {
+fn psk_dhe_groups_deserializes_rfc7951_augmented_leaf_list() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
             "server": [
@@ -303,7 +303,10 @@ fn psk_dhe_group_deserializes_rfc7951_augmented_leaf() {
                                 "cleartext-symmetric-key": "dG9wc2VjcmV0"
                             },
                             "external-identity": "id@example.com",
-                            "tacacsrs-tls-psk-dhe:psk-dhe-ke-group": "ffdhe3072"
+                            "tacacsrs-tls-psk-dhe:psk-dhe-ke-groups": [
+                                "x25519",
+                                "ffdhe3072"
+                            ]
                         }
                     }
                 }
@@ -311,11 +314,13 @@ fn psk_dhe_group_deserializes_rfc7951_augmented_leaf() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("PSK DHE group should deserialize");
-    let group = config.server[0]
+    let config = parse_yang_json(json).expect("PSK DHE groups should deserialize");
+    let groups = &config.server[0]
         .client_identity
         .as_ref()
         .and_then(|identity| identity.tls13_epsk.as_ref())
-        .and_then(|epsk| epsk.psk_dhe_ke_group.as_ref());
-    assert!(matches!(group, Some(PskDheKeSupportedGroup::Ffdhe3072)));
+        .expect("tls13-epsk should be present")
+        .psk_dhe_ke_groups;
+    assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::X25519)));
+    assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Ffdhe3072)));
 }
