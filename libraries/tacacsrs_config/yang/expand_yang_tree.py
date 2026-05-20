@@ -75,7 +75,11 @@ def _load_pyang_modules(root_module_name: str, search_paths: list[Path], module_
     ctx = context.Context(repo)
 
     for module_path in module_paths:
-        ctx.add_module(str(module_path), module_path.read_text(encoding="utf-8"))
+        try:
+            module_text = module_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise OSError(f"failed to read local YANG module {module_path}") from exc
+        ctx.add_module(str(module_path), module_text)
 
     root_module = ctx.search_module(None, root_module_name)
     if root_module is None:

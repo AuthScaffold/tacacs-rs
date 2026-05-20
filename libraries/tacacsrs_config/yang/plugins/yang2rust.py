@@ -910,6 +910,11 @@ class Collector:
     @staticmethod
     def _serde_name(stmt, field_mod: ModuleTypes) -> str:
         src = _source_module(stmt)
+        # Project-owned augment leaves come from separate modules and therefore
+        # use module-qualified RFC 7951 JSON member names.  The generator treats
+        # `tacacsrs-` as the project module namespace prefix; upstream grouping
+        # internals are intentionally left as parent-local field names to match
+        # the existing generated model.
         if src and src.startswith("tacacsrs-") and src != field_mod.yang_name:
             return f"{src}:{stmt.arg}"
         return stmt.arg
