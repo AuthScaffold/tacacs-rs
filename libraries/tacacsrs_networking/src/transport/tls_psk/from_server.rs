@@ -119,6 +119,7 @@ mod tests {
                 context: None,
                 target_protocol: None,
                 target_kdf: None,
+                psk_dhe_ke_group: None,
                 inline_definition: Some(SymmetricKeyInlineDefinition {
                     key_format: None,
                     cleartext_symmetric_key: Some(key.to_vec()),

@@ -10,6 +10,7 @@
 - Config-local credential bundle validation
 - Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
 - A reusable `TacacsPlusServerBuilder` for constructing `TacacsPlusServer` values in code
+- A project-owned YANG augmentation for TLS 1.3 PSK DHE key exchange group selection
 
 Any future external secret resolution and materialization should live in a separate runtime/provider crate rather than in `tacacsrs-config`.
 
@@ -338,6 +339,46 @@ Used in `SymmetricKeyInlineDefinition` (the inline definition for TLS 1.3 extern
 }
 ```
 
+## Project TACACS+/TLS augmentation
+
+The repository includes a local YANG module, `tacacsrs-tls-psk-dhe`, that augments
+the TACACS+ TLS 1.3 EPSK configuration with `psk-dhe-ke-group`. The augmentation
+is controlled by the `psk-dhe-ke-hello-params` YANG feature in
+`yang/feature-flags.ini`; set that entry to `false` before regenerating if the
+extension should be excluded from generated artifacts.
+
+Because this leaf is added by a different YANG module than its parent, RFC 7951
+JSON uses the module-qualified key
+`tacacsrs-tls-psk-dhe:psk-dhe-ke-group`:
+
+```json
+{
+  "ietf-system-tacacs-plus:tacacs-plus": {
+    "server": [
+      {
+        "name": "tls-psk-dhe",
+        "server-type": "accounting",
+        "address": "192.0.2.10",
+        "port": 49,
+        "client-identity": {
+          "tls13-epsk": {
+            "inline-definition": {
+              "cleartext-symmetric-key": "BASE64VALUE="
+            },
+            "external-identity": "client@example.com",
+            "tacacsrs-tls-psk-dhe:psk-dhe-ke-group": "x25519"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+Supported group values are `x25519`, `secp256r1`, `secp384r1`, `secp521r1`,
+`ffdhe2048`, `ffdhe3072`, `ffdhe4096`, `ffdhe6144`, and `ffdhe8192`. Unknown
+values fail during JSON deserialization.
+
 ## Example config
 
 ```json
@@ -363,6 +404,7 @@ The generated Rust types come from the checked-in YANG tooling under `yang/`:
 
 - `yang/plugins/yang2rust.py` — custom `pyang` plugin that emits Rust structs/enums/bitflags and identity set enums from YANG `identityref` leaves
 - `yang/expand_yang_tree.py` — helper used to refresh the fully expanded tree reference
+- `yang/modules/` — project-owned YANG modules passed to `pyang` alongside the upstream TACACS+ model
 - `yang/generated_types.rs` — generator output, produced on demand and copied into `src/generated.rs`
 
 The generator automatically resolves `identityref` base identities and walks loaded modules to collect derived identities, emitting Rust enums with `ALL`, `ALLOWED_VALUES`, `as_rfc7951_str()`, `from_rfc7951_str()`, and `is_valid()` helpers. Fixed-set `identityref` fields use these enums directly, while YANG `binary` leaves deserialize from RFC 7951 base64 into in-memory `Vec<u8>` values and serialize back to base64 when writing JSON.
@@ -372,8 +414,8 @@ The higher-level validation logic in `src/validation.rs` is still maintained man
 To regenerate after YANG module updates:
 
 ```bash
-# Install pyang either in an activated virtual environment or globally.
-python -m pip install pyang
+# Install pyang and any other generator requirements.
+python -m pip install -r requirements.txt
 
 # Example with a repo-local venv instead of a global install:
 # python -m venv .venv
@@ -381,9 +423,9 @@ python -m pip install pyang
 # python -m pip install pyang
 
 cd libraries/tacacsrs_config/yang
-python expand_yang_tree.py > expanded-tree.txt
 python expand_yang_tree.py --list-features
 python expand_yang_tree.py --list-features --list-features-format ini > feature-flags.ini
+python expand_yang_tree.py --features-ini feature-flags.ini > expanded-tree.txt
 python expand_yang_tree.py \
   -f rust \
   --features-ini feature-flags.ini \

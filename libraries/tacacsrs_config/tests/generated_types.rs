@@ -1,5 +1,5 @@
 use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
-use tacacsrs_config::{parse_yang_json, TacacsPlusServerType};
+use tacacsrs_config::{parse_yang_json, PskDheKeSupportedGroup, TacacsPlusServerType};
 
 // ---------------------------------------------------------------------------
 // PublicKeyFormat identity enum
@@ -281,4 +281,41 @@ fn epsk_hash_sha384_explicit() {
         .as_ref()
         .unwrap();
     assert!(matches!(epsk.hash, tacacsrs_config::EpskSupportedHash::Sha384));
+}
+
+// ---------------------------------------------------------------------------
+// PSK DHE supported group augmentation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn psk_dhe_group_deserializes_rfc7951_augmented_leaf() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "dhe-group",
+                    "server-type": "accounting",
+                    "address": "10.0.0.1",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "cleartext-symmetric-key": "dG9wc2VjcmV0"
+                            },
+                            "external-identity": "id@example.com",
+                            "tacacsrs-tls-psk-dhe:psk-dhe-ke-group": "ffdhe3072"
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let config = parse_yang_json(json).expect("PSK DHE group should deserialize");
+    let group = config.server[0]
+        .client_identity
+        .as_ref()
+        .and_then(|identity| identity.tls13_epsk.as_ref())
+        .and_then(|epsk| epsk.psk_dhe_ke_group.as_ref());
+    assert!(matches!(group, Some(PskDheKeSupportedGroup::Ffdhe3072)));
 }

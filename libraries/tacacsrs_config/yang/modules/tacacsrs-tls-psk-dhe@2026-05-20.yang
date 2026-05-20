@@ -1,0 +1,138 @@
+module tacacsrs-tls-psk-dhe {
+  yang-version 1.1;
+  namespace "urn:authscaffold:tacacs-rs:yang:tacacsrs-tls-psk-dhe";
+  prefix trs-psk-dhe;
+
+  import ietf-system {
+    prefix sys;
+    reference
+      "RFC 7317: A YANG Data Model for System Management";
+  }
+
+  import ietf-system-tacacs-plus {
+    prefix sys-tcs-plus;
+    reference
+      "RFC 9950: A YANG Data Model for Terminal Access Controller
+                 Access-Control System Plus (TACACS+)";
+  }
+
+  organization
+    "AuthScaffold tacacs-rs project";
+  contact
+    "Project Web: <https://github.com/AuthScaffold/tacacs-rs>";
+  description
+    "Project-owned TACACS+/TLS configuration extensions for tacacs-rs.";
+
+  revision 2026-05-20 {
+    description
+      "Adds TLS 1.3 PSK psk_dhe_ke supported group configuration.";
+    reference
+      "RFC 8446: The Transport Layer Security (TLS) Protocol
+                 Version 1.3, Sections 4.2.7 and 4.2.8";
+  }
+
+  feature psk-dhe-ke-hello-params {
+    description
+      "Indicates that TLS 1.3 PSK psk_dhe_ke ClientHello supported
+       group and key share parameters are configurable.";
+  }
+
+  typedef psk-dhe-ke-supported-group {
+    type enumeration {
+      enum x25519 {
+        description
+          "X25519 elliptic curve group.";
+        reference
+          "RFC 8446: The Transport Layer Security (TLS) Protocol
+                     Version 1.3, Section 4.2.7";
+      }
+      enum secp256r1 {
+        description
+          "NIST P-256 elliptic curve group.";
+      }
+      enum secp384r1 {
+        description
+          "NIST P-384 elliptic curve group.";
+      }
+      enum secp521r1 {
+        description
+          "NIST P-521 elliptic curve group.";
+      }
+      enum ffdhe2048 {
+        description
+          "Finite field Diffie-Hellman group ffdhe2048.";
+        reference
+          "RFC 7919: Negotiated Finite Field Diffie-Hellman Ephemeral
+                     Parameters for TLS";
+      }
+      enum ffdhe3072 {
+        description
+          "Finite field Diffie-Hellman group ffdhe3072.";
+      }
+      enum ffdhe4096 {
+        description
+          "Finite field Diffie-Hellman group ffdhe4096.";
+      }
+      enum ffdhe6144 {
+        description
+          "Finite field Diffie-Hellman group ffdhe6144.";
+      }
+      enum ffdhe8192 {
+        description
+          "Finite field Diffie-Hellman group ffdhe8192.";
+      }
+    }
+    description
+      "TLS 1.3 supported groups that tacacs-rs may use for
+       psk_dhe_ke ClientHello key share generation.";
+    reference
+      "RFC 8446: The Transport Layer Security (TLS) Protocol
+                 Version 1.3, Section 4.2.7";
+  }
+
+  grouping psk-dhe-ke-hello-params {
+    description
+      "Configuration for TLS 1.3 PSK psk_dhe_ke ClientHello
+       supported group and key share parameters.";
+
+    leaf psk-dhe-ke-group {
+      if-feature "psk-dhe-ke-hello-params";
+      type psk-dhe-ke-supported-group;
+      description
+        "The supported group to offer in ClientHello key_share when
+         using TLS 1.3 PSK psk_dhe_ke.";
+      reference
+        "RFC 8446: The Transport Layer Security (TLS) Protocol
+                   Version 1.3, Sections 4.2.7 and 4.2.8";
+    }
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
+        + "sys-tcs-plus:client-credentials/"
+        + "sys-tcs-plus:auth-type/"
+        + "sys-tcs-plus:tls13-epsk/"
+        + "sys-tcs-plus:tls13-epsk" {
+    if-feature "psk-dhe-ke-hello-params";
+    description
+      "Adds PSK DHE supported group configuration to reusable client
+       credential bundles.";
+    uses psk-dhe-ke-hello-params;
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
+        + "sys-tcs-plus:server/"
+        + "sys-tcs-plus:security/"
+        + "sys-tcs-plus:tls/"
+        + "sys-tcs-plus:client-identity/"
+        + "sys-tcs-plus:ref-or-explicit/"
+        + "sys-tcs-plus:explicit/"
+        + "sys-tcs-plus:auth-type/"
+        + "sys-tcs-plus:tls13-epsk/"
+        + "sys-tcs-plus:tls13-epsk" {
+    if-feature "psk-dhe-ke-hello-params";
+    description
+      "Adds PSK DHE supported group configuration to per-server TLS
+       client identities.";
+    uses psk-dhe-ke-hello-params;
+  }
+}

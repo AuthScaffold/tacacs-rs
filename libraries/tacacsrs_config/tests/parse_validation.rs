@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use tacacsrs_config::{
     enumerate_server as resolve_server, parse_yang_json, parse_yang_json_file, pipeline,
-    validate_credential_references, YangConfigRoot, TacacsPlusServerType,
+    validate_credential_references, PskDheKeSupportedGroup, YangConfigRoot, TacacsPlusServerType,
 };
 
 fn write_temp_json_file(json: &str) -> PathBuf {
@@ -1445,6 +1445,108 @@ fn accept_tls13_epsk_when_present() {
     let config = parse_yang_json(json).expect("tls13-epsk should parse");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "epsk-ok");
+}
+
+#[test]
+fn accept_tls13_epsk_with_psk_dhe_group() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "epsk-dhe",
+                    "server-type": "accounting",
+                    "address": "10.0.0.35",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "cleartext-symmetric-key": "dG9wc2VjcmV0"
+                            },
+                            "external-identity": "client@example.com",
+                            "tacacsrs-tls-psk-dhe:psk-dhe-ke-group": "x25519"
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let config = parse_yang_json(json).expect("psk_dhe_ke group should parse");
+    let group = config.server[0]
+        .client_identity
+        .as_ref()
+        .and_then(|identity| identity.tls13_epsk.as_ref())
+        .and_then(|epsk| epsk.psk_dhe_ke_group.as_ref());
+    assert!(matches!(group, Some(PskDheKeSupportedGroup::X25519)));
+}
+
+#[test]
+fn accept_client_credentials_tls13_epsk_with_psk_dhe_group() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "client-credentials": [
+                {
+                    "id": "epsk-dhe-cred",
+                    "tls13-epsk": {
+                        "inline-definition": {
+                            "cleartext-symmetric-key": "dG9wc2VjcmV0"
+                        },
+                        "external-identity": "client@example.com",
+                        "tacacsrs-tls-psk-dhe:psk-dhe-ke-group": "secp256r1"
+                    }
+                }
+            ],
+            "server": [
+                {
+                    "name": "epsk-dhe-ref",
+                    "server-type": "accounting",
+                    "address": "10.0.0.36",
+                    "port": 49,
+                    "client-identity": {
+                        "credentials-reference": "epsk-dhe-cred"
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let config = parse_yang_json(json).expect("credential-bundle psk_dhe_ke group should parse");
+    let group = config.client_credentials[0]
+        .tls13_epsk
+        .as_ref()
+        .and_then(|epsk| epsk.psk_dhe_ke_group.as_ref());
+    assert!(matches!(group, Some(PskDheKeSupportedGroup::Secp256r1)));
+}
+
+#[test]
+fn reject_unknown_psk_dhe_group() {
+    let json = r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [
+                {
+                    "name": "epsk-bad-group",
+                    "server-type": "accounting",
+                    "address": "10.0.0.37",
+                    "port": 49,
+                    "client-identity": {
+                        "tls13-epsk": {
+                            "inline-definition": {
+                                "cleartext-symmetric-key": "dG9wc2VjcmV0"
+                            },
+                            "external-identity": "client@example.com",
+                            "tacacsrs-tls-psk-dhe:psk-dhe-ke-group": "secp224r1"
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    let err = parse_yang_json(json).unwrap_err();
+    assert!(
+        err.to_string().contains("secp224r1") || err.to_string().contains("psk-dhe-ke-group"),
+        "unexpected error: {err}",
+    );
 }
 
 #[test]

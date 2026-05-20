@@ -12,12 +12,13 @@ use serde::{Deserialize, Serialize};
 pub mod tacacs_plus {
     use serde::{Deserialize, Serialize};
     use super::keystore;
+    use super::tacacsrs_tls_psk_dhe;
     use super::truststore;
 
     pub type ClientCredentialsRef = String;
     pub type ServerCredentialsRef = String;
 
-    /// For externally established PSKs, the Hash algorithm must be
+    /// For externally established PSKs, the hash algorithm must be
     /// set when the PSK is established or default to SHA-256 if no
     /// such algorithm is defined.
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,7 +117,7 @@ pub mod tacacs_plus {
         EpskSupportedHash::Sha256
     }
 
-    /// An EPSK is established or provisioned out-of-band.
+    /// An EPSK is established or provisioned out of band.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct Tls13Epsk {
@@ -125,10 +126,10 @@ pub mod tacacs_plus {
         #[serde(default)]
         pub inline_definition: Option<keystore::SymmetricKeyInlineDefinition>,
         /// A sequence of bytes used to identify an EPSK. A label for
-        /// a pre-shared key established externally.
+        /// a PSK established externally.
         #[serde(rename = "external-identity")]
         pub external_identity: String,
-        /// For externally established PSKs, the Hash algorithm must be
+        /// For externally established PSKs, the hash algorithm must be
         /// set when the PSK is established or default to SHA-256 if no
         /// such algorithm is defined.
         #[serde(default = "default_tls13_epsk_hash")]
@@ -147,6 +148,11 @@ pub mod tacacs_plus {
         #[serde(rename = "target-kdf")]
         #[serde(default)]
         pub target_kdf: Option<u16>,
+        /// The supported group to offer in ClientHello key_share when
+        /// using TLS 1.3 PSK psk_dhe_ke.
+        #[serde(rename = "tacacsrs-tls-psk-dhe:psk-dhe-ke-group")]
+        #[serde(default)]
+        pub psk_dhe_ke_group: Option<tacacsrs_tls_psk_dhe::PskDheKeSupportedGroup>,
     }
 
     /// Choice constraints for [`Tls13Epsk`].
@@ -172,7 +178,7 @@ pub mod tacacs_plus {
         /// Specifies the client identity using a certificate.
         #[serde(default)]
         pub certificate: Option<ClientIdentityCertificate>,
-        /// An EPSK is established or provisioned out-of-band.
+        /// An EPSK is established or provisioned out of band.
         #[serde(rename = "tls13-epsk")]
         #[serde(default)]
         pub tls13_epsk: Option<Tls13Epsk>,
@@ -219,7 +225,7 @@ pub mod tacacs_plus {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct ServerCredentials {
-        /// An identifier that uniquely identify server
+        /// An identifier that uniquely identifies server
         /// credentials within the device configuration.
         pub id: String,
         /// A set of CA certificates used by the TLS client to
@@ -256,7 +262,7 @@ pub mod tacacs_plus {
         /// Specifies the client identity using a certificate.
         #[serde(default)]
         pub certificate: Option<ClientIdentityCertificate>,
-        /// An EPSK is established or provisioned out-of-band.
+        /// An EPSK is established or provisioned out of band.
         #[serde(rename = "tls13-epsk")]
         #[serde(default)]
         pub tls13_epsk: Option<Tls13Epsk>,
@@ -326,26 +332,27 @@ pub mod tacacs_plus {
     pub struct TacacsPlusServer {
         /// A name that is used to uniquely identify a TACACS+
         /// server within the device configuration.
-        /// This name is not to be confused with the domain-name.
+        /// This name is not to be confused with the
+        /// 'domain-name'.
         pub name: String,
-        /// Server type: authentication/authorization/accounting and
-        /// various combinations.
+        /// The server type can be authentication, authorization,
+        /// accounting, or any combination of the three types.
         #[serde(rename = "server-type")]
         pub server_type: TacacsPlusServerType,
         /// Provides a domain name of the TACACS+ server.
         #[serde(rename = "domain-name")]
         #[serde(default)]
         pub domain_name: Option<String>,
-        /// Enables the use of SNI, when set to true. Disables the
-        /// use of SNI, when set to false.
+        /// Enables the use of SNI when set to true. Disables the
+        /// use of SNI when set to false.
         #[serde(rename = "sni-enabled")]
         #[serde(default)]
         pub sni_enabled: Option<bool>,
         /// The IP address or name of the TACACS+ server.
         pub address: String,
-        /// The port number of TACACS+ server.
-        /// Default port number for legacy TACACS+ is 49,
-        /// while it is TBD for TACACS+TLS.
+        /// The port number of the TACACS+ server.
+        /// The default port number for legacy TACACS+ is 49,
+        /// while it is 300 for TACACS+ over TLS.
         pub port: u16,
         /// Identity credentials that a TLS client may present when
         /// establishing a connection to a TLS server.
@@ -780,6 +787,44 @@ pub mod crypto_types {
         {
             serializer.serialize_str(self.as_rfc7951_str())
         }
+    }
+}
+
+/// Types from `tacacsrs-tls-psk-dhe`.
+pub mod tacacsrs_tls_psk_dhe {
+    use serde::{Deserialize, Serialize};
+
+    /// TLS 1.3 supported groups that tacacs-rs may use for
+    /// psk_dhe_ke ClientHello key share generation.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub enum PskDheKeSupportedGroup {
+        /// X25519 elliptic curve group.
+        #[serde(rename = "x25519")]
+        X25519,
+        /// NIST P-256 elliptic curve group.
+        #[serde(rename = "secp256r1")]
+        Secp256r1,
+        /// NIST P-384 elliptic curve group.
+        #[serde(rename = "secp384r1")]
+        Secp384r1,
+        /// NIST P-521 elliptic curve group.
+        #[serde(rename = "secp521r1")]
+        Secp521r1,
+        /// Finite field Diffie-Hellman group ffdhe2048.
+        #[serde(rename = "ffdhe2048")]
+        Ffdhe2048,
+        /// Finite field Diffie-Hellman group ffdhe3072.
+        #[serde(rename = "ffdhe3072")]
+        Ffdhe3072,
+        /// Finite field Diffie-Hellman group ffdhe4096.
+        #[serde(rename = "ffdhe4096")]
+        Ffdhe4096,
+        /// Finite field Diffie-Hellman group ffdhe6144.
+        #[serde(rename = "ffdhe6144")]
+        Ffdhe6144,
+        /// Finite field Diffie-Hellman group ffdhe8192.
+        #[serde(rename = "ffdhe8192")]
+        Ffdhe8192,
     }
 }
 

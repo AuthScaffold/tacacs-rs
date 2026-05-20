@@ -19,6 +19,8 @@ pub use generated::tacacs_plus::{
 pub use builders::{TacacsPlusBuilder, TacacsPlusServerBuilder};
 pub use extensions::TacacsPlusServerExt;
 pub use generated::truststore;
+pub use generated::tacacsrs_tls_psk_dhe;
+pub use generated::tacacsrs_tls_psk_dhe::PskDheKeSupportedGroup;
 pub use generated::{crypto_types, keystore, YangConfigRoot};
 
 pub use statistics::ServerStatistics;
@@ -33,7 +35,10 @@ pub mod model {
         ServerAuthenticationCaCerts, ServerCredentials, TacacsPlus, TacacsPlusServer,
         TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
     };
-    pub use crate::generated::{crypto_types, keystore, truststore, YangConfigRoot};
+    pub use crate::generated::{
+        crypto_types, keystore, tacacsrs_tls_psk_dhe, truststore, YangConfigRoot,
+    };
+    pub use crate::generated::tacacsrs_tls_psk_dhe::PskDheKeSupportedGroup;
     pub use crate::validation::{ValidationOptions, ValidationRelaxation};
 }
 
