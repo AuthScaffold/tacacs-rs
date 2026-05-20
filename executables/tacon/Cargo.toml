@@ -55,3 +55,7 @@ assets = [
     ["debian/changelog.gz", "usr/share/doc/tacon/changelog.Debian.gz", "644"],
     ["debian/tacon.1.gz", "usr/share/man/man1/tacon.1.gz", "644"],
 ]
+
+[package.metadata.deb.variants.psk]
+features = ["psk"]
+depends = "$auto"

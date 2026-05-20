@@ -22,3 +22,20 @@ workspace = true
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
 tempfile = "3.27.0"
+
+# Debian package metadata
+[package.metadata.deb]
+maintainer = "AuthScaffold <support@authscaffold.com>"
+copyright = "2024, AuthScaffold <support@authscaffold.com>"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+session-wrapper is a Linux x86_64 login/session wrapper that mediates command \
+execution through TACACS+ authorization using seccomp user notifications."""
+depends = "$auto"
+section = "admin"
+priority = "optional"
+assets = [
+    ["target/release/session-wrapper", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/session-wrapper/", "644"],
+    ["../../LICENSE", "usr/share/doc/session-wrapper/", "644"],
+]
