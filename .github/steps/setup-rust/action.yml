@@ -30,6 +30,10 @@ inputs:
     description: 'Install libseccomp-dev on Linux (required by session-wrapper)'
     required: false
     default: 'true'
+  install-openssl:
+    description: 'Install OpenSSL development/runtime dependencies'
+    required: false
+    default: 'true'
   musl-libseccomp-version:
     description: 'libseccomp version to build statically for musl targets'
     required: false
@@ -48,7 +52,7 @@ runs:
       shell: bash
       run: |
         CMD="rustup toolchain install $(printf '%q' "${{ inputs.toolchain }}") --profile minimal"
-        
+
         # Add components if specified
         if [ -n "${{ inputs.components }}" ]; then
           IFS=' ' read -ra COMPONENTS <<< "${{ inputs.components }}"
@@ -56,7 +60,7 @@ runs:
             CMD="$CMD --component $(printf '%q' "$component")"
           done
         fi
-        
+
         # Add targets if specified
         if [ -n "${{ inputs.targets }}" ]; then
           IFS=' ' read -ra TARGETS <<< "${{ inputs.targets }}"
@@ -64,7 +68,7 @@ runs:
             CMD="$CMD --target $(printf '%q' "$target")"
           done
         fi
-        
+
         echo "cmd=$CMD" >> $GITHUB_OUTPUT
 
     - name: Install Rust toolchain
@@ -152,6 +156,7 @@ runs:
         echo "PKG_CONFIG_PATH=$LIBSECCOMP_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
 
     - name: Setup OpenSSL
+      if: inputs.install-openssl == 'true'
       uses: ./.github/steps/setup-openssl
 
     - name: Setup Rust cache

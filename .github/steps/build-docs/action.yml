@@ -1,0 +1,33 @@
+name: Build Documentation
+description: Build Rust documentation for a target platform
+
+inputs:
+  target:
+    description: 'Rust target triple to document'
+    required: true
+  feature-args:
+    description: 'Cargo feature arguments to append'
+    required: false
+    default: ''
+  deny-warnings:
+    description: 'Treat rustdoc warnings as errors'
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Build documentation
+      shell: bash
+      run: |
+        RUSTDOCFLAGS_VALUE=""
+        if [ "${{ inputs.deny-warnings }}" = "true" ]; then
+          RUSTDOCFLAGS_VALUE="-D warnings"
+        fi
+
+        RUSTDOCFLAGS="$RUSTDOCFLAGS_VALUE" cargo doc \
+          --workspace \
+          --no-deps \
+          --document-private-items \
+          --target "${{ inputs.target }}" \
+          ${{ inputs.feature-args }}

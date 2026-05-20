@@ -1,0 +1,37 @@
+name: Protobuf Compatibility
+description: Check protobuf backward compatibility against a git ref
+
+inputs:
+  against-ref:
+    description: 'Git ref to check backward compatibility against'
+    required: false
+    default: 'main'
+  github-token:
+    description: 'GitHub token for buf setup'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
+      with:
+        github_token: ${{ inputs.github-token }}
+
+    - name: Ensure comparison ref exists locally
+      shell: bash
+      run: |
+        if git rev-parse --verify "${{ inputs.against-ref }}" >/dev/null 2>&1; then
+          echo "Ref '${{ inputs.against-ref }}' already exists locally"
+        elif git rev-parse --verify "origin/${{ inputs.against-ref }}" >/dev/null 2>&1; then
+          git branch "${{ inputs.against-ref }}" "origin/${{ inputs.against-ref }}"
+          echo "Created local branch '${{ inputs.against-ref }}' from 'origin/${{ inputs.against-ref }}'"
+        else
+          echo "::error::Ref '${{ inputs.against-ref }}' not found locally or on origin"
+          exit 1
+        fi
+
+    - name: Check protobuf backward compatibility
+      shell: bash
+      run: |
+        buf breaking --against '.git#branch=${{ inputs.against-ref }}' || \
+          echo "::warning::Protobuf compatibility check reported issues; continuing because this check is advisory"

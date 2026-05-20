@@ -1,0 +1,51 @@
+name: Security Audit
+description: Run cargo-audit, optionally skipping when dependency manifests are unchanged
+
+inputs:
+  skip-if-no-dep-changes:
+    description: 'Skip audit when dependency manifests did not change'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+      id: audit-changes
+      if: inputs.skip-if-no-dep-changes == 'true'
+      with:
+        filters: |
+          deps:
+            - '**/Cargo.toml'
+            - '**/Cargo.lock'
+
+    - name: Should run audit
+      id: should-run-audit
+      shell: bash
+      run: |
+        if [ "${{ inputs.skip-if-no-dep-changes }}" = "true" ]; then
+          echo "run=${{ steps.audit-changes.outputs.deps }}" >> "$GITHUB_OUTPUT"
+        else
+          echo "run=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Install cargo-audit
+      if: steps.should-run-audit.outputs.run == 'true'
+      uses: taiki-e/install-action@7be9fd86bd1707236395105d6e9329dd1511a7e1 # v2.79.0
+      with:
+        tool: cargo-audit
+
+    - name: Generate Cargo.lock
+      if: steps.should-run-audit.outputs.run == 'true'
+      shell: bash
+      run: cargo generate-lockfile
+
+    - name: Run security audit
+      if: steps.should-run-audit.outputs.run == 'true'
+      shell: bash
+      run: cargo audit
+
+    - name: Skip audit notice
+      if: steps.should-run-audit.outputs.run != 'true'
+      shell: bash
+      run: echo "Skipping audit - no dependency changes detected"

@@ -1,0 +1,13 @@
+name: Run Miri
+description: Run Miri tests as an advisory deep check
+
+runs:
+  using: composite
+  steps:
+    - name: Run Miri
+      shell: bash
+      env:
+        MIRIFLAGS: -Zmiri-disable-isolation
+      run: |
+        cargo +nightly miri test --workspace --all-features || \
+          echo "::warning::Miri reported issues; continuing because this check is advisory"

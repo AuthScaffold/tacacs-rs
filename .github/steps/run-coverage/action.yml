@@ -1,0 +1,13 @@
+name: Run Coverage
+description: Install cargo-llvm-cov and generate coverage artifacts
+
+runs:
+  using: composite
+  steps:
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@7be9fd86bd1707236395105d6e9329dd1511a7e1 # v2.79.0
+      with:
+        tool: cargo-llvm-cov
+
+    - name: Generate Coverage
+      uses: ./.github/steps/generate-coverage

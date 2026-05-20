@@ -1,0 +1,42 @@
+name: Package Debian Artifacts
+description: Prepare, build, verify, and collect Debian packages from staged official build assets
+
+inputs:
+  target:
+    description: 'Rust target triple that was built'
+    required: true
+  binary-name:
+    description: 'Binary/package name'
+    required: true
+  versions:
+    description: 'JSON map of package versions to inject'
+    required: false
+    default: '{}'
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare Debian package assets
+      uses: ./.github/steps/prepare-debian-package-assets
+      with:
+        target: ${{ inputs.target }}
+        binary-name: ${{ inputs.binary-name }}
+        versions: ${{ inputs.versions }}
+
+    - name: Install cargo-deb
+      uses: ./.github/steps/install-cargo-deb
+
+    - name: Build Debian package
+      uses: ./.github/steps/build-debian-package
+      with:
+        binary-name: ${{ inputs.binary-name }}
+
+    - name: Verify Debian package
+      uses: ./.github/steps/verify-debian-package
+      with:
+        binary-name: ${{ inputs.binary-name }}
+
+    - name: Collect Debian packages
+      uses: ./.github/steps/collect-debian-packages
+      with:
+        binary-name: ${{ inputs.binary-name }}

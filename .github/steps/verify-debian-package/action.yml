@@ -1,0 +1,25 @@
+name: Verify Debian Package
+description: Run lintian and display Debian package metadata
+
+inputs:
+  binary-name:
+    description: 'Binary/package name'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Verify Debian package with lintian
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y lintian
+        lintian target/debian/${{ inputs.binary-name }}_*.deb || true
+
+    - name: Display Debian package info
+      shell: bash
+      run: |
+        dpkg --info target/debian/${{ inputs.binary-name }}_*.deb
+        if ls target/debian/${{ inputs.binary-name }}-dbgsym_*.ddeb 1>/dev/null 2>&1; then
+          dpkg --info target/debian/${{ inputs.binary-name }}-dbgsym_*.ddeb
+        fi

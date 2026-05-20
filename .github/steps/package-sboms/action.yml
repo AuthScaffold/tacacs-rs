@@ -1,0 +1,43 @@
+name: Package SBOMs
+description: Generate JSON/XML SBOMs and stage sanitized SBOM files into the package directory
+
+inputs:
+  target:
+    description: 'Rust target triple used for SBOM generation'
+    required: true
+  binary-name:
+    description: 'Binary/package name'
+    required: true
+  features:
+    description: 'Space-separated cargo features to enable'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Generate SBOM (JSON)
+      uses: ./.github/steps/generate-sbom
+      with:
+        output-format: json
+        manifest-path: executables/${{ inputs.binary-name }}/Cargo.toml
+        describe: binaries
+        target: ${{ inputs.target }}
+        target-in-filename: 'true'
+        features: ${{ inputs.features }}
+
+    - name: Generate SBOM (XML)
+      uses: ./.github/steps/generate-sbom
+      with:
+        output-format: xml
+        manifest-path: executables/${{ inputs.binary-name }}/Cargo.toml
+        describe: binaries
+        target: ${{ inputs.target }}
+        target-in-filename: 'true'
+        features: ${{ inputs.features }}
+
+    - name: Stage SBOM files
+      uses: ./.github/steps/stage-sbom-files
+      with:
+        target: ${{ inputs.target }}
+        binary-name: ${{ inputs.binary-name }}

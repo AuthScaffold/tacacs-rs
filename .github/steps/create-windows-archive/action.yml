@@ -1,0 +1,20 @@
+name: Create Windows Archive
+description: Create a Windows zip package from the staged package directory
+
+inputs:
+  asset-name:
+    description: 'Platform-specific release asset name'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Create Windows archive
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path packaged | Out-Null
+        $archive = "packaged/${{ inputs.asset-name }}.zip"
+        if (Test-Path $archive) {
+          Remove-Item $archive
+        }
+        Compress-Archive -Path $env:PACKAGE_DIR -DestinationPath $archive -Force

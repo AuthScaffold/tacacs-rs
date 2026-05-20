@@ -1,0 +1,63 @@
+name: Compute Package Names
+description: Compute package names and shared environment variables for official build packaging
+
+inputs:
+  asset-name:
+    description: 'Platform-specific release asset name'
+    required: true
+  binary-name:
+    description: 'Binary/package name'
+    required: true
+  features:
+    description: 'Space-separated cargo features to enable'
+    required: false
+    default: ''
+  build-release:
+    description: 'Build in release mode'
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Compute package names
+      shell: bash
+      run: |
+        ASSET_NAME="${{ inputs.asset-name }}"
+        BINARY_NAME="${{ inputs.binary-name }}"
+
+        if [[ "$ASSET_NAME" == "$BINARY_NAME-"* ]]; then
+          ASSET_SUFFIX="${ASSET_NAME#"$BINARY_NAME-"}"
+        elif [[ "$ASSET_NAME" == "$BINARY_NAME" ]]; then
+          echo "Error: asset-name must be platform-specific. Use ${BINARY_NAME}-<platform>."
+          exit 1
+        else
+          ASSET_SUFFIX="$ASSET_NAME"
+        fi
+
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          BINARY_EXT=".exe"
+        else
+          BINARY_EXT=""
+        fi
+
+        if [[ "${{ inputs.build-release }}" == "true" ]]; then
+          PROFILE="release"
+          BUILD_PROFILE_FLAG="--release"
+        else
+          PROFILE="debug"
+          BUILD_PROFILE_FLAG=""
+        fi
+
+        FEATURE_ARGS=""
+        if [[ -n "${{ inputs.features }}" ]]; then
+          FEATURE_ARGS="--features ${{ inputs.features }}"
+        fi
+
+        echo "ASSET_SUFFIX=$ASSET_SUFFIX" >> "$GITHUB_ENV"
+        echo "BINARY_EXT=$BINARY_EXT" >> "$GITHUB_ENV"
+        echo "BUILD_PROFILE_FLAG=$BUILD_PROFILE_FLAG" >> "$GITHUB_ENV"
+        echo "FEATURE_ARGS=$FEATURE_ARGS" >> "$GITHUB_ENV"
+        echo "PACKAGE_DIR=staging/$ASSET_NAME" >> "$GITHUB_ENV"
+        echo "PROFILE=$PROFILE" >> "$GITHUB_ENV"
+        echo "SBOM_BASENAME=sbom-$ASSET_SUFFIX" >> "$GITHUB_ENV"

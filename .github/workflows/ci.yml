@@ -34,6 +34,8 @@ jobs:
         uses: ./.github/steps/setup-rust
         with:
           cache-key: stable
+          install-libseccomp-dev: 'false'
+          install-openssl: 'false'
 
       - name: Compute versions
         id: compute

@@ -1,0 +1,42 @@
+name: Stage SBOM Files
+description: Stage generated SBOMs into the package directory and sanitize workspace-specific paths
+
+inputs:
+  target:
+    description: 'Rust target triple used for SBOM generation'
+    required: true
+  binary-name:
+    description: 'Binary/package name'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Stage SBOM files
+      shell: bash
+      run: |
+        JSON_SOURCE="executables/${{ inputs.binary-name }}/${{ inputs.binary-name }}_bin_${{ inputs.target }}.cdx.json"
+        XML_SOURCE="executables/${{ inputs.binary-name }}/${{ inputs.binary-name }}_bin_${{ inputs.target }}.cdx.xml"
+        JSON_DEST="$PACKAGE_DIR/${SBOM_BASENAME}.json"
+        XML_DEST="$PACKAGE_DIR/${SBOM_BASENAME}.xml"
+
+        cp "$JSON_SOURCE" "$JSON_DEST"
+        cp "$XML_SOURCE" "$XML_DEST"
+
+        WORKSPACE_PATH="${GITHUB_WORKSPACE}"
+        REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
+
+        jq --arg ws "${WORKSPACE_PATH}/" \
+           --arg repo "$REPO_URL" \
+           '
+          walk(
+            if type == "string" then
+              gsub($ws; "/workspace/") |
+              gsub("download_url=file://[^\"&]*"; "download_url=\($repo)")
+            else .
+            end
+          )
+          ' "$JSON_DEST" > "${JSON_DEST}.tmp" && mv "${JSON_DEST}.tmp" "$JSON_DEST"
+
+        sed -i "s|${WORKSPACE_PATH}/|/workspace/|g" "$XML_DEST"
+        sed -i -E "s|download_url=file://[^\"&]*|download_url=${REPO_URL}|g" "$XML_DEST"

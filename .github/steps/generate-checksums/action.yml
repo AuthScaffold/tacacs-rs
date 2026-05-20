@@ -1,0 +1,18 @@
+name: Generate Checksums
+description: Generate SHA-256 checksums for staged release assets
+
+runs:
+  using: composite
+  steps:
+    - name: Generate checksums
+      shell: bash
+      run: |
+        cd release
+        find . -maxdepth 1 -type f ! -name 'checksums-sha256.txt' -exec sha256sum {} \; \
+          | sed 's|\./||' | sort > checksums-sha256.txt
+
+        echo "=== Release assets ==="
+        ls -lh
+        echo ""
+        echo "=== Checksums ==="
+        cat checksums-sha256.txt

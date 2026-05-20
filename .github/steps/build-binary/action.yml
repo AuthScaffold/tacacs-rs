@@ -1,5 +1,5 @@
 name: Build Binary
-description: Build a release binary for a specific target with artifact upload
+description: Build a binary for a specific target using package environment prepared by compute-package-names
 
 inputs:
   target:
@@ -8,134 +8,15 @@ inputs:
   binary-name:
     description: 'Name of the binary to build'
     required: true
-  asset-name:
-    description: 'Name for the uploaded asset'
-    required: true
-  features:
-    description: 'Space-separated cargo features to enable for the build'
-    required: false
-    default: ''
-  strip-binary:
-    description: 'Strip the binary on Linux'
-    required: false
-    default: 'true'
-  artifact-retention-days:
-    description: 'Number of days to retain the artifact'
-    required: false
-    default: '7'
 
 runs:
   using: composite
   steps:
-    - name: Build release binary
+    - name: Build binary
       shell: bash
       run: |
-        FEATURE_ARGS=()
-        if [[ -n "${{ inputs.features }}" ]]; then
-          FEATURE_ARGS+=(--features "${{ inputs.features }}")
-        fi
-
-        cargo build --release --target ${{ inputs.target }} --bin ${{ inputs.binary-name }} \
-          "${FEATURE_ARGS[@]}"
-
-        mkdir -p build-output
-
-        # Determine binary extension
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          BINARY_EXT=".exe"
-        else
-          BINARY_EXT=""
-        fi
-
-        cp "target/${{ inputs.target }}/release/${{ inputs.binary-name }}${BINARY_EXT}" build-output/
-
-    - name: Discover and prepare artifacts
-      shell: bash
-      run: |
-        mkdir -p artifacts
-
-        # Determine the expected binary extension
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          BINARY_EXT=".exe"
-        else
-          BINARY_EXT=""
-        fi
-
-        # The artifact-dir output should contain the binary
-        BINARY_NAME="${{ inputs.binary-name }}${BINARY_EXT}"
-        BINARY_PATH="build-output/${BINARY_NAME}"
-
-        if [ ! -f "$BINARY_PATH" ]; then
-          echo "Error: Expected binary not found at $BINARY_PATH"
-          echo "Contents of build-output:"
-          ls -la build-output/
-          exit 1
-        fi
-
-        echo "Found binary: $BINARY_PATH"
-
-        # Copy binary to artifacts directory (preserving original name on Windows)
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          cp "$BINARY_PATH" "artifacts/${BINARY_NAME}"
-        else
-          cp "$BINARY_PATH" "artifacts/${{ inputs.asset-name }}"
-          chmod +x "artifacts/${{ inputs.asset-name }}"
-        fi
-
-    - name: Strip binary (Linux only)
-      if: runner.os == 'Linux' && inputs.strip-binary == 'true'
-      shell: bash
-      run: strip artifacts/${{ inputs.asset-name }}
-
-    - name: Package debug symbols (Unix)
-      if: runner.os != 'Windows'
-      shell: bash
-      run: |
-        # Debug symbols live in the target directory
-        if ls target/${{ inputs.target }}/release/*.dwp 1> /dev/null 2>&1; then
-          cp target/${{ inputs.target }}/release/*.dwp artifacts/${{ inputs.asset-name }}.dwp
-        fi
-
-    - name: Package debug symbols (Windows)
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        $pdbFileTarget = "target/${{ inputs.target }}/release/${{ inputs.binary-name }}.pdb"
-        $pdbDestination = "artifacts/${{ inputs.binary-name }}.pdb"
-
-        if (Test-Path $pdbFileTarget) {
-          Copy-Item $pdbFileTarget $pdbDestination
-        }
-
-    - name: Collect OpenSSL runtime DLLs (Windows with psk feature)
-      if: runner.os == 'Windows' && contains(inputs.features, 'psk')
-      shell: pwsh
-      run: |
-        $opensslBinDir = Join-Path $env:OPENSSL_DIR "bin"
-
-        if (-not (Test-Path $opensslBinDir)) {
-          throw "OpenSSL bin directory not found: $opensslBinDir"
-        }
-
-        $libcryptoDlls = @(Get-ChildItem -Path $opensslBinDir -Filter "libcrypto-*.dll" -ErrorAction SilentlyContinue)
-        $libsslDlls = @(Get-ChildItem -Path $opensslBinDir -Filter "libssl-*.dll" -ErrorAction SilentlyContinue)
-
-        if ($libcryptoDlls.Count -ne 1) {
-          throw "Expected exactly one libcrypto runtime DLL in $opensslBinDir, found $($libcryptoDlls.Count)"
-        }
-
-        if ($libsslDlls.Count -ne 1) {
-          throw "Expected exactly one libssl runtime DLL in $opensslBinDir, found $($libsslDlls.Count)"
-        }
-
-        $dlls = $libcryptoDlls + $libsslDlls
-        foreach ($dll in $dlls) {
-          Copy-Item $dll.FullName (Join-Path "artifacts" $dll.Name)
-        }
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-      with:
-        name: ${{ inputs.asset-name }}
-        path: artifacts/*
-        retention-days: ${{ inputs.artifact-retention-days }}
+        cargo build \
+          ${BUILD_PROFILE_FLAG} \
+          --target "${{ inputs.target }}" \
+          --bin "${{ inputs.binary-name }}" \
+          ${FEATURE_ARGS}

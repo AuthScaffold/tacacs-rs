@@ -1,0 +1,105 @@
+name: Prepare Debian Package Assets
+description: Prepare binaries, SBOMs, man page, and Debian changelog assets for cargo-deb
+
+inputs:
+  target:
+    description: 'Rust target triple that was built'
+    required: true
+  binary-name:
+    description: 'Binary/package name'
+    required: true
+  versions:
+    description: 'JSON map of package versions to inject'
+    required: false
+    default: '{}'
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare Debian binary and SBOM assets
+      shell: bash
+      run: |
+        mkdir -p target/release "executables/${{ inputs.binary-name }}/debian"
+        cp "$PACKAGE_DIR/${{ inputs.binary-name }}" "target/release/${{ inputs.binary-name }}"
+        chmod +x "target/release/${{ inputs.binary-name }}"
+        cp "$PACKAGE_DIR/${SBOM_BASENAME}.json" "executables/${{ inputs.binary-name }}/debian/sbom.json"
+        cp "$PACKAGE_DIR/${SBOM_BASENAME}.xml" "executables/${{ inputs.binary-name }}/debian/sbom.xml"
+
+    - name: Copy generated man page and compress Debian assets
+      shell: bash
+      run: |
+        PKG="${{ inputs.binary-name }}"
+        PKG_DIR="executables/${PKG}"
+        MAN_PAGE=$(find "target/${{ inputs.target }}/${PROFILE}/build" -path "*/out/man/${PKG}.1" -type f | head -1)
+        if [ -z "$MAN_PAGE" ]; then
+          MAN_PAGE=$(find target/release/build -path "*/out/man/${PKG}.1" -type f | head -1)
+        fi
+        if [ -z "$MAN_PAGE" ]; then
+          MAN_PAGE=$(find target/debug/build -path "*/out/man/${PKG}.1" -type f | head -1)
+        fi
+        if [ -z "$MAN_PAGE" ]; then
+          echo "Error: Generated man page not found"
+          exit 1
+        fi
+        echo "Found man page at: $MAN_PAGE"
+        cp "$MAN_PAGE" "${PKG_DIR}/debian/${PKG}.1"
+
+        VERSIONS='${{ inputs.versions }}'
+        VERSION=$(echo "$VERSIONS" | jq -r --arg pkg "$PKG" '.[$pkg] // "0.0.0-dev"' | tr -d '\r')
+        TAG_PREFIX="${PKG}-"
+        MAINTAINER="AuthScaffold <support@authscaffold.com>"
+        CHANGELOG="${PKG_DIR}/debian/changelog"
+
+        mapfile -t TAGS < <(git tag --list "${TAG_PREFIX}*" --sort=v:refname)
+
+        > "$CHANGELOG"
+
+        if [ ${#TAGS[@]} -gt 0 ]; then
+          LAST_TAG="${TAGS[-1]}"
+          COMMITS=$(git log --pretty=format:"  * %s" "${LAST_TAG}..HEAD" -- "${PKG_DIR}")
+        else
+          COMMITS=$(git log --pretty=format:"  * %s" -- "${PKG_DIR}")
+        fi
+        if [ -z "$COMMITS" ]; then
+          COMMITS="  * Release ${VERSION}"
+        fi
+        {
+          echo "${PKG} (${VERSION}) stable; urgency=medium"
+          echo ""
+          echo "$COMMITS"
+          echo ""
+          echo " -- ${MAINTAINER}  $(date -u -R)"
+        } >> "$CHANGELOG"
+
+        for (( i=${#TAGS[@]}-1; i>=0; i-- )); do
+          TAG="${TAGS[$i]}"
+          TAG_VERSION="${TAG#${TAG_PREFIX}}"
+          TAG_DATE=$(git log -1 --format="%aD" "$TAG")
+
+          if [ $i -gt 0 ]; then
+            PREV="${TAGS[$((i-1))]}"
+            COMMITS=$(git log --pretty=format:"  * %s" "${PREV}..${TAG}" -- "${PKG_DIR}")
+          else
+            COMMITS=$(git log --pretty=format:"  * %s" "${TAG}" -- "${PKG_DIR}")
+          fi
+
+          if [ -z "$COMMITS" ]; then
+            COMMITS="  * Release ${TAG_VERSION}"
+          fi
+
+          {
+            echo ""
+            echo "${PKG} (${TAG_VERSION}) stable; urgency=medium"
+            echo ""
+            echo "$COMMITS"
+            echo ""
+            echo " -- ${MAINTAINER}  ${TAG_DATE}"
+          } >> "$CHANGELOG"
+        done
+
+        echo "Generated changelog ($(grep -c '^${PKG} ' "$CHANGELOG" || true) stanzas):"
+        cat "$CHANGELOG"
+
+        cd "${PKG_DIR}/debian"
+        gzip -9 -n -c changelog > changelog.gz
+        gzip -9 -n -c ${PKG}.1 > ${PKG}.1.gz
