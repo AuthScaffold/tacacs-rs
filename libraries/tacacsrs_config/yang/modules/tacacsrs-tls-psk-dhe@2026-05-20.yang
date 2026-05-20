@@ -95,7 +95,7 @@ module tacacsrs-tls-psk-dhe {
       "Configuration for TLS 1.3 PSK psk_dhe_ke ClientHello
        supported group and key share parameters.";
 
-    leaf-list psk-dhe-ke-groups {
+    leaf-list groups {
       if-feature "psk-dhe-ke-hello-params";
       type psk-dhe-ke-supported-group;
       ordered-by user;

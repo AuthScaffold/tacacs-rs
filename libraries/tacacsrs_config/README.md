@@ -342,14 +342,14 @@ Used in `SymmetricKeyInlineDefinition` (the inline definition for TLS 1.3 extern
 ## Project TACACS+/TLS augmentation
 
 The repository includes a local YANG module, `tacacsrs-tls-psk-dhe`, that augments
-the TACACS+ TLS 1.3 EPSK configuration with `psk-dhe-ke-groups`. The augmentation
+the TACACS+ TLS 1.3 EPSK configuration with `groups`. The augmentation
 is controlled by the `psk-dhe-ke-hello-params` YANG feature in
 `yang/feature-flags.ini`; set that entry to `false` before regenerating if the
 extension should be excluded from generated artifacts.
 
 Because this leaf-list is added by a different YANG module than its parent, RFC 7951
 JSON uses the module-qualified key
-`tacacsrs-tls-psk-dhe:psk-dhe-ke-groups`. The value is an ordered array; earlier
+`tacacsrs-tls-psk-dhe:groups`. The value is an ordered array; earlier
 entries are preferred when the TLS client builds its ClientHello key shares:
 
 ```json
@@ -367,7 +367,7 @@ entries are preferred when the TLS client builds its ClientHello key shares:
               "cleartext-symmetric-key": "BASE64VALUE="
             },
             "external-identity": "client@example.com",
-            "tacacsrs-tls-psk-dhe:psk-dhe-ke-groups": [
+            "tacacsrs-tls-psk-dhe:groups": [
               "x25519",
               "secp256r1",
               "ffdhe3072"

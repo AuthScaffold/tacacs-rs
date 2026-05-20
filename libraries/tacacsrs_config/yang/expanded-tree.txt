@@ -26,12 +26,12 @@ module: ietf-system-tacacs-plus
        |           |        +--rw (key-type)
        |           |           +--:(cleartext-symmetric-key)
        |           |              +--rw cleartext-symmetric-key?   binary {cleartext-symmetric-keys}?
-       |           +--rw external-identity                string
-       |           +--rw hash?                            tlscmn:epsk-supported-hash
-       |           +--rw context?                         string
-       |           +--rw target-protocol?                 uint16
-       |           +--rw target-kdf?                      uint16
-       |           +--rw trs-psk-dhe:psk-dhe-ke-groups*   psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
+       |           +--rw external-identity          string
+       |           +--rw hash?                      tlscmn:epsk-supported-hash
+       |           +--rw context?                   string
+       |           +--rw target-protocol?           uint16
+       |           +--rw target-kdf?                uint16
+       |           +--rw trs-psk-dhe:groups*        psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
        +--rw server-credentials* [id] {credential-reference}?
        |  +--rw id             string
        |  +--rw ca-certs!
@@ -85,12 +85,12 @@ module: ietf-system-tacacs-plus
           |  |  |                 |        +--rw (key-type)
           |  |  |                 |           +--:(cleartext-symmetric-key)
           |  |  |                 |              +--rw cleartext-symmetric-key?   binary {cleartext-symmetric-keys}?
-          |  |  |                 +--rw external-identity                string
-          |  |  |                 +--rw hash?                            tlscmn:epsk-supported-hash
-          |  |  |                 +--rw context?                         string
-          |  |  |                 +--rw target-protocol?                 uint16
-          |  |  |                 +--rw target-kdf?                      uint16
-          |  |  |                 +--rw trs-psk-dhe:psk-dhe-ke-groups*   psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
+          |  |  |                 +--rw external-identity          string
+          |  |  |                 +--rw hash?                      tlscmn:epsk-supported-hash
+          |  |  |                 +--rw context?                   string
+          |  |  |                 +--rw target-protocol?           uint16
+          |  |  |                 +--rw target-kdf?                uint16
+          |  |  |                 +--rw trs-psk-dhe:groups*        psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
           |  |  +--rw server-authentication
           |  |     +--rw (ref-or-explicit)?
           |  |        +--:(ref)

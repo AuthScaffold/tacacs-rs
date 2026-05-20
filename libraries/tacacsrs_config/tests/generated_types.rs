@@ -303,7 +303,7 @@ fn psk_dhe_groups_deserializes_rfc7951_augmented_leaf_list() {
                                 "cleartext-symmetric-key": "dG9wc2VjcmV0"
                             },
                             "external-identity": "id@example.com",
-                            "tacacsrs-tls-psk-dhe:psk-dhe-ke-groups": [
+                            "tacacsrs-tls-psk-dhe:groups": [
                                 "x25519",
                                 "ffdhe3072"
                             ]
@@ -320,7 +320,7 @@ fn psk_dhe_groups_deserializes_rfc7951_augmented_leaf_list() {
         .as_ref()
         .and_then(|identity| identity.tls13_epsk.as_ref())
         .expect("tls13-epsk should be present")
-        .psk_dhe_ke_groups;
+        .groups;
     assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::X25519)));
     assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Ffdhe3072)));
 }
