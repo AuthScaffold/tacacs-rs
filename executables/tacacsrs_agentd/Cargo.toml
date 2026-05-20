@@ -28,3 +28,25 @@ psk = ["tacacsrs-agent/psk"]
 
 [lints]
 workspace = true
+
+# Debian package metadata
+[package.metadata.deb]
+maintainer = "AuthScaffold <support@authscaffold.com>"
+copyright = "2024, AuthScaffold <support@authscaffold.com>"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+tacacsrs-agentd is a long-running local TACACS+ client service. It maintains \
+pooled upstream TACACS+ connections and exposes a local IPC interface for \
+clients such as tacon and session-wrapper."""
+depends = "$auto"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/tacacsrs-agentd", "usr/sbin/", "755"],
+    ["../../docs/tacacsrs-agentd.md", "usr/share/doc/tacacsrs-agentd/README.md", "644"],
+    ["../../LICENSE", "usr/share/doc/tacacsrs-agentd/", "644"],
+]
+
+[package.metadata.deb.variants.psk]
+features = ["psk"]
+depends = "$auto"
