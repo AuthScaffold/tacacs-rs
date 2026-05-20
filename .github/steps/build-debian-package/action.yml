@@ -1,0 +1,14 @@
+name: Build Debian Package
+description: Build Debian package and debug symbol package with cargo-deb
+
+inputs:
+  binary-name:
+    description: 'Binary/package name'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Generate Debian package
+      shell: bash
+      run: cargo deb --package ${{ inputs.binary-name }} --no-build --dbgsym

@@ -1,0 +1,9 @@
+name: Check Formatting
+description: Run rustfmt over the Rust workspace
+
+runs:
+  using: composite
+  steps:
+    - name: Check formatting
+      shell: bash
+      run: cargo +nightly fmt --all -- --check

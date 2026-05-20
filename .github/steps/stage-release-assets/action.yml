@@ -1,0 +1,18 @@
+name: Stage Release Assets
+description: Stage downloaded packaged artifacts into the final release directory
+
+runs:
+  using: composite
+  steps:
+    - name: Stage release assets
+      shell: bash
+      run: |
+        mkdir -p release
+        shopt -s nullglob
+        package_files=(raw/packages/*)
+        shopt -u nullglob
+        if [ "${#package_files[@]}" -eq 0 ]; then
+          echo "Error: no packaged artifacts were downloaded"
+          exit 1
+        fi
+        cp "${package_files[@]}" release/

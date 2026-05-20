@@ -1,0 +1,34 @@
+name: Run Fuzz Smoke Tests
+description: Install cargo-fuzz and run protocol parser fuzz smoke tests
+
+runs:
+  using: composite
+  steps:
+    - name: Install cargo-fuzz
+      uses: taiki-e/install-action@7be9fd86bd1707236395105d6e9329dd1511a7e1 # v2.79.0
+      with:
+        tool: cargo-fuzz
+
+    - name: Fuzz header parsing
+      shell: bash
+      run: |
+        cargo +nightly fuzz run fuzz_header_parse -- -max_total_time=30 || \
+          echo "::warning::Header parsing fuzz smoke test reported issues; continuing because this check is advisory"
+
+    - name: Fuzz accounting request parsing
+      shell: bash
+      run: |
+        cargo +nightly fuzz run fuzz_accounting_request_parse -- -max_total_time=30 || \
+          echo "::warning::Accounting request fuzz smoke test reported issues; continuing because this check is advisory"
+
+    - name: Fuzz accounting reply parsing
+      shell: bash
+      run: |
+        cargo +nightly fuzz run fuzz_accounting_reply_parse -- -max_total_time=30 || \
+          echo "::warning::Accounting reply fuzz smoke test reported issues; continuing because this check is advisory"
+
+    - name: Fuzz accounting request packet parsing
+      shell: bash
+      run: |
+        cargo +nightly fuzz run fuzz_accounting_request_packet_parse -- -max_total_time=30 || \
+          echo "::warning::Accounting request packet fuzz smoke test reported issues; continuing because this check is advisory"

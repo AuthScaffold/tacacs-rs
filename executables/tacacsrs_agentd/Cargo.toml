@@ -26,6 +26,9 @@ default = []
 console = ["console-subscriber"]
 psk = ["tacacsrs-agent/psk"]
 
+[package.metadata.cargo-udeps.ignore]
+normal = ["env_logger"]
+
 [lints]
 workspace = true
 

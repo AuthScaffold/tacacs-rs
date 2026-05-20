@@ -1,0 +1,32 @@
+name: Package Debug Symbols
+description: Copy target debug symbols into the package directory when they are available
+
+inputs:
+  target:
+    description: 'Rust target triple that was built'
+    required: true
+  binary-name:
+    description: 'Binary/package name'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Package debug symbols (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        if ls target/${{ inputs.target }}/${PROFILE}/*.dwp 1> /dev/null 2>&1; then
+          cp target/${{ inputs.target }}/${PROFILE}/*.dwp "$PACKAGE_DIR/"
+        fi
+
+    - name: Package debug symbols (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $pdbFileTarget = "target/${{ inputs.target }}/${env:PROFILE}/${{ inputs.binary-name }}.pdb"
+        $pdbDestination = Join-Path $env:PACKAGE_DIR "${{ inputs.binary-name }}.pdb"
+
+        if (Test-Path $pdbFileTarget) {
+          Copy-Item $pdbFileTarget $pdbDestination
+        }

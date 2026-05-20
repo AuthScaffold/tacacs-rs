@@ -12,9 +12,11 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = "1.0.102"
-libc = "0.2"
 tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [lints.rust]
 unsafe_code = "allow"

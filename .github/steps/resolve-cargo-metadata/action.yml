@@ -1,0 +1,20 @@
+name: Resolve Cargo Metadata
+description: Resolve Cargo metadata for a target platform without compiling the workspace
+
+inputs:
+  metadata-target:
+    description: 'Target triple used for cargo metadata platform filtering'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve cargo metadata
+      shell: bash
+      run: |
+        cargo metadata \
+          --locked \
+          --format-version 1 \
+          --all-features \
+          --filter-platform "${{ inputs.metadata-target }}" \
+          > /dev/null

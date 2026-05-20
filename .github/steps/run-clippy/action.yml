@@ -1,0 +1,42 @@
+name: Run Clippy
+description: Run clippy for a target platform
+
+inputs:
+  target:
+    description: 'Rust target triple to lint'
+    required: true
+  feature-args:
+    description: 'Cargo feature arguments to append'
+    required: false
+    default: ''
+  lint-args:
+    description: 'Arguments passed after cargo clippy --'
+    required: false
+    default: '-D warnings'
+  advisory:
+    description: 'Report clippy failures as warnings instead of failing'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Run Clippy
+      shell: bash
+      run: |
+        if [ "${{ inputs.advisory }}" = "true" ]; then
+          cargo clippy \
+            --workspace \
+            --all-targets \
+            --target "${{ inputs.target }}" \
+            ${{ inputs.feature-args }} \
+            -- ${{ inputs.lint-args }} || \
+            echo "::warning::Clippy reported advisory issues"
+        else
+          cargo clippy \
+            --workspace \
+            --all-targets \
+            --target "${{ inputs.target }}" \
+            ${{ inputs.feature-args }} \
+            -- ${{ inputs.lint-args }}
+        fi

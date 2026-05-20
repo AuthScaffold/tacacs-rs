@@ -1,0 +1,32 @@
+name: Run Tests
+description: Run workspace tests for a target platform
+
+inputs:
+  target:
+    description: 'Rust target triple to test'
+    required: true
+  feature-args:
+    description: 'Cargo feature arguments to append'
+    required: false
+    default: ''
+  build-release:
+    description: 'Run tests in release mode'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Run unit tests
+      shell: bash
+      run: |
+        RELEASE_FLAG=""
+        if [ "${{ inputs.build-release }}" = "true" ]; then
+          RELEASE_FLAG="--release"
+        fi
+
+        cargo test \
+          --workspace \
+          --target "${{ inputs.target }}" \
+          ${{ inputs.feature-args }} \
+          ${RELEASE_FLAG}

@@ -1,0 +1,16 @@
+name: Create MUSL Archive
+description: Create a tar.gz package from the staged Linux MUSL package directory
+
+inputs:
+  asset-name:
+    description: 'Platform-specific release asset name'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Create MUSL archive
+      shell: bash
+      run: |
+        tar -czf "packaged/${{ inputs.asset-name }}.tar.gz" \
+          -C staging "${{ inputs.asset-name }}"

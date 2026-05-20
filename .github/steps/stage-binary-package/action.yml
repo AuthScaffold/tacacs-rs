@@ -1,0 +1,34 @@
+name: Stage Binary Package
+description: Stage the built binary into the package directory
+
+inputs:
+  target:
+    description: 'Rust target triple that was built'
+    required: true
+  binary-name:
+    description: 'Binary/package name'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Stage binary package contents
+      shell: bash
+      run: |
+        mkdir -p "$PACKAGE_DIR" packaged
+        BINARY_PATH="target/${{ inputs.target }}/${PROFILE}/${{ inputs.binary-name }}${BINARY_EXT}"
+
+        if [ ! -f "$BINARY_PATH" ]; then
+          echo "Error: expected binary not found at $BINARY_PATH"
+          exit 1
+        fi
+
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          cp "$BINARY_PATH" "$PACKAGE_DIR/${{ inputs.binary-name }}${BINARY_EXT}"
+        else
+          cp "$BINARY_PATH" "$PACKAGE_DIR/${{ inputs.binary-name }}"
+          chmod +x "$PACKAGE_DIR/${{ inputs.binary-name }}"
+          if [ "$PROFILE" = "release" ]; then
+            strip "$PACKAGE_DIR/${{ inputs.binary-name }}"
+          fi
+        fi
