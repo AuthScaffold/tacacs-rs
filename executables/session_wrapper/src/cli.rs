@@ -29,11 +29,11 @@ pub struct Cli {
 
     /// UID to drop to after forking the session process.
     #[arg(long)]
-    pub user_uid: libc::uid_t,
+    pub user_uid: u32,
 
     /// GID to drop to after forking the session process.
     #[arg(long)]
-    pub user_gid: libc::gid_t,
+    pub user_gid: u32,
 
     /// IPC endpoint for the central TACACS+ client service.
     #[arg(long, default_value = "/run/tacacs.sock", value_name = "PATH_OR_ADDR")]

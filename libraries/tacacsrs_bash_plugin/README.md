@@ -4,6 +4,12 @@
 ABI. It is intended for SONiC images that include the bash plugin architecture
 from `src/bash/patches/0001-Add-plugin-support-to-bash.patch`.
 
+The plugin uses a platform abstraction layer (PAL) for SONiC-specific user, TTY,
+PID, and syslog lookups. Linux GNU builds use the real PAL backend. Windows,
+musl, and other unsupported targets compile the same authorization and
+configuration logic over a mock PAL backend so the crate can be maintained from
+non-SONiC development environments.
+
 The shared object exports the three symbols loaded by patched bash:
 
 ```c

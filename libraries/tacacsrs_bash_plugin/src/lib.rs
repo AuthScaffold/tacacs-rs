@@ -6,6 +6,7 @@ mod c_strings;
 mod config;
 mod ffi;
 mod logging;
+mod pal;
 mod runtime;
 mod session;
 

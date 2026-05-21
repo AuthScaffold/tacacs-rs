@@ -243,10 +243,10 @@ fn read_argv(
 ///
 /// # Syscall argument layout (`x86_64`)
 ///
-/// | Syscall    | arg\[0\] | arg\[1\]   | arg\[2\] |
-/// |------------|----------|--------------|---------|
-/// | `execve`   | filename | argv pointer | envp      |
-/// | `execveat` | dirfd    | pathname     | argv      |
+/// | Syscall    | arg\[0\] | arg\[1\]     | arg\[2\] |
+/// |------------|----------|--------------|----------|
+/// | `execve`   | filename | argv pointer | envp     |
+/// | `execveat` | dirfd    | pathname     | argv     |
 ///
 /// For `execveat`, `arg[0]` is an integer (the `dirfd`), not a pointer. The
 /// filename starts at `arg[1]`.

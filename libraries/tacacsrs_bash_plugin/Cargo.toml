@@ -15,7 +15,7 @@ anyhow = "1.0.102"
 tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libc = "0.2"
 
 [lints.rust]

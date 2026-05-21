@@ -27,10 +27,10 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────────────┐
-//! │  OS thread  (std::thread::spawn — long-lived blocker)               │
-//! │                                                                       │
+//! │  OS thread  (std::thread::spawn — long-lived blocker)                │
+//! │                                                                      │
 //! │  loop { ScmpNotifReq::receive(fd) }                                  │
-//! │            │                                                          │
+//! │            │                                                         │
 //! │            └──── mpsc::Sender<ScmpNotifReq> ───────────────────────► │
 //! └──────────────────────────────────────────────────────────────────────┘
 //!                                                                │
@@ -38,27 +38,27 @@
 //!                                                                ▼
 //! ┌──────────────────────────────────────────────────────────────────────┐
 //! │  Tokio runtime  (multi-thread, 2 worker threads)                     │
-//! │                                                                       │
+//! │                                                                      │
 //! │  dispatch_loop (main async task)                                     │
 //! │  ┌───────────────────────────────────────────────────────────────┐   │
 //! │  │  tokio::select! {                                             │   │
-//! │  │    req = notif_rx.recv()  ──► tokio::spawn(handle_one(...))  │   │
-//! │  │    _ = sigchld.recv()     ──► reap_available_children()      │   │
-//! │  │    _ = reap_interval.tick() ► reap_available_children()      │   │
-//! │  │    Some(_) = tasks.join_next() ──► (task completed)          │   │
-//! │  │    result = &mut ctrl_rx  ──► propagate child setup error    │   │
+//! │  │    req = notif_rx.recv()  ──► tokio::spawn(handle_one(...))   │   │
+//! │  │    _ = sigchld.recv()     ──► reap_available_children()       │   │
+//! │  │    _ = reap_interval.tick() ► reap_available_children()       │   │
+//! │  │    Some(_) = tasks.join_next() ──► (task completed)           │   │
+//! │  │    result = &mut ctrl_rx  ──► propagate child setup error     │   │
 //! │  │  }                                                            │   │
 //! │  └───────────────────────────────────────────────────────────────┘   │
-//! │                │                                                      │
-//! │         spawn  │ per notification                                     │
-//! │                ▼                                                      │
+//! │                │                                                     │
+//! │         spawn  │ per notification                                    │
+//! │                ▼                                                     │
 //! │  ┌─────────────────────────────────────────────────────────────┐     │
 //! │  │  handle_one_notification  (concurrent Tokio tasks)          │     │
 //! │  │                                                             │     │
-//! │  │  read_exec_args()          ← /proc/[pid]/mem  (fast pread) │     │
-//! │  │  allowlist.is_allowed()    ← HashSet O(1)                  │     │
-//! │  │  client.send_authorization().await  ← async gRPC IPC       │     │
-//! │  │  send_response()           ← kernel ioctl  (fast)          │     │
+//! │  │  read_exec_args()          ← /proc/[pid]/mem  (fast pread)  │     │
+//! │  │  allowlist.is_allowed()    ← HashSet O(1)                   │     │
+//! │  │  client.send_authorization().await  ← async gRPC IPC        │     │
+//! │  │  send_response()           ← kernel ioctl  (fast)           │     │
 //! │  └─────────────────────────────────────────────────────────────┘     │
 //! └──────────────────────────────────────────────────────────────────────┘
 //! ```
@@ -81,30 +81,27 @@
 //!
 //! # Fail policy
 //!
-//! | Policy             | Behaviour on IPC failure          |
-//! |--------------------|-----------------------------------|
+//! | Policy                 | Behaviour on IPC failure      |
+//! |------------------------|-------------------------------|
 //! | [`FailPolicy::Closed`] | Deny the exec with `EPERM`    |
 //! | [`FailPolicy::Open`]   | Allow the exec (continue)     |
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use libseccomp::{ScmpFd, ScmpNotifReq, ScmpNotifResp, ScmpNotifRespFlags, notify_id_valid};
-use tacacsrs_agent_client::{
-    AuthorizationArg, AuthorizationOperation, AuthorizationOperationResponse,
-    AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
-};
+use tacacsrs_agent_client::{AuthorizationOperation, IpcEndpoint, ServiceClient};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::{JoinSet, spawn_blocking};
 use tokio::time;
 
-use super::allowlist::Allowlist;
-use super::cli::FailPolicy;
-use super::deny::{
-    authorization_denied_message, command_display, fail_closed_unavailable_message, non_empty,
+use crate::allowlist::Allowlist;
+use crate::authorization::{AuthDecision, DenySource, fail_policy_decision, map_authorization_response};
+use crate::cli::FailPolicy;
+use crate::deny::{
+    authorization_denied_message, command_display, fail_closed_unavailable_message,
     write_process_stderr,
 };
 use super::process::{
@@ -205,32 +202,6 @@ pub(crate) struct SupervisorConfig {
 
 // ── authorization primitives ─────────────────────────────────────────────────
 
-/// Outcome of an authorization decision for one exec notification.
-#[derive(Debug)]
-enum AuthDecision {
-    /// Allow the exec to proceed (`SECCOMP_USER_NOTIF_FLAG_CONTINUE`).
-    Allow,
-    /// Deny the exec; the process receives `EPERM`.
-    Deny(DenyDecision),
-}
-
-/// Rich context for deny decisions.
-#[derive(Debug)]
-struct DenyDecision {
-    source: DenySource,
-    reason: String,
-    server: Option<String>,
-    server_message: Option<String>,
-    fail_policy: Option<FailPolicy>,
-}
-
-/// Source of a deny decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DenySource {
-    AuthorizationDenied,
-    ServiceUnavailableFailClosed,
-}
-
 /// Connects to the TACACS+ agent and returns a usable client.
 ///
 /// Returns `None` if the connection fails; the caller applies the fail policy.
@@ -326,121 +297,6 @@ async fn ipc_authorize(
                 response.server
             );
             Some(map_authorization_response(&response, exec_path))
-        }
-    }
-}
-
-/// Maps an authorization response into the local seccomp decision.
-///
-/// Seccomp user notification can either continue the original frozen `execve`
-/// or deny it; it cannot inject additional argv values or replace the submitted
-/// argv. RFC 8907 lets clients ignore optional response args, but mandatory
-/// response args must be applied or authorization fails.
-fn map_authorization_response(
-    response: &AuthorizationOperationResponse,
-    exec_path: &str,
-) -> AuthDecision {
-    let server = non_empty(Some(response.server.as_str())).map(str::to_owned);
-    let server_message = non_empty(Some(response.server_message.as_str())).map(str::to_owned);
-
-    match response.status {
-        AuthorizationResponseStatus::PassAdd => map_pass_with_args(
-            "PASS_ADD",
-            "response",
-            response.args.as_slice(),
-            exec_path,
-            server,
-            server_message,
-        ),
-        AuthorizationResponseStatus::PassRepl => map_pass_with_args(
-            "PASS_REPL",
-            "replacement",
-            response.args.as_slice(),
-            exec_path,
-            server,
-            server_message,
-        ),
-        AuthorizationResponseStatus::Fail
-        | AuthorizationResponseStatus::Error
-        | AuthorizationResponseStatus::Follow => {
-            let mut reason =
-                format!("TACACS+ agent denied {exec_path:?}: status={:?}", response.status);
-            if let Some(message) = server_message.as_deref() {
-                let _ = write!(reason, ", server_message={message:?}");
-            }
-
-            AuthDecision::Deny(DenyDecision {
-                source: DenySource::AuthorizationDenied,
-                reason,
-                server,
-                server_message,
-                fail_policy: None,
-            })
-        }
-    }
-}
-
-fn map_pass_with_args(
-    status_name: &str,
-    arg_kind: &str,
-    args: &[AuthorizationArg],
-    exec_path: &str,
-    server: Option<String>,
-    server_message: Option<String>,
-) -> AuthDecision {
-    if args.is_empty() {
-        return AuthDecision::Allow;
-    }
-
-    let arg_names: Vec<&str> = args.iter().map(|a| a.name.as_str()).collect();
-    let mandatory_names: Vec<&str> = args
-        .iter()
-        .filter(|a| a.mandatory)
-        .map(|a| a.name.as_str())
-        .collect();
-
-    if mandatory_names.is_empty() {
-        log::warn!(
-            "IPC authorization {status_name} for {exec_path:?} returned optional {arg_kind} \
-             args {arg_names:?} that cannot be applied in seccomp notify mode; ignoring them"
-        );
-        AuthDecision::Allow
-    } else {
-        log::warn!(
-            "IPC authorization {status_name} for {exec_path:?} returned mandatory {arg_kind} \
-             args {mandatory_names:?} (all args: {arg_names:?}) that cannot be applied in seccomp \
-             notify mode; treating as failed per RFC 8907 §6.2"
-        );
-        AuthDecision::Deny(DenyDecision {
-            source: DenySource::AuthorizationDenied,
-            reason: format!(
-                "TACACS+ agent returned {status_name} for {exec_path:?} with mandatory {arg_kind} \
-                 arg(s) that cannot be applied: {mandatory_names:?}"
-            ),
-            server,
-            server_message,
-            fail_policy: None,
-        })
-    }
-}
-
-/// Maps a fail policy to an [`AuthDecision`] for when IPC is unavailable.
-fn fail_policy_decision(policy: FailPolicy, exec_path: &str) -> AuthDecision {
-    match policy {
-        FailPolicy::Open => {
-            log::warn!("IPC unavailable, fail-open: allowing {exec_path:?}");
-            AuthDecision::Allow
-        }
-        FailPolicy::Closed => {
-            let reason = format!("IPC unavailable, fail-closed: denying {exec_path:?}");
-            log::warn!("{reason}");
-            AuthDecision::Deny(DenyDecision {
-                source: DenySource::ServiceUnavailableFailClosed,
-                reason,
-                server: None,
-                server_message: None,
-                fail_policy: Some(FailPolicy::Closed),
-            })
         }
     }
 }
@@ -962,114 +818,7 @@ async fn dispatch_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    fn authorization_response(
-        status: AuthorizationResponseStatus,
-        args: Vec<AuthorizationArg>,
-    ) -> AuthorizationOperationResponse {
-        AuthorizationOperationResponse {
-            server: "test-server".to_owned(),
-            status,
-            server_message: String::new(),
-            args,
-            data: String::new(),
-        }
-    }
-
-    #[test]
-    fn pass_add_with_only_optional_response_args_is_allowed() {
-        let response = authorization_response(
-            AuthorizationResponseStatus::PassAdd,
-            vec![AuthorizationArg::optional("priv-lvl", "15")],
-        );
-
-        let decision = map_authorization_response(&response, "/bin/echo");
-
-        assert!(matches!(decision, AuthDecision::Allow));
-    }
-
-    #[test]
-    fn pass_repl_with_only_optional_replacement_args_is_allowed() {
-        let response = authorization_response(
-            AuthorizationResponseStatus::PassRepl,
-            vec![AuthorizationArg::optional("cmd-arg", "ignored")],
-        );
-
-        let decision = map_authorization_response(&response, "/bin/echo");
-
-        assert!(matches!(decision, AuthDecision::Allow));
-    }
-
-    #[test]
-    fn pass_add_with_mandatory_response_arg_is_denied() {
-        let response = authorization_response(
-            AuthorizationResponseStatus::PassAdd,
-            vec![AuthorizationArg::mandatory("priv-lvl", "15")],
-        );
-
-        let decision = map_authorization_response(&response, "/bin/echo");
-
-        match decision {
-            AuthDecision::Deny(deny) => assert!(deny.reason.contains("priv-lvl")),
-            AuthDecision::Allow => panic!("mandatory PASS_ADD response arg was allowed"),
-        }
-    }
-
-    #[test]
-    fn pass_repl_with_mandatory_replacement_arg_is_denied() {
-        let response = authorization_response(
-            AuthorizationResponseStatus::PassRepl,
-            vec![AuthorizationArg::mandatory("cmd", "/bin/date")],
-        );
-
-        let decision = map_authorization_response(&response, "/bin/echo");
-
-        match decision {
-            AuthDecision::Deny(deny) => assert!(deny.reason.contains("cmd")),
-            AuthDecision::Allow => panic!("mandatory PASS_REPL replacement arg was allowed"),
-        }
-    }
-
-    #[test]
-    fn authorization_fail_status_is_denied_without_fail_policy() {
-        let mut response = authorization_response(AuthorizationResponseStatus::Fail, Vec::new());
-        response.server_message = "no authorization rule matched request".to_owned();
-
-        let decision = map_authorization_response(&response, "/usr/bin/htop");
-
-        match decision {
-            AuthDecision::Deny(deny) => {
-                assert_eq!(deny.source, DenySource::AuthorizationDenied);
-                assert_eq!(deny.fail_policy, None);
-                assert_eq!(
-                    deny.server_message.as_deref(),
-                    Some("no authorization rule matched request")
-                );
-            }
-            AuthDecision::Allow => panic!("authorization Fail status was allowed"),
-        }
-    }
-
-    #[test]
-    fn authorization_error_status_is_denied_without_fail_policy() {
-        let mut response = authorization_response(AuthorizationResponseStatus::Error, Vec::new());
-        response.server_message = "authorization policy evaluation failed".to_owned();
-
-        let decision = map_authorization_response(&response, "/usr/bin/htop");
-
-        match decision {
-            AuthDecision::Deny(deny) => {
-                assert_eq!(deny.source, DenySource::AuthorizationDenied);
-                assert_eq!(deny.fail_policy, None);
-                assert_eq!(
-                    deny.server_message.as_deref(),
-                    Some("authorization policy evaluation failed")
-                );
-            }
-            AuthDecision::Allow => panic!("authorization Error status was allowed"),
-        }
-    }
+    use super::verify_exec_path_if_available;
 
     #[test]
     fn unknown_filename_address_skips_exec_path_verification() {

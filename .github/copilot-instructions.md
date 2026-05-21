@@ -8,7 +8,15 @@ surfaces. Treat checked-in code, manifests, READMEs, and CI workflows as the
 source of truth. These instructions are a map, not a reason to skip reading the
 local module you are changing.
 
-- Keep changes focused on the requested behavior and the owning crate.
+- Keep changes focused on the requested behavior and the owning crate, but do
+  not treat the smallest possible diff as the goal when a clearer design is
+  available.
+- Prioritize long-term maintainability, readable structure, and explicit
+  architectural boundaries. A good change should be easy for the next developer
+  to find, understand, test, and extend.
+- When a request exposes a real concept or boundary, reflect that in naming,
+  module layout, traits, docs, and tests instead of hiding it behind scattered
+  conditionals or one-off glue.
 - Prefer existing repo patterns over new abstractions.
 - Preserve user changes in the worktree; never reset or revert unrelated files.
 - Internal APIs may break when that improves correctness or maintainability, but
@@ -173,6 +181,13 @@ injects them during builds through `.github/steps/compute-versions` and
   ownership boundary, or public API area. Avoid vague dumping grounds like
   `utils`, `helpers`, `common`, or `misc` unless the crate already has a clear
   local convention.
+- Make architectural boundaries visible in the file tree. If a change introduces
+  or clarifies a boundary such as a platform abstraction layer, transport layer,
+  protocol flow, parser, or FFI surface, prefer a cohesive module directory with
+  precise names over loose sibling files whose relationship must be inferred.
+- Keep narrowly scoped edits coherent rather than merely small: move related
+  code together, name the concept, and update nearby documentation when that
+  makes the design easier to maintain.
 - Prefer `pub(crate)` for cross-module seams and `pub` only for intentional crate
   API.
 - Re-export items explicitly. Avoid `pub use foo::*` except for narrow,

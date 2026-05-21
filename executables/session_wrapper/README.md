@@ -4,38 +4,45 @@
 
 ## Platform support
 
-The real wrapper is compiled only on Linux `x86_64`, where seccomp user notifications and the current `libseccomp-rs` integration are available. Other platforms compile a noop entrypoint so the workspace still builds on macOS and Windows.
+The process mediation backend is implemented through a platform abstraction
+layer (PAL). Linux `x86_64` builds use the real seccomp user-notification PAL.
+Windows, macOS, and other unsupported targets compile the same CLI, allowlist,
+deny-message, and authorization decision logic over a mock PAL backend. The mock
+backend accepts the CLI contract and then returns a clear unsupported-platform
+error instead of executing or mediating the requested command.
 
 ## What it does today
 
 The wrapper:
 
 1. Parses login/session context from CLI arguments.
-2. Optionally loads an exec allowlist (one path per line; built-in defaults always active).
-3. Forks a child process.
-4. Installs a seccomp user-notification filter in the child (notify on `execve`/`execveat`).
-5. Sends the seccomp notification listener fd from child to parent over a Unix socketpair.
-6. Connects to the TACACS+ IPC agent and starts the supervisor in the parent.
-7. Releases the child once the supervisor is ready.
-8. Drops the child to the requested UID/GID and execs `COMMAND [ARGS]...`.
-9. For each intercepted exec:
-   - Checks the exec path against the **allowlist** — if matched, responds CONTINUE immediately.
-   - Otherwise, sends a TACACS+ **accounting** record to the agent and interprets the response status as allow/deny.
-   - On IPC failure, applies the configured `--fail-policy` (closed = deny, open = allow).
-10. Keeps supervising until the initial child **and all subreaped descendants** exit.
+1. Optionally loads an exec allowlist (one path per line; built-in defaults always active).
+1. Forks a child process.
+1. Installs a seccomp user-notification filter in the child (notify on `execve`/`execveat`).
+1. Sends the seccomp notification listener fd from child to parent over a Unix socketpair.
+1. Connects to the TACACS+ IPC agent and starts the supervisor in the parent.
+1. Releases the child once the supervisor is ready.
+1. Drops the child to the requested UID/GID and execs `COMMAND [ARGS]...`.
+1. For each intercepted exec, checks the exec path against the **allowlist**; otherwise sends a TACACS+ **authorization** request to the agent and applies `--fail-policy` when IPC is unavailable.
+1. Keeps supervising until the initial child **and all subreaped descendants** exit.
 
 The seccomp filter is inherited across `fork`/`clone` and preserved across `exec`, so every nested shell, subshell, background job, and shell script in the wrapped session sends notifications through the same supervisor without any re-installation.
 
 ## Module architecture
 
 | Module | Responsibility |
-|--------|---------------|
+| ------ | -------------- |
+| `app` | Portable application entrypoint and CLI-to-PAL wiring |
 | `cli` | CLI argument parsing (clap) |
-| `process` | Fork/exec lifecycle, seccomp fd hand-off, child subreaper |
-| `seccomp` | BPF filter construction via `libseccomp-rs` |
 | `allowlist` | Fast-path allow set loaded from file + built-in defaults |
-| `process_reader` | Read exec args from `/proc/[pid]/mem` via `pread` |
-| `supervisor` | Notification loop, IPC authorization calls, kernel responses |
+| `authorization` | TACACS+ authorization response and fail-policy decision mapping |
+| `deny` | User-facing deny message formatting and stderr delivery helper |
+| `pal` | Platform backend selector |
+| `pal::mock` | Unsupported-target developer backend; parses CLI and returns an explicit unsupported-platform error |
+| `pal::linux::process` | Fork/exec lifecycle, seccomp fd hand-off, child subreaper |
+| `pal::linux::seccomp` | BPF filter construction via `libseccomp-rs` |
+| `pal::linux::process_reader` | Read exec args from `/proc/[pid]/mem` via `pread` |
+| `pal::linux::supervisor` | Notification loop, IPC authorization calls, kernel responses |
 
 ## Why the process lifecycle is structured this way
 
@@ -49,7 +56,7 @@ The parent marks itself as a child subreaper so descendants that outlive the ini
 
 On startup the supervisor loads an in-memory `HashSet` of executable paths that are always allowed to run without an IPC round-trip. The set always includes built-in defaults for shell infrastructure (`/bin/bash`, `/bin/sh`, `/usr/bin/env`, `/usr/bin/id`, etc.). An optional config file can add more paths:
 
-```
+```text
 # One absolute path per line; # comments and blank lines are ignored
 /usr/local/bin/my-tool
 /opt/vendor/status
@@ -72,7 +79,7 @@ process was not killed mid-read; it does not prove argv memory is unchanged.
 The policy is intentionally narrow — not a general sandbox:
 
 | Syscall family | Action | Purpose |
-|----------------|--------|---------|
+| -------------- | ------ | ------- |
 | `execve`, `execveat` | Notify parent | Command execution authorization boundary |
 | `ptrace` | `EPERM` | Prevent ptrace tampering |
 | Everything else | Allow | Keep normal shell behavior working |
@@ -94,7 +101,7 @@ target/debug/session-wrapper \
 Useful options:
 
 | Option | Meaning |
-|--------|---------|
+| ------ | ------- |
 | `--user <NAME>` | Target username for TACACS+ accounting context |
 | `--user-uid <UID>` | Target UID |
 | `--user-gid <GID>` | Target primary GID |
