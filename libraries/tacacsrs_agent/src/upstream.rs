@@ -31,7 +31,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_flows::accounting::AccountingFlowTrait;
+use tacacsrs_flows::accounting::AccountingFlow;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,

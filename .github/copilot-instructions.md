@@ -99,7 +99,7 @@ session-wrapper -> tacacsrs-agent-client
 - `tacacsrs-flow-abstractions` contains sans-I/O flow helpers and traits such as
   packet construction/parsing and `ClientSessionFlowIoTrait`.
 - `tacacsrs-flows` contains high-level protocol flows such as
-  `AccountingFlowTrait`, implemented over session I/O abstractions.
+  `AccountingFlow`, implemented over session I/O abstractions.
 - `tacacsrs-networking` owns transports, packet reader/writer plumbing,
   `TacacsConnection`, `DedicatedConnection`, session multiplexing, single-connect
   tracking, and config-driven connection establishment.
@@ -196,7 +196,7 @@ injects them during builds through `.github/steps/compute-versions` and
 - Keep service-like structs concrete. Put generics on methods when practical,
   and use `Box<dyn Trait>` only at runtime-polymorphic boundaries.
 - Reuse existing abstractions: `Transport`, `BoxedTransport`,
-  `ClientSessionFlowIoTrait`, `AccountingFlowTrait`, `ConfigDatastore`,
+  `ClientSessionFlowIoTrait`, `AccountingFlow`, `ConfigDatastore`,
   `ServiceError`, `IpcEndpoint`, and the mock transport/controller patterns.
 - Essential behavior should be inherent on the owning type; traits should expose
   extension or abstraction seams, not hide core functionality.

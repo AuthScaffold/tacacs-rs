@@ -11,7 +11,7 @@ pub enum TacacsMajorVersion {
 impl fmt::Display for TacacsMajorVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TacacsPlusMajor1 => write!(f, "TACACS_PLUS_MAJOR_1"),
+            Self::TacacsPlusMajor1 => write!(f, "TAC_PLUS_MAJOR_VER"),
         }
     }
 }
@@ -27,9 +27,9 @@ impl fmt::Display for TacacsMinorVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TacacsPlusMinorVerDefault => {
-                write!(f, "TACACS_PLUS_MINOR_VER_DEFAULT")
+                write!(f, "TAC_PLUS_MINOR_VER_DEFAULT")
             }
-            Self::TacacsPlusMinorVerOne => write!(f, "TACACS_PLUS_MINOR_VER_ONE"),
+            Self::TacacsPlusMinorVerOne => write!(f, "TAC_PLUS_MINOR_VER_ONE"),
         }
     }
 }
@@ -286,23 +286,37 @@ impl fmt::Display for TacacsAuthenticationMethod {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
+/// TACACS+ authorization reply status octet values.
+///
+/// These values are carried in the `status` field of a TACACS+ authorization
+/// REPLY body as defined by RFC 8907 section 6.2.
 pub enum TacacsAuthorizationStatus {
+    /// `TAC_PLUS_AUTHOR_STATUS_PASS_ADD` (`0x01`) accepts the request and asks
+    /// the client to append the returned arguments to the submitted argument set.
     TacPlusPassAdd = 0x01,
+    /// `TAC_PLUS_AUTHOR_STATUS_PASS_REPL` (`0x02`) accepts the request and asks
+    /// the client to replace the submitted argument set with returned arguments.
     TacPlusPassRepl = 0x02,
+    /// `TAC_PLUS_AUTHOR_STATUS_FAIL` (`0x10`) denies the requested operation.
     TacPlusFail = 0x10,
+    /// `TAC_PLUS_AUTHOR_STATUS_ERROR` (`0x11`) reports that authorization could
+    /// not be completed because of a server-side or protocol processing error.
     TacPlusError = 0x11,
+    /// `TAC_PLUS_AUTHOR_STATUS_FOLLOW` (`0x21`) indicates deployment-specific
+    /// follow-up handling is needed.
     TacPlusFollow = 0x21,
 }
 
 impl fmt::Display for TacacsAuthorizationStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TacPlusPassAdd => write!(f, "TAC_PLUS_PASS_ADD"),
-            Self::TacPlusPassRepl => write!(f, "TAC_PLUS_PASS_REPL"),
-            Self::TacPlusFail => write!(f, "TAC_PLUS_FAIL"),
-            Self::TacPlusError => write!(f, "TAC_PLUS_ERROR"),
-            Self::TacPlusFollow => write!(f, "TAC_PLUS_FOLLOW"),
+            Self::TacPlusPassAdd => write!(f, "TAC_PLUS_AUTHOR_STATUS_PASS_ADD"),
+            Self::TacPlusPassRepl => write!(f, "TAC_PLUS_AUTHOR_STATUS_PASS_REPL"),
+            Self::TacPlusFail => write!(f, "TAC_PLUS_AUTHOR_STATUS_FAIL"),
+            Self::TacPlusError => write!(f, "TAC_PLUS_AUTHOR_STATUS_ERROR"),
+            Self::TacPlusFollow => write!(f, "TAC_PLUS_AUTHOR_STATUS_FOLLOW"),
         }
     }
 }

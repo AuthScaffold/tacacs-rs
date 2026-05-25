@@ -65,11 +65,15 @@ No runtime dependencies are required — the binaries are self-contained.
 
 ### Component roles on a SONiC switch
 
-| Binary             | Role on the switch                                            | Lifetime                       |
-|--------------------|---------------------------------------------------------------|--------------------------------|
-| `tacacsrs-agentd`  | Long-running daemon. Maintains TACACS+ connections to upstream servers and exposes `/run/tacacs.sock` for local IPC. | systemd service (always on)    |
-| `session-wrapper`  | **Not a daemon.** One process per SSH login, spawned by `sshd` via `ForceCommand` (or as the user's login shell). Forks the user's shell under a seccomp filter and proxies authorization through the agent. | Lives for the SSH session only |
-| `tacon`            | Operator CLI for ad-hoc TACACS+ requests. Useful for accounting test traffic and debugging the agent.                                          | One-shot CLI invocation        |
+- `tacacsrs-agentd`: Long-running daemon. Maintains TACACS+ connections to
+    upstream servers and exposes `/run/tacacs.sock` for local IPC. Lifetime:
+    systemd service, always on.
+- `session-wrapper`: **Not a daemon.** One process per SSH login, spawned by
+    `sshd` via `ForceCommand` or as the user's login shell. Forks the user's shell
+    under a seccomp filter and proxies authorization through the agent. Lifetime:
+    the SSH session.
+- `tacon`: Operator CLI for ad-hoc TACACS+ requests. Useful for accounting test
+    traffic and debugging the agent. Lifetime: one-shot CLI invocation.
 
 ### systemd interaction
 
@@ -131,8 +135,8 @@ file target/x86_64-unknown-linux-musl/release/session-wrapper
 # Should show: "statically linked"
 ```
 
-The CI build matrix in `.github/workflows/reusable-build.yml` uses
-`--workspace`, so `session-wrapper` is built and statically verified for the
-`x86_64-unknown-linux-musl` target on every PR alongside `tacon` and
+The CI target matrix in `.github/workflows/reusable-pipeline.yml` includes a
+MUSL official-build lane, so `session-wrapper` is built and statically verified
+for the `x86_64-unknown-linux-musl` target on every PR alongside `tacon` and
 `tacacsrs-agentd`. The supporting `setup-rust` step builds and caches a
 musl-targeted static `libseccomp` so the wrapper links cleanly.
