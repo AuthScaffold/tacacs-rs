@@ -30,7 +30,7 @@ tacon --service-endpoint /run/tacacs.sock \
 
 **Best for:** production deployments where multiple clients share TACACS+ connections with automatic failover.
 
-**Restrictions in service mode:** custom TACACS+ flags (`--custom-flag-1`, `--custom-flag-2`) and explicit session IDs (`--session-id`) are not supported — the agent assigns these.
+**Restrictions in service mode:** explicit session IDs (`--session-id`) are not supported — the agent assigns these.
 
 ## Global Options
 
@@ -85,8 +85,6 @@ tacon -s server:49 \
 |----------|-------------|
 | `<CMD>` | The command being recorded |
 | `[ARGS...]` | Optional command arguments |
-| `--custom-flag-1` | Set `TAC_PLUS_CUSTOM_FLAG_1` (0x40) on the packet header |
-| `--custom-flag-2` | Set `TAC_PLUS_CUSTOM_FLAG_2` (0x80) on the packet header |
 | `--session-id <ID>` | Use a specific session ID (direct mode only) |
 
 ### `authentication`
@@ -145,10 +143,6 @@ Batch files are JSON documents containing metadata and a list of requests.
       "rem_addr": "10.0.0.1",
       "cmd": "show running-config",
       "cmd_args": ["brief"],
-      "custom_flags": {
-        "custom_flag_1": false,
-        "custom_flag_2": false
-      },
       "session_id": null
     }
   ]

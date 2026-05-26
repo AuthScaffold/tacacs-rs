@@ -3,7 +3,6 @@ use log::info;
 use tacacsrs_flow_abstractions::authorization::{build_authorization_packet, parse_authorization_reply};
 use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::authorization::{reply::AuthorizationReply, request::AuthorizationRequest};
-use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_messages::packet::PacketTrait;
 
 /// Fixed TACACS+ client authorization flow.
@@ -16,28 +15,12 @@ pub trait AuthorizationFlow: ClientSessionFlowIoTrait {
         &self,
         request: AuthorizationRequest,
     ) -> anyhow::Result<AuthorizationReply> {
-        self.send_authorization_request_with_flags(request, TacacsFlags::empty())
-            .await
-    }
-
-    /// Sends an authorization request with custom flags added to the header.
-    ///
-    /// # Arguments
-    ///
-    /// * `request` - The authorization request to send
-    /// * `custom_flags` - Additional flags to set on the packet header
-    async fn send_authorization_request_with_flags(
-        &self,
-        request: AuthorizationRequest,
-        custom_flags: TacacsFlags,
-    ) -> anyhow::Result<AuthorizationReply> {
         if self.is_complete().await {
             return Err(anyhow::Error::msg("Session is already complete"));
         }
 
         let sequence_number = self.next_sequence_number().await;
-        let packet =
-            build_authorization_packet(self.session_id(), sequence_number, &request, custom_flags)?;
+        let packet = build_authorization_packet(self.session_id(), sequence_number, &request)?;
         let flags = packet.header().flags;
 
         info!(
@@ -70,7 +53,7 @@ mod tests {
     use std::sync::Arc;
     use tacacsrs_messages::enumerations::{
         TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType,
-        TacacsAuthorizationStatus, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
+        TacacsAuthorizationStatus, TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
     };
     use tacacsrs_messages::header::Header;
     use tacacsrs_messages::packet::Packet;

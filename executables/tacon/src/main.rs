@@ -10,7 +10,6 @@ use std::str::FromStr;
 use anyhow::{bail, Context};
 use clap::Parser;
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
-use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
 use tacacsrs_networking::session::Session;
 use tacacsrs_networking::DedicatedConnection;
@@ -47,18 +46,8 @@ async fn execute_command(command: &Command, session: &Session) -> anyhow::Result
             args,
             cmd,
             cmd_args,
-            custom_flag_1,
-            custom_flag_2,
             session_id: _,
         } => {
-            let mut custom_flags = TacacsFlags::empty();
-            if *custom_flag_1 {
-                custom_flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1;
-            }
-            if *custom_flag_2 {
-                custom_flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
-            }
-
             send_accounting_request(
                 session,
                 &args.user,
@@ -66,7 +55,6 @@ async fn execute_command(command: &Command, session: &Session) -> anyhow::Result
                 &args.rem_addr,
                 cmd,
                 cmd_args.as_ref(),
-                custom_flags,
             )
             .await?;
         }
@@ -90,15 +78,9 @@ async fn execute_command(command: &Command, session: &Session) -> anyhow::Result
     Ok(())
 }
 
-fn ensure_service_mode_accounting_supported(
-    custom_flag_1: bool,
-    custom_flag_2: bool,
-    session_id: Option<u32>,
-) -> anyhow::Result<()> {
-    if custom_flag_1 || custom_flag_2 || session_id.is_some() {
-        anyhow::bail!(
-            "Central TACACS+ service mode does not support custom TACACS+ flags or client-specified session IDs"
-        );
+fn ensure_service_mode_accounting_supported(session_id: Option<u32>) -> anyhow::Result<()> {
+    if session_id.is_some() {
+        anyhow::bail!("Central TACACS+ service mode does not support client-specified session IDs");
     }
 
     Ok(())
@@ -115,11 +97,9 @@ async fn execute_command_via_service(endpoint: &str, command: &Command) -> anyho
             args,
             cmd,
             cmd_args,
-            custom_flag_1,
-            custom_flag_2,
             session_id,
         } => {
-            ensure_service_mode_accounting_supported(*custom_flag_1, *custom_flag_2, *session_id)?;
+            ensure_service_mode_accounting_supported(*session_id)?;
             let response = client
                 .send_accounting(AccountingOperation {
                     user: args.user.clone(),
@@ -251,8 +231,6 @@ async fn execute_command_dedicated(
             args,
             cmd,
             cmd_args,
-            custom_flag_1,
-            custom_flag_2,
             session_id: _,
         } => {
             let stream = connection::establish_stream(server, options)
@@ -261,14 +239,6 @@ async fn execute_command_dedicated(
 
             let obfuscation_key = server.obfuscation_key();
             let mut conn = DedicatedConnection::new(stream, obfuscation_key.as_deref());
-
-            let mut custom_flags = TacacsFlags::empty();
-            if *custom_flag_1 {
-                custom_flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1;
-            }
-            if *custom_flag_2 {
-                custom_flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
-            }
 
             let request = commands::accounting::build_accounting_request(
                 &args.user,
@@ -279,7 +249,7 @@ async fn execute_command_dedicated(
             );
 
             let result = conn
-                .send_accounting(request, custom_flags)
+                .send_accounting(request)
                 .await
                 .context("Dedicated accounting request failed")?;
 
@@ -315,10 +285,8 @@ mod tests {
     use super::ensure_service_mode_accounting_supported;
 
     #[test]
-    fn test_service_mode_rejects_custom_flags_and_session_ids() {
-        assert!(ensure_service_mode_accounting_supported(true, false, None).is_err());
-        assert!(ensure_service_mode_accounting_supported(false, true, None).is_err());
-        assert!(ensure_service_mode_accounting_supported(false, false, Some(7)).is_err());
-        assert!(ensure_service_mode_accounting_supported(false, false, None).is_ok());
+    fn test_service_mode_rejects_session_ids() {
+        assert!(ensure_service_mode_accounting_supported(Some(7)).is_err());
+        assert!(ensure_service_mode_accounting_supported(None).is_ok());
     }
 }

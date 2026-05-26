@@ -115,15 +115,14 @@ where
     pub async fn send_accounting(
         &mut self,
         request: AccountingRequest,
-        custom_flags: TacacsFlags,
     ) -> anyhow::Result<ExchangeResult> {
         let session_id: u32 = (self.session_id_fn)();
-        let packet = build_accounting_packet(
-            session_id,
-            1,
-            &request,
-            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG | custom_flags,
-        )?;
+        let packet = build_accounting_packet(session_id, 1, &request)?;
+        let mut header = packet.header().clone();
+        header
+            .flags
+            .insert(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
+        let packet = Packet::new(header, packet.body().clone())?;
 
         let response = self
             .exchange(packet)
@@ -273,10 +272,7 @@ mod tests {
 
         let mut conn = DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
 
-        let result = conn
-            .send_accounting(test_request(), TacacsFlags::empty())
-            .await
-            .unwrap();
+        let result = conn.send_accounting(test_request()).await.unwrap();
 
         assert_eq!(result.reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
         assert_eq!(result.reply.server_msg, "OK");
@@ -305,10 +301,7 @@ mod tests {
 
         let mut conn = DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
 
-        let result = conn
-            .send_accounting(test_request(), TacacsFlags::empty())
-            .await
-            .unwrap();
+        let result = conn.send_accounting(test_request()).await.unwrap();
 
         assert!(!result.single_connect_supported);
     }
@@ -333,10 +326,7 @@ mod tests {
         let mut conn =
             DedicatedConnection::new_with_session_id_fn(mock, Some(key), fixed_session_id);
 
-        let result = conn
-            .send_accounting(test_request(), TacacsFlags::empty())
-            .await
-            .unwrap();
+        let result = conn.send_accounting(test_request()).await.unwrap();
 
         assert_eq!(result.reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
         assert_eq!(result.reply.server_msg, "OK");
@@ -392,9 +382,7 @@ mod tests {
 
         let mut conn = DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
 
-        let result = conn
-            .send_accounting(test_request(), TacacsFlags::empty())
-            .await;
+        let result = conn.send_accounting(test_request()).await;
 
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
@@ -423,9 +411,7 @@ mod tests {
 
         let mut conn = DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
 
-        let result = conn
-            .send_accounting(test_request(), TacacsFlags::empty())
-            .await;
+        let result = conn.send_accounting(test_request()).await;
 
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
@@ -433,37 +419,6 @@ mod tests {
             err_msg.contains("unexpected TACACS+ accounting response header"),
             "error should mention header mismatch, got: {err_msg}"
         );
-    }
-
-    #[tokio::test]
-    async fn test_custom_flags_are_set_on_outgoing_packet() {
-        let mock = MockTransport::new();
-        let coordinator = mock.coordinator();
-
-        coordinator
-            .accounting_reply_for_id(TEST_SESSION_ID, 2, &test_reply())
-            .send()
-            .await
-            .unwrap();
-
-        let mut conn = DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
-
-        let custom = TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1 | TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
-        let result = conn.send_accounting(test_request(), custom).await.unwrap();
-
-        assert_eq!(result.reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
-
-        // Verify the captured request has both custom flags and the
-        // single-connect flag set.
-        let requests = coordinator
-            .get_requests_for_session(TEST_SESSION_ID)
-            .await
-            .unwrap();
-        let captured = &requests[&1];
-        let flags = captured.header().flags;
-        assert!(flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1));
-        assert!(flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2));
-        assert!(flags.contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
     }
 
     #[tokio::test]
@@ -480,10 +435,7 @@ mod tests {
 
         let mut dedicated =
             DedicatedConnection::new_with_session_id_fn(mock, None, fixed_session_id);
-        let probe = dedicated
-            .send_accounting(test_request(), TacacsFlags::empty())
-            .await
-            .unwrap();
+        let probe = dedicated.send_accounting(test_request()).await.unwrap();
         assert!(probe.single_connect_supported);
 
         let connection = dedicated.upgrade();
@@ -498,13 +450,8 @@ mod tests {
             .unwrap();
 
         let seq_no = session.next_sequence_number().await;
-        let packet = build_accounting_packet(
-            session.session_id(),
-            seq_no,
-            &test_request(),
-            TacacsFlags::empty(),
-        )
-        .unwrap();
+        let packet =
+            build_accounting_packet(session.session_id(), seq_no, &test_request()).unwrap();
         session.duplex_channel.sender.send(packet).await.unwrap();
 
         let mut receiver = session.duplex_channel.receiver.write().await;

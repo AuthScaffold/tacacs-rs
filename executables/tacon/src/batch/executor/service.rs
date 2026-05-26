@@ -141,31 +141,16 @@ async fn execute_batch_load_test_via_service(
 mod tests {
     use super::super::common::validate_service_mode_request;
     use super::*;
-    use crate::batch::types::{AccountingRequest, CustomFlags};
+    use crate::batch::types::AccountingRequest;
 
     #[test]
-    fn test_service_mode_rejects_custom_flags_and_session_ids_in_batch_requests() {
+    fn test_service_mode_rejects_session_ids_in_batch_requests() {
         let request = BatchRequest::Accounting(AccountingRequest {
             user: "admin".to_owned(),
             port: "tty0".to_owned(),
             rem_addr: "127.0.0.1".to_owned(),
             cmd: "show".to_owned(),
             cmd_args: vec![],
-            custom_flags: CustomFlags {
-                custom_flag_1: true,
-                custom_flag_2: false,
-            },
-            session_id: None,
-        });
-        assert!(validate_service_mode_request(&request).is_err());
-
-        let request = BatchRequest::Accounting(AccountingRequest {
-            user: "admin".to_owned(),
-            port: "tty0".to_owned(),
-            rem_addr: "127.0.0.1".to_owned(),
-            cmd: "show".to_owned(),
-            cmd_args: vec![],
-            custom_flags: CustomFlags::default(),
             session_id: Some(7),
         });
         assert!(validate_service_mode_request(&request).is_err());

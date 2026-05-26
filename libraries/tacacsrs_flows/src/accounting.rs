@@ -3,7 +3,6 @@ use log::info;
 use tacacsrs_flow_abstractions::accounting::{build_accounting_packet, parse_accounting_reply};
 use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
-use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_messages::packet::PacketTrait;
 
 /// Fixed TACACS+ client accounting flow.
@@ -16,28 +15,12 @@ pub trait AccountingFlow: ClientSessionFlowIoTrait {
         &self,
         request: AccountingRequest,
     ) -> anyhow::Result<AccountingReply> {
-        self.send_accounting_request_with_flags(request, TacacsFlags::empty())
-            .await
-    }
-
-    /// Sends an accounting request with custom flags added to the header
-    ///
-    /// # Arguments
-    ///
-    /// * `request` - The accounting request to send
-    /// * `custom_flags` - Additional flags to set on the packet header
-    async fn send_accounting_request_with_flags(
-        &self,
-        request: AccountingRequest,
-        custom_flags: TacacsFlags,
-    ) -> anyhow::Result<AccountingReply> {
         if self.is_complete().await {
             return Err(anyhow::Error::msg("Session is already complete"));
         }
 
         let sequence_number = self.next_sequence_number().await;
-        let packet =
-            build_accounting_packet(self.session_id(), sequence_number, &request, custom_flags)?;
+        let packet = build_accounting_packet(self.session_id(), sequence_number, &request)?;
         let flags = packet.header().flags;
 
         info!(
@@ -70,7 +53,7 @@ mod tests {
     use std::sync::Arc;
     use tacacsrs_messages::enumerations::{
         TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
-        TacacsAuthenticationService, TacacsAuthenticationType, TacacsMajorVersion,
+        TacacsAuthenticationService, TacacsAuthenticationType, TacacsMajorVersion, TacacsFlags,
         TacacsMinorVersion, TacacsType,
     };
     use tacacsrs_messages::header::Header;

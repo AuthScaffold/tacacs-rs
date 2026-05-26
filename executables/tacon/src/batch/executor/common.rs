@@ -32,15 +32,9 @@ pub(super) fn to_service_accounting_request(request: &AccountingRequest) -> Acco
 
 pub(super) fn validate_service_mode_request(request: &BatchRequest) -> Result<(), String> {
     match request {
-        BatchRequest::Accounting(req)
-            if req.custom_flags.custom_flag_1
-                || req.custom_flags.custom_flag_2
-                || req.session_id.is_some() =>
-        {
-            Err(
-                "Central TACACS+ service mode does not support custom TACACS+ flags or client-specified session IDs"
-                    .to_owned(),
-            )
+        BatchRequest::Accounting(req) if req.session_id.is_some() => {
+            Err("Central TACACS+ service mode does not support client-specified session IDs"
+                .to_owned())
         }
         _ => Ok(()),
     }
@@ -59,8 +53,6 @@ pub(super) async fn execute_single_request(
                 Some(&req.cmd_args)
             };
 
-            let custom_flags = req.custom_flags.to_tacacs_flags();
-
             match send_accounting_request(
                 session,
                 &req.user,
@@ -68,7 +60,6 @@ pub(super) async fn execute_single_request(
                 &req.rem_addr,
                 &req.cmd,
                 cmd_args,
-                custom_flags,
             )
             .await
             {

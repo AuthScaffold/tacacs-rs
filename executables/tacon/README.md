@@ -75,8 +75,6 @@ tacon -s 192.168.1.1:49 -k "secret" accounting \
 | `-u, --user <USER>` | Username for the request |
 | `-p, --port <PORT>` | Port identifier (e.g., `tty0`, `console`) |
 | `-r, --rem-addr <ADDR>` | Remote address of the client |
-| `--custom-flag-1` | Set TAC_PLUS_CUSTOM_FLAG_1 (0x40) on packet header |
-| `--custom-flag-2` | Set TAC_PLUS_CUSTOM_FLAG_2 (0x80) on packet header |
 | `--session-id <ID>` | Use a specific session ID instead of random |
 
 #### Authentication

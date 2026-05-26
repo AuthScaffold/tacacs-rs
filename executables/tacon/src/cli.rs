@@ -148,14 +148,6 @@ pub enum Command {
         #[arg(value_name = "ARG")]
         cmd_args: Option<Vec<String>>,
 
-        /// Set `TAC_PLUS_CUSTOM_FLAG_1` (0x40) on the packet header
-        #[arg(long)]
-        custom_flag_1: bool,
-
-        /// Set `TAC_PLUS_CUSTOM_FLAG_2` (0x80) on the packet header
-        #[arg(long)]
-        custom_flag_2: bool,
-
         /// Use a specific session ID instead of a randomly generated one
         #[arg(long)]
         session_id: Option<u32>,
@@ -247,6 +239,26 @@ mod tests {
         ]);
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_accounting_rejects_removed_custom_flag_arguments() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "accounting",
+            "--user",
+            "testuser",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.168.1.100",
+            "--custom-flag-1",
+            "test_cmd",
+        ]);
+
+        assert!(result.is_err());
     }
 
     #[test]

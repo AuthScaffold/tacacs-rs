@@ -3,7 +3,6 @@ use futures::future::join_all;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_networking::DedicatedConnection;
 use tacacsrs_networking::config_connect::ConnectOptions;
 
@@ -39,7 +38,7 @@ pub(super) async fn probe_single_connect(
         let request = build_accounting_request("tacon", "batch", "localhost", "tacon", Some(&args));
 
         let exchange = connection
-            .send_accounting(request, TacacsFlags::empty())
+            .send_accounting(request)
             .await
             .context("Probe accounting exchange failed")?;
 
@@ -117,7 +116,7 @@ async fn execute_single_request_dedicated(
                 build_accounting_request(&req.user, &req.port, &req.rem_addr, &req.cmd, cmd_args);
 
             connection
-                .send_accounting(tacacs_request, req.custom_flags.to_tacacs_flags())
+                .send_accounting(tacacs_request)
                 .await
                 .map(|result| format!("Accounting success: {:?}", result.reply))
                 .map_err(|error| format!("Accounting failed: {error}"))

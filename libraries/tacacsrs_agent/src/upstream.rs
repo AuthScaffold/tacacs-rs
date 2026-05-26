@@ -35,7 +35,7 @@ use tacacsrs_flows::accounting::AccountingFlow;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
-    TacacsAuthenticationService, TacacsAuthenticationType, TacacsFlags,
+    TacacsAuthenticationService, TacacsAuthenticationType,
 };
 use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
@@ -362,7 +362,7 @@ async fn send_dedicated_accounting(
     let mut conn = DedicatedConnection::new(stream, obfuscation_key.as_deref());
 
     let exchange = conn
-        .send_accounting(tacacs_request, TacacsFlags::empty())
+        .send_accounting(tacacs_request)
         .await
         .map(|ex| to_dedicated_result(&address, ex))?;
 

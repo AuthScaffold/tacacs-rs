@@ -7,8 +7,7 @@ use tacacsrs_messages::traits::TacacsBodyTrait;
 
 /// Builds a TACACS+ authorization packet ready to send.
 ///
-/// The standard unencrypted flag is always set; callers can add protocol
-/// negotiation or custom flags through `custom_flags`.
+/// The standard unencrypted flag is always set.
 ///
 /// # Errors
 ///
@@ -18,12 +17,11 @@ pub fn build_authorization_packet(
     session_id: u32,
     seq_no: u8,
     request: &AuthorizationRequest,
-    custom_flags: TacacsFlags,
 ) -> anyhow::Result<Packet> {
     let data = request.to_bytes()?;
     let length = u32::try_from(data.len())
         .map_err(|_| anyhow::Error::msg("authorization request payload exceeds u32 length"))?;
-    let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | custom_flags;
+    let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
 
     Packet::new(
         Header {

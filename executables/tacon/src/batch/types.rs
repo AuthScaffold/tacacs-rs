@@ -6,33 +6,6 @@
 use serde::Deserialize;
 use std::time::Duration;
 use tacacsrs_config::TacacsPlusServerType;
-use tacacsrs_messages::enumerations::TacacsFlags;
-
-/// Custom flags that can be set on TACACS+ packet headers
-#[derive(Debug, Deserialize, Default, Clone, Copy)]
-pub struct CustomFlags {
-    /// Set `TAC_PLUS_CUSTOM_FLAG_1` (0x40) on the packet header
-    #[serde(default)]
-    pub custom_flag_1: bool,
-
-    /// Set `TAC_PLUS_CUSTOM_FLAG_2` (0x80) on the packet header
-    #[serde(default)]
-    pub custom_flag_2: bool,
-}
-
-impl CustomFlags {
-    /// Converts the custom flags to `TacacsFlags`
-    pub fn to_tacacs_flags(self) -> TacacsFlags {
-        let mut flags = TacacsFlags::empty();
-        if self.custom_flag_1 {
-            flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1;
-        }
-        if self.custom_flag_2 {
-            flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
-        }
-        flags
-    }
-}
 
 /// Batch file structure containing metadata and requests
 #[derive(Debug, Deserialize)]
@@ -151,10 +124,6 @@ pub struct AccountingRequest {
     #[serde(default)]
     pub cmd_args: Vec<String>,
 
-    /// Optional custom flags to set on the packet header
-    #[serde(default)]
-    pub custom_flags: CustomFlags,
-
     /// Optional custom session ID (if not provided, a random one is generated)
     #[serde(default)]
     pub session_id: Option<u32>,
@@ -176,10 +145,6 @@ pub struct AuthenticationRequest {
     /// Password (for PAP) or other credentials
     #[serde(default)]
     pub password: Option<String>,
-
-    /// Optional custom flags to set on the packet header
-    #[serde(default)]
-    pub custom_flags: CustomFlags,
 
     /// Optional custom session ID (if not provided, a random one is generated)
     #[serde(default)]
@@ -210,10 +175,6 @@ pub struct AuthorizationRequest {
     /// Service type (e.g., "shell")
     #[serde(default = "default_service")]
     pub service: String,
-
-    /// Optional custom flags to set on the packet header
-    #[serde(default)]
-    pub custom_flags: CustomFlags,
 
     /// Optional custom session ID (if not provided, a random one is generated)
     #[serde(default)]
@@ -424,24 +385,5 @@ mod tests {
         let load_config = batch.metadata.load_test.as_ref().unwrap();
         assert_eq!(load_config.repetitions, 50);
         assert_eq!(load_config.max_parallel, 10); // default value
-    }
-
-    #[test]
-    fn test_custom_flags_to_tacacs_flags() {
-        let flags = CustomFlags {
-            custom_flag_1: true,
-            custom_flag_2: false,
-        };
-        let tacacs_flags = flags.to_tacacs_flags();
-        assert!(tacacs_flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1));
-        assert!(!tacacs_flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2));
-
-        let both_flags = CustomFlags {
-            custom_flag_1: true,
-            custom_flag_2: true,
-        };
-        let tacacs_flags = both_flags.to_tacacs_flags();
-        assert!(tacacs_flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1));
-        assert!(tacacs_flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2));
     }
 }
