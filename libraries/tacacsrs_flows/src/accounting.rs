@@ -8,12 +8,31 @@ use tacacsrs_messages::packet::PacketTrait;
 
 /// Fixed TACACS+ client accounting flow.
 ///
-/// Implement this on any type that can provide [`ClientSessionFlowIoTrait`].
+/// Implement this on owned session handles that can provide
+/// [`ClientSessionFlowIoTrait`]. Flow methods consume the session handle so a
+/// completed session cannot be reused for another flow.
+///
+/// ```compile_fail
+/// # use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
+/// # use tacacsrs_flows::accounting::AccountingFlow;
+/// # use tacacsrs_messages::accounting::request::AccountingRequest;
+/// # async fn cannot_reuse_after_flow<S>(
+/// #     session: S,
+/// #     request: AccountingRequest,
+/// # ) -> anyhow::Result<()>
+/// # where
+/// #     S: AccountingFlow,
+/// # {
+/// let _reply = session.send_accounting_request(request).await?;
+/// let _session_id = session.session_id();
+/// # Ok(())
+/// # }
+/// ```
 #[async_trait]
-pub trait AccountingFlow: ClientSessionFlowIoTrait {
+pub trait AccountingFlow: ClientSessionFlowIoTrait + Sized + Send {
     /// Sends an accounting request with default flags (`TAC_PLUS_UNENCRYPTED_FLAG`)
     async fn send_accounting_request(
-        &self,
+        self,
         request: AccountingRequest,
     ) -> anyhow::Result<AccountingReply> {
         self.send_accounting_request_with_flags(request, TacacsFlags::empty())
@@ -27,7 +46,7 @@ pub trait AccountingFlow: ClientSessionFlowIoTrait {
     /// * `request` - The accounting request to send
     /// * `custom_flags` - Additional flags to set on the packet header
     async fn send_accounting_request_with_flags(
-        &self,
+        self,
         request: AccountingRequest,
         custom_flags: TacacsFlags,
     ) -> anyhow::Result<AccountingReply> {
@@ -61,7 +80,7 @@ pub trait AccountingFlow: ClientSessionFlowIoTrait {
     }
 }
 
-impl<T> AccountingFlow for T where T: ClientSessionFlowIoTrait + ?Sized {}
+impl<T> AccountingFlow for T where T: ClientSessionFlowIoTrait + Sized + Send {}
 
 #[cfg(test)]
 mod tests {
@@ -83,6 +102,10 @@ mod tests {
 
     struct TestIo {
         session_id: u32,
+        state: Arc<TestIoState>,
+    }
+
+    struct TestIoState {
         next_seq: Mutex<u8>,
         complete: Mutex<bool>,
         sent_packets: Mutex<Vec<Packet>>,
@@ -93,10 +116,12 @@ mod tests {
         fn new(session_id: u32, inbound_packets: VecDeque<Packet>) -> Self {
             Self {
                 session_id,
-                next_seq: Mutex::new(1),
-                complete: Mutex::new(false),
-                sent_packets: Mutex::new(Vec::new()),
-                inbound_packets: Mutex::new(inbound_packets),
+                state: Arc::new(TestIoState {
+                    next_seq: Mutex::new(1),
+                    complete: Mutex::new(false),
+                    sent_packets: Mutex::new(Vec::new()),
+                    inbound_packets: Mutex::new(inbound_packets),
+                }),
             }
         }
     }
@@ -104,11 +129,11 @@ mod tests {
     #[async_trait]
     impl ClientSessionFlowIoTrait for TestIo {
         async fn is_complete(&self) -> bool {
-            *self.complete.lock().await
+            *self.state.complete.lock().await
         }
 
         async fn next_sequence_number(&self) -> u8 {
-            let mut seq = self.next_seq.lock().await;
+            let mut seq = self.state.next_seq.lock().await;
             let current = *seq;
             *seq = current.wrapping_add(2);
             current
@@ -119,12 +144,13 @@ mod tests {
         }
 
         async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {
-            self.sent_packets.lock().await.push(packet);
+            self.state.sent_packets.lock().await.push(packet);
             Ok(())
         }
 
         async fn receive_packet(&self) -> anyhow::Result<Packet> {
-            self.inbound_packets
+            self.state
+                .inbound_packets
                 .lock()
                 .await
                 .pop_front()
@@ -132,7 +158,7 @@ mod tests {
         }
 
         async fn complete(&self) {
-            *self.complete.lock().await = true;
+            *self.state.complete.lock().await = true;
         }
     }
 
@@ -173,16 +199,17 @@ mod tests {
         )?;
 
         let io = TestIo::new(42, VecDeque::from([reply_packet]));
+        let state = io.state.clone();
         let reply = io.send_accounting_request(request).await?;
 
         assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
 
-        let sent_packets = io.sent_packets.lock().await;
+        let sent_packets = state.sent_packets.lock().await;
         assert_eq!(sent_packets.len(), 1);
         assert_eq!(sent_packets[0].header().session_id, 42);
         assert_eq!(sent_packets[0].header().seq_no, 1);
         assert_eq!(sent_packets[0].header().tacacs_type, TacacsType::TacPlusAccounting);
-        assert!(io.is_complete().await);
+        assert!(*state.complete.lock().await);
 
         Ok(())
     }
@@ -222,7 +249,6 @@ mod tests {
 
         let reply = session.send_accounting_request(request).await?;
         assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
-        assert!(session.is_complete().await);
 
         let requests = mock_control.get_requests_for_session(session_id).await?;
         let sent_packet = requests

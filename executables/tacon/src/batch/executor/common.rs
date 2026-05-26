@@ -48,7 +48,7 @@ pub(super) fn validate_service_mode_request(request: &BatchRequest) -> Result<()
 
 /// Executes a single batch request on a session
 pub(super) async fn execute_single_request(
-    session: &Session,
+    session: Session,
     request: &BatchRequest,
 ) -> Result<String, String> {
     match request {
