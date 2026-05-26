@@ -18,9 +18,7 @@ use tacacsrs_agent_client::{
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tokio::sync::{Mutex, Notify};
 
-use crate::upstream::{
-    DedicatedAccountingResult, DedicatedAuthorizationResult, UpstreamConnection, UpstreamConnector,
-};
+use crate::upstream::{DedicatedOperationResult, UpstreamConnection, UpstreamConnector};
 use tacacsrs_networking::SingleConnectionState;
 
 // ---------------------------------------------------------------------------
@@ -165,12 +163,12 @@ impl UpstreamConnector for FakeConnector {
         &self,
         server: &TacacsPlusServer,
         request: &AccountingOperation,
-    ) -> anyhow::Result<DedicatedAccountingResult> {
+    ) -> anyhow::Result<DedicatedOperationResult<AccountingOperationResponse>> {
         let connection = self.connect(server).await?;
         let response = connection.send_accounting(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAccountingResult {
+        Ok(DedicatedOperationResult {
             response,
             single_connect_supported: supported,
         })
@@ -180,12 +178,12 @@ impl UpstreamConnector for FakeConnector {
         &self,
         server: &TacacsPlusServer,
         request: &AuthorizationOperation,
-    ) -> anyhow::Result<DedicatedAuthorizationResult> {
+    ) -> anyhow::Result<DedicatedOperationResult<AuthorizationOperationResponse>> {
         let connection = self.connect(server).await?;
         let response = connection.send_authorization(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAuthorizationResult {
+        Ok(DedicatedOperationResult {
             response,
             single_connect_supported: supported,
         })
@@ -274,12 +272,12 @@ impl UpstreamConnector for SingleSessionConnector {
         &self,
         server: &TacacsPlusServer,
         request: &AccountingOperation,
-    ) -> anyhow::Result<DedicatedAccountingResult> {
+    ) -> anyhow::Result<DedicatedOperationResult<AccountingOperationResponse>> {
         let connection = self.connect(server).await?;
         let response = connection.send_accounting(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAccountingResult {
+        Ok(DedicatedOperationResult {
             response,
             single_connect_supported: supported,
         })
@@ -289,12 +287,12 @@ impl UpstreamConnector for SingleSessionConnector {
         &self,
         server: &TacacsPlusServer,
         request: &AuthorizationOperation,
-    ) -> anyhow::Result<DedicatedAuthorizationResult> {
+    ) -> anyhow::Result<DedicatedOperationResult<AuthorizationOperationResponse>> {
         let connection = self.connect(server).await?;
         let response = connection.send_authorization(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAuthorizationResult {
+        Ok(DedicatedOperationResult {
             response,
             single_connect_supported: supported,
         })
@@ -372,12 +370,12 @@ impl UpstreamConnector for BlockingConnector {
         &self,
         server: &TacacsPlusServer,
         request: &AccountingOperation,
-    ) -> anyhow::Result<DedicatedAccountingResult> {
+    ) -> anyhow::Result<DedicatedOperationResult<AccountingOperationResponse>> {
         let connection = self.connect(server).await?;
         let response = connection.send_accounting(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAccountingResult {
+        Ok(DedicatedOperationResult {
             response,
             single_connect_supported: supported,
         })
@@ -387,12 +385,12 @@ impl UpstreamConnector for BlockingConnector {
         &self,
         server: &TacacsPlusServer,
         request: &AuthorizationOperation,
-    ) -> anyhow::Result<DedicatedAuthorizationResult> {
+    ) -> anyhow::Result<DedicatedOperationResult<AuthorizationOperationResponse>> {
         let connection = self.connect(server).await?;
         let response = connection.send_authorization(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAuthorizationResult {
+        Ok(DedicatedOperationResult {
             response,
             single_connect_supported: supported,
         })
@@ -486,12 +484,12 @@ impl UpstreamConnector for ExclusiveSessionConnector {
         &self,
         server: &TacacsPlusServer,
         request: &AccountingOperation,
-    ) -> anyhow::Result<DedicatedAccountingResult> {
+    ) -> anyhow::Result<DedicatedOperationResult<AccountingOperationResponse>> {
         let connection = self.connect(server).await?;
         let response = connection.send_accounting(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAccountingResult {
+        Ok(DedicatedOperationResult {
             response,
             single_connect_supported: supported,
         })
@@ -501,12 +499,12 @@ impl UpstreamConnector for ExclusiveSessionConnector {
         &self,
         server: &TacacsPlusServer,
         request: &AuthorizationOperation,
-    ) -> anyhow::Result<DedicatedAuthorizationResult> {
+    ) -> anyhow::Result<DedicatedOperationResult<AuthorizationOperationResponse>> {
         let connection = self.connect(server).await?;
         let response = connection.send_authorization(request).await?;
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAuthorizationResult {
+        Ok(DedicatedOperationResult {
             response,
             single_connect_supported: supported,
         })

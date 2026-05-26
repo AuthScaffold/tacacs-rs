@@ -31,7 +31,7 @@ pub use packet_reader::{PacketReader, PacketReaderTrait, PacketReadResult};
 pub use packet_writer::{PacketWriter, PacketWriterTrait, PacketWriteResult};
 pub use single_connect_tracker::{LocalSingleConnectState, SingleConnectFlag};
 pub use connection::TacacsConnection;
-pub use dedicated_connection::{AuthorizationExchangeResult, DedicatedConnection, ExchangeResult};
+pub use dedicated_connection::{DedicatedConnection, ExchangeResult};
 pub use transport::Transport;
 pub use transport::BoxedTransport;
 pub use transport::mock::MockTransport;

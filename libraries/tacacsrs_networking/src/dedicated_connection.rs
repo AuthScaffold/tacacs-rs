@@ -28,21 +28,11 @@ use crate::packet_reader::{PacketReadResult, PacketReader, PacketReaderTrait};
 use crate::packet_writer::{PacketWriteResult, PacketWriter, PacketWriterTrait};
 use crate::transport::Transport;
 
-/// The result of a one-shot TACACS+ accounting exchange.
+/// The result of a one-shot TACACS+ request-response exchange.
 #[derive(Debug)]
-pub struct ExchangeResult {
-    /// The accounting reply from the server.
-    pub reply: AccountingReply,
-    /// Whether the server indicated support for single-connection mode
-    /// by echoing `TAC_PLUS_SINGLE_CONNECT_FLAG` in its response.
-    pub single_connect_supported: bool,
-}
-
-/// The result of a one-shot TACACS+ authorization exchange.
-#[derive(Debug)]
-pub struct AuthorizationExchangeResult {
-    /// The authorization reply from the server.
-    pub reply: AuthorizationReply,
+pub struct ExchangeResult<Reply> {
+    /// The parsed reply from the server.
+    pub reply: Reply,
     /// Whether the server indicated support for single-connection mode
     /// by echoing `TAC_PLUS_SINGLE_CONNECT_FLAG` in its response.
     pub single_connect_supported: bool,
@@ -129,7 +119,7 @@ where
         &mut self,
         request: AccountingRequest,
         custom_flags: TacacsFlags,
-    ) -> anyhow::Result<ExchangeResult> {
+    ) -> anyhow::Result<ExchangeResult<AccountingReply>> {
         let session_id: u32 = (self.session_id_fn)();
         let packet = build_accounting_packet(
             session_id,
@@ -181,7 +171,7 @@ where
         &mut self,
         request: AuthorizationRequest,
         custom_flags: TacacsFlags,
-    ) -> anyhow::Result<AuthorizationExchangeResult> {
+    ) -> anyhow::Result<ExchangeResult<AuthorizationReply>> {
         let session_id: u32 = (self.session_id_fn)();
         let packet = build_authorization_packet(
             session_id,
@@ -215,7 +205,7 @@ where
         let reply =
             parse_authorization_reply(&response).context("failed to parse authorization reply")?;
 
-        Ok(AuthorizationExchangeResult {
+        Ok(ExchangeResult {
             reply,
             single_connect_supported,
         })

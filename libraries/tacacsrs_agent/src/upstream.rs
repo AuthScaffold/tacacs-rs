@@ -34,6 +34,8 @@ use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_flows::accounting::AccountingFlow;
 use tacacsrs_flows::authorization::AuthorizationFlow;
 use tacacsrs_messages::accounting::request::AccountingRequest;
+use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_messages::authorization::reply::AuthorizationReply;
 use tacacsrs_messages::authorization::request::AuthorizationRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
@@ -45,9 +47,10 @@ use tacacsrs_agent_client::{
 };
 use tacacsrs_networking::SingleConnectionState;
 use tacacsrs_networking::config_connect::{self, ConnectOptions};
+use tacacsrs_networking::connection::TacacsConnection;
 use tacacsrs_networking::dedicated_connection::DedicatedConnection;
 use tacacsrs_networking::traits::SessionManagementTrait;
-use tacacsrs_networking::connection::TacacsConnection;
+use tacacsrs_networking::ExchangeResult;
 
 #[async_trait]
 /// Abstracts a single persistent TACACS+ server connection used by the service.
@@ -126,7 +129,7 @@ pub(crate) trait UpstreamConnector: Send + Sync {
         &self,
         server: &TacacsPlusServer,
         request: &AccountingOperation,
-    ) -> anyhow::Result<DedicatedAccountingResult>;
+    ) -> anyhow::Result<DedicatedOperationResult<AccountingOperationResponse>>;
 
     /// Sends a single authorization request over a dedicated one-shot connection.
     ///
@@ -138,21 +141,13 @@ pub(crate) trait UpstreamConnector: Send + Sync {
         &self,
         server: &TacacsPlusServer,
         request: &AuthorizationOperation,
-    ) -> anyhow::Result<DedicatedAuthorizationResult>;
+    ) -> anyhow::Result<DedicatedOperationResult<AuthorizationOperationResponse>>;
 }
 
-/// Result of a one-shot accounting request sent via [`DedicatedConnection`].
-pub(crate) struct DedicatedAccountingResult {
-    /// The accounting response mapped to domain types.
-    pub response: AccountingOperationResponse,
-    /// Whether the server indicated support for single-connection mode.
-    pub single_connect_supported: bool,
-}
-
-/// Result of a one-shot authorization request sent via [`DedicatedConnection`].
-pub(crate) struct DedicatedAuthorizationResult {
-    /// The authorization response mapped to domain types.
-    pub response: AuthorizationOperationResponse,
+/// Result of a one-shot request sent via [`DedicatedConnection`].
+pub(crate) struct DedicatedOperationResult<Response> {
+    /// The operation response mapped to domain types.
+    pub response: Response,
     /// Whether the server indicated support for single-connection mode.
     pub single_connect_supported: bool,
 }
@@ -185,7 +180,7 @@ impl UpstreamConnector for NetworkUpstreamConnector {
         &self,
         server: &TacacsPlusServer,
         request: &AccountingOperation,
-    ) -> anyhow::Result<DedicatedAccountingResult> {
+    ) -> anyhow::Result<DedicatedOperationResult<AccountingOperationResponse>> {
         send_dedicated_accounting(server, self.disable_certificate_verification, request).await
     }
 
@@ -193,7 +188,7 @@ impl UpstreamConnector for NetworkUpstreamConnector {
         &self,
         server: &TacacsPlusServer,
         request: &AuthorizationOperation,
-    ) -> anyhow::Result<DedicatedAuthorizationResult> {
+    ) -> anyhow::Result<DedicatedOperationResult<AuthorizationOperationResponse>> {
         send_dedicated_authorization(server, self.disable_certificate_verification, request).await
     }
 }
@@ -228,18 +223,13 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         &self,
         request: &AccountingOperation,
     ) -> anyhow::Result<AccountingOperationResponse> {
-        log::debug!(
-            "Creating TACACS+ session on {} for accounting request (user={}, cmd={})",
-            self.server_address,
-            request.user,
-            request.command,
+        log_session_start(
+            "accounting",
+            &self.server_address,
+            &format!("user={}, cmd={}", request.user, request.command),
         );
 
-        let session = self
-            .connection
-            .create_session()
-            .await
-            .with_context(|| format!("Failed to create session on {}", self.server_address))?;
+        let session = create_session(&self.connection, &self.server_address).await?;
 
         let response = session
             .send_accounting_request(build_accounting_request(request))
@@ -247,51 +237,40 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
         match &response {
             Ok(resp) => {
-                log::debug!(
-                    "Accounting response from {}: status={:?}, server_msg={}",
-                    self.server_address,
-                    resp.status,
-                    if resp.server_msg.is_empty() {
-                        "(empty)"
-                    } else {
-                        &resp.server_msg
-                    },
+                log_protocol_reply(
+                    "Accounting",
+                    &self.server_address,
+                    &resp.status,
+                    &resp.server_msg,
                 );
             }
             Err(error) => {
-                log::warn!("Accounting request to {} failed: {error:#}", self.server_address);
+                log_session_failure("Accounting", &self.server_address, error);
             }
         }
 
-        let response = response.with_context(|| {
-            format!("Failed to send accounting request via {}", self.server_address)
-        })?;
+        let response =
+            response.with_context(|| shared_failure_context("accounting", &self.server_address))?;
 
-        Ok(AccountingOperationResponse {
-            server: self.server_address.clone(),
-            status: accounting_status(response.status),
-            server_message: response.server_msg,
-            data: response.data,
-        })
+        Ok(to_accounting_response(&self.server_address, response))
     }
 
     async fn send_authorization(
         &self,
         request: &AuthorizationOperation,
     ) -> anyhow::Result<AuthorizationOperationResponse> {
-        log::debug!(
-            "Creating TACACS+ session on {} for authorization request (user={}, service={}, cmd={})",
-            self.server_address,
-            request.user,
-            request.service().unwrap_or("<missing>"),
-            request.command().unwrap_or("<missing>"),
+        log_session_start(
+            "authorization",
+            &self.server_address,
+            &format!(
+                "user={}, service={}, cmd={}",
+                request.user,
+                request.service().unwrap_or("<missing>"),
+                request.command().unwrap_or("<missing>"),
+            ),
         );
 
-        let session = self
-            .connection
-            .create_session()
-            .await
-            .with_context(|| format!("Failed to create session on {}", self.server_address))?;
+        let session = create_session(&self.connection, &self.server_address).await?;
 
         let response = session
             .send_authorization_request(build_authorization_request(request)?)
@@ -299,33 +278,22 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
         match &response {
             Ok(resp) => {
-                log::debug!(
-                    "Authorization response from {}: status={:?}, server_msg={}",
-                    self.server_address,
-                    resp.status,
-                    if resp.server_msg.is_empty() {
-                        "(empty)"
-                    } else {
-                        &resp.server_msg
-                    },
+                log_protocol_reply(
+                    "Authorization",
+                    &self.server_address,
+                    &resp.status,
+                    &resp.server_msg,
                 );
             }
             Err(error) => {
-                log::warn!("Authorization request to {} failed: {error:#}", self.server_address);
+                log_session_failure("Authorization", &self.server_address, error);
             }
         }
 
-        let response = response.with_context(|| {
-            format!("Failed to send authorization request via {}", self.server_address)
-        })?;
+        let response = response
+            .with_context(|| shared_failure_context("authorization", &self.server_address))?;
 
-        Ok(AuthorizationOperationResponse {
-            server: self.server_address.clone(),
-            status: authorization_status(response.status),
-            server_message: response.server_msg,
-            args: parse_authorization_args(response.args)?,
-            data: response.data,
-        })
+        to_authorization_response(&self.server_address, response)
     }
 }
 
@@ -411,6 +379,44 @@ fn parse_authorization_args(args: Vec<String>) -> anyhow::Result<Vec<Authorizati
         .collect()
 }
 
+fn log_session_start(operation: &'static str, server_address: &str, summary: &str) {
+    log::debug!("Creating TACACS+ session on {server_address} for {operation} request ({summary})");
+}
+
+async fn create_session(
+    connection: &Arc<TacacsConnection>,
+    server_address: &str,
+) -> anyhow::Result<tacacsrs_networking::session::Session> {
+    connection
+        .create_session()
+        .await
+        .with_context(|| format!("Failed to create session on {server_address}"))
+}
+
+fn log_protocol_reply<Status: std::fmt::Debug>(
+    operation: &'static str,
+    server_address: &str,
+    status: &Status,
+    server_msg: &str,
+) {
+    log::debug!(
+        "{operation} response from {server_address}: status={status:?}, server_msg={}",
+        if server_msg.is_empty() {
+            "(empty)"
+        } else {
+            server_msg
+        },
+    );
+}
+
+fn log_session_failure(operation: &'static str, server_address: &str, error: &anyhow::Error) {
+    log::warn!("{operation} request to {server_address} failed: {error:#}");
+}
+
+fn shared_failure_context(operation: &'static str, server_address: &str) -> String {
+    format!("Failed to send {operation} request via {server_address}")
+}
+
 /// Establishes a new TCP (or TLS/PSK) connection to an upstream TACACS+ server.
 ///
 /// The connection sequence is:
@@ -472,47 +478,25 @@ async fn connect_upstream(
 
     Ok(connection)
 }
-
 /// Sends a single accounting request over a [`DedicatedConnection`] — one
 /// TCP connection, one packet out, one packet back, no background tasks.
 async fn send_dedicated_accounting(
     server: &TacacsPlusServer,
     disable_certificate_verification: bool,
     request: &AccountingOperation,
-) -> anyhow::Result<DedicatedAccountingResult> {
-    let address = server.socket_address();
-    let timeout_duration = server.timeout_duration();
-
-    let security_label = security_label(server);
-    log::debug!(
-        "Dedicated accounting request to {address} (security: {security_label}, timeout: {timeout_duration:?})",
-    );
-
-    let options = ConnectOptions {
-        disable_certificate_verification,
-        timeout: Some(timeout_duration),
-    };
-
-    let stream = config_connect::establish_stream(server, &options)
-        .await
-        .with_context(|| format!("Failed to connect to {address}"))?;
-
+) -> anyhow::Result<DedicatedOperationResult<AccountingOperationResponse>> {
     let tacacs_request = build_accounting_request(request);
-    let obfuscation_key = server.obfuscation_key();
-    let mut conn = DedicatedConnection::new(stream, obfuscation_key.as_deref());
-
-    let exchange = conn
-        .send_accounting(tacacs_request, TacacsFlags::empty())
-        .await
-        .map(|ex| to_dedicated_result(&address, ex))?;
-
-    log::debug!(
-        "Dedicated accounting response from {address}: status={:?}, single_connect={}",
-        exchange.response.status,
-        exchange.single_connect_supported,
-    );
-
-    Ok(exchange)
+    send_dedicated_exchange(
+        server,
+        disable_certificate_verification,
+        "accounting",
+        |mut conn| async move {
+            conn.send_accounting(tacacs_request, TacacsFlags::empty())
+                .await
+        },
+        |address, reply| Ok(to_accounting_response(address, reply)),
+    )
+    .await
 }
 
 /// Sends a single authorization request over a [`DedicatedConnection`] — one
@@ -521,13 +505,44 @@ async fn send_dedicated_authorization(
     server: &TacacsPlusServer,
     disable_certificate_verification: bool,
     request: &AuthorizationOperation,
-) -> anyhow::Result<DedicatedAuthorizationResult> {
+) -> anyhow::Result<DedicatedOperationResult<AuthorizationOperationResponse>> {
+    let tacacs_request = build_authorization_request(request)?;
+    send_dedicated_exchange(
+        server,
+        disable_certificate_verification,
+        "authorization",
+        |mut conn| async move {
+            conn.send_authorization(tacacs_request, TacacsFlags::empty())
+                .await
+        },
+        to_authorization_response,
+    )
+    .await
+}
+
+type BoxedDedicatedConnection = DedicatedConnection<
+    Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+    Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+>;
+
+async fn send_dedicated_exchange<WireReply, Response, SendExchange, SendFuture, MapResponse>(
+    server: &TacacsPlusServer,
+    disable_certificate_verification: bool,
+    operation: &'static str,
+    send_exchange: SendExchange,
+    map_response: MapResponse,
+) -> anyhow::Result<DedicatedOperationResult<Response>>
+where
+    SendExchange: FnOnce(BoxedDedicatedConnection) -> SendFuture,
+    SendFuture: std::future::Future<Output = anyhow::Result<ExchangeResult<WireReply>>>,
+    MapResponse: FnOnce(&str, WireReply) -> anyhow::Result<Response>,
+{
     let address = server.socket_address();
     let timeout_duration = server.timeout_duration();
 
     let security_label = security_label(server);
     log::debug!(
-        "Dedicated authorization request to {address} (security: {security_label}, timeout: {timeout_duration:?})",
+        "Dedicated {operation} request to {address} (security: {security_label}, timeout: {timeout_duration:?})",
     );
 
     let options = ConnectOptions {
@@ -539,22 +554,20 @@ async fn send_dedicated_authorization(
         .await
         .with_context(|| format!("Failed to connect to {address}"))?;
 
-    let tacacs_request = build_authorization_request(request)?;
     let obfuscation_key = server.obfuscation_key();
-    let mut conn = DedicatedConnection::new(stream, obfuscation_key.as_deref());
-
-    let exchange = conn
-        .send_authorization(tacacs_request, TacacsFlags::empty())
-        .await
-        .and_then(|ex| to_dedicated_authorization_result(&address, ex))?;
+    let conn = DedicatedConnection::new(stream, obfuscation_key.as_deref());
+    let exchange = send_exchange(conn).await?;
+    let single_connect_supported = exchange.single_connect_supported;
+    let response = map_response(&address, exchange.reply)?;
 
     log::debug!(
-        "Dedicated authorization response from {address}: status={:?}, single_connect={}",
-        exchange.response.status,
-        exchange.single_connect_supported,
+        "Dedicated {operation} response from {address}: single_connect={single_connect_supported}",
     );
 
-    Ok(exchange)
+    Ok(DedicatedOperationResult {
+        response,
+        single_connect_supported,
+    })
 }
 
 fn security_label(server: &TacacsPlusServer) -> &'static str {
@@ -567,34 +580,25 @@ fn security_label(server: &TacacsPlusServer) -> &'static str {
     }
 }
 
-fn to_dedicated_result(
-    address: &str,
-    exchange: tacacsrs_networking::ExchangeResult,
-) -> DedicatedAccountingResult {
-    DedicatedAccountingResult {
-        response: AccountingOperationResponse {
-            server: address.to_owned(),
-            status: accounting_status(exchange.reply.status),
-            server_message: exchange.reply.server_msg,
-            data: exchange.reply.data,
-        },
-        single_connect_supported: exchange.single_connect_supported,
+fn to_accounting_response(address: &str, reply: AccountingReply) -> AccountingOperationResponse {
+    AccountingOperationResponse {
+        server: address.to_owned(),
+        status: accounting_status(reply.status),
+        server_message: reply.server_msg,
+        data: reply.data,
     }
 }
 
-fn to_dedicated_authorization_result(
+fn to_authorization_response(
     address: &str,
-    exchange: tacacsrs_networking::AuthorizationExchangeResult,
-) -> anyhow::Result<DedicatedAuthorizationResult> {
-    Ok(DedicatedAuthorizationResult {
-        response: AuthorizationOperationResponse {
-            server: address.to_owned(),
-            status: authorization_status(exchange.reply.status),
-            server_message: exchange.reply.server_msg,
-            args: parse_authorization_args(exchange.reply.args)?,
-            data: exchange.reply.data,
-        },
-        single_connect_supported: exchange.single_connect_supported,
+    reply: AuthorizationReply,
+) -> anyhow::Result<AuthorizationOperationResponse> {
+    Ok(AuthorizationOperationResponse {
+        server: address.to_owned(),
+        status: authorization_status(reply.status),
+        server_message: reply.server_msg,
+        args: parse_authorization_args(reply.args)?,
+        data: reply.data,
     })
 }
 
