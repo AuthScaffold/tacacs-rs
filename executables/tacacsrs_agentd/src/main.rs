@@ -12,6 +12,8 @@ use clap::ValueEnum;
 use futures_util::StreamExt;
 use tacacsrs_agent::{ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
+#[cfg(feature = "psk")]
+use tacacsrs_config::PskDheKeSupportedGroup;
 use tacacsrs_config::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerExt,
     TacacsPlusServerType,
@@ -30,46 +32,6 @@ enum PskKeyExchange {
     /// Use TLS 1.3 PSK-only key exchange for interoperability.
     #[value(name = "psk-only")]
     PskOnly,
-}
-
-#[cfg(feature = "psk")]
-#[derive(Debug, Clone, Eq, PartialEq, ValueEnum)]
-enum PskDheKeGroup {
-    /// X25519 elliptic curve group.
-    #[value(name = "x25519")]
-    X25519,
-
-    /// NIST P-256 elliptic curve group.
-    #[value(name = "secp256r1")]
-    Secp256r1,
-
-    /// NIST P-384 elliptic curve group.
-    #[value(name = "secp384r1")]
-    Secp384r1,
-
-    /// NIST P-521 elliptic curve group.
-    #[value(name = "secp521r1")]
-    Secp521r1,
-
-    /// Finite field Diffie-Hellman group ffdhe2048.
-    #[value(name = "ffdhe2048")]
-    Ffdhe2048,
-
-    /// Finite field Diffie-Hellman group ffdhe3072.
-    #[value(name = "ffdhe3072")]
-    Ffdhe3072,
-
-    /// Finite field Diffie-Hellman group ffdhe4096.
-    #[value(name = "ffdhe4096")]
-    Ffdhe4096,
-
-    /// Finite field Diffie-Hellman group ffdhe6144.
-    #[value(name = "ffdhe6144")]
-    Ffdhe6144,
-
-    /// Finite field Diffie-Hellman group ffdhe8192.
-    #[value(name = "ffdhe8192")]
-    Ffdhe8192,
 }
 
 #[derive(Debug, Parser)]
@@ -166,8 +128,15 @@ struct Cli {
 
     /// Comma-separated TLS 1.3 PSK-DHE groups in preferred order.
     #[cfg(feature = "psk")]
-    #[arg(long, value_enum, value_delimiter = ',', requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
-    psk_key_exchange_groups: Vec<PskDheKeGroup>,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "GROUP[,GROUP...]",
+        help = "Comma-separated TLS 1.3 PSK-DHE groups in preferred order (x25519, secp256r1, secp384r1, secp521r1, ffdhe2048, ffdhe3072, ffdhe4096, ffdhe6144, ffdhe8192)",
+        requires_all = ["use_tls", "psk_identity", "psk_key"],
+        conflicts_with_all = ["client_certificate", "client_key"]
+    )]
+    psk_key_exchange_groups: Vec<PskDheKeSupportedGroup>,
 }
 
 #[cfg(unix)]
@@ -237,10 +206,7 @@ fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
                             builder.with_tls13_epsk_with_psk_dhe_groups(
                                 psk_identity.clone(),
                                 psk_key.as_bytes().to_vec(),
-                                cli.psk_key_exchange_groups
-                                    .iter()
-                                    .map(psk_dhe_ke_group_from_cli)
-                                    .collect(),
+                                cli.psk_key_exchange_groups.clone(),
                             )
                         }
                         Some(PskKeyExchange::PskDhe) | None => builder
@@ -332,23 +298,6 @@ fn base_server_builder_from_address(
 
     TacacsPlusServerBuilder::new(format!("server-{index}"), TacacsPlusServerType::all(), host, port)
         .with_timeout(timeout)
-}
-
-#[cfg(feature = "psk")]
-const fn psk_dhe_ke_group_from_cli(
-    group: &PskDheKeGroup,
-) -> tacacsrs_config::PskDheKeSupportedGroup {
-    match group {
-        PskDheKeGroup::X25519 => tacacsrs_config::PskDheKeSupportedGroup::X25519,
-        PskDheKeGroup::Secp256r1 => tacacsrs_config::PskDheKeSupportedGroup::Secp256r1,
-        PskDheKeGroup::Secp384r1 => tacacsrs_config::PskDheKeSupportedGroup::Secp384r1,
-        PskDheKeGroup::Secp521r1 => tacacsrs_config::PskDheKeSupportedGroup::Secp521r1,
-        PskDheKeGroup::Ffdhe2048 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe2048,
-        PskDheKeGroup::Ffdhe3072 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe3072,
-        PskDheKeGroup::Ffdhe4096 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe4096,
-        PskDheKeGroup::Ffdhe6144 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe6144,
-        PskDheKeGroup::Ffdhe8192 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe8192,
-    }
 }
 
 fn tacacs_plus_from_config(path: &std::path::Path) -> anyhow::Result<TacacsPlus> {

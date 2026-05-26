@@ -7,7 +7,7 @@ use tacacsrs_networking::helpers::{normalize_cli_certificate_data, normalize_cli
 
 use crate::cli::{Cli, Command};
 #[cfg(feature = "psk")]
-use crate::cli::{PskDheKeGroup, PskKeyExchange};
+use crate::cli::PskKeyExchange;
 
 /// Builds a single-server [`TacacsPlus`] root from CLI flags for direct-mode connections.
 ///
@@ -40,10 +40,9 @@ fn validation_options_from_cli(cli: &Cli) -> ValidationOptions {
     // cli::ValidationRelaxation is a separate enum that mirrors
     // tacacsrs_config::ValidationRelaxation.  The duplication is intentional:
     // build.rs includes cli.rs via `include!` to auto-generate the man page, so
-    // cli.rs may only depend on crates listed in [build-dependencies] (currently
-    // just clap).  Introducing a tacacsrs_config dependency in cli.rs would
-    // break that constraint.  This function is the single mapping point, so
-    // adding a new relaxation requires one change here and one in cli.rs.
+    // cli.rs may only depend on crates listed in [build-dependencies]. This
+    // function is the single mapping point, so adding a new relaxation requires
+    // one change here and one in cli.rs.
     use crate::cli::ValidationRelaxation as CliRelaxation;
     use tacacsrs_config::ValidationRelaxation;
 
@@ -165,30 +164,10 @@ fn apply_psk_key_exchange(
             .with_tls13_epsk_with_psk_dhe_groups(
                 psk_identity,
                 psk_key,
-                cli.psk_key_exchange_groups
-                    .iter()
-                    .map(psk_dhe_ke_group_from_cli)
-                    .collect(),
+                cli.psk_key_exchange_groups.clone(),
             ),
         Some(PskKeyExchange::PskDhe) | None => builder.with_tls13_epsk(psk_identity, psk_key),
     })
-}
-
-#[cfg(feature = "psk")]
-const fn psk_dhe_ke_group_from_cli(
-    group: &PskDheKeGroup,
-) -> tacacsrs_config::PskDheKeSupportedGroup {
-    match group {
-        PskDheKeGroup::X25519 => tacacsrs_config::PskDheKeSupportedGroup::X25519,
-        PskDheKeGroup::Secp256r1 => tacacsrs_config::PskDheKeSupportedGroup::Secp256r1,
-        PskDheKeGroup::Secp384r1 => tacacsrs_config::PskDheKeSupportedGroup::Secp384r1,
-        PskDheKeGroup::Secp521r1 => tacacsrs_config::PskDheKeSupportedGroup::Secp521r1,
-        PskDheKeGroup::Ffdhe2048 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe2048,
-        PskDheKeGroup::Ffdhe3072 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe3072,
-        PskDheKeGroup::Ffdhe4096 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe4096,
-        PskDheKeGroup::Ffdhe6144 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe6144,
-        PskDheKeGroup::Ffdhe8192 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe8192,
-    }
 }
 
 /// Loads a [`TacacsPlus`] root from a YANG JSON string with the supplied validation options.

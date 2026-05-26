@@ -288,6 +288,26 @@ fn epsk_hash_sha384_explicit() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn psk_dhe_group_from_str_uses_rfc7951_values() {
+    assert!(matches!(
+        "secp384r1".parse::<PskDheKeSupportedGroup>(),
+        Ok(PskDheKeSupportedGroup::Secp384r1),
+    ));
+    assert_eq!(PskDheKeSupportedGroup::X25519.as_rfc7951_str(), "x25519");
+    assert!(PskDheKeSupportedGroup::RFC7951_VALUES.contains(&"ffdhe8192"));
+}
+
+#[test]
+fn psk_dhe_group_from_str_rejects_unknown_values() {
+    let error = "secp224r1"
+        .parse::<PskDheKeSupportedGroup>()
+        .expect_err("unknown group should fail");
+
+    assert!(error.contains("secp224r1"));
+    assert!(error.contains("secp384r1"));
+}
+
+#[test]
 fn psk_dhe_groups_deserializes_rfc7951_augmented_leaf_list() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {

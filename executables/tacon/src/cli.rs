@@ -1,4 +1,6 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
+#[cfg(feature = "psk")]
+use tacacsrs_config::PskDheKeSupportedGroup;
 
 /// Validation relaxation that loosens a specific YANG constraint.
 ///
@@ -28,47 +30,6 @@ pub enum PskKeyExchange {
     /// Use TLS 1.3 PSK-only key exchange for interoperability.
     #[value(name = "psk-only")]
     PskOnly,
-}
-
-/// TLS 1.3 PSK-DHE supported group offered in `ClientHello` key shares.
-#[cfg(feature = "psk")]
-#[derive(Debug, Clone, Eq, PartialEq, ValueEnum)]
-pub enum PskDheKeGroup {
-    /// X25519 elliptic curve group.
-    #[value(name = "x25519")]
-    X25519,
-
-    /// NIST P-256 elliptic curve group.
-    #[value(name = "secp256r1")]
-    Secp256r1,
-
-    /// NIST P-384 elliptic curve group.
-    #[value(name = "secp384r1")]
-    Secp384r1,
-
-    /// NIST P-521 elliptic curve group.
-    #[value(name = "secp521r1")]
-    Secp521r1,
-
-    /// Finite field Diffie-Hellman group ffdhe2048.
-    #[value(name = "ffdhe2048")]
-    Ffdhe2048,
-
-    /// Finite field Diffie-Hellman group ffdhe3072.
-    #[value(name = "ffdhe3072")]
-    Ffdhe3072,
-
-    /// Finite field Diffie-Hellman group ffdhe4096.
-    #[value(name = "ffdhe4096")]
-    Ffdhe4096,
-
-    /// Finite field Diffie-Hellman group ffdhe6144.
-    #[value(name = "ffdhe6144")]
-    Ffdhe6144,
-
-    /// Finite field Diffie-Hellman group ffdhe8192.
-    #[value(name = "ffdhe8192")]
-    Ffdhe8192,
 }
 
 /// TACACS+ Client CLI
@@ -145,8 +106,15 @@ pub struct Cli {
 
     /// Comma-separated TLS 1.3 PSK-DHE groups in preferred order.
     #[cfg(feature = "psk")]
-    #[arg(long, value_enum, value_delimiter = ',', requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
-    pub psk_key_exchange_groups: Vec<PskDheKeGroup>,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "GROUP[,GROUP...]",
+        help = "Comma-separated TLS 1.3 PSK-DHE groups in preferred order (x25519, secp256r1, secp384r1, secp521r1, ffdhe2048, ffdhe3072, ffdhe4096, ffdhe6144, ffdhe8192)",
+        requires_all = ["use_tls", "psk_identity", "psk_key"],
+        conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"]
+    )]
+    pub psk_key_exchange_groups: Vec<PskDheKeSupportedGroup>,
 
     /// Increase verbosity level (-v, -vv, -vvv, -vvvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -370,10 +338,15 @@ mod tests {
         ]);
 
         assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap().psk_key_exchange_groups,
-            vec![PskDheKeGroup::Secp384r1, PskDheKeGroup::Secp256r1]
-        );
+        let cli = result.unwrap();
+        assert!(matches!(
+            cli.psk_key_exchange_groups.first(),
+            Some(PskDheKeSupportedGroup::Secp384r1)
+        ));
+        assert!(matches!(
+            cli.psk_key_exchange_groups.get(1),
+            Some(PskDheKeSupportedGroup::Secp256r1)
+        ));
     }
 
     #[cfg(feature = "psk")]

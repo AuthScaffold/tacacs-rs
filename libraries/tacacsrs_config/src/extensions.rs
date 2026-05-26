@@ -1,6 +1,60 @@
+use std::str::FromStr;
 use std::time::Duration;
 
-use crate::{TacacsPlusServer, TacacsPlusServerType};
+use crate::{PskDheKeSupportedGroup, TacacsPlusServer, TacacsPlusServerType};
+
+impl PskDheKeSupportedGroup {
+    /// Supported RFC 7951 string values for `psk-dhe-ke-groups`.
+    pub const RFC7951_VALUES: &'static [&'static str] = &[
+        "x25519",
+        "secp256r1",
+        "secp384r1",
+        "secp521r1",
+        "ffdhe2048",
+        "ffdhe3072",
+        "ffdhe4096",
+        "ffdhe6144",
+        "ffdhe8192",
+    ];
+
+    /// Returns the RFC 7951 string value for this supported group.
+    #[must_use]
+    pub const fn as_rfc7951_str(&self) -> &'static str {
+        match self {
+            Self::X25519 => "x25519",
+            Self::Secp256r1 => "secp256r1",
+            Self::Secp384r1 => "secp384r1",
+            Self::Secp521r1 => "secp521r1",
+            Self::Ffdhe2048 => "ffdhe2048",
+            Self::Ffdhe3072 => "ffdhe3072",
+            Self::Ffdhe4096 => "ffdhe4096",
+            Self::Ffdhe6144 => "ffdhe6144",
+            Self::Ffdhe8192 => "ffdhe8192",
+        }
+    }
+}
+
+impl FromStr for PskDheKeSupportedGroup {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "x25519" => Ok(Self::X25519),
+            "secp256r1" => Ok(Self::Secp256r1),
+            "secp384r1" => Ok(Self::Secp384r1),
+            "secp521r1" => Ok(Self::Secp521r1),
+            "ffdhe2048" => Ok(Self::Ffdhe2048),
+            "ffdhe3072" => Ok(Self::Ffdhe3072),
+            "ffdhe4096" => Ok(Self::Ffdhe4096),
+            "ffdhe6144" => Ok(Self::Ffdhe6144),
+            "ffdhe8192" => Ok(Self::Ffdhe8192),
+            _ => Err(format!(
+                "unsupported TLS 1.3 PSK-DHE group `{value}`; expected one of: {}",
+                Self::RFC7951_VALUES.join(", ")
+            )),
+        }
+    }
+}
 
 /// Convenience helpers for runtime-oriented access to a TACACS+ server entry.
 ///
