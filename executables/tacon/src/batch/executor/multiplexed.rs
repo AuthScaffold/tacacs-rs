@@ -34,7 +34,7 @@ pub(super) async fn execute_sequential_multiplexed(
             log::info!("Using custom session ID: {session_id}");
         }
 
-        let result = execute_single_request(&session, request).await;
+        let result = execute_single_request(session, request).await;
         results.push(RequestResult {
             index,
             request_type: request.type_name(),
@@ -68,7 +68,7 @@ pub(super) async fn execute_parallel_multiplexed(
 
     let futures: Vec<_> = requests
         .iter()
-        .zip(sessions.iter())
+        .zip(sessions)
         .enumerate()
         .map(|(index, (request, session))| async move {
             log::info!("Starting parallel request {}", index + 1);
@@ -134,7 +134,7 @@ async fn execute_load_test_single(
             format!("Session creation failed at rep {}, request {}: {}", rep + 1, idx + 1, error)
         })?;
 
-    execute_single_request(&session, request)
+    execute_single_request(session, request)
         .await
         .map(|_| ())
         .map_err(|error| {
