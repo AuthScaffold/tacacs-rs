@@ -1,4 +1,4 @@
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use anyhow::Context;
 use byteorder::ReadBytesExt;
@@ -7,6 +7,7 @@ use num_enum::TryFromPrimitive;
 use crate::enumerations::{
     TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType,
 };
+use crate::helpers::read_string;
 use crate::packet::{Packet, PacketTrait};
 use crate::traits::TacacsBodyTrait;
 
@@ -94,21 +95,6 @@ impl AuthorizationRequest {
         Ok(fixed_and_sizes + string_lengths)
     }
 
-    fn read_string(cursor: &mut Cursor<&[u8]>, len: usize) -> anyhow::Result<String> {
-        #[allow(clippy::cast_possible_truncation)]
-        let remaining_buffer = cursor.get_ref().len() - cursor.position() as usize;
-        if remaining_buffer < len {
-            anyhow::bail!("not enough data to read authorization string");
-        }
-
-        let mut buffer = vec![0; len];
-        cursor
-            .read_exact(&mut buffer)
-            .with_context(|| format!("unable to read {len} authorization bytes"))?;
-
-        String::from_utf8(buffer).context("authorization string is not valid UTF-8")
-    }
-
     /// # Errors
     /// Returns an error if the data is too short or contains invalid field values.
     pub fn from_bytes(data: &[u8]) -> anyhow::Result<Self> {
@@ -144,12 +130,12 @@ impl AuthorizationRequest {
             arg_sizes.push(cursor.read_u8().context("unable to read arg size")?);
         }
 
-        let user = Self::read_string(&mut cursor, usize::from(user_len))?;
-        let port = Self::read_string(&mut cursor, usize::from(port_len))?;
-        let rem_address = Self::read_string(&mut cursor, usize::from(rem_addr_len))?;
+        let user = read_string(&mut cursor, usize::from(user_len))?;
+        let port = read_string(&mut cursor, usize::from(port_len))?;
+        let rem_address = read_string(&mut cursor, usize::from(rem_addr_len))?;
         let mut args = Vec::with_capacity(arg_sizes.len());
         for arg_size in arg_sizes {
-            args.push(Self::read_string(&mut cursor, usize::from(arg_size))?);
+            args.push(read_string(&mut cursor, usize::from(arg_size))?);
         }
 
         Ok(Self {

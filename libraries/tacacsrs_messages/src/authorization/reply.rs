@@ -1,10 +1,11 @@
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use anyhow::Context;
 use byteorder::{BigEndian, ReadBytesExt};
 use num_enum::TryFromPrimitive;
 
 use crate::enumerations::TacacsAuthorizationStatus;
+use crate::helpers::read_string;
 use crate::traits::TacacsBodyTrait;
 
 const AUTHORIZATION_REPLY_MIN_LENGTH: usize = 6;
@@ -66,21 +67,6 @@ impl AuthorizationReply {
         Ok(AUTHORIZATION_REPLY_MIN_LENGTH + arg_cnt + msg_len + data_len + arg_lengths)
     }
 
-    fn read_string(cursor: &mut Cursor<&[u8]>, len: usize) -> anyhow::Result<String> {
-        #[allow(clippy::cast_possible_truncation)]
-        let remaining_buffer = cursor.get_ref().len() - cursor.position() as usize;
-        if remaining_buffer < len {
-            anyhow::bail!("not enough data to read authorization reply string");
-        }
-
-        let mut buffer = vec![0; len];
-        cursor
-            .read_exact(&mut buffer)
-            .with_context(|| format!("unable to read {len} authorization reply bytes"))?;
-
-        String::from_utf8(buffer).context("authorization reply string is not valid UTF-8")
-    }
-
     /// # Errors
     /// Returns an error if the data is too short or contains invalid field values.
     pub fn from_bytes(data: &[u8]) -> anyhow::Result<Self> {
@@ -112,11 +98,11 @@ impl AuthorizationReply {
             arg_sizes.push(cursor.read_u8().context("unable to read arg size")?);
         }
 
-        let server_msg = Self::read_string(&mut cursor, usize::from(msg_len))?;
-        let data = Self::read_string(&mut cursor, usize::from(data_len))?;
+        let server_msg = read_string(&mut cursor, usize::from(msg_len))?;
+        let data = read_string(&mut cursor, usize::from(data_len))?;
         let mut args = Vec::with_capacity(arg_sizes.len());
         for arg_size in arg_sizes {
-            args.push(Self::read_string(&mut cursor, usize::from(arg_size))?);
+            args.push(read_string(&mut cursor, usize::from(arg_size))?);
         }
 
         Ok(Self {
