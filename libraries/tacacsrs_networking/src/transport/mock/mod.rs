@@ -88,4 +88,6 @@ mod mock_transport_coordinator;
 mod mock_write_half;
 
 pub use mock_transport::MockTransport;
-pub use mock_transport_coordinator::{MockAccountingReplyBuilder, MockTransportCoordinator};
+pub use mock_transport_coordinator::{
+    MockAccountingReplyBuilder, MockAuthorizationReplyBuilder, MockTransportCoordinator,
+};

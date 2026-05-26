@@ -74,7 +74,7 @@ async fn send_accounting_request(
         ));
     }
     let sequence_number = session.next_sequence_number().await;
-    let data = request.to_bytes();
+    let data = request.to_bytes()?;
     let length = u32::try_from(data.len())
         .map_err(|_| anyhow::Error::msg("Accounting request payload exceeds u32 length"))?;
     let packet = Packet::new(

@@ -105,19 +105,21 @@ impl AccountingReply {
 }
 
 impl TacacsBodyTrait for AccountingReply {
-    fn to_bytes(&self) -> Vec<u8> {
-        // TACACS+ protocol encodes these lengths as u16 BE.
-        let server_msg_len =
-            u16::try_from(self.server_msg.len()).expect("server_msg exceeds 65535 bytes");
-        let data_len = u16::try_from(self.data.len()).expect("data exceeds 65535 bytes");
+    fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        let server_msg_len = u16::try_from(self.server_msg.len())
+            .context("accounting reply server_msg exceeds 65535 bytes")?;
+        let data_len =
+            u16::try_from(self.data.len()).context("accounting reply data exceeds 65535 bytes")?;
 
-        let mut bytes = Vec::new();
+        let total = TACACS_ACCOUNTING_REPLY_MIN_LENGTH + self.server_msg.len() + self.data.len();
+
+        let mut bytes = Vec::with_capacity(total);
         bytes.extend(server_msg_len.to_be_bytes());
         bytes.extend(data_len.to_be_bytes());
         bytes.push(self.status as u8);
         bytes.extend(self.server_msg.as_bytes());
         bytes.extend(self.data.as_bytes());
-        bytes
+        Ok(bytes)
     }
 }
 
@@ -190,7 +192,7 @@ pub mod tests {
         let bytes = generate_accounting_reply_data();
         let reply = AccountingReply::from_bytes(&bytes).unwrap();
 
-        assert_eq!(reply.to_bytes(), bytes);
+        assert_eq!(reply.to_bytes().unwrap(), bytes);
     }
 
     #[test]
