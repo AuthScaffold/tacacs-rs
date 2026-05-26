@@ -30,7 +30,7 @@ pub enum PskKeyExchange {
     PskOnly,
 }
 
-/// TLS 1.3 PSK-DHE supported group offered in ClientHello key shares.
+/// TLS 1.3 PSK-DHE supported group offered in `ClientHello` key shares.
 #[cfg(feature = "psk")]
 #[derive(Debug, Clone, Eq, PartialEq, ValueEnum)]
 pub enum PskDheKeGroup {

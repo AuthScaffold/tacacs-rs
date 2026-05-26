@@ -5,7 +5,7 @@ use crate::{
 };
 use crate::validation::{self, ValidationOptions};
 
-/// Default TLS 1.3 PSK-DHE groups, in preferred ClientHello key share order.
+/// Default TLS 1.3 PSK-DHE groups, in preferred `ClientHello` key share order.
 pub const DEFAULT_PSK_DHE_KE_GROUPS: &[PskDheKeSupportedGroup] = &[
     PskDheKeSupportedGroup::Secp384r1,
     PskDheKeSupportedGroup::Secp256r1,

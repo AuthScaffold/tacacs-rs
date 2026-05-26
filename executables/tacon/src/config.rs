@@ -577,8 +577,8 @@ mod tests {
     }
 
     #[cfg(feature = "psk")]
-    fn tls13_epsk_groups(cli: Cli) -> Vec<PskDheKeSupportedGroup> {
-        let mut root = tacacs_plus_from_cli(&cli).expect("PSK config should build");
+    fn tls13_epsk_groups(cli: &Cli) -> Vec<PskDheKeSupportedGroup> {
+        let mut root = tacacs_plus_from_cli(cli).expect("PSK config should build");
         root.server
             .remove(0)
             .client_identity
@@ -610,7 +610,7 @@ mod tests {
             "show",
         ]);
 
-        let groups = tls13_epsk_groups(cli);
+        let groups = tls13_epsk_groups(&cli);
 
         assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::Secp384r1)));
         assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp256r1)));
@@ -640,7 +640,7 @@ mod tests {
             "show",
         ]);
 
-        assert!(tls13_epsk_groups(cli).is_empty());
+        assert!(tls13_epsk_groups(&cli).is_empty());
     }
 
     #[cfg(feature = "psk")]
@@ -667,7 +667,7 @@ mod tests {
             "show",
         ]);
 
-        let groups = tls13_epsk_groups(cli);
+        let groups = tls13_epsk_groups(&cli);
 
         assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::Secp256r1)));
         assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::X25519)));
