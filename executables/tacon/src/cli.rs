@@ -17,6 +17,60 @@ pub enum ValidationRelaxation {
     AllowPlainTcpWithoutSharedSecret,
 }
 
+/// TLS 1.3 PSK key-exchange behavior.
+#[cfg(feature = "psk")]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum PskKeyExchange {
+    /// Use TLS 1.3 PSK with ephemeral (EC)DHE key exchange.
+    #[value(name = "psk-dhe")]
+    PskDhe,
+
+    /// Use TLS 1.3 PSK-only key exchange for interoperability.
+    #[value(name = "psk-only")]
+    PskOnly,
+}
+
+/// TLS 1.3 PSK-DHE supported group offered in ClientHello key shares.
+#[cfg(feature = "psk")]
+#[derive(Debug, Clone, Eq, PartialEq, ValueEnum)]
+pub enum PskDheKeGroup {
+    /// X25519 elliptic curve group.
+    #[value(name = "x25519")]
+    X25519,
+
+    /// NIST P-256 elliptic curve group.
+    #[value(name = "secp256r1")]
+    Secp256r1,
+
+    /// NIST P-384 elliptic curve group.
+    #[value(name = "secp384r1")]
+    Secp384r1,
+
+    /// NIST P-521 elliptic curve group.
+    #[value(name = "secp521r1")]
+    Secp521r1,
+
+    /// Finite field Diffie-Hellman group ffdhe2048.
+    #[value(name = "ffdhe2048")]
+    Ffdhe2048,
+
+    /// Finite field Diffie-Hellman group ffdhe3072.
+    #[value(name = "ffdhe3072")]
+    Ffdhe3072,
+
+    /// Finite field Diffie-Hellman group ffdhe4096.
+    #[value(name = "ffdhe4096")]
+    Ffdhe4096,
+
+    /// Finite field Diffie-Hellman group ffdhe6144.
+    #[value(name = "ffdhe6144")]
+    Ffdhe6144,
+
+    /// Finite field Diffie-Hellman group ffdhe8192.
+    #[value(name = "ffdhe8192")]
+    Ffdhe8192,
+}
+
 /// TACACS+ Client CLI
 ///
 /// A command-line tool for interacting with TACACS+ servers,
@@ -83,6 +137,16 @@ pub struct Cli {
     #[cfg(feature = "psk")]
     #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
     pub psk_key: Option<String>,
+
+    /// TLS 1.3 PSK key-exchange mode.
+    #[cfg(feature = "psk")]
+    #[arg(long, value_enum, requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
+    pub psk_key_exchange: Option<PskKeyExchange>,
+
+    /// Comma-separated TLS 1.3 PSK-DHE groups in preferred order.
+    #[cfg(feature = "psk")]
+    #[arg(long, value_enum, value_delimiter = ',', requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
+    pub psk_key_exchange_groups: Vec<PskDheKeGroup>,
 
     /// Increase verbosity level (-v, -vv, -vvv, -vvvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -258,6 +322,74 @@ mod tests {
             "--use-tls",
             "--client-certificate",
             "cert.der",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn test_psk_key_exchange_mode_parses() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange",
+            "psk-only",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().psk_key_exchange, Some(PskKeyExchange::PskOnly));
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn test_psk_key_exchange_groups_parse_comma_separated_values() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange-groups",
+            "secp384r1,secp256r1",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap().psk_key_exchange_groups,
+            vec![PskDheKeGroup::Secp384r1, PskDheKeGroup::Secp256r1]
+        );
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn test_psk_key_exchange_groups_reject_unknown_group() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange-groups",
+            "secp224r1",
             "batch",
             "batch.txt",
         ]);

@@ -202,10 +202,15 @@ For code paths that do not start from RFC 7951 JSON, use:
 - `TacacsPlusServerBuilder::with_shared_secret(...) -> TacacsPlusServerBuilder`
 - `TacacsPlusServerBuilder::with_tls_client_certificate(...) -> TacacsPlusServerBuilder`
 - `TacacsPlusServerBuilder::with_tls13_epsk(...) -> TacacsPlusServerBuilder`
+- `TacacsPlusServerBuilder::with_tls13_epsk_with_psk_dhe_groups(...) -> TacacsPlusServerBuilder`
+- `TacacsPlusServerBuilder::with_tls13_epsk_psk_only(...) -> TacacsPlusServerBuilder`
 - `TacacsPlusServerBuilder::with_tls_server_authentication() -> TacacsPlusServerBuilder`
 - `TacacsPlusServerBuilder::build() -> TacacsPlusServer`
 
 This is the supported way to create `TacacsPlusServer` values in application code without manually repeating the crate's default field setup.
+`with_tls13_epsk(...)` uses PSK-DHE by default with preferred groups
+`secp384r1,secp256r1`; use `with_tls13_epsk_psk_only(...)` only for
+interoperability with peers that cannot negotiate PSK-DHE.
 
 ### 2) Advanced: Generated YANG model and pipeline API
 

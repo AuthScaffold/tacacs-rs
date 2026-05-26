@@ -43,6 +43,10 @@ tacon --server-addr <HOST:PORT> [OPTIONS] <COMMAND>
 | `--use-tls` | Enable TLS 1.3 for the connection |
 | `--client-certificate <FILE>` | Path to a PEM- or DER-encoded client certificate for TLS authentication |
 | `--client-key <FILE>` | Path to a PEM- or DER-encoded client private key for TLS authentication |
+| `--psk-identity <IDENTITY>` | TLS 1.3 PSK identity sent during the handshake (requires the `psk` feature) |
+| `--psk-key <KEY>` | TLS 1.3 pre-shared key material (requires the `psk` feature) |
+| `--psk-key-exchange <psk-dhe\|psk-only>` | Select PSK-DHE or explicit PSK-only interoperability mode |
+| `--psk-key-exchange-groups <GROUPS>` | Comma-separated PSK-DHE supported groups in preferred order |
 | `-v, --verbose` | Increase verbosity (`-v` warn, `-vv` info, `-vvv` debug, `-vvvv` trace) |
 
 ### TLS Client Certificates and Keys
@@ -53,6 +57,18 @@ When `--use-tls` is set, `--client-certificate` and `--client-key` let `tacon` p
 - Both files may be PEM or DER. PEM input is detected at runtime and normalized to DER internally before `tacon` builds its runtime connection settings.
 - Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags; provide PEM or DER certificate/key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If you load TLS material through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
+
+### TLS 1.3 PSK
+
+When built with the `psk` feature, `--psk-identity` and `--psk-key` select TLS
+1.3 PSK authentication. The default key-exchange mode is PSK-DHE with the
+preferred group order `secp384r1,secp256r1`.
+
+Use `--psk-key-exchange-groups` to constrain the PSK-DHE groups offered in
+ClientHello. Supplying groups implies PSK-DHE mode. Use
+`--psk-key-exchange psk-only` only when an interoperability peer cannot
+negotiate PSK-DHE; PSK-only mode cannot be combined with
+`--psk-key-exchange-groups`.
 
 ### Commands
 
@@ -157,6 +173,36 @@ tacon \
     --use-tls \
     --client-certificate /path/to/client.crt.der \
     --client-key /path/to/client.key.der \
+    --user testuser \
+    --port tty1 \
+    --rem-addr 192.168.1.100 \
+    accounting "show interfaces"
+```
+
+#### Using TLS 1.3 PSK-DHE
+
+```bash
+tacon \
+    --server-addr tacacsserver.local:449 \
+    --use-tls \
+    --psk-identity client@example.com \
+    --psk-key "$TACACS_TLS_PSK" \
+    --psk-key-exchange-groups secp384r1,secp256r1 \
+    --user testuser \
+    --port tty1 \
+    --rem-addr 192.168.1.100 \
+    accounting "show interfaces"
+```
+
+For PSK-only interoperability mode:
+
+```bash
+tacon \
+    --server-addr legacy-tacacs.example.com:449 \
+    --use-tls \
+    --psk-identity client@example.com \
+    --psk-key "$TACACS_TLS_PSK" \
+    --psk-key-exchange psk-only \
     --user testuser \
     --port tty1 \
     --rem-addr 192.168.1.100 \

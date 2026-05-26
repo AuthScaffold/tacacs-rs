@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::{ArgGroup, Parser};
+#[cfg(feature = "psk")]
+use clap::ValueEnum;
 use futures_util::StreamExt;
 use tacacsrs_agent::{ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
@@ -17,6 +19,58 @@ use tacacsrs_config::{
 use tacacsrs_datastore::{ConfigDatastore, StaticDatastore};
 use tacacsrs_networking::helpers::{normalize_cli_certificate_data, normalize_cli_private_key_data};
 use tacacsrs_sonic::{SonicConfigDb, SonicConnection, DEFAULT_REDIS_URL};
+
+#[cfg(feature = "psk")]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+enum PskKeyExchange {
+    /// Use TLS 1.3 PSK with ephemeral (EC)DHE key exchange.
+    #[value(name = "psk-dhe")]
+    PskDhe,
+
+    /// Use TLS 1.3 PSK-only key exchange for interoperability.
+    #[value(name = "psk-only")]
+    PskOnly,
+}
+
+#[cfg(feature = "psk")]
+#[derive(Debug, Clone, Eq, PartialEq, ValueEnum)]
+enum PskDheKeGroup {
+    /// X25519 elliptic curve group.
+    #[value(name = "x25519")]
+    X25519,
+
+    /// NIST P-256 elliptic curve group.
+    #[value(name = "secp256r1")]
+    Secp256r1,
+
+    /// NIST P-384 elliptic curve group.
+    #[value(name = "secp384r1")]
+    Secp384r1,
+
+    /// NIST P-521 elliptic curve group.
+    #[value(name = "secp521r1")]
+    Secp521r1,
+
+    /// Finite field Diffie-Hellman group ffdhe2048.
+    #[value(name = "ffdhe2048")]
+    Ffdhe2048,
+
+    /// Finite field Diffie-Hellman group ffdhe3072.
+    #[value(name = "ffdhe3072")]
+    Ffdhe3072,
+
+    /// Finite field Diffie-Hellman group ffdhe4096.
+    #[value(name = "ffdhe4096")]
+    Ffdhe4096,
+
+    /// Finite field Diffie-Hellman group ffdhe6144.
+    #[value(name = "ffdhe6144")]
+    Ffdhe6144,
+
+    /// Finite field Diffie-Hellman group ffdhe8192.
+    #[value(name = "ffdhe8192")]
+    Ffdhe8192,
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
@@ -104,6 +158,16 @@ struct Cli {
     #[cfg(feature = "psk")]
     #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key"])]
     psk_key: Option<String>,
+
+    /// TLS 1.3 PSK key-exchange mode.
+    #[cfg(feature = "psk")]
+    #[arg(long, value_enum, requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
+    psk_key_exchange: Option<PskKeyExchange>,
+
+    /// Comma-separated TLS 1.3 PSK-DHE groups in preferred order.
+    #[cfg(feature = "psk")]
+    #[arg(long, value_enum, value_delimiter = ',', requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
+    psk_key_exchange_groups: Vec<PskDheKeGroup>,
 }
 
 #[cfg(unix)]
@@ -149,12 +213,39 @@ fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
         if let (Some(psk_identity), Some(psk_key)) =
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
         {
+            if matches!(cli.psk_key_exchange, Some(PskKeyExchange::PskOnly))
+                && !cli.psk_key_exchange_groups.is_empty()
+            {
+                anyhow::bail!(
+                    "--psk-key-exchange psk-only cannot be combined with --psk-key-exchange-groups; remove the groups or use --psk-key-exchange psk-dhe"
+                );
+            }
+
             cli.server_addresses
                 .iter()
                 .enumerate()
                 .map(|(i, addr)| {
-                    base_server_builder_from_address(addr, i, timeout)
-                        .with_tls13_epsk(psk_identity.clone(), psk_key.as_bytes().to_vec())
+                    let builder = base_server_builder_from_address(addr, i, timeout);
+                    match cli.psk_key_exchange {
+                        Some(PskKeyExchange::PskOnly) => builder.with_tls13_epsk_psk_only(
+                            psk_identity.clone(),
+                            psk_key.as_bytes().to_vec(),
+                        ),
+                        Some(PskKeyExchange::PskDhe) | None
+                            if !cli.psk_key_exchange_groups.is_empty() =>
+                        {
+                            builder.with_tls13_epsk_with_psk_dhe_groups(
+                                psk_identity.clone(),
+                                psk_key.as_bytes().to_vec(),
+                                cli.psk_key_exchange_groups
+                                    .iter()
+                                    .map(psk_dhe_ke_group_from_cli)
+                                    .collect(),
+                            )
+                        }
+                        Some(PskKeyExchange::PskDhe) | None => builder
+                            .with_tls13_epsk(psk_identity.clone(), psk_key.as_bytes().to_vec()),
+                    }
                 })
                 .collect()
         } else {
@@ -241,6 +332,23 @@ fn base_server_builder_from_address(
 
     TacacsPlusServerBuilder::new(format!("server-{index}"), TacacsPlusServerType::all(), host, port)
         .with_timeout(timeout)
+}
+
+#[cfg(feature = "psk")]
+const fn psk_dhe_ke_group_from_cli(
+    group: &PskDheKeGroup,
+) -> tacacsrs_config::PskDheKeSupportedGroup {
+    match group {
+        PskDheKeGroup::X25519 => tacacsrs_config::PskDheKeSupportedGroup::X25519,
+        PskDheKeGroup::Secp256r1 => tacacsrs_config::PskDheKeSupportedGroup::Secp256r1,
+        PskDheKeGroup::Secp384r1 => tacacsrs_config::PskDheKeSupportedGroup::Secp384r1,
+        PskDheKeGroup::Secp521r1 => tacacsrs_config::PskDheKeSupportedGroup::Secp521r1,
+        PskDheKeGroup::Ffdhe2048 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe2048,
+        PskDheKeGroup::Ffdhe3072 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe3072,
+        PskDheKeGroup::Ffdhe4096 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe4096,
+        PskDheKeGroup::Ffdhe6144 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe6144,
+        PskDheKeGroup::Ffdhe8192 => tacacsrs_config::PskDheKeSupportedGroup::Ffdhe8192,
+    }
 }
 
 fn tacacs_plus_from_config(path: &std::path::Path) -> anyhow::Result<TacacsPlus> {
@@ -387,6 +495,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{tacacs_plus_from_cli, tacacs_plus_from_config, Cli};
+    #[cfg(feature = "psk")]
+    use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::crypto_types::PrivateKeyFormat;
 
     fn sample_path(file_name: &str) -> PathBuf {
@@ -489,5 +599,101 @@ mod tests {
         assert_eq!(inline.cert_data.as_deref(), Some(expected_cert_der.as_slice()));
         assert_eq!(inline.cleartext_private_key.as_deref(), Some(expected_key_der.as_slice()));
         assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat));
+    }
+
+    #[cfg(feature = "psk")]
+    fn tls13_epsk_groups(cli: Cli) -> Vec<PskDheKeSupportedGroup> {
+        let mut root = tacacs_plus_from_cli(&cli).expect("PSK config should build");
+        root.server
+            .remove(0)
+            .client_identity
+            .expect("client identity")
+            .tls13_epsk
+            .expect("tls13 epsk")
+            .psk_dhe_ke_groups
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn tacacs_plus_from_cli_defaults_psk_to_dhe_groups() {
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+        ]);
+
+        let groups = tls13_epsk_groups(cli);
+
+        assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::Secp384r1)));
+        assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp256r1)));
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn tacacs_plus_from_cli_allows_psk_only_mode() {
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange",
+            "psk-only",
+        ]);
+
+        assert!(tls13_epsk_groups(cli).is_empty());
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn tacacs_plus_from_cli_uses_custom_psk_dhe_groups() {
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange-groups",
+            "secp256r1,x25519",
+        ]);
+
+        let groups = tls13_epsk_groups(cli);
+
+        assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::Secp256r1)));
+        assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::X25519)));
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn tacacs_plus_from_cli_rejects_psk_only_with_groups() {
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange",
+            "psk-only",
+            "--psk-key-exchange-groups",
+            "secp384r1",
+        ]);
+
+        let error = tacacs_plus_from_cli(&cli).expect_err("PSK-only plus groups should fail");
+        assert!(error.to_string().contains("--psk-key-exchange psk-only"));
+        assert!(error.to_string().contains("--psk-key-exchange-groups"));
     }
 }
