@@ -13,11 +13,14 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
+    AuthorizationOperation, AuthorizationOperationResponse, AuthorizationResponseStatus,
 };
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tokio::sync::{Mutex, Notify};
 
-use crate::upstream::{DedicatedAccountingResult, UpstreamConnection, UpstreamConnector};
+use crate::upstream::{
+    DedicatedAccountingResult, DedicatedAuthorizationResult, UpstreamConnection, UpstreamConnector,
+};
 use tacacsrs_networking::SingleConnectionState;
 
 // ---------------------------------------------------------------------------
@@ -62,6 +65,24 @@ impl UpstreamConnection for FakeConnection {
             server: self.address.clone(),
             status: AccountingResponseStatus::Success,
             server_message: format!("handled by {}", self.address),
+            data: String::new(),
+        })
+    }
+
+    async fn send_authorization(
+        &self,
+        _request: &AuthorizationOperation,
+    ) -> anyhow::Result<AuthorizationOperationResponse> {
+        if self.fail_next_request.swap(false, Ordering::Relaxed) {
+            self.usable.store(false, Ordering::Relaxed);
+            anyhow::bail!("simulated failure from {}", self.address);
+        }
+
+        Ok(AuthorizationOperationResponse {
+            server: self.address.clone(),
+            status: AuthorizationResponseStatus::PassAdd,
+            server_message: format!("authorized by {}", self.address),
+            args: Vec::new(),
             data: String::new(),
         })
     }
@@ -154,6 +175,21 @@ impl UpstreamConnector for FakeConnector {
             single_connect_supported: supported,
         })
     }
+
+    async fn send_authorization_dedicated(
+        &self,
+        server: &TacacsPlusServer,
+        request: &AuthorizationOperation,
+    ) -> anyhow::Result<DedicatedAuthorizationResult> {
+        let connection = self.connect(server).await?;
+        let response = connection.send_authorization(request).await?;
+        let supported =
+            connection.single_connection_state().await == SingleConnectionState::Supported;
+        Ok(DedicatedAuthorizationResult {
+            response,
+            single_connect_supported: supported,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +233,20 @@ impl UpstreamConnection for SingleSessionConnection {
             data: String::new(),
         })
     }
+
+    async fn send_authorization(
+        &self,
+        _request: &AuthorizationOperation,
+    ) -> anyhow::Result<AuthorizationOperationResponse> {
+        self.usable.store(false, Ordering::Relaxed);
+        Ok(AuthorizationOperationResponse {
+            server: self.address.clone(),
+            status: AuthorizationResponseStatus::PassAdd,
+            server_message: "single-session upstream".to_owned(),
+            args: Vec::new(),
+            data: String::new(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -230,6 +280,21 @@ impl UpstreamConnector for SingleSessionConnector {
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
         Ok(DedicatedAccountingResult {
+            response,
+            single_connect_supported: supported,
+        })
+    }
+
+    async fn send_authorization_dedicated(
+        &self,
+        server: &TacacsPlusServer,
+        request: &AuthorizationOperation,
+    ) -> anyhow::Result<DedicatedAuthorizationResult> {
+        let connection = self.connect(server).await?;
+        let response = connection.send_authorization(request).await?;
+        let supported =
+            connection.single_connection_state().await == SingleConnectionState::Supported;
+        Ok(DedicatedAuthorizationResult {
             response,
             single_connect_supported: supported,
         })
@@ -273,6 +338,20 @@ impl UpstreamConnection for BlockingConnection {
             data: String::new(),
         })
     }
+
+    async fn send_authorization(
+        &self,
+        _request: &AuthorizationOperation,
+    ) -> anyhow::Result<AuthorizationOperationResponse> {
+        self.release.notified().await;
+        Ok(AuthorizationOperationResponse {
+            server: self.address.clone(),
+            status: AuthorizationResponseStatus::PassAdd,
+            server_message: String::new(),
+            args: Vec::new(),
+            data: String::new(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -299,6 +378,21 @@ impl UpstreamConnector for BlockingConnector {
         let supported =
             connection.single_connection_state().await == SingleConnectionState::Supported;
         Ok(DedicatedAccountingResult {
+            response,
+            single_connect_supported: supported,
+        })
+    }
+
+    async fn send_authorization_dedicated(
+        &self,
+        server: &TacacsPlusServer,
+        request: &AuthorizationOperation,
+    ) -> anyhow::Result<DedicatedAuthorizationResult> {
+        let connection = self.connect(server).await?;
+        let response = connection.send_authorization(request).await?;
+        let supported =
+            connection.single_connection_state().await == SingleConnectionState::Supported;
+        Ok(DedicatedAuthorizationResult {
             response,
             single_connect_supported: supported,
         })
@@ -349,6 +443,22 @@ impl UpstreamConnection for ExclusiveSessionConnection {
             data: String::new(),
         })
     }
+
+    async fn send_authorization(
+        &self,
+        _request: &AuthorizationOperation,
+    ) -> anyhow::Result<AuthorizationOperationResponse> {
+        if self.session_claimed.swap(true, Ordering::Relaxed) {
+            anyhow::bail!("Connection is not accepting new sessions");
+        }
+        Ok(AuthorizationOperationResponse {
+            server: self.address.clone(),
+            status: AuthorizationResponseStatus::PassAdd,
+            server_message: "exclusive-session upstream".to_owned(),
+            args: Vec::new(),
+            data: String::new(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -386,6 +496,21 @@ impl UpstreamConnector for ExclusiveSessionConnector {
             single_connect_supported: supported,
         })
     }
+
+    async fn send_authorization_dedicated(
+        &self,
+        server: &TacacsPlusServer,
+        request: &AuthorizationOperation,
+    ) -> anyhow::Result<DedicatedAuthorizationResult> {
+        let connection = self.connect(server).await?;
+        let response = connection.send_authorization(request).await?;
+        let supported =
+            connection.single_connection_state().await == SingleConnectionState::Supported;
+        Ok(DedicatedAuthorizationResult {
+            response,
+            single_connect_supported: supported,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,4 +525,15 @@ pub(super) fn build_request() -> AccountingOperation {
         command: "show".to_owned(),
         command_arguments: vec!["users".to_owned()],
     }
+}
+
+pub(super) fn build_authorization_request() -> AuthorizationOperation {
+    AuthorizationOperation::builder("admin", 15)
+        .port("tty0")
+        .remote_address("127.0.0.1")
+        .service("shell")
+        .command("show")
+        .command_arg("users")
+        .build()
+        .expect("test authorization request is valid")
 }

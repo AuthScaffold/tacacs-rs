@@ -15,8 +15,11 @@ use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use tacacsrs_flow_abstractions::accounting::{build_accounting_packet, parse_accounting_reply};
+use tacacsrs_flow_abstractions::authorization::{build_authorization_packet, parse_authorization_reply};
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_messages::authorization::reply::AuthorizationReply;
+use tacacsrs_messages::authorization::request::AuthorizationRequest;
 use tacacsrs_messages::enumerations::{TacacsFlags, TacacsType};
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 
@@ -30,6 +33,16 @@ use crate::transport::Transport;
 pub struct ExchangeResult {
     /// The accounting reply from the server.
     pub reply: AccountingReply,
+    /// Whether the server indicated support for single-connection mode
+    /// by echoing `TAC_PLUS_SINGLE_CONNECT_FLAG` in its response.
+    pub single_connect_supported: bool,
+}
+
+/// The result of a one-shot TACACS+ authorization exchange.
+#[derive(Debug)]
+pub struct AuthorizationExchangeResult {
+    /// The authorization reply from the server.
+    pub reply: AuthorizationReply,
     /// Whether the server indicated support for single-connection mode
     /// by echoing `TAC_PLUS_SINGLE_CONNECT_FLAG` in its response.
     pub single_connect_supported: bool,
@@ -151,6 +164,58 @@ where
             parse_accounting_reply(&response).context("failed to parse accounting reply")?;
 
         Ok(ExchangeResult {
+            reply,
+            single_connect_supported,
+        })
+    }
+
+    /// Sends a TACACS+ authorization request and returns the server's reply
+    /// together with its single-connection negotiation result.
+    ///
+    /// The outgoing packet always includes `TAC_PLUS_SINGLE_CONNECT_FLAG`.
+    /// If the server echoes the flag in its response, the caller knows it
+    /// can switch to a shared multiplexed connection for future requests.
+    /// # Errors
+    /// Returns an error if the exchange fails (write, read, header mismatch, or parse failure).
+    pub async fn send_authorization(
+        &mut self,
+        request: AuthorizationRequest,
+        custom_flags: TacacsFlags,
+    ) -> anyhow::Result<AuthorizationExchangeResult> {
+        let session_id: u32 = (self.session_id_fn)();
+        let packet = build_authorization_packet(
+            session_id,
+            1,
+            &request,
+            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG | custom_flags,
+        )?;
+
+        let response = self
+            .exchange(packet)
+            .await
+            .context("TACACS+ authorization exchange failed")?;
+
+        let header = response.header();
+        if header.session_id != session_id
+            || header.seq_no != 2
+            || header.tacacs_type != TacacsType::TacPlusAuthorisation
+        {
+            anyhow::bail!(
+                "unexpected TACACS+ authorization response header: session_id={:#x}, seq_no={}, type={:?}",
+                header.session_id,
+                header.seq_no,
+                header.tacacs_type,
+            );
+        }
+
+        let single_connect_supported = header
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
+
+        let reply =
+            parse_authorization_reply(&response).context("failed to parse authorization reply")?;
+
+        Ok(AuthorizationExchangeResult {
             reply,
             single_connect_supported,
         })

@@ -23,7 +23,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::bail;
-use tacacsrs_agent_client::{AccountingOperation, AccountingOperationResponse, ServiceError};
+use tacacsrs_agent_client::{
+    AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
+    AuthorizationOperationResponse, ServiceError,
+};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_networking::SingleConnectionState;
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -321,6 +324,33 @@ impl ServiceState {
             .await
     }
 
+    /// Executes one IPC authorization RPC against the currently selected
+    /// upstream TACACS+ server.
+    ///
+    /// Authorization follows the same connection strategy and failover model as
+    /// accounting: dedicated one-shot connections are used until a server proves
+    /// single-connection support, after which requests reuse the cached shared
+    /// connection.
+    pub(super) async fn execute_authorization_request(
+        &self,
+        request: AuthorizationOperation,
+    ) -> Result<AuthorizationOperationResponse, ServiceError> {
+        let _client_guard = self.client_tracker.start_guard();
+        let active_index = *self.active_index.read().await;
+
+        if self.servers[active_index]
+            .single_connection_supported
+            .load(Ordering::Relaxed)
+        {
+            return self
+                .execute_authorization_on_shared_connection(&request)
+                .await;
+        }
+
+        self.execute_authorization_with_dedicated_connection(active_index, &request)
+            .await
+    }
+
     /// Executes a request over the shared cached connection (single-connection
     /// mode).
     ///
@@ -384,6 +414,64 @@ impl ServiceState {
         }
     }
 
+    /// Executes an authorization request over the shared cached connection
+    /// (single-connection mode).
+    async fn execute_authorization_on_shared_connection(
+        &self,
+        request: &AuthorizationOperation,
+    ) -> Result<AuthorizationOperationResponse, ServiceError> {
+        let bound_server = self.bind_server_for_new_session().await.map_err(|error| {
+            log::warn!("Failed to bind IPC request to an upstream server: {error:#}");
+            ServiceError::new(error.to_string()).retriable(true)
+        })?;
+
+        log::debug!(
+            "Executing authorization request via {} (server index {}, shared connection)",
+            bound_server.connection.server_address(),
+            bound_server.index,
+        );
+
+        match bound_server.connection.send_authorization(request).await {
+            Ok(response) => {
+                self.check_single_connection_negotiation(
+                    bound_server.index,
+                    &*bound_server.connection,
+                )
+                .await;
+                Ok(response)
+            }
+            Err(error) => {
+                if !bound_server.connection.is_usable_for_new_sessions().await {
+                    log::info!(
+                        "Shared connection to {} no longer usable; \
+                         falling back to a dedicated connection",
+                        self.servers[bound_server.index].server.socket_address(),
+                    );
+                    self.check_single_connection_negotiation(
+                        bound_server.index,
+                        &*bound_server.connection,
+                    )
+                    .await;
+                    return self
+                        .execute_authorization_with_dedicated_connection(
+                            bound_server.index,
+                            request,
+                        )
+                        .await;
+                }
+
+                log::warn!(
+                    "Authorization request failed on {}: {error:#}",
+                    bound_server.connection.server_address(),
+                );
+                self.note_failure(bound_server.index).await;
+                Err(ServiceError::new(error.to_string())
+                    .with_server(bound_server.connection.server_address())
+                    .retriable(true))
+            }
+        }
+    }
+
     /// Sends a single accounting request over a dedicated one-shot TCP
     /// connection (no background tasks, no session multiplexing).
     ///
@@ -421,6 +509,44 @@ impl ServiceState {
             }
             Err(error) => {
                 log::warn!("Dedicated accounting request to {address} failed: {error:#}");
+                self.note_failure(index).await;
+                Err(ServiceError::new(error.to_string())
+                    .with_server(&address)
+                    .retriable(true))
+            }
+        }
+    }
+
+    /// Sends a single authorization request over a dedicated one-shot TCP
+    /// connection (no background tasks, no session multiplexing).
+    async fn execute_authorization_with_dedicated_connection(
+        &self,
+        index: usize,
+        request: &AuthorizationOperation,
+    ) -> Result<AuthorizationOperationResponse, ServiceError> {
+        let address = self.servers[index].server.socket_address();
+        log::debug!("Sending dedicated authorization request to {address}");
+
+        match self
+            .connector
+            .send_authorization_dedicated(&self.servers[index].server, request)
+            .await
+        {
+            Ok(result) => {
+                if result.single_connect_supported
+                    && !self.servers[index]
+                        .single_connection_supported
+                        .swap(true, Ordering::Relaxed)
+                {
+                    log::info!(
+                        "Server {address} supports single-connection mode; \
+                         switching to shared connections for future requests",
+                    );
+                }
+                Ok(result.response)
+            }
+            Err(error) => {
+                log::warn!("Dedicated authorization request to {address} failed: {error:#}");
                 self.note_failure(index).await;
                 Err(ServiceError::new(error.to_string())
                     .with_server(&address)
@@ -672,7 +798,7 @@ mod tests {
     use super::ServiceState;
     use super::super::test_support::{
         BlockingConnection, BlockingConnector, ExclusiveSessionConnector, FakeConnection,
-        FakeConnector, SingleSessionConnector, build_request,
+        FakeConnector, SingleSessionConnector, build_authorization_request, build_request,
     };
     use crate::upstream::UpstreamConnector;
 
@@ -1067,5 +1193,71 @@ mod tests {
             2,
             "Shared path should reuse the cached connection (no additional connects)"
         );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    async fn test_authorization_request_uses_configured_upstream_server() {
+        let connection = Arc::new(FakeConnection {
+            address: "server:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            "server:49".to_owned(),
+            Arc::clone(&connection),
+        )])));
+
+        let state = ServiceState::new(
+            vec![test_server("server:49")],
+            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(200),
+        );
+
+        let response = state
+            .execute_authorization_request(build_authorization_request())
+            .await
+            .unwrap();
+
+        assert_eq!(response.server, "server:49");
+        assert_eq!(connector.connect_attempts_for("server:49").await, 1);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    async fn test_authorization_failure_returns_service_error_and_fails_over() {
+        let primary = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(true),
+        });
+        let secondary = Arc::new(FakeConnection {
+            address: "secondary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([
+            ("primary:49".to_owned(), Arc::clone(&primary)),
+            ("secondary:49".to_owned(), Arc::clone(&secondary)),
+        ])));
+
+        let state = ServiceState::new(
+            vec![test_server("primary:49"), test_server("secondary:49")],
+            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(200),
+        );
+
+        let error = state
+            .execute_authorization_request(build_authorization_request())
+            .await
+            .unwrap_err();
+        assert_eq!(error.server.as_deref(), Some("primary:49"));
+        assert!(error.retriable);
+
+        let response = state
+            .execute_authorization_request(build_authorization_request())
+            .await
+            .unwrap();
+        assert_eq!(response.server, "secondary:49");
     }
 }

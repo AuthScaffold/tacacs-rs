@@ -32,13 +32,16 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_flows::accounting::AccountingFlow;
+use tacacsrs_flows::authorization::AuthorizationFlow;
 use tacacsrs_messages::accounting::request::AccountingRequest;
+use tacacsrs_messages::authorization::request::AuthorizationRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
-    TacacsAuthenticationService, TacacsAuthenticationType, TacacsFlags,
+    TacacsAuthenticationService, TacacsAuthenticationType, TacacsAuthorizationStatus, TacacsFlags,
 };
 use tacacsrs_agent_client::{
-    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
+    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus, AuthorizationArg,
+    AuthorizationOperation, AuthorizationOperationResponse, AuthorizationResponseStatus,
 };
 use tacacsrs_networking::SingleConnectionState;
 use tacacsrs_networking::config_connect::{self, ConnectOptions};
@@ -82,6 +85,17 @@ pub(crate) trait UpstreamConnection: Send + Sync {
         &self,
         request: &AccountingOperation,
     ) -> anyhow::Result<AccountingOperationResponse>;
+
+    /// Sends one authorization request and returns the server's reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session cannot be created or the authorization
+    /// exchange fails at the TACACS+ protocol level.
+    async fn send_authorization(
+        &self,
+        request: &AuthorizationOperation,
+    ) -> anyhow::Result<AuthorizationOperationResponse>;
 }
 
 #[async_trait]
@@ -113,12 +127,32 @@ pub(crate) trait UpstreamConnector: Send + Sync {
         server: &TacacsPlusServer,
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult>;
+
+    /// Sends a single authorization request over a dedicated one-shot connection.
+    ///
+    /// Opens a TCP connection, sends one TACACS+ packet, reads one response,
+    /// and closes the connection.  No background tasks, no session
+    /// multiplexing.  The outgoing packet includes the single-connect flag
+    /// so the server's response reveals whether it supports multiplexing.
+    async fn send_authorization_dedicated(
+        &self,
+        server: &TacacsPlusServer,
+        request: &AuthorizationOperation,
+    ) -> anyhow::Result<DedicatedAuthorizationResult>;
 }
 
 /// Result of a one-shot accounting request sent via [`DedicatedConnection`].
 pub(crate) struct DedicatedAccountingResult {
     /// The accounting response mapped to domain types.
     pub response: AccountingOperationResponse,
+    /// Whether the server indicated support for single-connection mode.
+    pub single_connect_supported: bool,
+}
+
+/// Result of a one-shot authorization request sent via [`DedicatedConnection`].
+pub(crate) struct DedicatedAuthorizationResult {
+    /// The authorization response mapped to domain types.
+    pub response: AuthorizationOperationResponse,
     /// Whether the server indicated support for single-connection mode.
     pub single_connect_supported: bool,
 }
@@ -153,6 +187,14 @@ impl UpstreamConnector for NetworkUpstreamConnector {
         request: &AccountingOperation,
     ) -> anyhow::Result<DedicatedAccountingResult> {
         send_dedicated_accounting(server, self.disable_certificate_verification, request).await
+    }
+
+    async fn send_authorization_dedicated(
+        &self,
+        server: &TacacsPlusServer,
+        request: &AuthorizationOperation,
+    ) -> anyhow::Result<DedicatedAuthorizationResult> {
+        send_dedicated_authorization(server, self.disable_certificate_verification, request).await
     }
 }
 
@@ -232,6 +274,59 @@ impl UpstreamConnection for TacacsUpstreamConnection {
             data: response.data,
         })
     }
+
+    async fn send_authorization(
+        &self,
+        request: &AuthorizationOperation,
+    ) -> anyhow::Result<AuthorizationOperationResponse> {
+        log::debug!(
+            "Creating TACACS+ session on {} for authorization request (user={}, service={}, cmd={})",
+            self.server_address,
+            request.user,
+            request.service().unwrap_or("<missing>"),
+            request.command().unwrap_or("<missing>"),
+        );
+
+        let session = self
+            .connection
+            .create_session()
+            .await
+            .with_context(|| format!("Failed to create session on {}", self.server_address))?;
+
+        let response = session
+            .send_authorization_request(build_authorization_request(request)?)
+            .await;
+
+        match &response {
+            Ok(resp) => {
+                log::debug!(
+                    "Authorization response from {}: status={:?}, server_msg={}",
+                    self.server_address,
+                    resp.status,
+                    if resp.server_msg.is_empty() {
+                        "(empty)"
+                    } else {
+                        &resp.server_msg
+                    },
+                );
+            }
+            Err(error) => {
+                log::warn!("Authorization request to {} failed: {error:#}", self.server_address);
+            }
+        }
+
+        let response = response.with_context(|| {
+            format!("Failed to send authorization request via {}", self.server_address)
+        })?;
+
+        Ok(AuthorizationOperationResponse {
+            server: self.server_address.clone(),
+            status: authorization_status(response.status),
+            server_message: response.server_msg,
+            args: parse_authorization_args(response.args)?,
+            data: response.data,
+        })
+    }
 }
 
 /// Maps a TACACS+ protocol accounting status to the domain enum.
@@ -269,6 +364,51 @@ fn build_accounting_args(command: &str, command_arguments: &[String]) -> Vec<Str
     let base_args = ["service=shell".to_owned(), format!("cmd={command}")];
     let extra_args = command_arguments.iter().map(|arg| format!("cmd-arg={arg}"));
     base_args.into_iter().chain(extra_args).collect()
+}
+
+/// Maps a TACACS+ protocol authorization status to the domain enum.
+const fn authorization_status(status: TacacsAuthorizationStatus) -> AuthorizationResponseStatus {
+    match status {
+        TacacsAuthorizationStatus::TacPlusPassAdd => AuthorizationResponseStatus::PassAdd,
+        TacacsAuthorizationStatus::TacPlusPassRepl => AuthorizationResponseStatus::PassRepl,
+        TacacsAuthorizationStatus::TacPlusFail => AuthorizationResponseStatus::Fail,
+        TacacsAuthorizationStatus::TacPlusError => AuthorizationResponseStatus::Error,
+        TacacsAuthorizationStatus::TacPlusFollow => AuthorizationResponseStatus::Follow,
+    }
+}
+
+/// Converts a domain [`AuthorizationOperation`] into a TACACS+ authorization
+/// request message with service-level authentication context defaults.
+fn build_authorization_request(
+    request: &AuthorizationOperation,
+) -> anyhow::Result<AuthorizationRequest> {
+    let priv_lvl = u8::try_from(request.privilege_level)
+        .context("authorization privilege level exceeds TACACS+ u8 field")?;
+    Ok(AuthorizationRequest {
+        authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus,
+        priv_lvl,
+        authen_type: TacacsAuthenticationType::TacPlusAuthenTypeAscii,
+        authen_service: TacacsAuthenticationService::TacPlusAuthenSvcLogin,
+        user: request.user.clone(),
+        port: request.port.clone(),
+        rem_address: request.remote_address.clone(),
+        args: request.args.iter().map(format_authorization_arg).collect(),
+    })
+}
+
+fn format_authorization_arg(arg: &AuthorizationArg) -> String {
+    let separator = if arg.mandatory {
+        '='
+    } else {
+        '*'
+    };
+    format!("{}{separator}{}", arg.name, arg.value)
+}
+
+fn parse_authorization_args(args: Vec<String>) -> anyhow::Result<Vec<AuthorizationArg>> {
+    args.into_iter()
+        .map(|arg| AuthorizationArg::parse(&arg))
+        .collect()
 }
 
 /// Establishes a new TCP (or TLS/PSK) connection to an upstream TACACS+ server.
@@ -375,6 +515,48 @@ async fn send_dedicated_accounting(
     Ok(exchange)
 }
 
+/// Sends a single authorization request over a [`DedicatedConnection`] — one
+/// TCP connection, one packet out, one packet back, no background tasks.
+async fn send_dedicated_authorization(
+    server: &TacacsPlusServer,
+    disable_certificate_verification: bool,
+    request: &AuthorizationOperation,
+) -> anyhow::Result<DedicatedAuthorizationResult> {
+    let address = server.socket_address();
+    let timeout_duration = server.timeout_duration();
+
+    let security_label = security_label(server);
+    log::debug!(
+        "Dedicated authorization request to {address} (security: {security_label}, timeout: {timeout_duration:?})",
+    );
+
+    let options = ConnectOptions {
+        disable_certificate_verification,
+        timeout: Some(timeout_duration),
+    };
+
+    let stream = config_connect::establish_stream(server, &options)
+        .await
+        .with_context(|| format!("Failed to connect to {address}"))?;
+
+    let tacacs_request = build_authorization_request(request)?;
+    let obfuscation_key = server.obfuscation_key();
+    let mut conn = DedicatedConnection::new(stream, obfuscation_key.as_deref());
+
+    let exchange = conn
+        .send_authorization(tacacs_request, TacacsFlags::empty())
+        .await
+        .and_then(|ex| to_dedicated_authorization_result(&address, ex))?;
+
+    log::debug!(
+        "Dedicated authorization response from {address}: status={:?}, single_connect={}",
+        exchange.response.status,
+        exchange.single_connect_supported,
+    );
+
+    Ok(exchange)
+}
+
 fn security_label(server: &TacacsPlusServer) -> &'static str {
     if server.is_tls() {
         "tls"
@@ -398,6 +580,22 @@ fn to_dedicated_result(
         },
         single_connect_supported: exchange.single_connect_supported,
     }
+}
+
+fn to_dedicated_authorization_result(
+    address: &str,
+    exchange: tacacsrs_networking::AuthorizationExchangeResult,
+) -> anyhow::Result<DedicatedAuthorizationResult> {
+    Ok(DedicatedAuthorizationResult {
+        response: AuthorizationOperationResponse {
+            server: address.to_owned(),
+            status: authorization_status(exchange.reply.status),
+            server_message: exchange.reply.server_msg,
+            args: parse_authorization_args(exchange.reply.args)?,
+            data: exchange.reply.data,
+        },
+        single_connect_supported: exchange.single_connect_supported,
+    })
 }
 
 #[cfg(test)]
@@ -430,6 +628,27 @@ mod tests {
         assert_eq!(request.user, "user");
         assert_eq!(request.port, "tty0");
         assert_eq!(request.rem_address, "127.0.0.1");
+        assert_eq!(request.args, vec!["service=shell", "cmd=show", "cmd-arg=users"]);
+    }
+
+    #[test]
+    fn test_build_authorization_request_maps_domain_fields() {
+        let request = build_authorization_request(
+            &AuthorizationOperation::builder("admin", 15)
+                .port("pts/1")
+                .remote_address("192.0.2.10")
+                .service("shell")
+                .command("show")
+                .command_arg("users")
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(request.user, "admin");
+        assert_eq!(request.port, "pts/1");
+        assert_eq!(request.rem_address, "192.0.2.10");
+        assert_eq!(request.priv_lvl, 15);
         assert_eq!(request.args, vec!["service=shell", "cmd=show", "cmd-arg=users"]);
     }
 }
