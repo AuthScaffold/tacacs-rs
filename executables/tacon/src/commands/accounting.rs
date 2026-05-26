@@ -13,7 +13,7 @@ use tacacsrs_networking::session::Session;
 ///
 /// # Arguments
 ///
-/// * `session` - The active TACACS+ session
+/// * `session` - The active TACACS+ session, consumed by this one accounting flow
 /// * `user` - Username executing the command
 /// * `port` - Port identifier (e.g., "tty0")
 /// * `rem_address` - Remote address of the client
@@ -24,7 +24,7 @@ use tacacsrs_networking::session::Session;
 ///
 /// The accounting reply from the server, or an error if the request failed.
 pub async fn send_accounting_request(
-    session: &Session,
+    session: Session,
     user: &str,
     port: &str,
     rem_address: &str,

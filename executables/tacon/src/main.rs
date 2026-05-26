@@ -38,7 +38,7 @@ fn init_logger(verbose: u8) {
 }
 
 /// Executes the requested TACACS+ command
-async fn execute_command(command: &Command, session: &Session) -> anyhow::Result<()> {
+async fn execute_command(command: &Command, session: Session) -> anyhow::Result<()> {
     log::info!("Executing command: {command:?}");
 
     match command {
@@ -214,7 +214,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         log::info!("Using custom session ID: {sid}");
     }
 
-    execute_command(&cli.command, &session).await
+    execute_command(&cli.command, session).await
 }
 
 /// Executes the command using a dedicated connection — a minimal one-shot
