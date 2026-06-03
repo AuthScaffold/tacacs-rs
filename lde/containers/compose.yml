@@ -1,13 +1,13 @@
 services:
   tacplus:
-    build: https://github.com/christian-becker/tac_plus-ng.git
+    build: https://github.com/christian-becker/tac_plus-ng.git#main
     image: 'tac_plus:ubuntu'
     restart: unless-stopped
     command: ["/usr/local/sbin/tac_plus-ng", "/usr/local/etc/tac_plus.cfg"]
     environment:
       - TZ=Australia/Brisbane
     ports:
-      - '49:49'
-      - '449:449'
+      - '4949:4949'
+      - '4449:4449'
     volumes:
       - ./config:/usr/local/etc/
