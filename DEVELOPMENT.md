@@ -285,6 +285,12 @@ The CI workflow also generates the same artifacts as the release workflow:
 
 These artifacts are uploaded and retained for 7 days, allowing for testing and validation before official releases.
 
+For CI, LDE, documentation, or other non-release changes that should not create
+new version tags, add a `norelease`, `no-release`, or `skip-release` label to
+the merged PR. You can also include `[norelease]`, `[no-release]`, or
+`[skip-release]` in the head commit message. Main branch CI still runs, but it
+skips release version injection, tag creation, and GitHub release publication.
+
 ### Release Workflow
 
 Triggered automatically when a version tag (`v*.*.*`) is pushed. Builds release binaries for:
