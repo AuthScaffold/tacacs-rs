@@ -1,5 +1,7 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 #[cfg(feature = "psk")]
+use clap::builder::TypedValueParser as _;
+#[cfg(feature = "psk")]
 use tacacsrs_config::PskDheKeSupportedGroup;
 
 /// Validation relaxation that loosens a specific YANG constraint.
@@ -30,6 +32,16 @@ pub enum PskKeyExchange {
     /// Use TLS 1.3 PSK-only key exchange for interoperability.
     #[value(name = "psk-only")]
     PskOnly,
+}
+
+#[cfg(feature = "psk")]
+fn psk_dhe_ke_supported_group_parser(
+) -> impl clap::builder::TypedValueParser<Value = PskDheKeSupportedGroup> + Clone {
+    clap::builder::PossibleValuesParser::new(PskDheKeSupportedGroup::ALLOWED_VALUES.iter().copied())
+        .map(|value| {
+            PskDheKeSupportedGroup::from_rfc7951_str(&value)
+                .expect("clap accepted only generated PSK-DHE group values")
+        })
 }
 
 /// TACACS+ Client CLI
@@ -110,7 +122,8 @@ pub struct Cli {
         long,
         value_delimiter = ',',
         value_name = "GROUP[,GROUP...]",
-        help = "Comma-separated TLS 1.3 PSK-DHE groups in preferred order (x25519, secp256r1, secp384r1, secp521r1, ffdhe2048, ffdhe3072, ffdhe4096, ffdhe6144, ffdhe8192)",
+        value_parser = psk_dhe_ke_supported_group_parser(),
+        help = "Comma-separated TLS 1.3 PSK-DHE groups in preferred order",
         requires_all = ["use_tls", "psk_identity", "psk_key"],
         conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"]
     )]
