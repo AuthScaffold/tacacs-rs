@@ -226,6 +226,18 @@ impl TacacsClient {
         self.create_session_after_shared_miss().await
     }
 
+    /// Stops the cached shared connection from accepting new sessions.
+    ///
+    /// Dedicated sessions are opened per operation and have no cached state to
+    /// drain. If a shared stream exists, it is removed from the cache and told
+    /// to reject future session creation while already-created sessions finish.
+    pub async fn stop_accepting_new_sessions(&self) {
+        let connection = self.shared_connection.write().await.take();
+        if let Some(connection) = connection {
+            connection.disable_new_sessions().await;
+        }
+    }
+
     async fn create_session_after_shared_miss(&self) -> anyhow::Result<ClientSession> {
         // Stage 3: the failed shared attempt may have changed client state. For
         // example, a graceful server shutdown becomes NotSupported, while a hard

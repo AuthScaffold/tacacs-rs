@@ -1,19 +1,30 @@
 #![doc = include_str!("../README.md")]
 
-/// Local listener, failover coordinator, and graceful-shutdown behavior.
-///
-/// This module contains the public [`TacacsClientService`] entry point and the
-/// internal [`ServiceConfig`] consumed at startup. Underneath it delegates to
-/// a shared state machine that routes each IPC request to an upstream
-/// TACACS+ server and manages ordered failover.
-pub mod service;
+/// Public configuration for the agent runtime.
+pub mod config;
+
+/// Local IPC adapters and listener infrastructure.
+mod ipc;
+
+/// Typed accounting and authorization execution over routed upstreams.
+mod operations;
+
+/// Long-lived service lifecycle and hot-reload orchestration.
+pub mod runtime;
+
+/// Upstream server routing, failover, connection cache, and drain tracking.
+mod routing;
 
 /// Persistent upstream TACACS+ connection management.
 ///
-/// This module adapts the lower-level networking/session APIs into the
-/// service's higher-level operation model. Each upstream connection can be
-/// reused for many IPC requests, while the service keeps ownership of failover
-/// decisions and connection lifecycle.
+/// This module adapts lower-level networking/session APIs into the agent's
+/// operation model. Each upstream connection can be reused for many IPC
+/// requests, while the routing layer keeps ownership of failover decisions and
+/// connection lifecycle.
 pub mod upstream;
 
-pub use service::{ServiceConfig, TacacsClientService};
+#[cfg(test)]
+mod test_support;
+
+pub use config::ServiceConfig;
+pub use runtime::TacacsClientService;

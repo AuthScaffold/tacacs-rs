@@ -1,9 +1,9 @@
-//! Shared operation helpers for [`ServiceState`].
+//! Shared operation helpers for [`RoutingState`].
 
 use async_trait::async_trait;
 use tacacsrs_agent_client::ServiceError;
 
-use super::ServiceState;
+use crate::routing::RoutingState;
 use crate::upstream::UpstreamConnection;
 
 /// Operation-specific hooks used by the shared TACACS+ routing state machine.
@@ -14,9 +14,7 @@ use crate::upstream::UpstreamConnection;
 /// keeps those specializations small while preserving typed request and response
 /// values.
 #[async_trait]
-pub(in crate::service::state) trait RoutedOperation:
-    Send + Sync + 'static
-{
+pub(crate) trait RoutedOperation: Send + Sync + 'static {
     /// IPC-level request type for the operation.
     type Request: Send + Sync;
     /// IPC-level response type for the operation.
@@ -34,21 +32,21 @@ pub(in crate::service::state) trait RoutedOperation:
     ) -> anyhow::Result<Self::Response>;
 }
 
-impl ServiceState {
+impl RoutingState {
     /// Executes one IPC operation against the currently selected upstream
     /// TACACS+ server.
     ///
     /// The networking layer owns dedicated versus single-connection behavior.
-    /// `ServiceState` only selects a configured server, records failures, and
+    /// `RoutingState` only selects a configured server, records failures, and
     /// advances failover state for subsequent IPC requests.
-    pub(in crate::service::state) async fn execute_operation<Operation>(
+    pub(crate) async fn execute_operation<Operation>(
         &self,
         request: Operation::Request,
     ) -> Result<Operation::Response, ServiceError>
     where
         Operation: RoutedOperation,
     {
-        let _client_guard = self.client_tracker.start_guard();
+        let _client_guard = self.start_client_request();
         let bound_server = self.bind_server_for_new_session().await.map_err(|error| {
             log::warn!("Failed to bind IPC request to an upstream server: {error:#}");
             ServiceError::new(error.to_string()).retriable(true)
@@ -69,7 +67,7 @@ impl ServiceState {
                     Operation::DISPLAY_NAME,
                     bound_server.connection.server_address(),
                 );
-                self.note_failure(bound_server.index).await;
+                self.note_bound_server_failure(&bound_server).await;
                 Err(ServiceError::new(error.to_string())
                     .with_server(bound_server.connection.server_address())
                     .retriable(true))

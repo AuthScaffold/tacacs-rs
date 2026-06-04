@@ -18,6 +18,13 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// Returns the `host:port` address string for this upstream server.
     fn server_address(&self) -> &str;
 
+    /// Stops this cached connection from accepting new TACACS+ sessions.
+    ///
+    /// Existing sessions that have already been created are allowed to drain
+    /// through the networking runtime. The service calls this when a datastore
+    /// reload removes or replaces a server definition.
+    async fn stop_accepting_new_sessions(&self);
+
     /// Sends one accounting request and returns the server's reply.
     ///
     /// # Errors
@@ -44,9 +51,9 @@ pub(crate) trait UpstreamConnection: Send + Sync {
 #[async_trait]
 /// Creates upstream connections for a configured TACACS+ server.
 ///
-/// The connector is called by [`ServiceState`](crate::service) whenever a
-/// fresh upstream connection manager is needed, such as during startup warm-up
-/// or after a previous operation failed.
+/// The connector is called by [`RoutingState`](crate::routing::RoutingState)
+/// whenever a fresh upstream connection manager is needed, such as during
+/// startup warm-up or after a previous operation failed.
 pub(crate) trait UpstreamConnector: Send + Sync {
     /// Establishes a new upstream connection manager for the given TACACS+ server.
     ///

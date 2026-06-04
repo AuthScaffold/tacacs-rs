@@ -15,7 +15,7 @@ use super::mapping::{
     build_accounting_request, build_authorization_request, to_accounting_response,
     to_authorization_response,
 };
-use super::traits::{UpstreamConnection, UpstreamConnector};
+use super::connection::{UpstreamConnection, UpstreamConnector};
 
 /// Production connector backed by [`tacacsrs_networking`].
 ///
@@ -64,6 +64,10 @@ struct TacacsUpstreamConnection {
 impl UpstreamConnection for TacacsUpstreamConnection {
     fn server_address(&self) -> &str {
         &self.server_address
+    }
+
+    async fn stop_accepting_new_sessions(&self) {
+        self.connection.stop_accepting_new_sessions().await;
     }
 
     async fn send_accounting(

@@ -22,12 +22,15 @@ that both the server and local consumers share the same protocol definitions.
 ## Module hierarchy
 
 ```text
-tacacsrs_agent├── service
-│   ├── config       - listener & failover configuration
-│   ├── coordinator  - runtime & listener lifecycle
-│   ├── state        - failover state & request routing
-│   └── tests        - integration & failover coverage
-└── upstream         - persistent TACACS+ connection adapters
+tacacsrs_agent
+├── config           - public runtime configuration
+├── ipc              - Tonic gRPC adapter and local listener transports
+│   └── listener     - Unix socket and loopback TCP binding
+├── operations       - typed accounting and authorization execution hooks
+├── routing          - server snapshots, failover, cache, probes, and drains
+├── runtime          - TacacsClientService lifecycle and hot reload
+├── test_support     - fake and blocking upstream fixtures for tests
+└── upstream         - TACACS+ network execution and protocol mapping
 ```
 
 ## Architecture overview
@@ -53,7 +56,7 @@ tacacsrs_agent├── service
        │ delegates request binding + failover
        v
 ┌──────────────────────────────┐
-│ ServiceState                 │
+│ RoutingState                 │
 │ - active server selection    │
 │ - preferred server probing   │
 │ - request execution          │
@@ -75,7 +78,8 @@ tacacsrs_agent├── service
 
 ## Request activity diagram
 
-The runtime currently uses one unary accounting RPC per local IPC session.
+The runtime uses unary accounting and authorization RPCs over the local IPC
+endpoint.
 
 ```text
 Client
@@ -87,10 +91,13 @@ connect to IPC endpoint
 send Accounting RPC
   |
   v
-TacacsClientService accepts client
+local IPC listener accepts client
   |
   v
-ServiceState chooses the active server
+GrpcService decodes the request
+  |
+  v
+RoutingState chooses the active server
   |
   +--> no responsive server
   |      |
@@ -114,10 +121,10 @@ send TACACS+ accounting request
   |   return ServiceError { server, retriable: true }
   |
   v
-map reply to AccountingOperationResponse
+map reply to the operation-specific response
   |
   v
-return AccountingResponse
+return protobuf response envelope
 ```
 
 ## Failover state chart
@@ -205,7 +212,7 @@ start at once against a relatively small TACACS+ server pool. If no server is
 reachable during startup, the service still starts and later IPC requests retry
 failover on demand.
 
-Per-server reconnect attempts are also serialized inside the service. When many
+Per-server reconnect attempts are serialized inside the routing layer. When many
 IPC requests arrive at once, they share one in-flight reconnect attempt for a
 given TACACS+ server instead of generating a burst of duplicate TLS handshakes.
 After that reconnect attempt finishes, queued callers reuse the cached
@@ -216,10 +223,10 @@ server again for that same burst of IPC work if it failed.
 
 Each accepted IPC connection currently carries a single unary RPC exchange:
 
-1. Decode one protobuf accounting request.
+1. Decode one protobuf accounting or authorization request.
 2. Select the upstream server for that IPC session.
 3. Execute the request against that bound server.
-4. Encode one protobuf accounting reply envelope.
+4. Encode one protobuf reply envelope.
 
 ## Protocol source of truth
 

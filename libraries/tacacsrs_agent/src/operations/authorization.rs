@@ -1,10 +1,10 @@
-//! Authorization request execution for [`ServiceState`].
+//! Authorization request execution for [`RoutingState`].
 
 use async_trait::async_trait;
 use tacacsrs_agent_client::{AuthorizationOperation, AuthorizationOperationResponse, ServiceError};
 
-use super::common::RoutedOperation;
-use super::ServiceState;
+use super::routed::RoutedOperation;
+use crate::routing::RoutingState;
 use crate::upstream::UpstreamConnection;
 
 struct AuthorizationRoute;
@@ -25,13 +25,13 @@ impl RoutedOperation for AuthorizationRoute {
     }
 }
 
-impl ServiceState {
+impl RoutingState {
     /// Executes one IPC authorization RPC against the currently selected
     /// upstream TACACS+ server.
     ///
     /// Authorization follows the same server-selection and failover model as
     /// accounting; connection reuse is handled by the networking layer.
-    pub(in crate::service) async fn execute_authorization_request(
+    pub(crate) async fn execute_authorization_request(
         &self,
         request: AuthorizationOperation,
     ) -> Result<AuthorizationOperationResponse, ServiceError> {

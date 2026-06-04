@@ -1,10 +1,10 @@
-//! Accounting request execution for [`ServiceState`].
+//! Accounting request execution for [`RoutingState`].
 
 use async_trait::async_trait;
 use tacacsrs_agent_client::{AccountingOperation, AccountingOperationResponse, ServiceError};
 
-use super::common::RoutedOperation;
-use super::ServiceState;
+use super::routed::RoutedOperation;
+use crate::routing::RoutingState;
 use crate::upstream::UpstreamConnection;
 
 struct AccountingRoute;
@@ -25,13 +25,13 @@ impl RoutedOperation for AccountingRoute {
     }
 }
 
-impl ServiceState {
+impl RoutingState {
     /// Executes one IPC accounting RPC against the currently selected upstream
     /// TACACS+ server.
     ///
     /// Connection reuse and single-connection negotiation are handled by the
     /// networking layer behind the selected upstream connection.
-    pub(in crate::service) async fn execute_accounting_request(
+    pub(crate) async fn execute_accounting_request(
         &self,
         request: AccountingOperation,
     ) -> Result<AccountingOperationResponse, ServiceError> {
