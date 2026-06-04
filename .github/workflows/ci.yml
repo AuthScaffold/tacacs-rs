@@ -12,11 +12,64 @@ permissions:
   packages: read
 
 jobs:
+  # -- Release policy for main pushes ------------------------
+  release-policy:
+    name: Release Policy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip-release: ${{ steps.detect.outputs.skip_release }}
+      reason: ${{ steps.detect.outputs.reason }}
+    steps:
+      - name: Detect norelease marker
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_API_URL: ${{ github.api_url }}
+        run: |
+          set -euo pipefail
+
+          skip_release=false
+          reason="release-enabled"
+          marker_regex='(^|[^[:alnum:]_-])(\[?(no[-_ ]?release|skip[-_ ]?release)\]?)([^[:alnum:]_-]|$)'
+          label_regex='^(no[-_ ]?release|skip[-_ ]?release)$'
+
+          if [ "$EVENT_NAME" != "push" ]; then
+            reason="not-a-push"
+          elif printf '%s\n' "$HEAD_COMMIT_MESSAGE" | grep -Eiq "$marker_regex"; then
+            skip_release=true
+            reason="head-commit-marker"
+          else
+            api_url="${GH_API_URL}/repos/${GH_REPOSITORY}/commits/${COMMIT_SHA}/pulls"
+            prs_json=$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$api_url")
+
+            if printf '%s' "$prs_json" | jq -r '.[].labels[].name?' | grep -Eiq "$label_regex"; then
+              skip_release=true
+              reason="associated-pr-label"
+            fi
+          fi
+
+          echo "skip_release=${skip_release}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+          echo "skip_release=${skip_release} (${reason})"
+
   # ── Compute versions from git tags ───────────────────────
   compute-versions:
     name: Compute Versions
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    needs: [release-policy]
+    if: github.event_name == 'push' && needs.release-policy.outputs.skip-release != 'true'
     permissions:
       contents: read
     outputs:
@@ -46,7 +99,7 @@ jobs:
   # ── Run the full CI pipeline ─────────────────────────────
   pipeline:
     name: CI Pipeline
-    needs: [compute-versions]
+    needs: [release-policy, compute-versions]
     if: always()
     uses: ./.github/workflows/reusable-pipeline.yml
     permissions:
@@ -57,7 +110,7 @@ jobs:
       include-fmt: false
       include-proto-compat: false
       include-outdated: false
-      versions: ${{ needs.compute-versions.outputs.versions || '{}' }}
+      versions: ${{ needs.release-policy.outputs.skip-release == 'true' && '{}' || needs.compute-versions.outputs.versions || '{}' }}
     secrets: inherit
 
   ci-success:
@@ -74,10 +127,11 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [ci-success, compute-versions]
+    needs: [ci-success, compute-versions, release-policy]
     if: >-
       github.event_name == 'push' &&
       github.repository_owner == 'AuthScaffold' &&
+      needs.release-policy.outputs.skip-release != 'true' &&
       needs.ci-success.result == 'success' &&
       needs.compute-versions.outputs.has-release == 'true'
     permissions:

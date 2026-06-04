@@ -501,11 +501,12 @@ function Start-Vm {
         '-name', $VmName,
         '-m', "${MemoryMB}M",
         '-smp', "cpus=$Cpus",
+        '-cpu', 'max',
         '-drive', "file=$disk,format=$diskFmt,index=0,media=disk,id=drive0",
         '-drive', "file=$DataDiskPath,format=qcow2,index=1,media=disk,id=datadisk0",
         '-serial', "telnet:127.0.0.1:${SerialPort},server,nowait",
         '-monitor', "tcp:127.0.0.1:${MonitorPort},server,nowait",
-        '-display', 'none',
+#        '-display', 'none',
         '-device', 'e1000,netdev=net0',
         '-netdev', $netdev
     )
@@ -571,7 +572,7 @@ DATA_MOUNT='$DataMount'
 EXPECTED_SIZE_BYTES='$expectedSizeBytes'
 
 find_by_label() {
-    blkid -L "`$DATA_LABEL" 2>/dev/null || true
+    sudo blkid -L "`$DATA_LABEL" 2>/dev/null || true
 }
 
 find_blank_data_disk() {
@@ -588,7 +589,7 @@ find_blank_data_disk() {
         if lsblk -nr -o MOUNTPOINT "`$real" | grep -q '[^[:space:]]'; then
             continue
         fi
-        if blkid "`$real" >/dev/null 2>&1; then
+        if sudo blkid -p "`$real" >/dev/null 2>&1; then
             continue
         fi
         echo "`$real"
@@ -622,7 +623,7 @@ EOF
 set_ext4_label() {
     device="`$1"
     label="`$2"
-    current_label=`$(blkid -s LABEL -o value "`$device" 2>/dev/null || true)
+    current_label=`$(sudo blkid -s LABEL -o value "`$device" 2>/dev/null || true)
     [ "`$current_label" = "`$label" ] && return 0
 
     echo "Relabeling `$device from '`$current_label' to '`$label'"
