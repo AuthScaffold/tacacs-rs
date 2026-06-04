@@ -3,7 +3,7 @@
 //!
 //! This module owns the translation from the YANG-derived configuration model
 //! to the lower-level PSK primitives ([`PskIdentity`], the symmetric key
-//! bytes). It exists so the `config_connect` dispatcher does not need to
+//! bytes). It exists so the establishment dispatcher does not need to
 //! understand PSK encoding details.
 
 use anyhow::{Context, Result};

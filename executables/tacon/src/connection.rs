@@ -1,23 +1,16 @@
 use std::sync::Arc;
 
-use anyhow::Context;
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_networking::{
-    BoxedTransport,
-    config_connect::{self, ConnectOptions},
-    connection::TacacsConnection,
-    session::Session,
-    traits::SessionManagementTrait,
-};
+use tacacsrs_config::TacacsPlusServer;
+use tacacsrs_networking::{ClientSession, ConnectOptions, TacacsClient};
 
 /// Represents an active TACACS+ connection (either plain TCP or TLS)
 #[derive(Clone)]
 pub struct Connection {
-    inner: Arc<TacacsConnection>,
+    inner: Arc<TacacsClient>,
 }
 
 impl Connection {
-    pub(crate) const fn from_inner(inner: Arc<TacacsConnection>) -> Self {
+    pub(crate) const fn from_inner(inner: Arc<TacacsClient>) -> Self {
         Self { inner }
     }
 
@@ -26,38 +19,8 @@ impl Connection {
     /// # Errors
     ///
     /// Returns an error if session creation fails on the underlying connection.
-    pub async fn create_session(&self) -> anyhow::Result<Session> {
+    pub async fn create_session(&self) -> anyhow::Result<ClientSession> {
         self.inner.create_session().await
-    }
-
-    /// Creates a session with a specific session ID on this connection
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the session ID is already in use or if session creation fails.
-    pub async fn create_session_with_id(&self, session_id: u32) -> anyhow::Result<Session> {
-        self.inner.create_session_with_id(session_id).await
-    }
-
-    /// Creates a session, optionally with a specific session ID
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the session ID is already in use or if session creation fails.
-    pub async fn create_session_optional_id(
-        &self,
-        session_id: Option<u32>,
-    ) -> anyhow::Result<Session> {
-        match session_id {
-            Some(id) => self.create_session_with_id(id).await,
-            None => self.create_session().await,
-        }
-    }
-
-    /// Returns true if new sessions can be created on this connection
-    #[allow(dead_code)] // Useful for callers to check before attempting to create sessions
-    pub async fn can_create_sessions(&self) -> bool {
-        self.inner.can_create_sessions().await
     }
 }
 
@@ -73,33 +36,25 @@ pub async fn establish_connection(
     server: &TacacsPlusServer,
     options: &ConnectOptions,
 ) -> anyhow::Result<Connection> {
-    let obfuscation_key = server.obfuscation_key();
-    let stream = establish_stream(server, options).await?;
-
-    let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
-    connection
-        .run(stream)
-        .await
-        .context("Failed to start connection handler")?;
-
-    Ok(Connection::from_inner(connection))
+    let connection = TacacsClient::connect(server.clone(), options.clone()).await?;
+    Ok(Connection::from_inner(Arc::new(connection)))
 }
 
-/// Establishes a TCP or TLS stream based on the server config.
+/// Establishes a connection with TACACS+ single-connection mode disabled in
+/// the effective server configuration.
 ///
-/// This is the shared connection-setup logic used by both
-/// [`establish_connection`] (multiplexed sessions) and the dedicated
-/// connection path (one-shot exchanges).
+/// Networking follows [`TacacsPlusServer::single_connection`] exactly, so the
+/// CLI forces dedicated behavior by modifying a cloned server config before
+/// handing it to [`TacacsClient`].
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - TCP connection cannot be established
-/// - TLS is requested but certificate/key are missing or invalid
-/// - TLS handshake fails
-pub async fn establish_stream(
+/// Returns an error if the underlying connection cannot be established.
+pub async fn establish_dedicated_connection(
     server: &TacacsPlusServer,
     options: &ConnectOptions,
-) -> anyhow::Result<BoxedTransport> {
-    config_connect::establish_stream(server, options).await
+) -> anyhow::Result<Connection> {
+    let mut dedicated_server = server.clone();
+    dedicated_server.single_connection = false;
+    establish_connection(&dedicated_server, options).await
 }

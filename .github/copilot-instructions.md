@@ -193,8 +193,6 @@ injects them during builds through `.github/steps/compute-versions` and
   ownership unless ownership transfer is required. For flexible function inputs,
   consider `impl AsRef<str>`, `impl AsRef<Path>`, or `impl AsRef<[u8]>` when it
   improves ergonomics without infecting stored types.
-- Keep service-like structs concrete. Put generics on methods when practical,
-  and use `Box<dyn Trait>` only at runtime-polymorphic boundaries.
 - Reuse existing abstractions: `Transport`, `BoxedTransport`,
   `ClientSessionFlowIoTrait`, `AccountingFlow`, `ConfigDatastore`,
   `ServiceError`, `IpcEndpoint`, and the mock transport/controller patterns.

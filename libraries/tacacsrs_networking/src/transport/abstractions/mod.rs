@@ -11,7 +11,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// This abstraction allows connection handling code to be generic over
 /// different transport types (TCP, TLS, etc.) while still being able to
 /// perform concurrent read and write operations.
-pub trait Transport: Send + 'static {
+pub(crate) trait Transport: Send + 'static {
     /// The read half type after splitting the transport.
     type ReadHalf: AsyncRead + Unpin + Send + 'static;
     /// The write half type after splitting the transport.

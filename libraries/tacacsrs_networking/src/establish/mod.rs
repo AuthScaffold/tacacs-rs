@@ -20,18 +20,65 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 
-use crate::BoxedTransport;
 use crate::helpers::connect_tcp;
+use crate::transport::BoxedTransport;
 
 /// Options that control connection behaviour beyond what the
 /// [`TacacsPlusServer`] already carries.
+///
+/// TACACS+ single-connection mode is intentionally controlled by
+/// [`TacacsPlusServer::single_connection`]. Callers that need dedicated mode
+/// should pass a server value with `single_connection` set to `false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConnectPreflight {
+    /// Do not perform any connection preflight when constructing a client.
+    #[default]
+    Disabled,
+    /// Send a TACACS+ accounting WATCHDOG request before returning the client.
+    ///
+    /// When the server configuration enables single-connection mode, this also
+    /// discovers support and promotes the preflight stream if the server echoes
+    /// the single-connect flag.
+    AccountingWatchdog,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ConnectOptions {
     /// Dangerously disable TLS certificate verification.
-    pub disable_certificate_verification: bool,
+    disable_certificate_verification: bool,
     /// Connection timeout. When `None`, no timeout is applied to the TCP
     /// connect phase — callers are responsible for their own timeouts.
-    pub timeout: Option<Duration>,
+    timeout: Option<Duration>,
+    /// Optional preflight operation performed by `TacacsClient::connect`.
+    preflight: ConnectPreflight,
+}
+
+impl ConnectOptions {
+    /// Returns options with TLS certificate verification disabled when
+    /// `disabled` is true.
+    #[must_use]
+    pub const fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
+        self.disable_certificate_verification = disabled;
+        self
+    }
+
+    /// Returns options with the TCP connect timeout set to `timeout`.
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Returns options with the connection preflight mode set to `preflight`.
+    #[must_use]
+    pub const fn with_preflight(mut self, preflight: ConnectPreflight) -> Self {
+        self.preflight = preflight;
+        self
+    }
+
+    pub(crate) const fn preflight(&self) -> ConnectPreflight {
+        self.preflight
+    }
 }
 
 /// Establishes a transport stream to the server described by `server`.
@@ -54,7 +101,7 @@ pub struct ConnectOptions {
 /// - TCP connection fails or times out
 /// - the selected backend rejects the configured material or fails to
 ///   complete its handshake
-pub async fn establish_stream(
+pub(crate) async fn establish_stream(
     server: &TacacsPlusServer,
     options: &ConnectOptions,
 ) -> Result<BoxedTransport> {

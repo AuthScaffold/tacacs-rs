@@ -7,7 +7,6 @@ use tacacsrs_messages::enumerations::{
     TacacsAuthenticationType, TacacsFlags,
 };
 use tacacsrs_flows::accounting::AccountingFlow;
-use tacacsrs_networking::session::Session;
 
 /// Sends an accounting request to record command execution.
 ///
@@ -19,20 +18,22 @@ use tacacsrs_networking::session::Session;
 /// * `rem_address` - Remote address of the client
 /// * `cmd` - The command being executed
 /// * `cmd_args` - Optional arguments to the command
-/// * `custom_flags` - Custom flags to set on the packet header (e.g., `TAC_PLUS_CUSTOM_FLAG_1`, `TAC_PLUS_CUSTOM_FLAG_2`)
 ///
 /// # Returns
 ///
 /// The accounting reply from the server, or an error if the request failed.
-pub async fn send_accounting_request(
-    session: Session,
+pub async fn send_accounting_request<SessionIo>(
+    session: SessionIo,
     user: &str,
     port: &str,
     rem_address: &str,
     cmd: &str,
     cmd_args: Option<&Vec<String>>,
     custom_flags: TacacsFlags,
-) -> anyhow::Result<AccountingReply> {
+) -> anyhow::Result<AccountingReply>
+where
+    SessionIo: AccountingFlow,
+{
     let request = build_accounting_request(user, port, rem_address, cmd, cmd_args);
 
     let response = session

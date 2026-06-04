@@ -14,11 +14,11 @@ use tacacsrs_messages::packet::Packet;
 /// Stored in [`MockState::replies`] and consumed by the write processor when a
 /// matching request arrives.
 #[derive(Clone, Debug)]
-pub struct ReplyConfig {
+pub(in crate::transport::mock) struct ReplyConfig {
     /// The raw serialised TACACS+ packet bytes to send back.
-    pub(crate) bytes: Vec<u8>,
+    pub(in crate::transport::mock) bytes: Vec<u8>,
     /// Optional delay before delivering the reply, useful for testing timeouts.
-    pub(crate) delay: Option<Duration>,
+    pub(in crate::transport::mock) delay: Option<Duration>,
 }
 
 /// Shared mutable state between the write processor and the
@@ -28,12 +28,12 @@ pub struct ReplyConfig {
 /// and the coordinator (which may be called concurrently from test code) can
 /// access it without blocking the tokio runtime.
 #[derive(Debug, Default)]
-pub struct MockState {
+pub(in crate::transport::mock) struct MockState {
     /// Pre-configured replies, keyed by `session_id → seq_no → ReplyConfig`.
     ///
     /// Entries are **removed** (consumed) when the write processor matches them
     /// to an incoming request. This means each reply is delivered at most once.
-    pub(crate) replies: HashMap<u32, HashMap<u8, ReplyConfig>>,
+    pub(in crate::transport::mock) replies: HashMap<u32, HashMap<u8, ReplyConfig>>,
 
     /// Captured request packets, keyed by `session_id → seq_no → Packet`.
     ///
@@ -45,5 +45,5 @@ pub struct MockState {
     /// uses an obfuscation key, the packet bodies here will still be
     /// obfuscated. Callers must deobfuscate manually if they need to inspect
     /// cleartext content.
-    pub(crate) requests: HashMap<u32, HashMap<u8, Packet>>,
+    pub(in crate::transport::mock) requests: HashMap<u32, HashMap<u8, Packet>>,
 }

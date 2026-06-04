@@ -29,10 +29,7 @@ use std::sync::Arc;
 use anyhow::{Context, bail};
 use tacacsrs_agent_client::ipc;
 use tacacsrs_agent_client::ipc::tacacs_agent_server::{TacacsAgent, TacacsAgentServer};
-use tacacsrs_agent_client::{
-    AccountingOperation, AuthorizationOperation, AuthorizationOperationResponse,
-    AuthorizationResponseStatus, IpcEndpoint,
-};
+use tacacsrs_agent_client::{AccountingOperation, AuthorizationOperation, IpcEndpoint};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
@@ -130,10 +127,9 @@ impl TacacsAgent for GrpcService {
 
     /// Handles one unary authorization RPC from a local IPC client.
     ///
-    /// This is a deliberately temporary allow-all stub so session-wrapper can
-    /// build and test command mediation over the dedicated authorization IPC
-    /// contract. Future work should replace this method body with real RFC 8907
-    /// TACACS+ authorization forwarding behind the same protobuf contract.
+    /// Decodes the protobuf request, delegates to [`ServiceState`] for server
+    /// selection and upstream execution, and encodes the result into the oneof
+    /// `AuthorizationReply` envelope.
     async fn authorization(
         &self,
         request: Request<ipc::AuthorizationRequest>,
@@ -149,17 +145,25 @@ impl TacacsAgent for GrpcService {
             request.command().unwrap_or("<missing>"),
         );
 
-        let response = AuthorizationOperationResponse {
-            server: "stub".to_owned(),
-            status: AuthorizationResponseStatus::PassAdd,
-            server_message: "authorization allowed by temporary local stub; upstream TACACS+ authorization is not implemented yet".to_owned(),
-            args: Vec::new(),
-            data: String::new(),
+        let result = match self.state.execute_authorization_request(request).await {
+            Ok(response) => {
+                log::debug!(
+                    "IPC authorization request completed: server={}, status={:?}",
+                    response.server,
+                    response.status,
+                );
+                ipc::AuthorizationReply {
+                    result: Some(ipc::authorization_reply::Result::Response(response.into_proto())),
+                }
+            }
+            Err(error) => {
+                log::warn!("IPC authorization request failed: {error:?}");
+                ipc::AuthorizationReply {
+                    result: Some(ipc::authorization_reply::Result::Error(error.into_proto())),
+                }
+            }
         };
-
-        Ok(Response::new(ipc::AuthorizationReply {
-            result: Some(ipc::authorization_reply::Result::Response(response.into_proto())),
-        }))
+        Ok(Response::new(result))
     }
 }
 
@@ -428,14 +432,22 @@ mod tests {
     use std::time::Duration;
 
     #[cfg(unix)]
+    use tacacsrs_agent_client::ipc;
+    #[cfg(unix)]
+    use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
+    #[cfg(unix)]
     use tacacsrs_agent_client::{
         AuthorizationOperation, AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
     };
+    #[cfg(unix)]
+    use tonic::Request;
 
     #[cfg(unix)]
     use super::TacacsClientService;
     #[cfg(unix)]
     use super::super::config::ServiceConfig;
+    #[cfg(unix)]
+    use super::super::state::ServiceState;
     #[cfg(unix)]
     use super::super::test_support::{FakeConnection, FakeConnector, build_request};
 
@@ -596,7 +608,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // real Unix socket + gRPC I/O
-    async fn test_authorization_rpc_returns_temporary_allow_stub() {
+    async fn test_authorization_rpc_uses_upstream_server() {
         let primary = Arc::new(FakeConnection {
             address: "primary:49".to_owned(),
             usable: AtomicBool::new(true),
@@ -608,7 +620,7 @@ mod tests {
             Arc::clone(&primary),
         )])));
 
-        let endpoint = test_endpoint("tacacs-service-authorization-stub");
+        let endpoint = test_endpoint("tacacs-service-authorization-upstream");
         let config = service_config(endpoint.clone(), vec![test_server("primary:49")]);
 
         let service = TacacsClientService::new_with_connector(config, connector).unwrap();
@@ -626,9 +638,9 @@ mod tests {
             .unwrap();
         let response = client.send_authorization(request).await.unwrap();
 
-        assert_eq!(response.server, "stub");
+        assert_eq!(response.server, "primary:49");
         assert_eq!(response.status, AuthorizationResponseStatus::PassAdd);
-        assert!(response.server_message.contains("temporary local stub"));
+        assert!(response.server_message.contains("authorized by primary:49"));
         assert!(response.args.is_empty());
         assert!(response.data.is_empty());
 
@@ -638,6 +650,49 @@ mod tests {
         if let IpcEndpoint::Unix(path) = endpoint {
             let _ = tokio::fs::remove_file(path).await;
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio sync/time not supported
+    async fn test_authorization_rpc_failure_returns_service_error_oneof() {
+        let primary = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(true),
+        });
+
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            primary.address.clone(),
+            Arc::clone(&primary),
+        )])));
+        let state = Arc::new(ServiceState::new(
+            vec![test_server("primary:49")],
+            connector,
+            Duration::from_millis(50),
+        ));
+        let service = super::GrpcService { state };
+        let request = AuthorizationOperation::builder("admin", 0)
+            .port("pts/1")
+            .remote_address("127.0.0.1")
+            .service("shell")
+            .command("/bin/echo")
+            .command_arg("hello")
+            .build()
+            .unwrap();
+
+        let reply = service
+            .authorization(Request::new((&request).into()))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let Some(ipc::authorization_reply::Result::Error(error)) = reply.result else {
+            panic!("authorization failure should be returned in ServiceError oneof");
+        };
+        assert_eq!(error.server, "primary:49");
+        assert!(error.retriable);
+        assert!(error.message.contains("simulated failure"));
     }
 
     #[cfg(unix)]

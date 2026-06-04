@@ -30,14 +30,12 @@ tacon --service-endpoint /run/tacacs.sock \
 
 **Best for:** production deployments where multiple clients share TACACS+ connections with automatic failover.
 
-**Restrictions in service mode:** custom TACACS+ flags (`--custom-flag-1`, `--custom-flag-2`) and explicit session IDs (`--session-id`) are not supported — the agent assigns these.
-
 ## Global Options
 
 ### Transport Target (one required)
 
 | Flag | Description |
-|------|-------------|
+| --- | --- |
 | `-s, --server-addr <ADDR>` | Direct connection to a TACACS+ server (e.g. `192.168.1.1:49`) |
 | `--config <FILE>` | Load the direct connection from a YANG JSON config file |
 | `--service-endpoint <PATH>` | Connect via the agent service (Unix socket or TCP address) |
@@ -45,7 +43,7 @@ tacon --service-endpoint /run/tacacs.sock \
 ### Encryption (direct mode only)
 
 | Flag | Description |
-|------|-------------|
+| --- | --- |
 | `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
 | `--use-tls` | Enable TLS 1.3 |
 | `--client-certificate <FILE>` | Client TLS certificate (requires `--client-key`) |
@@ -57,13 +55,13 @@ tacon --service-endpoint /run/tacacs.sock \
 ### Connection Behaviour (direct mode only)
 
 | Flag | Description |
-|------|-------------|
+| --- | --- |
 | `--dedicated` | Use a one-shot connection per request (no session multiplexing) |
 
 ### Debugging
 
 | Flag | Description |
-|------|-------------|
+| --- | --- |
 | `-v` | Warnings |
 | `-vv` | Info |
 | `-vvv` | Debug |
@@ -82,12 +80,9 @@ tacon -s server:49 \
 ```
 
 | Argument | Description |
-|----------|-------------|
+| --- | --- |
 | `<CMD>` | The command being recorded |
 | `[ARGS...]` | Optional command arguments |
-| `--custom-flag-1` | Set `TAC_PLUS_CUSTOM_FLAG_1` (0x40) on the packet header |
-| `--custom-flag-2` | Set `TAC_PLUS_CUSTOM_FLAG_2` (0x80) on the packet header |
-| `--session-id <ID>` | Use a specific session ID (direct mode only) |
 
 ### `authentication`
 
@@ -144,12 +139,7 @@ Batch files are JSON documents containing metadata and a list of requests.
       "port": "tty0",
       "rem_addr": "10.0.0.1",
       "cmd": "show running-config",
-      "cmd_args": ["brief"],
-      "custom_flags": {
-        "custom_flag_1": false,
-        "custom_flag_2": false
-      },
-      "session_id": null
+      "cmd_args": ["brief"]
     }
   ]
 }
@@ -158,7 +148,7 @@ Batch files are JSON documents containing metadata and a list of requests.
 ### Metadata Fields
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `description` | string | — | Optional description |
 | `parallel` | bool | `false` | Execute all requests concurrently |
 | `load_test` | object | — | Enable load testing mode |
@@ -168,7 +158,7 @@ Batch files are JSON documents containing metadata and a list of requests.
 ### Execution Modes
 
 | `parallel` | `load_test` | Behaviour |
-|-----------|------------|-----------|
+| --- | --- | --- |
 | `false` | absent | Requests execute sequentially |
 | `true` | absent | All requests execute concurrently |
 | any | present | All requests repeat N times with bounded parallelism |
@@ -229,6 +219,6 @@ tacon -s tacacs-server:449 --use-tls \
 ## Exit Codes
 
 | Code | Meaning |
-|------|---------|
+| --- | --- |
 | `0` | All requests succeeded |
 | `1` | One or more requests failed |
