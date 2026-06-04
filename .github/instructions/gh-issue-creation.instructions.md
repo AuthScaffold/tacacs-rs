@@ -38,3 +38,9 @@ single quotes, and no dollar signs**. If in doubt, use `--body-file`.
   Copilot or another agent later.
 - Use fenced code blocks with language identifiers for examples.
 - Reference file paths relative to the repository root.
+- Always include a section about implementation freedom. For example:
+
+```markdown
+## Implementation freedom
+Copilot and other implementers may make breaking changes, refactors, public API modifications, module reorganizations, or any other changes needed to deliver a solid, maintainable, well-documented project. Do not preserve existing APIs, structure, or behavior solely for compatibility if changing them produces a better design for this work.
+```
