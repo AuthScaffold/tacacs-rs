@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 
 use tacacsrs_messages::packet::PacketTrait;
 
-use crate::packet_reader::{PacketReadResult, PacketReader, PacketReaderTrait};
+use crate::codec::{PacketReadResult, PacketReader, PacketReaderTrait};
 use crate::transport::abstractions::Transport;
 
 use super::channel_reader::ChannelReader;
@@ -26,12 +26,12 @@ use super::mock_write_half::MockWriteHalf;
 ///
 /// Construct one with [`MockTransport::new()`], obtain a [`MockTransportCoordinator`]
 /// via [`MockTransport::coordinator()`], then pass the transport into
-/// [`TacacsConnection::run()`](crate::connection::TacacsConnection::run).
+/// [`MultiplexedConnection`](crate::runtime::MultiplexedConnection).
 ///
 /// Since [`split`](Transport::split) consumes `self`, the compiler enforces
 /// that it can only be called once.
 #[derive(Debug)]
-pub struct MockTransport {
+pub(crate) struct MockTransport {
     /// Shared state holding replies and captured requests.
     /// Also accessed by [`MockTransportCoordinator`].
     state: Arc<Mutex<MockState>>,
@@ -57,7 +57,7 @@ impl MockTransport {
     /// After construction, call [`coordinator()`](Self::coordinator) to get a handle
     /// for configuring replies and inspecting captured requests.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         // This channel carries reply bytes from the write processor → MockReadHalf.
         let (read_tx, read_rx) = mpsc::unbounded_channel();
         Self {
@@ -76,7 +76,7 @@ impl MockTransport {
     ///
     /// Multiple coordinators may be created; they all share the same underlying state.
     #[must_use]
-    pub fn coordinator(&self) -> MockTransportCoordinator {
+    pub(crate) fn coordinator(&self) -> MockTransportCoordinator {
         MockTransportCoordinator {
             state: Arc::clone(&self.state),
         }

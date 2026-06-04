@@ -2,8 +2,7 @@ use anyhow::Context;
 use futures::future::join_all;
 
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_networking::config_connect::ConnectOptions;
-use tacacsrs_networking::session::Session;
+use tacacsrs_networking::{ConnectOptions, ClientSession};
 
 use crate::connection::{establish_connection, Connection};
 
@@ -12,8 +11,8 @@ use super::super::types::{BatchRequest, LoadTestConfig, LoadTestResult, RequestR
 
 /// Executes requests sequentially on a multiplexed connection
 ///
-/// The caller has already confirmed single-connection support via the probe,
-/// so every request reuses the same connection without reconnect checks.
+/// The first request may perform single-connection negotiation. Once the
+/// server confirms support, later requests reuse the upgraded shared transport.
 pub(super) async fn execute_sequential_multiplexed(
     connection: Connection,
     requests: &[BatchRequest],
@@ -26,15 +25,11 @@ pub(super) async fn execute_sequential_multiplexed(
         log::info!("Executing request {}/{}", index + 1, requests.len());
 
         let session = connection
-            .create_session_optional_id(request.session_id())
+            .create_session()
             .await
             .context("Failed to create session for batch request")?;
 
-        if let Some(session_id) = request.session_id() {
-            log::info!("Using custom session ID: {session_id}");
-        }
-
-        let result = execute_single_request(&session, request).await;
+        let result = execute_single_request(session, request).await;
         results.push(RequestResult {
             index,
             request_type: request.type_name(),
@@ -53,11 +48,11 @@ pub(super) async fn execute_parallel_multiplexed(
     log::info!("Executing {} requests in parallel on multiplexed connection", requests.len());
 
     let mut session_futures = Vec::with_capacity(requests.len());
-    for request in requests {
-        session_futures.push(connection.create_session_optional_id(request.session_id()));
+    for _ in requests {
+        session_futures.push(connection.create_session());
     }
 
-    let sessions: Vec<Session> = join_all(session_futures)
+    let sessions: Vec<ClientSession> = join_all(session_futures)
         .await
         .into_iter()
         .enumerate()
@@ -68,7 +63,7 @@ pub(super) async fn execute_parallel_multiplexed(
 
     let futures: Vec<_> = requests
         .iter()
-        .zip(sessions.iter())
+        .zip(sessions)
         .enumerate()
         .map(|(index, (request, session))| async move {
             log::info!("Starting parallel request {}", index + 1);
@@ -86,8 +81,10 @@ pub(super) async fn execute_parallel_multiplexed(
 
 /// Executes a load test using multiplexed connections with controlled concurrency
 ///
-/// Each iteration opens a new multiplexed connection, creates a session, and
-/// sends the request. The test stops immediately on the first failure.
+/// The load test uses one adaptive connection for the whole run. The first
+/// request may negotiate single-connection support; subsequent requests create
+/// sessions from the same client and reuse the upgraded shared transport when
+/// the server supports it. The test stops immediately on the first failure.
 pub(super) async fn execute_load_test_multiplexed(
     server: &TacacsPlusServer,
     requests: &[BatchRequest],
@@ -98,43 +95,34 @@ pub(super) async fn execute_load_test_multiplexed(
 
     println!("Starting load test with {total_requests} total requests...\n");
 
-    let server = server.clone();
-    let options = options.clone();
+    let connection = establish_connection(server, options)
+        .await
+        .context("Failed to establish multiplexed TACACS+ connection for load test")?;
+
     Ok(run_load_test(
         total_requests,
         load_test_iterations(requests, config.repetitions),
         config.max_parallel,
         move |rep, idx, request| {
-            let server = server.clone();
-            let options = options.clone();
-            async move { execute_load_test_single(&server, &options, request, rep, idx).await }
+            let connection = connection.clone();
+            async move { execute_load_test_single(&connection, request, rep, idx).await }
         },
     )
     .await)
 }
 
-/// Executes a single load test iteration on a new multiplexed connection
+/// Executes a single load test iteration on the shared multiplexed connection.
 async fn execute_load_test_single(
-    server: &TacacsPlusServer,
-    options: &ConnectOptions,
+    connection: &Connection,
     request: &BatchRequest,
     rep: usize,
     idx: usize,
 ) -> Result<(), String> {
-    let connection = establish_connection(server, options)
-        .await
-        .map_err(|error| {
-            format!("Connection failed at rep {}, request {}: {}", rep + 1, idx + 1, error)
-        })?;
+    let session = connection.create_session().await.map_err(|error| {
+        format!("Session creation failed at rep {}, request {}: {}", rep + 1, idx + 1, error)
+    })?;
 
-    let session = connection
-        .create_session_optional_id(request.session_id())
-        .await
-        .map_err(|error| {
-            format!("Session creation failed at rep {}, request {}: {}", rep + 1, idx + 1, error)
-        })?;
-
-    execute_single_request(&session, request)
+    execute_single_request(session, request)
         .await
         .map(|_| ())
         .map_err(|error| {

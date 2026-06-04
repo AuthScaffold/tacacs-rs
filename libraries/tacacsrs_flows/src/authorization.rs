@@ -8,12 +8,14 @@ use tacacsrs_messages::packet::PacketTrait;
 
 /// Fixed TACACS+ client authorization flow.
 ///
-/// Implement this on any type that can provide [`ClientSessionFlowIoTrait`].
+/// Implement this on owned session handles that can provide
+/// [`ClientSessionFlowIoTrait`]. Flow methods consume the session handle so a
+/// completed session cannot be reused for another flow.
 #[async_trait]
-pub trait AuthorizationFlow: ClientSessionFlowIoTrait {
+pub trait AuthorizationFlow: ClientSessionFlowIoTrait + Sized + Send {
     /// Sends an authorization request with default flags (`TAC_PLUS_UNENCRYPTED_FLAG`).
     async fn send_authorization_request(
-        &self,
+        self,
         request: AuthorizationRequest,
     ) -> anyhow::Result<AuthorizationReply> {
         self.send_authorization_request_with_flags(request, TacacsFlags::empty())
@@ -27,7 +29,7 @@ pub trait AuthorizationFlow: ClientSessionFlowIoTrait {
     /// * `request` - The authorization request to send
     /// * `custom_flags` - Additional flags to set on the packet header
     async fn send_authorization_request_with_flags(
-        &self,
+        self,
         request: AuthorizationRequest,
         custom_flags: TacacsFlags,
     ) -> anyhow::Result<AuthorizationReply> {
@@ -61,7 +63,7 @@ pub trait AuthorizationFlow: ClientSessionFlowIoTrait {
     }
 }
 
-impl<T> AuthorizationFlow for T where T: ClientSessionFlowIoTrait + ?Sized {}
+impl<T> AuthorizationFlow for T where T: ClientSessionFlowIoTrait + Sized + Send {}
 
 #[cfg(test)]
 mod tests {
@@ -75,13 +77,14 @@ mod tests {
     use tacacsrs_messages::header::Header;
     use tacacsrs_messages::packet::Packet;
     use tacacsrs_messages::traits::TacacsBodyTrait;
-    use tacacsrs_networking::connection::TacacsConnection;
-    use tacacsrs_networking::traits::SessionManagementTrait;
-    use tacacsrs_networking::transport::mock::MockTransport;
     use tokio::sync::Mutex;
 
     struct TestIo {
         session_id: u32,
+        state: Arc<TestIoState>,
+    }
+
+    struct TestIoState {
         next_seq: Mutex<u8>,
         complete: Mutex<bool>,
         sent_packets: Mutex<Vec<Packet>>,
@@ -92,10 +95,12 @@ mod tests {
         fn new(session_id: u32, inbound_packets: VecDeque<Packet>) -> Self {
             Self {
                 session_id,
-                next_seq: Mutex::new(1),
-                complete: Mutex::new(false),
-                sent_packets: Mutex::new(Vec::new()),
-                inbound_packets: Mutex::new(inbound_packets),
+                state: Arc::new(TestIoState {
+                    next_seq: Mutex::new(1),
+                    complete: Mutex::new(false),
+                    sent_packets: Mutex::new(Vec::new()),
+                    inbound_packets: Mutex::new(inbound_packets),
+                }),
             }
         }
     }
@@ -103,11 +108,11 @@ mod tests {
     #[async_trait]
     impl ClientSessionFlowIoTrait for TestIo {
         async fn is_complete(&self) -> bool {
-            *self.complete.lock().await
+            *self.state.complete.lock().await
         }
 
         async fn next_sequence_number(&self) -> u8 {
-            let mut seq = self.next_seq.lock().await;
+            let mut seq = self.state.next_seq.lock().await;
             let current = *seq;
             *seq = current.wrapping_add(2);
             current
@@ -118,12 +123,13 @@ mod tests {
         }
 
         async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {
-            self.sent_packets.lock().await.push(packet);
+            self.state.sent_packets.lock().await.push(packet);
             Ok(())
         }
 
         async fn receive_packet(&self) -> anyhow::Result<Packet> {
-            self.inbound_packets
+            self.state
+                .inbound_packets
                 .lock()
                 .await
                 .pop_front()
@@ -131,7 +137,7 @@ mod tests {
         }
 
         async fn complete(&self) {
-            *self.complete.lock().await = true;
+            *self.state.complete.lock().await = true;
         }
     }
 
@@ -179,54 +185,18 @@ mod tests {
         )?;
 
         let io = TestIo::new(42, VecDeque::from([reply_packet]));
+        let state = io.state.clone();
         let reply = io.send_authorization_request(request).await?;
 
         assert_eq!(reply.status, TacacsAuthorizationStatus::TacPlusPassAdd);
         assert_eq!(reply.args, vec!["priv-lvl=15"]);
 
-        let sent_packets = io.sent_packets.lock().await;
+        let sent_packets = state.sent_packets.lock().await;
         assert_eq!(sent_packets.len(), 1);
         assert_eq!(sent_packets[0].header().session_id, 42);
         assert_eq!(sent_packets[0].header().seq_no, 1);
         assert_eq!(sent_packets[0].header().tacacs_type, TacacsType::TacPlusAuthorisation);
-        assert!(io.is_complete().await);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_send_authorization_request_with_session_adapter() -> anyhow::Result<()> {
-        let mock_transport = MockTransport::new();
-        let mock_control = mock_transport.coordinator();
-        let tacacs_connection = Arc::new(TacacsConnection::new(None));
-        tacacs_connection.run(mock_transport).await?;
-
-        let session = tacacs_connection.create_session().await?;
-        let session_id = session.session_id();
-        let request = authorization_request();
-        let authorization_reply = authorization_reply();
-
-        mock_control
-            .authorization_reply(&session, 2, &authorization_reply)
-            .send()
-            .await?;
-
-        let reply = session.send_authorization_request(request).await?;
-        assert_eq!(reply.status, TacacsAuthorizationStatus::TacPlusPassAdd);
-        assert_eq!(reply.args, vec!["priv-lvl=15"]);
-        assert!(session.is_complete().await);
-
-        let requests = mock_control.get_requests_for_session(session_id).await?;
-        let sent_packet = requests
-            .get(&1)
-            .ok_or_else(|| anyhow::Error::msg("Missing authorization request packet with seq 1"))?;
-        assert_eq!(sent_packet.header().session_id, session_id);
-        assert_eq!(sent_packet.header().seq_no, 1);
-        assert_eq!(sent_packet.header().tacacs_type, TacacsType::TacPlusAuthorisation);
-
-        let sent_request = AuthorizationRequest::from_bytes(sent_packet.body())?;
-        assert_eq!(sent_request.user, "admin");
-        assert_eq!(sent_request.args, vec!["service=shell", "cmd=show"]);
+        assert!(*state.complete.lock().await);
 
         Ok(())
     }

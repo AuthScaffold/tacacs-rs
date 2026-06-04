@@ -19,7 +19,7 @@ use super::channel_reader::ChannelReader;
 /// server responses.
 ///
 /// Internally delegates to a [`ChannelReader`].
-pub struct MockReadHalf {
+pub(crate) struct MockReadHalf {
     /// The channel-backed reader that does the actual buffering and reading.
     inner: ChannelReader,
 }

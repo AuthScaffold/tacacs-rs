@@ -179,18 +179,6 @@ pub enum Command {
         /// Additional arguments for the command
         #[arg(value_name = "ARG")]
         cmd_args: Option<Vec<String>>,
-
-        /// Set `TAC_PLUS_CUSTOM_FLAG_1` (0x40) on the packet header
-        #[arg(long)]
-        custom_flag_1: bool,
-
-        /// Set `TAC_PLUS_CUSTOM_FLAG_2` (0x80) on the packet header
-        #[arg(long)]
-        custom_flag_2: bool,
-
-        /// Use a specific session ID instead of a randomly generated one
-        #[arg(long)]
-        session_id: Option<u32>,
     },
 
     /// Perform authentication
@@ -204,17 +192,6 @@ pub enum Command {
         #[command(flatten)]
         args: RequestArgs,
     },
-}
-
-impl Command {
-    /// Returns the custom session ID from the command, if specified
-    #[must_use]
-    pub const fn session_id(&self) -> Option<u32> {
-        match self {
-            Self::Accounting { session_id, .. } => *session_id,
-            Self::Batch { .. } | Self::Authentication { .. } | Self::Authorization { .. } => None,
-        }
-    }
 }
 
 #[cfg(test)]

@@ -36,7 +36,7 @@ tacon --server-addr <HOST:PORT> [OPTIONS] <COMMAND>
 ### Global Options
 
 | Option | Description |
-|--------|-------------|
+| --- | --- |
 | `-s, --server-addr <ADDR>` | TACACS+ server address and port (e.g., `192.168.1.1:49`) |
 | `--config <FILE>` | Load direct connection settings from a YANG JSON config file |
 | `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
@@ -87,13 +87,10 @@ tacon -s 192.168.1.1:49 -k "secret" accounting \
 **Accounting Options:**
 
 | Option | Description |
-|--------|-------------|
+| --- | --- |
 | `-u, --user <USER>` | Username for the request |
 | `-p, --port <PORT>` | Port identifier (e.g., `tty0`, `console`) |
 | `-r, --rem-addr <ADDR>` | Remote address of the client |
-| `--custom-flag-1` | Set TAC_PLUS_CUSTOM_FLAG_1 (0x40) on packet header |
-| `--custom-flag-2` | Set TAC_PLUS_CUSTOM_FLAG_2 (0x80) on packet header |
-| `--session-id <ID>` | Use a specific session ID instead of random |
 
 #### Authentication
 
@@ -241,28 +238,28 @@ Batch files use JSON format to define multiple TACACS+ requests:
 ### Batch Metadata Options
 
 | Field | Description |
-|-------|-------------|
+| --- | --- |
 | `description` | Optional description of the batch |
 | `parallel` | Execute requests in parallel (`true`) or sequentially (`false`) |
 
 ### Request Fields
 
-| Field | Description |
-|-------|-------------|
-| `type` | Request type: `accounting`, `authentication`, or `authorization` |
-| `user` | Username for the request |
-| `port` | Port identifier |
-| `rem_addr` | Remote address of the client |
-| `cmd` | Command being executed (for accounting) |
+| Field      | Description                                                      |
+| ---------- | ---------------------------------------------------------------- |
+| `type`     | Request type: `accounting`, `authentication`, or `authorization` |
+| `user`     | Username for the request                                         |
+| `port`     | Port identifier                                                  |
+| `rem_addr` | Remote address of the client                                     |
+| `cmd`      | Command being executed (for accounting)                          |
 
 See the [examples](examples/) directory for sample batch files.
 
 ## Exit Codes
 
-| Code | Description |
-|------|-------------|
-| 0 | Success |
-| 1 | Error (connection failure, invalid arguments, request failure) |
+| Code | Description                                                    |
+| ---- | -------------------------------------------------------------- |
+| 0    | Success                                                        |
+| 1    | Error (connection failure, invalid arguments, request failure) |
 
 ## Related
 
