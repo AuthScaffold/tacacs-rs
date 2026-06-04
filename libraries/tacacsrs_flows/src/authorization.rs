@@ -69,6 +69,7 @@ impl<T> AuthorizationFlow for T where T: ClientSessionFlowIoTrait + Sized + Send
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use std::sync::Arc;
     use tacacsrs_messages::enumerations::{
         TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType,
         TacacsAuthorizationStatus, TacacsMajorVersion, TacacsMinorVersion, TacacsType,

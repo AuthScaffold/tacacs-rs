@@ -86,6 +86,7 @@ impl<T> AccountingFlow for T where T: ClientSessionFlowIoTrait + Sized + Send {}
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use std::sync::Arc;
     use tacacsrs_messages::enumerations::{
         TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
         TacacsAuthenticationService, TacacsAuthenticationType, TacacsMajorVersion,
