@@ -30,7 +30,7 @@ use anyhow::{Context, bail};
 use tacacsrs_agent_client::ipc;
 use tacacsrs_agent_client::ipc::tacacs_agent_server::{TacacsAgent, TacacsAgentServer};
 use tacacsrs_agent_client::{AccountingOperation, AuthorizationOperation, IpcEndpoint};
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
+use tacacsrs_config::{TacacsPlus, TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -200,6 +200,26 @@ impl TacacsClientService {
         Ok(Self { config, state })
     }
 
+    /// Applies a validated TACACS+ configuration snapshot to the running service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the snapshot does not contain at least one
+    /// accounting-capable upstream server or credential-reference resolution
+    /// fails. The existing runtime state is left unchanged on error.
+    pub async fn reload_tacacs_plus(&self, tacacs_plus: TacacsPlus) -> anyhow::Result<()> {
+        let mut reload_config = self.config.clone();
+        reload_config.tacacs_plus = tacacs_plus;
+        let servers = enumerate_accounting_servers(&reload_config)?;
+        self.state.reload_servers(servers).await
+    }
+
+    /// Returns the current number of accounting-capable upstream servers.
+    #[must_use]
+    pub fn server_count(&self) -> usize {
+        self.state.server_count()
+    }
+
     /// Starts serving local IPC requests until the process is terminated.
     ///
     /// Startup first performs a best-effort warm-up of the first responsive
@@ -211,7 +231,7 @@ impl TacacsClientService {
     ///
     /// Returns an error if the IPC listener cannot be created or if the local
     /// endpoint configuration is invalid for the current platform.
-    pub async fn serve(self) -> anyhow::Result<()> {
+    pub async fn serve(&self) -> anyhow::Result<()> {
         log::info!("Warming upstream TACACS+ connections");
         self.state.warm_connections().await;
         let probe_task = if self.state.server_count() > 1 {

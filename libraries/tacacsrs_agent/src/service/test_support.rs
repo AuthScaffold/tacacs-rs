@@ -33,6 +33,10 @@ impl UpstreamConnection for FakeConnection {
         &self.address
     }
 
+    async fn stop_accepting_new_sessions(&self) {
+        self.usable.store(false, Ordering::Relaxed);
+    }
+
     async fn send_accounting(
         &self,
         _request: &AccountingOperation,
@@ -154,6 +158,8 @@ impl UpstreamConnection for BlockingConnection {
     fn server_address(&self) -> &str {
         &self.address
     }
+
+    async fn stop_accepting_new_sessions(&self) {}
 
     async fn send_accounting(
         &self,

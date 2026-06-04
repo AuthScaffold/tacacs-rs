@@ -21,7 +21,7 @@ use tacacsrs_config::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerExt,
     TacacsPlusServerType, crypto_types::PrivateKeyFormat,
 };
-use tacacsrs_datastore::{ConfigDatastore, StaticDatastore};
+use tacacsrs_datastore::{ConfigChange, ConfigDatastore, StaticDatastore};
 use tacacsrs_sonic::{SonicConfigDb, SonicConnection, DEFAULT_REDIS_URL};
 
 #[cfg(feature = "psk")]
@@ -426,17 +426,28 @@ fn build_datastore(cli: &Cli) -> anyhow::Result<Arc<dyn ConfigDatastore>> {
     Ok(Arc::new(StaticDatastore::with_label(config, "cli")))
 }
 
+async fn apply_config_change(
+    label: &str,
+    change: ConfigChange,
+    service: &TacacsClientService,
+) -> anyhow::Result<()> {
+    log::info!(
+        "Datastore '{label}' reports configuration change: {} server(s); added={:?} removed={:?} modified={:?} root_metadata_changed={}",
+        change.config.server.len(),
+        change.delta.added_servers,
+        change.delta.removed_servers,
+        change.delta.modified_servers,
+        change.delta.root_metadata_changed,
+    );
+    service.reload_tacacs_plus((*change.config).clone()).await
+}
+
 /// Spawn a background task that consumes [`ConfigDatastore::subscribe`]
-/// events.
-///
-/// The current agent runtime does not yet support hot-swapping the upstream
-/// server set without a restart. Until that work lands, this task records
-/// every observed change and emits a clear operator-facing message indicating
-/// that an agent restart is required to apply the new configuration. The
-/// plumbing is shaped so that a future implementation can replace the body
-/// with an atomic [`ServiceState`](tacacsrs_agent::TacacsClientService) reload
-/// without changing the surrounding lifecycle.
-fn spawn_change_listener(datastore: Arc<dyn ConfigDatastore>) {
+/// events and applies each new snapshot to the running service.
+fn spawn_change_listener(
+    datastore: Arc<dyn ConfigDatastore>,
+    service: Arc<TacacsClientService>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let label = datastore.label();
         let mut stream = match datastore.subscribe().await {
@@ -448,18 +459,22 @@ fn spawn_change_listener(datastore: Arc<dyn ConfigDatastore>) {
         };
         log::info!("Subscribed to '{label}' configuration change notifications");
         while let Some(change) = stream.next().await {
-            log::warn!(
-                "Datastore '{label}' reports configuration change: {} server(s); added={:?} removed={:?} modified={:?} root_metadata_changed={}. \
-                Hot reload is not yet implemented; restart tacacsrs-agentd to apply the new configuration.",
-                change.config.server.len(),
-                change.delta.added_servers,
-                change.delta.removed_servers,
-                change.delta.modified_servers,
-                change.delta.root_metadata_changed,
-            );
+            match apply_config_change(label, change, &service).await {
+                Ok(()) => {
+                    log::info!(
+                        "Applied datastore '{label}' configuration reload with {} accounting-capable upstream server(s)",
+                        service.server_count(),
+                    );
+                }
+                Err(error) => {
+                    log::error!(
+                        "Failed to apply datastore '{label}' configuration reload; keeping previous runtime state: {error:#}"
+                    );
+                }
+            }
         }
         log::debug!("Datastore '{label}' change stream ended");
-    });
+    })
 }
 
 /// Starts the central TACACS+ client service process.
@@ -486,13 +501,12 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Linux deployments must use a Unix domain socket endpoint");
     }
 
+    let datastore = build_datastore(&cli)?;
     let tacacs_plus = {
-        let datastore = build_datastore(&cli)?;
         let initial = datastore.load().await.with_context(|| {
             format!("Failed to load configuration from datastore '{}'", datastore.label())
         })?;
         log::info!("Initial configuration loaded from datastore '{}'", datastore.label());
-        spawn_change_listener(Arc::clone(&datastore));
         initial
     };
 
@@ -510,16 +524,19 @@ async fn main() -> anyhow::Result<()> {
         log::info!("  {} ({}) -> {}:{}", server.name, security_label, server.address, server.port);
     }
 
-    let service = TacacsClientService::new(ServiceConfig {
-        endpoint,
-        tacacs_plus,
-        preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
-        #[cfg(unix)]
-        socket_mode: parse_socket_mode(&cli.socket_mode)?,
-        disable_certificate_verification: cli.insecure_disable_certificate_verification,
-    })
-    .context("Failed to build TACACS+ client service configuration")?;
+    let service = Arc::new(
+        TacacsClientService::new(ServiceConfig {
+            endpoint,
+            tacacs_plus,
+            preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
+            #[cfg(unix)]
+            socket_mode: parse_socket_mode(&cli.socket_mode)?,
+            disable_certificate_verification: cli.insecure_disable_certificate_verification,
+        })
+        .context("Failed to build TACACS+ client service configuration")?,
+    );
 
+    let _change_listener = spawn_change_listener(Arc::clone(&datastore), Arc::clone(&service));
     service.serve().await
 }
 
@@ -528,12 +545,20 @@ mod tests {
     use clap::Parser;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{tacacs_plus_from_cli, tacacs_plus_from_config, Cli};
+    use super::{Cli, apply_config_change, tacacs_plus_from_cli, tacacs_plus_from_config};
+    use tacacsrs_agent::{ServiceConfig, TacacsClientService};
+    use tacacsrs_agent_client::IpcEndpoint;
     #[cfg(feature = "psk")]
     use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::crypto_types::PrivateKeyFormat;
+    use tacacsrs_config::{
+        TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType,
+    };
+    use tacacsrs_datastore::{ConfigChange, ConfigDelta};
 
     fn sample_path(file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -554,6 +579,37 @@ mod tests {
         let path = std::env::temp_dir().join(format!("agentd-config-test-{unique}.json"));
         fs::write(&path, contents).expect("temp config should be written");
         path
+    }
+
+    fn test_config(addresses: &[&str]) -> TacacsPlus {
+        addresses
+            .iter()
+            .enumerate()
+            .map(|(index, address)| {
+                let (host, port) = address.rsplit_once(':').unwrap_or((*address, "49"));
+                TacacsPlusServerBuilder::new(
+                    format!("server-{index}"),
+                    TacacsPlusServerType::ACCOUNTING,
+                    host.to_owned(),
+                    port.parse().expect("test port should be valid"),
+                )
+                .with_shared_secret("test-secret".to_owned())
+            })
+            .fold(TacacsPlusBuilder::new(), TacacsPlusBuilder::with_server_builder)
+            .build()
+            .expect("test config should be valid")
+    }
+
+    fn test_service(config: TacacsPlus) -> TacacsClientService {
+        TacacsClientService::new(ServiceConfig {
+            endpoint: IpcEndpoint::Tcp("127.0.0.1:0".parse().expect("test endpoint is valid")),
+            tacacs_plus: config,
+            preferred_probe_interval: Duration::from_secs(1),
+            #[cfg(unix)]
+            socket_mode: 0o660,
+            disable_certificate_verification: false,
+        })
+        .expect("test service should be valid")
     }
 
     #[test]
@@ -602,6 +658,23 @@ mod tests {
 
         let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
         assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
+    }
+
+    #[tokio::test]
+    async fn apply_config_change_reloads_service_without_restart() {
+        let initial = test_config(&["192.0.2.10:49"]);
+        let service = test_service(initial.clone());
+        assert_eq!(service.server_count(), 1);
+
+        let updated = test_config(&["192.0.2.10:49", "192.0.2.11:49"]);
+        let change = ConfigChange {
+            delta: ConfigDelta::diff(Some(&initial), &updated),
+            config: Arc::new(updated),
+        };
+
+        apply_config_change("test", change, &service).await.unwrap();
+
+        assert_eq!(service.server_count(), 2);
     }
 
     #[test]

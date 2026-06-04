@@ -19,7 +19,7 @@
 //! one in-flight reconnect attempt instead of stampeding the same TACACS+
 //! server with duplicate TLS handshakes.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::bail;
@@ -43,16 +43,22 @@ mod common;
 /// background probe can reset it back to `0` (the preferred server) once
 /// recovery is detected.
 pub(super) struct ServiceState {
-    /// Per-server state including cached connections and reconnect locks.
-    servers: Vec<ServerState>,
+    /// Current immutable server-set snapshot used by new IPC requests.
+    server_set: StdRwLock<Arc<ServerSet>>,
     /// Factory for creating new upstream connections.
     connector: Arc<dyn UpstreamConnector>,
-    /// Index into `servers` of the currently preferred server for new sessions.
-    active_index: RwLock<usize>,
     /// Interval between preferred-server recovery probes.
     preferred_probe_interval: std::time::Duration,
     /// Tracks in-flight IPC handlers for graceful shutdown draining.
     client_tracker: Arc<ClientTracker>,
+}
+
+/// Immutable configured server snapshot plus its mutable failover cursor.
+struct ServerSet {
+    /// Per-server state including cached connections and reconnect locks.
+    servers: Vec<Arc<ServerState>>,
+    /// Index into `servers` of the currently preferred server for new sessions.
+    active_index: RwLock<usize>,
 }
 
 /// Per-server cached connection state.
@@ -78,6 +84,8 @@ struct ServerState {
 /// Contains both the server index (for recording failover) and the
 /// connection handle (for executing the request).
 pub(super) struct BoundServer {
+    /// The server snapshot this request was bound against.
+    server_set: Arc<ServerSet>,
     /// Index into the service's server list.
     pub(super) index: usize,
     /// The upstream connection to use for this request.
@@ -105,6 +113,48 @@ struct ClientTracker {
 /// the shutdown waiter.
 struct ClientGuard {
     tracker: Arc<ClientTracker>,
+}
+
+impl ServerState {
+    fn new(server: TacacsPlusServer) -> Self {
+        Self {
+            server,
+            connection: RwLock::new(None),
+            connect_lock: Mutex::new(()),
+            completed_connect_attempts: AtomicU64::new(0),
+        }
+    }
+
+    async fn drain_cached_connection(&self) {
+        let connection = self.connection.write().await.take();
+        if let Some(connection) = connection {
+            log::debug!(
+                "Draining cached upstream connection for {} during configuration reload",
+                self.server.socket_address(),
+            );
+            connection.stop_accepting_new_sessions().await;
+        }
+    }
+}
+
+impl ServerSet {
+    fn new(servers: Vec<Arc<ServerState>>, active_index: usize) -> Self {
+        Self {
+            servers,
+            active_index: RwLock::new(active_index),
+        }
+    }
+
+    fn server_count(&self) -> usize {
+        self.servers.len()
+    }
+}
+
+fn servers_equivalent(left: &TacacsPlusServer, right: &TacacsPlusServer) -> bool {
+    match (serde_json::to_value(left), serde_json::to_value(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 impl ClientTracker {
@@ -167,21 +217,26 @@ impl ServiceState {
         connector: Arc<dyn UpstreamConnector>,
         preferred_probe_interval: std::time::Duration,
     ) -> Self {
+        let servers = servers
+            .into_iter()
+            .map(ServerState::new)
+            .map(Arc::new)
+            .collect();
         Self {
-            servers: servers
-                .into_iter()
-                .map(|server| ServerState {
-                    server,
-                    connection: RwLock::new(None),
-                    connect_lock: Mutex::new(()),
-                    completed_connect_attempts: AtomicU64::new(0),
-                })
-                .collect(),
+            server_set: StdRwLock::new(Arc::new(ServerSet::new(servers, 0))),
             connector,
-            active_index: RwLock::new(0),
             preferred_probe_interval,
             client_tracker: Arc::new(ClientTracker::default()),
         }
+    }
+
+    fn current_server_set(&self) -> Arc<ServerSet> {
+        Arc::clone(
+            &self
+                .server_set
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Attempts to establish or refresh the first responsive cached connection
@@ -196,13 +251,14 @@ impl ServiceState {
     /// If no server is reachable during startup the service still starts; the
     /// first IPC requests will retry failover on demand.
     pub(super) async fn warm_connections(&self) {
-        let start_index = *self.active_index.read().await;
+        let server_set = self.current_server_set();
+        let start_index = *server_set.active_index.read().await;
 
-        for offset in 0..self.servers.len() {
-            let index = (start_index + offset) % self.servers.len();
-            match self.ensure_connection(index).await {
+        for offset in 0..server_set.server_count() {
+            let index = (start_index + offset) % server_set.server_count();
+            match self.ensure_connection(&server_set.servers[index]).await {
                 Ok(connection) => {
-                    *self.active_index.write().await = index;
+                    *server_set.active_index.write().await = index;
                     log::info!(
                         "Initialized startup upstream connection using {}",
                         connection.server_address()
@@ -212,7 +268,7 @@ impl ServiceState {
                 Err(error) => {
                     log::warn!(
                         "Initial connection attempt to {} failed: {error}",
-                        self.servers[index].server.socket_address()
+                        server_set.servers[index].server.socket_address()
                     );
                 }
             }
@@ -225,7 +281,73 @@ impl ServiceState {
 
     /// Returns the number of configured upstream TACACS+ servers.
     pub(super) fn server_count(&self) -> usize {
-        self.servers.len()
+        self.current_server_set().server_count()
+    }
+
+    /// Atomically replaces the configured upstream TACACS+ server set.
+    ///
+    /// New IPC requests observe the new ordered server snapshot immediately.
+    /// Requests that already bound to the previous snapshot keep running with
+    /// their existing connection handles. Cached connections for unchanged
+    /// servers are preserved, while removed or modified server connections are
+    /// marked as not accepting new sessions and then dropped from the active
+    /// runtime state.
+    pub(super) async fn reload_servers(
+        &self,
+        servers: Vec<TacacsPlusServer>,
+    ) -> anyhow::Result<()> {
+        if servers.is_empty() {
+            bail!("At least one accounting-capable TACACS+ server must be configured");
+        }
+
+        let previous = self.current_server_set();
+        let previous_active_name = {
+            let active_index = *previous.active_index.read().await;
+            previous.servers[active_index].server.name.clone()
+        };
+
+        let mut new_server_states = Vec::with_capacity(servers.len());
+        for server in servers {
+            let reusable = previous
+                .servers
+                .iter()
+                .find(|state| {
+                    state.server.name == server.name && servers_equivalent(&state.server, &server)
+                })
+                .cloned();
+            new_server_states.push(reusable.unwrap_or_else(|| Arc::new(ServerState::new(server))));
+        }
+
+        let new_active_index = new_server_states
+            .iter()
+            .position(|state| state.server.name == previous_active_name)
+            .unwrap_or(0);
+        let new_set = Arc::new(ServerSet::new(new_server_states, new_active_index));
+
+        {
+            let mut current = self
+                .server_set
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *current = Arc::clone(&new_set);
+        }
+
+        log::info!(
+            "Reloaded TACACS+ upstream server set: {} server(s), active index {} ({})",
+            new_set.server_count(),
+            new_active_index,
+            new_set.servers[new_active_index].server.socket_address(),
+        );
+
+        for stale in previous
+            .servers
+            .iter()
+            .filter(|old| !new_set.servers.iter().any(|new| Arc::ptr_eq(old, new)))
+        {
+            stale.drain_cached_connection().await;
+        }
+
+        Ok(())
     }
 
     /// Starts the background probe that periodically checks whether the
@@ -239,38 +361,39 @@ impl ServiceState {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(state.preferred_probe_interval).await;
+                let server_set = state.current_server_set();
 
-                if state.servers.len() <= 1 {
+                if server_set.server_count() <= 1 {
                     continue;
                 }
 
-                let active_index = *state.active_index.read().await;
+                let active_index = *server_set.active_index.read().await;
                 if active_index == 0 {
                     log::trace!(
                         "Preferred server probe: already using preferred server {}",
-                        state.servers[0].server.socket_address(),
+                        server_set.servers[0].server.socket_address(),
                     );
                     continue;
                 }
 
                 log::debug!(
                     "Probing preferred server {} (currently failed over to {})",
-                    state.servers[0].server.socket_address(),
-                    state.servers[active_index].server.socket_address(),
+                    server_set.servers[0].server.socket_address(),
+                    server_set.servers[active_index].server.socket_address(),
                 );
 
-                match state.ensure_connection(0).await {
+                match state.ensure_connection(&server_set.servers[0]).await {
                     Ok(connection) => {
                         log::info!(
                             "Preferred TACACS+ server {} recovered; routing new sessions back to it",
                             connection.server_address()
                         );
-                        *state.active_index.write().await = 0;
+                        *server_set.active_index.write().await = 0;
                     }
                     Err(error) => {
                         log::debug!(
                             "Preferred TACACS+ server {} probe failed: {error:#}",
-                            state.servers[0].server.socket_address(),
+                            server_set.servers[0].server.socket_address(),
                         );
                     }
                 }
@@ -299,21 +422,26 @@ impl ServiceState {
     /// servers are currently unavailable rather than that startup accepted an
     /// invalid configuration.
     pub(super) async fn bind_server_for_new_session(&self) -> anyhow::Result<BoundServer> {
-        let start_index = *self.active_index.read().await;
+        let server_set = self.current_server_set();
+        let start_index = *server_set.active_index.read().await;
 
-        for offset in 0..self.servers.len() {
-            let index = (start_index + offset) % self.servers.len();
-            match self.ensure_connection(index).await {
+        for offset in 0..server_set.server_count() {
+            let index = (start_index + offset) % server_set.server_count();
+            match self.ensure_connection(&server_set.servers[index]).await {
                 Ok(connection) => {
-                    *self.active_index.write().await = index;
-                    return Ok(BoundServer { index, connection });
+                    *server_set.active_index.write().await = index;
+                    return Ok(BoundServer {
+                        server_set,
+                        index,
+                        connection,
+                    });
                 }
                 Err(error) => {
                     log::warn!(
                         "TACACS+ server {} is non-responsive: {error}",
-                        self.servers[index].server.socket_address()
+                        server_set.servers[index].server.socket_address()
                     );
-                    self.note_failure(index).await;
+                    self.note_failure(&server_set, index).await;
                 }
             }
         }
@@ -351,57 +479,57 @@ impl ServiceState {
     /// returned error into a retriable
     /// [`tacacsrs_agent_client::ServiceError`] for
     /// the affected IPC request.
-    async fn ensure_connection(&self, index: usize) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        let existing_conn = self.servers[index].connection.read().await.clone();
+    async fn ensure_connection(
+        &self,
+        server_state: &Arc<ServerState>,
+    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        let existing_conn = server_state.connection.read().await.clone();
         if let Some(existing) = existing_conn {
             log::debug!(
                 "Reusing cached upstream connection manager for {}",
-                self.servers[index].server.socket_address()
+                server_state.server.socket_address()
             );
             return Ok(existing);
         }
 
-        let reconnect_generation = self.servers[index]
+        let reconnect_generation = server_state
             .completed_connect_attempts
             .load(Ordering::Acquire);
-        let _connect_guard = self.servers[index].connect_lock.lock().await;
+        let _connect_guard = server_state.connect_lock.lock().await;
 
-        let existing_conn = self.servers[index].connection.read().await.clone();
+        let existing_conn = server_state.connection.read().await.clone();
         if let Some(existing) = existing_conn {
             log::debug!(
                 "Reusing cached upstream connection manager for {} after waiting on another reconnect",
-                self.servers[index].server.socket_address()
+                server_state.server.socket_address()
             );
             return Ok(existing);
         }
 
-        if self.servers[index]
+        if server_state
             .completed_connect_attempts
             .load(Ordering::Acquire)
             != reconnect_generation
         {
             log::debug!(
                 "Skipping duplicate reconnect to {}; another attempt already completed",
-                self.servers[index].server.socket_address(),
+                server_state.server.socket_address(),
             );
             bail!(
                 "Another reconnect attempt for TACACS+ server {} already completed for this request wave",
-                self.servers[index].server.socket_address()
+                server_state.server.socket_address()
             );
         }
 
-        log::debug!(
-            "Opening upstream connection to {}",
-            self.servers[index].server.socket_address()
-        );
-        match self.connector.connect(&self.servers[index].server).await {
+        log::debug!("Opening upstream connection to {}", server_state.server.socket_address());
+        match self.connector.connect(&server_state.server).await {
             Ok(connection) => {
                 log::info!(
                     "Upstream connection to {} established successfully",
-                    self.servers[index].server.socket_address(),
+                    server_state.server.socket_address(),
                 );
-                *self.servers[index].connection.write().await = Some(Arc::clone(&connection));
-                self.servers[index]
+                *server_state.connection.write().await = Some(Arc::clone(&connection));
+                server_state
                     .completed_connect_attempts
                     .fetch_add(1, Ordering::AcqRel);
                 Ok(connection)
@@ -409,10 +537,10 @@ impl ServiceState {
             Err(error) => {
                 log::warn!(
                     "Failed to connect to upstream TACACS+ server {}: {error:#}",
-                    self.servers[index].server.socket_address(),
+                    server_state.server.socket_address(),
                 );
-                *self.servers[index].connection.write().await = None;
-                self.servers[index]
+                *server_state.connection.write().await = None;
+                server_state
                     .completed_connect_attempts
                     .fetch_add(1, Ordering::AcqRel);
                 Err(error)
@@ -430,19 +558,19 @@ impl ServiceState {
     /// This does not itself send any reply to IPC clients. The client that hit
     /// the failure receives the error from the request execution path, while
     /// this method updates shared state for subsequent clients.
-    async fn note_failure(&self, index: usize) {
+    async fn note_failure(&self, server_set: &Arc<ServerSet>, index: usize) {
         // Keep request-time failure recording ordered with reconnect attempts
         // so a waiter that is about to reconnect observes the cleared cache
         // before it decides whether it must establish a fresh connection.
-        let _connect_guard = self.servers[index].connect_lock.lock().await;
-        *self.servers[index].connection.write().await = None;
-        let mut active_index = self.active_index.write().await;
+        let _connect_guard = server_set.servers[index].connect_lock.lock().await;
+        *server_set.servers[index].connection.write().await = None;
+        let mut active_index = server_set.active_index.write().await;
         if *active_index == index {
-            let next_index = (index + 1) % self.servers.len();
+            let next_index = (index + 1) % server_set.server_count();
             log::info!(
                 "Failing over new IPC sessions from {} to {}",
-                self.servers[index].server.socket_address(),
-                self.servers[next_index].server.socket_address()
+                server_set.servers[index].server.socket_address(),
+                server_set.servers[next_index].server.socket_address()
             );
             *active_index = next_index;
         }
@@ -459,7 +587,7 @@ impl ServiceState {
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use tacacsrs_config::TacacsPlusServer;
@@ -578,6 +706,86 @@ mod tests {
         let bound = state.bind_server_for_new_session().await.unwrap();
         assert_eq!(bound.connection.server_address(), second.address);
         assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    async fn reload_preserves_unchanged_cached_connection() {
+        let first = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let second = Arc::new(FakeConnection {
+            address: "server-b:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+
+        let connector = Arc::new(FakeConnector::new(HashMap::from([
+            (first.address.clone(), Arc::clone(&first)),
+            (second.address.clone(), Arc::clone(&second)),
+        ])));
+
+        let state = ServiceState::new(
+            vec![test_server("server-a:49")],
+            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(25),
+        );
+
+        state.warm_connections().await;
+        assert_eq!(connector.connect_attempts_for(&first.address).await, 1);
+
+        state
+            .reload_servers(vec![test_server("server-a:49"), test_server("server-b:49")])
+            .await
+            .unwrap();
+
+        let bound = state.bind_server_for_new_session().await.unwrap();
+        assert_eq!(bound.connection.server_address(), first.address);
+        assert_eq!(connector.connect_attempts_for(&first.address).await, 1);
+        assert_eq!(connector.connect_attempts_for(&second.address).await, 0);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    async fn reload_drops_removed_or_modified_cached_connection() {
+        let first = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let second = Arc::new(FakeConnection {
+            address: "server-b:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+
+        let connector = Arc::new(FakeConnector::new(HashMap::from([
+            (first.address.clone(), Arc::clone(&first)),
+            (second.address.clone(), Arc::clone(&second)),
+        ])));
+
+        let state = ServiceState::new(
+            vec![test_server("server-a:49")],
+            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(25),
+        );
+
+        state.warm_connections().await;
+        assert_eq!(connector.connect_attempts_for(&first.address).await, 1);
+
+        let mut modified = test_server("server-a:49");
+        modified.timeout = 10;
+        state
+            .reload_servers(vec![modified, test_server("server-b:49")])
+            .await
+            .unwrap();
+
+        let bound = state.bind_server_for_new_session().await.unwrap();
+        assert_eq!(bound.connection.server_address(), second.address);
+        assert_eq!(connector.connect_attempts_for(&first.address).await, 2);
+        assert!(!first.usable.load(Ordering::Relaxed));
     }
 
     #[tokio::test]

@@ -69,7 +69,8 @@ impl ServiceState {
                     Operation::DISPLAY_NAME,
                     bound_server.connection.server_address(),
                 );
-                self.note_failure(bound_server.index).await;
+                self.note_failure(&bound_server.server_set, bound_server.index)
+                    .await;
                 Err(ServiceError::new(error.to_string())
                     .with_server(bound_server.connection.server_address())
                     .retriable(true))

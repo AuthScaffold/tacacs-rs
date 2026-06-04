@@ -18,6 +18,13 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// Returns the `host:port` address string for this upstream server.
     fn server_address(&self) -> &str;
 
+    /// Stops this cached connection from accepting new TACACS+ sessions.
+    ///
+    /// Existing sessions that have already been created are allowed to drain
+    /// through the networking runtime. The service calls this when a datastore
+    /// reload removes or replaces a server definition.
+    async fn stop_accepting_new_sessions(&self);
+
     /// Sends one accounting request and returns the server's reply.
     ///
     /// # Errors

@@ -66,6 +66,10 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         &self.server_address
     }
 
+    async fn stop_accepting_new_sessions(&self) {
+        self.connection.stop_accepting_new_sessions().await;
+    }
+
     async fn send_accounting(
         &self,
         request: &AccountingOperation,

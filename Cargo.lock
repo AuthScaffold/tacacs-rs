@@ -1914,6 +1914,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "log",
+ "serde_json",
  "tacacsrs-agent-client",
  "tacacsrs-config",
  "tacacsrs-flows",

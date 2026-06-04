@@ -260,6 +260,10 @@ impl MultiplexedConnection {
         self.session_manager.can_create_sessions().await
     }
 
+    pub(crate) async fn disable_new_sessions(self: &Arc<Self>) {
+        self.session_manager.disable_new_sessions().await;
+    }
+
     pub(crate) async fn create_session(self: &Arc<Self>) -> anyhow::Result<SharedSession> {
         self.session_manager.create_session().await
     }
