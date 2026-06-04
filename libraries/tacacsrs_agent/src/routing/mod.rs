@@ -1,6 +1,6 @@
 //! Internal state machine for IPC request routing and TACACS+ server failover.
 //!
-//! [`RoutingState`] is shared by all listener tasks. It owns the currently
+//! `RoutingState` is shared by all listener tasks. It owns the currently
 //! preferred server index, cached upstream connections, and the active-client
 //! drain tracking used during graceful shutdown.
 //!

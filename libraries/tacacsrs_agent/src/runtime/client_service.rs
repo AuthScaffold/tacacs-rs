@@ -20,7 +20,7 @@
 //! 3. The Unix socket path is removed (Unix only).
 
 #[cfg(all(test, unix))]
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use tacacsrs_config::TacacsPlus;
@@ -160,7 +160,7 @@ impl TacacsClientService {
     #[cfg(all(test, unix))]
     pub(super) async fn prepare_unix_listener(
         &self,
-        path: &PathBuf,
+        path: &Path,
     ) -> anyhow::Result<tokio::net::UnixListener> {
         listener::prepare_unix_listener(path, self.config.socket_mode).await
     }
