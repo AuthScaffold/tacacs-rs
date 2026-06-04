@@ -36,7 +36,7 @@ pub enum PskKeyExchange {
 
 #[cfg(feature = "psk")]
 fn psk_dhe_ke_supported_group_parser(
-) -> impl clap::builder::TypedValueParser<Value = PskDheKeSupportedGroup> + Clone {
+) -> impl clap::builder::TypedValueParser<Value = PskDheKeSupportedGroup> {
     clap::builder::PossibleValuesParser::new(PskDheKeSupportedGroup::ALLOWED_VALUES.iter().copied())
         .map(|value| {
             PskDheKeSupportedGroup::from_rfc7951_str(&value)

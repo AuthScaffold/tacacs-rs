@@ -29,6 +29,7 @@ impl PskDheKeGroups {
         Some(Self {
             openssl_list: groups
                 .iter()
+                .copied()
                 .map(openssl_group_name)
                 .collect::<Vec<_>>()
                 .join(":"),
@@ -47,7 +48,7 @@ impl PskDheKeGroups {
     }
 }
 
-fn openssl_group_name(group: &PskDheKeSupportedGroup) -> &'static str {
+fn openssl_group_name(group: PskDheKeSupportedGroup) -> &'static str {
     match group {
         PskDheKeSupportedGroup::X25519 => "X25519",
         PskDheKeSupportedGroup::Secp256r1 => "P-256",
