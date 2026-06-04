@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::task;
 
@@ -106,7 +107,11 @@ impl MultiplexedConnection {
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
-        let receiver = self.session_manager.take_receiver().await.unwrap();
+        let receiver = self
+            .session_manager
+            .take_receiver()
+            .await
+            .context("multiplexed TACACS+ connection runtime has already been started")?;
 
         let write_future = async {
             match run_write_loop(
@@ -204,14 +209,14 @@ impl MultiplexedConnection {
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
                         "Failed to read header from network due to error: {error}"
                     );
-                    return Err(anyhow::Error::msg(error.to_string()));
+                    return Err(error).context("failed to read TACACS+ packet header");
                 }
                 PacketReadResult::HeaderParseError(error) => {
                     log::error!(
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
                         "Failed to parse header due to error: {error}"
                     );
-                    continue;
+                    return Err(error).context("failed to parse TACACS+ packet header");
                 }
                 PacketReadResult::BodyLengthExceeded {
                     session_id,
@@ -231,7 +236,7 @@ impl MultiplexedConnection {
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
                         "Failed to read body for session id {session_id} due to error: {error}"
                     );
-                    return Err(anyhow::Error::msg(error.to_string()));
+                    return Err(error).context("failed to read TACACS+ packet body");
                 }
                 PacketReadResult::PacketCreateError { session_id, error } => {
                     log::error!(

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Context;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
@@ -57,7 +58,7 @@ pub(super) async fn run_write_loop(
                     target: "tacacsrs_networking::runtime::multiplexed::write_loop",
                     "Failed to write packet for session id {session_id} due to error: {error}"
                 );
-                return Err(anyhow::Error::msg(error.to_string()));
+                return Err(error).context("failed to write TACACS+ packet");
             }
         }
     }

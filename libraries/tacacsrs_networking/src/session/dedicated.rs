@@ -187,12 +187,30 @@ impl DedicatedSession {
             None => packet,
         };
 
-        let mut connection = self.connection.lock().await;
-        let connection = connection
-            .as_mut()
-            .context("dedicated TACACS+ session is already complete")?;
-        connection.write_packet(packet).await?;
-        *self.expected_response_sequence.lock().await = Some(response_sequence);
+        {
+            let mut expected_response_sequence = self.expected_response_sequence.lock().await;
+            if expected_response_sequence.is_some() {
+                anyhow::bail!(
+                    "dedicated TACACS+ session {} already has a request awaiting response",
+                    self.session_id,
+                );
+            }
+            *expected_response_sequence = Some(response_sequence);
+        }
+
+        let write_result = {
+            let mut connection = self.connection.lock().await;
+            match connection.as_mut() {
+                Some(connection) => connection.write_packet(packet).await,
+                None => Err(anyhow::anyhow!("dedicated TACACS+ session is already complete")),
+            }
+        };
+
+        if let Err(error) = write_result {
+            *self.expected_response_sequence.lock().await = None;
+            return Err(error);
+        }
+
         Ok(())
     }
 
@@ -382,6 +400,37 @@ mod tests {
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+    }
+
+    #[tokio::test]
+    async fn dedicated_session_rejects_send_while_response_is_pending() {
+        let mock = MockTransport::new();
+        let session = DedicatedSession::new(BoxedTransport::new(mock), None, None);
+        let session_id = session.session_id();
+
+        session
+            .send_packet(test_packet(
+                session_id,
+                1,
+                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                b"request",
+            ))
+            .await
+            .unwrap();
+
+        let error = session
+            .send_packet(test_packet(
+                session_id,
+                3,
+                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                b"next request",
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("already has a request awaiting response"));
     }
 
     #[tokio::test]
