@@ -1,4 +1,8 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
+#[cfg(feature = "psk")]
+use clap::builder::TypedValueParser as _;
+#[cfg(feature = "psk")]
+use tacacsrs_config::PskDheKeSupportedGroup;
 
 /// Validation relaxation that loosens a specific YANG constraint.
 ///
@@ -15,6 +19,29 @@ pub enum ValidationRelaxation {
     /// Allow plain TCP without TLS or TACACS+ shared-secret obfuscation.
     #[value(name = "allow-plain-tcp-without-shared-secret")]
     AllowPlainTcpWithoutSharedSecret,
+}
+
+/// TLS 1.3 PSK key-exchange behavior.
+#[cfg(feature = "psk")]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum PskKeyExchange {
+    /// Use TLS 1.3 PSK with ephemeral (EC)DHE key exchange.
+    #[value(name = "psk-dhe")]
+    PskDhe,
+
+    /// Use TLS 1.3 PSK-only key exchange for interoperability.
+    #[value(name = "psk-only")]
+    PskOnly,
+}
+
+#[cfg(feature = "psk")]
+fn psk_dhe_ke_supported_group_parser(
+) -> impl clap::builder::TypedValueParser<Value = PskDheKeSupportedGroup> {
+    clap::builder::PossibleValuesParser::new(PskDheKeSupportedGroup::ALLOWED_VALUES.iter().copied())
+        .map(|value| {
+            PskDheKeSupportedGroup::from_rfc7951_str(&value)
+                .expect("clap accepted only generated PSK-DHE group values")
+        })
 }
 
 /// TACACS+ Client CLI
@@ -83,6 +110,24 @@ pub struct Cli {
     #[cfg(feature = "psk")]
     #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
     pub psk_key: Option<String>,
+
+    /// TLS 1.3 PSK key-exchange mode.
+    #[cfg(feature = "psk")]
+    #[arg(long, value_enum, requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
+    pub psk_key_exchange: Option<PskKeyExchange>,
+
+    /// Comma-separated TLS 1.3 PSK-DHE groups in preferred order.
+    #[cfg(feature = "psk")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "GROUP[,GROUP...]",
+        value_parser = psk_dhe_ke_supported_group_parser(),
+        help = "Comma-separated TLS 1.3 PSK-DHE groups in preferred order",
+        requires_all = ["use_tls", "psk_identity", "psk_key"],
+        conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"]
+    )]
+    pub psk_key_exchange_groups: Vec<PskDheKeSupportedGroup>,
 
     /// Increase verbosity level (-v, -vv, -vvv, -vvvv)
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -235,6 +280,79 @@ mod tests {
             "--use-tls",
             "--client-certificate",
             "cert.der",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn test_psk_key_exchange_mode_parses() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange",
+            "psk-only",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().psk_key_exchange, Some(PskKeyExchange::PskOnly));
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn test_psk_key_exchange_groups_parse_comma_separated_values() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange-groups",
+            "secp384r1,secp256r1",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_ok());
+        let cli = result.unwrap();
+        assert!(matches!(
+            cli.psk_key_exchange_groups.first(),
+            Some(PskDheKeSupportedGroup::Secp384r1)
+        ));
+        assert!(matches!(
+            cli.psk_key_exchange_groups.get(1),
+            Some(PskDheKeSupportedGroup::Secp256r1)
+        ));
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn test_psk_key_exchange_groups_reject_unknown_group() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange-groups",
+            "secp224r1",
             "batch",
             "batch.txt",
         ]);

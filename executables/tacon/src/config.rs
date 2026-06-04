@@ -6,6 +6,8 @@ use tacacsrs_config::{
 };
 
 use crate::cli::{Cli, Command};
+#[cfg(feature = "psk")]
+use crate::cli::PskKeyExchange;
 
 fn data_contains_pem_header(data: &[u8]) -> bool {
     const PEM_HEADER: &[u8] = b"-----BEGIN";
@@ -113,10 +115,9 @@ fn validation_options_from_cli(cli: &Cli) -> ValidationOptions {
     // cli::ValidationRelaxation is a separate enum that mirrors
     // tacacsrs_config::ValidationRelaxation.  The duplication is intentional:
     // build.rs includes cli.rs via `include!` to auto-generate the man page, so
-    // cli.rs may only depend on crates listed in [build-dependencies] (currently
-    // just clap).  Introducing a tacacsrs_config dependency in cli.rs would
-    // break that constraint.  This function is the single mapping point, so
-    // adding a new relaxation requires one change here and one in cli.rs.
+    // cli.rs may only depend on crates listed in [build-dependencies]. This
+    // function is the single mapping point, so adding a new relaxation requires
+    // one change here and one in cli.rs.
     use crate::cli::ValidationRelaxation as CliRelaxation;
     use tacacsrs_config::ValidationRelaxation;
 
@@ -147,8 +148,12 @@ fn populate_security_from_cli(
         if let (Some(psk_identity), Some(psk_key)) =
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
         {
-            let tls_builder =
-                builder.with_tls13_epsk(psk_identity.clone(), psk_key.as_bytes().to_vec());
+            let tls_builder = apply_psk_key_exchange(
+                cli,
+                builder,
+                psk_identity.clone(),
+                psk_key.as_bytes().to_vec(),
+            )?;
 
             if options.allows(&ValidationRelaxation::AllowTlsWithSharedSecret) {
                 if let Some(ref secret) = cli.shared_secret {
@@ -211,6 +216,33 @@ fn populate_security_from_cli(
             None => builder.build(),
         })
     }
+}
+
+#[cfg(feature = "psk")]
+fn apply_psk_key_exchange(
+    cli: &Cli,
+    builder: TacacsPlusServerBuilder,
+    psk_identity: String,
+    psk_key: Vec<u8>,
+) -> anyhow::Result<TacacsPlusServerBuilder> {
+    if matches!(cli.psk_key_exchange, Some(PskKeyExchange::PskOnly))
+        && !cli.psk_key_exchange_groups.is_empty()
+    {
+        anyhow::bail!(
+            "--psk-key-exchange psk-only cannot be combined with --psk-key-exchange-groups; remove the groups or use --psk-key-exchange psk-dhe"
+        );
+    }
+
+    Ok(match cli.psk_key_exchange {
+        Some(PskKeyExchange::PskOnly) => builder.with_tls13_epsk_psk_only(psk_identity, psk_key),
+        Some(PskKeyExchange::PskDhe) | None if !cli.psk_key_exchange_groups.is_empty() => builder
+            .with_tls13_epsk_with_psk_dhe_groups(
+                psk_identity,
+                psk_key,
+                cli.psk_key_exchange_groups.clone(),
+            ),
+        Some(PskKeyExchange::PskDhe) | None => builder.with_tls13_epsk(psk_identity, psk_key),
+    })
 }
 
 /// Loads a [`TacacsPlus`] root from a YANG JSON string with the supplied validation options.
@@ -338,6 +370,8 @@ mod tests {
 
     use super::{select_first_server_for_type, tacacs_plus_from_cli, tacacs_plus_from_str};
     use crate::cli::Cli;
+    #[cfg(feature = "psk")]
+    use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::{TacacsPlusServerType, ValidationOptions, crypto_types::PrivateKeyFormat};
 
     fn sample_path(file_name: &str) -> PathBuf {
@@ -617,5 +651,133 @@ mod tests {
             root.server[0].shared_secret.is_none(),
             "shared secret should not be set without relaxation",
         );
+    }
+
+    #[cfg(feature = "psk")]
+    fn tls13_epsk_groups(cli: &Cli) -> Vec<PskDheKeSupportedGroup> {
+        let mut root = tacacs_plus_from_cli(cli).expect("PSK config should build");
+        root.server
+            .remove(0)
+            .client_identity
+            .expect("client identity")
+            .tls13_epsk
+            .expect("tls13 epsk")
+            .psk_dhe_ke_groups
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn tacacs_plus_from_cli_defaults_psk_to_dhe_groups() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        let groups = tls13_epsk_groups(&cli);
+
+        assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::Secp384r1)));
+        assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp256r1)));
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn tacacs_plus_from_cli_allows_psk_only_mode() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange",
+            "psk-only",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        assert!(tls13_epsk_groups(&cli).is_empty());
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn tacacs_plus_from_cli_uses_custom_psk_dhe_groups() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange-groups",
+            "secp256r1,x25519",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        let groups = tls13_epsk_groups(&cli);
+
+        assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::Secp256r1)));
+        assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::X25519)));
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn tacacs_plus_from_cli_rejects_psk_only_with_groups() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "secret",
+            "--psk-key-exchange",
+            "psk-only",
+            "--psk-key-exchange-groups",
+            "secp384r1",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        let error = tacacs_plus_from_cli(&cli).expect_err("PSK-only plus groups should fail");
+        assert!(error.to_string().contains("--psk-key-exchange psk-only"));
+        assert!(error.to_string().contains("--psk-key-exchange-groups"));
     }
 }

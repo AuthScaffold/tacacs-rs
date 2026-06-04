@@ -5,7 +5,7 @@
 ## What this crate contains
 
 - Generated Rust types in `src/generated.rs` that mirror the expanded YANG tree
-- Generated identity set enums for YANG `identityref` leaves (key format types)
+- Generated enums for YANG enumerations and `identityref` leaves (key format types)
 - Validation logic for YANG-specific constraints and semantic checks on inline key material
 - Config-local credential bundle validation
 - Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
@@ -202,10 +202,15 @@ For code paths that do not start from RFC 7951 JSON, use:
 - `TacacsPlusServerBuilder::with_shared_secret(...) -> TacacsPlusServerBuilder`
 - `TacacsPlusServerBuilder::with_tls_client_certificate(...) -> TacacsPlusServerBuilder`
 - `TacacsPlusServerBuilder::with_tls13_epsk(...) -> TacacsPlusServerBuilder`
+- `TacacsPlusServerBuilder::with_tls13_epsk_with_psk_dhe_groups(...) -> TacacsPlusServerBuilder`
+- `TacacsPlusServerBuilder::with_tls13_epsk_psk_only(...) -> TacacsPlusServerBuilder`
 - `TacacsPlusServerBuilder::with_tls_server_authentication() -> TacacsPlusServerBuilder`
 - `TacacsPlusServerBuilder::build() -> TacacsPlusServer`
 
 This is the supported way to create `TacacsPlusServer` values in application code without manually repeating the crate's default field setup.
+`with_tls13_epsk(...)` uses PSK-DHE by default with preferred groups
+`secp384r1,secp256r1`; use `with_tls13_epsk_psk_only(...)` only for
+interoperability with peers that cannot negotiate PSK-DHE.
 
 ### 2) Advanced: Generated YANG model and pipeline API
 
@@ -248,15 +253,15 @@ The generated model is intentionally public for schema-aware or tooling-heavy in
   - `TacacsPlusServerExt`
   - `TacacsPlusServerBuilder`
 
-### 5) Generated identity set types
+### 5) Generated enum helper types
 
-The `crypto_types` module includes generated enums for YANG `identityref` leaves. Each enum provides:
+Generated YANG enumeration and `identityref` enums provide:
 
 - `ALL` — list of all valid identities
 - `ALLOWED_VALUES` — RFC 7951 JSON string values
 - `as_rfc7951_str()` — convert enum to the canonical JSON string
 - `from_rfc7951_str(&str)` — parse an RFC 7951 string into the enum
-- `is_valid(&str)` — check if a string is a valid identity value
+- `is_valid(&str)` — check if a string is a valid value
 
 Available identity sets:
 
@@ -407,12 +412,12 @@ values fail during JSON deserialization.
 
 The generated Rust types come from the checked-in YANG tooling under `yang/`:
 
-- `yang/plugins/yang2rust.py` — custom `pyang` plugin that emits Rust structs/enums/bitflags and identity set enums from YANG `identityref` leaves
+- `yang/plugins/yang2rust.py` — custom `pyang` plugin that emits Rust structs/enums/bitflags, plus helper methods for YANG enumerations and identity set enums from `identityref` leaves
 - `yang/expand_yang_tree.py` — helper used to refresh the fully expanded tree reference
 - `yang/modules/` — project-owned YANG modules passed to `pyang` alongside the upstream TACACS+ model
 - `yang/generated_types.rs` — generator output, produced on demand and copied into `src/generated.rs`
 
-The generator automatically resolves `identityref` base identities and walks loaded modules to collect derived identities, emitting Rust enums with `ALL`, `ALLOWED_VALUES`, `as_rfc7951_str()`, `from_rfc7951_str()`, and `is_valid()` helpers. Fixed-set `identityref` fields use these enums directly, while YANG `binary` leaves deserialize from RFC 7951 base64 into in-memory `Vec<u8>` values and serialize back to base64 when writing JSON.
+The generator emits Rust enums with `ALL`, `ALLOWED_VALUES`, `as_rfc7951_str()`, `from_rfc7951_str()`, and `is_valid()` helpers for YANG enumerations. It also resolves `identityref` base identities and walks loaded modules to collect derived identities with the same helper shape. Fixed-set `identityref` fields use these enums directly, while YANG `binary` leaves deserialize from RFC 7951 base64 into in-memory `Vec<u8>` values and serialize back to base64 when writing JSON.
 
 The higher-level validation logic in `src/validation.rs` is still maintained manually, but enum membership and base64 decoding now happen during deserialization. The handwritten validation layer is therefore focused on semantic checks such as choice rules, non-empty inline material, and TLS-specific policy.
 

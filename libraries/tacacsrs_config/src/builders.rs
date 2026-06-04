@@ -1,9 +1,15 @@
 use crate::{
     crypto_types, ClientIdentityCertificate, EpskSupportedHash, TacacsPlus, TacacsPlusServer,
-    TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
-    keystore,
+    PskDheKeSupportedGroup, TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity,
+    TlsClientServerAuthentication, keystore,
 };
 use crate::validation::{self, ValidationOptions};
+
+/// Default TLS 1.3 PSK-DHE groups, in preferred `ClientHello` key share order.
+pub const DEFAULT_PSK_DHE_KE_GROUPS: &[PskDheKeSupportedGroup] = &[
+    PskDheKeSupportedGroup::Secp384r1,
+    PskDheKeSupportedGroup::Secp256r1,
+];
 
 /// Builder for constructing a [`TacacsPlus`] root configuration in code.
 ///
@@ -191,9 +197,38 @@ impl TacacsPlusServerBuilder {
     /// Selects TLS using a TLS 1.3 externally provisioned PSK.
     #[must_use]
     pub fn with_tls13_epsk(
+        self,
+        external_identity: impl Into<String>,
+        cleartext_symmetric_key: Vec<u8>,
+    ) -> Self {
+        self.with_tls13_epsk_with_psk_dhe_groups(
+            external_identity,
+            cleartext_symmetric_key,
+            DEFAULT_PSK_DHE_KE_GROUPS.to_vec(),
+        )
+    }
+
+    /// Selects TLS using a TLS 1.3 externally provisioned PSK in PSK-only mode.
+    #[must_use]
+    pub fn with_tls13_epsk_psk_only(
+        self,
+        external_identity: impl Into<String>,
+        cleartext_symmetric_key: Vec<u8>,
+    ) -> Self {
+        self.with_tls13_epsk_with_psk_dhe_groups(
+            external_identity,
+            cleartext_symmetric_key,
+            Vec::new(),
+        )
+    }
+
+    /// Selects TLS using a TLS 1.3 externally provisioned PSK with PSK-DHE groups.
+    #[must_use]
+    pub fn with_tls13_epsk_with_psk_dhe_groups(
         mut self,
         external_identity: impl Into<String>,
         cleartext_symmetric_key: Vec<u8>,
+        psk_dhe_ke_groups: Vec<PskDheKeSupportedGroup>,
     ) -> Self {
         self.server.shared_secret = None;
         self.server.client_identity = Some(TlsClientClientIdentity {
@@ -209,7 +244,7 @@ impl TacacsPlusServerBuilder {
                 context: None,
                 target_protocol: None,
                 target_kdf: None,
-                psk_dhe_ke_groups: vec![],
+                psk_dhe_ke_groups,
             }),
         });
         self.server.server_authentication = None;
@@ -239,7 +274,7 @@ impl TacacsPlusServerBuilder {
 
 #[cfg(test)]
 mod tests {
-    use crate::{TacacsPlusServerExt, TacacsPlusServerType, enumerate_servers};
+    use crate::{PskDheKeSupportedGroup, TacacsPlusServerExt, TacacsPlusServerType, enumerate_servers};
 
     use super::{TacacsPlusBuilder, TacacsPlusServerBuilder};
 
@@ -270,6 +305,39 @@ mod tests {
         assert!(server.client_identity.is_none());
         assert!(server.server_authentication.is_some());
         assert!(server.is_tls());
+    }
+
+    #[test]
+    fn tls13_epsk_builder_defaults_to_psk_dhe_groups() {
+        let server =
+            TacacsPlusServerBuilder::new("cli", TacacsPlusServerType::ACCOUNTING, "192.0.2.10", 49)
+                .with_tls13_epsk("client", b"secret".to_vec())
+                .build();
+        let groups = &server
+            .client_identity
+            .expect("client identity")
+            .tls13_epsk
+            .expect("tls13 epsk")
+            .psk_dhe_ke_groups;
+
+        assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::Secp384r1)));
+        assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp256r1)));
+    }
+
+    #[test]
+    fn tls13_epsk_builder_supports_psk_only_mode() {
+        let server =
+            TacacsPlusServerBuilder::new("cli", TacacsPlusServerType::ACCOUNTING, "192.0.2.10", 49)
+                .with_tls13_epsk_psk_only("client", b"secret".to_vec())
+                .build();
+        let groups = &server
+            .client_identity
+            .expect("client identity")
+            .tls13_epsk
+            .expect("tls13 epsk")
+            .psk_dhe_ke_groups;
+
+        assert!(groups.is_empty());
     }
 
     #[test]

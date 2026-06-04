@@ -22,6 +22,10 @@
 .PARAMETER FixFormatting
     Run cargo +nightly fmt --all before the CI formatting check.
 
+.PARAMETER ApplyFixes
+    Automatically run available fixes for each selected test before running the
+    corresponding check. The shorter -Fix alias is also supported.
+
 .PARAMETER IncludeFmt
     Include the rustfmt check. Matches the workflow_call include-fmt input.
 
@@ -58,6 +62,9 @@
     .\lde\run-pre-tests.ps1 -FixFormatting
 
 .EXAMPLE
+    .\lde\run-pre-tests.ps1 -Task Clippy -ApplyFixes
+
+.EXAMPLE
     .\lde\run-pre-tests.ps1 -Matrix LinuxGnu -SkipAuditIfNoDepChanges
 
 .EXAMPLE
@@ -75,6 +82,9 @@ param(
     [string[]]$Task = @('All'),
 
     [switch]$FixFormatting,
+
+    [Alias('Fix')]
+    [switch]$ApplyFixes,
 
     [bool]$IncludeFmt = $true,
 
@@ -177,6 +187,16 @@ function Test-MetadataTaskExplicitlySelected {
     return $false
 }
 
+function Test-AutoFixSelected {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    if ($ApplyFixes -and (Test-TaskSelected -Name $Name)) {
+        return $true
+    }
+
+    return $false
+}
+
 function Invoke-CheckedCommand {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -216,6 +236,29 @@ function Invoke-CheckedCommand {
 
         throw "Command failed with exit code ${exitCode}: $display"
     }
+}
+
+function Invoke-ClippyFix {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [string[]]$LintArgs = @()
+    )
+
+    $clippyFixCommand = @(
+        '+stable',
+        'clippy',
+        '--fix',
+        '--workspace',
+        '--all-targets',
+        '--allow-dirty',
+        '--target',
+        $Config.Target
+    ) + $Config.FeatureArgs
+    if ($LintArgs.Count -gt 0) {
+        $clippyFixCommand += @('--') + $LintArgs
+    }
+
+    Invoke-CheckedCommand -FilePath 'cargo' -Arguments $clippyFixCommand
 }
 
 function Assert-CommandExists {
@@ -508,7 +551,12 @@ function Invoke-PreTestsForConfig {
         Install-RustToolchain -Toolchain 'nightly' -Components @('rustfmt') -Targets @($Config.Target)
     }
 
-    if ((Test-TaskSelected -Name 'FixFormatting') -and ((Test-ExplicitTaskSelection) -or $FixFormatting)) {
+    $formattingFixTaskSelected = Test-TaskSelected -Name 'FixFormatting'
+    $formattingFixRequested = (Test-ExplicitTaskSelection) -or $FixFormatting
+    $explicitFormattingFix = $formattingFixTaskSelected -and $formattingFixRequested
+    $checkFormattingFix = $ApplyFixes -and (Test-OptionalTaskSelected -Name 'CheckFormatting' -Include $IncludeFmt)
+    $runFormattingFix = $explicitFormattingFix -or $checkFormattingFix
+    if ($runFormattingFix) {
         Write-Host "`n--- Fix formatting ---" -ForegroundColor Yellow
         Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('+nightly', 'fmt', '--all')
     }
@@ -531,12 +579,24 @@ function Invoke-PreTestsForConfig {
     }
 
     if (Test-TaskSelected -Name 'Clippy') {
+        if (Test-AutoFixSelected -Name 'Clippy') {
+            Write-Host "`n--- Fix Clippy suggestions ---" -ForegroundColor Yellow
+            Invoke-ClippyFix -Config $Config
+        }
+
         Write-Host "`n--- Run Clippy ---" -ForegroundColor Yellow
         $clippyCommand = @('+stable', 'clippy', '--workspace', '--all-targets', '--target', $Config.Target) + $Config.FeatureArgs + @('--', '-D', 'warnings')
         Invoke-CheckedCommand -FilePath 'cargo' -Arguments $clippyCommand
     }
 
     if (Test-OptionalTaskSelected -Name 'ClippyNursery' -Include $IncludeClippyNursery) {
+        # Probably a bad idea since the Clippy Nursery is very opinionated about drop and const stuff that
+        # sometimes doesn't matter....
+        # if (Test-AutoFixSelected -Name 'ClippyNursery') {
+        #     Write-Host "`n--- Fix Clippy nursery suggestions ---" -ForegroundColor Yellow
+        #     Invoke-ClippyFix -Config $Config -LintArgs @('-W', 'clippy::nursery')
+        # }
+
         Write-Host "`n--- Clippy nursery lints (advisory) ---" -ForegroundColor Yellow
         $nurseryCommand = @('+stable', 'clippy', '--workspace', '--all-targets', '--target', $Config.Target) + $Config.FeatureArgs + @('--', '-W', 'clippy::nursery')
         Invoke-CheckedCommand -FilePath 'cargo' -Arguments $nurseryCommand -Advisory

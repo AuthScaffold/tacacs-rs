@@ -1,6 +1,20 @@
+use std::str::FromStr;
 use std::time::Duration;
 
-use crate::{TacacsPlusServer, TacacsPlusServerType};
+use crate::{PskDheKeSupportedGroup, TacacsPlusServer, TacacsPlusServerType};
+
+impl FromStr for PskDheKeSupportedGroup {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_rfc7951_str(value).ok_or_else(|| {
+            format!(
+                "unsupported TLS 1.3 PSK-DHE group `{value}`; expected one of: {}",
+                Self::ALLOWED_VALUES.join(", ")
+            )
+        })
+    }
+}
 
 /// Convenience helpers for runtime-oriented access to a TACACS+ server entry.
 ///
