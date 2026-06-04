@@ -1,4 +1,4 @@
-//! Shared fake types and helpers for service-layer tests.
+//! Reusable fake upstream fixtures for routing and IPC tests.
 //!
 //! This module is only compiled under `#[cfg(test)]` and provides reusable
 //! mock implementations of [`UpstreamConnection`] and [`UpstreamConnector`]
@@ -16,12 +16,12 @@ use tacacsrs_agent_client::{
     AuthorizationOperation, AuthorizationOperationResponse, AuthorizationResponseStatus,
 };
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
 
 #[derive(Debug)]
-pub(super) struct FakeConnection {
+pub(crate) struct FakeConnection {
     pub address: String,
     pub usable: AtomicBool,
     pub fail_next_request: AtomicBool,
@@ -74,7 +74,7 @@ impl UpstreamConnection for FakeConnection {
 }
 
 #[derive(Debug)]
-pub(super) struct FakeConnector {
+pub(crate) struct FakeConnector {
     pub connections: HashMap<String, Arc<FakeConnection>>,
     connect_attempts: Mutex<HashMap<String, usize>>,
     connect_delay: Duration,
@@ -145,82 +145,4 @@ impl UpstreamConnector for FakeConnector {
         self.in_flight_connects.fetch_sub(1, Ordering::Relaxed);
         result
     }
-}
-
-#[derive(Debug)]
-pub(super) struct BlockingConnection {
-    pub address: String,
-    pub release: Arc<Notify>,
-}
-
-#[async_trait]
-impl UpstreamConnection for BlockingConnection {
-    fn server_address(&self) -> &str {
-        &self.address
-    }
-
-    async fn stop_accepting_new_sessions(&self) {}
-
-    async fn send_accounting(
-        &self,
-        _request: &AccountingOperation,
-    ) -> anyhow::Result<AccountingOperationResponse> {
-        self.release.notified().await;
-        Ok(AccountingOperationResponse {
-            server: self.address.clone(),
-            status: AccountingResponseStatus::Success,
-            server_message: String::new(),
-            data: String::new(),
-        })
-    }
-
-    async fn send_authorization(
-        &self,
-        _request: &AuthorizationOperation,
-    ) -> anyhow::Result<AuthorizationOperationResponse> {
-        self.release.notified().await;
-        Ok(AuthorizationOperationResponse {
-            server: self.address.clone(),
-            status: AuthorizationResponseStatus::PassAdd,
-            server_message: String::new(),
-            args: Vec::new(),
-            data: String::new(),
-        })
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct BlockingConnector {
-    pub connection: Arc<BlockingConnection>,
-}
-
-#[async_trait]
-impl UpstreamConnector for BlockingConnector {
-    async fn connect(
-        &self,
-        _server: &TacacsPlusServer,
-    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        Ok(Arc::clone(&self.connection) as Arc<dyn UpstreamConnection>)
-    }
-}
-
-pub(super) fn build_request() -> AccountingOperation {
-    AccountingOperation {
-        user: "admin".to_owned(),
-        port: "tty0".to_owned(),
-        remote_address: "127.0.0.1".to_owned(),
-        command: "show".to_owned(),
-        command_arguments: vec!["users".to_owned()],
-    }
-}
-
-pub(super) fn build_authorization_request() -> AuthorizationOperation {
-    AuthorizationOperation::builder("admin", 15)
-        .port("tty0")
-        .remote_address("127.0.0.1")
-        .service("shell")
-        .command("show")
-        .command_arg("users")
-        .build()
-        .expect("test authorization request is valid")
 }

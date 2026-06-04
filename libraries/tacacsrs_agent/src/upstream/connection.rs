@@ -51,9 +51,9 @@ pub(crate) trait UpstreamConnection: Send + Sync {
 #[async_trait]
 /// Creates upstream connections for a configured TACACS+ server.
 ///
-/// The connector is called by [`ServiceState`](crate::service) whenever a
-/// fresh upstream connection manager is needed, such as during startup warm-up
-/// or after a previous operation failed.
+/// The connector is called by [`RoutingState`](crate::routing::RoutingState)
+/// whenever a fresh upstream connection manager is needed, such as during
+/// startup warm-up or after a previous operation failed.
 pub(crate) trait UpstreamConnector: Send + Sync {
     /// Establishes a new upstream connection manager for the given TACACS+ server.
     ///

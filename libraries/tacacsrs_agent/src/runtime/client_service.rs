@@ -1,8 +1,8 @@
-//! Listener orchestration for the central TACACS+ client service.
+//! Runtime orchestration for the central TACACS+ client service.
 //!
 //! This module owns process-level behavior: startup validation, IPC listener
-//! creation, graceful shutdown, and delegation into [`super::state::ServiceState`]
-//! for per-client request handling and upstream failover decisions.
+//! graceful shutdown, and delegation into [`crate::routing::RoutingState`] for
+//! per-client request handling and upstream failover decisions.
 //!
 //! # Startup sequence
 //!
@@ -19,25 +19,16 @@
 //! 2. In-flight RPC handlers run to completion.
 //! 3. The Unix socket path is removed (Unix only).
 
-use std::net::SocketAddr;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, bail};
-use tacacsrs_agent_client::ipc;
-use tacacsrs_agent_client::ipc::tacacs_agent_server::{TacacsAgent, TacacsAgentServer};
-use tacacsrs_agent_client::{AccountingOperation, AuthorizationOperation, IpcEndpoint};
-use tacacsrs_config::{TacacsPlus, TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
-#[cfg(unix)]
-use tokio_stream::wrappers::UnixListenerStream;
-use tokio_stream::wrappers::TcpListenerStream;
-use tonic::{Request, Response, Status};
+use tacacsrs_config::TacacsPlus;
 
-use super::config::ServiceConfig;
-use super::state::ServiceState;
+use super::enumerate_accounting_servers;
+use crate::config::ServiceConfig;
+use crate::ipc::listener;
+use crate::routing::RoutingState;
 use crate::upstream::{NetworkUpstreamConnector, UpstreamConnector};
 
 /// Long-lived local TACACS+ client service.
@@ -67,104 +58,7 @@ pub struct TacacsClientService {
     /// Validated operator configuration snapshot.
     config: ServiceConfig,
     /// Shared failover state used by all IPC client handlers.
-    state: Arc<ServiceState>,
-}
-
-/// Thin gRPC service adapter that delegates every RPC into the shared
-/// [`ServiceState`].
-///
-/// Each [`tonic`] handler creates a fresh instance of this adapter (it's
-/// `Clone`), registers itself as an active client, and forwards the decoded
-/// request into the state machine.
-#[derive(Clone)]
-struct GrpcService {
-    state: Arc<ServiceState>,
-}
-
-#[tonic::async_trait]
-impl TacacsAgent for GrpcService {
-    /// Handles one unary accounting RPC from a local IPC client.
-    ///
-    /// Decodes the protobuf request, delegates to [`ServiceState`] for server
-    /// selection and upstream execution, and encodes the result into the oneof
-    /// `AccountingReply` envelope. Transport-level gRPC errors (e.g. invalid
-    /// argument) are returned as [`Status`]; application-level errors (e.g.
-    /// upstream failure) are returned inside the `ServiceError` variant of the
-    /// reply.
-    async fn accounting(
-        &self,
-        request: Request<ipc::AccountingRequest>,
-    ) -> Result<Response<ipc::AccountingReply>, Status> {
-        let request = AccountingOperation::try_from(request.into_inner()).map_err(|error| {
-            log::warn!("Invalid IPC accounting request: {error}");
-            Status::invalid_argument(error.to_string())
-        })?;
-        log::debug!(
-            "Received IPC accounting request: user={}, cmd={}",
-            request.user,
-            request.command,
-        );
-        let result = match self.state.execute_accounting_request(request).await {
-            Ok(response) => {
-                log::debug!(
-                    "IPC accounting request completed: server={}, status={:?}",
-                    response.server,
-                    response.status,
-                );
-                ipc::AccountingReply {
-                    result: Some(ipc::accounting_reply::Result::Response(response.into_proto())),
-                }
-            }
-            Err(error) => {
-                log::warn!("IPC accounting request failed: {error:?}");
-                ipc::AccountingReply {
-                    result: Some(ipc::accounting_reply::Result::Error(error.into_proto())),
-                }
-            }
-        };
-        Ok(Response::new(result))
-    }
-
-    /// Handles one unary authorization RPC from a local IPC client.
-    ///
-    /// Decodes the protobuf request, delegates to [`ServiceState`] for server
-    /// selection and upstream execution, and encodes the result into the oneof
-    /// `AuthorizationReply` envelope.
-    async fn authorization(
-        &self,
-        request: Request<ipc::AuthorizationRequest>,
-    ) -> Result<Response<ipc::AuthorizationReply>, Status> {
-        let request = AuthorizationOperation::try_from(request.into_inner()).map_err(|error| {
-            log::warn!("Invalid IPC authorization request: {error}");
-            Status::invalid_argument(error.to_string())
-        })?;
-        log::debug!(
-            "Received IPC authorization request: user={}, service={}, cmd={}",
-            request.user,
-            request.service().unwrap_or("<missing>"),
-            request.command().unwrap_or("<missing>"),
-        );
-
-        let result = match self.state.execute_authorization_request(request).await {
-            Ok(response) => {
-                log::debug!(
-                    "IPC authorization request completed: server={}, status={:?}",
-                    response.server,
-                    response.status,
-                );
-                ipc::AuthorizationReply {
-                    result: Some(ipc::authorization_reply::Result::Response(response.into_proto())),
-                }
-            }
-            Err(error) => {
-                log::warn!("IPC authorization request failed: {error:?}");
-                ipc::AuthorizationReply {
-                    result: Some(ipc::authorization_reply::Result::Error(error.into_proto())),
-                }
-            }
-        };
-        Ok(Response::new(result))
-    }
+    state: Arc<RoutingState>,
 }
 
 impl TacacsClientService {
@@ -182,7 +76,7 @@ impl TacacsClientService {
             disable_certificate_verification: config.disable_certificate_verification,
         });
         let state =
-            Arc::new(ServiceState::new(servers, connector, config.preferred_probe_interval));
+            Arc::new(RoutingState::new(servers, connector, config.preferred_probe_interval));
 
         Ok(Self { config, state })
     }
@@ -195,7 +89,7 @@ impl TacacsClientService {
         let servers = enumerate_accounting_servers(&config)?;
 
         let state =
-            Arc::new(ServiceState::new(servers, connector, config.preferred_probe_interval));
+            Arc::new(RoutingState::new(servers, connector, config.preferred_probe_interval));
 
         Ok(Self { config, state })
     }
@@ -244,11 +138,16 @@ impl TacacsClientService {
             None
         };
 
-        let result = match &self.config.endpoint {
-            #[cfg(unix)]
-            IpcEndpoint::Unix(path) => self.serve_unix(path).await,
-            IpcEndpoint::Tcp(address) => self.serve_tcp(*address).await,
-        };
+        #[cfg(unix)]
+        let result = listener::serve(
+            &self.config.endpoint,
+            Arc::clone(&self.state),
+            self.config.socket_mode,
+        )
+        .await;
+
+        #[cfg(not(unix))]
+        let result = listener::serve(&self.config.endpoint, Arc::clone(&self.state)).await;
 
         if let Some(task) = probe_task {
             task.abort();
@@ -258,185 +157,12 @@ impl TacacsClientService {
         result
     }
 
-    #[cfg(unix)]
-    /// Serves Unix domain socket IPC clients until shutdown is requested.
-    ///
-    /// The gRPC server stops accepting new requests once shutdown is signalled,
-    /// waits for active RPC handlers to drain, and then removes the socket path.
-    async fn serve_unix(&self, path: &PathBuf) -> anyhow::Result<()> {
-        let listener = self.prepare_unix_listener(path).await?;
-        let incoming = UnixListenerStream::new(listener);
-        let grpc_service = GrpcService {
-            state: Arc::clone(&self.state),
-        };
-
-        log::info!("Listening for IPC clients on Unix socket {}", path.display());
-
-        tonic::transport::Server::builder()
-            .add_service(TacacsAgentServer::new(grpc_service))
-            .serve_with_incoming_shutdown(incoming, shutdown_signal())
-            .await
-            .with_context(|| format!("Unix IPC server {} failed", path.display()))?;
-
-        log::info!("Shutdown signal received; draining active IPC clients");
-        self.state.wait_for_active_clients().await;
-        match tokio::fs::remove_file(path).await {
-            Ok(()) => {
-                log::debug!("Removed Unix socket {}", path.display());
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                log::debug!("Unix socket {} was already removed during shutdown", path.display());
-            }
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("Failed to remove socket {}", path.display()));
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    /// Creates the Unix listener, safely handling either a live competing
-    /// service instance or a stale filesystem entry from a previous run.
+    #[cfg(all(test, unix))]
     pub(super) async fn prepare_unix_listener(
         &self,
         path: &PathBuf,
     ) -> anyhow::Result<tokio::net::UnixListener> {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!("Failed to create socket directory {}", parent.display())
-            })?;
-        }
-
-        if tokio::fs::try_exists(path)
-            .await
-            .with_context(|| format!("Failed to inspect socket path {}", path.display()))?
-        {
-            log::debug!("Socket path {} already exists; checking if it is active", path.display());
-            match tokio::net::UnixStream::connect(path).await {
-                Ok(_) => {
-                    log::error!(
-                        "Unix socket {} is already accepting connections; refusing to start",
-                        path.display()
-                    );
-                    bail!(
-                        "Unix socket {} is already accepting connections; another service instance may already be running",
-                        path.display()
-                    );
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-                    ) =>
-                {
-                    log::info!(
-                        "Removing stale Unix socket {} (previous instance likely crashed)",
-                        path.display()
-                    );
-                    tokio::fs::remove_file(path).await.with_context(|| {
-                        format!("Failed to remove stale socket {}", path.display())
-                    })?;
-                }
-                Err(error) => {
-                    log::error!(
-                        "Cannot determine state of existing socket {}: {error}",
-                        path.display()
-                    );
-                    return Err(error).with_context(|| {
-                        format!(
-                            "Refusing to remove existing socket {} because it may still belong to another service instance",
-                            path.display()
-                        )
-                    });
-                }
-            }
-        }
-
-        let listener = tokio::net::UnixListener::bind(path)
-            .with_context(|| format!("Failed to bind Unix socket {}", path.display()))?;
-
-        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(self.config.socket_mode))
-            .await
-            .with_context(|| format!("Failed to set permissions on socket {}", path.display()))?;
-        Ok(listener)
-    }
-
-    /// Serves loopback TCP IPC clients until shutdown is requested.
-    ///
-    /// This path exists primarily for non-Unix development workflows where a
-    /// Unix domain socket is not available.
-    async fn serve_tcp(&self, address: SocketAddr) -> anyhow::Result<()> {
-        if !address.ip().is_loopback() {
-            log::error!("Refusing non-loopback TCP IPC endpoint: {address}");
-            bail!("TCP IPC endpoint must be loopback-only: {address}");
-        }
-
-        let listener = tokio::net::TcpListener::bind(address)
-            .await
-            .with_context(|| format!("Failed to bind TCP IPC endpoint {address}"))?;
-        let incoming = TcpListenerStream::new(listener);
-        let grpc_service = GrpcService {
-            state: Arc::clone(&self.state),
-        };
-
-        log::info!("Listening for IPC clients on TCP {address}");
-
-        tonic::transport::Server::builder()
-            .add_service(TacacsAgentServer::new(grpc_service))
-            .serve_with_incoming_shutdown(incoming, shutdown_signal())
-            .await
-            .with_context(|| format!("TCP IPC server {address} failed"))?;
-
-        log::info!("Shutdown signal received; draining active IPC clients");
-        self.state.wait_for_active_clients().await;
-        Ok(())
-    }
-}
-
-fn enumerate_accounting_servers(config: &ServiceConfig) -> anyhow::Result<Vec<TacacsPlusServer>> {
-    let servers = tacacsrs_config::enumerate_servers(&config.tacacs_plus)?;
-    let accounting_servers = servers
-        .into_iter()
-        .filter(|server| server.supports_server_type(TacacsPlusServerType::ACCOUNTING))
-        .collect::<Vec<_>>();
-
-    if accounting_servers.is_empty() {
-        bail!("At least one accounting-capable TACACS+ server must be configured");
-    }
-
-    Ok(accounting_servers)
-}
-
-/// Waits for a process termination signal that should stop the service from
-/// accepting new IPC clients.
-///
-/// Unix builds listen for both `SIGTERM` and Ctrl-C. Other platforms fall back
-/// to Ctrl-C only.
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-
-        if let Ok(mut terminate_signal) = signal(SignalKind::terminate()) {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    log::info!("Received Ctrl-C; initiating graceful shutdown");
-                }
-                _ = terminate_signal.recv() => {
-                    log::info!("Received SIGTERM; initiating graceful shutdown");
-                }
-            }
-        } else {
-            let _ = tokio::signal::ctrl_c().await;
-            log::info!("Received Ctrl-C; initiating graceful shutdown");
-        }
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-        log::info!("Received Ctrl-C; initiating graceful shutdown");
+        listener::prepare_unix_listener(path, self.config.socket_mode).await
     }
 }
 
@@ -465,11 +191,13 @@ mod tests {
     #[cfg(unix)]
     use super::TacacsClientService;
     #[cfg(unix)]
-    use super::super::config::ServiceConfig;
+    use crate::config::ServiceConfig;
     #[cfg(unix)]
-    use super::super::state::ServiceState;
+    use crate::ipc::GrpcService;
     #[cfg(unix)]
-    use super::super::test_support::{FakeConnection, FakeConnector, build_request};
+    use crate::routing::RoutingState;
+    #[cfg(unix)]
+    use crate::test_support::{FakeConnection, FakeConnector, build_request};
 
     #[cfg(unix)]
     fn test_server(address: &str) -> tacacsrs_config::TacacsPlusServer {
@@ -686,12 +414,12 @@ mod tests {
             primary.address.clone(),
             Arc::clone(&primary),
         )])));
-        let state = Arc::new(ServiceState::new(
+        let state = Arc::new(RoutingState::new(
             vec![test_server("primary:49")],
             connector,
             Duration::from_millis(50),
         ));
-        let service = super::GrpcService { state };
+        let service = GrpcService::new(state);
         let request = AuthorizationOperation::builder("admin", 0)
             .port("pts/1")
             .remote_address("127.0.0.1")

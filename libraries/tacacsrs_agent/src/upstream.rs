@@ -26,9 +26,9 @@
 //! unusable for new sessions and the service reconnects for the next IPC
 //! request.
 
+mod connection;
 mod mapping;
 mod network;
-mod traits;
 
 pub(crate) use network::NetworkUpstreamConnector;
-pub(crate) use traits::{UpstreamConnection, UpstreamConnector};
+pub(crate) use connection::{UpstreamConnection, UpstreamConnector};
