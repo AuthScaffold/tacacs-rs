@@ -1057,10 +1057,9 @@ class RustEmitter:
         w(f"/// Types from `{mod.yang_name}`.\n")
         w(f"pub mod {mod.rust_name} {{\n")
         # Only import serde derive traits when there's a type that derives them.
-        # Identity sets emit fully qualified `serde::Serializer` references and
-        # don't rely on these imports.
+        # Enum, identity, and bitflags helpers use fully qualified serde paths.
         emitted_use = False
-        if mod.structs or mod.enums or mod.bitflags:
+        if mod.structs:
             w("    use serde::{Deserialize, Serialize};\n")
             emitted_use = True
 
@@ -1105,13 +1104,70 @@ class RustEmitter:
     def _emit_enum(self, enum: Enum):
         w = self.fd.write
         self._doc(enum.doc, "    ")
-        w("    #[derive(Debug, Clone, Serialize, Deserialize)]\n")
+        w("    #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n")
         w(f"    pub enum {enum.name} {{\n")
         for v in enum.variants:
             self._doc(v.doc, "        ")
-            if v.yang_name != _yang_to_snake(v.rust_name):
-                w(f'        #[serde(rename = "{v.yang_name}")]\n')
             w(f"        {v.rust_name},\n")
+        w("    }\n\n")
+
+        w(f"    impl {enum.name} {{\n")
+        w("        /// All valid values for this YANG enumeration.\n")
+        w("        pub const ALL: &[Self] = &[\n")
+        for v in enum.variants:
+            w(f"            Self::{v.rust_name},\n")
+        w("        ];\n\n")
+
+        w("        /// RFC 7951 JSON string values accepted for this YANG enumeration.\n")
+        w("        pub const ALLOWED_VALUES: &[&str] = &[\n")
+        for v in enum.variants:
+            w(f'            "{v.yang_name}",\n')
+        w("        ];\n\n")
+
+        w("        /// Returns the RFC 7951 JSON string.\n")
+        w("        #[must_use]\n")
+        w("        pub fn as_rfc7951_str(&self) -> &'static str {\n")
+        w("            match self {\n")
+        for v in enum.variants:
+            w(f'                Self::{v.rust_name} => "{v.yang_name}",\n')
+        w("            }\n")
+        w("        }\n\n")
+
+        w("        /// Parses an RFC 7951 string into this YANG enumeration.\n")
+        w("        #[must_use]\n")
+        w(f"        pub fn from_rfc7951_str(s: &str) -> Option<Self> {{\n")
+        w("            match s {\n")
+        for v in enum.variants:
+            w(f'                "{v.yang_name}" => Some(Self::{v.rust_name}),\n')
+        w("                _ => None,\n")
+        w("            }\n")
+        w("        }\n\n")
+
+        w("        /// Checks whether the given string is a valid RFC 7951 value.\n")
+        w("        #[must_use]\n")
+        w("        pub fn is_valid(s: &str) -> bool {\n")
+        w("            Self::from_rfc7951_str(s).is_some()\n")
+        w("        }\n")
+        w("    }\n\n")
+
+        w(f"    impl<'de> serde::Deserialize<'de> for {enum.name} {{\n")
+        w("        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\n")
+        w("        where\n")
+        w("            D: serde::Deserializer<'de>,\n")
+        w("        {\n")
+        w("            let s = <String as serde::Deserialize>::deserialize(deserializer)?;\n")
+        w("            Self::from_rfc7951_str(&s)\n")
+        w("                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))\n")
+        w("        }\n")
+        w("    }\n\n")
+
+        w(f"    impl serde::Serialize for {enum.name} {{\n")
+        w("        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>\n")
+        w("        where\n")
+        w("            S: serde::Serializer,\n")
+        w("        {\n")
+        w("            serializer.serialize_str(self.as_rfc7951_str())\n")
+        w("        }\n")
         w("    }\n\n")
 
     def _emit_bitflags(self, bf: Bitflags):
@@ -1131,7 +1187,7 @@ class RustEmitter:
         w(f"        where\n")
         w(f"            D: serde::Deserializer<'de>,\n")
         w(f"        {{\n")
-        w(f"            let s = String::deserialize(deserializer)?;\n")
+        w(f"            let s = <String as serde::Deserialize>::deserialize(deserializer)?;\n")
         w(f"            let mut bits = Self::empty();\n")
         w(f"            for token in s.split_whitespace() {{\n")
         w(f"                match token {{\n")
@@ -1237,7 +1293,7 @@ class RustEmitter:
         w(f"        where\n")
         w(f"            D: serde::Deserializer<'de>,\n")
         w(f"        {{\n")
-        w(f"            let s = String::deserialize(deserializer)?;\n")
+        w(f"            let s = <String as serde::Deserialize>::deserialize(deserializer)?;\n")
         w(f"            Self::from_rfc7951_str(&s).ok_or_else(|| {{\n")
         w(f"                serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES)\n")
         w(f"            }})\n")

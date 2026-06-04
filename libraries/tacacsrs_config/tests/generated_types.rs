@@ -294,7 +294,7 @@ fn psk_dhe_group_from_str_uses_rfc7951_values() {
         Ok(PskDheKeSupportedGroup::Secp384r1),
     ));
     assert_eq!(PskDheKeSupportedGroup::X25519.as_rfc7951_str(), "x25519");
-    assert!(PskDheKeSupportedGroup::RFC7951_VALUES.contains(&"ffdhe8192"));
+    assert!(PskDheKeSupportedGroup::ALLOWED_VALUES.contains(&"ffdhe8192"));
 }
 
 #[test]

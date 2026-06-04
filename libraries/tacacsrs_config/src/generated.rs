@@ -21,14 +21,65 @@ pub mod tacacs_plus {
     /// For externally established PSKs, the hash algorithm must be
     /// set when the PSK is established or default to SHA-256 if no
     /// such algorithm is defined.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum EpskSupportedHash {
         /// The SHA-256 hash.
-        #[serde(rename = "sha-256")]
         Sha256,
         /// The SHA-384 hash.
-        #[serde(rename = "sha-384")]
         Sha384,
+    }
+
+    impl EpskSupportedHash {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[Self::Sha256, Self::Sha384];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &["sha-256", "sha-384"];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::Sha256 => "sha-256",
+                Self::Sha384 => "sha-384",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "sha-256" => Some(Self::Sha256),
+                "sha-384" => Some(Self::Sha384),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for EpskSupportedHash {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for EpskSupportedHash {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
     }
 
     bitflags::bitflags! {
@@ -53,7 +104,7 @@ pub mod tacacs_plus {
         where
             D: serde::Deserializer<'de>,
         {
-            let s = String::deserialize(deserializer)?;
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
             let mut bits = Self::empty();
             for token in s.split_whitespace() {
                 match token {
@@ -610,7 +661,7 @@ pub mod crypto_types {
         where
             D: serde::Deserializer<'de>,
         {
-            let s = String::deserialize(deserializer)?;
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
             Self::from_rfc7951_str(&s)
                 .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
         }
@@ -697,7 +748,7 @@ pub mod crypto_types {
         where
             D: serde::Deserializer<'de>,
         {
-            let s = String::deserialize(deserializer)?;
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
             Self::from_rfc7951_str(&s)
                 .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
         }
@@ -774,7 +825,7 @@ pub mod crypto_types {
         where
             D: serde::Deserializer<'de>,
         {
-            let s = String::deserialize(deserializer)?;
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
             Self::from_rfc7951_str(&s)
                 .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
         }
@@ -792,39 +843,115 @@ pub mod crypto_types {
 
 /// Types from `tacacsrs`.
 pub mod tacacsrs {
-    use serde::{Deserialize, Serialize};
-
     /// TLS 1.3 supported groups that tacacs-rs may use for
     /// psk_dhe_ke ClientHello key share generation.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum PskDheKeSupportedGroup {
         /// X25519 elliptic curve group.
-        #[serde(rename = "x25519")]
         X25519,
         /// NIST P-256 elliptic curve group.
-        #[serde(rename = "secp256r1")]
         Secp256r1,
         /// NIST P-384 elliptic curve group.
-        #[serde(rename = "secp384r1")]
         Secp384r1,
         /// NIST P-521 elliptic curve group.
-        #[serde(rename = "secp521r1")]
         Secp521r1,
         /// Finite field Diffie-Hellman group ffdhe2048.
-        #[serde(rename = "ffdhe2048")]
         Ffdhe2048,
         /// Finite field Diffie-Hellman group ffdhe3072.
-        #[serde(rename = "ffdhe3072")]
         Ffdhe3072,
         /// Finite field Diffie-Hellman group ffdhe4096.
-        #[serde(rename = "ffdhe4096")]
         Ffdhe4096,
         /// Finite field Diffie-Hellman group ffdhe6144.
-        #[serde(rename = "ffdhe6144")]
         Ffdhe6144,
         /// Finite field Diffie-Hellman group ffdhe8192.
-        #[serde(rename = "ffdhe8192")]
         Ffdhe8192,
+    }
+
+    impl PskDheKeSupportedGroup {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::X25519,
+            Self::Secp256r1,
+            Self::Secp384r1,
+            Self::Secp521r1,
+            Self::Ffdhe2048,
+            Self::Ffdhe3072,
+            Self::Ffdhe4096,
+            Self::Ffdhe6144,
+            Self::Ffdhe8192,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "x25519",
+            "secp256r1",
+            "secp384r1",
+            "secp521r1",
+            "ffdhe2048",
+            "ffdhe3072",
+            "ffdhe4096",
+            "ffdhe6144",
+            "ffdhe8192",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::X25519 => "x25519",
+                Self::Secp256r1 => "secp256r1",
+                Self::Secp384r1 => "secp384r1",
+                Self::Secp521r1 => "secp521r1",
+                Self::Ffdhe2048 => "ffdhe2048",
+                Self::Ffdhe3072 => "ffdhe3072",
+                Self::Ffdhe4096 => "ffdhe4096",
+                Self::Ffdhe6144 => "ffdhe6144",
+                Self::Ffdhe8192 => "ffdhe8192",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "x25519" => Some(Self::X25519),
+                "secp256r1" => Some(Self::Secp256r1),
+                "secp384r1" => Some(Self::Secp384r1),
+                "secp521r1" => Some(Self::Secp521r1),
+                "ffdhe2048" => Some(Self::Ffdhe2048),
+                "ffdhe3072" => Some(Self::Ffdhe3072),
+                "ffdhe4096" => Some(Self::Ffdhe4096),
+                "ffdhe6144" => Some(Self::Ffdhe6144),
+                "ffdhe8192" => Some(Self::Ffdhe8192),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for PskDheKeSupportedGroup {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for PskDheKeSupportedGroup {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
     }
 }
 
