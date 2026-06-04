@@ -1,9 +1,7 @@
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_networking::config_connect::ConnectOptions;
+use tacacsrs_networking::ConnectOptions;
 
-use crate::connection::Connection;
-
-use super::dedicated::{execute_requests_dedicated, probe_single_connect, run_dedicated_load_test};
+use super::dedicated::{execute_requests_dedicated, run_dedicated_load_test};
 use super::multiplexed::{
     execute_load_test_multiplexed, execute_parallel_multiplexed, execute_sequential_multiplexed,
 };
@@ -17,16 +15,16 @@ enum ExecutionMode {
 
 /// Determines the execution mode for the batch.
 ///
-/// When `dedicated` is `true`, the probe is skipped and dedicated mode is used
-/// unconditionally. Otherwise the probe result decides whether the batch can
-/// use multiplexed mode.
-fn determine_execution_mode(dedicated: bool, single_connect_supported: bool) -> ExecutionMode {
+/// When `dedicated` is `true`, dedicated mode is used unconditionally.
+/// Otherwise the server configuration decides whether the batch can use the
+/// adaptive single-connection path.
+fn determine_execution_mode(dedicated: bool, single_connection_enabled: bool) -> ExecutionMode {
     if dedicated {
-        log::info!("Dedicated mode forced by CLI flag — skipping single-connection probe");
+        log::info!("Dedicated mode forced by CLI flag");
         return ExecutionMode::Dedicated;
     }
 
-    if single_connect_supported {
+    if single_connection_enabled {
         ExecutionMode::Multiplexed
     } else {
         ExecutionMode::Dedicated
@@ -35,10 +33,8 @@ fn determine_execution_mode(dedicated: bool, single_connect_supported: bool) -> 
 
 /// Entry point for executing a batch file over a direct server connection.
 ///
-/// Unless `dedicated` is `true`, a lightweight probe is sent first to detect
-/// single-connection support. The result decides whether batch requests use
-/// multiplexed or dedicated connections. Normal multiplexed batches explicitly
-/// upgrade the successful probe stream instead of reconnecting.
+/// Unless `dedicated` is `true`, the server configuration decides whether
+/// batch requests use the adaptive single-connection path or dedicated streams.
 pub async fn execute_batch(
     server: &TacacsPlusServer,
     dedicated: bool,
@@ -54,16 +50,7 @@ pub async fn execute_batch(
         return Ok(vec![]);
     }
 
-    let mut probe = if dedicated {
-        None
-    } else {
-        log::info!("Probing server for single-connection support via dedicated connection");
-        probe_single_connect(server, options).await
-    };
-    let execution_mode = determine_execution_mode(
-        dedicated,
-        probe.as_ref().is_some_and(|p| p.single_connect_supported),
-    );
+    let execution_mode = determine_execution_mode(dedicated, server.single_connection);
 
     if let Some(load_config) = &batch.metadata.load_test {
         return execute_batch_load_test(server, batch, load_config, execution_mode, options).await;
@@ -74,12 +61,7 @@ pub async fn execute_batch(
 
     let results = match execution_mode {
         ExecutionMode::Multiplexed => {
-            let Some(probe_connection) = probe.take().and_then(|probe| probe.connection) else {
-                anyhow::bail!(
-                    "internal error: multiplexed mode selected without an upgradeable probe connection"
-                );
-            };
-            let connection = Connection::from_inner(probe_connection.upgrade());
+            let connection = crate::connection::establish_connection(server, options).await?;
             if batch.metadata.parallel {
                 execute_parallel_multiplexed(connection, &batch.requests).await?
             } else {
@@ -130,7 +112,7 @@ async fn execute_batch_load_test(
             execute_load_test_multiplexed(server, &batch.requests, load_config, options).await?
         }
         ExecutionMode::Dedicated => {
-            run_dedicated_load_test(server, &batch.requests, load_config, options).await
+            run_dedicated_load_test(server, &batch.requests, load_config, options).await?
         }
     };
     print_load_test_summary(&result);

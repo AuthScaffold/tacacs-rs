@@ -6,33 +6,6 @@
 use serde::Deserialize;
 use std::time::Duration;
 use tacacsrs_config::TacacsPlusServerType;
-use tacacsrs_messages::enumerations::TacacsFlags;
-
-/// Custom flags that can be set on TACACS+ packet headers
-#[derive(Debug, Deserialize, Default, Clone, Copy)]
-pub struct CustomFlags {
-    /// Set `TAC_PLUS_CUSTOM_FLAG_1` (0x40) on the packet header
-    #[serde(default)]
-    pub custom_flag_1: bool,
-
-    /// Set `TAC_PLUS_CUSTOM_FLAG_2` (0x80) on the packet header
-    #[serde(default)]
-    pub custom_flag_2: bool,
-}
-
-impl CustomFlags {
-    /// Converts the custom flags to `TacacsFlags`
-    pub fn to_tacacs_flags(self) -> TacacsFlags {
-        let mut flags = TacacsFlags::empty();
-        if self.custom_flag_1 {
-            flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1;
-        }
-        if self.custom_flag_2 {
-            flags |= TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2;
-        }
-        flags
-    }
-}
 
 /// Batch file structure containing metadata and requests
 #[derive(Debug, Deserialize)]
@@ -113,15 +86,6 @@ impl BatchRequest {
         }
     }
 
-    /// Returns the optional custom session ID for this request
-    pub const fn session_id(&self) -> Option<u32> {
-        match self {
-            Self::Accounting(req) => req.session_id,
-            Self::Authentication(req) => req.session_id,
-            Self::Authorization(req) => req.session_id,
-        }
-    }
-
     /// Returns the TACACS+ server type required to execute this request.
     pub const fn server_type(&self) -> TacacsPlusServerType {
         match self {
@@ -134,6 +98,7 @@ impl BatchRequest {
 
 /// Arguments for an accounting request
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountingRequest {
     /// Username executing the command
     pub user: String,
@@ -150,18 +115,11 @@ pub struct AccountingRequest {
     /// Optional command arguments
     #[serde(default)]
     pub cmd_args: Vec<String>,
-
-    /// Optional custom flags to set on the packet header
-    #[serde(default)]
-    pub custom_flags: CustomFlags,
-
-    /// Optional custom session ID (if not provided, a random one is generated)
-    #[serde(default)]
-    pub session_id: Option<u32>,
 }
 
 /// Arguments for an authentication request
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[allow(dead_code)] // Fields will be used when authentication is implemented
 pub struct AuthenticationRequest {
     /// Username to authenticate
@@ -176,18 +134,11 @@ pub struct AuthenticationRequest {
     /// Password (for PAP) or other credentials
     #[serde(default)]
     pub password: Option<String>,
-
-    /// Optional custom flags to set on the packet header
-    #[serde(default)]
-    pub custom_flags: CustomFlags,
-
-    /// Optional custom session ID (if not provided, a random one is generated)
-    #[serde(default)]
-    pub session_id: Option<u32>,
 }
 
 /// Arguments for an authorization request
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[allow(dead_code)] // Fields will be used when authorization is implemented
 pub struct AuthorizationRequest {
     /// Username requesting authorization
@@ -210,14 +161,6 @@ pub struct AuthorizationRequest {
     /// Service type (e.g., "shell")
     #[serde(default = "default_service")]
     pub service: String,
-
-    /// Optional custom flags to set on the packet header
-    #[serde(default)]
-    pub custom_flags: CustomFlags,
-
-    /// Optional custom session ID (if not provided, a random one is generated)
-    #[serde(default)]
-    pub session_id: Option<u32>,
 }
 
 fn default_service() -> String {
@@ -427,21 +370,21 @@ mod tests {
     }
 
     #[test]
-    fn test_custom_flags_to_tacacs_flags() {
-        let flags = CustomFlags {
-            custom_flag_1: true,
-            custom_flag_2: false,
-        };
-        let tacacs_flags = flags.to_tacacs_flags();
-        assert!(tacacs_flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1));
-        assert!(!tacacs_flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2));
+    fn test_parse_batch_file_rejects_session_id() {
+        let json = r#"{
+            "requests": [
+                {
+                    "type": "accounting",
+                    "user": "user1",
+                    "port": "tty0",
+                    "rem_addr": "10.0.0.1",
+                    "cmd": "show version",
+                    "session_id": 7
+                }
+            ]
+        }"#;
 
-        let both_flags = CustomFlags {
-            custom_flag_1: true,
-            custom_flag_2: true,
-        };
-        let tacacs_flags = both_flags.to_tacacs_flags();
-        assert!(tacacs_flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_1));
-        assert!(tacacs_flags.contains(TacacsFlags::TAC_PLUS_CUSTOM_FLAG_2));
+        let error = serde_json::from_str::<BatchFile>(json).unwrap_err();
+        assert!(error.to_string().contains("unknown field `session_id`"));
     }
 }

@@ -6,7 +6,7 @@
 //!
 //! Used by both [`MockReadHalf`](super::mock_read_half::MockReadHalf) (to deliver reply bytes)
 //! and the write processor task (to feed incoming request bytes into
-//! [`PacketReader`](crate::packet_reader::PacketReader)).
+//! [`PacketReader`](crate::codec::PacketReader)).
 
 use std::io;
 use std::pin::Pin;

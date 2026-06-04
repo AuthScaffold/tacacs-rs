@@ -1,134 +1,37 @@
 use anyhow::Context;
 use futures::future::join_all;
-use tokio::io::{AsyncRead, AsyncWrite};
 
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_messages::enumerations::TacacsFlags;
-use tacacsrs_networking::DedicatedConnection;
-use tacacsrs_networking::config_connect::ConnectOptions;
+use tacacsrs_config::TacacsPlusServer;
+use tacacsrs_networking::ConnectOptions;
 
-use crate::commands::accounting::build_accounting_request;
-use crate::connection::establish_stream;
+use crate::connection::{
+    establish_dedicated_connection as establish_dedicated_server_connection, Connection,
+};
 
-use super::common::{load_test_iterations, run_load_test};
+use super::common::{execute_single_request, load_test_iterations, run_load_test};
 use super::super::types::{BatchRequest, LoadTestConfig, RequestResult};
-
-pub(super) type ProbeConnection =
-    DedicatedConnection<Box<dyn AsyncRead + Unpin + Send>, Box<dyn AsyncWrite + Unpin + Send>>;
-
-pub(super) struct SingleConnectProbe {
-    pub single_connect_supported: bool,
-    pub connection: Option<ProbeConnection>,
-}
-
-/// Probes the server for single-connection support by sending a lightweight
-/// accounting record that logs tacon's invocation.
-pub(super) async fn probe_single_connect(
-    server: &TacacsPlusServer,
-    options: &ConnectOptions,
-) -> Option<SingleConnectProbe> {
-    let result = async {
-        let stream = establish_stream(server, options)
-            .await
-            .context("Probe connection failed")?;
-        let obfuscation_key = server.obfuscation_key();
-        let mut connection = DedicatedConnection::new(stream, obfuscation_key.as_deref());
-
-        let args =
-            redact_secret_args(std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()));
-        let request = build_accounting_request("tacon", "batch", "localhost", "tacon", Some(&args));
-
-        let exchange = connection
-            .send_accounting(request, TacacsFlags::empty())
-            .await
-            .context("Probe accounting exchange failed")?;
-
-        Ok::<_, anyhow::Error>((connection, exchange))
-    }
-    .await;
-
-    match result {
-        Ok((connection, exchange)) => {
-            log::info!(
-                "Probe reply: {:?}, single_connect_supported: {}",
-                exchange.reply,
-                exchange.single_connect_supported
-            );
-            Some(SingleConnectProbe {
-                single_connect_supported: exchange.single_connect_supported,
-                connection: exchange.single_connect_supported.then_some(connection),
-            })
-        }
-        Err(error) => {
-            log::warn!("Single-connect probe failed, falling back to dedicated: {error}");
-            None
-        }
-    }
-}
-
-const SECRET_FLAGS: &[&str] = &["-k", "--shared-secret", "--psk-key"];
-
-/// Replaces the value following any secret flag with `***`.
-fn redact_secret_args(args: impl Iterator<Item = String>) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut redact_next = false;
-    for arg in args {
-        if redact_next {
-            result.push("***".to_owned());
-            redact_next = false;
-        } else if SECRET_FLAGS.contains(&arg.as_str()) {
-            result.push(arg);
-            redact_next = true;
-        } else if let Some((flag, _)) = arg.split_once('=') {
-            if SECRET_FLAGS.contains(&flag) {
-                result.push(format!("{flag}=***"));
-            } else {
-                result.push(arg);
-            }
-        } else {
-            result.push(arg);
-        }
-    }
-    result
-}
 
 /// Executes a single batch request using a dedicated connection (no background
 /// tasks, no session multiplexing).
 async fn execute_single_request_dedicated(
-    server: &TacacsPlusServer,
-    options: &ConnectOptions,
+    connection: &Connection,
     request: &BatchRequest,
 ) -> Result<String, String> {
-    match request {
-        BatchRequest::Accounting(req) => {
-            let stream = establish_stream(server, options)
-                .await
-                .map_err(|error| format!("Connection failed: {error}"))?;
+    let session = connection
+        .create_session()
+        .await
+        .map_err(|error| format!("Session creation failed: {error}"))?;
 
-            let obfuscation_key = server.obfuscation_key();
-            let mut connection = DedicatedConnection::new(stream, obfuscation_key.as_deref());
+    execute_single_request(session, request).await
+}
 
-            let cmd_args = if req.cmd_args.is_empty() {
-                None
-            } else {
-                Some(&req.cmd_args)
-            };
-            let tacacs_request =
-                build_accounting_request(&req.user, &req.port, &req.rem_addr, &req.cmd, cmd_args);
-
-            connection
-                .send_accounting(tacacs_request, req.custom_flags.to_tacacs_flags())
-                .await
-                .map(|result| format!("Accounting success: {:?}", result.reply))
-                .map_err(|error| format!("Accounting failed: {error}"))
-        }
-        BatchRequest::Authentication(req) => {
-            Err(format!("Authentication not yet implemented (user: {})", req.user))
-        }
-        BatchRequest::Authorization(req) => {
-            Err(format!("Authorization not yet implemented (user: {})", req.user))
-        }
-    }
+async fn establish_dedicated_connection(
+    server: &TacacsPlusServer,
+    options: &ConnectOptions,
+) -> anyhow::Result<Connection> {
+    establish_dedicated_server_connection(server, options)
+        .await
+        .context("Failed to establish dedicated TACACS+ connection")
 }
 
 pub(super) async fn execute_requests_dedicated(
@@ -137,18 +40,33 @@ pub(super) async fn execute_requests_dedicated(
     parallel: bool,
     options: &ConnectOptions,
 ) -> Vec<RequestResult> {
+    let connection = match establish_dedicated_connection(server, options).await {
+        Ok(connection) => connection,
+        Err(error) => {
+            let message = format!("Connection failed: {error:#}");
+            return requests
+                .iter()
+                .enumerate()
+                .map(|(index, request)| RequestResult {
+                    index,
+                    request_type: request.type_name(),
+                    result: Err(message.clone()),
+                })
+                .collect();
+        }
+    };
+
     if parallel {
         let futures: Vec<_> = requests
             .iter()
             .enumerate()
             .map(|(index, request)| {
-                let server = server.clone();
-                let options = options.clone();
+                let connection = connection.clone();
                 async move {
                     RequestResult {
                         index,
                         request_type: request.type_name(),
-                        result: execute_single_request_dedicated(&server, &options, request).await,
+                        result: execute_single_request_dedicated(&connection, request).await,
                     }
                 }
             })
@@ -161,7 +79,7 @@ pub(super) async fn execute_requests_dedicated(
             results.push(RequestResult {
                 index,
                 request_type: request.type_name(),
-                result: execute_single_request_dedicated(server, options, request).await,
+                result: execute_single_request_dedicated(&connection, request).await,
             });
         }
         results
@@ -173,18 +91,17 @@ pub(super) async fn run_dedicated_load_test(
     requests: &[BatchRequest],
     load_config: &LoadTestConfig,
     options: &ConnectOptions,
-) -> super::super::types::LoadTestResult {
-    let server = server.clone();
-    let options = options.clone();
-    run_load_test(
+) -> anyhow::Result<super::super::types::LoadTestResult> {
+    let connection = establish_dedicated_connection(server, options).await?;
+
+    Ok(run_load_test(
         requests.len() * load_config.repetitions,
         load_test_iterations(requests, load_config.repetitions),
         load_config.max_parallel,
         move |rep, idx, request| {
-            let server = server.clone();
-            let options = options.clone();
+            let connection = connection.clone();
             async move {
-                execute_single_request_dedicated(&server, &options, request)
+                execute_single_request_dedicated(&connection, request)
                     .await
                     .map(|_| ())
                     .map_err(|error| {
@@ -193,57 +110,5 @@ pub(super) async fn run_dedicated_load_test(
             }
         },
     )
-    .await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::redact_secret_args;
-
-    fn redact(args: &[&str]) -> Vec<String> {
-        redact_secret_args(args.iter().map(|s| (*s).to_owned()))
-    }
-
-    #[test]
-    fn passthrough_when_no_secrets() {
-        assert_eq!(
-            redact(&["tacon", "--server-addr", "1.2.3.4:49"]),
-            ["tacon", "--server-addr", "1.2.3.4:49"]
-        );
-    }
-
-    #[test]
-    fn redacts_obfuscation_key_long_flag() {
-        assert_eq!(
-            redact(&["tacon", "--shared-secret", "s3cret", "batch", "f.json"]),
-            ["tacon", "--shared-secret", "***", "batch", "f.json"],
-        );
-    }
-
-    #[test]
-    fn redacts_obfuscation_key_short_flag() {
-        assert_eq!(
-            redact(&["tacon", "-k", "s3cret", "batch", "f.json"]),
-            ["tacon", "-k", "***", "batch", "f.json"],
-        );
-    }
-
-    #[test]
-    fn redacts_psk_key() {
-        assert_eq!(redact(&["tacon", "--psk-key", "top_secret"]), ["tacon", "--psk-key", "***"],);
-    }
-
-    #[test]
-    fn redacts_equals_syntax() {
-        assert_eq!(
-            redact(&["tacon", "--shared-secret=s3cret", "--psk-key=top"]),
-            ["tacon", "--shared-secret=***", "--psk-key=***"],
-        );
-    }
-
-    #[test]
-    fn secret_flag_at_end_without_value() {
-        // Edge case: flag at end with no following value — just passes through
-        assert_eq!(redact(&["tacon", "-k"]), ["tacon", "-k"]);
-    }
+    .await)
 }

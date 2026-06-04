@@ -1,21 +1,14 @@
-use std::sync::Arc;
 use async_trait::async_trait;
 use tacacsrs_messages::enumerations::TacacsFlags;
-use tacacsrs_messages::packet::PacketTrait;
 use tacacsrs_messages::packet::Packet;
+use tacacsrs_messages::packet::PacketTrait;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
-
-use crate::session_manager::SessionManager;
 
 /// Result of writing a packet to the stream.
 #[derive(Debug)]
-pub enum PacketWriteResult {
+pub(crate) enum PacketWriteResult {
     /// Successfully wrote the packet.
     Success,
-    /// The close signal was received.
-    CloseSignal,
-    /// The channel was closed.
-    ChannelClosed,
     /// Failed to write to stream.
     WriteError(std::io::Error),
 }
@@ -26,7 +19,7 @@ pub enum PacketWriteResult {
 /// and easier testing. Implementations can provide custom behavior for obfuscating
 /// and writing packets.
 #[async_trait]
-pub trait PacketWriterTrait: Send + Sync {
+pub(crate) trait PacketWriterTrait: Send + Sync {
     /// Prepares a packet for writing by optionally obfuscating it.
     ///
     /// # Arguments
@@ -49,90 +42,13 @@ pub trait PacketWriterTrait: Send + Sync {
         writer: &mut (dyn AsyncWrite + Unpin + Send),
         packet: Packet,
     ) -> PacketWriteResult;
-
-    /// Runs the write handler loop, receiving packets from the channel and writing them.
-    ///
-    /// This method will:
-    /// 1. Wait for packets from the receiver or a close signal
-    /// 2. Prepare (potentially obfuscate) each packet
-    /// 3. Write the packet to the stream
-    /// 4. Continue until close signal or channel closed
-    ///
-    /// # Arguments
-    /// * `receiver` - The channel receiver for outgoing packets
-    /// * `writer` - A mutable reference to an async writer
-    /// * `connection` - The session manager for close signal coordination
-    ///
-    /// # Returns
-    /// `Ok(())` on graceful shutdown, `Err` on write failure.
-    async fn run_write_loop(
-        &self,
-        mut receiver: tokio::sync::mpsc::Receiver<Packet>,
-        writer: &mut (dyn AsyncWrite + Unpin + Send),
-        connection: Arc<SessionManager>,
-    ) -> anyhow::Result<()> {
-        loop {
-            let packet = tokio::select! {
-                // Wait for close signal
-                () = connection.wait_for_close() => {
-                    log::info!(
-                        target: "tacacsrs_networking::packet_writer::run_write_loop",
-                        "Received close signal. Shutting down write handler."
-                    );
-                    // Gracefully shutdown the write half
-                    let _ = writer.shutdown().await;
-                    return Ok(())
-                }
-
-                // Wait for packet to send
-                packet = receiver.recv() => {
-                    if let Some(packet) = packet { packet } else {
-                        log::info!(
-                            target: "tacacsrs_networking::packet_writer::run_write_loop",
-                            "Channel closed. Shutting down write handler."
-                        );
-                        let _ = writer.shutdown().await;
-                        return Ok(())
-                    }
-                }
-            };
-
-            let session_id = packet.header().session_id;
-
-            log::info!(
-                target: "tacacsrs_networking::packet_writer::run_write_loop",
-                "Received packet for session id {session_id} to send to network"
-            );
-
-            match self.write_packet(writer, packet).await {
-                PacketWriteResult::Success => {
-                    log::info!(
-                        target: "tacacsrs_networking::packet_writer::run_write_loop",
-                        "Sent packet for session id {session_id} to network"
-                    );
-                }
-                PacketWriteResult::WriteError(e) => {
-                    log::error!(
-                        target: "tacacsrs_networking::packet_writer::run_write_loop",
-                        "Failed to write packet for session id {session_id} due to error: {e}"
-                    );
-                    return Err(anyhow::Error::msg(e.to_string()));
-                }
-                PacketWriteResult::CloseSignal | PacketWriteResult::ChannelClosed => {
-                    // These shouldn't happen in write_packet, but handle gracefully
-                    let _ = writer.shutdown().await;
-                    return Ok(());
-                }
-            }
-        }
-    }
 }
 
 /// Default implementation of `PacketWriterTrait` for writing TACACS+ packets.
 ///
 /// Handles writing packets to any async writer, including optional obfuscation
 /// using the provided key.
-pub struct PacketWriter {
+pub(crate) struct PacketWriter {
     obfuscation_key: Option<Vec<u8>>,
 }
 
@@ -143,7 +59,7 @@ impl PacketWriter {
     /// * `obfuscation_key` - Optional key used to obfuscate outgoing packets.
     ///   If `None`, packets are sent unencrypted.
     #[must_use]
-    pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
+    pub(crate) const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
         Self { obfuscation_key }
     }
 
@@ -165,7 +81,7 @@ impl PacketWriterTrait for PacketWriter {
             if is_packet_deobfuscated {
                 packet = packet.to_obfuscated(key);
                 log::info!(
-                    target: "tacacsrs_networking::packet_writer::prepare_packet",
+                    target: "tacacsrs_networking::codec::writer::prepare_packet",
                     "Obfuscated packet for session id {session_id}"
                 );
             }
@@ -232,7 +148,7 @@ mod tests {
             PacketWriteResult::Success => {
                 assert_eq!(buffer.into_inner(), expected_bytes);
             }
-            _ => panic!("Expected Success result"),
+            PacketWriteResult::WriteError(error) => panic!("Expected Success result: {error}"),
         }
     }
 

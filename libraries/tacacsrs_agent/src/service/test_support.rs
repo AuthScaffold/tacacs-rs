@@ -13,16 +13,12 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_agent_client::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
+    AuthorizationOperation, AuthorizationOperationResponse, AuthorizationResponseStatus,
 };
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tokio::sync::{Mutex, Notify};
 
-use crate::upstream::{DedicatedAccountingResult, UpstreamConnection, UpstreamConnector};
-use tacacsrs_networking::SingleConnectionState;
-
-// ---------------------------------------------------------------------------
-// FakeConnection / FakeConnector — configurable success/failure per server
-// ---------------------------------------------------------------------------
+use crate::upstream::{UpstreamConnection, UpstreamConnector};
 
 #[derive(Debug)]
 pub(super) struct FakeConnection {
@@ -35,18 +31,6 @@ pub(super) struct FakeConnection {
 impl UpstreamConnection for FakeConnection {
     fn server_address(&self) -> &str {
         &self.address
-    }
-
-    async fn is_usable_for_new_sessions(&self) -> bool {
-        self.usable.load(Ordering::Relaxed)
-    }
-
-    async fn single_connection_state(&self) -> SingleConnectionState {
-        if self.usable.load(Ordering::Relaxed) {
-            SingleConnectionState::Supported
-        } else {
-            SingleConnectionState::NotSupported
-        }
     }
 
     async fn send_accounting(
@@ -62,6 +46,24 @@ impl UpstreamConnection for FakeConnection {
             server: self.address.clone(),
             status: AccountingResponseStatus::Success,
             server_message: format!("handled by {}", self.address),
+            data: String::new(),
+        })
+    }
+
+    async fn send_authorization(
+        &self,
+        _request: &AuthorizationOperation,
+    ) -> anyhow::Result<AuthorizationOperationResponse> {
+        if self.fail_next_request.swap(false, Ordering::Relaxed) {
+            self.usable.store(false, Ordering::Relaxed);
+            anyhow::bail!("simulated failure from {}", self.address);
+        }
+
+        Ok(AuthorizationOperationResponse {
+            server: self.address.clone(),
+            status: AuthorizationResponseStatus::PassAdd,
+            server_message: format!("authorized by {}", self.address),
+            args: Vec::new(),
             data: String::new(),
         })
     }
@@ -139,107 +141,7 @@ impl UpstreamConnector for FakeConnector {
         self.in_flight_connects.fetch_sub(1, Ordering::Relaxed);
         result
     }
-
-    async fn send_accounting_dedicated(
-        &self,
-        server: &TacacsPlusServer,
-        request: &AccountingOperation,
-    ) -> anyhow::Result<DedicatedAccountingResult> {
-        let connection = self.connect(server).await?;
-        let response = connection.send_accounting(request).await?;
-        let supported =
-            connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAccountingResult {
-            response,
-            single_connect_supported: supported,
-        })
-    }
 }
-
-// ---------------------------------------------------------------------------
-// SingleSessionConnection / SingleSessionConnector — marks itself unusable
-// after one accounting call, forcing a reconnect on the next request.
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-pub(super) struct SingleSessionConnection {
-    address: String,
-    usable: AtomicBool,
-}
-
-#[async_trait]
-impl UpstreamConnection for SingleSessionConnection {
-    fn server_address(&self) -> &str {
-        &self.address
-    }
-
-    async fn is_usable_for_new_sessions(&self) -> bool {
-        self.usable.load(Ordering::Relaxed)
-    }
-
-    async fn single_connection_state(&self) -> SingleConnectionState {
-        if self.usable.load(Ordering::Relaxed) {
-            SingleConnectionState::Initial
-        } else {
-            SingleConnectionState::NotSupported
-        }
-    }
-
-    async fn send_accounting(
-        &self,
-        _request: &AccountingOperation,
-    ) -> anyhow::Result<AccountingOperationResponse> {
-        self.usable.store(false, Ordering::Relaxed);
-        Ok(AccountingOperationResponse {
-            server: self.address.clone(),
-            status: AccountingResponseStatus::Success,
-            server_message: "single-session upstream".to_owned(),
-            data: String::new(),
-        })
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct SingleSessionConnector {
-    pub address: String,
-    pub connect_attempts: AtomicUsize,
-}
-
-#[async_trait]
-impl UpstreamConnector for SingleSessionConnector {
-    async fn connect(
-        &self,
-        server: &TacacsPlusServer,
-    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        let address = server.socket_address();
-        assert_eq!(address, self.address);
-        self.connect_attempts.fetch_add(1, Ordering::Relaxed);
-        Ok(Arc::new(SingleSessionConnection {
-            address: self.address.clone(),
-            usable: AtomicBool::new(true),
-        }))
-    }
-
-    async fn send_accounting_dedicated(
-        &self,
-        server: &TacacsPlusServer,
-        request: &AccountingOperation,
-    ) -> anyhow::Result<DedicatedAccountingResult> {
-        let connection = self.connect(server).await?;
-        let response = connection.send_accounting(request).await?;
-        let supported =
-            connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAccountingResult {
-            response,
-            single_connect_supported: supported,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// BlockingConnection / BlockingConnector — blocks in send_accounting until
-// an external Notify fires, useful for drain / shutdown tests.
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub(super) struct BlockingConnection {
@@ -253,14 +155,6 @@ impl UpstreamConnection for BlockingConnection {
         &self.address
     }
 
-    async fn is_usable_for_new_sessions(&self) -> bool {
-        true
-    }
-
-    async fn single_connection_state(&self) -> SingleConnectionState {
-        SingleConnectionState::Supported
-    }
-
     async fn send_accounting(
         &self,
         _request: &AccountingOperation,
@@ -270,6 +164,20 @@ impl UpstreamConnection for BlockingConnection {
             server: self.address.clone(),
             status: AccountingResponseStatus::Success,
             server_message: String::new(),
+            data: String::new(),
+        })
+    }
+
+    async fn send_authorization(
+        &self,
+        _request: &AuthorizationOperation,
+    ) -> anyhow::Result<AuthorizationOperationResponse> {
+        self.release.notified().await;
+        Ok(AuthorizationOperationResponse {
+            server: self.address.clone(),
+            status: AuthorizationResponseStatus::PassAdd,
+            server_message: String::new(),
+            args: Vec::new(),
             data: String::new(),
         })
     }
@@ -288,109 +196,7 @@ impl UpstreamConnector for BlockingConnector {
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         Ok(Arc::clone(&self.connection) as Arc<dyn UpstreamConnection>)
     }
-
-    async fn send_accounting_dedicated(
-        &self,
-        server: &TacacsPlusServer,
-        request: &AccountingOperation,
-    ) -> anyhow::Result<DedicatedAccountingResult> {
-        let connection = self.connect(server).await?;
-        let response = connection.send_accounting(request).await?;
-        let supported =
-            connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAccountingResult {
-            response,
-            single_connect_supported: supported,
-        })
-    }
 }
-
-// ---------------------------------------------------------------------------
-// ExclusiveSessionConnection / ExclusiveSessionConnector — allows exactly one
-// session per connection; subsequent send_accounting calls fail, simulating a
-// server that does not support single-connection mode under concurrent load.
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-pub(super) struct ExclusiveSessionConnection {
-    address: String,
-    session_claimed: AtomicBool,
-}
-
-#[async_trait]
-impl UpstreamConnection for ExclusiveSessionConnection {
-    fn server_address(&self) -> &str {
-        &self.address
-    }
-
-    async fn is_usable_for_new_sessions(&self) -> bool {
-        !self.session_claimed.load(Ordering::Relaxed)
-    }
-
-    async fn single_connection_state(&self) -> SingleConnectionState {
-        if self.session_claimed.load(Ordering::Relaxed) {
-            SingleConnectionState::NotSupported
-        } else {
-            SingleConnectionState::Initial
-        }
-    }
-
-    async fn send_accounting(
-        &self,
-        _request: &AccountingOperation,
-    ) -> anyhow::Result<AccountingOperationResponse> {
-        if self.session_claimed.swap(true, Ordering::Relaxed) {
-            anyhow::bail!("Connection is not accepting new sessions");
-        }
-        Ok(AccountingOperationResponse {
-            server: self.address.clone(),
-            status: AccountingResponseStatus::Success,
-            server_message: "exclusive-session upstream".to_owned(),
-            data: String::new(),
-        })
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct ExclusiveSessionConnector {
-    pub address: String,
-    pub connect_attempts: AtomicUsize,
-}
-
-#[async_trait]
-impl UpstreamConnector for ExclusiveSessionConnector {
-    async fn connect(
-        &self,
-        server: &TacacsPlusServer,
-    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        let address = server.socket_address();
-        assert_eq!(address, self.address);
-        self.connect_attempts.fetch_add(1, Ordering::Relaxed);
-        Ok(Arc::new(ExclusiveSessionConnection {
-            address: self.address.clone(),
-            session_claimed: AtomicBool::new(false),
-        }))
-    }
-
-    async fn send_accounting_dedicated(
-        &self,
-        server: &TacacsPlusServer,
-        request: &AccountingOperation,
-    ) -> anyhow::Result<DedicatedAccountingResult> {
-        let connection = self.connect(server).await?;
-        let response = connection.send_accounting(request).await?;
-        let supported =
-            connection.single_connection_state().await == SingleConnectionState::Supported;
-        Ok(DedicatedAccountingResult {
-            response,
-            single_connect_supported: supported,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
 
 pub(super) fn build_request() -> AccountingOperation {
     AccountingOperation {
@@ -400,4 +206,15 @@ pub(super) fn build_request() -> AccountingOperation {
         command: "show".to_owned(),
         command_arguments: vec!["users".to_owned()],
     }
+}
+
+pub(super) fn build_authorization_request() -> AuthorizationOperation {
+    AuthorizationOperation::builder("admin", 15)
+        .port("tty0")
+        .remote_address("127.0.0.1")
+        .service("shell")
+        .command("show")
+        .command_arg("users")
+        .build()
+        .expect("test authorization request is valid")
 }

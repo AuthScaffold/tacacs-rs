@@ -69,7 +69,6 @@ impl<T> AuthorizationFlow for T where T: ClientSessionFlowIoTrait + Sized + Send
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-    use std::sync::Arc;
     use tacacsrs_messages::enumerations::{
         TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType,
         TacacsAuthorizationStatus, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
@@ -77,9 +76,6 @@ mod tests {
     use tacacsrs_messages::header::Header;
     use tacacsrs_messages::packet::Packet;
     use tacacsrs_messages::traits::TacacsBodyTrait;
-    use tacacsrs_networking::connection::TacacsConnection;
-    use tacacsrs_networking::traits::SessionManagementTrait;
-    use tacacsrs_networking::transport::mock::MockTransport;
     use tokio::sync::Mutex;
 
     struct TestIo {
@@ -200,42 +196,6 @@ mod tests {
         assert_eq!(sent_packets[0].header().seq_no, 1);
         assert_eq!(sent_packets[0].header().tacacs_type, TacacsType::TacPlusAuthorisation);
         assert!(*state.complete.lock().await);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_send_authorization_request_with_session_adapter() -> anyhow::Result<()> {
-        let mock_transport = MockTransport::new();
-        let mock_control = mock_transport.coordinator();
-        let tacacs_connection = Arc::new(TacacsConnection::new(None));
-        tacacs_connection.run(mock_transport).await?;
-
-        let session = tacacs_connection.create_session().await?;
-        let session_id = session.session_id();
-        let request = authorization_request();
-        let authorization_reply = authorization_reply();
-
-        mock_control
-            .authorization_reply(&session, 2, &authorization_reply)
-            .send()
-            .await?;
-
-        let reply = session.send_authorization_request(request).await?;
-        assert_eq!(reply.status, TacacsAuthorizationStatus::TacPlusPassAdd);
-        assert_eq!(reply.args, vec!["priv-lvl=15"]);
-
-        let requests = mock_control.get_requests_for_session(session_id).await?;
-        let sent_packet = requests
-            .get(&1)
-            .ok_or_else(|| anyhow::Error::msg("Missing authorization request packet with seq 1"))?;
-        assert_eq!(sent_packet.header().session_id, session_id);
-        assert_eq!(sent_packet.header().seq_no, 1);
-        assert_eq!(sent_packet.header().tacacs_type, TacacsType::TacPlusAuthorisation);
-
-        let sent_request = AuthorizationRequest::from_bytes(sent_packet.body())?;
-        assert_eq!(sent_request.user, "admin");
-        assert_eq!(sent_request.args, vec!["service=shell", "cmd=show"]);
 
         Ok(())
     }

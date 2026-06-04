@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::vec;
 
+use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerType};
+use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
@@ -10,40 +12,35 @@ use tacacsrs_messages::enumerations::{
 use tacacsrs_messages::header::Header;
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 use tacacsrs_messages::traits::TacacsBodyTrait;
-
-use tacacsrs_networking::helpers::connect_tcp;
-use tacacsrs_networking::session::Session;
-use tacacsrs_networking::traits::SessionManagementTrait;
-use tacacsrs_networking::TacacsConnection;
+use tacacsrs_networking::{ConnectOptions, TacacsClient, ClientSession};
 use tokio::task::JoinHandle;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = init_logging();
-    let hostname = "tacacsserver.local";
-    let obfuscation_key = Some(b"tac_plus_key".to_vec());
 
     #[cfg(tokio_unstable)]
     {
         console_subscriber::init();
     }
 
-    let tcp_stream = connect_tcp(hostname).await?;
-    let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
-    connection.run(tcp_stream).await?;
-
-    // For TLS or TLS-PSK, build a TacacsPlusServer via TacacsPlusServerBuilder
-    // and call tacacsrs_networking::config_connect::establish_stream — see the
-    // tls_client.rs and tls_psk_client.rs examples in this directory.
-
+    let server = TacacsPlusServerBuilder::new(
+        "multiple-transactions-example",
+        TacacsPlusServerType::ACCOUNTING,
+        "tacacsserver.local",
+        49,
+    )
+    .with_shared_secret("tac_plus_key")
+    .build();
+    let connection = Arc::new(TacacsClient::connect(server, ConnectOptions::default()).await?);
     let session_count = 100_000;
 
     let session_creation = (0..session_count).map(|_| {
-        let conn = connection.clone();
+        let conn = Arc::clone(&connection);
         tokio::spawn(async move { conn.create_session().await })
     });
 
-    let mut sessions = Vec::<Session>::with_capacity(session_count);
+    let mut sessions = Vec::<ClientSession>::with_capacity(session_count);
     for session in session_creation {
         let session = match session.await? {
             Ok(session) => session,
@@ -62,13 +59,13 @@ async fn main() -> anyhow::Result<()> {
         .collect();
 
     for handle in handles {
-        let _ = handle.await?;
+        handle.await??;
     }
 
     Ok(())
 }
 
-async fn send_test_request(session: Session) -> anyhow::Result<()> {
+async fn send_test_request(session: ClientSession) -> anyhow::Result<()> {
     let accounting_request = AccountingRequest {
         flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
         authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
@@ -81,19 +78,12 @@ async fn send_test_request(session: Session) -> anyhow::Result<()> {
         args: vec!["cmd=test".to_string()],
     };
 
-    let _response = match send_accounting_request(&session, accounting_request).await {
-        Ok(response) => response,
-        Err(e) => {
-            println!("Failed to send accounting request: {e}");
-            return Err(e);
-        }
-    };
-
+    send_accounting_request(&session, accounting_request).await?;
     Ok(())
 }
 
 async fn send_accounting_request(
-    session: &Session,
+    session: &(impl ClientSessionFlowIoTrait + Sync),
     request: AccountingRequest,
 ) -> anyhow::Result<AccountingReply> {
     if session.is_complete().await {
@@ -101,6 +91,7 @@ async fn send_accounting_request(
             "Cannot send accounting request: session is already complete",
         ));
     }
+
     let sequence_number = session.next_sequence_number().await;
     let data = request.to_bytes()?;
     let length = u32::try_from(data.len())
@@ -118,19 +109,15 @@ async fn send_accounting_request(
         data,
     )?;
 
-    session.duplex_channel.sender.send(packet).await?;
-    let mut reader_lock = session.duplex_channel.receiver.write().await;
-    let response = reader_lock
-        .recv()
-        .await
-        .ok_or_else(|| anyhow::Error::msg("Failed to receive response"))?;
+    session.send_packet(packet).await?;
+    let response = session.receive_packet().await?;
     let reply = AccountingReply::from_bytes(response.body())?;
     session.complete().await;
     Ok(reply)
 }
 
-use log::{Record, Level, Metadata};
-use log::{SetLoggerError, LevelFilter};
+use log::{Level, Metadata, Record};
+use log::{LevelFilter, SetLoggerError};
 
 static LOGGER: SimpleLogger = SimpleLogger;
 

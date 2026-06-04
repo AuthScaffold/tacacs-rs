@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 /// via an unbounded channel. This means `poll_write` **never blocks or contends
 /// on the shared [`MockState`](super::mock_state::MockState) mutex** — it simply
 /// enqueues the bytes and returns.
-pub struct MockWriteHalf {
+pub(crate) struct MockWriteHalf {
     /// Channel sender to the write processor task.
     write_tx: mpsc::UnboundedSender<Vec<u8>>,
 
