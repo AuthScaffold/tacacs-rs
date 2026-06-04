@@ -2,7 +2,7 @@
 //!
 //! This type is intentionally **not** part of the public API: all callers
 //! must drive PSK connection construction through
-//! [`crate::config_connect::establish_stream`], which guarantees that the
+//! [`crate::establish::establish_stream`], which guarantees that the
 //! YANG configuration model is the single source of truth for transport
 //! parameters.
 

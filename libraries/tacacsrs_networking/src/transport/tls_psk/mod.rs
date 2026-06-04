@@ -5,7 +5,7 @@
 //! configuration (specifically, the `client-identity.tls13-epsk` container)
 //! and performs the TLS-PSK handshake. The internal `PskIdentity` and
 //! `PskConfigurationBuilder` helpers are no longer part of the public API;
-//! callers should drive the dispatcher in [`crate::config_connect`] instead.
+//! callers should drive the dispatcher in [`crate::establish`] instead.
 //!
 //! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 

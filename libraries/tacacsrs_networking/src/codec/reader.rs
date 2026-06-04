@@ -6,7 +6,7 @@ use tacacsrs_messages::{header::Header, packet::Packet};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// Result of reading a packet from the stream.
-pub enum PacketReadResult {
+pub(crate) enum PacketReadResult {
     /// Successfully read and parsed a packet.
     Success(Packet),
     /// Failed to read header from stream (connection closed or error).
@@ -40,7 +40,7 @@ pub enum PacketReadResult {
 /// and easier testing. Implementations can provide custom behavior for reading,
 /// parsing, and deobfuscating packets.
 #[async_trait]
-pub trait PacketReaderTrait: Send + Sync {
+pub(crate) trait PacketReaderTrait: Send + Sync {
     /// Reads a single packet from the provided reader.
     ///
     /// This method will:
@@ -61,7 +61,7 @@ pub trait PacketReaderTrait: Send + Sync {
 ///
 /// Handles reading packets from any async reader, including optional deobfuscation
 /// using the provided key.
-pub struct PacketReader {
+pub(crate) struct PacketReader {
     obfuscation_key: Option<Vec<u8>>,
 }
 
@@ -72,7 +72,7 @@ impl PacketReader {
     /// * `obfuscation_key` - Optional key used to deobfuscate incoming packets.
     ///   If `None`, packets are assumed to be unencrypted.
     #[must_use]
-    pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
+    pub(crate) const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
         Self { obfuscation_key }
     }
 }
@@ -99,7 +99,7 @@ impl PacketReaderTrait for PacketReader {
         // 2. Potential truncation issues on 32-bit platforms when casting to usize
         if header.length > TACACS_MAX_BODY_LENGTH {
             log::warn!(
-                target: "tacacsrs_networking::packet_reader::read_packet",
+                target: "tacacsrs_networking::codec::reader::read_packet",
                 "Rejecting packet with excessive body length. Session ID: {}, Body length: {}, Max allowed: {}",
                 session_id, header.length, TACACS_MAX_BODY_LENGTH
             );
@@ -111,7 +111,7 @@ impl PacketReaderTrait for PacketReader {
         }
 
         log::info!(
-            target: "tacacsrs_networking::packet_reader::read_packet",
+            target: "tacacsrs_networking::codec::reader::read_packet",
             "Received header with session id: {}. Loading body of length {}",
             session_id, header.length
         );
@@ -131,7 +131,7 @@ impl PacketReaderTrait for PacketReader {
         }
 
         log::info!(
-            target: "tacacsrs_networking::packet_reader::read_packet",
+            target: "tacacsrs_networking::codec::reader::read_packet",
             "Received body for session id: {session_id}"
         );
 
@@ -156,7 +156,7 @@ impl PacketReaderTrait for PacketReader {
             if !is_packet_deobfuscated {
                 packet = packet.to_deobfuscated(key);
                 log::info!(
-                    target: "tacacsrs_networking::packet_reader::read_packet",
+                    target: "tacacsrs_networking::codec::reader::read_packet",
                     "Deobfuscated packet for session id: {session_id}"
                 );
             }

@@ -57,23 +57,6 @@ impl SessionIdAllocator {
         }
     }
 
-    pub(crate) fn reserve_specific(
-        self: &Arc<Self>,
-        session_id: u32,
-    ) -> anyhow::Result<ReservedSessionId> {
-        let mut state = self.state.lock();
-
-        anyhow::ensure!(
-            state.active_session_ids.insert(session_id),
-            "Session ID {session_id} is already in use"
-        );
-
-        Ok(ReservedSessionId {
-            session_id,
-            allocator: Arc::clone(self),
-        })
-    }
-
     fn release(&self, session_id: u32) {
         let mut state = self.state.lock();
         state.active_session_ids.remove(&session_id);
@@ -92,7 +75,7 @@ impl Drop for ReservedSessionId {
     }
 }
 
-fn random_nonzero_session_id() -> u32 {
+pub(crate) fn random_nonzero_session_id() -> u32 {
     loop {
         let candidate = rand::random::<u32>();
         if candidate != 0 {
@@ -115,18 +98,5 @@ mod tests {
         assert_ne!(first.get(), 0);
         assert_ne!(second.get(), 0);
         assert_ne!(first.get(), second.get());
-    }
-
-    #[test]
-    fn specific_ids_can_be_reused_after_drop() {
-        let allocator = SessionIdAllocator::new();
-
-        {
-            let reserved = allocator.reserve_specific(0xDEAD_BEEF).unwrap();
-            assert_eq!(reserved.get(), 0xDEAD_BEEF);
-        }
-
-        let reserved_again = allocator.reserve_specific(0xDEAD_BEEF).unwrap();
-        assert_eq!(reserved_again.get(), 0xDEAD_BEEF);
     }
 }

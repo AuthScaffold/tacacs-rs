@@ -235,29 +235,37 @@ impl AccountingRequest {
 }
 
 impl TacacsBodyTrait for AccountingRequest {
-    fn to_bytes(&self) -> Vec<u8> {
-        // TACACS+ protocol encodes these lengths as u8; panic on overflow
-        // rather than producing a silently malformed packet.
-        let user_len = u8::try_from(self.user.len()).expect("user field exceeds 255 bytes");
-        let port_len = u8::try_from(self.port.len()).expect("port field exceeds 255 bytes");
-        let rem_addr_len =
-            u8::try_from(self.rem_address.len()).expect("rem_address field exceeds 255 bytes");
-        let arg_cnt = u8::try_from(self.args.len()).expect("args count exceeds 255");
+    fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        let user_len = u8::try_from(self.user.len())
+            .context("accounting request user field exceeds 255 bytes")?;
+        let port_len = u8::try_from(self.port.len())
+            .context("accounting request port field exceeds 255 bytes")?;
+        let rem_addr_len = u8::try_from(self.rem_address.len())
+            .context("accounting request rem_address field exceeds 255 bytes")?;
+        let arg_cnt =
+            u8::try_from(self.args.len()).context("accounting request args count exceeds 255")?;
 
-        let mut data = vec![
-            self.flags.bits(),
-            self.authen_method as u8,
-            self.priv_lvl,
-            self.authen_type as u8,
-            self.authen_service as u8,
-            user_len,
-            port_len,
-            rem_addr_len,
-            arg_cnt,
-        ];
+        let total = TACACS_ACCOUNTING_REQUEST_MIN_LENGTH
+            + self.args.len()
+            + self.user.len()
+            + self.port.len()
+            + self.rem_address.len()
+            + self.args.iter().map(String::len).sum::<usize>();
+
+        let mut data = Vec::with_capacity(total);
+        data.push(self.flags.bits());
+        data.push(self.authen_method as u8);
+        data.push(self.priv_lvl);
+        data.push(self.authen_type as u8);
+        data.push(self.authen_service as u8);
+        data.push(user_len);
+        data.push(port_len);
+        data.push(rem_addr_len);
+        data.push(arg_cnt);
 
         for arg in &self.args {
-            let arg_len = u8::try_from(arg.len()).expect("arg field exceeds 255 bytes");
+            let arg_len = u8::try_from(arg.len())
+                .context("accounting request arg field exceeds 255 bytes")?;
             data.push(arg_len);
         }
 
@@ -268,7 +276,7 @@ impl TacacsBodyTrait for AccountingRequest {
             data.extend(arg.as_bytes());
         }
 
-        data
+        Ok(data)
     }
 }
 
@@ -403,7 +411,7 @@ mod tests {
     fn test_to_data() {
         let data = generate_accounting_request_data();
         let accounting_request = AccountingRequest::from_bytes(data.as_slice()).unwrap();
-        let new_data = accounting_request.to_bytes();
+        let new_data = accounting_request.to_bytes().unwrap();
 
         assert_eq!(data, new_data);
     }
@@ -504,7 +512,7 @@ mod tests {
 
         let accounting_request = AccountingRequest::from_packet(&packet).unwrap();
 
-        assert_eq!(accounting_request.to_bytes(), packet.body().clone());
+        assert_eq!(accounting_request.to_bytes().unwrap(), packet.body().clone());
     }
 
     #[test]

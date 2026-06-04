@@ -11,3 +11,4 @@
 //! define minimal I/O traits and keep protocol state-machine logic in this crate.
 
 pub mod accounting;
+pub mod authorization;

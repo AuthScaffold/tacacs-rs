@@ -1,11 +1,85 @@
 use anyhow::Context;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tacacsrs_config::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerExt,
-    TacacsPlusServerType, ValidationOptions,
+    TacacsPlusServerType, ValidationOptions, crypto_types::PrivateKeyFormat,
 };
-use tacacsrs_networking::helpers::{normalize_cli_certificate_data, normalize_cli_private_key_data};
 
 use crate::cli::{Cli, Command};
+
+fn data_contains_pem_header(data: &[u8]) -> bool {
+    const PEM_HEADER: &[u8] = b"-----BEGIN";
+
+    data.windows(PEM_HEADER.len())
+        .any(|window| window == PEM_HEADER)
+}
+
+fn normalize_cli_certificate_data(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    if data.is_empty() {
+        anyhow::bail!("client certificate data is empty");
+    }
+
+    if !data_contains_pem_header(data) {
+        return Ok(data.to_vec());
+    }
+
+    let certificates = CertificateDer::pem_slice_iter(data)
+        .collect::<Result<Vec<_>, _>>()
+        .context("failed to parse PEM client certificate")?;
+
+    if certificates.len() != 1 {
+        anyhow::bail!("client certificate file must contain exactly one PEM certificate");
+    }
+
+    Ok(certificates[0].as_ref().to_vec())
+}
+
+fn normalize_cli_private_key_data(data: &[u8]) -> anyhow::Result<(Vec<u8>, PrivateKeyFormat)> {
+    if data.is_empty() {
+        anyhow::bail!("client private key data is empty");
+    }
+
+    let private_key = if data_contains_pem_header(data) {
+        PrivateKeyDer::from_pem_slice(data).context("failed to parse PEM client private key")?
+    } else {
+        PrivateKeyDer::try_from(data).map_err(|_| {
+            anyhow::anyhow!(
+                "unsupported DER client private key format; expected PKCS#1, SEC1, or PKCS#8"
+            )
+        })?
+    };
+
+    let private_key_format = match &private_key {
+        PrivateKeyDer::Pkcs1(_) => PrivateKeyFormat::RsaPrivateKeyFormat,
+        PrivateKeyDer::Sec1(_) => PrivateKeyFormat::EcPrivateKeyFormat,
+        PrivateKeyDer::Pkcs8(_) => PrivateKeyFormat::OneAsymmetricKeyFormat,
+        _ => anyhow::bail!("unsupported client private key format"),
+    };
+
+    Ok((private_key.secret_der().to_vec(), private_key_format))
+}
+
+fn parse_host_port(addr: &str, default_port: u16) -> (String, u16) {
+    if let Some(rest) = addr.strip_prefix('[') {
+        if let Some((host, after_bracket)) = rest.split_once(']') {
+            let port = after_bracket
+                .strip_prefix(':')
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(default_port);
+            return (host.to_owned(), port);
+        }
+    }
+
+    if addr.matches(':').count() == 1 {
+        if let Some((host, port_str)) = addr.rsplit_once(':') {
+            if let Ok(port) = port_str.parse::<u16>() {
+                return (host.to_owned(), port);
+            }
+        }
+    }
+
+    (addr.to_owned(), default_port)
+}
 
 /// Builds a single-server [`TacacsPlus`] root from CLI flags for direct-mode connections.
 ///
@@ -20,14 +94,15 @@ pub fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
         .as_deref()
         .context("A TACACS+ server address is required for direct mode")?;
 
-    let (host, port) = tacacsrs_networking::helpers::parse_host_port(server_addr, 49);
+    let (host, port) = parse_host_port(server_addr, 49);
 
-    let server = populate_security_from_cli(
+    let mut server = populate_security_from_cli(
         cli,
         TacacsPlusServerBuilder::new("cli", TacacsPlusServerType::all(), host, port)
             .with_timeout(5),
         &options,
     )?;
+    server.single_connection = true;
 
     TacacsPlusBuilder::new()
         .with_server(server)
@@ -389,6 +464,29 @@ mod tests {
 
         let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
         assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret123"));
+    }
+
+    #[test]
+    fn tacacs_plus_from_cli_enables_single_connection_negotiation() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--shared-secret",
+            "secret123",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        let root = tacacs_plus_from_cli(&cli).expect("CLI server config should load");
+
+        assert!(root.server[0].single_connection);
     }
 
     #[test]

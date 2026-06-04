@@ -1,6 +1,6 @@
 # Session Wrapper Smoke and Integration Testing
 
-This document describes local checks that verify the Linux `session-wrapper` path is operating as expected. The wrapper is currently Linux x86_64 only; other platforms build the noop entrypoint.
+This document describes local checks that verify the Linux `session-wrapper` path is operating as expected. The real process mediation backend is Linux x86_64 only. Other platforms build the portable CLI, allowlist, deny-message, and authorization decision logic over a mock PAL backend that returns an explicit unsupported-platform error instead of executing or mediating commands.
 
 For architecture, CLI shape, and current implementation scope, see the [session-wrapper README](../executables/session_wrapper/README.md).
 
@@ -15,7 +15,7 @@ The trailing `COMMAND [ARGS]...` is the process that is executed under supervisi
 Runnable allow-all demos live in `executables/session_wrapper/demo/`:
 
 | Script | Purpose |
-|--------|---------|
+| ------ | ------- |
 | `allow-all-basic.sh` | Builds `session-wrapper`, runs a short wrapped script, and verifies the wrapped process wrote a marker file |
 | `allow-all-descendants.sh` | Runs a wrapped script that exits while a descendant continues |
 | `allow-all-interactive-bash.sh` | Starts an interactive Bash session under the current allow-all supervisor for manual exploration |
@@ -50,6 +50,17 @@ export PKG_CONFIG_PATH=/path/to/libseccomp-musl/lib/pkgconfig
 Native Alpine builds have one extra `libseccomp`/musl linking caveat. See the crate-local [Alpine Linux technical note](../executables/session_wrapper/README.alpine.md).
 
 ## Compile-time integration checks
+
+On non-Linux development machines, run the portable checks first:
+
+```bash
+cargo check -p session-wrapper
+cargo test -p session-wrapper
+cargo clippy -p session-wrapper --all-targets -- -D warnings
+```
+
+These checks exercise the portable modules and the mock PAL backend. They do not
+validate fork, seccomp, `/proc`, signal, or child-reaping behavior.
 
 Run these on Linux x86_64:
 
@@ -192,7 +203,7 @@ Expected result: the marker contains the target user's UID and primary GID, not 
 These smoke tests are good candidates for a Linux-only integration test job once the wrapper behavior stabilizes:
 
 | Check | Requires root | Purpose |
-|-------|---------------|---------|
+| ----- | ------------- | ------- |
 | Compile-time integration checks | No | Validate Rust code, seccomp policy construction, fd passing, and musl compatibility |
 | Child starts and exits | No | Validate notification fd handoff, ready synchronization, and child exec |
 | Missing shell failure | No | Validate child-to-parent setup error reporting |

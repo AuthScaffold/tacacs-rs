@@ -10,10 +10,10 @@ use tokio_rustls::rustls::DigitallySignedStruct;
 /// This is dangerous and should only be used for testing or in controlled environments.
 /// Using this in production exposes you to man-in-the-middle attacks.
 #[derive(Debug)]
-pub struct NoCertificateVerification(CryptoProvider);
+pub(super) struct NoCertificateVerification(CryptoProvider);
 
 impl NoCertificateVerification {
-    pub const fn new(provider: CryptoProvider) -> Self {
+    pub(super) const fn new(provider: CryptoProvider) -> Self {
         Self(provider)
     }
 }

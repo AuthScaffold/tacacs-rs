@@ -28,11 +28,11 @@ impl<T: Transport> ErasedTransport for T {
 ///
 /// Construct one with [`BoxedTransport::new`], passing any concrete
 /// [`Transport`] implementor (e.g. `TcpStream`, `TlsStream<TcpStream>`).
-pub struct BoxedTransport(Box<dyn ErasedTransport>);
+pub(crate) struct BoxedTransport(Box<dyn ErasedTransport>);
 
 impl BoxedTransport {
     /// Wraps a concrete transport in a type-erased wrapper.
-    pub fn new<T: Transport>(transport: T) -> Self {
+    pub(crate) fn new<T: Transport>(transport: T) -> Self {
         Self(Box::new(transport))
     }
 }

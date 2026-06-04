@@ -5,7 +5,7 @@
 //! configuration and performs the TLS handshake. The internal
 //! `TlsConfigurationBuilder` and `connect_tls` helpers are no longer part
 //! of the public API; callers should drive the dispatcher in
-//! [`crate::config_connect`] instead.
+//! [`crate::establish`] instead.
 //!
 //! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 

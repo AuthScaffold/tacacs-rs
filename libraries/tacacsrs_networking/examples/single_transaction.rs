@@ -1,6 +1,7 @@
-use std::sync::Arc;
 use std::vec;
 
+use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerType};
+use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
@@ -10,90 +11,57 @@ use tacacsrs_messages::enumerations::{
 use tacacsrs_messages::header::Header;
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 use tacacsrs_messages::traits::TacacsBodyTrait;
-
-use tacacsrs_networking::session::Session;
-use tacacsrs_networking::TacacsConnection;
-use tacacsrs_networking::traits::SessionManagementTrait;
+use tacacsrs_networking::{ConnectOptions, TacacsClient};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = init_logging();
-    let hostname = "tacacsserver.local";
-    let obfuscation_key = Some(b"tac_plus_key".to_vec());
 
     #[cfg(tokio_unstable)]
     {
         console_subscriber::init();
     }
 
-    let tcp_stream = tacacsrs_networking::helpers::connect_tcp(hostname).await?;
-    let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
-    connection.run(tcp_stream).await?;
-
-    let session = connection.clone().create_session().await?;
-
-    let accounting_request = AccountingRequest {
-        flags: TacacsAccountingFlags::START,
-        authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
-        priv_lvl: 0,
-        authen_type: TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
-        authen_service: TacacsAuthenticationService::TacPlusAuthenSvcNone,
-        user: "admin".to_string(),
-        port: "test".to_string(),
-        rem_address: "1.1.1.1".to_string(),
-        args: vec![
-            "service=shell".to_string(),
-            "task_id=123".to_string(),
-            "cmd=test".to_string(),
-        ],
-    };
-
-    let response = match send_accounting_request(&session, accounting_request).await {
-        Ok(response) => response,
-        Err(e) => {
-            println!("Failed to send accounting request: {e}");
-            return Err(e);
-        }
-    };
-
-    println!("Received accounting response: {response:#?}");
-
-    let session = connection.clone().create_session().await?;
-
-    let response = match send_accounting_request(
-        &session,
-        AccountingRequest {
-            flags: TacacsAccountingFlags::STOP,
-            authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
-            priv_lvl: 0,
-            authen_type: TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
-            authen_service: TacacsAuthenticationService::TacPlusAuthenSvcNone,
-            user: "admin".to_string(),
-            port: "test".to_string(),
-            rem_address: "1.1.1.1".to_string(),
-            args: vec![
-                "service=shell".to_string(),
-                "task_id=123".to_string(),
-                "cmd=test".to_string(),
-            ],
-        },
+    let server = TacacsPlusServerBuilder::new(
+        "single-transaction-example",
+        TacacsPlusServerType::ACCOUNTING,
+        "tacacsserver.local",
+        49,
     )
-    .await
-    {
-        Ok(response) => response,
-        Err(e) => {
-            println!("Failed to send accounting request: {e}");
-            return Err(e);
-        }
-    };
+    .with_shared_secret("tac_plus_key")
+    .build();
+    let connection = TacacsClient::connect(server, ConnectOptions::default()).await?;
 
-    println!("Received accounting response: {response:#?}");
+    for flags in [TacacsAccountingFlags::START, TacacsAccountingFlags::STOP] {
+        let session = connection.create_session().await?;
+        let response = send_accounting_request(
+            &session,
+            AccountingRequest {
+                flags,
+                authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
+                priv_lvl: 0,
+                authen_type: TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
+                authen_service: TacacsAuthenticationService::TacPlusAuthenSvcNone,
+                user: "admin".to_string(),
+                port: "test".to_string(),
+                rem_address: "1.1.1.1".to_string(),
+                args: vec![
+                    "service=shell".to_string(),
+                    "task_id=123".to_string(),
+                    "cmd=test".to_string(),
+                ],
+            },
+        )
+        .await?;
+
+        println!("Received accounting response: {response:#?}");
+    }
 
     Ok(())
 }
 
 async fn send_accounting_request(
-    session: &Session,
+    session: &(impl ClientSessionFlowIoTrait + Sync),
     request: AccountingRequest,
 ) -> anyhow::Result<AccountingReply> {
     if session.is_complete().await {
@@ -101,8 +69,9 @@ async fn send_accounting_request(
             "Cannot send accounting request: session is already complete",
         ));
     }
+
     let sequence_number = session.next_sequence_number().await;
-    let data = request.to_bytes();
+    let data = request.to_bytes()?;
     let length = u32::try_from(data.len())
         .map_err(|_| anyhow::Error::msg("Accounting request payload exceeds u32 length"))?;
 
@@ -119,19 +88,15 @@ async fn send_accounting_request(
         data,
     )?;
 
-    session.duplex_channel.sender.send(packet).await?;
-    let mut reader_lock = session.duplex_channel.receiver.write().await;
-    let response = reader_lock
-        .recv()
-        .await
-        .ok_or_else(|| anyhow::Error::msg("Failed to receive response"))?;
+    session.send_packet(packet).await?;
+    let response = session.receive_packet().await?;
     let reply = AccountingReply::from_bytes(response.body())?;
     session.complete().await;
     Ok(reply)
 }
 
-use log::{Record, Level, Metadata};
-use log::{SetLoggerError, LevelFilter};
+use log::{Level, Metadata, Record};
+use log::{LevelFilter, SetLoggerError};
 static LOGGER: SimpleLogger = SimpleLogger;
 
 struct SimpleLogger;

@@ -1,54 +1,57 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 
-use crate::duplex_channel::DuplexChannel;
-use crate::session_manager::SessionManager;
+use tacacsrs_messages::packet::Packet;
 
-pub struct Session {
-    pub session_id: u32,
-    pub duplex_channel: DuplexChannel,
+use super::{DuplexChannel, SessionManager};
 
-    pub current_sequence_number: RwLock<u8>,
-    pub session_complete: AtomicBool,
+pub(crate) struct SharedSession {
+    id: u32,
+    duplex_channel: DuplexChannel,
+
+    current_sequence_number: RwLock<u8>,
+    complete: AtomicBool,
     manager: Option<Arc<SessionManager>>,
 }
 
-impl Session {
-    pub fn new(session_id: u32, duplex_channel: DuplexChannel) -> Self {
+impl SharedSession {
+    #[cfg(test)]
+    pub(crate) fn new(session_id: u32, duplex_channel: DuplexChannel) -> Self {
         Self {
-            session_id,
+            id: session_id,
             duplex_channel,
             current_sequence_number: 1_u8.into(),
-            session_complete: AtomicBool::new(false),
+            complete: AtomicBool::new(false),
             manager: None,
         }
     }
 
-    pub fn new_with_manager(
+    pub(crate) fn new_with_manager(
         session_id: u32,
         duplex_channel: DuplexChannel,
         manager: Option<Arc<SessionManager>>,
     ) -> Self {
         Self {
-            session_id,
+            id: session_id,
             duplex_channel,
             current_sequence_number: 1_u8.into(),
-            session_complete: AtomicBool::new(false),
+            complete: AtomicBool::new(false),
             manager,
         }
     }
 
     fn mark_complete(&self) -> bool {
-        !self.session_complete.swap(true, Ordering::AcqRel)
+        !self.complete.swap(true, Ordering::AcqRel)
     }
 
-    pub const fn session_id(&self) -> u32 {
-        self.session_id
+    pub(crate) const fn session_id(&self) -> u32 {
+        self.id
     }
 
-    pub async fn next_sequence_number(&self) -> u8 {
+    pub(crate) async fn next_sequence_number(&self) -> u8 {
         let mut sequence_number_lock = self.current_sequence_number.write().await;
         let sequence_number = *sequence_number_lock;
         *sequence_number_lock = sequence_number.wrapping_add(2);
@@ -56,18 +59,18 @@ impl Session {
         sequence_number
     }
 
-    pub async fn complete(&self) {
+    pub(crate) async fn complete(&self) {
         if !self.mark_complete() {
             return;
         }
 
         // Notify the session manager to remove this session from the registry
         if let Some(mgr) = &self.manager {
-            mgr.remove_session(self.session_id).await;
+            mgr.remove_session(self.id).await;
         }
     }
 
-    pub async fn is_complete(&self) -> bool {
+    pub(crate) async fn is_complete(&self) -> bool {
         if self.duplex_channel.sender_closed() {
             return true;
         }
@@ -76,11 +79,24 @@ impl Session {
             return true;
         }
 
-        self.session_complete.load(Ordering::Acquire)
+        self.complete.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {
+        self.duplex_channel.send_packet(packet).await
+    }
+
+    pub(crate) async fn receive_packet(&self) -> anyhow::Result<Packet> {
+        self.duplex_channel.receive_packet().await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn close_receiver(&self) {
+        self.duplex_channel.close_receiver().await;
     }
 }
 
-impl Drop for Session {
+impl Drop for SharedSession {
     fn drop(&mut self) {
         if !self.mark_complete() {
             return;
@@ -90,7 +106,7 @@ impl Drop for Session {
             return;
         };
 
-        let session_id = self.session_id;
+        let session_id = self.id;
 
         match Handle::try_current() {
             Ok(handle) => {
@@ -100,7 +116,7 @@ impl Drop for Session {
             }
             Err(_) => {
                 log::warn!(
-                    target: "tacacsrs_networking::session::drop",
+                    target: "tacacsrs_networking::session::shared::drop",
                     "Dropping session {session_id} without a Tokio runtime; session registry cleanup could not be scheduled"
                 );
             }
@@ -111,7 +127,6 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::duplex_channel::DuplexChannel;
     use tacacsrs_messages::packet::Packet;
     use tokio::sync::mpsc;
 
@@ -121,7 +136,7 @@ mod tests {
         let (_client_sender, client_receiver) = mpsc::channel::<Packet>(32);
         let duplex_channel = DuplexChannel::new(client_receiver, network_sender);
 
-        let session = Session::new(1, duplex_channel);
+        let session = SharedSession::new(1, duplex_channel);
 
         assert_eq!(session.session_id(), 1);
         assert!(!(session.is_complete().await));
@@ -137,7 +152,7 @@ mod tests {
         let (_client_sender, client_receiver) = mpsc::channel::<Packet>(32);
         let duplex_channel = DuplexChannel::new(client_receiver, network_sender);
 
-        let session = Session::new(1, duplex_channel);
+        let session = SharedSession::new(1, duplex_channel);
 
         assert_eq!(session.next_sequence_number().await, 1);
         assert_eq!(session.next_sequence_number().await, 3);
@@ -152,7 +167,7 @@ mod tests {
         let (client_sender, client_receiver) = mpsc::channel::<Packet>(32);
         let duplex_channel = DuplexChannel::new(client_receiver, network_sender);
 
-        let session = Session::new(1, duplex_channel);
+        let session = SharedSession::new(1, duplex_channel);
         assert!(!(session.is_complete().await));
 
         // Close the client sender, this should propagate to the session

@@ -20,7 +20,7 @@ pub fn build_accounting_packet(
     request: &AccountingRequest,
     custom_flags: TacacsFlags,
 ) -> anyhow::Result<Packet> {
-    let data = request.to_bytes();
+    let data = request.to_bytes()?;
     let length = u32::try_from(data.len())
         .map_err(|_| anyhow::Error::msg("Accounting request payload exceeds u32 length"))?;
     let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | custom_flags;

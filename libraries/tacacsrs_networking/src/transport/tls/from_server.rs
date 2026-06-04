@@ -3,7 +3,7 @@
 //!
 //! This module owns the translation from the YANG-derived configuration model
 //! to the lower-level TLS primitives (`rustls::RootCertStore`, DER certificate
-//! chains, `PrivateKeyDer`, SNI server names). It exists so the `config_connect`
+//! chains, `PrivateKeyDer`, SNI server names). It exists so the establishment
 //! dispatcher does not need to understand certificate or key encoding details.
 
 use std::sync::Arc;

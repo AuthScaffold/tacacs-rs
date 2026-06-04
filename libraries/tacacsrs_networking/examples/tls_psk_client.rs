@@ -1,16 +1,10 @@
-//! Demonstrates establishing a TLS 1.3 PSK connection by constructing a
-//! [`TacacsPlusServer`] with [`TacacsPlusServerBuilder`] and letting the
-//! dispatcher in [`tacacsrs_networking::config_connect`] pick the correct
-//! transport.
-//!
-//! This is the only supported entry point for PSK connection construction —
-//! the lower-level builders inside `transport::tls_psk` are crate-internal.
-
-use std::sync::Arc;
+//! Demonstrates establishing a TLS 1.3 PSK connection through the public client
+//! session API.
 
 use env_logger::Env;
+use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerType};
+use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerExt, TacacsPlusServerType};
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
@@ -19,16 +13,12 @@ use tacacsrs_messages::enumerations::{
 use tacacsrs_messages::header::Header;
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 use tacacsrs_messages::traits::TacacsBodyTrait;
-use tacacsrs_networking::TacacsConnection;
-use tacacsrs_networking::config_connect::{ConnectOptions, establish_stream};
-use tacacsrs_networking::session::Session;
-use tacacsrs_networking::traits::SessionManagementTrait;
+use tacacsrs_networking::{ConnectOptions, TacacsClient};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
 
-    // Configure a TACACS+ server that uses a TLS 1.3 externally provisioned PSK.
     let server = TacacsPlusServerBuilder::new(
         "tacacs-psk-example",
         TacacsPlusServerType::all(),
@@ -38,16 +28,10 @@ async fn main() -> anyhow::Result<()> {
     .with_tls13_epsk("tacacs-client-01", b"my-pre-shared-key-material".to_vec())
     .build();
 
-    let options = ConnectOptions::default();
-
-    let stream = establish_stream(&server, &options).await?;
-    let obfuscation_key = server.obfuscation_key();
-    let connection = Arc::new(TacacsConnection::new(obfuscation_key.as_deref()));
-    connection.run(stream).await?;
-
+    let connection = TacacsClient::connect(server, ConnectOptions::default()).await?;
     let session = connection.create_session().await?;
 
-    let response = match send_accounting_request(
+    let response = send_accounting_request(
         &session,
         AccountingRequest {
             flags: TacacsAccountingFlags::STOP,
@@ -65,14 +49,7 @@ async fn main() -> anyhow::Result<()> {
             ],
         },
     )
-    .await
-    {
-        Ok(response) => response,
-        Err(e) => {
-            println!("Failed to send accounting request: {e}");
-            return Err(e);
-        }
-    };
+    .await?;
 
     println!("Received accounting response: {response:#?}");
 
@@ -80,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn send_accounting_request(
-    session: &Session,
+    session: &(impl ClientSessionFlowIoTrait + Sync),
     request: AccountingRequest,
 ) -> anyhow::Result<AccountingReply> {
     if session.is_complete().await {
@@ -88,8 +65,9 @@ async fn send_accounting_request(
             "Cannot send accounting request: session is already complete",
         ));
     }
+
     let sequence_number = session.next_sequence_number().await;
-    let data = request.to_bytes();
+    let data = request.to_bytes()?;
     let length = u32::try_from(data.len())
         .map_err(|_| anyhow::Error::msg("Accounting request payload exceeds u32 length"))?;
     let packet = Packet::new(
@@ -105,12 +83,8 @@ async fn send_accounting_request(
         data,
     )?;
 
-    session.duplex_channel.sender.send(packet).await?;
-    let mut reader_lock = session.duplex_channel.receiver.write().await;
-    let response = reader_lock
-        .recv()
-        .await
-        .ok_or_else(|| anyhow::Error::msg("Failed to receive response"))?;
+    session.send_packet(packet).await?;
+    let response = session.receive_packet().await?;
     let reply = AccountingReply::from_bytes(response.body())?;
     session.complete().await;
     Ok(reply)

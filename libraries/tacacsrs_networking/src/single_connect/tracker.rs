@@ -5,13 +5,15 @@
 //! we track state locally and only notify the session manager on state transitions.
 
 use std::sync::Arc;
+
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_messages::packet::PacketTrait;
-use crate::session_manager::SessionManager;
+
+use crate::session::SessionManager;
 
 /// Represents whether the `TAC_PLUS_SINGLE_CONNECT_FLAG` is set in a packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SingleConnectFlag {
+pub(crate) enum SingleConnectFlag {
     /// The `TAC_PLUS_SINGLE_CONNECT_FLAG` is set
     Set,
     /// The `TAC_PLUS_SINGLE_CONNECT_FLAG` is not set
@@ -20,7 +22,7 @@ pub enum SingleConnectFlag {
 
 impl SingleConnectFlag {
     /// Extract the single connect flag state from a packet.
-    pub fn from_packet(packet: &impl PacketTrait) -> Self {
+    pub(crate) fn from_packet(packet: &impl PacketTrait) -> Self {
         if packet
             .header()
             .flags
@@ -41,7 +43,7 @@ impl SingleConnectFlag {
 /// - Detecting graceful shutdown when server removes the flag
 /// - Terminal state when single connection is not supported
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LocalSingleConnectState {
+pub(crate) enum LocalSingleConnectState {
     /// Haven't received any packets yet - need to notify on first packet
     #[default]
     AwaitingFirstPacket,
@@ -57,23 +59,21 @@ impl LocalSingleConnectState {
     /// # State Transitions
     ///
     /// ```text
-    /// ┌──────────────────────────┐
-    /// │   AwaitingFirstPacket    │
-    /// └────────────┬─────────────┘
-    ///              │ First packet received
-    ///     ┌────────┴────────┐
-    ///     │ flag set?       │
-    ///     ▼                 ▼
-    /// ┌─────────┐      ┌──────────────┐
-    /// │Supported│      │ NotSupported │ (terminal)
-    /// └────┬────┘      └──────────────┘
-    ///      │ flag removed (graceful shutdown)
-    ///      ▼
-    /// ┌──────────────┐
-    /// │ NotSupported │ (terminal)
-    /// └──────────────┘
+    /// [AwaitingFirstPacket]
+    ///     |
+    ///     | first packet
+    ///     v
+    /// flag set?
+    ///     |
+    ///     +-- yes --> [Supported]
+    ///     |              |
+    ///     |              | later packet without flag
+    ///     |              v
+    ///     |        [NotSupported] (terminal)
+    ///     |
+    ///     +-- no ---> [NotSupported] (terminal)
     /// ```
-    pub async fn process_packet(
+    pub(crate) async fn process_packet(
         self,
         flag: SingleConnectFlag,
         connection: &Arc<SessionManager>,

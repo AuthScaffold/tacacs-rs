@@ -8,14 +8,14 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{ArgGroup, Parser};
 use futures_util::StreamExt;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tacacsrs_agent::{ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerExt,
-    TacacsPlusServerType,
+    TacacsPlusServerType, crypto_types::PrivateKeyFormat,
 };
 use tacacsrs_datastore::{ConfigDatastore, StaticDatastore};
-use tacacsrs_networking::helpers::{normalize_cli_certificate_data, normalize_cli_private_key_data};
 use tacacsrs_sonic::{SonicConfigDb, SonicConnection, DEFAULT_REDIS_URL};
 
 #[derive(Debug, Parser)]
@@ -109,6 +109,80 @@ struct Cli {
 #[cfg(unix)]
 fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
     u32::from_str_radix(mode, 8).with_context(|| format!("Invalid socket mode: {mode}"))
+}
+
+fn data_contains_pem_header(data: &[u8]) -> bool {
+    const PEM_HEADER: &[u8] = b"-----BEGIN";
+
+    data.windows(PEM_HEADER.len())
+        .any(|window| window == PEM_HEADER)
+}
+
+fn normalize_cli_certificate_data(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    if data.is_empty() {
+        anyhow::bail!("client certificate data is empty");
+    }
+
+    if !data_contains_pem_header(data) {
+        return Ok(data.to_vec());
+    }
+
+    let certificates = CertificateDer::pem_slice_iter(data)
+        .collect::<Result<Vec<_>, _>>()
+        .context("failed to parse PEM client certificate")?;
+
+    if certificates.len() != 1 {
+        anyhow::bail!("client certificate file must contain exactly one PEM certificate");
+    }
+
+    Ok(certificates[0].as_ref().to_vec())
+}
+
+fn normalize_cli_private_key_data(data: &[u8]) -> anyhow::Result<(Vec<u8>, PrivateKeyFormat)> {
+    if data.is_empty() {
+        anyhow::bail!("client private key data is empty");
+    }
+
+    let private_key = if data_contains_pem_header(data) {
+        PrivateKeyDer::from_pem_slice(data).context("failed to parse PEM client private key")?
+    } else {
+        PrivateKeyDer::try_from(data).map_err(|_| {
+            anyhow::anyhow!(
+                "unsupported DER client private key format; expected PKCS#1, SEC1, or PKCS#8"
+            )
+        })?
+    };
+
+    let private_key_format = match &private_key {
+        PrivateKeyDer::Pkcs1(_) => PrivateKeyFormat::RsaPrivateKeyFormat,
+        PrivateKeyDer::Sec1(_) => PrivateKeyFormat::EcPrivateKeyFormat,
+        PrivateKeyDer::Pkcs8(_) => PrivateKeyFormat::OneAsymmetricKeyFormat,
+        _ => anyhow::bail!("unsupported client private key format"),
+    };
+
+    Ok((private_key.secret_der().to_vec(), private_key_format))
+}
+
+fn parse_host_port(addr: &str, default_port: u16) -> (String, u16) {
+    if let Some(rest) = addr.strip_prefix('[') {
+        if let Some((host, after_bracket)) = rest.split_once(']') {
+            let port = after_bracket
+                .strip_prefix(':')
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(default_port);
+            return (host.to_owned(), port);
+        }
+    }
+
+    if addr.matches(':').count() == 1 {
+        if let Some((host, port_str)) = addr.rsplit_once(':') {
+            if let Ok(port) = port_str.parse::<u16>() {
+                return (host.to_owned(), port);
+            }
+        }
+    }
+
+    (addr.to_owned(), default_port)
 }
 
 /// Initializes the logger based on verbosity level.
@@ -237,7 +311,7 @@ fn base_server_builder_from_address(
     index: usize,
     timeout: u16,
 ) -> TacacsPlusServerBuilder {
-    let (host, port) = tacacsrs_networking::helpers::parse_host_port(addr, 49);
+    let (host, port) = parse_host_port(addr, 49);
 
     TacacsPlusServerBuilder::new(format!("server-{index}"), TacacsPlusServerType::all(), host, port)
         .with_timeout(timeout)
