@@ -95,6 +95,7 @@ jobs:
         uses: ./.github/steps/compute-versions
         with:
           binary-name: tacon
+          shared-executables: tacacsrs-agentd
 
   # ── Run the full CI pipeline ─────────────────────────────
   pipeline:
