@@ -72,17 +72,14 @@ pub(crate) fn authorize_command(
 
     match response {
         Ok(response) => {
-            debug_log(
-                flags,
-                &format!("authorization response status: {:?}", response.status),
-            );
+            debug_log(flags, &format!("authorization response status: {:?}", response.status));
             match response.status {
-            AuthorizationResponseStatus::PassAdd | AuthorizationResponseStatus::PassRepl => {
-                AuthorizationDecision::Allow
-            }
-            AuthorizationResponseStatus::Fail
-            | AuthorizationResponseStatus::Error
-            | AuthorizationResponseStatus::Follow => AuthorizationDecision::Deny,
+                AuthorizationResponseStatus::PassAdd | AuthorizationResponseStatus::PassRepl => {
+                    AuthorizationDecision::Allow
+                }
+                AuthorizationResponseStatus::Fail
+                | AuthorizationResponseStatus::Error
+                | AuthorizationResponseStatus::Follow => AuthorizationDecision::Deny,
             }
         }
         Err(error) => {

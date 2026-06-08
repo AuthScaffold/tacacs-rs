@@ -3,8 +3,7 @@ use std::os::raw::{c_char, c_int};
 use crate::authorization::{AuthorizationDecision, authorize_command};
 use crate::c_strings::{argv_strings, c_string};
 use crate::config::{
-    LOCAL_AUTHORIZATION_FLAG, TACACS_AUTHORIZATION_FLAG, current_flags, format_flags,
-    reload_config,
+    LOCAL_AUTHORIZATION_FLAG, TACACS_AUTHORIZATION_FLAG, current_flags, format_flags, reload_config,
 };
 use crate::logging::debug_log;
 use crate::session::{get_user_name, is_remote_user, remote_address, tty_name};
@@ -12,10 +11,7 @@ use crate::session::{get_user_name, is_remote_user, remote_address, tty_name};
 #[no_mangle]
 pub unsafe extern "C" fn plugin_init() -> c_int {
     let flags = reload_config(true);
-    debug_log(
-        flags,
-        &format!("tacacsrs bash plugin initialized; flags={}", format_flags(flags)),
-    );
+    debug_log(flags, &format!("tacacsrs bash plugin initialized; flags={}", format_flags(flags)));
     0
 }
 

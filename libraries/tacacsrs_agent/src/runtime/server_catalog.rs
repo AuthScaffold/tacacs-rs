@@ -4,10 +4,9 @@ use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerTyp
 
 use crate::config::ServiceConfig;
 
-pub(crate) const REQUIRED_SERVER_TYPES: TacacsPlusServerType =
-    TacacsPlusServerType::AUTHENTICATION
-        .union(TacacsPlusServerType::AUTHORIZATION)
-        .union(TacacsPlusServerType::ACCOUNTING);
+pub(crate) const REQUIRED_SERVER_TYPES: TacacsPlusServerType = TacacsPlusServerType::AUTHENTICATION
+    .union(TacacsPlusServerType::AUTHORIZATION)
+    .union(TacacsPlusServerType::ACCOUNTING);
 
 pub(crate) fn enumerate_supported_servers(
     config: &ServiceConfig,

@@ -69,10 +69,7 @@ pub(crate) fn ipc_endpoint() -> anyhow::Result<IpcEndpoint> {
         .ok()
         .and_then(|config| config.ipc_endpoint.clone())
     {
-        debug_log(
-            current_flags(),
-            &format!("using IPC endpoint from plugin config: {endpoint}"),
-        );
+        debug_log(current_flags(), &format!("using IPC endpoint from plugin config: {endpoint}"));
         return endpoint.parse();
     }
 
@@ -89,9 +86,7 @@ pub(crate) fn ipc_endpoint() -> anyhow::Result<IpcEndpoint> {
             if let Some(endpoint) = agentd_config_ipc_endpoint() {
                 debug_log(
                     current_flags(),
-                    &format!(
-                        "using IPC endpoint from {DEFAULT_AGENTD_CONFIG_FILE}: {endpoint}"
-                    ),
+                    &format!("using IPC endpoint from {DEFAULT_AGENTD_CONFIG_FILE}: {endpoint}"),
                 );
                 return endpoint.parse();
             }
@@ -99,10 +94,7 @@ pub(crate) fn ipc_endpoint() -> anyhow::Result<IpcEndpoint> {
             let endpoint = IpcEndpoint::default_local();
             debug_log(
                 current_flags(),
-                &format!(
-                    "using built-in default IPC endpoint: {}",
-                    format_endpoint(&endpoint)
-                ),
+                &format!("using built-in default IPC endpoint: {}", format_endpoint(&endpoint)),
             );
             Ok(endpoint)
         }
@@ -233,11 +225,8 @@ mod tests {
     #[test]
     fn parse_config_file_reads_ipc_endpoint_token() {
         let path = test_file_path("plugin-config.txt");
-        fs::write(
-            &path,
-            "debug=on\nlocal_authorization\nipc_endpoint=/run/tacacs/custom.sock\n",
-        )
-        .expect("plugin config should be written");
+        fs::write(&path, "debug=on\nlocal_authorization\nipc_endpoint=/run/tacacs/custom.sock\n")
+            .expect("plugin config should be written");
 
         let config = parse_config_file(path.to_str().expect("temp path should be valid UTF-8"));
         assert_eq!(config.ipc_endpoint.as_deref(), Some("/run/tacacs/custom.sock"));
@@ -277,10 +266,7 @@ mod tests {
 
     fn test_file_path(name: &str) -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
-        path.push(format!(
-            "tacacsrs-bash-plugin-config-tests-{name}-{}",
-            std::process::id()
-        ));
+        path.push(format!("tacacsrs-bash-plugin-config-tests-{name}-{}", std::process::id()));
         path
     }
 }

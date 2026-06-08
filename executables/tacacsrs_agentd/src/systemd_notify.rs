@@ -29,7 +29,7 @@ impl SystemdNotifier {
         }
 
         if server_count == 0 {
-            self.notify(
+            Self::notify(
                 false,
                 "Waiting for TACACS+ servers that support authentication, authorization, and accounting from SONiC ConfigDB",
             );
@@ -40,10 +40,10 @@ impl SystemdNotifier {
         let status = format!(
             "Serving with {server_count} TACACS+ upstream server(s) supporting authentication, authorization, and accounting"
         );
-        self.notify(ready, &status);
+        Self::notify(ready, &status);
     }
 
-    fn notify(&self, ready: bool, status: &str) {
+    fn notify(ready: bool, status: &str) {
         let mut command = Command::new("systemd-notify");
         command.arg("--pid=parent");
         command.arg(format!("--status={status}"));

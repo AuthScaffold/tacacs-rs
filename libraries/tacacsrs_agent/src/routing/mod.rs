@@ -929,8 +929,6 @@ mod tests {
             .unwrap_err();
 
         assert!(error.retriable);
-        assert!(error
-            .message
-            .contains("waiting for initial configuration"));
+        assert!(error.message.contains("waiting for initial configuration"));
     }
 }
