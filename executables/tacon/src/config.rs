@@ -2,7 +2,7 @@ use anyhow::Context;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tacacsrs_config::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerExt,
-    TacacsPlusServerType, ValidationOptions, crypto_types::PrivateKeyFormat,
+    TacacsPlusServerType, ValidationOptions, YangConfigRoot, crypto_types::PrivateKeyFormat,
 };
 
 use crate::cli::{Cli, Command};
@@ -294,6 +294,23 @@ pub fn resolve_tacacs_plus_config(cli: &Cli) -> anyhow::Result<TacacsPlus> {
     }
 }
 
+/// Renders the CLI's effective configuration as pretty RFC 7951 YANG JSON.
+///
+/// # Errors
+///
+/// Returns an error if the configuration cannot be resolved or serialized.
+pub fn render_yang_config(cli: &Cli) -> anyhow::Result<String> {
+    if cli.service_endpoint.is_some() {
+        anyhow::bail!("dump-yang-config requires direct configuration via --config or direct server flags, not --service-endpoint");
+    }
+
+    let root = YangConfigRoot {
+        tacacs_plus: resolve_tacacs_plus_config(cli)?,
+    };
+
+    serde_json::to_string_pretty(&root).context("Failed to serialize effective YANG JSON")
+}
+
 /// Resolves the first upstream server with the requested service type from the
 /// CLI's effective [`TacacsPlus`] config.
 ///
@@ -352,7 +369,7 @@ const fn server_type_for_command(command: &Command) -> Option<TacacsPlusServerTy
         Command::Accounting { .. } => Some(TacacsPlusServerType::ACCOUNTING),
         Command::Authentication { .. } => Some(TacacsPlusServerType::AUTHENTICATION),
         Command::Authorization { .. } => Some(TacacsPlusServerType::AUTHORIZATION),
-        Command::Batch { .. } => None,
+        Command::Batch { .. } | Command::DumpYangConfig => None,
     }
 }
 
@@ -374,7 +391,10 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{select_first_server_for_type, tacacs_plus_from_cli, tacacs_plus_from_str};
+    use super::{
+        render_yang_config, select_first_server_for_type, tacacs_plus_from_cli,
+        tacacs_plus_from_str,
+    };
     use crate::cli::Cli;
     #[cfg(feature = "psk")]
     use tacacsrs_config::PskDheKeSupportedGroup;
@@ -620,6 +640,41 @@ mod tests {
         assert_eq!(server.domain_name.as_deref(), Some("tacacs.example.com"));
         assert_eq!(server.sni_enabled, Some(true));
         assert!(server.server_authentication.is_some(), "TLS should be set");
+    }
+
+    #[test]
+    fn render_yang_config_outputs_round_trippable_rfc7951_json() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--shared-secret",
+            "secret123",
+            "dump-yang-config",
+        ]);
+
+        let rendered = render_yang_config(&cli).expect("effective config should serialize");
+        assert!(rendered.contains("ietf-system-tacacs-plus:tacacs-plus"));
+
+        let parsed = tacacsrs_config::parse_yang_json(&rendered)
+            .expect("rendered config should parse back as RFC 7951 JSON");
+        assert_eq!(parsed.server.len(), 1);
+        assert_eq!(parsed.server[0].name, "cli");
+    }
+
+    #[test]
+    fn render_yang_config_rejects_service_endpoint_mode() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--service-endpoint",
+            "/run/tacacs/tacacs.sock",
+            "dump-yang-config",
+        ]);
+
+        let error = render_yang_config(&cli).expect_err("service endpoint mode should be rejected");
+        assert!(error
+            .to_string()
+            .contains("dump-yang-config requires direct configuration"));
     }
 
     #[test]

@@ -1005,6 +1005,7 @@ class RustEmitter:
 
     def emit(self):
         w = self.fd.write
+        w("// @generated\n")
         w("// Auto-generated from YANG modules by yang2rust.py — DO NOT EDIT\n\n")
         w("#![allow(dead_code)]\n")
         w("#![allow(non_camel_case_types)]\n")
@@ -1366,6 +1367,10 @@ class RustEmitter:
 
         if f.optional or f.is_vec:
             w("        #[serde(default)]\n")
+            if f.optional:
+                w('        #[serde(skip_serializing_if = "Option::is_none")]\n')
+            elif f.is_vec:
+                w('        #[serde(skip_serializing_if = "Vec::is_empty")]\n')
         elif f.yang_name in default_fns:
             fn_name = default_fns[f.yang_name][0]
             w(f'        #[serde(default = "{fn_name}")]\n')

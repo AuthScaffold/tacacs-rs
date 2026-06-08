@@ -185,6 +185,10 @@ pub enum Command {
         file: String,
     },
 
+    /// Dump the effective YANG JSON configuration to stdout and exit
+    #[command(name = "dump-yang-config")]
+    DumpYangConfig,
+
     /// Send an accounting record
     Accounting {
         #[command(flatten)]
@@ -305,10 +309,7 @@ mod tests {
         ]);
 
         assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap().tls_server_name.as_deref(),
-            Some("tacacs.example.com")
-        );
+        assert_eq!(result.unwrap().tls_server_name.as_deref(), Some("tacacs.example.com"));
     }
 
     #[test]
@@ -414,6 +415,22 @@ mod tests {
             "192.168.1.100",
             "test_cmd",
         ]);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_dump_yang_config_subcommand_parses_in_direct_mode() {
+        let result =
+            Cli::try_parse_from(["tacon", "--server-addr", "localhost:49", "dump-yang-config"]);
+
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap().command, Command::DumpYangConfig));
+    }
+
+    #[test]
+    fn test_dump_yang_config_subcommand_parses_with_config_file() {
+        let result = Cli::try_parse_from(["tacon", "--config", "config.json", "dump-yang-config"]);
 
         assert!(result.is_ok());
     }
