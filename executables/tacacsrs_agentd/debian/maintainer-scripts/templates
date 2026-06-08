@@ -1,0 +1,20 @@
+Template: tacacsrs-agentd/config-source
+Type: select
+Choices: sonic-configdb, unset
+Default: unset
+Description: Which configuration source should tacacsrs-agentd record?
+ This package can record package-managed defaults for the tacacsrs-agentd
+ installation profile in /etc/tacacsrs-agentd/config.ini.
+ .
+ Choose sonic-configdb for a SONiC deployment that should source TACACS+
+ configuration from CONFIG_DB. Choose unset to leave the package profile in a
+ neutral state for later manual configuration.
+
+Template: tacacsrs-agentd/install-sonic-service
+Type: boolean
+Default: false
+Description: Enable the SONiC tacacsrs-agentd systemd service?
+ If enabled, the package will configure and enable tacacsrs-agentd.service so
+ the daemon starts automatically using the SONiC ConfigDB-backed service unit.
+ .
+ You can change this later with dpkg-reconfigure tacacsrs-agentd.

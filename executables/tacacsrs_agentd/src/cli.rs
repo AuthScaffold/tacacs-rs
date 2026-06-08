@@ -53,17 +53,17 @@ pub(crate) struct Cli {
     #[arg(long = "server-addr", conflicts_with_all = ["sonic", "sonic_redis_url", "sonic_redis_db"])]
     pub(crate) server_addresses: Vec<String>,
 
-    /// Source TACACS+ configuration from SONiC ConfigDB (`TACPLUS` /
+    /// Source TACACS+ configuration from `SONiC` `ConfigDB` (`TACPLUS` /
     /// `TACPLUS_SERVER` Redis tables).
     #[arg(long)]
     pub(crate) sonic: bool,
 
-    /// Override the SONiC ConfigDB Redis connection URL (default:
+    /// Override the `SONiC` `ConfigDB` Redis connection URL (default:
     /// `unix:///var/run/redis/redis.sock?db=4`).
     #[arg(long, value_name = "URL", requires = "sonic")]
     pub(crate) sonic_redis_url: Option<String>,
 
-    /// Override the SONiC ConfigDB Redis database index used for keyspace
+    /// Override the `SONiC` `ConfigDB` Redis database index used for keyspace
     /// notifications (default: `4`).
     #[arg(long, value_name = "INDEX", requires = "sonic")]
     pub(crate) sonic_redis_db: Option<i64>,
