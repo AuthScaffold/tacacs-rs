@@ -1,9 +1,12 @@
+use std::os::raw::c_int;
+
 use tacacsrs_agent_client::{
     AuthorizationArg, AuthorizationKey, AuthorizationOperation, AuthorizationResponseStatus,
-    ServiceClient,
+    IpcEndpoint, ServiceClient,
 };
 
-use crate::config::ipc_endpoint;
+use crate::config::{format_endpoint, ipc_endpoint};
+use crate::logging::debug_log;
 use crate::runtime::RUNTIME;
 use crate::session::task_id;
 
@@ -15,6 +18,7 @@ pub(crate) enum AuthorizationDecision {
 }
 
 pub(crate) fn authorize_command(
+    flags: c_int,
     user: &str,
     port: &str,
     remote_address: &str,
@@ -29,31 +33,69 @@ pub(crate) fn authorize_command(
         args: authorization_args(command, argv),
     };
 
-    if request.validate().is_err() {
+    if let Err(error) = request.validate() {
+        debug_log(
+            flags,
+            &format!("authorization request validation failed for user {user}: {error}"),
+        );
         return AuthorizationDecision::Deny;
     }
 
     let runtime = match RUNTIME.as_ref() {
         Ok(runtime) => runtime,
-        Err(_) => return AuthorizationDecision::Unavailable,
+        Err(error) => {
+            debug_log(flags, &format!("authorization runtime unavailable: {error}"));
+            return AuthorizationDecision::Unavailable;
+        }
     };
 
+    let endpoint = match ipc_endpoint() {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            debug_log(flags, &format!("failed to resolve IPC endpoint: {error}"));
+            return AuthorizationDecision::Unavailable;
+        }
+    };
+
+    debug_log(
+        flags,
+        &format!(
+            "sending authorization request for user {user} on tty {port} from {remote_address} via {}",
+            format_endpoint(&endpoint)
+        ),
+    );
+
     let response = runtime.block_on(async move {
-        let client = ServiceClient::connect(ipc_endpoint()?).await?;
+        let client = connect_client(flags, endpoint).await?;
         client.send_authorization(request).await
     });
 
     match response {
-        Ok(response) => match response.status {
+        Ok(response) => {
+            debug_log(
+                flags,
+                &format!("authorization response status: {:?}", response.status),
+            );
+            match response.status {
             AuthorizationResponseStatus::PassAdd | AuthorizationResponseStatus::PassRepl => {
                 AuthorizationDecision::Allow
             }
             AuthorizationResponseStatus::Fail
             | AuthorizationResponseStatus::Error
             | AuthorizationResponseStatus::Follow => AuthorizationDecision::Deny,
-        },
-        Err(_) => AuthorizationDecision::Unavailable,
+            }
+        }
+        Err(error) => {
+            debug_log(flags, &format!("authorization request failed: {error}"));
+            AuthorizationDecision::Unavailable
+        }
     }
+}
+
+async fn connect_client(flags: c_int, endpoint: IpcEndpoint) -> anyhow::Result<ServiceClient> {
+    let client = ServiceClient::connect(endpoint).await?;
+    debug_log(flags, "IPC connection to tacacsrs-agentd established");
+    Ok(client)
 }
 
 fn authorization_args(command: &str, argv: &[String]) -> Vec<AuthorizationArg> {

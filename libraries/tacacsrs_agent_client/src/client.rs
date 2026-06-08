@@ -8,7 +8,7 @@
 //!
 //! | Platform | Transport | Notes |
 //! |----------|-----------|-------|
-//! | Linux / macOS | Unix domain socket | Default: `/run/tacacs.sock` |
+//! | Linux / macOS | Unix domain socket | Default: `/run/tacacs/tacacs.sock` |
 //! | Windows / other | Loopback TCP | Default: `127.0.0.1:9049` |
 //!
 //! [`ServiceClient`] holds a persistent gRPC [`tonic::transport::Channel`] that

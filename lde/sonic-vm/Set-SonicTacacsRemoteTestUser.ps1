@@ -23,7 +23,7 @@ param(
     [string]$Shell = '/bin/bash',
     [string[]]$Groups = @('sudo', 'docker'),
     [string]$ConfigPath = '/etc/tacplus_nss.conf',
-    [string]$IpcEndpoint = '/run/tacacs.sock',
+    [string]$IpcEndpoint = '/run/tacacs/tacacs.sock',
     [string]$HostName = '127.0.0.1',
     [int]$Port = 2222,
     [string]$User = 'admin',

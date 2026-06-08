@@ -98,7 +98,7 @@ Useful options:
 | `--user <NAME>` | Target username for TACACS+ accounting context |
 | `--user-uid <UID>` | Target UID |
 | `--user-gid <GID>` | Target primary GID |
-| `--service-endpoint <PATH_OR_ADDR>` | TACACS+ IPC endpoint (default `/run/tacacs.sock`) |
+| `--service-endpoint <PATH_OR_ADDR>` | TACACS+ IPC endpoint (default `/run/tacacs/tacacs.sock`) |
 | `--fail-policy <closed\|open>` | What to do when the IPC agent is unreachable |
 | `--allowlist <FILE>` | Additional exec allowlist file |
 | `--port`, `--rem-addr` | TACACS+ context fields, typically from SSH environment |

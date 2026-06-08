@@ -12,7 +12,7 @@
 //    your language (e.g. grpcio-tools for Python, protoc-gen-go-grpc for Go).
 //
 // 2. Connect to the local IPC endpoint:
-//      - Linux default: Unix domain socket at /run/tacacs.sock
+//      - Linux default: Unix domain socket at /run/tacacs/tacacs.sock
 //      - Non-Unix / dev fallback: loopback TCP at 127.0.0.1:9049
 //    The endpoint is configurable by the service operator.
 //
