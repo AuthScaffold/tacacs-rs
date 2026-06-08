@@ -9,7 +9,7 @@ description = "TACACS+ protocol flow implementations decoupled from transport/se
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 async-trait = "0.1.89"
-log = "0.4.30"
+log = "0.4.32"
 tacacsrs-flow-abstractions = { path = "../tacacsrs_flow_abstractions" }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
 

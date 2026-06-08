@@ -10,7 +10,7 @@ readme = "README.md"
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 async-trait = "0.1.89"
-log = "0.4.30"
+log = "0.4.32"
 serde_json = "1.0.150"
 tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
 tacacsrs-config = { path = "../tacacsrs_config" }
