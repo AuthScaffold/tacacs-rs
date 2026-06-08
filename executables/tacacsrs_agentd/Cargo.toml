@@ -27,6 +27,11 @@ default = []
 console = ["console-subscriber"]
 psk = ["tacacsrs-agent/psk"]
 
+[build-dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+clap_mangen = "0.3.0"
+tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
+
 [package.metadata.cargo-udeps.ignore]
 normal = ["env_logger"]
 
@@ -49,6 +54,8 @@ assets = [
     ["target/release/tacacsrs-agentd", "usr/sbin/", "755"],
     ["../../docs/tacacsrs-agentd.md", "usr/share/doc/tacacsrs-agentd/README.md", "644"],
     ["../../LICENSE", "usr/share/doc/tacacsrs-agentd/", "644"],
+    ["debian/changelog.gz", "usr/share/doc/tacacsrs-agentd/changelog.Debian.gz", "644"],
+    ["debian/tacacsrs-agentd.1.gz", "usr/share/man/man1/tacacsrs-agentd.1.gz", "644"],
 ]
 
 [package.metadata.deb.variants.psk]

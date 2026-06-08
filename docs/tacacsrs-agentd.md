@@ -106,15 +106,15 @@ Servers are tried in the order they are specified. The first server (`--server-a
               startup
                 │
                 ▼
-        ┌───────────────┐
+        ┌────────────────┐
         │ PreferredActive│◄──── probe succeeds
         │   (server 0)   │
         └───────┬────────┘
                 │ connection fails
                 ▼
-        ┌───────────────┐
-        │  FailedOver   │──── try server 1, 2, ...
-        │  (server N)   │
+        ┌────────────────┐
+        │  FailedOver    │──── try server 1, 2, ...
+        │  (server N)    │
         └───────┬────────┘
                 │ all servers fail
                 ▼
@@ -142,11 +142,10 @@ The daemon communicates with clients via gRPC over Unix domain sockets (Linux) o
 
 **Available RPCs:**
 
-| RPC | Description |
-|-----|-------------|
-| `Accounting` | Record user activity (unary) |
-| `Authentication` | Verify credentials *(not yet implemented)* |
-| `Authorization` | Check command authorization *(not yet implemented)* |
+| RPC             | Description                          |
+|-----------------|--------------------------------------|
+| `Accounting`    | Record user activity (unary)         |
+| `Authorization` | Check command authorization (unary)  |
 
 **Error responses** include a `retriable` flag. When `true`, the client should retry the request — this typically means the daemon is reconnecting to a different upstream server.
 

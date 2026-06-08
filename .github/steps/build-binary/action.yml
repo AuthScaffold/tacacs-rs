@@ -5,8 +5,14 @@ inputs:
   target:
     description: 'Rust target triple (e.g., x86_64-unknown-linux-gnu)'
     required: true
-  binary-name:
-    description: 'Name of the binary to build'
+  package-name:
+    description: 'Cargo package name to build'
+    required: true
+  artifact-name:
+    description: 'Binary or library target name to build'
+    required: true
+  artifact-kind:
+    description: 'Artifact kind to build (bin or cdylib)'
     required: true
 
 runs:
@@ -15,8 +21,21 @@ runs:
     - name: Build binary
       shell: bash
       run: |
-        cargo build \
-          ${BUILD_PROFILE_FLAG} \
-          --target "${{ inputs.target }}" \
-          --bin "${{ inputs.binary-name }}" \
-          ${FEATURE_ARGS}
+        if [[ "${{ inputs.artifact-kind }}" == "bin" ]]; then
+          cargo build \
+            ${BUILD_PROFILE_FLAG} \
+            --target "${{ inputs.target }}" \
+            --package "${{ inputs.package-name }}" \
+            --bin "${{ inputs.artifact-name }}" \
+            ${FEATURE_ARGS}
+        elif [[ "${{ inputs.artifact-kind }}" == "cdylib" ]]; then
+          cargo build \
+            ${BUILD_PROFILE_FLAG} \
+            --target "${{ inputs.target }}" \
+            --package "${{ inputs.package-name }}" \
+            --lib \
+            ${FEATURE_ARGS}
+        else
+          echo "Error: unsupported artifact kind: ${{ inputs.artifact-kind }}"
+          exit 1
+        fi

@@ -5,9 +5,6 @@ inputs:
   target:
     description: 'Rust target triple that was built'
     required: true
-  binary-name:
-    description: 'Binary/package name'
-    required: true
 
 runs:
   using: composite
@@ -16,19 +13,18 @@ runs:
       shell: bash
       run: |
         mkdir -p "$PACKAGE_DIR" packaged
-        BINARY_PATH="target/${{ inputs.target }}/${PROFILE}/${{ inputs.binary-name }}${BINARY_EXT}"
+        ARTIFACT_PATH="target/${{ inputs.target }}/${PROFILE}/${ARTIFACT_FILENAME}"
 
-        if [ ! -f "$BINARY_PATH" ]; then
-          echo "Error: expected binary not found at $BINARY_PATH"
+        if [ ! -f "$ARTIFACT_PATH" ]; then
+          echo "Error: expected artifact not found at $ARTIFACT_PATH"
           exit 1
         fi
 
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          cp "$BINARY_PATH" "$PACKAGE_DIR/${{ inputs.binary-name }}${BINARY_EXT}"
-        else
-          cp "$BINARY_PATH" "$PACKAGE_DIR/${{ inputs.binary-name }}"
-          chmod +x "$PACKAGE_DIR/${{ inputs.binary-name }}"
+        cp "$ARTIFACT_PATH" "$PACKAGE_DIR/${ARTIFACT_FILENAME}"
+
+        if [[ "${{ runner.os }}" != "Windows" ]]; then
+          chmod +x "$PACKAGE_DIR/${ARTIFACT_FILENAME}"
           if [ "$PROFILE" = "release" ]; then
-            strip "$PACKAGE_DIR/${{ inputs.binary-name }}"
+            strip "$PACKAGE_DIR/${ARTIFACT_FILENAME}"
           fi
         fi

@@ -53,20 +53,16 @@ on:
         required: false
         default: true
         type: boolean
-      targets:
-        description: 'JSON array of build/SBOM target configurations with os, target, asset_name, and optional features'
+      products:
+        description: 'JSON array of build product configurations with package, artifact, target, packaging, and feature metadata'
         required: false
         default: |
           [
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "features": ""},
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-musl", "asset_name": "tacon-linux-musl-x86_64", "features": ""},
-            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64", "features": "psk"}
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "psk", "sbom_describe": "binaries", "man_page_name": "tacon", "debian_package": true},
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-agentd-linux-gnu-x86_64", "package_name": "tacacsrs-agentd", "package_root": "executables/tacacsrs_agentd", "artifact_name": "tacacsrs-agentd", "artifact_kind": "bin", "features": "psk", "sbom_describe": "binaries", "man_page_name": "tacacsrs-agentd", "debian_package": true},
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-bash-plugin-linux-gnu-x86_64", "package_name": "tacacsrs-bash-plugin", "package_root": "libraries/tacacsrs_bash_plugin", "artifact_name": "tacacsrs_bash_plugin", "artifact_kind": "cdylib", "features": "", "sbom_describe": "all-cargo-targets", "man_page_name": "", "debian_package": true},
+            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "psk", "sbom_describe": "binaries", "man_page_name": "tacon", "debian_package": false}
           ]
-        type: string
-      binary-name:
-        description: 'Name of the binary to build'
-        required: false
-        default: 'tacon'
         type: string
       versions:
         description: 'JSON map of crate-name → version to inject into Cargo.toml files. Empty or {} is a no-op.'
@@ -90,10 +86,9 @@ jobs:
             os: ubuntu-latest
             toolchain: stable
             components: clippy llvm-tools-preview
-            targets: x86_64-unknown-linux-musl
+            targets: x86_64-unknown-linux-gnu
             cache_key: stable
-            metadata_target: x86_64-unknown-linux-musl
-            install_musl_tools: 'true'
+            metadata_target: x86_64-unknown-linux-gnu
             install_libseccomp_dev: 'true'
             install_openssl: 'true'
           - name: Windows Stable
@@ -103,17 +98,15 @@ jobs:
             targets: x86_64-pc-windows-msvc
             cache_key: stable
             metadata_target: x86_64-pc-windows-msvc
-            install_musl_tools: 'false'
             install_libseccomp_dev: 'false'
             install_openssl: 'true'
           - name: Linux Nightly
             os: ubuntu-latest
             toolchain: nightly
             components: rustfmt clippy miri
-            targets: x86_64-unknown-linux-musl
+            targets: x86_64-unknown-linux-gnu
             cache_key: nightly
-            metadata_target: x86_64-unknown-linux-musl
-            install_musl_tools: 'true'
+            metadata_target: x86_64-unknown-linux-gnu
             install_libseccomp_dev: 'true'
             install_openssl: 'true'
     steps:
@@ -127,7 +120,6 @@ jobs:
           targets: ${{ matrix.config.targets }}
           cache-key: ${{ matrix.config.cache_key }}
           save-if: 'true'
-          install-musl-tools: ${{ matrix.config.install_musl_tools }}
           install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
           install-openssl: ${{ matrix.config.install_openssl }}
 
@@ -149,23 +141,13 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             feature_args: --all-features
-            install_musl_tools: 'false'
             install_libseccomp_dev: 'true'
             install_openssl: 'true'
             metadata_checks: 'true'
-          - name: Linux MUSL
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            feature_args: ''
-            install_musl_tools: 'true'
-            install_libseccomp_dev: 'true'
-            install_openssl: 'true'
-            metadata_checks: 'false'
           - name: Windows MSVC
             os: windows-latest
             target: x86_64-pc-windows-msvc
             feature_args: --all-features
-            install_musl_tools: 'false'
             install_libseccomp_dev: 'false'
             install_openssl: 'true'
             metadata_checks: 'false'
@@ -181,7 +163,6 @@ jobs:
           components: rustfmt
           targets: ${{ matrix.config.target }}
           cache-key: nightly
-          install-musl-tools: ${{ matrix.config.install_musl_tools }}
           install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
           install-openssl: ${{ matrix.config.install_openssl }}
 
@@ -202,7 +183,6 @@ jobs:
           components: clippy
           targets: ${{ matrix.config.target }}
           cache-key: stable
-          install-musl-tools: ${{ matrix.config.install_musl_tools }}
           install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
           install-openssl: ${{ matrix.config.install_openssl }}
 
@@ -258,27 +238,15 @@ jobs:
             target: x86_64-unknown-linux-gnu
             feature_args: --all-features
             components: llvm-tools-preview
-            install_musl_tools: 'false'
             install_libseccomp_dev: 'true'
             install_openssl: 'true'
             coverage: 'true'
             deep_checks: 'true'
-          - name: Linux MUSL
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            feature_args: ''
-            components: ''
-            install_musl_tools: 'true'
-            install_libseccomp_dev: 'true'
-            install_openssl: 'true'
-            coverage: 'false'
-            deep_checks: 'false'
           - name: Windows MSVC
             os: windows-latest
             target: x86_64-pc-windows-msvc
             feature_args: --all-features
             components: ''
-            install_musl_tools: 'false'
             install_libseccomp_dev: 'false'
             install_openssl: 'true'
             coverage: 'false'
@@ -293,7 +261,6 @@ jobs:
           components: ${{ matrix.config.components }}
           targets: ${{ matrix.config.target }}
           cache-key: stable
-          install-musl-tools: ${{ matrix.config.install_musl_tools }}
           install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
           install-openssl: ${{ matrix.config.install_openssl }}
 
@@ -334,7 +301,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: ${{ fromJson(inputs.targets) }}
+        config: ${{ fromJson(inputs.products) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -350,7 +317,6 @@ jobs:
         with:
           targets: ${{ matrix.config.target }}
           cache-key: stable
-          install-musl-tools: ${{ contains(matrix.config.target, 'musl') }}
           install-libseccomp-dev: ${{ runner.os == 'Linux' }}
           install-openssl: 'true'
 
@@ -358,7 +324,9 @@ jobs:
         uses: ./.github/steps/compute-package-names
         with:
           asset-name: ${{ matrix.config.asset_name }}
-          binary-name: ${{ inputs.binary-name }}
+          package-name: ${{ matrix.config.package_name }}
+          artifact-name: ${{ matrix.config.artifact_name }}
+          artifact-kind: ${{ matrix.config.artifact_kind }}
           features: ${{ matrix.config.features }}
           build-release: ${{ inputs.build-release }}
 
@@ -366,19 +334,19 @@ jobs:
         uses: ./.github/steps/build-binary
         with:
           target: ${{ matrix.config.target }}
-          binary-name: ${{ inputs.binary-name }}
+          package-name: ${{ matrix.config.package_name }}
+          artifact-name: ${{ matrix.config.artifact_name }}
+          artifact-kind: ${{ matrix.config.artifact_kind }}
 
       - name: Stage binary package
         uses: ./.github/steps/stage-binary-package
         with:
           target: ${{ matrix.config.target }}
-          binary-name: ${{ inputs.binary-name }}
 
       - name: Package debug symbols
         uses: ./.github/steps/package-debug-symbols
         with:
           target: ${{ matrix.config.target }}
-          binary-name: ${{ inputs.binary-name }}
 
       - name: Collect OpenSSL runtime DLLs
         if: runner.os == 'Windows' && contains(matrix.config.features, 'psk')
@@ -388,7 +356,8 @@ jobs:
         uses: ./.github/steps/package-sboms
         with:
           target: ${{ matrix.config.target }}
-          binary-name: ${{ inputs.binary-name }}
+          package-root: ${{ matrix.config.package_root }}
+          sbom-describe: ${{ matrix.config.sbom_describe }}
           features: ${{ matrix.config.features }}
 
       - name: Create Windows archive
@@ -397,18 +366,14 @@ jobs:
         with:
           asset-name: ${{ matrix.config.asset_name }}
 
-      - name: Create MUSL archive
-        if: contains(matrix.config.target, 'musl')
-        uses: ./.github/steps/create-musl-archive
-        with:
-          asset-name: ${{ matrix.config.asset_name }}
-
       - name: Package Debian artifacts
-        if: matrix.config.target == 'x86_64-unknown-linux-gnu'
+        if: runner.os == 'Linux' && matrix.config.debian_package
         uses: ./.github/steps/package-debian
         with:
           target: ${{ matrix.config.target }}
-          binary-name: ${{ inputs.binary-name }}
+          package-name: ${{ matrix.config.package_name }}
+          package-root: ${{ matrix.config.package_root }}
+          man-page-name: ${{ matrix.config.man_page_name }}
           versions: ${{ inputs.versions }}
 
       - name: Upload packaged artifact

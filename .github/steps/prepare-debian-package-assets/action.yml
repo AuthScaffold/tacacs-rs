@@ -5,9 +5,16 @@ inputs:
   target:
     description: 'Rust target triple that was built'
     required: true
-  binary-name:
-    description: 'Binary/package name'
+  package-name:
+    description: 'Cargo package name used for changelog/version lookup'
     required: true
+  package-root:
+    description: 'Path to the package root containing the debian assets directory'
+    required: true
+  man-page-name:
+    description: 'Optional man page basename without extension'
+    required: true
+    default: ''
   versions:
     description: 'JSON map of package versions to inject'
     required: false
@@ -19,30 +26,41 @@ runs:
     - name: Prepare Debian binary and SBOM assets
       shell: bash
       run: |
-        mkdir -p target/release "executables/${{ inputs.binary-name }}/debian"
-        cp "$PACKAGE_DIR/${{ inputs.binary-name }}" "target/release/${{ inputs.binary-name }}"
-        chmod +x "target/release/${{ inputs.binary-name }}"
-        cp "$PACKAGE_DIR/${SBOM_BASENAME}.json" "executables/${{ inputs.binary-name }}/debian/sbom.json"
-        cp "$PACKAGE_DIR/${SBOM_BASENAME}.xml" "executables/${{ inputs.binary-name }}/debian/sbom.xml"
+        mkdir -p target/release "${{ inputs.package-root }}/debian"
+        cp "$PACKAGE_DIR/${ARTIFACT_FILENAME}" "target/release/${ARTIFACT_FILENAME}"
+        chmod +x "target/release/${ARTIFACT_FILENAME}"
+        cp "$PACKAGE_DIR/${SBOM_BASENAME}.json" "${{ inputs.package-root }}/debian/sbom.json"
+        cp "$PACKAGE_DIR/${SBOM_BASENAME}.xml" "${{ inputs.package-root }}/debian/sbom.xml"
 
     - name: Copy generated man page and compress Debian assets
       shell: bash
       run: |
-        PKG="${{ inputs.binary-name }}"
-        PKG_DIR="executables/${PKG}"
-        MAN_PAGE=$(find "target/${{ inputs.target }}/${PROFILE}/build" -path "*/out/man/${PKG}.1" -type f | head -1)
-        if [ -z "$MAN_PAGE" ]; then
-          MAN_PAGE=$(find target/release/build -path "*/out/man/${PKG}.1" -type f | head -1)
+        PKG="${{ inputs.package-name }}"
+        PKG_DIR="${{ inputs.package-root }}"
+        MAN_PAGE_NAME="${{ inputs.man-page-name }}"
+
+        if [ -n "$MAN_PAGE_NAME" ]; then
+          MAN_PAGE=""
+          for build_dir in \
+            "target/${{ inputs.target }}/${PROFILE}/build" \
+            "target/${PROFILE}/build" \
+            target/release/build \
+            target/debug/build
+          do
+            if [ -d "$build_dir" ]; then
+              MAN_PAGE=$(find "$build_dir" -path "*/out/man/${MAN_PAGE_NAME}.1" -type f -print -quit)
+              if [ -n "$MAN_PAGE" ]; then
+                break
+              fi
+            fi
+          done
+          if [ -z "$MAN_PAGE" ]; then
+            echo "Error: Generated man page not found for $MAN_PAGE_NAME"
+            exit 1
+          fi
+          echo "Found man page at: $MAN_PAGE"
+          cp "$MAN_PAGE" "${PKG_DIR}/debian/${MAN_PAGE_NAME}.1"
         fi
-        if [ -z "$MAN_PAGE" ]; then
-          MAN_PAGE=$(find target/debug/build -path "*/out/man/${PKG}.1" -type f | head -1)
-        fi
-        if [ -z "$MAN_PAGE" ]; then
-          echo "Error: Generated man page not found"
-          exit 1
-        fi
-        echo "Found man page at: $MAN_PAGE"
-        cp "$MAN_PAGE" "${PKG_DIR}/debian/${PKG}.1"
 
         VERSIONS='${{ inputs.versions }}'
         VERSION=$(echo "$VERSIONS" | jq -r --arg pkg "$PKG" '.[$pkg] // "0.0.0-dev"' | tr -d '\r')
@@ -102,4 +120,6 @@ runs:
 
         cd "${PKG_DIR}/debian"
         gzip -9 -n -c changelog > changelog.gz
-        gzip -9 -n -c ${PKG}.1 > ${PKG}.1.gz
+        if [ -n "$MAN_PAGE_NAME" ]; then
+          gzip -9 -n -c "${MAN_PAGE_NAME}.1" > "${MAN_PAGE_NAME}.1.gz"
+        fi
