@@ -18,6 +18,7 @@
 //! TACPLUS_SERVER|192.0.2.10                         priority  "1"
 //!                                                   tcp_port  "49"
 //!                                                   timeout   "10"
+//!                                                   use_tls   "true"
 //!                                                   passkey   "optional-per-server-secret"
 //! ```
 //!
@@ -85,6 +86,9 @@ impl SonicTacacsTables {
 ///
 /// Per-row fields fall back to the matching `TACPLUS|global` field when the
 /// per-server value is absent (this matches SONiC's `pam_tacplus` behavior).
+/// The forward-compatible `use_tls` extension key selects the same empty
+/// `server-authentication` TLS container that `tacon --use-tls` constructs
+/// when no explicit client/server certificate material is configured.
 ///
 /// # Errors
 ///
@@ -136,6 +140,7 @@ struct SonicGlobal {
     timeout: Option<u16>,
     passkey: Option<String>,
     src_intf: Option<String>,
+    use_tls: Option<bool>,
 }
 
 impl SonicGlobal {
@@ -155,6 +160,9 @@ impl SonicGlobal {
                     if !value.is_empty() {
                         g.src_intf = Some(value.clone());
                     }
+                }
+                "use_tls" => {
+                    g.use_tls = Some(parse_bool(value).context("TACPLUS|global.use_tls")?);
                 }
                 // `auth_type` controls PAM-side defaults (PAP vs CHAP). The
                 // agent does not expose authentication types yet, so the
@@ -181,6 +189,7 @@ struct SonicServerRow {
     passkey: Option<String>,
     domain_name: Option<String>,
     sni_enabled: Option<bool>,
+    use_tls: Option<bool>,
     single_connection: bool,
     vrf_name: Option<String>,
     src_ip: Option<String>,
@@ -198,6 +207,7 @@ impl SonicServerRow {
             passkey: None,
             domain_name: None,
             sni_enabled: None,
+            use_tls: None,
             single_connection: false,
             vrf_name: None,
             src_ip: None,
@@ -238,6 +248,11 @@ impl SonicServerRow {
                 "sni_enabled" => {
                     row.sni_enabled = Some(parse_bool(value).with_context(|| {
                         format!("TACPLUS_SERVER|{address}.sni_enabled='{value}' is not a boolean")
+                    })?);
+                }
+                "use_tls" => {
+                    row.use_tls = Some(parse_bool(value).with_context(|| {
+                        format!("TACPLUS_SERVER|{address}.use_tls='{value}' is not a boolean")
                     })?);
                 }
                 "single_connection" => {
@@ -288,6 +303,8 @@ impl SonicServerRow {
             .or(global.timeout)
             .unwrap_or(DEFAULT_TIMEOUT_SECONDS);
 
+        let use_tls = self.use_tls.or(global.use_tls).unwrap_or(false);
+
         let mut builder = TacacsPlusServerBuilder::new(
             sonic_server_name(&self.address),
             self.server_type,
@@ -296,8 +313,19 @@ impl SonicServerRow {
         )
         .with_timeout(timeout);
 
+        if use_tls {
+            builder = builder.with_tls_server_authentication();
+        }
+
         if let Some(passkey) = self.passkey.clone().or_else(|| global.passkey.clone()) {
-            builder = builder.with_shared_secret(passkey);
+            if use_tls {
+                log::debug!(
+                    "Ignoring SONiC passkey for server '{}': use_tls selects TLS server-authentication instead of shared-secret obfuscation",
+                    self.address
+                );
+            } else {
+                builder = builder.with_shared_secret(passkey);
+            }
         }
 
         let mut server = builder.build();
@@ -475,6 +503,7 @@ mod tests {
                 ("passkey", "topsecret"),
                 ("domain_name", "tacacs.example.com"),
                 ("sni_enabled", "true"),
+                ("use_tls", "true"),
                 ("single_connection", "yes"),
                 ("vrf_name", "mgmt"),
                 ("src_intf", "Loopback0"),
@@ -487,6 +516,8 @@ mod tests {
         let s = &cfg.server[0];
         assert_eq!(s.domain_name.as_deref(), Some("tacacs.example.com"));
         assert_eq!(s.sni_enabled, Some(true));
+        assert!(s.server_authentication.is_some());
+        assert_eq!(s.shared_secret, None);
         assert!(s.single_connection);
         assert_eq!(s.vrf_instance.as_deref(), Some("mgmt"));
         assert_eq!(s.source_ip, None);
@@ -494,6 +525,25 @@ mod tests {
         assert!(s.server_type.contains(TacacsPlusServerType::AUTHENTICATION));
         assert!(s.server_type.contains(TacacsPlusServerType::ACCOUNTING));
         assert!(!s.server_type.contains(TacacsPlusServerType::AUTHORIZATION));
+    }
+
+    #[test]
+    fn global_use_tls_falls_back_when_row_does_not_override_it() {
+        let mut servers = BTreeMap::new();
+        servers.insert(
+            "192.0.2.10".to_string(),
+            h(&[("priority", "1"), ("passkey", "ignored-when-tls")]),
+        );
+
+        let cfg = map_sonic_tables_to_tacacs_plus(&SonicTacacsTables::new(
+            h(&[("use_tls", "true")]),
+            servers,
+        ))
+        .expect("mapping succeeds");
+
+        let server = &cfg.server[0];
+        assert!(server.server_authentication.is_some());
+        assert_eq!(server.shared_secret, None);
     }
 
     #[test]
