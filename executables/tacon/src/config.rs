@@ -104,6 +104,12 @@ pub fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
             .with_timeout(5),
         &options,
     )?;
+
+    if let Some(tls_server_name) = cli.tls_server_name.as_ref() {
+        server.domain_name = Some(tls_server_name.clone());
+        server.sni_enabled = Some(true);
+    }
+
     server.single_connection = true;
 
     TacacsPlusBuilder::new()
@@ -587,6 +593,33 @@ mod tests {
         assert_eq!(inline.cert_data.as_deref(), Some(expected_cert_der.as_slice()));
         assert_eq!(inline.cleartext_private_key.as_deref(), Some(expected_key_der.as_slice()));
         assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat));
+    }
+
+    #[test]
+    fn tacacs_plus_from_cli_sets_tls_server_name_as_domain_name() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--use-tls",
+            "--tls-server-name",
+            "tacacs.example.com",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        let root = tacacs_plus_from_cli(&cli).expect("TLS server name should load");
+        let server = &root.server[0];
+
+        assert_eq!(server.domain_name.as_deref(), Some("tacacs.example.com"));
+        assert_eq!(server.sni_enabled, Some(true));
+        assert!(server.server_authentication.is_some(), "TLS should be set");
     }
 
     #[test]
