@@ -160,8 +160,9 @@ injects them during builds through `.github/steps/compute-versions` and
   must not remove or change unrelated public API behavior.
 - Use `#[cfg(feature = "psk")]` and platform `cfg`s narrowly around code that
   truly needs them.
-- Windows CI builds the release artifact with `psk`; Linux GNU and MUSL builds
-  use default features unless the workflow is changed.
+- Windows CI may build release artifacts with `psk`; Linux GNU release artifacts
+  build the executable Debian packages with `psk` and package
+  `tacacsrs-bash-plugin` without additional feature flags.
 - `session-wrapper` is Linux x86_64-specific. On Windows, validate it through WSL
   with paths mapped under `/mnt/<drive>/...`.
 

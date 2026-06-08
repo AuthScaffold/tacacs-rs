@@ -2,8 +2,8 @@ name: Collect Debian Packages
 description: Copy Debian package outputs into the packaged artifact directory
 
 inputs:
-  binary-name:
-    description: 'Binary/package name'
+  package-name:
+    description: 'Debian package name/prefix to collect'
     required: true
 
 runs:
@@ -12,5 +12,5 @@ runs:
     - name: Collect Debian packages
       shell: bash
       run: |
-        cp target/debian/${{ inputs.binary-name }}_*.deb packaged/
-        cp target/debian/${{ inputs.binary-name }}-dbgsym_*.ddeb packaged/ 2>/dev/null || true
+        cp target/debian/${{ inputs.package-name }}_*.deb packaged/
+        cp target/debian/${{ inputs.package-name }}-dbgsym_*.ddeb packaged/ 2>/dev/null || true

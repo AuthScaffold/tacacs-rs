@@ -2,11 +2,8 @@ name: Stage SBOM Files
 description: Stage generated SBOMs into the package directory and sanitize workspace-specific paths
 
 inputs:
-  target:
-    description: 'Rust target triple used for SBOM generation'
-    required: true
-  binary-name:
-    description: 'Binary/package name'
+  package-root:
+    description: 'Path to the package root that contains generated SBOM files'
     required: true
 
 runs:
@@ -15,10 +12,15 @@ runs:
     - name: Stage SBOM files
       shell: bash
       run: |
-        JSON_SOURCE="executables/${{ inputs.binary-name }}/${{ inputs.binary-name }}_bin_${{ inputs.target }}.cdx.json"
-        XML_SOURCE="executables/${{ inputs.binary-name }}/${{ inputs.binary-name }}_bin_${{ inputs.target }}.cdx.xml"
+        JSON_SOURCE=$(find "${{ inputs.package-root }}" -maxdepth 1 -name '*.cdx.json' -type f | head -1)
+        XML_SOURCE=$(find "${{ inputs.package-root }}" -maxdepth 1 -name '*.cdx.xml' -type f | head -1)
         JSON_DEST="$PACKAGE_DIR/${SBOM_BASENAME}.json"
         XML_DEST="$PACKAGE_DIR/${SBOM_BASENAME}.xml"
+
+        if [ -z "$JSON_SOURCE" ] || [ -z "$XML_SOURCE" ]; then
+          echo "Error: generated SBOM files were not found under ${{ inputs.package-root }}"
+          exit 1
+        fi
 
         cp "$JSON_SOURCE" "$JSON_DEST"
         cp "$XML_SOURCE" "$XML_DEST"

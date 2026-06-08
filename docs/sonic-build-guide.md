@@ -1,86 +1,74 @@
 # Building for SONiC
 
-SONiC (Software for Open Networking in the Cloud) runs on Linux and requires statically-linked binaries for easy deployment across switch platforms. This guide covers producing fully static executables using [musl](https://musl.libc.org/).
+SONiC runs on a Debian/glibc userspace, so the supported TACACS-rs build flow is
+based on GNU Linux binaries and Debian packages.
 
-## Rust Toolchain
+## Rust toolchain
 
-For SONiC build environments that do not ship a Rust toolchain, or that ship an older version, the current stable Rust toolchain should be provisioned using `rustup`. This provides the greatest level of reproducibility across supported SONiC versions.
+Provision a current stable Rust toolchain inside WSL when the base image does
+not already provide one:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
     --default-toolchain stable -y
 ```
 
-## Prerequisites
+## Build products
 
-Install the musl toolchain and add the Rust target:
-
-```bash
-# Install musl tools (Debian/Ubuntu)
-sudo apt install -y musl-tools
-
-# Add the musl target to Rust
-rustup target add x86_64-unknown-linux-musl
-```
-
-## Building
-
-Build all workspace crates with the musl target:
+Build the SONiC-relevant artifacts from a Linux environment with GNU targets:
 
 ```bash
-cargo build --release --workspace --target x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-gnu -p tacon --features psk
+cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-agentd --features psk
+cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-bash-plugin
 ```
 
-The binaries will be in `target/x86_64-unknown-linux-musl/release/`.
+The resulting artifacts are:
 
-To output artifacts to a specific directory (requires nightly or `-Z unstable-options`):
-
-```bash
-cargo build --release --workspace --artifact-dir out -Z unstable-options --target x86_64-unknown-linux-musl
+```text
+target/x86_64-unknown-linux-gnu/release/tacon
+target/x86_64-unknown-linux-gnu/release/tacacsrs-agentd
+target/x86_64-unknown-linux-gnu/release/libtacacsrs_bash_plugin.so
 ```
 
-## Verifying Static Linkage
+For package-oriented validation, prefer the GNU Debian packages produced by CI
+or the local `cargo deb --no-build` flow described in `DEBIAN_PACKAGING.md`.
 
-Confirm the binary is statically linked:
+If you are starting from Windows, run these Linux-targeted Cargo commands from
+WSL. Do not copy Windows-built binaries or libraries into SONiC.
 
-```bash
-file target/x86_64-unknown-linux-musl/release/tacon
-# Should show: "statically linked"
+## Publishing artifacts to the SONiC VM
 
-ldd target/x86_64-unknown-linux-musl/release/tacon
-# Should show: "not a dynamic executable"
+Use the existing helper scripts instead of raw `scp` or `ssh` commands.
+
+Publish GNU binaries:
+
+```powershell
+.\lde\sonic-vm\Publish-SonicBinary.ps1 -Package tacon -Profile release
+.\lde\sonic-vm\Publish-SonicBinary.ps1 -Package tacacsrs-agentd -Bin tacacsrs-agentd -Profile release
 ```
 
-## Deploying to SONiC
+Publish the bash plugin shared library:
 
-Copy the static binaries to the switch:
-
-```bash
-scp target/x86_64-unknown-linux-musl/release/tacon admin@switch:/usr/local/bin/
-scp target/x86_64-unknown-linux-musl/release/tacacsrs-agentd admin@switch:/usr/local/bin/
-scp target/x86_64-unknown-linux-musl/release/session-wrapper admin@switch:/usr/local/bin/
+```powershell
+.\lde\sonic-vm\Publish-SonicSharedLibrary.ps1 -Package tacacsrs-bash-plugin -Profile release
 ```
 
-No runtime dependencies are required — the binaries are self-contained.
+The shared library publisher copies `libtacacsrs_bash_plugin.so` to the VM and
+is the preferred path for SONiC bash plugin smoke testing.
 
-### Component roles on a SONiC switch
+## Component roles on a SONiC switch
 
-- `tacacsrs-agentd`: Long-running daemon. Maintains TACACS+ connections to
-    upstream servers and exposes `/run/tacacs.sock` for local IPC. Lifetime:
-    systemd service, always on.
-- `session-wrapper`: **Not a daemon.** One process per SSH login, spawned by
-    `sshd` via `ForceCommand` or as the user's login shell. Forks the user's shell
-    under a seccomp filter and proxies authorization through the agent. Lifetime:
-    the SSH session.
-- `tacon`: Operator CLI for ad-hoc TACACS+ requests. Useful for accounting test
-    traffic and debugging the agent. Lifetime: one-shot CLI invocation.
+- `tacacsrs-agentd`: long-running daemon that owns upstream TACACS+ connections
+  and local IPC.
+- `tacon`: operator CLI for ad-hoc requests and debugging.
+- `tacacsrs-bash-plugin`: shared library loaded by patched bash for per-command
+  authorization through `tacacsrs-agentd`.
 
-### systemd interaction
+## systemd interaction
 
-Only `tacacsrs-agentd` needs a systemd unit on SONiC — `session-wrapper` is
-launched on demand by `sshd` and exits with the user's session.
-
-A typical unit file (`/etc/systemd/system/tacacsrs-agentd.service`) looks like:
+Only `tacacsrs-agentd` needs a systemd unit on SONiC. A typical unit file looks
+like this:
 
 ```ini
 [Unit]
@@ -98,45 +86,32 @@ RestartSec=2s
 WantedBy=multi-user.target
 ```
 
-Enable and start it before any SSH session can require authorization:
+Enable it before testing any wrapper or plugin flow:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now tacacsrs-agentd
 ```
 
-### Prerequisite: `tacacsrs-agentd` must be running
+## Bash plugin installation path
 
-`session-wrapper` connects to the agent at `/run/tacacs.sock` (or whatever
-path is passed via `--service-endpoint`). If the agent is not running, the
-wrapper applies its `--fail-policy`:
+The standalone Debian package installs the plugin to:
 
-- `closed` → the SSH session is denied. This is the production default.
-- `open`   → the SSH session is allowed without authorization. Lab use only.
-
-Before enabling `ForceCommand` system-wide, verify that:
-
-1. `tacacsrs-agentd` is enabled in systemd and currently active.
-2. The socket exists with the expected mode/owner: `ls -l /run/tacacs.sock`.
-3. A manual `tacon` request against the same endpoint succeeds.
-
-See [`docs/session-wrapper.md`](session-wrapper.md) for the full SSH
-integration guide, configuration examples, and troubleshooting.
-
-### Building only `session-wrapper`
-
-The workspace musl build produces all three binaries in one pass. If you
-want to verify the static `session-wrapper` binary in isolation:
-
-```bash
-cargo build --release --target x86_64-unknown-linux-musl -p session-wrapper
-
-file target/x86_64-unknown-linux-musl/release/session-wrapper
-# Should show: "statically linked"
+```text
+/usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so
 ```
 
-The CI target matrix in `.github/workflows/reusable-pipeline.yml` includes a
-MUSL official-build lane, so `session-wrapper` is built and statically verified
-for the `x86_64-unknown-linux-musl` target on every PR alongside `tacon` and
-`tacacsrs-agentd`. The supporting `setup-rust` step builds and caches a
-musl-targeted static `libseccomp` so the wrapper links cleanly.
+Reference that path from `/etc/bash_plugins.conf`:
+
+```text
+plugin=/usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so
+```
+
+## Verification
+
+Before enabling SONiC command authorization broadly, verify that:
+
+1. `tacacsrs-agentd` is active and its IPC socket exists.
+2. A manual `tacon` request against the configured endpoint succeeds.
+3. The plugin shared library is present at the expected security path.
+4. Any SONiC VM testing is performed with Linux artifacts built from WSL, not Windows binaries.

@@ -5,9 +5,13 @@ inputs:
   target:
     description: 'Rust target triple used for SBOM generation'
     required: true
-  binary-name:
-    description: 'Binary/package name'
+  package-root:
+    description: 'Path to the package root containing Cargo.toml'
     required: true
+  sbom-describe:
+    description: 'CycloneDX describe mode'
+    required: false
+    default: 'binaries'
   features:
     description: 'Space-separated cargo features to enable'
     required: false
@@ -16,12 +20,18 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Clear prior SBOMs for package
+      shell: bash
+      run: |
+        find "${{ inputs.package-root }}" -maxdepth 1 -name '*.cdx.json' -delete
+        find "${{ inputs.package-root }}" -maxdepth 1 -name '*.cdx.xml' -delete
+
     - name: Generate SBOM (JSON)
       uses: ./.github/steps/generate-sbom
       with:
         output-format: json
-        manifest-path: executables/${{ inputs.binary-name }}/Cargo.toml
-        describe: binaries
+        manifest-path: ${{ inputs.package-root }}/Cargo.toml
+        describe: ${{ inputs.sbom-describe }}
         target: ${{ inputs.target }}
         target-in-filename: 'true'
         features: ${{ inputs.features }}
@@ -30,8 +40,8 @@ runs:
       uses: ./.github/steps/generate-sbom
       with:
         output-format: xml
-        manifest-path: executables/${{ inputs.binary-name }}/Cargo.toml
-        describe: binaries
+        manifest-path: ${{ inputs.package-root }}/Cargo.toml
+        describe: ${{ inputs.sbom-describe }}
         target: ${{ inputs.target }}
         target-in-filename: 'true'
         features: ${{ inputs.features }}
@@ -39,5 +49,4 @@ runs:
     - name: Stage SBOM files
       uses: ./.github/steps/stage-sbom-files
       with:
-        target: ${{ inputs.target }}
-        binary-name: ${{ inputs.binary-name }}
+        package-root: ${{ inputs.package-root }}

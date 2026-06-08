@@ -10,9 +10,16 @@ target/
 *.pdb
 
 # Debian packaging - generated files
+**/debian/changelog
 **/debian/changelog.gz
 **/debian/*.1
 **/debian/*.1.gz
+**/debian/sbom.json
+**/debian/sbom.xml
+
+# Local packaging validation output
+packaged/
+staging/
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

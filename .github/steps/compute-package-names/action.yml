@@ -5,8 +5,14 @@ inputs:
   asset-name:
     description: 'Platform-specific release asset name'
     required: true
-  binary-name:
-    description: 'Binary/package name'
+  package-name:
+    description: 'Cargo package name'
+    required: true
+  artifact-name:
+    description: 'Binary or library target name without platform prefix/suffix'
+    required: true
+  artifact-kind:
+    description: 'Artifact kind to build and stage (bin or cdylib)'
     required: true
   features:
     description: 'Space-separated cargo features to enable'
@@ -24,21 +30,41 @@ runs:
       shell: bash
       run: |
         ASSET_NAME="${{ inputs.asset-name }}"
-        BINARY_NAME="${{ inputs.binary-name }}"
+        PACKAGE_NAME="${{ inputs.package-name }}"
+        ARTIFACT_NAME_INPUT="${{ inputs.artifact-name }}"
+        ARTIFACT_KIND="${{ inputs.artifact-kind }}"
 
-        if [[ "$ASSET_NAME" == "$BINARY_NAME-"* ]]; then
-          ASSET_SUFFIX="${ASSET_NAME#"$BINARY_NAME-"}"
-        elif [[ "$ASSET_NAME" == "$BINARY_NAME" ]]; then
-          echo "Error: asset-name must be platform-specific. Use ${BINARY_NAME}-<platform>."
+        if [[ "$ASSET_NAME" == "$PACKAGE_NAME-"* ]]; then
+          ASSET_SUFFIX="${ASSET_NAME#"$PACKAGE_NAME-"}"
+        elif [[ "$ASSET_NAME" == "$PACKAGE_NAME" ]]; then
+          echo "Error: asset-name must be platform-specific. Use ${PACKAGE_NAME}-<platform>."
           exit 1
         else
           ASSET_SUFFIX="$ASSET_NAME"
         fi
 
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          BINARY_EXT=".exe"
+        if [[ "$ARTIFACT_KIND" == "bin" ]]; then
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            ARTIFACT_BASENAME="${ARTIFACT_NAME_INPUT}"
+            ARTIFACT_FILENAME="${ARTIFACT_NAME_INPUT}.exe"
+          else
+            ARTIFACT_BASENAME="${ARTIFACT_NAME_INPUT}"
+            ARTIFACT_FILENAME="${ARTIFACT_NAME_INPUT}"
+          fi
+        elif [[ "$ARTIFACT_KIND" == "cdylib" ]]; then
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            ARTIFACT_BASENAME="${ARTIFACT_NAME_INPUT}"
+            ARTIFACT_FILENAME="${ARTIFACT_NAME_INPUT}.dll"
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            ARTIFACT_BASENAME="lib${ARTIFACT_NAME_INPUT}"
+            ARTIFACT_FILENAME="lib${ARTIFACT_NAME_INPUT}.dylib"
+          else
+            ARTIFACT_BASENAME="lib${ARTIFACT_NAME_INPUT}"
+            ARTIFACT_FILENAME="lib${ARTIFACT_NAME_INPUT}.so"
+          fi
         else
-          BINARY_EXT=""
+          echo "Error: unsupported artifact kind: $ARTIFACT_KIND"
+          exit 1
         fi
 
         if [[ "${{ inputs.build-release }}" == "true" ]]; then
@@ -55,9 +81,12 @@ runs:
         fi
 
         echo "ASSET_SUFFIX=$ASSET_SUFFIX" >> "$GITHUB_ENV"
-        echo "BINARY_EXT=$BINARY_EXT" >> "$GITHUB_ENV"
+        echo "ARTIFACT_BASENAME=$ARTIFACT_BASENAME" >> "$GITHUB_ENV"
+        echo "ARTIFACT_FILENAME=$ARTIFACT_FILENAME" >> "$GITHUB_ENV"
+        echo "ARTIFACT_KIND=$ARTIFACT_KIND" >> "$GITHUB_ENV"
         echo "BUILD_PROFILE_FLAG=$BUILD_PROFILE_FLAG" >> "$GITHUB_ENV"
         echo "FEATURE_ARGS=$FEATURE_ARGS" >> "$GITHUB_ENV"
+        echo "PACKAGE_NAME=$PACKAGE_NAME" >> "$GITHUB_ENV"
         echo "PACKAGE_DIR=staging/$ASSET_NAME" >> "$GITHUB_ENV"
         echo "PROFILE=$PROFILE" >> "$GITHUB_ENV"
         echo "SBOM_BASENAME=sbom-$ASSET_SUFFIX" >> "$GITHUB_ENV"
