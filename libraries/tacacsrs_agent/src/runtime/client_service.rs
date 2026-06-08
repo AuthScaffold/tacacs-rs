@@ -191,6 +191,8 @@ mod tests {
     #[cfg(unix)]
     use super::TacacsClientService;
     #[cfg(unix)]
+    use crate::runtime::REQUIRED_SERVER_TYPES;
+    #[cfg(unix)]
     use crate::config::ServiceConfig;
     #[cfg(unix)]
     use crate::ipc::GrpcService;
@@ -207,7 +209,7 @@ mod tests {
         };
         tacacsrs_config::TacacsPlusServer {
             name: address.to_owned(),
-            server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
+            server_type: REQUIRED_SERVER_TYPES,
             address: host,
             port,
             shared_secret: Some("test-secret".to_owned()),
