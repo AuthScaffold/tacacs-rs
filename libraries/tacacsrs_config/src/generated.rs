@@ -1,9 +1,12 @@
+// @generated
 // Auto-generated from YANG modules by yang2rust.py — DO NOT EDIT
 
 #![allow(dead_code)]
 #![allow(non_camel_case_types)]
 #![allow(clippy::doc_markdown)]
+
 #![allow(clippy::too_long_first_doc_paragraph)]
+
 #![allow(rustdoc::broken_intra_doc_links)]
 
 use serde::{Deserialize, Serialize};
@@ -31,10 +34,16 @@ pub mod tacacs_plus {
 
     impl EpskSupportedHash {
         /// All valid values for this YANG enumeration.
-        pub const ALL: &[Self] = &[Self::Sha256, Self::Sha384];
+        pub const ALL: &[Self] = &[
+            Self::Sha256,
+            Self::Sha384,
+        ];
 
         /// RFC 7951 JSON string values accepted for this YANG enumeration.
-        pub const ALLOWED_VALUES: &[&str] = &["sha-256", "sha-384"];
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "sha-256",
+            "sha-384",
+        ];
 
         /// Returns the RFC 7951 JSON string.
         #[must_use]
@@ -111,12 +120,10 @@ pub mod tacacs_plus {
                     "authentication" => bits |= Self::AUTHENTICATION,
                     "authorization" => bits |= Self::AUTHORIZATION,
                     "accounting" => bits |= Self::ACCOUNTING,
-                    other => {
-                        return Err(serde::de::Error::unknown_variant(
-                            other,
-                            &["authentication", "authorization", "accounting"],
-                        ))
-                    }
+                    other => return Err(serde::de::Error::unknown_variant(
+                        other,
+                        &["authentication", "authorization", "accounting"],
+                    )),
                 }
             }
             if bits.is_empty() {
@@ -151,6 +158,7 @@ pub mod tacacs_plus {
         /// A container to hold the local key definition.
         #[serde(rename = "inline-definition")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub inline_definition: Option<keystore::EndEntityCertWithKeyInlineDefinition>,
     }
 
@@ -159,14 +167,13 @@ pub mod tacacs_plus {
         /// YANG choice `inline-or-keystore` (mandatory).
         ///
         /// Each inner slice is one case; at most one case may have fields set.
-        pub const CHOICE_INLINE_OR_KEYSTORE: &[(&str, &[&str])] =
-            &[("inline", &["inline-definition"])];
+        pub const CHOICE_INLINE_OR_KEYSTORE: &[(&str, &[&str])] = &[
+            ("inline", &["inline-definition"]),
+        ];
         pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
     }
 
-    fn default_tls13_epsk_hash() -> EpskSupportedHash {
-        EpskSupportedHash::Sha256
-    }
+    fn default_tls13_epsk_hash() -> EpskSupportedHash { EpskSupportedHash::Sha256 }
 
     /// An EPSK is established or provisioned out of band.
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +182,7 @@ pub mod tacacs_plus {
         /// A container to hold the local key definition.
         #[serde(rename = "inline-definition")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub inline_definition: Option<keystore::SymmetricKeyInlineDefinition>,
         /// A sequence of bytes used to identify an EPSK. A label for
         /// a PSK established externally.
@@ -189,20 +197,24 @@ pub mod tacacs_plus {
         /// example, context may include information about peer roles or
         /// identities to mitigate Selfie-style reflection attacks.
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub context: Option<String>,
         /// Specifies the protocol for which a PSK is imported for
         /// use.
         #[serde(rename = "target-protocol")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub target_protocol: Option<u16>,
         /// The KDF for which a PSK is imported for use.
         #[serde(rename = "target-kdf")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub target_kdf: Option<u16>,
         /// Supported groups to offer, in preference order, in
         /// ClientHello key_share when using TLS 1.3 PSK psk_dhe_ke.
         #[serde(rename = "tacacsrs:psk-dhe-ke-groups")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         pub psk_dhe_ke_groups: Vec<tacacsrs::PskDheKeSupportedGroup>,
     }
 
@@ -211,8 +223,9 @@ pub mod tacacs_plus {
         /// YANG choice `inline-or-keystore` (mandatory).
         ///
         /// Each inner slice is one case; at most one case may have fields set.
-        pub const CHOICE_INLINE_OR_KEYSTORE: &[(&str, &[&str])] =
-            &[("inline", &["inline-definition"])];
+        pub const CHOICE_INLINE_OR_KEYSTORE: &[(&str, &[&str])] = &[
+            ("inline", &["inline-definition"]),
+        ];
         pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
     }
 
@@ -228,10 +241,12 @@ pub mod tacacs_plus {
         pub id: String,
         /// Specifies the client identity using a certificate.
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub certificate: Option<ClientIdentityCertificate>,
         /// An EPSK is established or provisioned out of band.
         #[serde(rename = "tls13-epsk")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsk: Option<Tls13Epsk>,
     }
 
@@ -258,6 +273,7 @@ pub mod tacacs_plus {
         /// certificates.
         #[serde(rename = "inline-definition")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub inline_definition: Option<truststore::CertsInlineDefinition>,
     }
 
@@ -266,8 +282,9 @@ pub mod tacacs_plus {
         /// YANG choice `inline-or-truststore` (mandatory).
         ///
         /// Each inner slice is one case; at most one case may have fields set.
-        pub const CHOICE_INLINE_OR_TRUSTSTORE: &[(&str, &[&str])] =
-            &[("inline", &["inline-definition"])];
+        pub const CHOICE_INLINE_OR_TRUSTSTORE: &[(&str, &[&str])] = &[
+            ("inline", &["inline-definition"]),
+        ];
         pub const CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY: bool = true;
     }
 
@@ -285,6 +302,7 @@ pub mod tacacs_plus {
         /// chain of trust to a configured CA certificate.
         #[serde(rename = "ca-certs")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub ca_certs: Option<ServerAuthenticationCaCerts>,
         /// A set of server certificates (i.e., end entity certificates)
         /// used by a TLS client to authenticate certificates
@@ -293,11 +311,13 @@ pub mod tacacs_plus {
         /// certificate.
         #[serde(rename = "ee-certs")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub ee_certs: Option<ServerAuthenticationCaCerts>,
         /// Indicates that a TLS client can authenticate TLS servers
         /// using configured EPSKs.
         #[serde(rename = "tls13-epsks")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<bool>,
     }
 
@@ -309,13 +329,16 @@ pub mod tacacs_plus {
         /// Specifies the client credentials reference.
         #[serde(rename = "credentials-reference")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub credentials_reference: Option<String>,
         /// Specifies the client identity using a certificate.
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub certificate: Option<ClientIdentityCertificate>,
         /// An EPSK is established or provisioned out of band.
         #[serde(rename = "tls13-epsk")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsk: Option<Tls13Epsk>,
     }
 
@@ -338,6 +361,7 @@ pub mod tacacs_plus {
         /// Specifies the server credentials reference.
         #[serde(rename = "credentials-reference")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub credentials_reference: Option<String>,
         /// A set of CA certificates used by the TLS client to
         /// authenticate TLS server certificates.
@@ -345,6 +369,7 @@ pub mod tacacs_plus {
         /// chain of trust to a configured CA certificate.
         #[serde(rename = "ca-certs")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub ca_certs: Option<ServerAuthenticationCaCerts>,
         /// A set of server certificates (i.e., end entity certificates)
         /// used by a TLS client to authenticate certificates
@@ -353,11 +378,13 @@ pub mod tacacs_plus {
         /// certificate.
         #[serde(rename = "ee-certs")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub ee_certs: Option<ServerAuthenticationCaCerts>,
         /// Indicates that a TLS client can authenticate TLS servers
         /// using configured EPSKs.
         #[serde(rename = "tls13-epsks")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<bool>,
     }
 
@@ -373,9 +400,7 @@ pub mod tacacs_plus {
         pub const CHOICE_REF_OR_EXPLICIT_MANDATORY: bool = false;
     }
 
-    fn default_tacacs_plus_server_timeout() -> u16 {
-        5
-    }
+    fn default_tacacs_plus_server_timeout() -> u16 { 5 }
 
     /// List of TACACS+ servers used by the device.
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -393,11 +418,13 @@ pub mod tacacs_plus {
         /// Provides a domain name of the TACACS+ server.
         #[serde(rename = "domain-name")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub domain_name: Option<String>,
         /// Enables the use of SNI when set to true. Disables the
         /// use of SNI when set to false.
         #[serde(rename = "sni-enabled")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub sni_enabled: Option<bool>,
         /// The IP address or name of the TACACS+ server.
         pub address: String,
@@ -409,10 +436,12 @@ pub mod tacacs_plus {
         /// establishing a connection to a TLS server.
         #[serde(rename = "client-identity")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub client_identity: Option<TlsClientClientIdentity>,
         /// Specifies how a TLS client can authenticate TLS servers.
         #[serde(rename = "server-authentication")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub server_authentication: Option<TlsClientServerAuthentication>,
         /// The shared secret, which is known to both the
         /// TACACS+ client and server. TACACS+ server
@@ -426,25 +455,28 @@ pub mod tacacs_plus {
         /// best described as 'obfuscation' and not 'encryption'
         /// as it does not provide any meaningful integrity,
         /// privacy, or replay protection.
-        ///
+        /// 
         /// The use of obfuscation is deprecated in favor
         /// of TLS.
-        ///
+        /// 
         /// This choice is provided in the model to accommodate
         /// installed base.
         #[serde(rename = "shared-secret")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub shared_secret: Option<String>,
         /// Specifies the source IP address for TACACS+ outbound
         /// packets.
         #[serde(rename = "source-ip")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub source_ip: Option<String>,
         /// Specifies the interface from which the IP address
         /// is derived for use as the source for outbound
         /// TACACS+ packets.
         #[serde(rename = "source-interface")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub source_interface: Option<String>,
         /// Specifies the VPN Routing and Forwarding (VRF) instance
         /// to use to communicate with the TACACS+ server.
@@ -453,6 +485,7 @@ pub mod tacacs_plus {
         /// (via bind-ni-name).
         #[serde(rename = "vrf-instance")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub vrf_instance: Option<String>,
         /// Indicates whether the Single Connection Mode is enabled
         /// for the server.
@@ -496,16 +529,20 @@ pub mod tacacs_plus {
         /// when configuring server instances.
         #[serde(rename = "client-credentials")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         pub client_credentials: Vec<ClientCredentials>,
         /// Identity credentials that a TLS client may use
         /// to authenticate a TLS server.
         #[serde(rename = "server-credentials")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         pub server_credentials: Vec<ServerCredentials>,
         /// List of TACACS+ servers used by the device.
         #[serde(default)]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         pub server: Vec<TacacsPlusServer>,
     }
+
 }
 
 /// Types from `ietf-keystore`.
@@ -522,33 +559,38 @@ pub mod keystore {
         /// specified format.
         #[serde(rename = "public-key-format")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub public_key_format: Option<crypto_types::PublicKeyFormat>,
         /// The binary value of the public key.  The interpretation
         /// of the value is defined by the 'public-key-format' field.
         #[serde(rename = "public-key")]
         #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub public_key: Option<Vec<u8>>,
         /// Identifies the private key's format.  Implementations SHOULD
         /// ensure that the incoming private key value is encoded in the
         /// specified format.
-        ///
+        /// 
         /// For encrypted keys, the value is the decrypted key's
         /// format (i.e., the 'encrypted-value-format' conveys the
         /// encrypted key's format).
         #[serde(rename = "private-key-format")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub private_key_format: Option<crypto_types::PrivateKeyFormat>,
         /// The value of the binary key.  The key's value is
         /// interpreted by the 'private-key-format' field.
         #[serde(rename = "cleartext-private-key")]
         #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub cleartext_private_key: Option<Vec<u8>>,
         /// The binary certificate data for this certificate.
         #[serde(rename = "cert-data")]
         #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub cert_data: Option<Vec<u8>>,
     }
 
@@ -557,8 +599,9 @@ pub mod keystore {
         /// YANG choice `private-key-type` (mandatory).
         ///
         /// Each inner slice is one case; at most one case may have fields set.
-        pub const CHOICE_PRIVATE_KEY_TYPE: &[(&str, &[&str])] =
-            &[("cleartext-private-key", &["cleartext-private-key"])];
+        pub const CHOICE_PRIVATE_KEY_TYPE: &[(&str, &[&str])] = &[
+            ("cleartext-private-key", &["cleartext-private-key"]),
+        ];
         pub const CHOICE_PRIVATE_KEY_TYPE_MANDATORY: bool = true;
     }
 
@@ -569,18 +612,20 @@ pub mod keystore {
         /// Identifies the symmetric key's format.  Implementations
         /// SHOULD ensure that the incoming symmetric key value is
         /// encoded in the specified format.
-        ///
+        /// 
         /// For encrypted keys, the value is the decrypted key's
         /// format (i.e., the 'encrypted-value-format' conveys the
         /// encrypted key's format).
         #[serde(rename = "key-format")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub key_format: Option<crypto_types::SymmetricKeyFormat>,
         /// The binary value of the key.  The interpretation of
         /// the value is defined by the 'key-format' field.
         #[serde(rename = "cleartext-symmetric-key")]
         #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]
         #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub cleartext_symmetric_key: Option<Vec<u8>>,
     }
 
@@ -589,10 +634,12 @@ pub mod keystore {
         /// YANG choice `key-type` (mandatory).
         ///
         /// Each inner slice is one case; at most one case may have fields set.
-        pub const CHOICE_KEY_TYPE: &[(&str, &[&str])] =
-            &[("cleartext-symmetric-key", &["cleartext-symmetric-key"])];
+        pub const CHOICE_KEY_TYPE: &[(&str, &[&str])] = &[
+            ("cleartext-symmetric-key", &["cleartext-symmetric-key"]),
+        ];
         pub const CHOICE_KEY_TYPE_MANDATORY: bool = true;
     }
+
 }
 
 /// Types from `ietf-crypto-types`.
@@ -604,7 +651,7 @@ pub mod crypto_types {
     pub enum PublicKeyFormat {
         /// Indicates that the public key value is a Secure Shell (SSH)
         /// public key, as specified in RFC 4253, Section 6.6, i.e.:
-        ///
+        /// 
         /// string    certificate or public key format
         /// identifier
         /// byte[n]   key/certificate data.
@@ -618,7 +665,10 @@ pub mod crypto_types {
 
     impl PublicKeyFormat {
         /// All valid identities for this base.
-        pub const ALL: &[Self] = &[Self::SshPublicKeyFormat, Self::SubjectPublicKeyInfoFormat];
+        pub const ALL: &[Self] = &[
+            Self::SshPublicKeyFormat,
+            Self::SubjectPublicKeyInfoFormat,
+        ];
 
         /// RFC 7951 JSON string values accepted for this identity.
         pub const ALLOWED_VALUES: &[&str] = &[
@@ -631,9 +681,7 @@ pub mod crypto_types {
         pub fn as_rfc7951_str(&self) -> &'static str {
             match self {
                 Self::SshPublicKeyFormat => "ietf-crypto-types:ssh-public-key-format",
-                Self::SubjectPublicKeyInfoFormat => {
-                    "ietf-crypto-types:subject-public-key-info-format"
-                }
+                Self::SubjectPublicKeyInfoFormat => "ietf-crypto-types:subject-public-key-info-format",
             }
         }
 
@@ -642,9 +690,7 @@ pub mod crypto_types {
         pub fn from_rfc7951_str(s: &str) -> Option<Self> {
             match s {
                 "ietf-crypto-types:ssh-public-key-format" => Some(Self::SshPublicKeyFormat),
-                "ietf-crypto-types:subject-public-key-info-format" => {
-                    Some(Self::SubjectPublicKeyInfoFormat)
-                }
+                "ietf-crypto-types:subject-public-key-info-format" => Some(Self::SubjectPublicKeyInfoFormat),
                 _ => None,
             }
         }
@@ -662,8 +708,9 @@ pub mod crypto_types {
             D: serde::Deserializer<'de>,
         {
             let s = <String as serde::Deserialize>::deserialize(deserializer)?;
-            Self::from_rfc7951_str(&s)
-                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+            Self::from_rfc7951_str(&s).ok_or_else(|| {
+                serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES)
+            })
         }
     }
 
@@ -749,8 +796,9 @@ pub mod crypto_types {
             D: serde::Deserializer<'de>,
         {
             let s = <String as serde::Deserialize>::deserialize(deserializer)?;
-            Self::from_rfc7951_str(&s)
-                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+            Self::from_rfc7951_str(&s).ok_or_else(|| {
+                serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES)
+            })
         }
     }
 
@@ -771,7 +819,7 @@ pub mod crypto_types {
         /// Indicates that the key is encoded as a raw octet string.
         /// The length of the octet string MUST be appropriate for
         /// the associated algorithm's block size.
-        ///
+        /// 
         /// The identity of the associated algorithm is outside the
         /// scope of this specification.  This is also true when
         /// the octet string has been encrypted.
@@ -786,7 +834,10 @@ pub mod crypto_types {
 
     impl SymmetricKeyFormat {
         /// All valid identities for this base.
-        pub const ALL: &[Self] = &[Self::OctetStringKeyFormat, Self::OneSymmetricKeyFormat];
+        pub const ALL: &[Self] = &[
+            Self::OctetStringKeyFormat,
+            Self::OneSymmetricKeyFormat,
+        ];
 
         /// RFC 7951 JSON string values accepted for this identity.
         pub const ALLOWED_VALUES: &[&str] = &[
@@ -826,8 +877,9 @@ pub mod crypto_types {
             D: serde::Deserializer<'de>,
         {
             let s = <String as serde::Deserialize>::deserialize(deserializer)?;
-            Self::from_rfc7951_str(&s)
-                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+            Self::from_rfc7951_str(&s).ok_or_else(|| {
+                serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES)
+            })
         }
     }
 
@@ -839,6 +891,7 @@ pub mod crypto_types {
             serializer.serialize_str(self.as_rfc7951_str())
         }
     }
+
 }
 
 /// Types from `tacacsrs`.
@@ -953,6 +1006,7 @@ pub mod tacacsrs {
             serializer.serialize_str(self.as_rfc7951_str())
         }
     }
+
 }
 
 /// Types from `ietf-truststore`.
@@ -978,8 +1032,10 @@ pub mod truststore {
     pub struct CertsInlineDefinition {
         /// A trust anchor certificate or chain of certificates.
         #[serde(default)]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         pub certificate: Vec<CertsCertificate>,
     }
+
 }
 
 /// Root wrapper for RFC 7951 JSON encoding.

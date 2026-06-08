@@ -26,8 +26,10 @@ TLS-related fields that the YANG `ietf-system-tacacs-plus` model supports
 (client identity certificates, server authentication trust anchors, TLS 1.3
 ePSKs, SNI, etc.). The mapping documents what would have to be added to
 ConfigDB to enable the richer YANG features; today the bridge supports plain
-TCP with an optional shared-secret / obfuscation key and leaves the TLS-related
-YANG fields unset on the resulting [`tacacsrs_config::TacacsPlusServer`].
+TCP with an optional shared-secret / obfuscation key plus a forward-compatible
+`use_tls` extension that selects the same empty `server-authentication`
+container as `tacon --use-tls` when no explicit certificate material is
+configured.
 
 ## Schema extensions
 
@@ -37,6 +39,7 @@ YANG model without waiting for SONiC ConfigDB updates:
 
 | Extension key on `TACPLUS_SERVER|<addr>` | YANG field                             |
 |------------------------------------------|----------------------------------------|
+| `use_tls`                                | `server-authentication: {}`            |
 | `domain_name`                            | `domain-name` (used for SNI)           |
 | `sni_enabled`                            | `sni-enabled`                          |
 | `single_connection`                      | `single-connection`                    |
@@ -45,8 +48,10 @@ YANG model without waiting for SONiC ConfigDB updates:
 | `src_ip`                                 | `source-ip`                            |
 | `server_type`                            | `server-type` bitset, defaults to `all`|
 
-Unknown keys are ignored with a `warn!` log so legacy SONiC builds with extra
-operator-specific keys do not cause the bridge to fail at startup.
+The `use_tls` key is also accepted on `TACPLUS|global` and falls back to each
+server row when the row does not override it. Unknown keys are ignored with a
+`warn!` log so legacy SONiC builds with extra operator-specific keys do not
+cause the bridge to fail at startup.
 
 ## Example watcher
 
@@ -74,7 +79,8 @@ redis-cli -n 4 HSET 'TACPLUS|global' \
    timeout 5 auth_type pap src_intf Management0
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' \
    priority 1 tcp_port 49 timeout 10 \
-   domain_name tacacs-a.example.test sni_enabled true single_connection true
+   use_tls true domain_name tacacs-a.example.test \
+   sni_enabled true single_connection true
 
 cargo run -p tacacsrs-sonic --example configdb_watch -- \
    --redis-url redis://127.0.0.1:6379 \
@@ -93,4 +99,6 @@ redis-cli -n 4 DEL 'TACPLUS_SERVER|192.0.2.20'
 
 The example intentionally reports only whether a shared secret is configured;
 it never prints secret values. Rows without a per-server or global `passkey`
-are treated as plain TCP without TACACS+ body obfuscation.
+are treated as plain TCP unless `use_tls` is enabled, in which case the bridge
+emits the empty YANG `server-authentication` container used for TLS without
+explicit certificate material.

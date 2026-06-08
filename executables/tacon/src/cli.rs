@@ -84,6 +84,10 @@ pub struct Cli {
     #[arg(long, conflicts_with = "service_endpoint")]
     pub use_tls: bool,
 
+    /// TLS server name used for SNI and certificate verification in direct mode
+    #[arg(long, value_name = "NAME", requires = "use_tls", conflicts_with = "service_endpoint")]
+    pub tls_server_name: Option<String>,
+
     /// Path to a PEM- or DER-encoded client certificate file for TLS authentication
     #[arg(long, value_name = "FILE", requires = "client_key", conflicts_with = "service_endpoint")]
     pub client_certificate: Option<String>,
@@ -180,6 +184,10 @@ pub enum Command {
         /// Path to the batch file containing TACACS+ requests
         file: String,
     },
+
+    /// Dump the effective YANG JSON configuration to stdout and exit
+    #[command(name = "dump-yang-config")]
+    DumpYangConfig,
 
     /// Send an accounting record
     Accounting {
@@ -287,6 +295,38 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_tls_server_name_parses_with_tls() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--use-tls",
+            "--tls-server-name",
+            "tacacs.example.com",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().tls_server_name.as_deref(), Some("tacacs.example.com"));
+    }
+
+    #[test]
+    fn test_tls_server_name_requires_tls() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--tls-server-name",
+            "tacacs.example.com",
+            "batch",
+            "batch.txt",
+        ]);
+
+        assert!(result.is_err());
+    }
+
     #[cfg(feature = "psk")]
     #[test]
     fn test_psk_key_exchange_mode_parses() {
@@ -375,6 +415,22 @@ mod tests {
             "192.168.1.100",
             "test_cmd",
         ]);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_dump_yang_config_subcommand_parses_in_direct_mode() {
+        let result =
+            Cli::try_parse_from(["tacon", "--server-addr", "localhost:49", "dump-yang-config"]);
+
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap().command, Command::DumpYangConfig));
+    }
+
+    #[test]
+    fn test_dump_yang_config_subcommand_parses_with_config_file() {
+        let result = Cli::try_parse_from(["tacon", "--config", "config.json", "dump-yang-config"]);
 
         assert!(result.is_ok());
     }

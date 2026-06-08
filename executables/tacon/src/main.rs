@@ -72,6 +72,9 @@ async fn execute_command(command: &Command, session: ClientSession) -> anyhow::R
             // Batch mode is handled separately in run() before this function is called
             unreachable!("Batch commands are handled by run_batch_mode before execute_command");
         }
+        Command::DumpYangConfig => {
+            unreachable!("dump-yang-config is handled in run() before execute_command");
+        }
     }
 
     Ok(())
@@ -113,6 +116,9 @@ async fn execute_command_via_service(endpoint: &str, command: &Command) -> anyho
             unreachable!(
                 "Batch commands are handled by run_batch_mode before execute_command_via_service"
             )
+        }
+        Command::DumpYangConfig => {
+            unreachable!("dump-yang-config is handled in run() before service execution")
         }
     }
 
@@ -167,10 +173,18 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     init_logger(cli.verbose);
 
-    // Handle batch subcommand separately
-    if let Command::Batch { file } = &cli.command {
-        log::info!("Running in batch mode with file: {file}");
-        return run_batch_mode(&cli, Path::new(file)).await;
+    match &cli.command {
+        Command::DumpYangConfig => {
+            println!("{}", config::render_yang_config(&cli)?);
+            return Ok(());
+        }
+        Command::Batch { file } => {
+            log::info!("Running in batch mode with file: {file}");
+            return run_batch_mode(&cli, Path::new(file)).await;
+        }
+        Command::Accounting { .. }
+        | Command::Authentication { .. }
+        | Command::Authorization { .. } => {}
     }
 
     if let Some(ref endpoint) = cli.service_endpoint {
@@ -240,6 +254,9 @@ async fn execute_command_dedicated(
         }
         Command::Batch { .. } => {
             unreachable!("Batch is handled before this point");
+        }
+        Command::DumpYangConfig => {
+            unreachable!("dump-yang-config is handled in run() before dedicated execution");
         }
     }
 

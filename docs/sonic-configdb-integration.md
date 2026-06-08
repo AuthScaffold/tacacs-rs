@@ -69,6 +69,7 @@ ahead of upstream ConfigDB schema work by adding the following keys to
 
 | Key                 | YANG field          | Notes                                                                                          |
 |---------------------|---------------------|------------------------------------------------------------------------------------------------|
+| `use_tls`           | `server-authentication: {}` | Accepts the same boolean forms as `sni_enabled`; also supported on `TACPLUS|global` as a default |
 | `domain_name`       | `domain-name`       | Used as SNI hostname                                                                           |
 | `sni_enabled`       | `sni-enabled`       | `true`/`false`/`yes`/`no`/`1`/`0`                                                              |
 | `single_connection` | `single-connection` | Boolean                                                                                        |
@@ -84,11 +85,13 @@ annotations on TACPLUS rows do not break the agent.
 
 SONiC's upstream TACACS+ ConfigDB schema does not yet expose certificate
 material, trust anchors, TLS 1.3 ePSKs, or other TLS-only fields from the
-YANG model. Until SONiC adopts a richer schema, the bridge supports only the
-shared-secret / obfuscation path (`passkey`). The mapping is structured so
-that promoting TLS support upstream will only require new ConfigDB fields
-and a corresponding update to `tacacsrs_sonic::mapping`; no daemon-level
-plumbing changes will be required.
+YANG model. Until SONiC adopts a richer schema, the bridge supports the
+shared-secret / obfuscation path (`passkey`) plus a forward-compatible
+`use_tls` extension that selects the empty `server-authentication` container
+used by `tacon --use-tls` when no explicit certificate material is configured.
+The mapping is structured so that promoting richer TLS support upstream will
+only require new ConfigDB fields and a corresponding update to
+`tacacsrs_sonic::mapping`; no daemon-level plumbing changes will be required.
 
 ## Running on SONiC
 

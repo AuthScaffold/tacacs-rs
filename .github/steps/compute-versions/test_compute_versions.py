@@ -552,6 +552,33 @@ class TestComputeAllVersions:
         assert result["has_release"] is True
         assert len(result["new_tags"]) == 3
 
+    def test_shared_executable_uses_primary_calver_and_watch_paths(self, tmp_workspace: Path) -> None:
+        make_executable(tmp_workspace, "tacon", "tacon")
+        make_executable(tmp_workspace, "tacacsrs-agentd", "tacacsrs_agentd")
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "tacon-2026.424.0")
+
+        (tmp_workspace / "executables" / "tacacsrs_agentd" / "src" / "main.rs").write_text(
+            "fn main() { println!(\"agentd update\"); }\n",
+            encoding="utf-8",
+        )
+        git_commit(tmp_workspace, "update agentd")
+
+        now = datetime(2026, 4, 24, tzinfo=timezone.utc)
+        result = compute_all_versions(
+            tmp_workspace,
+            binary_name="tacon",
+            shared_executable_names=["tacacsrs-agentd"],
+            skip_semver_checks=True,
+            now=now,
+        )
+
+        assert result["versions"]["tacon"] == "2026.424.1"
+        assert result["versions"]["tacacsrs-agentd"] == "2026.424.1"
+        assert result["calver_tag"] == "tacon-2026.424.1"
+        assert "tacon-2026.424.1" in result["new_tags"]
+        assert result["has_release"] is True
+
     def test_full_mixed_changes(self, tmp_workspace: Path) -> None:
         """Only changed crates get new tags."""
         make_library(tmp_workspace, "stable", "stable")

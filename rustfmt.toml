@@ -53,4 +53,5 @@ format_macro_bodies = true
 newline_style = "Auto"
 use_field_init_shorthand = true
 format_generated_files = false
+ignore = ["libraries/tacacsrs_config/src/generated.rs"]
 

@@ -9,6 +9,10 @@ inputs:
     description: 'Name of the CalVer-managed executable'
     required: false
     default: 'tacon'
+  shared-executables:
+    description: 'Comma-separated executable crate names that should share the CalVer version without creating their own tags'
+    required: false
+    default: ''
   skip-semver-checks:
     description: 'Skip cargo-semver-checks (faster, but always patch-bumps)'
     required: false
@@ -48,6 +52,7 @@ runs:
       shell: bash
       env:
         INPUT_BINARY_NAME: ${{ inputs.binary-name }}
+        INPUT_SHARED_EXECUTABLES: ${{ inputs.shared-executables }}
         INPUT_SKIP_SEMVER_CHECKS: ${{ inputs.skip-semver-checks }}
         INPUT_PRE_RELEASE: ${{ inputs.pre-release }}
         GITHUB_WORKSPACE: ${{ github.workspace }}

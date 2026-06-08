@@ -463,6 +463,7 @@ def compute_library_versions(
 def compute_all_versions(
     workspace_root: Path,
     binary_name: str = "tacon",
+    shared_executable_names: Sequence[str] | None = None,
     executable_watch_paths: Sequence[str] | None = None,
     skip_semver_checks: bool = False,
     now: datetime | None = None,
@@ -483,11 +484,16 @@ def compute_all_versions(
             "calver_tag": "tacon-YYYY.MMDD.BUILD" or "",
         }
     """
+    if shared_executable_names is None:
+        shared_executable_names = []
+
     if executable_watch_paths is None:
-        executable_watch_paths = [
-            f"executables/{binary_name}/",
-            "libraries/",
-        ]
+        executable_watch_paths = [f"executables/{binary_name}/"]
+        executable_watch_paths.extend(
+            f"executables/{name.replace('-', '_')}/"
+            for name in shared_executable_names
+        )
+        executable_watch_paths.append("libraries/")
 
     # Discover and sort libraries
     crates = discover_libraries(workspace_root)
@@ -533,11 +539,15 @@ def compute_all_versions(
     previous_calver_tag = ""
     if calver_result is not None:
         versions[calver_result.name] = calver_result.version
+        for shared_name in shared_executable_names:
+            versions[shared_name] = calver_result.version
         if calver_result.tag:
             new_tags.append(calver_result.tag)
             calver_tag = calver_result.tag
             previous_calver_tag = calver_result.previous_tag or ""
         print(f"  {calver_result.name}: {calver_result.version} ({calver_result.reason})")
+        for shared_name in shared_executable_names:
+            print(f"  {shared_name}: {calver_result.version} (shared executable version)")
     else:
         print(f"  {binary_name}: unchanged (no calver)")
 
@@ -563,11 +573,18 @@ def write_github_output(key: str, value: str) -> None:
 def main() -> None:
     workspace_root = Path(os.environ.get("GITHUB_WORKSPACE", ".")).resolve()
     binary_name = os.environ.get("INPUT_BINARY_NAME", "tacon")
+    shared_executables_raw = os.environ.get("INPUT_SHARED_EXECUTABLES", "")
     skip_semver = os.environ.get("INPUT_SKIP_SEMVER_CHECKS", "false").lower() == "true"
     pre_release = os.environ.get("INPUT_PRE_RELEASE", "")
+    shared_executable_names = [
+        name.strip()
+        for name in shared_executables_raw.split(",")
+        if name.strip()
+    ]
 
     print(f"Workspace: {workspace_root}")
     print(f"Binary: {binary_name}")
+    print(f"Shared executables: {shared_executable_names or ['(none)']}")
     print(f"Skip semver checks: {skip_semver}")
     print(f"Pre-release label: {pre_release or '(none — release mode)'}")
     print()
@@ -575,6 +592,7 @@ def main() -> None:
     result = compute_all_versions(
         workspace_root,
         binary_name=binary_name,
+        shared_executable_names=shared_executable_names,
         skip_semver_checks=skip_semver,
         pre_release=pre_release,
     )

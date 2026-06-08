@@ -41,6 +41,7 @@ tacon --server-addr <HOST:PORT> [OPTIONS] <COMMAND>
 | `--config <FILE>` | Load direct connection settings from a YANG JSON config file |
 | `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
 | `--use-tls` | Enable TLS 1.3 for the connection |
+| `--tls-server-name <NAME>` | Override the TLS server name used for SNI and certificate verification |
 | `--client-certificate <FILE>` | Path to a PEM- or DER-encoded client certificate for TLS authentication |
 | `--client-key <FILE>` | Path to a PEM- or DER-encoded client private key for TLS authentication |
 | `--psk-identity <IDENTITY>` | TLS 1.3 PSK identity sent during the handshake (requires the `psk` feature) |
@@ -55,6 +56,7 @@ When `--use-tls` is set, `--client-certificate` and `--client-key` let `tacon` p
 
 - Provide both flags together; the certificate flag requires the key flag, and the key flag requires the certificate flag.
 - Both files may be PEM or DER. PEM input is detected at runtime and normalized to DER internally before `tacon` builds its runtime connection settings.
+- Use `--tls-server-name` when you connect to a TLS server by IP address or any socket address that does not match the certificate DNS name. The supplied value is used for both SNI and certificate name verification in direct mode.
 - Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags; provide PEM or DER certificate/key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If you load TLS material through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 

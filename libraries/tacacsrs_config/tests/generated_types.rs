@@ -1,5 +1,6 @@
 use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
 use tacacsrs_config::{parse_yang_json, PskDheKeSupportedGroup, TacacsPlusServerType};
+use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder};
 
 // ---------------------------------------------------------------------------
 // PublicKeyFormat identity enum
@@ -219,6 +220,41 @@ fn server_type_serialize_two_flags() {
 
     let serialized = serde_json::to_string(&root).expect("should serialize");
     assert!(serialized.contains("\"server-type\":\"authentication accounting\""));
+}
+
+#[test]
+fn serialization_omits_absent_optionals_and_empty_lists() {
+    let root = tacacsrs_config::model::YangConfigRoot {
+        tacacs_plus: TacacsPlusBuilder::new()
+            .with_server(
+                TacacsPlusServerBuilder::new(
+                    "tls",
+                    TacacsPlusServerType::ACCOUNTING,
+                    "127.0.0.1",
+                    4449,
+                )
+                .with_tls_server_authentication()
+                .build(),
+            )
+            .build()
+            .expect("builder root should validate"),
+    };
+
+    let serialized = serde_json::to_string(&root).expect("should serialize");
+
+    assert!(!serialized.contains(":null"), "serialized JSON should omit null fields: {serialized}");
+    assert!(
+        !serialized.contains("\"client-credentials\":[]"),
+        "serialized JSON should omit empty client-credentials list: {serialized}"
+    );
+    assert!(
+        !serialized.contains("\"server-credentials\":[]"),
+        "serialized JSON should omit empty server-credentials list: {serialized}"
+    );
+    assert!(
+        serialized.contains("\"server-authentication\":{}"),
+        "serialized JSON should preserve the empty TLS choice container: {serialized}"
+    );
 }
 
 #[test]
