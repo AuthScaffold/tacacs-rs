@@ -1,0 +1,52 @@
+#!/bin/sh
+set -e
+
+CONFIG_FILE=/etc/bash_plugins.conf
+PLUGIN_PATH=/usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so
+START_MARKER="# tacacsrs-bash-plugin managed block start"
+END_MARKER="# tacacsrs-bash-plugin managed block end"
+
+remove_managed_block() {
+    file="$1"
+
+    if [ -f "$file" ]; then
+        sed -i "/^${START_MARKER}$/,/^${END_MARKER}$/d" "$file"
+    fi
+}
+
+ensure_managed_block() {
+    file="$1"
+
+    install -d -m 0755 /etc
+    touch "$file"
+    remove_managed_block "$file"
+
+    if [ -s "$file" ]; then
+        printf '\n' >> "$file"
+    fi
+
+    {
+        printf '%s\n' "$START_MARKER"
+        printf 'plugin=%s\n' "$PLUGIN_PATH"
+        printf '%s\n' "$END_MARKER"
+    } >> "$file"
+}
+
+case "$1" in
+    configure)
+        . /usr/share/debconf/confmodule
+
+        db_get tacacsrs-bash-plugin/enable-bash-plugin || true
+        enable_plugin="$RET"
+
+        if [ "$enable_plugin" = "true" ]; then
+            ensure_managed_block "$CONFIG_FILE"
+        else
+            remove_managed_block "$CONFIG_FILE"
+        fi
+
+        db_stop || true
+        ;;
+esac
+
+exit 0

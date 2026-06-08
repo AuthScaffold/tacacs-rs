@@ -71,6 +71,26 @@ The Linux GNU pre-test helper also exposes this as:
 pwsh -File ./lde/run-pre-tests.ps1 -Matrix LinuxGnu -Task DebianPackages
 ```
 
+## Package reconfiguration
+
+`tacacsrs-agentd` and `tacacsrs-bash-plugin` include `debconf` prompts so the
+package can be installed first and configured later with `dpkg-reconfigure`.
+
+Re-run the package configuration dialogs with:
+
+```bash
+sudo dpkg-reconfigure tacacsrs-agentd
+sudo dpkg-reconfigure tacacsrs-bash-plugin
+```
+
+Current package-managed options:
+
+- `tacacsrs-agentd` can enable or disable the SONiC-oriented
+	`tacacsrs-agentd.service` unit and records the selected package profile in
+	`/etc/tacacsrs-agentd/config.ini` for future runtime integration.
+- `tacacsrs-bash-plugin` can add or remove a package-managed `plugin=` entry in
+	`/etc/bash_plugins.conf` without taking ownership of the rest of that file.
+
 ## Generated packaging assets
 
 The package metadata lives with the owning crate manifests:

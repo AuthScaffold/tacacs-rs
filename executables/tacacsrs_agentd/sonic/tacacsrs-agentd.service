@@ -9,7 +9,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/tacacsrs-agentd \
+ExecStart=/usr/sbin/tacacsrs-agentd \
     --sonic \
     --listen-endpoint /run/tacacs.sock \
     --socket-mode 660 \

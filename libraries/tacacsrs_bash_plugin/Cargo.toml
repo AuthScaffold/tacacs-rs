@@ -26,9 +26,11 @@ extended-description = """\
 tacacsrs-bash-plugin is a SONiC bash execve authorization plugin backed by the \
 local tacacsrs-agentd IPC service. It installs the shared object used by \
 patched bash to authorize commands through the central TACACS+ client daemon."""
-depends = "$auto"
+depends = "$auto, tacacsrs-agentd"
+pre-depends = "debconf (>= 0.5) | debconf-2.0"
 section = "admin"
 priority = "optional"
+maintainer-scripts = "debian/maintainer-scripts"
 assets = [
 	["target/release/libtacacsrs_bash_plugin.so", "usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so", "755"],
 	["README.md", "usr/share/doc/tacacsrs-bash-plugin/README.md", "644"],
