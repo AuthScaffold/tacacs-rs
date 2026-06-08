@@ -70,7 +70,7 @@ exec /usr/local/bin/session-wrapper \
     --user "$USER" \
     --user-uid "$(id -u)" \
     --user-gid "$(id -g)" \
-    --service-endpoint /run/tacacs.sock \
+    --service-endpoint /run/tacacs/tacacs.sock \
     --fail-policy closed \
     --port "${SSH_TTY:-ssh}" \
     --rem-addr "${SSH_CONNECTION%% *}" \
@@ -108,7 +108,7 @@ For platforms where modifying `sshd_config` is impractical, set
        --user "$USER" \
        --user-uid "$(id -u)" \
        --user-gid "$(id -g)" \
-       --service-endpoint /run/tacacs.sock \
+       --service-endpoint /run/tacacs/tacacs.sock \
        --fail-policy closed \
        --port "${SSH_TTY:-login}" \
        --rem-addr "${SSH_CONNECTION%% *}" \
@@ -159,7 +159,7 @@ session-wrapper [OPTIONS] -- COMMAND [ARGS]...
 | `--user <NAME>`                 | *(required)*         | Target username for TACACS+ accounting context |
 | `--user-uid <UID>`              | *(required)*         | UID to drop to before exec |
 | `--user-gid <GID>`              | *(required)*         | Primary GID to drop to before exec |
-| `--service-endpoint <PATH>`     | `/run/tacacs.sock`   | Unix socket (or `host:port`) for `tacacsrs-agentd` IPC |
+| `--service-endpoint <PATH>`     | `/run/tacacs/tacacs.sock`   | Unix socket (or `host:port`) for `tacacsrs-agentd` IPC |
 | `--fail-policy <closed\|open>`  | `closed`             | What to do when IPC is unreachable |
 | `--authorization-timeout-ms <N>`| `5000`               | Per-request authorization timeout (ms) |
 | `--privilege-level <0..=15>`    | `1`                  | Current TACACS+ privilege level |
@@ -182,7 +182,7 @@ unreachable. This is the safe default for managed network devices.
 ```bash
 session-wrapper \
     --user alice --user-uid 1100 --user-gid 100 \
-    --service-endpoint /run/tacacs.sock \
+    --service-endpoint /run/tacacs/tacacs.sock \
     --fail-policy closed \
     --authorization-timeout-ms 3000 \
     -- /bin/bash
@@ -313,7 +313,7 @@ before exec. Look at the message text:
 The supervisor likely failed to start. Possible causes:
 
 - `tacacsrs-agentd` is not running. Confirm the socket exists
-  (`ls -l /run/tacacs.sock`) and the daemon is listening.
+  (`ls -l /run/tacacs/tacacs.sock`) and the daemon is listening.
 - The wrapper does not have permission to connect to the socket. Check the
   socket's mode and the wrapped user's group membership.
 - A `--fail-policy closed` deployment combined with an unreachable agent will

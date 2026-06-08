@@ -31,14 +31,14 @@
 tacacsrs-agentd \
     --server-addr tacacs1.example.com:49 \
     --server-addr tacacs2.example.com:49 \
-    --listen-endpoint /run/tacacs.sock \
+    --listen-endpoint /run/tacacs/tacacs.sock \
     --shared-secret "shared_secret"
 ```
 
 Then from any client on the same host:
 
 ```bash
-tacon --service-endpoint /run/tacacs.sock \
+tacon --service-endpoint /run/tacacs/tacacs.sock \
     --user admin --port tty0 --rem-addr 10.0.0.1 \
     accounting "show version"
 ```
@@ -56,7 +56,7 @@ tacon --service-endpoint /run/tacacs.sock \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--listen-endpoint <ENDPOINT>` | `/run/tacacs.sock` | Unix socket path (Linux) or TCP address (other platforms) |
+| `--listen-endpoint <ENDPOINT>` | `/run/tacacs/tacacs.sock` | Unix socket path (Linux) or TCP address (other platforms) |
 | `--socket-mode <MODE>` | `660` | File permission mode for the Unix socket (octal) |
 
 ### Upstream Encryption
@@ -106,15 +106,15 @@ Servers are tried in the order they are specified. The first server (`--server-a
               startup
                 │
                 ▼
-        ┌───────────────┐
+        ┌────────────────┐
         │ PreferredActive│◄──── probe succeeds
         │   (server 0)   │
         └───────┬────────┘
                 │ connection fails
                 ▼
-        ┌───────────────┐
-        │  FailedOver   │──── try server 1, 2, ...
-        │  (server N)   │
+        ┌────────────────┐
+        │  FailedOver    │──── try server 1, 2, ...
+        │  (server N)    │
         └───────┬────────┘
                 │ all servers fail
                 ▼
@@ -142,11 +142,10 @@ The daemon communicates with clients via gRPC over Unix domain sockets (Linux) o
 
 **Available RPCs:**
 
-| RPC | Description |
-|-----|-------------|
-| `Accounting` | Record user activity (unary) |
-| `Authentication` | Verify credentials *(not yet implemented)* |
-| `Authorization` | Check command authorization *(not yet implemented)* |
+| RPC             | Description                          |
+|-----------------|--------------------------------------|
+| `Accounting`    | Record user activity (unary)         |
+| `Authorization` | Check command authorization (unary)  |
 
 **Error responses** include a `retriable` flag. When `true`, the client should retry the request — this typically means the daemon is reconnecting to a different upstream server.
 
@@ -165,7 +164,7 @@ Type=simple
 ExecStart=/usr/local/bin/tacacsrs-agentd \
     --server-addr tacacs1.example.com:49 \
     --server-addr tacacs2.example.com:49 \
-    --listen-endpoint /run/tacacs.sock \
+    --listen-endpoint /run/tacacs/tacacs.sock \
     --socket-mode 660 \
     --shared-secret "shared_secret" \
     --preferred-probe-interval-seconds 30
@@ -185,7 +184,7 @@ tacacsrs-agentd \
     --use-tls \
     --client-certificate /etc/tacacs/client.crt.pem \
     --client-key /etc/tacacs/client.key.pem \
-    --listen-endpoint /run/tacacs.sock
+    --listen-endpoint /run/tacacs/tacacs.sock
 ```
 
 DER input is also supported for the same flags:
@@ -197,7 +196,7 @@ tacacsrs-agentd \
     --use-tls \
     --client-certificate /etc/tacacs/client.crt.der \
     --client-key /etc/tacacs/client.key.der \
-    --listen-endpoint /run/tacacs.sock
+    --listen-endpoint /run/tacacs/tacacs.sock
 ```
 
 ### Multiple Servers with Fast Failover
@@ -210,7 +209,7 @@ tacacsrs-agentd \
     --connect-timeout-seconds 3 \
     --preferred-probe-interval-seconds 15 \
     --shared-secret "shared_secret" \
-    --listen-endpoint /run/tacacs.sock \
+    --listen-endpoint /run/tacacs/tacacs.sock \
     -vv
 ```
 
@@ -219,7 +218,7 @@ tacacsrs-agentd \
 ```bash
 tacacsrs-agentd \
     --config /etc/tacacs/tacacs.json \
-    --listen-endpoint /run/tacacs.sock
+    --listen-endpoint /run/tacacs/tacacs.sock
 ```
 
 When `--config` is used, upstream server definitions are loaded from the `ietf-system-tacacs-plus` RFC 7951 JSON document instead of repeated `--server-addr` flags.

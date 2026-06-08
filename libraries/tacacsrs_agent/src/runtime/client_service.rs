@@ -6,7 +6,7 @@
 //!
 //! # Startup sequence
 //!
-//! 1. [`TacacsClientService::new`] validates configuration (≥1 server, etc.).
+//! 1. [`TacacsClientService::new`] resolves the current upstream server set.
 //! 2. [`TacacsClientService::serve`] warms upstream connections, optionally
 //!    spawns the preferred-server probe, and binds the IPC listener.
 //! 3. The gRPC server accepts clients until a shutdown signal is received.
@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use tacacsrs_config::TacacsPlus;
 
-use super::enumerate_accounting_servers;
+use super::enumerate_supported_servers;
 use crate::config::ServiceConfig;
 use crate::ipc::listener;
 use crate::routing::RoutingState;
@@ -67,10 +67,9 @@ impl TacacsClientService {
     ///
     /// # Errors
     ///
-    /// Returns an error if no upstream TACACS+ servers are configured or if
-    /// credential-reference resolution fails.
+    /// Returns an error if credential-reference resolution fails.
     pub fn new(config: ServiceConfig) -> anyhow::Result<Self> {
-        let servers = enumerate_accounting_servers(&config)?;
+        let servers = enumerate_supported_servers(&config)?;
 
         let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector {
             disable_certificate_verification: config.disable_certificate_verification,
@@ -86,7 +85,7 @@ impl TacacsClientService {
         config: ServiceConfig,
         connector: Arc<dyn UpstreamConnector>,
     ) -> anyhow::Result<Self> {
-        let servers = enumerate_accounting_servers(&config)?;
+        let servers = enumerate_supported_servers(&config)?;
 
         let state =
             Arc::new(RoutingState::new(servers, connector, config.preferred_probe_interval));
@@ -98,13 +97,12 @@ impl TacacsClientService {
     ///
     /// # Errors
     ///
-    /// Returns an error if the snapshot does not contain at least one
-    /// accounting-capable upstream server or credential-reference resolution
-    /// fails. The existing runtime state is left unchanged on error.
+    /// Returns an error if credential-reference resolution fails. The existing
+    /// runtime state is left unchanged on error.
     pub async fn reload_tacacs_plus(&self, tacacs_plus: TacacsPlus) -> anyhow::Result<()> {
         let mut reload_config = self.config.clone();
         reload_config.tacacs_plus = tacacs_plus;
-        let servers = enumerate_accounting_servers(&reload_config)?;
+        let servers = enumerate_supported_servers(&reload_config)?;
         self.state.reload_servers(servers).await
     }
 
@@ -119,7 +117,9 @@ impl TacacsClientService {
     /// Startup first performs a best-effort warm-up of the first responsive
     /// upstream server and, when multiple servers are configured, launches the
     /// background probe that returns new sessions to the preferred server after
-    /// recovery.
+    /// recovery. If no upstream servers support the full current TACACS+
+    /// operation set yet, the IPC listener still starts so later datastore
+    /// reloads can make the service ready without a process restart.
     ///
     /// # Errors
     ///
@@ -191,6 +191,8 @@ mod tests {
     #[cfg(unix)]
     use super::TacacsClientService;
     #[cfg(unix)]
+    use crate::runtime::REQUIRED_SERVER_TYPES;
+    #[cfg(unix)]
     use crate::config::ServiceConfig;
     #[cfg(unix)]
     use crate::ipc::GrpcService;
@@ -207,7 +209,7 @@ mod tests {
         };
         tacacsrs_config::TacacsPlusServer {
             name: address.to_owned(),
-            server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
+            server_type: REQUIRED_SERVER_TYPES,
             address: host,
             port,
             shared_secret: Some("test-secret".to_owned()),
@@ -247,12 +249,13 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn service_uses_only_accounting_capable_servers() {
-        let endpoint = test_endpoint("tacacs-service-accounting-filter");
-        let mut auth_only = test_server("auth-only:49");
-        auth_only.server_type = tacacsrs_config::TacacsPlusServerType::AUTHENTICATION;
-        let accounting = test_server("accounting:49");
-        let config = service_config(endpoint, vec![auth_only, accounting]);
+    fn service_uses_only_servers_supporting_runtime_operations() {
+        let endpoint = test_endpoint("tacacs-service-runtime-filter");
+        let mut partial = test_server("partial:49");
+        partial.server_type = tacacsrs_config::TacacsPlusServerType::AUTHORIZATION
+            | tacacsrs_config::TacacsPlusServerType::ACCOUNTING;
+        let full = test_server("full:49");
+        let config = service_config(endpoint, vec![partial, full]);
 
         let connector = Arc::new(FakeConnector::new(HashMap::new()));
         let service = TacacsClientService::new_with_connector(config, connector).unwrap();
@@ -262,20 +265,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn service_rejects_config_without_accounting_server() {
-        let endpoint = test_endpoint("tacacs-service-no-accounting");
-        let mut auth_only = test_server("auth-only:49");
-        auth_only.server_type = tacacsrs_config::TacacsPlusServerType::AUTHENTICATION;
-        let config = service_config(endpoint, vec![auth_only]);
+    fn service_accepts_config_without_fully_capable_server() {
+        let endpoint = test_endpoint("tacacs-service-no-full-server");
+        let mut partial = test_server("partial:49");
+        partial.server_type = tacacsrs_config::TacacsPlusServerType::AUTHORIZATION
+            | tacacsrs_config::TacacsPlusServerType::ACCOUNTING;
+        let config = service_config(endpoint, vec![partial]);
 
         let connector = Arc::new(FakeConnector::new(HashMap::new()));
-        let Err(error) = TacacsClientService::new_with_connector(config, connector) else {
-            panic!("accounting-capable server should be required");
-        };
+        let service = TacacsClientService::new_with_connector(config, connector)
+            .expect("service should accept waiting-for-config state");
 
-        assert!(error
-            .to_string()
-            .contains("At least one accounting-capable TACACS+ server"));
+        assert_eq!(service.state.server_count(), 0);
     }
 
     #[cfg(unix)]

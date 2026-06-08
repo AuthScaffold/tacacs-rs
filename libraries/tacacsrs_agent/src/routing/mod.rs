@@ -28,6 +28,7 @@ use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use self::client_tracker::{ClientGuard, ClientTracker};
 use self::server_set::{BoundServer, ServerSet, servers_equivalent};
 use self::server_slot::ServerSlot;
+use crate::runtime::REQUIRED_SERVER_TYPES;
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
 
 mod client_tracker;
@@ -44,6 +45,12 @@ mod server_slot;
 /// list, starting from `active_index`. On failure the index advances; a
 /// background probe can reset it back to `0` (the preferred server) once
 /// recovery is detected.
+///
+/// Every server admitted into this runtime state is expected to support the
+/// full TACACS+ operation set currently exposed by the agent. That lets the
+/// router use one ordered failover list for accounting and authorization
+/// today; if per-operation routing is introduced later, this type is the seam
+/// where separate catalogs should be added.
 pub(crate) struct RoutingState {
     /// Current immutable server-set snapshot used by new IPC requests.
     server_set: StdRwLock<Arc<ServerSet>>,
@@ -58,14 +65,20 @@ pub(crate) struct RoutingState {
 impl RoutingState {
     /// Creates shared failover state for the service runtime.
     ///
-    /// The caller is expected to validate that at least one upstream server is
-    /// configured before constructing this state. The higher-level service
-    /// constructor enforces that invariant for production use.
+    /// The runtime may start with zero configured accounting-capable upstream
+    /// servers while it waits for external configuration. In that state, IPC
+    /// requests fail fast with a retriable waiting-for-config error.
     pub(crate) fn new(
         servers: Vec<TacacsPlusServer>,
         connector: Arc<dyn UpstreamConnector>,
         preferred_probe_interval: std::time::Duration,
     ) -> Self {
+        debug_assert!(
+            servers
+                .iter()
+                .all(|server| server.supports_server_type(REQUIRED_SERVER_TYPES)),
+            "RoutingState expects servers to support the full current TACACS+ operation set"
+        );
         let servers = servers
             .into_iter()
             .map(ServerSlot::new)
@@ -101,6 +114,12 @@ impl RoutingState {
     /// first IPC requests will retry failover on demand.
     pub(crate) async fn warm_connections(&self) {
         let server_set = self.current_server_set();
+        if server_set.server_count() == 0 {
+            log::warn!(
+                "No TACACS+ servers are configured yet that support authentication, authorization, and accounting; waiting for runtime configuration"
+            );
+            return;
+        }
         let start_index = *server_set.active_index.read().await;
 
         for offset in 0..server_set.server_count() {
@@ -145,14 +164,12 @@ impl RoutingState {
         &self,
         servers: Vec<TacacsPlusServer>,
     ) -> anyhow::Result<()> {
-        if servers.is_empty() {
-            bail!("At least one accounting-capable TACACS+ server must be configured");
-        }
-
         let previous = self.current_server_set();
-        let previous_active_name = {
+        let previous_active_name = if previous.server_count() == 0 {
+            None
+        } else {
             let active_index = *previous.active_index.read().await;
-            previous.servers[active_index].server.name.clone()
+            Some(previous.servers[active_index].server.name.clone())
         };
 
         let mut new_server_slots = Vec::with_capacity(servers.len());
@@ -167,9 +184,13 @@ impl RoutingState {
             new_server_slots.push(reusable.unwrap_or_else(|| Arc::new(ServerSlot::new(server))));
         }
 
-        let new_active_index = new_server_slots
-            .iter()
-            .position(|state| state.server.name == previous_active_name)
+        let new_active_index = previous_active_name
+            .as_deref()
+            .and_then(|active_name| {
+                new_server_slots
+                    .iter()
+                    .position(|state| state.server.name == active_name)
+            })
             .unwrap_or(0);
         let new_set = Arc::new(ServerSet::new(new_server_slots, new_active_index));
 
@@ -181,12 +202,18 @@ impl RoutingState {
             *current = Arc::clone(&new_set);
         }
 
-        log::info!(
-            "Reloaded TACACS+ upstream server set: {} server(s), active index {} ({})",
-            new_set.server_count(),
-            new_active_index,
-            new_set.servers[new_active_index].server.socket_address(),
-        );
+        if new_set.server_count() == 0 {
+            log::warn!(
+                "Reloaded TACACS+ upstream server set: 0 servers support authentication, authorization, and accounting; waiting for runtime configuration"
+            );
+        } else {
+            log::info!(
+                "Reloaded TACACS+ upstream server set: {} server(s), active index {} ({})",
+                new_set.server_count(),
+                new_active_index,
+                new_set.servers[new_active_index].server.socket_address(),
+            );
+        }
 
         for stale in previous
             .servers
@@ -266,12 +293,20 @@ impl RoutingState {
     /// cached connection created by that one reconnect attempt, or skip that
     /// server for this IPC request if the reconnect attempt already failed.
     ///
-    /// The service constructor rejects an empty server list up front, so the
-    /// final "no responsive servers" error indicates that all configured
-    /// servers are currently unavailable rather than that startup accepted an
-    /// invalid configuration.
+    /// Because the runtime only admits servers that support every TACACS+
+    /// operation the agent exposes today, this shared selection path is valid
+    /// for both accounting and authorization requests.
+    ///
+    /// When no such servers are configured yet, the method fails immediately
+    /// with a retriable waiting-for-config error instead of trying to route the
+    /// request.
     pub(crate) async fn bind_server_for_new_session(&self) -> anyhow::Result<BoundServer> {
         let server_set = self.current_server_set();
+        if server_set.server_count() == 0 {
+            bail!(
+                "No TACACS+ servers are configured yet that support authentication, authorization, and accounting; waiting for initial configuration"
+            );
+        }
         let start_index = *server_set.active_index.read().await;
 
         for offset in 0..server_set.server_count() {
@@ -455,6 +490,7 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::RoutingState;
+    use crate::runtime::REQUIRED_SERVER_TYPES;
     use crate::test_support::{
         BlockingConnection, BlockingConnector, FakeConnection, FakeConnector,
         build_authorization_request, build_request,
@@ -468,7 +504,7 @@ mod tests {
         };
         tacacsrs_config::TacacsPlusServer {
             name: address.to_owned(),
-            server_type: tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
+            server_type: REQUIRED_SERVER_TYPES,
             address: host,
             port,
             shared_secret: None,
@@ -877,5 +913,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.server, "secondary:49");
+    }
+
+    #[tokio::test]
+    async fn test_request_without_configured_servers_returns_waiting_error() {
+        let state = RoutingState::new(
+            Vec::new(),
+            Arc::new(FakeConnector::new(HashMap::new())) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(200),
+        );
+
+        let error = state
+            .execute_authorization_request(build_authorization_request())
+            .await
+            .unwrap_err();
+
+        assert!(error.retriable);
+        assert!(error.message.contains("waiting for initial configuration"));
     }
 }

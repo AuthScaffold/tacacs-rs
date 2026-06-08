@@ -36,7 +36,7 @@ pub struct Cli {
     pub user_gid: libc::gid_t,
 
     /// IPC endpoint for the central TACACS+ client service.
-    #[arg(long, default_value = "/run/tacacs.sock", value_name = "PATH_OR_ADDR")]
+    #[arg(long, default_value = "/run/tacacs/tacacs.sock", value_name = "PATH_OR_ADDR")]
     pub service_endpoint: String,
 
     /// Policy to apply when TACACS+ authorization cannot be completed.
@@ -108,7 +108,7 @@ mod tests {
         assert_eq!(cli.user, "alice");
         assert_eq!(cli.user_uid, 1000);
         assert_eq!(cli.user_gid, 1000);
-        assert_eq!(cli.service_endpoint, "/run/tacacs.sock");
+        assert_eq!(cli.service_endpoint, "/run/tacacs/tacacs.sock");
         assert_eq!(cli.fail_policy, FailPolicy::Closed);
         assert_eq!(cli.authorization_timeout_ms, 5_000);
         assert_eq!(cli.privilege_level, 1);

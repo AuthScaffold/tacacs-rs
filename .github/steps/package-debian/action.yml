@@ -5,9 +5,16 @@ inputs:
   target:
     description: 'Rust target triple that was built'
     required: true
-  binary-name:
-    description: 'Binary/package name'
+  package-name:
+    description: 'Cargo/debian package name'
     required: true
+  package-root:
+    description: 'Path to the package root containing Cargo.toml and debian assets'
+    required: true
+  man-page-name:
+    description: 'Optional man page basename without extension'
+    required: true
+    default: ''
   versions:
     description: 'JSON map of package versions to inject'
     required: false
@@ -20,7 +27,9 @@ runs:
       uses: ./.github/steps/prepare-debian-package-assets
       with:
         target: ${{ inputs.target }}
-        binary-name: ${{ inputs.binary-name }}
+        package-name: ${{ inputs.package-name }}
+        package-root: ${{ inputs.package-root }}
+        man-page-name: ${{ inputs.man-page-name }}
         versions: ${{ inputs.versions }}
 
     - name: Install cargo-deb
@@ -29,14 +38,14 @@ runs:
     - name: Build Debian package
       uses: ./.github/steps/build-debian-package
       with:
-        binary-name: ${{ inputs.binary-name }}
+        package-name: ${{ inputs.package-name }}
 
     - name: Verify Debian package
       uses: ./.github/steps/verify-debian-package
       with:
-        binary-name: ${{ inputs.binary-name }}
+        package-name: ${{ inputs.package-name }}
 
     - name: Collect Debian packages
       uses: ./.github/steps/collect-debian-packages
       with:
-        binary-name: ${{ inputs.binary-name }}
+        package-name: ${{ inputs.package-name }}

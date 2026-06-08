@@ -20,20 +20,19 @@ use tacacsrs_config::TacacsPlus;
 /// Configuration for the long-lived TACACS+ client service process.
 ///
 /// The service consumes this once at startup. Validation that requires cross-
-/// field context, such as ensuring at least one TACACS+ server is configured,
-/// happens in [`TacacsClientService::new`](crate::TacacsClientService::new).
+/// field context, such as credential-reference resolution, happens in
+/// [`TacacsClientService::new`](crate::TacacsClientService::new).
 ///
 /// # Required fields
 ///
-/// - **`tacacs_plus`** — the YANG-modelled root configuration. After
-///   credential-reference resolution, at least one upstream TACACS+ server
-///   must be present. The order of `tacacs_plus.server` determines failover
-///   priority (index 0 is preferred).
+/// - **`tacacs_plus`** — the YANG-modelled root configuration. The order of
+///   `tacacs_plus.server` determines failover priority (index 0 is preferred)
+///   when one or more accounting-capable servers are configured.
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
     /// Local IPC endpoint exposed to local consumers.
     ///
-    /// Unix builds accept filesystem paths such as `/run/tacacs.sock`. All
+    /// Unix builds accept filesystem paths such as `/run/tacacs/tacacs.sock`. All
     /// platforms accept a TCP socket address such as `127.0.0.1:9049` for
     /// developer workflows. Empty strings are rejected instead of defaulting.
     pub endpoint: IpcEndpoint,

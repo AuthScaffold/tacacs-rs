@@ -191,7 +191,7 @@ finish, and then removes the Unix socket path.
 `ServiceConfig::endpoint` is explicit rather than permissive:
 
 - On Unix, values containing `/` are treated as Unix socket paths, for example
-  `/run/tacacs.sock`.
+  `/run/tacacs/tacacs.sock`.
 - On all platforms, values that parse as `SocketAddr` are treated as TCP
   endpoints, for example `127.0.0.1:9049`.
 - An empty string is rejected as invalid configuration; it does **not** fall

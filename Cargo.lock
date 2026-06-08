@@ -1982,6 +1982,7 @@ version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "clap",
+ "clap_mangen",
  "console-subscriber",
  "env_logger",
  "futures-util",

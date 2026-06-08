@@ -5,9 +5,6 @@ inputs:
   target:
     description: 'Rust target triple that was built'
     required: true
-  binary-name:
-    description: 'Binary/package name'
-    required: true
 
 runs:
   using: composite
@@ -24,8 +21,8 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        $pdbFileTarget = "target/${{ inputs.target }}/${env:PROFILE}/${{ inputs.binary-name }}.pdb"
-        $pdbDestination = Join-Path $env:PACKAGE_DIR "${{ inputs.binary-name }}.pdb"
+        $pdbFileTarget = "target/${{ inputs.target }}/${env:PROFILE}/${env:ARTIFACT_BASENAME}.pdb"
+        $pdbDestination = Join-Path $env:PACKAGE_DIR "${env:ARTIFACT_BASENAME}.pdb"
 
         if (Test-Path $pdbFileTarget) {
           Copy-Item $pdbFileTarget $pdbDestination

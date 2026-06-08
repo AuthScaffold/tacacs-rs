@@ -365,7 +365,7 @@ mod tests {
         let result = Cli::try_parse_from([
             "tacon",
             "--service-endpoint",
-            "/run/tacacs.sock",
+            "/run/tacacs/tacacs.sock",
             "accounting",
             "--user",
             "testuser",
@@ -440,7 +440,7 @@ mod tests {
             "--server-addr",
             "localhost:49",
             "--service-endpoint",
-            "/run/tacacs.sock",
+            "/run/tacacs/tacacs.sock",
             "batch",
             "batch.txt",
         ]);
@@ -530,7 +530,7 @@ mod tests {
         let result = Cli::try_parse_from([
             "tacon",
             "--service-endpoint",
-            "/run/tacacs.sock",
+            "/run/tacacs/tacacs.sock",
             "--validation-relaxation",
             "allow-tls-with-shared-secret",
             "batch",

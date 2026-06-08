@@ -11,5 +11,5 @@ mod shutdown;
 
 pub use client_service::TacacsClientService;
 
-pub(crate) use server_catalog::enumerate_accounting_servers;
+pub(crate) use server_catalog::{REQUIRED_SERVER_TYPES, enumerate_supported_servers};
 pub(crate) use shutdown::shutdown_signal;

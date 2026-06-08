@@ -6,18 +6,22 @@
     Mirrors .github/workflows/reusable-pipeline.yml job `pre-tests` for the
     selected matrix entry. The script installs Rust toolchains, components, and
     targets through rustup, checks formatting, runs cargo-udeps, clippy, clippy
-    nursery advisory lints, documentation, and the Linux GNU metadata checks.
+    nursery advisory lints, documentation, Linux GNU metadata checks, and the
+    Linux Debian package validation helper.
 
     By default the script runs the matrix entry for the current OS. On Windows
     this is the Windows MSVC entry. Run the Linux entries from Linux or WSL with
     PowerShell installed.
 
 .PARAMETER Matrix
-    Matrix entry to run: Local, WindowsMsvc, LinuxGnu, LinuxMusl, or All.
+    Matrix entry to run: Local, WindowsMsvc, LinuxGnu, or All.
 
 .PARAMETER Task
     Pre-test task or tasks to run. Defaults to All. Explicit task selection
     overrides the Include* toggles for that task.
+
+    Debian package validation is available as the `DebianPackages` task and only
+    runs in the Linux GNU matrix entry.
 
 .PARAMETER FixFormatting
     Run cargo +nightly fmt --all before the CI formatting check.
@@ -72,13 +76,16 @@
 
 .EXAMPLE
     .\lde\run-pre-tests.ps1 -Task Udeps,Docs
+
+.EXAMPLE
+    .\lde\run-pre-tests.ps1 -Matrix LinuxGnu -Task DebianPackages
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Local', 'WindowsMsvc', 'LinuxGnu', 'LinuxMusl', 'All')]
+    [ValidateSet('Local', 'WindowsMsvc', 'LinuxGnu', 'All')]
     [string]$Matrix = 'Local',
 
-    [ValidateSet('All', 'FixFormatting', 'CheckFormatting', 'Udeps', 'Clippy', 'ClippyNursery', 'Docs', 'Audit', 'Outdated', 'ProtoCompat', 'Metadata')]
+    [ValidateSet('All', 'FixFormatting', 'CheckFormatting', 'Udeps', 'Clippy', 'ClippyNursery', 'Docs', 'Audit', 'Outdated', 'ProtoCompat', 'Metadata', 'DebianPackages')]
     [string[]]$Task = @('All'),
 
     [switch]$FixFormatting,
@@ -254,11 +261,33 @@ function Invoke-ClippyFix {
         '--target',
         $Config.Target
     ) + $Config.FeatureArgs
+    if (Test-GitWorktreeCheckout) {
+        $clippyFixCommand += '--allow-no-vcs'
+    }
     if ($LintArgs.Count -gt 0) {
         $clippyFixCommand += @('--') + $LintArgs
     }
 
     Invoke-CheckedCommand -FilePath 'cargo' -Arguments $clippyFixCommand
+}
+
+function Test-GitWorktreeCheckout {
+    & git rev-parse --is-inside-work-tree *> $null
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+
+    $gitDir = (& git rev-parse --git-dir)
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+
+    $commonDir = (& git rev-parse --git-common-dir)
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+
+    return $gitDir.Trim() -ne $commonDir.Trim()
 }
 
 function Assert-CommandExists {
@@ -284,21 +313,9 @@ function Get-MatrixConfigs {
             HostKind = 'Linux'
             Target = 'x86_64-unknown-linux-gnu'
             FeatureArgs = @('--all-features')
-            InstallMuslTools = $false
             InstallLibseccompDev = $true
             InstallOpenSsl = $true
             MetadataChecks = $true
-        },
-        [PSCustomObject]@{
-            Name = 'Linux MUSL'
-            Id = 'LinuxMusl'
-            HostKind = 'Linux'
-            Target = 'x86_64-unknown-linux-musl'
-            FeatureArgs = @()
-            InstallMuslTools = $true
-            InstallLibseccompDev = $true
-            InstallOpenSsl = $true
-            MetadataChecks = $false
         },
         [PSCustomObject]@{
             Name = 'Windows MSVC'
@@ -306,7 +323,6 @@ function Get-MatrixConfigs {
             HostKind = 'Windows'
             Target = 'x86_64-pc-windows-msvc'
             FeatureArgs = @('--all-features')
-            InstallMuslTools = $false
             InstallLibseccompDev = $false
             InstallOpenSsl = $true
             MetadataChecks = $false
@@ -408,9 +424,6 @@ function Assert-LinuxPackages {
     }
 
     $packages = @()
-    if ($Config.InstallMuslTools) {
-        $packages += @('gcc', 'gperf', 'linux-libc-dev', 'make', 'musl-tools')
-    }
     if ($Config.InstallLibseccompDev) {
         $packages += 'libseccomp-dev'
     }
@@ -534,6 +547,10 @@ function Invoke-PreTestsForConfig {
         throw "Metadata tasks only run in the Linux GNU pre-tests matrix entry. Run with -Matrix LinuxGnu under Linux/WSL."
     }
 
+    if ((Test-ExplicitTaskSelection) -and (Test-TaskSelected -Name 'DebianPackages') -and -not $Config.MetadataChecks) {
+        throw "Debian package validation only runs in the Linux GNU pre-tests matrix entry. Run with -Matrix LinuxGnu under Linux/WSL."
+    }
+
     Write-Host "`n=== Pre-Tests ($($Config.Name)) ===" -ForegroundColor Cyan
 
     if ($HostKind -eq 'Linux') {
@@ -637,6 +654,17 @@ function Invoke-PreTestsForConfig {
             Assert-CommandExists -Name 'buf' -InstallHint 'Install buf from https://buf.build/docs/installation before running protobuf compatibility checks.'
             Confirm-ProtoCompatRef -RefName $ProtoCompatRef
             Invoke-CheckedCommand -FilePath 'buf' -Arguments @('breaking', '--against', ".git#branch=$ProtoCompatRef") -Advisory
+        }
+
+        if (Test-TaskSelected -Name 'DebianPackages') {
+            Write-Host "`n--- Debian package validation ---" -ForegroundColor Yellow
+            Invoke-CheckedCommand -FilePath 'pwsh' -Arguments @(
+                '-File',
+                (Join-Path 'lde' 'run-debian-packages.ps1'),
+                '-InstallMissingCargoTools',
+                $InstallMissingCargoTools,
+                '-SkipSystemDependencyChecks:' + $SkipSystemDependencyChecks.IsPresent
+            )
         }
     }
 }

@@ -18,5 +18,25 @@ tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[package.metadata.deb]
+maintainer = "AuthScaffold <support@authscaffold.com>"
+copyright = "2024, AuthScaffold <support@authscaffold.com>"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+tacacsrs-bash-plugin is a SONiC bash execve authorization plugin backed by the \
+local tacacsrs-agentd IPC service. It installs the shared object used by \
+patched bash to authorize commands through the central TACACS+ client daemon."""
+depends = "$auto, tacacsrs-agentd"
+pre-depends = "debconf (>= 0.5) | debconf-2.0"
+section = "admin"
+priority = "optional"
+maintainer-scripts = "debian/maintainer-scripts"
+assets = [
+	["target/release/libtacacsrs_bash_plugin.so", "usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so", "755"],
+	["README.md", "usr/share/doc/tacacsrs-bash-plugin/README.md", "644"],
+	["../../LICENSE", "usr/share/doc/tacacsrs-bash-plugin/", "644"],
+	["debian/changelog.gz", "usr/share/doc/tacacsrs-bash-plugin/changelog.Debian.gz", "644"],
+]
+
 [lints.rust]
 unsafe_code = "allow"

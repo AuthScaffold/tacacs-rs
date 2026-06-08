@@ -77,7 +77,7 @@ tacon -s tacacs-server:49 --shared-secret shared_secret \
     accounting "show running-config"
 
 # Send via the central agent service
-tacon --service-endpoint /run/tacacs.sock \
+tacon --service-endpoint /run/tacacs/tacacs.sock \
     --user admin --port tty0 --rem-addr 10.0.0.1 \
     accounting "show running-config"
 

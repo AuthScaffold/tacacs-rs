@@ -160,7 +160,7 @@ cargo test -p tacacsrs-messages
 
 ### Session Wrapper Smoke Tests
 
-The Linux `session-wrapper` has additional smoke and integration checks for seccomp notification handling, child lifecycle, descendant process coverage, and musl builds. See [Session Wrapper Testing](docs/session-wrapper-testing.md).
+The Linux `session-wrapper` has additional smoke and integration checks for seccomp notification handling, child lifecycle, and descendant process coverage. See [Session Wrapper Testing](docs/session-wrapper-testing.md).
 
 ### Code Coverage
 
@@ -279,7 +279,7 @@ After merging to `main`, additional checks run:
 
 The CI workflow also generates the same artifacts as the release workflow:
 
-- **Release Binaries**: Built for all supported platforms (Linux GNU, Linux MUSL, Windows MSVC)
+- **Release Binaries**: Built for all supported platforms (Linux GNU and Windows MSVC) plus GNU Debian packages for `tacon`, `tacacsrs-agentd`, and `tacacsrs-bash-plugin`
 - **SBOM Files**: Software Bill of Materials in CycloneDX format (JSON and XML)
 - **Checksums**: SHA256 checksums for all generated artifacts
 
@@ -296,7 +296,6 @@ skips release version injection, tag creation, and GitHub release publication.
 Triggered automatically when a version tag (`v*.*.*`) is pushed. Builds release binaries for:
 
 - `x86_64-unknown-linux-gnu`
-- `x86_64-unknown-linux-musl`
 - `x86_64-pc-windows-msvc`
 
 Additionally, the release workflow generates:
