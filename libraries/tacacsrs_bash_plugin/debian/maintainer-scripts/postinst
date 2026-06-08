@@ -7,29 +7,35 @@ START_MARKER="# tacacsrs-bash-plugin managed block start"
 END_MARKER="# tacacsrs-bash-plugin managed block end"
 
 remove_managed_block() {
-    file="$1"
+    managed_file="$1"
 
-    if [ -f "$file" ]; then
-        sed -i "/^${START_MARKER}$/,/^${END_MARKER}$/d" "$file"
+    if [ -f "$managed_file" ]; then
+        sed -i "/^${START_MARKER}$/,/^${END_MARKER}$/d" "$managed_file"
     fi
 }
 
 ensure_managed_block() {
-    file="$1"
+    target_file="$1"
+    existing_file="$(mktemp)"
+    temp_file="$(mktemp)"
 
     install -d -m 0755 /etc
-    touch "$file"
-    remove_managed_block "$file"
-
-    if [ -s "$file" ]; then
-        printf '\n' >> "$file"
-    fi
+    touch "$target_file"
+    cp "$target_file" "$existing_file"
+    remove_managed_block "$existing_file"
 
     {
         printf '%s\n' "$START_MARKER"
         printf 'plugin=%s\n' "$PLUGIN_PATH"
         printf '%s\n' "$END_MARKER"
-    } >> "$file"
+
+        if [ -s "$existing_file" ]; then
+            cat "$existing_file"
+        fi
+    } > "$temp_file"
+
+    cat "$temp_file" > "$target_file"
+    rm -f "$existing_file" "$temp_file"
 }
 
 case "$1" in

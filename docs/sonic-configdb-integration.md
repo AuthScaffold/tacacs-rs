@@ -137,7 +137,7 @@ config feature state tacacsrs-agentd enabled
 ```bash
 sudo /usr/local/bin/tacacsrs-agentd \
     --sonic \
-    --listen-endpoint /run/tacacs.sock \
+    --listen-endpoint /run/tacacs/tacacs.sock \
     -vv
 ```
 

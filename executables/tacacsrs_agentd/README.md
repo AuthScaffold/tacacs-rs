@@ -35,7 +35,7 @@ tacacsrs-agentd \
     --use-tls \
     --client-certificate /etc/tacacs/client.crt.pem \
     --client-key /etc/tacacs/client.key.pem \
-    --listen-endpoint /run/tacacs.sock
+    --listen-endpoint /run/tacacs/tacacs.sock
 ```
 
 DER files are also supported:
@@ -47,7 +47,7 @@ tacacsrs-agentd \
     --use-tls \
     --client-certificate /etc/tacacs/client.crt.der \
     --client-key /etc/tacacs/client.key.der \
-    --listen-endpoint /run/tacacs.sock
+    --listen-endpoint /run/tacacs/tacacs.sock
 ```
 
 TLS PSK-DHE uses the default group order unless groups are constrained:
@@ -60,7 +60,7 @@ tacacsrs-agentd \
     --psk-identity client@example.com \
     --psk-key "$TACACS_TLS_PSK" \
     --psk-key-exchange-groups secp384r1,secp256r1 \
-    --listen-endpoint /run/tacacs.sock
+    --listen-endpoint /run/tacacs/tacacs.sock
 ```
 
 For PSK-only interoperability mode:
@@ -72,5 +72,5 @@ tacacsrs-agentd \
     --psk-identity client@example.com \
     --psk-key "$TACACS_TLS_PSK" \
     --psk-key-exchange psk-only \
-    --listen-endpoint /run/tacacs.sock
+    --listen-endpoint /run/tacacs/tacacs.sock
 ```

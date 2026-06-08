@@ -9,7 +9,7 @@
 //!
 //! | Input | Platform | Result |
 //! |-------|----------|--------|
-//! | `/run/tacacs.sock` | Unix | `IpcEndpoint::Unix(PathBuf)` |
+//! | `/run/tacacs/tacacs.sock` | Unix | `IpcEndpoint::Unix(PathBuf)` |
 //! | `127.0.0.1:9049` | All | `IpcEndpoint::Tcp(SocketAddr)` |
 //! | *(empty string)* | All | Error |
 
@@ -63,7 +63,7 @@ impl IpcEndpoint {
     ///
     /// | Platform | Default |
     /// |----------|---------|
-    /// | Unix | `/run/tacacs.sock` |
+    /// | Unix | `/run/tacacs/tacacs.sock` |
     /// | Non-Unix | `127.0.0.1:9049` |
     ///
     /// This is not used implicitly by [`FromStr`]. Passing an empty string is
@@ -72,7 +72,7 @@ impl IpcEndpoint {
     pub fn default_local() -> Self {
         #[cfg(unix)]
         {
-            Self::Unix(PathBuf::from("/run/tacacs.sock"))
+            Self::Unix(PathBuf::from("/run/tacacs/tacacs.sock"))
         }
 
         #[cfg(not(unix))]
@@ -133,7 +133,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_unix_endpoint_string_parses() {
-        let endpoint = "/run/tacacs.sock"
+        let endpoint = "/run/tacacs/tacacs.sock"
             .parse::<IpcEndpoint>()
             .expect("unix endpoint should parse");
         assert!(matches!(endpoint, IpcEndpoint::Unix(_)));

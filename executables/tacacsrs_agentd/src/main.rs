@@ -18,10 +18,12 @@ use tacacsrs_datastore::{ConfigChange, ConfigDatastore, StaticDatastore};
 use tacacsrs_sonic::{SonicConfigDb, SonicConnection, DEFAULT_REDIS_URL};
 
 mod cli;
+mod systemd_notify;
 
 use crate::cli::Cli;
 #[cfg(feature = "psk")]
 use crate::cli::PskKeyExchange;
+use crate::systemd_notify::SystemdNotifier;
 
 #[cfg(unix)]
 fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
@@ -318,6 +320,7 @@ async fn apply_config_change(
 fn spawn_change_listener(
     datastore: Arc<dyn ConfigDatastore>,
     service: Arc<TacacsClientService>,
+    status_notifier: Arc<SystemdNotifier>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let label = datastore.label();
@@ -333,9 +336,10 @@ fn spawn_change_listener(
             match apply_config_change(label, change, &service).await {
                 Ok(()) => {
                     log::info!(
-                        "Applied datastore '{label}' configuration reload with {} accounting-capable upstream server(s)",
+                        "Applied datastore '{label}' configuration reload with {} upstream server(s) supporting authentication, authorization, and accounting",
                         service.server_count(),
                     );
+                    status_notifier.publish_server_state(service.server_count());
                 }
                 Err(error) => {
                     log::error!(
@@ -406,8 +410,14 @@ async fn main() -> anyhow::Result<()> {
         })
         .context("Failed to build TACACS+ client service configuration")?,
     );
+    let status_notifier = Arc::new(SystemdNotifier::from_env());
+    status_notifier.publish_server_state(service.server_count());
 
-    let _change_listener = spawn_change_listener(Arc::clone(&datastore), Arc::clone(&service));
+    let _change_listener = spawn_change_listener(
+        Arc::clone(&datastore),
+        Arc::clone(&service),
+        Arc::clone(&status_notifier),
+    );
     service.serve().await
 }
 
@@ -460,7 +470,9 @@ mod tests {
                 let (host, port) = address.rsplit_once(':').unwrap_or((*address, "49"));
                 TacacsPlusServerBuilder::new(
                     format!("server-{index}"),
-                    TacacsPlusServerType::ACCOUNTING,
+                    TacacsPlusServerType::AUTHENTICATION
+                        | TacacsPlusServerType::AUTHORIZATION
+                        | TacacsPlusServerType::ACCOUNTING,
                     host.to_owned(),
                     port.parse().expect("test port should be valid"),
                 )

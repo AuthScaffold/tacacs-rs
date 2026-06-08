@@ -8,17 +8,23 @@ After=database.service network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+# Keep the unit in "activating" with a clear status line until SONiC pushes
+# the first TACACS+ server into ConfigDB. The daemon emits READY=1 once that
+# initial configuration arrives.
+Type=notify
+NotifyAccess=all
 ExecStart=/usr/sbin/tacacsrs-agentd \
     --sonic \
-    --listen-endpoint /run/tacacs.sock \
-    --socket-mode 660 \
+    --listen-endpoint /run/tacacs/tacacs.sock \
+    --socket-mode 666 \
     -vv
 
 # Recreate the socket after restart and tear it down on stop.
 Restart=on-failure
 RestartSec=2s
 RuntimeDirectory=tacacs
+RuntimeDirectoryMode=0755
+TimeoutStartSec=0
 TimeoutStopSec=15s
 
 # SONiC keyspace notifications must be enabled on Redis for hot reload to

@@ -23,7 +23,7 @@ tacon -s tacacs-server:49 -k shared_secret \
 Connects to the central [tacacsrs-agentd](tacacsrs-agentd.md) service, which maintains persistent upstream connections with automatic failover.
 
 ```bash
-tacon --service-endpoint /run/tacacs.sock \
+tacon --service-endpoint /run/tacacs/tacacs.sock \
     --user admin --port tty0 --rem-addr 10.0.0.1 \
     accounting "show version"
 ```
@@ -173,7 +173,7 @@ tacon -s server:49 -k secret batch requests.json
 tacon -s server:49 -k secret --dedicated batch requests.json
 
 # Service — routed through the agent with failover
-tacon --service-endpoint /run/tacacs.sock batch requests.json
+tacon --service-endpoint /run/tacacs/tacacs.sock batch requests.json
 ```
 
 ## Transport Options

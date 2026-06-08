@@ -26,9 +26,11 @@ bash authorization policy flags:
 - `debug` enables stderr diagnostics from the plugin.
 
 Set `TACACSRS_BASH_PLUGIN_CONFIG` to point at a different config file. The local
-IPC endpoint defaults to `/run/tacacs.sock` on Unix, and can be set with
-`ipc_endpoint=<endpoint>` in the config file. `TACACSRS_AGENT_ENDPOINT` remains
-available as a fallback override when no config-file endpoint is set.
+IPC endpoint defaults to `/run/tacacs/tacacs.sock` on Unix, and can be set with
+`ipc_endpoint=<endpoint>` in the config file. If the plugin config omits that
+setting, `TACACSRS_AGENT_ENDPOINT` remains available as an explicit override,
+then `/etc/tacacsrs-agentd/config.ini` is consulted for `ipc_endpoint`, before
+falling back to the built-in Unix default.
 
 ## Config File
 
@@ -51,7 +53,7 @@ Token | Effect
 `tacacs_authorization` or `tacacs_authorization=on` | Enables per-command authorization through `tacacsrs-agentd`. Without this token, commands are allowed locally and no IPC authorization request is sent.
 `local_authorization` or `local_authorization=on` | Allows local fallback when the IPC/TACACS path is unavailable. Without this token, an unavailable authorization path blocks the command.
 `debug` or `debug=on` | Emits plugin diagnostics to stderr and syslog.
-`ipc_endpoint=/run/tacacs.sock` | Sets the local `tacacsrs-agentd` IPC endpoint. Use a Unix socket path on SONiC, or a loopback `host:port` value for developer testing.
+`ipc_endpoint=/run/tacacs/tacacs.sock` | Sets the local `tacacsrs-agentd` IPC endpoint. Use a Unix socket path on SONiC, or a loopback `host:port` value for developer testing. If omitted here, the plugin next checks `TACACSRS_AGENT_ENDPOINT`, then `/etc/tacacsrs-agentd/config.ini`.
 
 Example:
 
@@ -69,8 +71,8 @@ local_authorization
 debug=on
 
 # Optional tacacsrs-agentd IPC endpoint. If omitted, the plugin uses
-# /run/tacacs.sock on Unix.
-ipc_endpoint=/run/tacacs.sock
+# /run/tacacs/tacacs.sock on Unix.
+ipc_endpoint=/run/tacacs/tacacs.sock
 ```
 
 The plugin reloads the config when the file modification time changes. A missing

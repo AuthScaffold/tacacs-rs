@@ -68,7 +68,7 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "INDEX", requires = "sonic")]
     pub(crate) sonic_redis_db: Option<i64>,
 
-    /// Local IPC endpoint. Use a Unix socket path on Linux (default: /run/tacacs.sock).
+    /// Local IPC endpoint. Use a Unix socket path on Linux (default: /run/tacacs/tacacs.sock).
     #[arg(long)]
     pub(crate) listen_endpoint: Option<String>,
 
