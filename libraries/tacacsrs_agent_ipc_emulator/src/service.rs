@@ -98,7 +98,8 @@ impl TacacsAgent for AgentService {
                 server: "ipc-emulator".to_owned(),
                 status: "Fail".to_owned(),
                 server_message: format!(
-                    "policy returned no authorization decision for command {command_display}"
+                    "policy returned no authorization decision (undefined) for command \
+                     {command_display}"
                 ),
                 data: String::new(),
                 args: Vec::new(),

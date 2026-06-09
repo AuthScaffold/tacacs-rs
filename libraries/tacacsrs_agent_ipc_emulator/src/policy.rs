@@ -121,7 +121,7 @@ impl EmulatorPolicy {
         engine
             .add_policy("policy.rego".to_owned(), self.rego.clone())
             .context("Failed to compile IPC emulator Rego policy")?;
-        if !self.data.is_null() {
+        if !self.data.is_null() && self.data != empty_object() {
             let data = regorus::Value::from_json_str(&self.data.to_string())
                 .context("Failed to encode IPC emulator policy data")?;
             engine

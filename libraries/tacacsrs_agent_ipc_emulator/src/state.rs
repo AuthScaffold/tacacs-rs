@@ -86,7 +86,10 @@ impl EmulatorState {
             Status::internal(format!("Failed to encode policy decision for {rpc}: {error}"))
         })?;
         let decision: PolicyDecision = serde_json::from_value(decision).map_err(|error| {
-            Status::failed_precondition(format!("Invalid policy decision for {rpc}: {error}"))
+            Status::failed_precondition(format!(
+                "Invalid policy decision for {rpc}: expected an object with type=\"response\" or \
+                 type=\"error\": {error}"
+            ))
         })?;
         Ok(Some(EvaluatedDecision {
             response: decision.response,

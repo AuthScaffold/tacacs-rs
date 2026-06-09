@@ -91,10 +91,21 @@ async fn main() -> anyhow::Result<()> {
         cli.listen_endpoint
     );
     let policy = match &cli.data {
-        Some(data) => EmulatorPolicy::from_files_async(&cli.policy, data).await,
-        None => EmulatorPolicy::from_file_async(&cli.policy).await,
-    }
-    .with_context(|| format!("Failed to load IPC emulator policy from {}", cli.policy.display()))?;
+        Some(data) => EmulatorPolicy::from_files_async(&cli.policy, data)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to load IPC emulator policy from {} with data from {}",
+                    cli.policy.display(),
+                    data.display()
+                )
+            }),
+        None => EmulatorPolicy::from_file_async(&cli.policy)
+            .await
+            .with_context(|| {
+                format!("Failed to load IPC emulator policy from {}", cli.policy.display())
+            }),
+    }?;
     let (emulator, bound_endpoint) = IpcEmulator::from_policy_at_endpoint(policy, endpoint)
         .await
         .with_context(|| format!("Failed to start IPC emulator from {}", cli.policy.display()))?;
