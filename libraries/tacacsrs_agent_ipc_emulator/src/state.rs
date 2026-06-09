@@ -17,10 +17,10 @@ use crate::policy::{
 ///
 /// # Thread safety
 ///
-/// [`regorus::Engine`] is **not** internally synchronised: `set_input` and
+/// [`regorus::Engine`] is **not** internally synchronized: `set_input` and
 /// `eval_rule` take `&mut self` and share mutable engine state, so feeding one
 /// request's `input` while another request is being evaluated would race. This
-/// type therefore provides no interior synchronisation of its own and instead
+/// type therefore provides no interior synchronization of its own and instead
 /// relies on callers holding it behind a single exclusive lock. All access goes
 /// through `Arc<Mutex<EmulatorState>>` (see [`crate::service`]), and the lock is
 /// held across the whole [`Self::record_and_evaluate`] call so that `set_input`
