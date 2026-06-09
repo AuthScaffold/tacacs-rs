@@ -14,6 +14,17 @@ use crate::policy::{
 /// Stores the compiled OPA/Rego policy engine and every captured IPC request.
 /// The policy and its fixed data are compiled once; each request is evaluated
 /// by supplying the captured fields as Rego `input`.
+///
+/// # Thread safety
+///
+/// [`regorus::Engine`] is **not** internally synchronised: `set_input` and
+/// `eval_rule` take `&mut self` and share mutable engine state, so feeding one
+/// request's `input` while another request is being evaluated would race. This
+/// type therefore provides no interior synchronisation of its own and instead
+/// relies on callers holding it behind a single exclusive lock. All access goes
+/// through `Arc<Mutex<EmulatorState>>` (see [`crate::service`]), and the lock is
+/// held across the whole [`Self::record_and_evaluate`] call so that `set_input`
+/// and `eval_rule` execute atomically for one request at a time.
 pub(crate) struct EmulatorState {
     policy: EmulatorPolicy,
     engine: Engine,
@@ -63,6 +74,13 @@ impl EmulatorState {
         self.evaluate(rpc, fields)
     }
 
+    /// Sets the request as Rego `input` and evaluates the decision rule.
+    ///
+    /// `set_input` followed by `eval_rule` mutates shared engine state and must
+    /// not be interleaved with another request's evaluation. Callers guarantee
+    /// this by holding the surrounding `Mutex<EmulatorState>` for the entire
+    /// call (see the type-level "Thread safety" note); `&mut self` makes that
+    /// exclusivity explicit here.
     fn evaluate(
         &mut self,
         rpc: IpcRpc,
