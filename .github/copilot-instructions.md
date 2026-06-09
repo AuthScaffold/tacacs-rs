@@ -116,7 +116,7 @@ session-wrapper -> tacacsrs-agent-client
   datastore, config change events, and change stream helpers.
 - `tacacsrs-sonic` maps SONiC ConfigDB `TACPLUS` / `TACPLUS_SERVER` data into
   the YANG model and implements SONiC-backed config loading and watching.
-- `tacacsrs-agent-ipc-emulator` provides JSON-driven local IPC emulation for
+- `tacacsrs-agent-ipc-emulator` provides OPA/Rego-driven local IPC emulation for
   integration and scenario testing.
 - `tacacsrs-libtac` exposes a libtac-compatible C ABI backed by agent IPC.
 - `tacacsrs-bash-plugin` exposes the SONiC Bash `execve` plugin surface and must
@@ -131,7 +131,7 @@ session-wrapper -> tacacsrs-agent-client
 - `tacacsrs-agentd` is the local central agent daemon. It can load static JSON or
   SONiC ConfigDB-backed configuration and proxies IPC operations to upstream
   TACACS+ servers.
-- `tacacsrs-agent-ipc-emulatord` runs the JSON-driven IPC emulator as a process.
+- `tacacsrs-agent-ipc-emulatord` runs the OPA/Rego-driven IPC emulator as a process.
 - `session-wrapper` is a Linux x86_64 login session wrapper proof of concept.
   Use the session-wrapper WSL testing instructions when touching it on Windows.
 

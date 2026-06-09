@@ -1,0 +1,7 @@
+{
+  "denied": {
+    "/usr/bin/git": ["--force"],
+    "/bin/rm": ["-rf"],
+    "/usr/bin/chmod": ["777"]
+  }
+}

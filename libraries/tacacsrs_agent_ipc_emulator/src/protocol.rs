@@ -8,7 +8,7 @@ use tacacsrs_agent_client::{
 };
 use tonic::Status;
 
-use crate::scenario::{ErrorBody, ResponseBody};
+use crate::policy::{ErrorBody, ResponseBody};
 
 pub(crate) fn accounting_fields(request: &ipc::AccountingRequest) -> BTreeMap<String, Value> {
     BTreeMap::from([

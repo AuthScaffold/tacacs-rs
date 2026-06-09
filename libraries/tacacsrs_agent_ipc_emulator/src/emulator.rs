@@ -16,11 +16,11 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 use crate::controller::tacacs_agent_mock_controller_server::TacacsAgentMockControllerServer;
-use crate::scenario::{CapturedIpcRequest, EmulatorScenario, RuleHitCount};
+use crate::policy::{CapturedIpcRequest, EmulatorPolicy};
 use crate::service::{send_shutdown, shutdown_signal, AgentService, ControllerService};
 use crate::state::EmulatorState;
 
-/// JSON-driven emulator for the local TACACS+ agent IPC service.
+/// OPA/Rego-driven emulator for the local TACACS+ agent IPC service.
 ///
 /// Call [`shutdown()`](Self::shutdown) for clean teardown. Dropping the
 /// emulator without shutting down detaches the server task, which will
@@ -32,57 +32,57 @@ pub struct IpcEmulator {
 }
 
 impl IpcEmulator {
-    /// Loads a JSON scenario file and binds on an ephemeral loopback TCP port.
+    /// Loads a Rego policy file and binds on an ephemeral loopback TCP port.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be read, the JSON cannot be parsed,
-    /// or the emulator listener cannot be started.
+    /// Returns an error if the file cannot be read, the policy cannot be
+    /// compiled, or the emulator listener cannot be started.
     pub async fn from_file(path: impl AsRef<Path>) -> anyhow::Result<(Self, IpcEndpoint)> {
-        Self::from_scenario(EmulatorScenario::from_file_async(path).await?).await
+        Self::from_policy(EmulatorPolicy::from_file_async(path).await?).await
     }
 
-    /// Loads a JSON scenario file and binds on the provided endpoint.
+    /// Loads a Rego policy file and binds on the provided endpoint.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be read, the JSON cannot be parsed,
-    /// or the provided endpoint cannot be bound.
+    /// Returns an error if the file cannot be read, the policy cannot be
+    /// compiled, or the provided endpoint cannot be bound.
     pub async fn from_file_at_endpoint(
         path: impl AsRef<Path>,
         endpoint: IpcEndpoint,
     ) -> anyhow::Result<(Self, IpcEndpoint)> {
-        Self::from_scenario_at_endpoint(EmulatorScenario::from_file_async(path).await?, endpoint)
-            .await
+        Self::from_policy_at_endpoint(EmulatorPolicy::from_file_async(path).await?, endpoint).await
     }
 
-    /// Starts an emulator on an ephemeral loopback TCP port.
+    /// Starts an emulator from a policy on an ephemeral loopback TCP port.
     ///
     /// # Errors
     ///
-    /// Returns an error if the emulator listener cannot be started.
-    pub async fn from_scenario(scenario: EmulatorScenario) -> anyhow::Result<(Self, IpcEndpoint)> {
-        Self::from_scenario_at_endpoint(
-            scenario,
+    /// Returns an error if the policy cannot be compiled or the emulator
+    /// listener cannot be started.
+    pub async fn from_policy(policy: EmulatorPolicy) -> anyhow::Result<(Self, IpcEndpoint)> {
+        Self::from_policy_at_endpoint(
+            policy,
             IpcEndpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)),
         )
         .await
     }
 
-    /// Starts an emulator on the provided IPC endpoint.
+    /// Starts an emulator from a policy on the provided IPC endpoint.
     ///
     /// # Errors
     ///
-    /// Returns an error if the endpoint cannot be bound or is not a supported
-    /// local IPC endpoint.
-    pub async fn from_scenario_at_endpoint(
-        scenario: EmulatorScenario,
+    /// Returns an error if the policy cannot be compiled, the endpoint cannot be
+    /// bound, or it is not a supported local IPC endpoint.
+    pub async fn from_policy_at_endpoint(
+        policy: EmulatorPolicy,
         endpoint: IpcEndpoint,
     ) -> anyhow::Result<(Self, IpcEndpoint)> {
         match endpoint {
-            IpcEndpoint::Tcp(address) => Self::serve_tcp(scenario, address).await,
+            IpcEndpoint::Tcp(address) => Self::serve_tcp(policy, address).await,
             #[cfg(unix)]
-            IpcEndpoint::Unix(path) => Self::serve_unix(scenario, path).await,
+            IpcEndpoint::Unix(path) => Self::serve_unix(policy, path).await,
         }
     }
 
@@ -113,14 +113,8 @@ impl IpcEmulator {
         self.state.lock().await.captured_requests()
     }
 
-    /// Returns a snapshot of per-rule hit counts.
-    #[must_use]
-    pub async fn rule_hits(&self) -> Vec<RuleHitCount> {
-        self.state.lock().await.rule_hit_counts()
-    }
-
     async fn serve_tcp(
-        scenario: EmulatorScenario,
+        policy: EmulatorPolicy,
         address: SocketAddr,
     ) -> anyhow::Result<(Self, IpcEndpoint)> {
         if !address.ip().is_loopback() {
@@ -133,7 +127,7 @@ impl IpcEmulator {
             .local_addr()
             .context("Failed to inspect bound TCP endpoint")?;
         let incoming = TcpListenerStream::new(listener);
-        let (mut emulator, shutdown_rx) = Self::new_with_shutdown(scenario);
+        let (mut emulator, shutdown_rx) = Self::new_with_shutdown(policy)?;
         let agent = AgentService {
             state: Arc::clone(&emulator.state),
         };
@@ -154,7 +148,7 @@ impl IpcEmulator {
 
     #[cfg(unix)]
     async fn serve_unix(
-        scenario: EmulatorScenario,
+        policy: EmulatorPolicy,
         path: PathBuf,
     ) -> anyhow::Result<(Self, IpcEndpoint)> {
         if let Some(parent) = path.parent() {
@@ -183,7 +177,7 @@ impl IpcEmulator {
             })?;
         let incoming = UnixListenerStream::new(listener);
         let cleanup_path = path.clone();
-        let (mut emulator, shutdown_rx) = Self::new_with_shutdown(scenario);
+        let (mut emulator, shutdown_rx) = Self::new_with_shutdown(policy)?;
         let agent = AgentService {
             state: Arc::clone(&emulator.state),
         };
@@ -204,17 +198,18 @@ impl IpcEmulator {
         Ok((emulator, IpcEndpoint::Unix(path)))
     }
 
-    fn new_with_shutdown(scenario: EmulatorScenario) -> (Self, oneshot::Receiver<()>) {
-        let state = Arc::new(Mutex::new(EmulatorState::new(scenario)));
+    fn new_with_shutdown(policy: EmulatorPolicy) -> anyhow::Result<(Self, oneshot::Receiver<()>)> {
+        let engine = policy.compile()?;
+        let state = Arc::new(Mutex::new(EmulatorState::new(policy, engine)));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        (
+        Ok((
             Self {
                 state,
                 shutdown_sender: Arc::new(Mutex::new(Some(shutdown_tx))),
                 server_task: None,
             },
             shutdown_rx,
-        )
+        ))
     }
 }
 

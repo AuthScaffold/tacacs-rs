@@ -10,58 +10,41 @@ use tonic::{Request, Response, Status};
 
 use crate::controller;
 use crate::controller::tacacs_agent_mock_controller_server::TacacsAgentMockController;
+use crate::policy::{EmulatorPolicy, EmulatorResponse, IpcRpc, ResponseBody};
 use crate::protocol::{
     accounting_fields, accounting_response, authorization_fields, authorization_response,
     service_error,
 };
-use crate::scenario::{EmulatorResponse, EmulatorScenario, IpcRpc, ResponseBody};
-use crate::state::{EmulatorState, MatchResult, MatchedRule};
+use crate::state::{EmulatorState, EvaluatedDecision};
 
 #[derive(Clone)]
 /// Emulated implementation of the TACACS+ agent gRPC service.
 ///
-/// Each RPC captures the incoming request, applies the active scenario's
-/// ordered transaction rules, and returns the configured response or gRPC
+/// Each RPC captures the incoming request, evaluates the active OPA/Rego policy
+/// with the request as `input`, and returns the configured response or gRPC
 /// status error.
 pub(crate) struct AgentService {
     pub(crate) state: Arc<Mutex<EmulatorState>>,
 }
 
 impl AgentService {
-    async fn match_request(
+    async fn evaluate(
         &self,
         rpc: IpcRpc,
         fields: BTreeMap<String, Value>,
-    ) -> Result<MatchedRule, Status> {
-        let matched = {
+    ) -> Result<Option<EvaluatedDecision>, Status> {
+        let decision = {
             let mut state = self.state.lock().await;
-            state.record_and_match(rpc, &fields)?
+            state.record_and_evaluate(rpc, &fields)?
         };
-        log_match(rpc, &fields, &MatchResult::Matched(matched.clone()));
-        if let Some(delay_ms) = matched.delay_ms {
-            log::info!("{rpc} delaying response by {delay_ms} ms");
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        }
-        Ok(matched)
-    }
-
-    async fn match_request_result(
-        &self,
-        rpc: IpcRpc,
-        fields: BTreeMap<String, Value>,
-    ) -> Result<MatchResult, Status> {
-        let matched = {
-            let mut state = self.state.lock().await;
-            state.record_and_match_result(rpc, &fields)?
-        };
-        log_match(rpc, &fields, &matched);
-        if let MatchResult::Matched(matched_rule) = &matched {
-            if let Some(delay_ms) = matched_rule.delay_ms {
+        log_decision(rpc, fields.get("command"), decision.as_ref());
+        if let Some(decision) = &decision {
+            if let Some(delay_ms) = decision.delay_ms {
                 log::info!("{rpc} delaying response by {delay_ms} ms");
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
         }
-        Ok(matched)
+        Ok(decision)
     }
 }
 
@@ -73,8 +56,12 @@ impl TacacsAgent for AgentService {
     ) -> Result<Response<ipc::AccountingReply>, Status> {
         let fields = accounting_fields(&request.into_inner());
         log_request(IpcRpc::Accounting, &fields);
-        let matched = self.match_request(IpcRpc::Accounting, fields).await?;
-        match matched.response {
+        let Some(decision) = self.evaluate(IpcRpc::Accounting, fields).await? else {
+            return Err(Status::not_found(
+                "IPC emulator policy returned no Accounting decision for the request",
+            ));
+        };
+        match decision.response {
             EmulatorResponse::Response(response) => {
                 log_response(IpcRpc::Accounting, &response);
                 Ok(Response::new(ipc::AccountingReply {
@@ -100,15 +87,20 @@ impl TacacsAgent for AgentService {
     ) -> Result<Response<ipc::AuthorizationReply>, Status> {
         let fields = authorization_fields(&request.into_inner());
         log_request(IpcRpc::Authorization, &fields);
-        let matched = self
-            .match_request_result(IpcRpc::Authorization, fields)
-            .await?;
-        let response = match matched {
-            MatchResult::Matched(matched) => matched.response,
-            MatchResult::Unmatched { request_json } => EmulatorResponse::Response(ResponseBody {
+        let command_display = fields
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("<unknown>")
+            .to_owned();
+        let response = match self.evaluate(IpcRpc::Authorization, fields).await? {
+            Some(decision) => decision.response,
+            None => EmulatorResponse::Response(ResponseBody {
                 server: "ipc-emulator".to_owned(),
                 status: "Fail".to_owned(),
-                server_message: format!("no authorization rule matched request {request_json}"),
+                server_message: format!(
+                    "policy returned no authorization decision (undefined) for command \
+                     {command_display}"
+                ),
                 data: String::new(),
                 args: Vec::new(),
             }),
@@ -139,19 +131,12 @@ fn log_request(rpc: IpcRpc, fields: &BTreeMap<String, Value>) {
     log::debug!("{rpc} request fields {}", json_object(fields));
 }
 
-fn log_match(rpc: IpcRpc, fields: &BTreeMap<String, Value>, matched: &MatchResult) {
-    match matched {
-        MatchResult::Matched(rule) => {
-            log::info!(
-                "{rpc} matched rule #{} {}",
-                rule.rule_index,
-                response_summary(&rule.response)
-            );
-        }
-        MatchResult::Unmatched { request_json } => {
-            log::warn!("{rpc} no matching rule for {}", request_summary(fields));
-            log::debug!("{rpc} unmatched request fields {request_json}");
-        }
+fn log_decision(rpc: IpcRpc, command: Option<&Value>, decision: Option<&EvaluatedDecision>) {
+    if let Some(decision) = decision {
+        log::info!("{rpc} policy decided {}", response_summary(&decision.response));
+    } else {
+        let command = command.map_or_else(|| "<none>".to_owned(), json_value);
+        log::warn!("{rpc} policy returned no decision for command={command}");
     }
 }
 
@@ -167,7 +152,7 @@ fn log_response(rpc: IpcRpc, response: &ResponseBody) {
     }
 }
 
-fn log_error_response(rpc: IpcRpc, error: &crate::scenario::ErrorBody) {
+fn log_error_response(rpc: IpcRpc, error: &crate::policy::ErrorBody) {
     log::warn!(
         "{rpc} reply service-error retriable={} server={} message={}",
         error.retriable,
@@ -248,8 +233,8 @@ fn display_text(value: &str) -> String {
 #[derive(Clone)]
 /// Mock-controller gRPC service used by external integration test runners.
 ///
-/// Provides runtime scenario replacement, state reset, request inspection, rule
-/// hit inspection, and graceful shutdown for the same in-memory emulator state.
+/// Provides runtime policy replacement, state reset, request inspection, and
+/// graceful shutdown for the same in-memory emulator state.
 pub(crate) struct ControllerService {
     pub(crate) state: Arc<Mutex<EmulatorState>>,
     pub(crate) shutdown_sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
@@ -257,25 +242,33 @@ pub(crate) struct ControllerService {
 
 #[tonic::async_trait]
 impl TacacsAgentMockController for ControllerService {
-    async fn load_scenario(
+    async fn load_policy(
         &self,
-        request: Request<controller::LoadScenarioRequest>,
-    ) -> Result<Response<controller::LoadScenarioReply>, Status> {
-        let scenario: EmulatorScenario = serde_json::from_str(&request.into_inner().scenario_json)
-            .map_err(|error| Status::invalid_argument(format!("Invalid scenario JSON: {error}")))?;
-        log::info!(
-            "controller loaded scenario with {} transaction rule(s)",
-            scenario.transactions.len()
-        );
-        self.state.lock().await.replace_scenario(scenario);
-        Ok(Response::new(controller::LoadScenarioReply {}))
+        request: Request<controller::LoadPolicyRequest>,
+    ) -> Result<Response<controller::LoadPolicyReply>, Status> {
+        let request = request.into_inner();
+        let data = if request.data_json.trim().is_empty() {
+            Value::Object(serde_json::Map::new())
+        } else {
+            serde_json::from_str(&request.data_json).map_err(|error| {
+                Status::invalid_argument(format!("Invalid policy data JSON: {error}"))
+            })?
+        };
+        let policy = EmulatorPolicy::new(request.policy_rego).with_data(data);
+        self.state
+            .lock()
+            .await
+            .replace_policy(policy)
+            .map_err(|error| Status::invalid_argument(format!("Invalid policy: {error}")))?;
+        log::info!("controller loaded new OPA/Rego policy");
+        Ok(Response::new(controller::LoadPolicyReply {}))
     }
 
     async fn reset_state(
         &self,
         _request: Request<controller::ResetStateRequest>,
     ) -> Result<Response<controller::ResetStateReply>, Status> {
-        log::info!("controller reset captured requests and rule hit counts");
+        log::info!("controller reset captured requests");
         self.state.lock().await.reset();
         Ok(Response::new(controller::ResetStateReply {}))
     }
@@ -295,23 +288,6 @@ impl TacacsAgentMockController for ControllerService {
             .map_err(|error| Status::internal(error.to_string()))?;
         log::debug!("controller returned {} captured request(s)", requests.len());
         Ok(Response::new(controller::GetCapturedRequestsReply { requests }))
-    }
-
-    async fn get_rule_hit_counts(
-        &self,
-        _request: Request<controller::GetRuleHitCountsRequest>,
-    ) -> Result<Response<controller::GetRuleHitCountsReply>, Status> {
-        let hit_counts = self
-            .state
-            .lock()
-            .await
-            .rule_hit_counts()
-            .iter()
-            .map(controller::RuleHitCount::try_from)
-            .collect::<anyhow::Result<Vec<_>>>()
-            .map_err(|error| Status::internal(error.to_string()))?;
-        log::debug!("controller returned {} rule hit count(s)", hit_counts.len());
-        Ok(Response::new(controller::GetRuleHitCountsReply { hit_counts }))
     }
 
     async fn shutdown(

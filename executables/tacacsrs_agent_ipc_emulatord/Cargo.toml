@@ -4,7 +4,7 @@ version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Standalone JSON-driven TACACS+ agent IPC emulator"
+description = "Standalone OPA/Rego-driven TACACS+ agent IPC emulator"
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
