@@ -8,11 +8,50 @@ use tacacsrs_agent_client::{
 };
 use tonic::Code;
 
+use crate::policy::EmulatorResponse;
 use crate::state::EmulatorState;
-use crate::{
-    EmulatorResponse, EmulatorScenario, IpcEmulator, IpcRpc, MatchFields, MockControllerClient,
-    ResponseBody, TransactionRule,
-};
+use crate::{EmulatorPolicy, IpcEmulator, IpcRpc, MockControllerClient};
+
+const ACCOUNTING_POLICY: &str = r#"
+package tacacs.emulator
+import rego.v1
+
+decision := {
+    "type": "response",
+    "server": "primary",
+    "status": "Success",
+    "server_message": "",
+    "data": "",
+} if {
+    input.rpc == "Accounting"
+    input.user == "admin"
+}
+"#;
+
+const AUTHORIZATION_POLICY: &str = r#"
+package tacacs.emulator
+import rego.v1
+
+decision := {
+    "type": "response",
+    "server": "primary",
+    "status": status,
+    "server_message": message,
+    "data": "",
+    "args": [],
+} if {
+    input.rpc == "Authorization"
+    input.command == "show"
+}
+
+status := "Error" if {
+    data.error_mode
+} else := "PassAdd"
+
+message := "authorization policy evaluation failed" if {
+    data.error_mode
+} else := ""
+"#;
 
 fn accounting_request(user: &str, command: &str) -> AccountingOperation {
     AccountingOperation {
@@ -34,93 +73,77 @@ fn authorization_request(command: &str) -> AuthorizationOperation {
         .expect("authorization operation should build")
 }
 
-fn accounting_success_rule(user: &str, server: &str) -> TransactionRule {
-    TransactionRule {
-        rpc: IpcRpc::Accounting,
-        match_fields: MatchFields {
-            fields: BTreeMap::from([("user".to_owned(), json!(user))]),
-        },
-        match_any_fields: None,
-        respond: EmulatorResponse::Response(ResponseBody {
-            server: server.to_owned(),
-            status: "Success".to_owned(),
-            server_message: String::new(),
-            data: String::new(),
-            args: Vec::new(),
-        }),
-        delay_ms: None,
-    }
+fn state_from(rego: &str) -> EmulatorState {
+    let policy = EmulatorPolicy::new(rego);
+    let engine = policy.compile().expect("policy should compile");
+    EmulatorState::new(policy, engine)
 }
 
 #[test]
-fn parses_json_scenario() {
-    let scenario: EmulatorScenario = serde_json::from_str(
-        r#"{
-            "transactions": [{
-                "rpc": "Accounting",
-                "match": { "user": "admin", "command": "show" },
-                "respond": {
-                    "type": "response",
-                    "server": "tacacs-primary:49",
-                    "status": "Success",
-                    "server_message": "ok",
-                    "data": ""
-                },
-                "delay_ms": 5
-            }]
-        }"#,
-    )
-    .expect("scenario should parse");
-
-    assert_eq!(scenario.transactions.len(), 1);
-    assert_eq!(scenario.transactions[0].rpc, IpcRpc::Accounting);
-    assert_eq!(scenario.transactions[0].delay_ms, Some(5));
+fn compiles_valid_policy() {
+    EmulatorPolicy::new(ACCOUNTING_POLICY)
+        .compile()
+        .expect("valid policy should compile");
 }
 
 #[test]
-fn partial_matching_uses_only_present_fields() {
-    let match_fields = MatchFields {
-        fields: BTreeMap::from([("user".to_owned(), json!("admin"))]),
-    };
-    let request_fields = BTreeMap::from([
+fn rejects_invalid_policy() {
+    let error = EmulatorPolicy::new("this is not rego")
+        .compile()
+        .expect_err("invalid policy should fail to compile");
+    assert!(error.to_string().contains("Rego policy"));
+}
+
+#[test]
+fn evaluates_request_fields_as_input() {
+    let mut state = state_from(ACCOUNTING_POLICY);
+    let fields = BTreeMap::from([
         ("user".to_owned(), json!("admin")),
         ("command".to_owned(), json!("show")),
     ]);
 
-    assert!(match_fields.matches(&request_fields));
+    let decision = state
+        .record_and_evaluate(IpcRpc::Accounting, &fields)
+        .expect("evaluation should succeed")
+        .expect("policy should produce a decision");
+
+    match decision.response {
+        EmulatorResponse::Response(response) => assert_eq!(response.server, "primary"),
+        EmulatorResponse::Error(_) => panic!("expected response"),
+    }
+    assert_eq!(state.captured_requests().len(), 1);
 }
 
 #[test]
-fn rules_are_evaluated_in_order() {
-    let mut state = EmulatorState::new(EmulatorScenario {
-        transactions: vec![
-            accounting_success_rule("admin", "first"),
-            accounting_success_rule("admin", "second"),
-        ],
-    });
+fn undefined_decision_returns_none() {
+    let mut state = state_from(ACCOUNTING_POLICY);
+    let fields = BTreeMap::from([("user".to_owned(), json!("guest"))]);
 
-    let fields = BTreeMap::from([("user".to_owned(), json!("admin"))]);
-    let matched = state
-        .record_and_match(IpcRpc::Accounting, &fields)
-        .expect("rule should match");
+    let decision = state
+        .record_and_evaluate(IpcRpc::Accounting, &fields)
+        .expect("evaluation should succeed");
 
-    match matched.response {
-        EmulatorResponse::Response(response) => assert_eq!(response.server, "first"),
-        EmulatorResponse::Error(_) => panic!("expected response"),
-    }
-    assert_eq!(state.rule_hit_counts()[0].hits, 1);
-    assert_eq!(state.rule_hit_counts()[1].hits, 0);
+    assert!(decision.is_none());
+    assert_eq!(state.captured_requests().len(), 1);
 }
 
 #[tokio::test]
 async fn delay_is_applied_before_response() {
-    let scenario = EmulatorScenario {
-        transactions: vec![TransactionRule {
-            delay_ms: Some(25),
-            ..accounting_success_rule("admin", "primary")
-        }],
-    };
-    let (emulator, endpoint) = IpcEmulator::from_scenario(scenario)
+    let policy = EmulatorPolicy::new(
+        r#"
+package tacacs.emulator
+import rego.v1
+decision := {
+    "type": "response",
+    "server": "primary",
+    "status": "Success",
+    "server_message": "",
+    "data": "",
+    "delay_ms": 25,
+} if input.rpc == "Accounting"
+"#,
+    );
+    let (emulator, endpoint) = IpcEmulator::from_policy(policy)
         .await
         .expect("emulator should start");
     let client = ServiceClient::connect(endpoint)
@@ -138,11 +161,8 @@ async fn delay_is_applied_before_response() {
 }
 
 #[tokio::test]
-async fn captures_requests_and_hit_counts() {
-    let scenario = EmulatorScenario {
-        transactions: vec![accounting_success_rule("admin", "primary")],
-    };
-    let (emulator, endpoint) = IpcEmulator::from_scenario(scenario)
+async fn captures_requests() {
+    let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(ACCOUNTING_POLICY))
         .await
         .expect("emulator should start");
     let client = ServiceClient::connect(endpoint)
@@ -158,16 +178,12 @@ async fn captures_requests_and_hit_counts() {
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].rpc, IpcRpc::Accounting);
     assert_eq!(captured[0].fields["user"], json!("admin"));
-    assert_eq!(emulator.rule_hits().await[0].hits, 1);
     emulator.shutdown().await;
 }
 
 #[tokio::test]
-async fn unmatched_request_returns_grpc_error() {
-    let scenario = EmulatorScenario {
-        transactions: vec![accounting_success_rule("admin", "primary")],
-    };
-    let (emulator, endpoint) = IpcEmulator::from_scenario(scenario)
+async fn undefined_accounting_decision_returns_grpc_error() {
+    let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(ACCOUNTING_POLICY))
         .await
         .expect("emulator should start");
     let client = ServiceClient::connect(endpoint)
@@ -177,7 +193,7 @@ async fn unmatched_request_returns_grpc_error() {
     let error = client
         .send_accounting(accounting_request("guest", "show"))
         .await
-        .expect_err("unmatched request should fail");
+        .expect_err("undefined accounting decision should fail");
 
     let grpc_status = error
         .chain()
@@ -186,69 +202,32 @@ async fn unmatched_request_returns_grpc_error() {
     assert_eq!(grpc_status.code(), Code::NotFound);
     assert!(grpc_status
         .message()
-        .contains("IPC emulator has no Accounting transaction rule matching"));
+        .contains("policy returned no Accounting decision"));
     assert_eq!(emulator.captured_requests().await.len(), 1);
-    assert_eq!(emulator.rule_hits().await[0].hits, 0);
     emulator.shutdown().await;
 }
 
 #[tokio::test]
 async fn authorization_response_works_with_service_client() {
-    let scenario = EmulatorScenario {
-        transactions: vec![TransactionRule {
-            rpc: IpcRpc::Authorization,
-            match_fields: MatchFields {
-                fields: BTreeMap::from([("command".to_owned(), json!("show"))]),
-            },
-            match_any_fields: None,
-            respond: EmulatorResponse::Response(ResponseBody {
-                server: "primary".to_owned(),
-                status: "PassAdd".to_owned(),
-                server_message: String::new(),
-                data: String::new(),
-                args: Vec::new(),
-            }),
-            delay_ms: None,
-        }],
-    };
-    let (emulator, endpoint) = IpcEmulator::from_scenario(scenario)
+    let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(AUTHORIZATION_POLICY))
         .await
         .expect("emulator should start");
     let client = ServiceClient::connect(endpoint)
         .await
         .expect("client should connect");
-    let request = authorization_request("show");
 
     let response = client
-        .send_authorization(request)
+        .send_authorization(authorization_request("show"))
         .await
         .expect("authorization request should succeed");
 
     assert_eq!(response.status, AuthorizationResponseStatus::PassAdd);
-    assert_eq!(emulator.rule_hits().await[0].hits, 1);
     emulator.shutdown().await;
 }
 
 #[tokio::test]
-async fn unmatched_authorization_request_returns_fail_response() {
-    let scenario = EmulatorScenario {
-        transactions: vec![TransactionRule {
-            rpc: IpcRpc::Authorization,
-            match_fields: MatchFields {
-                fields: BTreeMap::from([("command".to_owned(), json!("show"))]),
-            },
-            match_any_fields: None,
-            respond: EmulatorResponse::Response(ResponseBody {
-                server: "primary".to_owned(),
-                status: "PassAdd".to_owned(),
-                server_message: String::new(),
-                data: String::new(),
-                args: Vec::new(),
-            }),
-            delay_ms: None,
-        }],
-    };
-    let (emulator, endpoint) = IpcEmulator::from_scenario(scenario)
+async fn undefined_authorization_decision_returns_fail_response() {
+    let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(AUTHORIZATION_POLICY))
         .await
         .expect("emulator should start");
     let client = ServiceClient::connect(endpoint)
@@ -258,39 +237,22 @@ async fn unmatched_authorization_request_returns_fail_response() {
     let response = client
         .send_authorization(authorization_request("/usr/bin/htop"))
         .await
-        .expect("authorization no-match should be a TACACS+ response");
+        .expect("authorization no-decision should be a TACACS+ response");
 
     assert_eq!(response.status, AuthorizationResponseStatus::Fail);
     assert_eq!(response.server, "ipc-emulator");
     assert!(response
         .server_message
-        .starts_with("no authorization rule matched request"));
+        .contains("policy returned no authorization decision"));
     assert!(response.server_message.contains("/usr/bin/htop"));
     assert_eq!(emulator.captured_requests().await.len(), 1);
-    assert_eq!(emulator.rule_hits().await[0].hits, 0);
     emulator.shutdown().await;
 }
 
 #[tokio::test]
-async fn authorization_error_status_returns_authorization_response() {
-    let scenario = EmulatorScenario {
-        transactions: vec![TransactionRule {
-            rpc: IpcRpc::Authorization,
-            match_fields: MatchFields {
-                fields: BTreeMap::from([("command".to_owned(), json!("show"))]),
-            },
-            match_any_fields: None,
-            respond: EmulatorResponse::Response(ResponseBody {
-                server: "primary".to_owned(),
-                status: "Error".to_owned(),
-                server_message: "authorization policy evaluation failed".to_owned(),
-                data: String::new(),
-                args: Vec::new(),
-            }),
-            delay_ms: None,
-        }],
-    };
-    let (emulator, endpoint) = IpcEmulator::from_scenario(scenario)
+async fn authorization_error_status_returns_response() {
+    let policy = EmulatorPolicy::new(AUTHORIZATION_POLICY).with_data(json!({ "error_mode": true }));
+    let (emulator, endpoint) = IpcEmulator::from_policy(policy)
         .await
         .expect("emulator should start");
     let client = ServiceClient::connect(endpoint)
@@ -304,16 +266,54 @@ async fn authorization_error_status_returns_authorization_response() {
 
     assert_eq!(response.status, AuthorizationResponseStatus::Error);
     assert_eq!(response.server_message, "authorization policy evaluation failed");
-    assert_eq!(emulator.rule_hits().await[0].hits, 1);
     emulator.shutdown().await;
 }
 
 #[tokio::test]
-async fn controller_can_reset_and_replace_state() {
-    let scenario = EmulatorScenario {
-        transactions: vec![accounting_success_rule("admin", "primary")],
-    };
-    let (emulator, endpoint) = IpcEmulator::from_scenario(scenario)
+async fn policy_data_drives_authorization_denylist() {
+    let policy = EmulatorPolicy::from_file("examples/policy.rego")
+        .expect("example policy should compile")
+        .with_data(
+            serde_json::from_str(
+                &std::fs::read_to_string("examples/policy_data.json")
+                    .expect("example data should load"),
+            )
+            .expect("example data should parse"),
+        );
+    let (emulator, endpoint) = IpcEmulator::from_policy(policy)
+        .await
+        .expect("emulator should start");
+    let client = ServiceClient::connect(endpoint)
+        .await
+        .expect("client should connect");
+
+    let denied = client
+        .send_authorization(
+            AuthorizationOperation::builder("admin", 15)
+                .port("tty0")
+                .remote_address("127.0.0.1")
+                .key_value(AuthorizationKey::Service, true, "shell")
+                .key_value(AuthorizationKey::Cmd, true, "/usr/bin/git")
+                .key_value(AuthorizationKey::CmdArg, false, "--force")
+                .build()
+                .expect("authorization operation should build"),
+        )
+        .await
+        .expect("denied request should still return a response");
+    assert_eq!(denied.status, AuthorizationResponseStatus::Fail);
+    assert!(denied.server_message.contains("--force"));
+
+    let allowed = client
+        .send_authorization(authorization_request("/usr/bin/git"))
+        .await
+        .expect("allowed request should succeed");
+    assert_eq!(allowed.status, AuthorizationResponseStatus::PassAdd);
+    emulator.shutdown().await;
+}
+
+#[tokio::test]
+async fn controller_can_reset_and_replace_policy() {
+    let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(ACCOUNTING_POLICY))
         .await
         .expect("emulator should start");
     let client = ServiceClient::connect(endpoint.clone())
@@ -327,7 +327,14 @@ async fn controller_can_reset_and_replace_state() {
         .send_accounting(accounting_request("admin", "show"))
         .await
         .expect("request should succeed");
-    assert_eq!(controller.rule_hits().await.expect("hits should load")[0].hits, 1);
+    assert_eq!(
+        controller
+            .captured_requests()
+            .await
+            .expect("captures should load")
+            .len(),
+        1
+    );
 
     controller
         .reset_state()
@@ -338,146 +345,35 @@ async fn controller_can_reset_and_replace_state() {
         .await
         .expect("captures should load")
         .is_empty());
-    assert_eq!(controller.rule_hits().await.expect("hits should load")[0].hits, 0);
 
     controller
-        .load_scenario(&EmulatorScenario {
-            transactions: vec![accounting_success_rule("guest", "secondary")],
-        })
+        .load_policy(&EmulatorPolicy::new(
+            r#"
+package tacacs.emulator
+import rego.v1
+decision := {
+    "type": "response",
+    "server": "secondary",
+    "status": "Success",
+    "server_message": "",
+    "data": "",
+} if {
+    input.rpc == "Accounting"
+    input.user == "guest"
+}
+"#,
+        ))
         .await
         .expect("load should succeed");
     client
         .send_accounting(accounting_request("guest", "show"))
         .await
-        .expect("new scenario should match");
-    assert_eq!(controller.rule_hits().await.expect("hits should load")[0].hits, 1);
+        .expect("new policy should match");
+    let captured = controller
+        .captured_requests()
+        .await
+        .expect("captures should load");
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].fields["user"], json!("guest"));
     emulator.shutdown().await;
-}
-
-#[test]
-fn match_any_matches_when_array_contains_value() {
-    let match_any = MatchFields {
-        fields: BTreeMap::from([("command_arguments".to_owned(), json!("--force"))]),
-    };
-    let request_fields = BTreeMap::from([
-        ("command".to_owned(), json!("/usr/bin/git")),
-        ("command_arguments".to_owned(), json!(["push", "--force", "origin"])),
-    ]);
-
-    assert!(match_any.matches_any(&request_fields));
-}
-
-#[test]
-fn match_any_rejects_when_array_does_not_contain_value() {
-    let match_any = MatchFields {
-        fields: BTreeMap::from([("command_arguments".to_owned(), json!("--force"))]),
-    };
-    let request_fields = BTreeMap::from([
-        ("command".to_owned(), json!("/usr/bin/git")),
-        ("command_arguments".to_owned(), json!(["push", "origin", "main"])),
-    ]);
-
-    assert!(!match_any.matches_any(&request_fields));
-}
-
-#[test]
-fn match_any_requires_all_values_when_array() {
-    let match_any = MatchFields {
-        fields: BTreeMap::from([("command_arguments".to_owned(), json!(["push", "--force"]))]),
-    };
-
-    // Contains both "push" and "--force" → matches.
-    let with_both =
-        BTreeMap::from([("command_arguments".to_owned(), json!(["push", "--force", "origin"]))]);
-    assert!(match_any.matches_any(&with_both));
-
-    // Contains "push" but not "--force" → no match.
-    let missing_force =
-        BTreeMap::from([("command_arguments".to_owned(), json!(["push", "origin"]))]);
-    assert!(!match_any.matches_any(&missing_force));
-
-    // Contains "--force" but not "push" → no match.
-    let missing_push =
-        BTreeMap::from([("command_arguments".to_owned(), json!(["commit", "--force"]))]);
-    assert!(!match_any.matches_any(&missing_push));
-}
-
-#[test]
-fn match_any_rejects_when_field_is_not_array() {
-    let match_any = MatchFields {
-        fields: BTreeMap::from([("command".to_owned(), json!("git"))]),
-    };
-    let request_fields = BTreeMap::from([("command".to_owned(), json!("/usr/bin/git"))]);
-
-    assert!(!match_any.matches_any(&request_fields));
-}
-
-#[test]
-fn match_any_combined_with_match_fields() {
-    let mut state = EmulatorState::new(EmulatorScenario {
-        transactions: vec![TransactionRule {
-            rpc: IpcRpc::Authorization,
-            match_fields: MatchFields {
-                fields: BTreeMap::from([("command".to_owned(), json!("/usr/bin/git"))]),
-            },
-            match_any_fields: Some(MatchFields {
-                fields: BTreeMap::from([("command_arguments".to_owned(), json!("--force"))]),
-            }),
-            respond: EmulatorResponse::Response(ResponseBody {
-                server: "primary".to_owned(),
-                status: "Fail".to_owned(),
-                server_message: String::new(),
-                data: String::new(),
-                args: Vec::new(),
-            }),
-            delay_ms: None,
-        }],
-    });
-
-    // Should match: command matches and --force is in args.
-    let fields_with_force = BTreeMap::from([
-        ("command".to_owned(), json!("/usr/bin/git")),
-        ("command_arguments".to_owned(), json!(["push", "--force", "origin"])),
-    ]);
-    assert!(state
-        .record_and_match(IpcRpc::Authorization, &fields_with_force)
-        .is_ok());
-
-    // Should not match: command matches but --force is absent.
-    let fields_without_force = BTreeMap::from([
-        ("command".to_owned(), json!("/usr/bin/git")),
-        ("command_arguments".to_owned(), json!(["push", "origin", "main"])),
-    ]);
-    assert!(state
-        .record_and_match(IpcRpc::Authorization, &fields_without_force)
-        .is_err());
-}
-
-#[test]
-fn match_any_round_trips_through_json() {
-    let rule_json = r#"{
-        "rpc": "Authorization",
-        "match": { "command": "/usr/bin/git" },
-        "match_any": { "command_arguments": "--force" },
-        "respond": {
-            "type": "response",
-            "server": "primary",
-            "status": "Fail",
-            "server_message": "",
-            "args": [],
-            "data": ""
-        }
-    }"#;
-    let rule: TransactionRule =
-        serde_json::from_str(rule_json).expect("rule with match_any should parse");
-    assert!(rule.match_any_fields.is_some());
-    assert_eq!(
-        rule.match_any_fields.as_ref().unwrap().fields["command_arguments"],
-        json!("--force")
-    );
-
-    let serialized = serde_json::to_string(&rule).expect("should serialize");
-    let deserialized: TransactionRule =
-        serde_json::from_str(&serialized).expect("should round-trip");
-    assert_eq!(rule, deserialized);
 }

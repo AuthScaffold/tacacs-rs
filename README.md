@@ -8,7 +8,7 @@
 |-----------|-------------|
 | **tacon** | CLI client for sending TACACS+ requests (accounting, authentication, authorization) |
 | **tacacsrs-agentd** | Central service daemon that manages persistent TACACS+ connections with automatic failover |
-| **tacacsrs-agent-ipc-emulatord** | JSON-driven gRPC IPC emulator for integration tests that exercise `ServiceClient` clients without a live daemon |
+| **tacacsrs-agent-ipc-emulatord** | OPA/Rego-driven gRPC IPC emulator for integration tests that exercise `ServiceClient` clients without a live daemon |
 | **tacacsrs-config** | YANG JSON configuration crate for `ietf-system-tacacs-plus` parsing, validation, and runtime mapping |
 | **session-wrapper** | Linux session wrapper POC for TACACS+ command authorization via seccomp user notifications |
 
@@ -38,7 +38,7 @@ tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
 
 - [tacon Usage Guide](docs/tacon.md) — CLI client reference, connection modes, batch execution
 - [tacacsrs-agentd Usage Guide](docs/tacacsrs-agentd.md) — Central service deployment, failover, IPC protocol
-- [tacacsrs-agent-ipc-emulator README](libraries/tacacsrs_agent_ipc_emulator/README.md) — JSON scenario format and in-process/out-of-process IPC emulator usage
+- [tacacsrs-agent-ipc-emulator README](libraries/tacacsrs_agent_ipc_emulator/README.md) — Rego policy format and in-process/out-of-process IPC emulator usage
 - [tacacsrs-config README](libraries/tacacsrs_config/README.md) — YANG JSON schema support, codegen workflow, parsing APIs
 - [session-wrapper README](executables/session_wrapper/README.md) — Linux seccomp session wrapper architecture and current allow-all behavior
 - [Session Wrapper Deployment Guide](docs/session-wrapper.md) — SSH `ForceCommand` integration, configuration examples, security notes, troubleshooting

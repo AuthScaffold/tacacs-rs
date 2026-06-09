@@ -3,8 +3,8 @@
 mod client;
 pub mod controller;
 mod emulator;
+mod policy;
 mod protocol;
-mod scenario;
 mod service;
 mod state;
 
@@ -13,7 +13,7 @@ mod tests;
 
 pub use client::MockControllerClient;
 pub use emulator::IpcEmulator;
-pub use scenario::{
-    CapturedIpcRequest, EmulatorResponse, EmulatorScenario, ErrorBody, IpcRpc, MatchFields,
-    ResponseBody, RuleHitCount, ScenarioAuthorizationArg, TransactionRule,
+pub use policy::{
+    AuthorizationResponseArg, CapturedIpcRequest, EmulatorPolicy, EmulatorResponse, ErrorBody,
+    IpcRpc, PolicyDecision, ResponseBody, DECISION_QUERY,
 };

@@ -5,15 +5,19 @@ use std::str::FromStr;
 use anyhow::Context;
 use clap::Parser;
 use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_agent_ipc_emulator::IpcEmulator;
+use tacacsrs_agent_ipc_emulator::{EmulatorPolicy, IpcEmulator};
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agent-ipc-emulatord", version, author)]
-#[command(about = "JSON-driven TACACS+ agent IPC emulator for integration tests")]
+#[command(about = "OPA/Rego-driven TACACS+ agent IPC emulator for integration tests")]
 struct Cli {
-    /// Path to the JSON emulator scenario file.
+    /// Path to the Rego policy file evaluated for every IPC request.
     #[arg(long, value_name = "FILE")]
-    scenario: PathBuf,
+    policy: PathBuf,
+
+    /// Optional JSON policy data document fixed at startup.
+    #[arg(long, value_name = "FILE")]
+    data: Option<PathBuf>,
 
     /// IPC endpoint to listen on. TCP port 0 chooses an ephemeral loopback port.
     #[arg(long, default_value = "127.0.0.1:0")]
@@ -79,19 +83,27 @@ async fn main() -> anyhow::Result<()> {
     let endpoint = IpcEndpoint::from_str(&cli.listen_endpoint)
         .with_context(|| format!("Invalid listen endpoint {}", cli.listen_endpoint))?;
     log::info!(
-        "starting IPC emulator scenario={} listen_endpoint={}",
-        cli.scenario.display(),
+        "starting IPC emulator policy={} data={} listen_endpoint={}",
+        cli.policy.display(),
+        cli.data
+            .as_ref()
+            .map_or_else(|| "<none>".to_owned(), |path| path.display().to_string()),
         cli.listen_endpoint
     );
-    let (emulator, bound_endpoint) = IpcEmulator::from_file_at_endpoint(&cli.scenario, endpoint)
+    let policy = match &cli.data {
+        Some(data) => EmulatorPolicy::from_files_async(&cli.policy, data).await,
+        None => EmulatorPolicy::from_file_async(&cli.policy).await,
+    }
+    .with_context(|| format!("Failed to load IPC emulator policy from {}", cli.policy.display()))?;
+    let (emulator, bound_endpoint) = IpcEmulator::from_policy_at_endpoint(policy, endpoint)
         .await
-        .with_context(|| format!("Failed to start IPC emulator from {}", cli.scenario.display()))?;
+        .with_context(|| format!("Failed to start IPC emulator from {}", cli.policy.display()))?;
 
     println!("{}", endpoint_string(&bound_endpoint));
     log::info!(
-        "IPC emulator ready endpoint={} scenario={}",
+        "IPC emulator ready endpoint={} policy={}",
         endpoint_string(&bound_endpoint),
-        cli.scenario.display()
+        cli.policy.display()
     );
     emulator.wait().await
 }

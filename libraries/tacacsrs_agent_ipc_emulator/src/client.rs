@@ -10,7 +10,7 @@ use tower::service_fn;
 
 use crate::controller;
 use crate::controller::tacacs_agent_mock_controller_client::TacacsAgentMockControllerClient as GeneratedControllerClient;
-use crate::scenario::{CapturedIpcRequest, EmulatorScenario, RuleHitCount};
+use crate::policy::{CapturedIpcRequest, EmulatorPolicy};
 
 #[cfg(unix)]
 const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
@@ -32,31 +32,41 @@ impl MockControllerClient {
         })
     }
 
-    /// Replaces the active scenario and clears request/hit state.
+    /// Replaces the active policy and clears captured requests.
     ///
     /// # Errors
     ///
-    /// Returns an error if the scenario cannot be encoded or the controller RPC
-    /// fails.
-    pub async fn load_scenario(&mut self, scenario: &EmulatorScenario) -> anyhow::Result<()> {
-        let scenario_json = serde_json::to_string(scenario).context("Failed to encode scenario")?;
-        self.load_scenario_json(scenario_json).await
+    /// Returns an error if the policy data cannot be encoded or the controller
+    /// RPC fails.
+    pub async fn load_policy(&mut self, policy: &EmulatorPolicy) -> anyhow::Result<()> {
+        let data_json = serde_json::to_string(&policy.data)
+            .context("Failed to encode IPC emulator policy data")?;
+        self.load_policy_rego(policy.rego.clone(), data_json).await
     }
 
-    /// Replaces the active scenario from raw JSON and clears request/hit state.
+    /// Replaces the active policy from raw Rego source and JSON data.
+    ///
+    /// An empty `data_json` string is treated as no policy data.
     ///
     /// # Errors
     ///
-    /// Returns an error if the controller rejects the JSON or the RPC fails.
-    pub async fn load_scenario_json(&mut self, scenario_json: String) -> anyhow::Result<()> {
+    /// Returns an error if the controller rejects the policy or the RPC fails.
+    pub async fn load_policy_rego(
+        &mut self,
+        policy_rego: String,
+        data_json: String,
+    ) -> anyhow::Result<()> {
         self.inner
-            .load_scenario(controller::LoadScenarioRequest { scenario_json })
+            .load_policy(controller::LoadPolicyRequest {
+                policy_rego,
+                data_json,
+            })
             .await
-            .context("Failed to load IPC emulator scenario")?;
+            .context("Failed to load IPC emulator policy")?;
         Ok(())
     }
 
-    /// Clears captured requests and resets hit counts to zero.
+    /// Clears captured requests.
     ///
     /// # Errors
     ///
@@ -83,23 +93,6 @@ impl MockControllerClient {
             .requests
             .into_iter()
             .map(CapturedIpcRequest::try_from)
-            .collect()
-    }
-
-    /// Fetches per-rule hit counts through the controller service.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the controller RPC fails or returns malformed data.
-    pub async fn rule_hits(&mut self) -> anyhow::Result<Vec<RuleHitCount>> {
-        self.inner
-            .get_rule_hit_counts(controller::GetRuleHitCountsRequest {})
-            .await
-            .context("Failed to fetch IPC emulator rule hit counts")?
-            .into_inner()
-            .hit_counts
-            .into_iter()
-            .map(RuleHitCount::try_from)
             .collect()
     }
 
