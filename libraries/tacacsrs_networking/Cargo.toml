@@ -20,11 +20,13 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_
 rustls-pki-types = "1.14.1"
 webpki-roots = "1.0.7"
 openssl = { version = "0.10.80", optional = true }
+openssl-sys = { version = "0.9.116", optional = true }
 tokio-openssl = { version = "0.6.5", optional = true }
+foreign-types = { version = "0.3.2", optional = true }
 
 [features]
 default = []
-psk = ["dep:openssl", "dep:tokio-openssl"]
+psk = ["dep:foreign-types", "dep:openssl", "dep:openssl-sys", "dep:tokio-openssl"]
 
 [dev-dependencies]
 console-subscriber = "0.5.0"
