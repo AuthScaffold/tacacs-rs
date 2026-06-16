@@ -11,7 +11,8 @@ use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
-use super::{PskDheKeGroups, PskHandshakeHash, create_psk_ssl_context};
+use super::context::create_psk_ssl_context;
+use super::{PskDheKeGroups, PskHandshakeHash};
 
 pub(crate) struct PskClientConfig {
     handshake_hash: PskHandshakeHash,
@@ -92,4 +93,39 @@ impl PskClientConfig {
 
 fn format_groups(groups: Option<&PskDheKeGroups>) -> &str {
     groups.map_or("psk-only", PskDheKeGroups::as_openssl_list)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tacacsrs_config::generated::tacacs_plus::{EpskSupportedHash, Tls13Epsk};
+    use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
+
+    fn epsk_with_key(key: &[u8]) -> Tls13Epsk {
+        Tls13Epsk {
+            external_identity: "client-id".to_owned(),
+            hash: EpskSupportedHash::Sha256,
+            context: None,
+            target_protocol: None,
+            target_kdf: None,
+            psk_dhe_ke_groups: vec![],
+            inline_definition: Some(SymmetricKeyInlineDefinition {
+                key_format: None,
+                cleartext_symmetric_key: Some(key.to_vec()),
+            }),
+        }
+    }
+
+    #[test]
+    fn prepare_surfaces_context_errors_before_handshake() {
+        let epsk = epsk_with_key(b"too-short");
+
+        let Err(error) = PskClientConfig::prepare(&epsk) else {
+            panic!("invalid PSK credentials should be rejected during preparation");
+        };
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to prepare OpenSSL TLS 1.3 PSK context"));
+        assert!(message.contains("PSK key must be at least 16 bytes"));
+    }
 }

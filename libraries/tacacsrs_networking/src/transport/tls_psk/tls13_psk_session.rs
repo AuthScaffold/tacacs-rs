@@ -13,7 +13,7 @@ use openssl_sys::{
 };
 use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
 
-use super::{PskHandshakeHash, tls13_epsk};
+use super::{tls13_epsk, PskHandshakeHash};
 
 const TLS_AES_128_GCM_SHA256_WIRE_ID: [c_uchar; 2] = [0x13, 0x01];
 const TLS_AES_256_GCM_SHA384_WIRE_ID: [c_uchar; 2] = [0x13, 0x02];

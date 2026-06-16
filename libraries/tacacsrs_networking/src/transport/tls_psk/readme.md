@@ -188,12 +188,12 @@ accepted.
 
 ```
 tls_psk/
-├── mod.rs              — crate-internal API surface + create_psk_ssl_context()
+├── mod.rs              — crate-internal API surface + Transport impl
+├── context.rs          — OpenSSL SslContext construction + hash/group projections
 ├── config_builder.rs   — PskClientConfig: validated SslContext → SslStream
-├── from_server.rs      — YANG config selection + OpenSSL name projections
+├── from_server.rs      — TacacsPlusServer PSK selection + connection establishment
 ├── tls13_epsk.rs       — validation/accessors for the YANG TLS 1.3 EPSK node
 ├── tls13_psk_session.rs — OpenSSL TLS 1.3 PSK callback + SSL_SESSION bridge
-├── tls_psk.rs          — Transport trait impl for SslStream<TcpStream>
 └── readme.md           — this file
 ```
 
@@ -210,7 +210,7 @@ PskClientConfig::prepare(epsk)
   │  validates EPSK fields and builds the OpenSSL context before async handshake work
         │
         ▼
-create_psk_ssl_context()
+      context::create_psk_ssl_context()
   │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK use-session callback,
   │  hash-matched ciphersuite, optional psk-dhe-ke groups
         ▼

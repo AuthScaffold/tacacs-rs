@@ -10,64 +10,24 @@
 //! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 
 mod config_builder;
+mod context;
 mod from_server;
 mod tls13_epsk;
 mod tls13_psk_session;
-#[allow(clippy::module_inception)]
-mod tls_psk;
 
 pub(crate) use config_builder::PskClientConfig;
-pub(crate) use from_server::{PskDheKeGroups, PskHandshakeHash, establish_from_server, server_has_psk};
+pub(crate) use context::{PskDheKeGroups, PskHandshakeHash};
+pub(crate) use from_server::{establish_from_server, server_has_psk};
 
-use anyhow::Context;
-use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
-use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
+use tokio::net::TcpStream;
 
-use self::tls13_psk_session::set_tls13_psk_use_session_callback;
+use crate::transport::abstractions::Transport;
 
-/// Creates an OpenSSL `SslContext` configured for TLS 1.3 PSK.
-///
-/// This is used internally by [`PskClientConfig`].
-///
-/// # Arguments
-///
-/// * `epsk` - The YANG TLS 1.3 EPSK configuration.
-fn create_psk_ssl_context(
-    epsk: &Tls13Epsk,
-    psk_dhe_ke_groups: Option<&PskDheKeGroups>,
-) -> anyhow::Result<SslContext> {
-    tls13_epsk::validate(epsk).context("Invalid TLS 1.3 EPSK configuration")?;
+impl Transport for tokio_openssl::SslStream<TcpStream> {
+    type ReadHalf = tokio::io::ReadHalf<Self>;
+    type WriteHalf = tokio::io::WriteHalf<Self>;
 
-    let handshake_hash = PskHandshakeHash::from_config(epsk.hash);
-    let mut ctx_builder = SslContext::builder(SslMethod::tls_client())
-        .context("OpenSSL failed to create a TLS 1.3 PSK client context builder")?;
-
-    ctx_builder
-        .set_min_proto_version(Some(SslVersion::TLS1_3))
-        .context("OpenSSL failed to enforce TLS 1.3 as the minimum PSK protocol version")?;
-    ctx_builder
-        .set_max_proto_version(Some(SslVersion::TLS1_3))
-        .context("OpenSSL failed to enforce TLS 1.3 as the maximum PSK protocol version")?;
-
-    ctx_builder.set_verify(SslVerifyMode::NONE);
-
-    set_tls13_psk_use_session_callback(&mut ctx_builder, epsk)
-        .context("OpenSSL failed to register TLS 1.3 PSK session callback")?;
-
-    ctx_builder
-        .set_ciphersuites(handshake_hash.tls13_ciphersuites())
-        .with_context(|| {
-            format!(
-                "OpenSSL failed to apply TLS 1.3 PSK ciphersuite {}",
-                handshake_hash.tls13_ciphersuites()
-            )
-        })?;
-
-    if let Some(groups) = psk_dhe_ke_groups {
-        ctx_builder
-            .set_groups_list(groups.as_openssl_list())
-            .map_err(|error| groups.unsupported_error(&error))?;
+    fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
+        tokio::io::split(self)
     }
-
-    Ok(ctx_builder.build())
 }
