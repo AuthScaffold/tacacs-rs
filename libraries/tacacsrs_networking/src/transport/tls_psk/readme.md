@@ -190,8 +190,8 @@ accepted.
 tls_psk/
 ├── mod.rs              — crate-internal API surface + create_psk_ssl_context()
 ├── config_builder.rs   — PskClientConfig: validated SslContext → SslStream
-├── from_server.rs      — YANG config → PskIdentity + handshake orchestration
-├── psk_identity.rs     — PskIdentity type (identity label + key bytes)
+├── from_server.rs      — YANG config selection + OpenSSL name projections
+├── tls13_epsk.rs       — validation/accessors for the YANG TLS 1.3 EPSK node
 ├── tls13_psk_session.rs — OpenSSL TLS 1.3 PSK callback + SSL_SESSION bridge
 ├── tls_psk.rs          — Transport trait impl for SslStream<TcpStream>
 └── readme.md           — this file
@@ -204,13 +204,10 @@ TacacsPlusServer (YANG config)
         │
         ▼
 from_server::establish_from_server()
-        │  extracts external-identity + cleartext-symmetric-key
+  │  selects client-identity.tls13-epsk
         ▼
-PskIdentity::new(identity, key)
-        │  validates: non-empty, no NUL, key ≥ 16 bytes
-        ▼
-PskClientConfig::prepare(psk, hash, groups)
-  │  builds and validates the OpenSSL context before async handshake work
+PskClientConfig::prepare(epsk)
+  │  validates EPSK fields and builds the OpenSSL context before async handshake work
         │
         ▼
 create_psk_ssl_context()
@@ -257,12 +254,12 @@ because `SslStream` does not support owned splitting.
 
 | Concern | Mitigation |
 |---------|-----------|
-| Key length | `PskIdentity::new()` rejects keys shorter than 16 bytes (128 bits) per RFC 9257 §6 |
-| Identity injection | NUL bytes in identity are rejected (OpenSSL uses C strings) |
+| Key length | EPSK validation rejects keys shorter than 16 bytes (128 bits) per RFC 9257 §6 |
+| Identity injection | NUL bytes in identity are rejected before OpenSSL callback registration |
 | Forward secrecy | Existing configs remain PSK-only. Configure `tacacsrs:psk-dhe-ke-groups` to negotiate `psk_dhe_ke` and add ephemeral (EC)DHE key material. |
 | Unsupported groups | OpenSSL group-list setup errors are surfaced before the handshake with the configured group list in the message. |
 | Certificate verification | Explicitly set to `SslVerifyMode::NONE` — intentional for PSK, where authentication comes from the shared secret, not certificates |
-| Key logging | `PskIdentity` implements a custom `Debug` that redacts the key bytes; PSK key copies are zeroized when the Rust holders are dropped |
+| Key logging | The PSK transport does not log key material. The generated `Tls13Epsk` model contains inline key bytes, so do not debug-log the full model. |
 | Ciphersuites | Restricted to `TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256` (AEAD-only, no CBC) |
 
 ## Feature Flag

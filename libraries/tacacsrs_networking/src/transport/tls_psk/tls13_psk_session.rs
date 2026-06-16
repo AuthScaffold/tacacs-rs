@@ -11,8 +11,9 @@ use openssl_sys::{
     EVP_MD, EVP_MD_get_type, EVP_sha256, EVP_sha384, SSL, SSL_CIPHER, SSL_CTX, SSL_SESSION,
     SSL_SESSION_free, SSL_get_SSL_CTX, TLS1_3_VERSION,
 };
+use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
 
-use super::{PskHandshakeHash, PskIdentity};
+use super::{PskHandshakeHash, tls13_epsk};
 
 const TLS_AES_128_GCM_SHA256_WIRE_ID: [c_uchar; 2] = [0x13, 0x01];
 const TLS_AES_256_GCM_SHA384_WIRE_ID: [c_uchar; 2] = [0x13, 0x02];
@@ -26,18 +27,8 @@ type PskUseSessionCallback = unsafe extern "C" fn(
 ) -> c_int;
 
 #[derive(Debug)]
-struct PskUseSessionConfig {
-    handshake_hash: PskHandshakeHash,
-    identity: Vec<u8>,
-    key: Vec<u8>,
-}
-
-impl Drop for PskUseSessionConfig {
-    fn drop(&mut self) {
-        use zeroize::Zeroize;
-
-        self.key.zeroize();
-    }
+struct OpenSslTls13EpskConfig {
+    epsk: Tls13Epsk,
 }
 
 extern "C" {
@@ -70,15 +61,10 @@ extern "C" {
 /// EPSK hash bound to the synthetic `SSL_SESSION`.
 pub(crate) fn set_tls13_psk_use_session_callback(
     builder: &mut SslContextBuilder,
-    psk: &PskIdentity,
-    handshake_hash: PskHandshakeHash,
+    epsk: &Tls13Epsk,
 ) -> Result<()> {
     let index = psk_config_index().context("failed to allocate OpenSSL PSK ex-data index")?;
-    let config = PskUseSessionConfig {
-        handshake_hash,
-        identity: psk.identity().as_bytes().to_vec(),
-        key: psk.key().to_vec(),
-    };
+    let config = OpenSslTls13EpskConfig { epsk: epsk.clone() };
 
     builder.set_ex_data(index, config);
 
@@ -93,15 +79,21 @@ pub(crate) fn set_tls13_psk_use_session_callback(
     Ok(())
 }
 
-fn psk_config_index() -> Result<Index<SslContext, PskUseSessionConfig>, openssl::error::ErrorStack>
-{
-    static INDEX: OnceLock<Index<SslContext, PskUseSessionConfig>> = OnceLock::new();
+pub(super) fn configured_tls13_epsk(context: &SslContext) -> Option<&Tls13Epsk> {
+    let index = psk_config_index().ok()?;
+
+    context.ex_data(index).map(|config| &config.epsk)
+}
+
+fn psk_config_index(
+) -> Result<Index<SslContext, OpenSslTls13EpskConfig>, openssl::error::ErrorStack> {
+    static INDEX: OnceLock<Index<SslContext, OpenSslTls13EpskConfig>> = OnceLock::new();
 
     if let Some(index) = INDEX.get() {
         return Ok(*index);
     }
 
-    let index = SslContext::new_ex_index::<PskUseSessionConfig>()?;
+    let index = SslContext::new_ex_index::<OpenSslTls13EpskConfig>()?;
     Ok(*INDEX.get_or_init(|| index))
 }
 
@@ -119,21 +111,22 @@ unsafe extern "C" fn psk_use_session_callback(
 
     match build_callback_session(ssl, digest) {
         Some((config, callback_session)) => {
+            let identity_bytes = config.epsk.external_identity.as_bytes();
             // SAFETY: OpenSSL consumes these out-parameters before the callback
             // returns. The identity bytes live in the context ex-data for the
             // lifetime of the `SSL_CTX`, and `callback_session` transfers
             // ownership of a newly allocated `SSL_SESSION` to OpenSSL.
             unsafe {
-                *identity = config.identity.as_ptr();
-                *identity_len = config.identity.len();
+                *identity = identity_bytes.as_ptr();
+                *identity_len = identity_bytes.len();
                 *session = callback_session;
             }
 
             log::debug!(
                 target: module_path!(),
                 "Provided TLS 1.3 PSK session (identity: {}, hash: {})",
-                String::from_utf8_lossy(&config.identity),
-                config.handshake_hash.as_name()
+                config.epsk.external_identity,
+                PskHandshakeHash::from_config(config.epsk.hash).as_name()
             );
 
             1
@@ -145,24 +138,25 @@ unsafe extern "C" fn psk_use_session_callback(
 unsafe fn build_callback_session(
     ssl: *mut SSL,
     digest: *const EVP_MD,
-) -> Option<(&'static PskUseSessionConfig, *mut SSL_SESSION)> {
+) -> Option<(&'static OpenSslTls13EpskConfig, *mut SSL_SESSION)> {
     let config = callback_config(ssl)?;
+    let handshake_hash = PskHandshakeHash::from_config(config.epsk.hash);
 
-    if !digest.is_null() && !config.handshake_hash.matches_digest(digest) {
+    if !digest.is_null() && !handshake_hash.matches_digest(digest) {
         log::warn!(
             target: module_path!(),
             "OpenSSL requested TLS 1.3 PSK hash that does not match configured hash {}",
-            config.handshake_hash.as_name()
+            handshake_hash.as_name()
         );
         return None;
     }
 
-    let cipher = config.handshake_hash.find_cipher(ssl);
+    let cipher = handshake_hash.find_cipher(ssl);
     if cipher.is_null() {
         log::error!(
             target: module_path!(),
             "OpenSSL could not find TLS 1.3 cipher suite {}",
-            config.handshake_hash.tls13_ciphersuites()
+            handshake_hash.tls13_ciphersuites()
         );
         return None;
     }
@@ -171,7 +165,7 @@ unsafe fn build_callback_session(
     Some((config, callback_session))
 }
 
-unsafe fn callback_config(ssl: *mut SSL) -> Option<&'static PskUseSessionConfig> {
+unsafe fn callback_config(ssl: *mut SSL) -> Option<&'static OpenSslTls13EpskConfig> {
     // SAFETY: `ssl` is the non-null `SSL*` OpenSSL passed to the callback.
     let context = unsafe { SSL_get_SSL_CTX(ssl) };
     if context.is_null() {
@@ -194,9 +188,17 @@ unsafe fn callback_config(ssl: *mut SSL) -> Option<&'static PskUseSessionConfig>
 }
 
 unsafe fn create_session(
-    config: &PskUseSessionConfig,
+    config: &OpenSslTls13EpskConfig,
     cipher: *const SSL_CIPHER,
 ) -> Option<*mut SSL_SESSION> {
+    let key = match tls13_epsk::symmetric_key(&config.epsk) {
+        Ok(key) => key,
+        Err(error) => {
+            log::error!(target: module_path!(), "TLS 1.3 EPSK callback has no symmetric key: {error}");
+            return None;
+        }
+    };
+
     // SAFETY: `SSL_SESSION_new` returns either null or a freshly allocated
     // session owned by the caller until transferred to OpenSSL.
     let session = unsafe { SSL_SESSION_new() };
@@ -212,7 +214,7 @@ unsafe fn create_session(
         // data into the session.
         SSL_SESSION_set_protocol_version(session, TLS1_3_VERSION) == 1
             && SSL_SESSION_set_cipher(session, cipher) == 1
-            && SSL_SESSION_set1_master_key(session, config.key.as_ptr(), config.key.len()) == 1
+            && SSL_SESSION_set1_master_key(session, key.as_ptr(), key.len()) == 1
     };
 
     if configured {

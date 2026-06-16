@@ -1,18 +1,17 @@
 //! Build TLS 1.3 PSK connections directly from a [`TacacsPlusServer`]
 //! configuration.
 //!
-//! This module owns the translation from the YANG-derived configuration model
-//! to the lower-level PSK primitives ([`PskIdentity`], the symmetric key
-//! bytes). It exists so the establishment dispatcher does not need to
-//! understand PSK encoding details.
+//! This module keeps the YANG-derived TLS 1.3 EPSK configuration as the
+//! first-class runtime input and owns only the OpenSSL-specific projections such
+//! as ciphersuite and group names.
 
 use anyhow::{Context, Result};
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
-use tacacsrs_config::{EpskSupportedHash, PskDheKeSupportedGroup, TacacsPlusServer};
+use tacacsrs_config::{EpskSupportedHash, PskDheKeSupportedGroup, TacacsPlusServer, Tls13Epsk};
 
-use super::{PskClientConfig, PskIdentity};
+use super::PskClientConfig;
 
 /// OpenSSL TLS 1.3 group list derived from `psk-dhe-ke-groups`.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,7 +20,7 @@ pub(crate) struct PskDheKeGroups {
 }
 
 impl PskDheKeGroups {
-    fn from_config(groups: &[PskDheKeSupportedGroup]) -> Option<Self> {
+    pub(crate) fn from_config(groups: &[PskDheKeSupportedGroup]) -> Option<Self> {
         if groups.is_empty() {
             return None;
         }
@@ -56,7 +55,7 @@ pub(crate) enum PskHandshakeHash {
 }
 
 impl PskHandshakeHash {
-    fn from_config(hash: EpskSupportedHash) -> Self {
+    pub(crate) fn from_config(hash: EpskSupportedHash) -> Self {
         match hash {
             EpskSupportedHash::Sha256 => Self::Sha256,
             EpskSupportedHash::Sha384 => Self::Sha384,
@@ -121,13 +120,11 @@ pub(crate) async fn establish_from_server(
     address: &str,
     tcp_stream: TcpStream,
 ) -> Result<SslStream<TcpStream>> {
-    let psk = build_psk_identity(server).context("Invalid PSK credentials")?;
-    let handshake_hash = build_psk_handshake_hash(server)?;
-    let psk_dhe_ke_groups = build_psk_dhe_ke_groups(server);
+    let epsk = tls13_epsk(server)?;
 
     log::debug!("Negotiating TLS-PSK handshake with {address}");
 
-    let tls_stream = PskClientConfig::prepare(psk, handshake_hash, psk_dhe_ke_groups)
+    let tls_stream = PskClientConfig::prepare(epsk)
         .context("Invalid TLS PSK OpenSSL configuration")?
         .connect(address, tcp_stream)
         .await
@@ -138,49 +135,12 @@ pub(crate) async fn establish_from_server(
     Ok(tls_stream)
 }
 
-fn build_psk_handshake_hash(server: &TacacsPlusServer) -> Result<PskHandshakeHash> {
-    let epsk = server
-        .client_identity
-        .as_ref()
-        .and_then(|ci| ci.tls13_epsk.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("server has no TLS 1.3 PSK client-identity"))?;
-
-    Ok(PskHandshakeHash::from_config(epsk.hash))
-}
-
-/// Decodes the configured PSK identity and key bytes into a [`PskIdentity`].
-fn build_psk_identity(server: &TacacsPlusServer) -> Result<PskIdentity> {
-    let epsk = server
-        .client_identity
-        .as_ref()
-        .and_then(|ci| ci.tls13_epsk.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("server has no TLS 1.3 PSK client-identity"))?;
-
-    let key_bytes = epsk
-        .inline_definition
-        .as_ref()
-        .and_then(|d| d.cleartext_symmetric_key.as_deref())
-        .map(parse_symmetric_key_data)
-        .unwrap_or_default();
-
-    PskIdentity::new(&epsk.external_identity, key_bytes)
-}
-
-fn build_psk_dhe_ke_groups(server: &TacacsPlusServer) -> Option<PskDheKeGroups> {
+fn tls13_epsk(server: &TacacsPlusServer) -> Result<&Tls13Epsk> {
     server
         .client_identity
         .as_ref()
         .and_then(|ci| ci.tls13_epsk.as_ref())
-        .and_then(|epsk| PskDheKeGroups::from_config(&epsk.psk_dhe_ke_groups))
-}
-
-/// Decodes the YANG-encoded symmetric key bytes into raw key material.
-///
-/// The current YANG model carries the key as already-decoded bytes, so this is
-/// a passthrough today — but it is the documented seam for future encoding
-/// changes (e.g. base64 unwrapping).
-fn parse_symmetric_key_data(data: &[u8]) -> Vec<u8> {
-    data.to_vec()
+        .ok_or_else(|| anyhow::anyhow!("server has no TLS 1.3 PSK client-identity"))
 }
 
 #[cfg(test)]
@@ -258,6 +218,10 @@ mod tests {
         server
     }
 
+    fn epsk(server: &TacacsPlusServer) -> &Tls13Epsk {
+        tls13_epsk(server).expect("tls13 epsk")
+    }
+
     #[test]
     fn server_has_psk_returns_true_when_tls13_epsk_present() {
         let server = server_with_psk("client-id", &[0u8; 16]);
@@ -271,49 +235,48 @@ mod tests {
     }
 
     #[test]
-    fn build_psk_identity_extracts_identity_and_key() {
+    fn tls13_epsk_extracts_config_model() {
         let key = b"resolved-psk-bytes-with-enough-length";
         let server = server_with_psk("my-client", key);
-        let psk = build_psk_identity(&server).expect("PSK credentials should be valid");
+        let epsk = epsk(&server);
 
-        assert_eq!(psk.identity(), "my-client");
-        assert_eq!(psk.key(), key.as_slice());
+        assert_eq!(epsk.external_identity, "my-client");
+        assert_eq!(super::super::tls13_epsk::symmetric_key(epsk).expect("symmetric key"), key);
     }
 
     #[test]
-    fn build_psk_dhe_ke_groups_preserves_psk_only_when_absent() {
+    fn psk_dhe_ke_groups_preserves_psk_only_when_absent() {
         let server = server_with_psk("my-client", b"resolved-psk-bytes-with-enough-length");
 
-        assert_eq!(build_psk_dhe_ke_groups(&server), None);
+        assert_eq!(PskDheKeGroups::from_config(&epsk(&server).psk_dhe_ke_groups), None);
     }
 
     #[test]
-    fn build_psk_dhe_ke_groups_maps_config_order_to_openssl_names() {
+    fn psk_dhe_ke_groups_maps_config_order_to_openssl_names() {
         let server = server_with_psk_dhe_groups(vec![
             PskDheKeSupportedGroup::X25519,
             PskDheKeSupportedGroup::Secp256r1,
             PskDheKeSupportedGroup::Ffdhe3072,
         ]);
-        let groups = build_psk_dhe_ke_groups(&server).expect("groups should be configured");
+        let groups = PskDheKeGroups::from_config(&epsk(&server).psk_dhe_ke_groups)
+            .expect("groups should be configured");
 
         assert_eq!(groups.as_openssl_list(), "X25519:P-256:ffdhe3072");
     }
 
     #[test]
-    fn build_psk_handshake_hash_maps_sha256_to_sha256_ciphersuite() {
+    fn psk_handshake_hash_maps_sha256_to_sha256_ciphersuite() {
         let server = server_with_psk_hash(EpskSupportedHash::Sha256);
-        let handshake_hash =
-            build_psk_handshake_hash(&server).expect("sha-256 should be supported");
+        let handshake_hash = PskHandshakeHash::from_config(epsk(&server).hash);
 
         assert_eq!(handshake_hash, PskHandshakeHash::Sha256);
         assert_eq!(handshake_hash.tls13_ciphersuites(), "TLS_AES_128_GCM_SHA256");
     }
 
     #[test]
-    fn build_psk_handshake_hash_maps_sha384_to_sha384_ciphersuite() {
+    fn psk_handshake_hash_maps_sha384_to_sha384_ciphersuite() {
         let server = server_with_psk_hash(EpskSupportedHash::Sha384);
-        let handshake_hash =
-            build_psk_handshake_hash(&server).expect("sha-384 should be supported");
+        let handshake_hash = PskHandshakeHash::from_config(epsk(&server).hash);
 
         assert_eq!(handshake_hash, PskHandshakeHash::Sha384);
         assert_eq!(handshake_hash.tls13_ciphersuites(), "TLS_AES_256_GCM_SHA384");
@@ -321,36 +284,32 @@ mod tests {
 
     #[test]
     fn create_psk_ssl_context_accepts_supported_psk_dhe_groups() {
-        let psk = PskIdentity::new("client-id", b"resolved-psk-bytes-with-enough-length")
-            .expect("valid psk");
+        let server = server_with_psk("client-id", b"resolved-psk-bytes-with-enough-length");
         let groups = PskDheKeGroups::from_config(&[
             PskDheKeSupportedGroup::X25519,
             PskDheKeSupportedGroup::Secp256r1,
         ])
         .expect("configured groups");
 
-        create_psk_ssl_context(&psk, PskHandshakeHash::Sha256, Some(&groups))
+        create_psk_ssl_context(epsk(&server), Some(&groups))
             .expect("OpenSSL should accept supported TLS 1.3 groups");
     }
 
     #[test]
     fn create_psk_ssl_context_accepts_sha384() {
-        let psk = PskIdentity::new("client-id", b"resolved-psk-bytes-with-enough-length")
-            .expect("valid psk");
+        let server = server_with_psk_hash(EpskSupportedHash::Sha384);
 
-        create_psk_ssl_context(&psk, PskHandshakeHash::Sha384, None)
+        create_psk_ssl_context(epsk(&server), None)
             .expect("OpenSSL should accept TLS 1.3 SHA-384 PSK sessions");
     }
 
     #[test]
     fn create_psk_ssl_context_accepts_all_supported_hashes() {
-        let psk = PskIdentity::new("client-id", b"resolved-psk-bytes-with-enough-length")
-            .expect("valid psk");
-
         for hash in EpskSupportedHash::ALL {
+            let server = server_with_psk_hash(*hash);
             let handshake_hash = PskHandshakeHash::from_config(*hash);
 
-            create_psk_ssl_context(&psk, handshake_hash, None).unwrap_or_else(|error| {
+            create_psk_ssl_context(epsk(&server), None).unwrap_or_else(|error| {
                 panic!(
                     "OpenSSL should accept TLS 1.3 PSK hash {} using ciphersuite {}: {error:#}",
                     handshake_hash.as_name(),
@@ -362,48 +321,39 @@ mod tests {
 
     #[test]
     fn create_psk_ssl_context_accepts_all_supported_psk_dhe_groups() {
-        let psk = PskIdentity::new("client-id", b"resolved-psk-bytes-with-enough-length")
-            .expect("valid psk");
+        let server = server_with_psk("client-id", b"resolved-psk-bytes-with-enough-length");
         let groups =
             PskDheKeGroups::from_config(PskDheKeSupportedGroup::ALL).expect("configured groups");
 
-        create_psk_ssl_context(&psk, PskHandshakeHash::Sha256, Some(&groups)).unwrap_or_else(
-            |error| {
-                panic!(
-                    "OpenSSL should accept every configured TLS 1.3 PSK-DHE group ({}): {error:#}",
-                    groups.as_openssl_list()
-                )
-            },
-        );
+        create_psk_ssl_context(epsk(&server), Some(&groups)).unwrap_or_else(|error| {
+            panic!(
+                "OpenSSL should accept every configured TLS 1.3 PSK-DHE group ({}): {error:#}",
+                groups.as_openssl_list()
+            )
+        });
     }
 
     #[test]
     fn prepare_psk_client_config_surfaces_context_errors_before_handshake() {
-        let psk = PskIdentity::new("client-id", b"resolved-psk-bytes-with-enough-length")
-            .expect("valid psk");
-        let groups = PskDheKeGroups {
-            openssl_list: "not-a-supported-tls-group".to_owned(),
-        };
+        let server = server_with_psk("client-id", b"too-short");
 
-        let error = match PskClientConfig::prepare(psk, PskHandshakeHash::Sha256, Some(groups)) {
-            Ok(_) => panic!("unsupported OpenSSL group should be rejected during preparation"),
-            Err(error) => error,
+        let Err(error) = PskClientConfig::prepare(epsk(&server)) else {
+            panic!("invalid PSK credentials should be rejected during preparation");
         };
         let message = format!("{error:#}");
 
         assert!(message.contains("Failed to prepare OpenSSL TLS 1.3 PSK context"));
-        assert!(message.contains("not-a-supported-tls-group"));
+        assert!(message.contains("PSK key must be at least 16 bytes"));
     }
 
     #[test]
     fn create_psk_ssl_context_errors_for_unsupported_group_list() {
-        let psk = PskIdentity::new("client-id", b"resolved-psk-bytes-with-enough-length")
-            .expect("valid psk");
+        let server = server_with_psk("client-id", b"resolved-psk-bytes-with-enough-length");
         let groups = PskDheKeGroups {
             openssl_list: "not-a-supported-tls-group".to_owned(),
         };
 
-        let error = create_psk_ssl_context(&psk, PskHandshakeHash::Sha256, Some(&groups))
+        let error = create_psk_ssl_context(epsk(&server), Some(&groups))
             .expect_err("unsupported OpenSSL group should be rejected");
         let message = error.to_string();
 
@@ -412,14 +362,8 @@ mod tests {
     }
 
     #[test]
-    fn build_psk_identity_errors_when_missing() {
+    fn tls13_epsk_errors_when_missing() {
         let server = server_template();
-        assert!(build_psk_identity(&server).is_err());
-    }
-
-    #[test]
-    fn parse_symmetric_key_data_bytes() {
-        let key = parse_symmetric_key_data(b"resolved-psk-bytes");
-        assert_eq!(key, b"resolved-psk-bytes");
+        assert!(tls13_epsk(&server).is_err());
     }
 }

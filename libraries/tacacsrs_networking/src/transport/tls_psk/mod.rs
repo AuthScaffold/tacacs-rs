@@ -3,25 +3,25 @@
 //! Connections are constructed exclusively through
 //! [`establish_from_server`], which interprets a [`TacacsPlusServer`]
 //! configuration (specifically, the `client-identity.tls13-epsk` container)
-//! and performs the TLS-PSK handshake. The internal `PskIdentity` and
-//! `PskClientConfig` helpers are not part of the public API; callers should
-//! drive the dispatcher in [`crate::establish`] instead.
+//! and performs the TLS-PSK handshake. Internal helpers are not part of the
+//! public API; callers should drive the dispatcher in [`crate::establish`]
+//! instead.
 //!
 //! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 
 mod config_builder;
 mod from_server;
-mod psk_identity;
+mod tls13_epsk;
 mod tls13_psk_session;
 #[allow(clippy::module_inception)]
 mod tls_psk;
 
 pub(crate) use config_builder::PskClientConfig;
 pub(crate) use from_server::{PskDheKeGroups, PskHandshakeHash, establish_from_server, server_has_psk};
-pub(crate) use psk_identity::PskIdentity;
 
 use anyhow::Context;
 use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
+use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
 
 use self::tls13_psk_session::set_tls13_psk_use_session_callback;
 
@@ -31,13 +31,14 @@ use self::tls13_psk_session::set_tls13_psk_use_session_callback;
 ///
 /// # Arguments
 ///
-/// * `psk` - The pre-shared key identity and secret
-/// * `handshake_hash` - The configured externally established PSK handshake hash.
+/// * `epsk` - The YANG TLS 1.3 EPSK configuration.
 fn create_psk_ssl_context(
-    psk: &PskIdentity,
-    handshake_hash: PskHandshakeHash,
+    epsk: &Tls13Epsk,
     psk_dhe_ke_groups: Option<&PskDheKeGroups>,
 ) -> anyhow::Result<SslContext> {
+    tls13_epsk::validate(epsk).context("Invalid TLS 1.3 EPSK configuration")?;
+
+    let handshake_hash = PskHandshakeHash::from_config(epsk.hash);
     let mut ctx_builder = SslContext::builder(SslMethod::tls_client())
         .context("OpenSSL failed to create a TLS 1.3 PSK client context builder")?;
 
@@ -50,7 +51,7 @@ fn create_psk_ssl_context(
 
     ctx_builder.set_verify(SslVerifyMode::NONE);
 
-    set_tls13_psk_use_session_callback(&mut ctx_builder, psk, handshake_hash)
+    set_tls13_psk_use_session_callback(&mut ctx_builder, epsk)
         .context("OpenSSL failed to register TLS 1.3 PSK session callback")?;
 
     ctx_builder
