@@ -189,9 +189,10 @@ accepted.
 ```
 tls_psk/
 ├── mod.rs              — crate-internal API surface + create_psk_ssl_context()
-├── config_builder.rs   — PskConfigurationBuilder: SslContext → SslStream
+├── config_builder.rs   — PskClientConfig: validated SslContext → SslStream
 ├── from_server.rs      — YANG config → PskIdentity + handshake orchestration
 ├── psk_identity.rs     — PskIdentity type (identity label + key bytes)
+├── tls13_psk_session.rs — OpenSSL TLS 1.3 PSK callback + SSL_SESSION bridge
 ├── tls_psk.rs          — Transport trait impl for SslStream<TcpStream>
 └── readme.md           — this file
 ```
@@ -208,14 +209,15 @@ from_server::establish_from_server()
 PskIdentity::new(identity, key)
         │  validates: non-empty, no NUL, key ≥ 16 bytes
         ▼
-PskConfigurationBuilder::new(psk)
-        │  applies psk-dhe-ke OpenSSL group list when configured
+PskClientConfig::prepare(psk, hash, groups)
+  │  builds and validates the OpenSSL context before async handshake work
         │
         ▼
 create_psk_ssl_context()
-        │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK callback, optional groups
+  │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK use-session callback,
+  │  hash-matched ciphersuite, optional psk-dhe-ke groups
         ▼
-SslStream::connect(tcp_stream)
+PskClientConfig::connect(address, tcp_stream)
         │  OpenSSL performs TLS 1.3 PSK handshake
         ▼
 SslStream<TcpStream> implements Transport
@@ -226,13 +228,22 @@ tokio::io::split() → (ReadHalf, WriteHalf)
 
 ### OpenSSL PSK Callback
 
-The `set_psk_client_callback` closure is invoked by OpenSSL during the handshake
-when it needs PSK material. It writes:
+The `openssl` crate's safe callback API only covers the legacy TLS 1.2-style PSK
+callback and cannot attach the digest required by a TLS 1.3 external PSK. This
+module therefore registers OpenSSL's TLS 1.3 `SSL_CTX_set_psk_use_session_callback`
+directly and stores callback state in `SSL_CTX` ex-data.
 
-1. The identity string (null-terminated) into the identity buffer — this becomes
-   the `PskIdentity.identity` field in the `pre_shared_key` extension.
-2. The raw key bytes into the PSK buffer — OpenSSL uses this to compute the
-   binder HMAC and derive traffic keys.
+When OpenSSL asks for the client PSK session, the callback:
+
+1. Verifies the requested digest matches the configured EPSK hash.
+2. Looks up the configured TLS 1.3 ciphersuite using the RFC 8446 wire ID.
+3. Builds a synthetic `SSL_SESSION` with TLS 1.3, the selected cipher, and the
+  PSK bytes copied as the session master key.
+4. Returns the PSK identity bytes and transfers the new `SSL_SESSION` to OpenSSL.
+
+This is the client-side counterpart to server implementations that use
+`SSL_CTX_set_psk_find_session_callback`, such as the .NET OpenSSL proof of
+concept in `Networking-AAA/src/OpenSsl`.
 
 ### Transport Trait
 
@@ -251,7 +262,7 @@ because `SslStream` does not support owned splitting.
 | Forward secrecy | Existing configs remain PSK-only. Configure `tacacsrs:psk-dhe-ke-groups` to negotiate `psk_dhe_ke` and add ephemeral (EC)DHE key material. |
 | Unsupported groups | OpenSSL group-list setup errors are surfaced before the handshake with the configured group list in the message. |
 | Certificate verification | Explicitly set to `SslVerifyMode::NONE` — intentional for PSK, where authentication comes from the shared secret, not certificates |
-| Key logging | `PskIdentity` implements a custom `Debug` that redacts the key bytes |
+| Key logging | `PskIdentity` implements a custom `Debug` that redacts the key bytes; PSK key copies are zeroized when the Rust holders are dropped |
 | Ciphersuites | Restricted to `TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256` (AEAD-only, no CBC) |
 
 ## Feature Flag

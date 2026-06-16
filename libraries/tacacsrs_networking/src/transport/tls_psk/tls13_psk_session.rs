@@ -14,6 +14,9 @@ use openssl_sys::{
 
 use super::{PskHandshakeHash, PskIdentity};
 
+const TLS_AES_128_GCM_SHA256_WIRE_ID: [c_uchar; 2] = [0x13, 0x01];
+const TLS_AES_256_GCM_SHA384_WIRE_ID: [c_uchar; 2] = [0x13, 0x02];
+
 type PskUseSessionCallback = unsafe extern "C" fn(
     ssl: *mut SSL,
     digest: *const EVP_MD,
@@ -27,6 +30,14 @@ struct PskUseSessionConfig {
     handshake_hash: PskHandshakeHash,
     identity: Vec<u8>,
     key: Vec<u8>,
+}
+
+impl Drop for PskUseSessionConfig {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+
+        self.key.zeroize();
+    }
 }
 
 extern "C" {
@@ -218,17 +229,10 @@ unsafe fn create_session(
 }
 
 impl PskHandshakeHash {
-    fn as_name(self) -> &'static str {
-        match self {
-            Self::Sha256 => "sha-256",
-            Self::Sha384 => "sha-384",
-        }
-    }
-
     unsafe fn find_cipher(self, ssl: *mut SSL) -> *const SSL_CIPHER {
         // SAFETY: `ssl` is the non-null `SSL*` OpenSSL passed to the callback,
-        // and the cipher suite ID is the two-byte TLS wire identifier expected
-        // by `SSL_CIPHER_find`.
+        // and the cipher suite ID is the two-byte TLS wire identifier from
+        // RFC 8446 Appendix B.4 expected by `SSL_CIPHER_find`.
         unsafe { SSL_CIPHER_find(ssl, self.tls13_cipher_suite_id().as_ptr()) }
     }
 
@@ -260,8 +264,8 @@ impl PskHandshakeHash {
 
     const fn tls13_cipher_suite_id(self) -> [c_uchar; 2] {
         match self {
-            Self::Sha256 => [0x13, 0x01],
-            Self::Sha384 => [0x13, 0x02],
+            Self::Sha256 => TLS_AES_128_GCM_SHA256_WIRE_ID,
+            Self::Sha384 => TLS_AES_256_GCM_SHA384_WIRE_ID,
         }
     }
 }

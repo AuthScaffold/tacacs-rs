@@ -23,10 +23,11 @@ openssl = { version = "0.10.80", optional = true }
 openssl-sys = { version = "0.9.116", optional = true }
 tokio-openssl = { version = "0.6.5", optional = true }
 foreign-types = { version = "0.3.2", optional = true }
+zeroize = { version = "1.8.2", optional = true }
 
 [features]
 default = []
-psk = ["dep:foreign-types", "dep:openssl", "dep:openssl-sys", "dep:tokio-openssl"]
+psk = ["dep:foreign-types", "dep:openssl", "dep:openssl-sys", "dep:tokio-openssl", "dep:zeroize"]
 
 [dev-dependencies]
 console-subscriber = "0.5.0"

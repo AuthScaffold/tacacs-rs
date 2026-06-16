@@ -12,7 +12,7 @@ use tokio_openssl::SslStream;
 
 use tacacsrs_config::{EpskSupportedHash, PskDheKeSupportedGroup, TacacsPlusServer};
 
-use super::{PskConfigurationBuilder, PskIdentity};
+use super::{PskClientConfig, PskIdentity};
 
 /// OpenSSL TLS 1.3 group list derived from `psk-dhe-ke-groups`.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,6 +69,13 @@ impl PskHandshakeHash {
             Self::Sha384 => "TLS_AES_256_GCM_SHA384",
         }
     }
+
+    pub(crate) const fn as_name(self) -> &'static str {
+        match self {
+            Self::Sha256 => "sha-256",
+            Self::Sha384 => "sha-384",
+        }
+    }
 }
 
 fn openssl_group_name(group: PskDheKeSupportedGroup) -> &'static str {
@@ -120,10 +127,9 @@ pub(crate) async fn establish_from_server(
 
     log::debug!("Negotiating TLS-PSK handshake with {address}");
 
-    let tls_stream = PskConfigurationBuilder::new(psk)
-        .with_handshake_hash(handshake_hash)
-        .with_psk_dhe_ke_groups(psk_dhe_ke_groups)
-        .connect(tcp_stream)
+    let tls_stream = PskClientConfig::prepare(psk, handshake_hash, psk_dhe_ke_groups)
+        .context("Invalid TLS PSK OpenSSL configuration")?
+        .connect(address, tcp_stream)
         .await
         .inspect_err(|e| log::warn!("TLS-PSK handshake with {address} failed: {e:#}"))
         .context("Failed to establish TLS PSK connection")?;
@@ -334,6 +340,59 @@ mod tests {
 
         create_psk_ssl_context(&psk, PskHandshakeHash::Sha384, None)
             .expect("OpenSSL should accept TLS 1.3 SHA-384 PSK sessions");
+    }
+
+    #[test]
+    fn create_psk_ssl_context_accepts_all_supported_hashes() {
+        let psk = PskIdentity::new("client-id", b"resolved-psk-bytes-with-enough-length")
+            .expect("valid psk");
+
+        for hash in EpskSupportedHash::ALL {
+            let handshake_hash = PskHandshakeHash::from_config(*hash);
+
+            create_psk_ssl_context(&psk, handshake_hash, None).unwrap_or_else(|error| {
+                panic!(
+                    "OpenSSL should accept TLS 1.3 PSK hash {} using ciphersuite {}: {error:#}",
+                    handshake_hash.as_name(),
+                    handshake_hash.tls13_ciphersuites()
+                )
+            });
+        }
+    }
+
+    #[test]
+    fn create_psk_ssl_context_accepts_all_supported_psk_dhe_groups() {
+        let psk = PskIdentity::new("client-id", b"resolved-psk-bytes-with-enough-length")
+            .expect("valid psk");
+        let groups =
+            PskDheKeGroups::from_config(PskDheKeSupportedGroup::ALL).expect("configured groups");
+
+        create_psk_ssl_context(&psk, PskHandshakeHash::Sha256, Some(&groups)).unwrap_or_else(
+            |error| {
+                panic!(
+                    "OpenSSL should accept every configured TLS 1.3 PSK-DHE group ({}): {error:#}",
+                    groups.as_openssl_list()
+                )
+            },
+        );
+    }
+
+    #[test]
+    fn prepare_psk_client_config_surfaces_context_errors_before_handshake() {
+        let psk = PskIdentity::new("client-id", b"resolved-psk-bytes-with-enough-length")
+            .expect("valid psk");
+        let groups = PskDheKeGroups {
+            openssl_list: "not-a-supported-tls-group".to_owned(),
+        };
+
+        let error = match PskClientConfig::prepare(psk, PskHandshakeHash::Sha256, Some(groups)) {
+            Ok(_) => panic!("unsupported OpenSSL group should be rejected during preparation"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to prepare OpenSSL TLS 1.3 PSK context"));
+        assert!(message.contains("not-a-supported-tls-group"));
     }
 
     #[test]

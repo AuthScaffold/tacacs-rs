@@ -77,6 +77,14 @@ impl PskIdentity {
     }
 }
 
+impl Drop for PskIdentity {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+
+        self.key.zeroize();
+    }
+}
+
 impl std::fmt::Debug for PskIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PskIdentity")
