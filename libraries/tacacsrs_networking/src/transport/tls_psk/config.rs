@@ -8,14 +8,16 @@ use anyhow::{Context, Result};
 use openssl::ssl::Ssl;
 use openssl::ssl::SslContext;
 use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
+use tacacsrs_config::EpskSupportedHash;
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
 use super::context::create_psk_ssl_context;
-use super::{PskDheKeGroups, PskHandshakeHash};
+use super::PskDheKeGroups;
 
 pub(crate) struct PskClientConfig {
-    handshake_hash: PskHandshakeHash,
+    external_identity: String,
+    handshake_hash: EpskSupportedHash,
     psk_dhe_ke_groups: Option<PskDheKeGroups>,
     ssl_context: SslContext,
 }
@@ -23,19 +25,20 @@ pub(crate) struct PskClientConfig {
 impl PskClientConfig {
     /// Prepares an OpenSSL TLS 1.3 PSK client context for the supplied EPSK config.
     pub(crate) fn prepare(epsk: &Tls13Epsk) -> Result<Self> {
-        let handshake_hash = PskHandshakeHash::from_config(epsk.hash);
+        let handshake_hash = epsk.hash;
         let psk_dhe_ke_groups = PskDheKeGroups::from_config(&epsk.psk_dhe_ke_groups);
         let ssl_context = create_psk_ssl_context(epsk, psk_dhe_ke_groups.as_ref())
             .with_context(|| {
                 format!(
                     "Failed to prepare OpenSSL TLS 1.3 PSK context (identity: {}, hash: {}, groups: {})",
                     epsk.external_identity,
-                    handshake_hash.as_name(),
+                    handshake_hash.as_rfc7951_str(),
                     format_groups(psk_dhe_ke_groups.as_ref())
                 )
             })?;
 
         Ok(Self {
+            external_identity: epsk.external_identity.clone(),
             handshake_hash,
             psk_dhe_ke_groups,
             ssl_context,
@@ -53,18 +56,17 @@ impl PskClientConfig {
         address: &str,
         stream: TcpStream,
     ) -> Result<SslStream<TcpStream>> {
-        let identity = super::tls13_psk_session::configured_tls13_epsk(&self.ssl_context)
-            .map_or("<unknown>", |epsk| epsk.external_identity.as_str());
         let ssl = Ssl::new(&self.ssl_context).with_context(|| {
             format!(
                 "OpenSSL failed to allocate TLS 1.3 PSK SSL object for {address} (identity: {}, hash: {})",
-                identity,
-                self.handshake_hash.as_name()
+                self.external_identity,
+                self.handshake_hash.as_rfc7951_str()
             )
         })?;
         let mut tls_stream = SslStream::new(ssl, stream).with_context(|| {
             format!(
-                "OpenSSL failed to attach TLS 1.3 PSK SSL object to TCP stream for {address} (identity: {identity})"
+                "OpenSSL failed to attach TLS 1.3 PSK SSL object to TCP stream for {address} (identity: {})",
+                self.external_identity
             )
         })?;
 
@@ -73,8 +75,8 @@ impl PskClientConfig {
             .with_context(|| {
                 format!(
                     "OpenSSL TLS 1.3 PSK handshake failed for {address} (identity: {}, hash: {}, groups: {})",
-                    identity,
-                    self.handshake_hash.as_name(),
+                    self.external_identity,
+                    self.handshake_hash.as_rfc7951_str(),
                     format_groups(self.psk_dhe_ke_groups.as_ref())
                 )
             })?;
@@ -82,8 +84,8 @@ impl PskClientConfig {
         log::info!(
             target: module_path!(),
             "TLS 1.3 PSK connection established (address: {address}, identity: {}, hash: {}, groups: {})",
-            identity,
-            self.handshake_hash.as_name(),
+            self.external_identity,
+            self.handshake_hash.as_rfc7951_str(),
             format_groups(self.psk_dhe_ke_groups.as_ref())
         );
 

@@ -193,7 +193,7 @@ tls_psk/
 ├── config_builder.rs   — PskClientConfig: validated SslContext → SslStream
 ├── from_server.rs      — TacacsPlusServer PSK selection + connection establishment
 ├── tls13_epsk.rs       — validation/accessors for the YANG TLS 1.3 EPSK node
-├── tls13_psk_session.rs — OpenSSL TLS 1.3 PSK callback + SSL_SESSION bridge
+├── ffi/ — OpenSSL TLS 1.3 PSK callback + SSL_SESSION FFI bridge
 └── readme.md           — this file
 ```
 
@@ -204,15 +204,15 @@ TacacsPlusServer (YANG config)
         │
         ▼
 from_server::establish_from_server()
-  │  selects client-identity.tls13-epsk
+        │  selects client-identity.tls13-epsk
         ▼
 PskClientConfig::prepare(epsk)
-  │  validates EPSK fields and builds the OpenSSL context before async handshake work
+        │  validates EPSK fields and builds the OpenSSL context before async handshake work
         │
         ▼
       context::create_psk_ssl_context()
-  │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK use-session callback,
-  │  hash-matched ciphersuite, optional psk-dhe-ke groups
+        │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK use-session callback,
+        │  hash-matched ciphersuite, optional psk-dhe-ke groups
         ▼
 PskClientConfig::connect(address, tcp_stream)
         │  OpenSSL performs TLS 1.3 PSK handshake
@@ -260,7 +260,7 @@ because `SslStream` does not support owned splitting.
 | Unsupported groups | OpenSSL group-list setup errors are surfaced before the handshake with the configured group list in the message. |
 | Certificate verification | Explicitly set to `SslVerifyMode::NONE` — intentional for PSK, where authentication comes from the shared secret, not certificates |
 | Key logging | The PSK transport does not log key material. The generated `Tls13Epsk` model contains inline key bytes, so do not debug-log the full model. |
-| Ciphersuites | Restricted to `TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256` (AEAD-only, no CBC) |
+| Ciphersuites | Restricted to the configured EPSK hash: SHA-256 uses `TLS_AES_128_GCM_SHA256`; SHA-384 uses `TLS_AES_256_GCM_SHA384` |
 
 ## Feature Flag
 

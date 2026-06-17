@@ -11,12 +11,12 @@
 
 mod config_builder;
 mod context;
+mod ffi;
 mod from_server;
 mod tls13_epsk;
-mod tls13_psk_session;
 
 pub(crate) use config_builder::PskClientConfig;
-pub(crate) use context::{PskDheKeGroups, PskHandshakeHash};
+pub(crate) use context::{EpskSupportedHashExt, PskDheKeGroups};
 pub(crate) use from_server::{establish_from_server, server_has_psk};
 
 use tokio::net::TcpStream;

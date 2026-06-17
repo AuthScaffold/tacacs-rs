@@ -8,7 +8,7 @@ use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
 use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
 use tacacsrs_config::{EpskSupportedHash, PskDheKeSupportedGroup};
 
-use super::tls13_psk_session::set_tls13_psk_use_session_callback;
+use super::ffi::set_tls13_psk_use_session_callback;
 use super::tls13_epsk;
 
 /// OpenSSL TLS 1.3 group list derived from `psk-dhe-ke-groups`.
@@ -45,32 +45,16 @@ impl PskDheKeGroups {
     }
 }
 
-/// TLS 1.3 EPSK handshake hash selected by configuration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PskHandshakeHash {
-    Sha256,
-    Sha384,
+/// OpenSSL projections for the configured TLS 1.3 EPSK hash.
+pub(crate) trait EpskSupportedHashExt {
+    fn tls13_ciphersuites(self) -> &'static str;
 }
 
-impl PskHandshakeHash {
-    pub(crate) fn from_config(hash: EpskSupportedHash) -> Self {
-        match hash {
-            EpskSupportedHash::Sha256 => Self::Sha256,
-            EpskSupportedHash::Sha384 => Self::Sha384,
-        }
-    }
-
-    pub(crate) const fn tls13_ciphersuites(self) -> &'static str {
+impl EpskSupportedHashExt for EpskSupportedHash {
+    fn tls13_ciphersuites(self) -> &'static str {
         match self {
             Self::Sha256 => "TLS_AES_128_GCM_SHA256",
             Self::Sha384 => "TLS_AES_256_GCM_SHA384",
-        }
-    }
-
-    pub(crate) const fn as_name(self) -> &'static str {
-        match self {
-            Self::Sha256 => "sha-256",
-            Self::Sha384 => "sha-384",
         }
     }
 }
@@ -81,7 +65,7 @@ pub(super) fn create_psk_ssl_context(
 ) -> anyhow::Result<SslContext> {
     tls13_epsk::validate(epsk).context("Invalid TLS 1.3 EPSK configuration")?;
 
-    let handshake_hash = PskHandshakeHash::from_config(epsk.hash);
+    let handshake_hash = epsk.hash;
     let mut ctx_builder = SslContext::builder(SslMethod::tls_client())
         .context("OpenSSL failed to create a TLS 1.3 PSK client context builder")?;
 
@@ -168,18 +152,16 @@ mod tests {
     }
 
     #[test]
-    fn psk_handshake_hash_maps_sha256_to_sha256_ciphersuite() {
-        let handshake_hash = PskHandshakeHash::from_config(EpskSupportedHash::Sha256);
+    fn epsk_supported_hash_maps_sha256_to_sha256_ciphersuite() {
+        let handshake_hash = EpskSupportedHash::Sha256;
 
-        assert_eq!(handshake_hash, PskHandshakeHash::Sha256);
         assert_eq!(handshake_hash.tls13_ciphersuites(), "TLS_AES_128_GCM_SHA256");
     }
 
     #[test]
-    fn psk_handshake_hash_maps_sha384_to_sha384_ciphersuite() {
-        let handshake_hash = PskHandshakeHash::from_config(EpskSupportedHash::Sha384);
+    fn epsk_supported_hash_maps_sha384_to_sha384_ciphersuite() {
+        let handshake_hash = EpskSupportedHash::Sha384;
 
-        assert_eq!(handshake_hash, PskHandshakeHash::Sha384);
         assert_eq!(handshake_hash.tls13_ciphersuites(), "TLS_AES_256_GCM_SHA384");
     }
 
@@ -208,12 +190,12 @@ mod tests {
     fn create_psk_ssl_context_accepts_all_supported_hashes() {
         for hash in EpskSupportedHash::ALL {
             let epsk = epsk_with_hash(*hash);
-            let handshake_hash = PskHandshakeHash::from_config(*hash);
+            let handshake_hash = *hash;
 
             create_psk_ssl_context(&epsk, None).unwrap_or_else(|error| {
                 panic!(
                     "OpenSSL should accept TLS 1.3 PSK hash {} using ciphersuite {}: {error:#}",
-                    handshake_hash.as_name(),
+                    handshake_hash.as_rfc7951_str(),
                     handshake_hash.tls13_ciphersuites()
                 )
             });

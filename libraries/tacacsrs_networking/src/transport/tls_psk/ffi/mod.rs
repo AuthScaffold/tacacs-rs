@@ -1,6 +1,8 @@
 #![allow(unsafe_code)]
 
+use std::ffi::CStr;
 use std::os::raw::{c_int, c_uchar};
+use std::ptr;
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
@@ -8,15 +10,14 @@ use foreign_types::ForeignTypeRef;
 use openssl::ex_data::Index;
 use openssl::ssl::{SslContext, SslContextBuilder, SslContextRef};
 use openssl_sys::{
-    EVP_MD, EVP_MD_get_type, EVP_sha256, EVP_sha384, SSL, SSL_CIPHER, SSL_CTX, SSL_SESSION,
-    SSL_SESSION_free, SSL_get_SSL_CTX, TLS1_3_VERSION,
+    stack_st_SSL_CIPHER, EVP_MD, EVP_MD_get_type, EVP_sha256, EVP_sha384, OPENSSL_STACK,
+    OPENSSL_sk_num, OPENSSL_sk_value, SSL, SSL_CIPHER, SSL_CIPHER_standard_name, SSL_CTX,
+    SSL_SESSION, SSL_SESSION_free, SSL_get_SSL_CTX, TLS1_3_VERSION,
 };
 use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
+use tacacsrs_config::EpskSupportedHash;
 
-use super::{tls13_epsk, PskHandshakeHash};
-
-const TLS_AES_128_GCM_SHA256_WIRE_ID: [c_uchar; 2] = [0x13, 0x01];
-const TLS_AES_256_GCM_SHA384_WIRE_ID: [c_uchar; 2] = [0x13, 0x02];
+use super::{tls13_epsk, EpskSupportedHashExt};
 
 type PskUseSessionCallback = unsafe extern "C" fn(
     ssl: *mut SSL,
@@ -26,8 +27,7 @@ type PskUseSessionCallback = unsafe extern "C" fn(
     session: *mut *mut SSL_SESSION,
 ) -> c_int;
 
-#[derive(Debug)]
-struct OpenSslTls13EpskConfig {
+struct OpenSslPskCallbackState {
     epsk: Tls13Epsk,
 }
 
@@ -49,7 +49,7 @@ extern "C" {
 
     fn SSL_SESSION_set_protocol_version(session: *mut SSL_SESSION, version: c_int) -> c_int;
 
-    fn SSL_CIPHER_find(ssl: *mut SSL, cipher_suite: *const c_uchar) -> *const SSL_CIPHER;
+    fn SSL_get_ciphers(ssl: *const SSL) -> *mut stack_st_SSL_CIPHER;
 }
 
 /// Configures a TLS 1.3 PSK use-session callback on an OpenSSL context.
@@ -64,9 +64,9 @@ pub(crate) fn set_tls13_psk_use_session_callback(
     epsk: &Tls13Epsk,
 ) -> Result<()> {
     let index = psk_config_index().context("failed to allocate OpenSSL PSK ex-data index")?;
-    let config = OpenSslTls13EpskConfig { epsk: epsk.clone() };
+    let state = OpenSslPskCallbackState { epsk: epsk.clone() };
 
-    builder.set_ex_data(index, config);
+    builder.set_ex_data(index, state);
 
     // SAFETY: `builder.as_ptr()` is a live `SSL_CTX` owned by the builder, and
     // `psk_use_session_callback` has the exact C ABI required by OpenSSL. The
@@ -79,21 +79,15 @@ pub(crate) fn set_tls13_psk_use_session_callback(
     Ok(())
 }
 
-pub(super) fn configured_tls13_epsk(context: &SslContext) -> Option<&Tls13Epsk> {
-    let index = psk_config_index().ok()?;
-
-    context.ex_data(index).map(|config| &config.epsk)
-}
-
 fn psk_config_index(
-) -> Result<Index<SslContext, OpenSslTls13EpskConfig>, openssl::error::ErrorStack> {
-    static INDEX: OnceLock<Index<SslContext, OpenSslTls13EpskConfig>> = OnceLock::new();
+) -> Result<Index<SslContext, OpenSslPskCallbackState>, openssl::error::ErrorStack> {
+    static INDEX: OnceLock<Index<SslContext, OpenSslPskCallbackState>> = OnceLock::new();
 
     if let Some(index) = INDEX.get() {
         return Ok(*index);
     }
 
-    let index = SslContext::new_ex_index::<OpenSslTls13EpskConfig>()?;
+    let index = SslContext::new_ex_index::<OpenSslPskCallbackState>()?;
     Ok(*INDEX.get_or_init(|| index))
 }
 
@@ -109,44 +103,47 @@ unsafe extern "C" fn psk_use_session_callback(
         return 0;
     }
 
-    match build_callback_session(ssl, digest) {
-        Some((config, callback_session)) => {
-            let identity_bytes = config.epsk.external_identity.as_bytes();
-            // SAFETY: OpenSSL consumes these out-parameters before the callback
-            // returns. The identity bytes live in the context ex-data for the
-            // lifetime of the `SSL_CTX`, and `callback_session` transfers
-            // ownership of a newly allocated `SSL_SESSION` to OpenSSL.
-            unsafe {
-                *identity = identity_bytes.as_ptr();
-                *identity_len = identity_bytes.len();
-                *session = callback_session;
-            }
+    let Some(state) = callback_state(ssl) else {
+        return 0;
+    };
 
-            log::debug!(
-                target: module_path!(),
-                "Provided TLS 1.3 PSK session (identity: {}, hash: {})",
-                config.epsk.external_identity,
-                PskHandshakeHash::from_config(config.epsk.hash).as_name()
-            );
+    let Some(callback_session) = build_callback_session(ssl, digest, state) else {
+        return 0;
+    };
 
-            1
-        }
-        None => 0,
+    let identity_bytes = state.epsk.external_identity.as_bytes();
+    // SAFETY: OpenSSL consumes these out-parameters before the callback
+    // returns. The identity bytes live in the context ex-data for the lifetime
+    // of the `SSL_CTX`, and `callback_session` transfers ownership of a newly
+    // allocated `SSL_SESSION` to OpenSSL.
+    unsafe {
+        *identity = identity_bytes.as_ptr();
+        *identity_len = identity_bytes.len();
+        *session = callback_session;
     }
+
+    log::debug!(
+        target: module_path!(),
+        "Provided TLS 1.3 PSK session (identity: {}, hash: {})",
+        state.epsk.external_identity,
+        state.epsk.hash.as_rfc7951_str()
+    );
+
+    1
 }
 
 unsafe fn build_callback_session(
     ssl: *mut SSL,
     digest: *const EVP_MD,
-) -> Option<(&'static OpenSslTls13EpskConfig, *mut SSL_SESSION)> {
-    let config = callback_config(ssl)?;
-    let handshake_hash = PskHandshakeHash::from_config(config.epsk.hash);
+    state: &OpenSslPskCallbackState,
+) -> Option<*mut SSL_SESSION> {
+    let handshake_hash = state.epsk.hash;
 
     if !digest.is_null() && !handshake_hash.matches_digest(digest) {
         log::warn!(
             target: module_path!(),
             "OpenSSL requested TLS 1.3 PSK hash that does not match configured hash {}",
-            handshake_hash.as_name()
+            handshake_hash.as_rfc7951_str()
         );
         return None;
     }
@@ -161,11 +158,10 @@ unsafe fn build_callback_session(
         return None;
     }
 
-    let callback_session = create_session(config, cipher)?;
-    Some((config, callback_session))
+    create_session(state, cipher)
 }
 
-unsafe fn callback_config(ssl: *mut SSL) -> Option<&'static OpenSslTls13EpskConfig> {
+unsafe fn callback_state(ssl: *mut SSL) -> Option<&'static OpenSslPskCallbackState> {
     // SAFETY: `ssl` is the non-null `SSL*` OpenSSL passed to the callback.
     let context = unsafe { SSL_get_SSL_CTX(ssl) };
     if context.is_null() {
@@ -188,10 +184,10 @@ unsafe fn callback_config(ssl: *mut SSL) -> Option<&'static OpenSslTls13EpskConf
 }
 
 unsafe fn create_session(
-    config: &OpenSslTls13EpskConfig,
+    state: &OpenSslPskCallbackState,
     cipher: *const SSL_CIPHER,
 ) -> Option<*mut SSL_SESSION> {
-    let key = match tls13_epsk::symmetric_key(&config.epsk) {
+    let key = match tls13_epsk::symmetric_key(&state.epsk) {
         Ok(key) => key,
         Err(error) => {
             log::error!(target: module_path!(), "TLS 1.3 EPSK callback has no symmetric key: {error}");
@@ -208,10 +204,10 @@ unsafe fn create_session(
     }
 
     let configured = unsafe {
-        // SAFETY: `session` is newly allocated, `cipher` came from
-        // `SSL_CIPHER_find` for the same `SSL*`, and the key slice is valid for
-        // the duration of the call. Each OpenSSL setter copies the supplied
-        // data into the session.
+        // SAFETY: `session` is newly allocated, `cipher` came from OpenSSL's
+        // configured cipher stack for the same `SSL*`, and the key slice is
+        // valid for the duration of the call. Each OpenSSL setter copies the
+        // supplied data into the session.
         SSL_SESSION_set_protocol_version(session, TLS1_3_VERSION) == 1
             && SSL_SESSION_set_cipher(session, cipher) == 1
             && SSL_SESSION_set1_master_key(session, key.as_ptr(), key.len()) == 1
@@ -230,12 +226,57 @@ unsafe fn create_session(
     }
 }
 
-impl PskHandshakeHash {
+trait OpenSslEpskSupportedHashExt {
+    unsafe fn find_cipher(self, ssl: *mut SSL) -> *const SSL_CIPHER;
+
+    fn matches_digest(self, digest: *const EVP_MD) -> bool;
+}
+
+impl OpenSslEpskSupportedHashExt for EpskSupportedHash {
     unsafe fn find_cipher(self, ssl: *mut SSL) -> *const SSL_CIPHER {
-        // SAFETY: `ssl` is the non-null `SSL*` OpenSSL passed to the callback,
-        // and the cipher suite ID is the two-byte TLS wire identifier from
-        // RFC 8446 Appendix B.4 expected by `SSL_CIPHER_find`.
-        unsafe { SSL_CIPHER_find(ssl, self.tls13_cipher_suite_id().as_ptr()) }
+        let expected_name = self.tls13_ciphersuites();
+
+        // SAFETY: `ssl` is the non-null `SSL*` OpenSSL passed to the callback.
+        // `SSL_get_ciphers` returns OpenSSL's configured cipher stack owned by
+        // the `SSL`; this code only inspects it during the callback.
+        let ciphers = unsafe { SSL_get_ciphers(ssl) };
+        if ciphers.is_null() {
+            return ptr::null();
+        }
+
+        // SAFETY: OpenSSL safe-stack macros delegate to `OPENSSL_sk_num` for
+        // stack length. Casting the typed stack to `OPENSSL_STACK` matches those
+        // macros for `STACK_OF(SSL_CIPHER)`.
+        let cipher_count = unsafe { OPENSSL_sk_num(ciphers.cast::<OPENSSL_STACK>()) };
+        if cipher_count <= 0 {
+            return ptr::null();
+        }
+
+        for index in 0..cipher_count {
+            // SAFETY: `index` is within the stack length returned above.
+            let cipher = unsafe { OPENSSL_sk_value(ciphers.cast::<OPENSSL_STACK>(), index) }
+                .cast::<SSL_CIPHER>();
+            if cipher.is_null() {
+                continue;
+            }
+
+            // SAFETY: `cipher` is an `SSL_CIPHER*` from OpenSSL's cipher stack.
+            let standard_name = unsafe { SSL_CIPHER_standard_name(cipher) };
+            if standard_name.is_null() {
+                continue;
+            }
+
+            // SAFETY: OpenSSL returns a valid NUL-terminated static cipher name.
+            let Ok(standard_name) = unsafe { CStr::from_ptr(standard_name) }.to_str() else {
+                continue;
+            };
+
+            if standard_name == expected_name {
+                return cipher;
+            }
+        }
+
+        ptr::null()
     }
 
     fn matches_digest(self, digest: *const EVP_MD) -> bool {
@@ -261,13 +302,6 @@ impl PskHandshakeHash {
             // to the callback, and `expected` is one of OpenSSL's digest
             // descriptors. Comparing NIDs avoids relying on pointer identity.
             EVP_MD_get_type(digest) == EVP_MD_get_type(expected)
-        }
-    }
-
-    const fn tls13_cipher_suite_id(self) -> [c_uchar; 2] {
-        match self {
-            Self::Sha256 => TLS_AES_128_GCM_SHA256_WIRE_ID,
-            Self::Sha384 => TLS_AES_256_GCM_SHA384_WIRE_ID,
         }
     }
 }
