@@ -101,7 +101,7 @@ are translated into OpenSSL supported-group names and used to send TLS 1.3
 `psk_dhe_ke` key shares. When the leaf-list is empty, the transport leaves the
 OpenSSL group list unchanged and preserves the existing PSK-only behaviour.
 
-### `server-authentication/tls13-epsks` — The Trust Policy
+### `server-authentication/tls13-epsks` — Model Placeholder
 
 ```
 leaf tls13-epsks {
@@ -110,10 +110,11 @@ leaf tls13-epsks {
 }
 ```
 
-This is a **policy flag** (presence = enabled). It declares that successful
-completion of a PSK handshake is sufficient to authenticate the server — no
-CA certificates or certificate pinning needed. No additional configuration is
-required because the key is inherently the same one in `client-identity`.
+This leaf exists in the TLS client YANG model, but this transport does not
+require or consume it. TACACS+ PSK selection is driven by
+`client-identity/tls13-epsk`; if that EPSK is configured and accepted by the
+server, the TLS 1.3 handshake authenticates the server through the PSK Finished
+MAC. The generated TACACS+ YANG input is not expected to supply this leaf.
 
 ### Why Both Nodes Exist
 
@@ -122,8 +123,9 @@ independent containers because other auth types (certificate, raw-public-key)
 genuinely support asymmetric combinations (e.g., client authenticates with a
 certificate while verifying the server via CA trust chain).
 
-For the PSK case specifically, this separation is **structural only** — it does
-not enable mixed PSK + certificate authentication. RFC 8446 §4.1.1 is explicit:
+For the PSK case specifically, this separation is structural only for this
+transport — it does not enable mixed PSK + certificate authentication. RFC 8446
+§4.1.1 is explicit:
 
 > "When authenticating via a certificate, the server will send the Certificate
 > (Section 4.4.2) and CertificateVerify (Section 4.4.3) messages. In TLS 1.3
@@ -286,7 +288,7 @@ propagates: `tacon` → `tacacsrs-networking` → OpenSSL.
   - Defines the `tls13-epsk` grouping and `server-auth-tls13-epsk` feature
 - **ietf-tls-client@2024-10-10.yang** (RFC 9645)
   - `client-ident-tls13-epsk` feature: client presents EPSK identity
-  - `server-auth-tls13-epsk` feature: client trusts server via PSK
+  - `server-auth-tls13-epsk` feature: model support for PSK-based server auth
 - **ietf-system-tacacs-plus@2026-03-31.yang** (RFC 9950)
   - `grouping tls13-epsk`: the EPSK tuple configuration
-  - `leaf tls13-epsks` in `server-authentication`: the trust policy flag
+  - `leaf tls13-epsks` in `server-authentication`: currently unused placeholder in this transport

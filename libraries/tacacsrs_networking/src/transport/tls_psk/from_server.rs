@@ -39,7 +39,6 @@ pub(crate) async fn establish_from_server(
     tcp_stream: TcpStream,
 ) -> Result<SslStream<TcpStream>> {
     let epsk = tls13_epsk(server)?;
-    ensure_tls13_epsk_server_authentication(server)?;
     let server_name = derive_sni_name(server)?;
 
     log::debug!(
@@ -66,21 +65,6 @@ fn tls13_epsk(server: &TacacsPlusServer) -> Result<&Tls13Epsk> {
         .ok_or_else(|| anyhow::anyhow!("server has no TLS 1.3 PSK client-identity"))
 }
 
-fn ensure_tls13_epsk_server_authentication(server: &TacacsPlusServer) -> Result<()> {
-    if server
-        .server_authentication
-        .as_ref()
-        .and_then(|server_authentication| server_authentication.tls13_epsks)
-        == Some(true)
-    {
-        return Ok(());
-    }
-
-    anyhow::bail!(
-        "server-authentication.tls13-epsks must be configured to trust TLS 1.3 PSK server authentication"
-    )
-}
-
 fn derive_sni_name(server: &TacacsPlusServer) -> Result<Option<&str>> {
     if !server.sni_enabled() {
         return Ok(None);
@@ -97,7 +81,7 @@ fn derive_sni_name(server: &TacacsPlusServer) -> Result<Option<&str>> {
 mod tests {
     use super::*;
     use tacacsrs_config::generated::tacacs_plus::{
-        EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
+        EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity,
     };
     use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
 
@@ -141,15 +125,6 @@ mod tests {
         server
     }
 
-    fn trust_tls13_epsk_server_authentication(server: &mut TacacsPlusServer) {
-        server.server_authentication = Some(TlsClientServerAuthentication {
-            credentials_reference: None,
-            ca_certs: None,
-            ee_certs: None,
-            tls13_epsks: Some(true),
-        });
-    }
-
     fn epsk(server: &TacacsPlusServer) -> &Tls13Epsk {
         tls13_epsk(server).expect("tls13 epsk")
     }
@@ -180,25 +155,6 @@ mod tests {
     fn tls13_epsk_errors_when_missing() {
         let server = server_template();
         assert!(tls13_epsk(&server).is_err());
-    }
-
-    #[test]
-    fn ensure_tls13_epsk_server_authentication_accepts_trust_policy() {
-        let mut server = server_with_psk("client-id", &[0u8; 16]);
-        trust_tls13_epsk_server_authentication(&mut server);
-
-        ensure_tls13_epsk_server_authentication(&server).expect("trust policy should be accepted");
-    }
-
-    #[test]
-    fn ensure_tls13_epsk_server_authentication_errors_when_missing() {
-        let server = server_with_psk("client-id", &[0u8; 16]);
-        let error = ensure_tls13_epsk_server_authentication(&server)
-            .expect_err("missing trust policy should be rejected");
-
-        assert!(error
-            .to_string()
-            .contains("server-authentication.tls13-epsks"));
     }
 
     #[test]

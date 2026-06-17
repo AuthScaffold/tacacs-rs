@@ -247,12 +247,7 @@ impl TacacsPlusServerBuilder {
                 psk_dhe_ke_groups,
             }),
         });
-        self.server.server_authentication = Some(TlsClientServerAuthentication {
-            credentials_reference: None,
-            ca_certs: None,
-            ee_certs: None,
-            tls13_epsks: Some(true),
-        });
+        self.server.server_authentication = None;
         self
     }
 
@@ -327,13 +322,6 @@ mod tests {
 
         assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::Secp384r1)));
         assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp256r1)));
-        assert_eq!(
-            server
-                .server_authentication
-                .as_ref()
-                .and_then(|server_authentication| server_authentication.tls13_epsks),
-            Some(true)
-        );
     }
 
     #[test]
