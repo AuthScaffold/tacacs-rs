@@ -1,66 +1,13 @@
 //! Build TLS 1.3 PSK connections directly from a [`TacacsPlusServer`]
 //! configuration.
-//!
-//! This module owns the translation from the YANG-derived configuration model
-//! to the lower-level PSK primitives ([`PskIdentity`], the symmetric key
-//! bytes). It exists so the establishment dispatcher does not need to
-//! understand PSK encoding details.
 
 use anyhow::{Context, Result};
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
-use tacacsrs_config::{PskDheKeSupportedGroup, TacacsPlusServer};
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, Tls13Epsk};
 
-use super::{PskConfigurationBuilder, PskIdentity};
-
-/// OpenSSL TLS 1.3 group list derived from `psk-dhe-ke-groups`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PskDheKeGroups {
-    openssl_list: String,
-}
-
-impl PskDheKeGroups {
-    fn from_config(groups: &[PskDheKeSupportedGroup]) -> Option<Self> {
-        if groups.is_empty() {
-            return None;
-        }
-
-        Some(Self {
-            openssl_list: groups
-                .iter()
-                .copied()
-                .map(openssl_group_name)
-                .collect::<Vec<_>>()
-                .join(":"),
-        })
-    }
-
-    pub(crate) fn as_openssl_list(&self) -> &str {
-        &self.openssl_list
-    }
-
-    pub(crate) fn unsupported_error(&self, error: &openssl::error::ErrorStack) -> anyhow::Error {
-        anyhow::anyhow!(
-            "unsupported TLS PSK DHE group list `{}`; ensure the configured psk-dhe-ke-groups are supported by the linked OpenSSL library: {error}",
-            self.openssl_list
-        )
-    }
-}
-
-fn openssl_group_name(group: PskDheKeSupportedGroup) -> &'static str {
-    match group {
-        PskDheKeSupportedGroup::X25519 => "X25519",
-        PskDheKeSupportedGroup::Secp256r1 => "P-256",
-        PskDheKeSupportedGroup::Secp384r1 => "P-384",
-        PskDheKeSupportedGroup::Secp521r1 => "P-521",
-        PskDheKeSupportedGroup::Ffdhe2048 => "ffdhe2048",
-        PskDheKeSupportedGroup::Ffdhe3072 => "ffdhe3072",
-        PskDheKeSupportedGroup::Ffdhe4096 => "ffdhe4096",
-        PskDheKeSupportedGroup::Ffdhe6144 => "ffdhe6144",
-        PskDheKeSupportedGroup::Ffdhe8192 => "ffdhe8192",
-    }
-}
+use super::PskClientConfig;
 
 /// Returns `true` when `server` carries a TLS 1.3 PSK client identity that
 /// would direct the dispatcher to use the PSK transport.
@@ -91,14 +38,17 @@ pub(crate) async fn establish_from_server(
     address: &str,
     tcp_stream: TcpStream,
 ) -> Result<SslStream<TcpStream>> {
-    let psk = build_psk_identity(server).context("Invalid PSK credentials")?;
-    let psk_dhe_ke_groups = build_psk_dhe_ke_groups(server);
+    let epsk = tls13_epsk(server)?;
+    let server_name = derive_sni_name(server)?;
 
-    log::debug!("Negotiating TLS-PSK handshake with {address}");
+    log::debug!(
+        "Negotiating TLS-PSK handshake with {address} (SNI: {})",
+        server_name.unwrap_or("disabled")
+    );
 
-    let tls_stream = PskConfigurationBuilder::new(psk)
-        .with_psk_dhe_ke_groups(psk_dhe_ke_groups)
-        .connect(tcp_stream)
+    let tls_stream = PskClientConfig::prepare(epsk)
+        .context("Invalid TLS PSK OpenSSL configuration")?
+        .connect(address, server_name, tcp_stream)
         .await
         .inspect_err(|e| log::warn!("TLS-PSK handshake with {address} failed: {e:#}"))
         .context("Failed to establish TLS PSK connection")?;
@@ -107,46 +57,32 @@ pub(crate) async fn establish_from_server(
     Ok(tls_stream)
 }
 
-/// Decodes the configured PSK identity and key bytes into a [`PskIdentity`].
-fn build_psk_identity(server: &TacacsPlusServer) -> Result<PskIdentity> {
-    let epsk = server
-        .client_identity
-        .as_ref()
-        .and_then(|ci| ci.tls13_epsk.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("server has no TLS 1.3 PSK client-identity"))?;
-
-    let key_bytes = epsk
-        .inline_definition
-        .as_ref()
-        .and_then(|d| d.cleartext_symmetric_key.as_deref())
-        .map(parse_symmetric_key_data)
-        .unwrap_or_default();
-
-    PskIdentity::new(&epsk.external_identity, key_bytes)
-}
-
-fn build_psk_dhe_ke_groups(server: &TacacsPlusServer) -> Option<PskDheKeGroups> {
+fn tls13_epsk(server: &TacacsPlusServer) -> Result<&Tls13Epsk> {
     server
         .client_identity
         .as_ref()
         .and_then(|ci| ci.tls13_epsk.as_ref())
-        .and_then(|epsk| PskDheKeGroups::from_config(&epsk.psk_dhe_ke_groups))
+        .ok_or_else(|| anyhow::anyhow!("server has no TLS 1.3 PSK client-identity"))
 }
 
-/// Decodes the YANG-encoded symmetric key bytes into raw key material.
-///
-/// The current YANG model carries the key as already-decoded bytes, so this is
-/// a passthrough today — but it is the documented seam for future encoding
-/// changes (e.g. base64 unwrapping).
-fn parse_symmetric_key_data(data: &[u8]) -> Vec<u8> {
-    data.to_vec()
+fn derive_sni_name(server: &TacacsPlusServer) -> Result<Option<&str>> {
+    if !server.sni_enabled() {
+        return Ok(None);
+    }
+
+    server
+        .domain_name
+        .as_deref()
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("sni-enabled requires domain-name to be configured"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::tls_psk::create_psk_ssl_context;
-    use tacacsrs_config::generated::tacacs_plus::{Tls13Epsk, TlsClientClientIdentity};
+    use tacacsrs_config::generated::tacacs_plus::{
+        EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity,
+    };
     use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
 
     fn server_template() -> TacacsPlusServer {
@@ -175,7 +111,7 @@ mod tests {
             certificate: None,
             tls13_epsk: Some(Tls13Epsk {
                 external_identity: identity.to_owned(),
-                hash: tacacsrs_config::generated::tacacs_plus::EpskSupportedHash::Sha256,
+                hash: EpskSupportedHash::Sha256,
                 context: None,
                 target_protocol: None,
                 target_kdf: None,
@@ -189,17 +125,8 @@ mod tests {
         server
     }
 
-    fn server_with_psk_dhe_groups(groups: Vec<PskDheKeSupportedGroup>) -> TacacsPlusServer {
-        let mut server = server_with_psk("client-id", b"resolved-psk-bytes-with-enough-length");
-        server
-            .client_identity
-            .as_mut()
-            .expect("client identity")
-            .tls13_epsk
-            .as_mut()
-            .expect("tls13 epsk")
-            .psk_dhe_ke_groups = groups;
-        server
+    fn epsk(server: &TacacsPlusServer) -> &Tls13Epsk {
+        tls13_epsk(server).expect("tls13 epsk")
     }
 
     #[test]
@@ -215,73 +142,49 @@ mod tests {
     }
 
     #[test]
-    fn build_psk_identity_extracts_identity_and_key() {
+    fn tls13_epsk_extracts_config_model() {
         let key = b"resolved-psk-bytes-with-enough-length";
         let server = server_with_psk("my-client", key);
-        let psk = build_psk_identity(&server).expect("PSK credentials should be valid");
+        let epsk = epsk(&server);
 
-        assert_eq!(psk.identity(), "my-client");
-        assert_eq!(psk.key(), key.as_slice());
+        assert_eq!(epsk.external_identity, "my-client");
+        assert_eq!(super::super::tls13_epsk::symmetric_key(epsk).expect("symmetric key"), key);
     }
 
     #[test]
-    fn build_psk_dhe_ke_groups_preserves_psk_only_when_absent() {
-        let server = server_with_psk("my-client", b"resolved-psk-bytes-with-enough-length");
-
-        assert_eq!(build_psk_dhe_ke_groups(&server), None);
-    }
-
-    #[test]
-    fn build_psk_dhe_ke_groups_maps_config_order_to_openssl_names() {
-        let server = server_with_psk_dhe_groups(vec![
-            PskDheKeSupportedGroup::X25519,
-            PskDheKeSupportedGroup::Secp256r1,
-            PskDheKeSupportedGroup::Ffdhe3072,
-        ]);
-        let groups = build_psk_dhe_ke_groups(&server).expect("groups should be configured");
-
-        assert_eq!(groups.as_openssl_list(), "X25519:P-256:ffdhe3072");
-    }
-
-    #[test]
-    fn create_psk_ssl_context_accepts_supported_psk_dhe_groups() {
-        let psk = PskIdentity::new("client-id", b"resolved-psk-bytes-with-enough-length")
-            .expect("valid psk");
-        let groups = PskDheKeGroups::from_config(&[
-            PskDheKeSupportedGroup::X25519,
-            PskDheKeSupportedGroup::Secp256r1,
-        ])
-        .expect("configured groups");
-
-        create_psk_ssl_context(&psk, None, Some(&groups))
-            .expect("OpenSSL should accept supported TLS 1.3 groups");
-    }
-
-    #[test]
-    fn create_psk_ssl_context_errors_for_unsupported_group_list() {
-        let psk = PskIdentity::new("client-id", b"resolved-psk-bytes-with-enough-length")
-            .expect("valid psk");
-        let groups = PskDheKeGroups {
-            openssl_list: "not-a-supported-tls-group".to_owned(),
-        };
-
-        let error = create_psk_ssl_context(&psk, None, Some(&groups))
-            .expect_err("unsupported OpenSSL group should be rejected");
-        let message = error.to_string();
-
-        assert!(message.contains("unsupported TLS PSK DHE group list"));
-        assert!(message.contains("not-a-supported-tls-group"));
-    }
-
-    #[test]
-    fn build_psk_identity_errors_when_missing() {
+    fn tls13_epsk_errors_when_missing() {
         let server = server_template();
-        assert!(build_psk_identity(&server).is_err());
+        assert!(tls13_epsk(&server).is_err());
     }
 
     #[test]
-    fn parse_symmetric_key_data_bytes() {
-        let key = parse_symmetric_key_data(b"resolved-psk-bytes");
-        assert_eq!(key, b"resolved-psk-bytes");
+    fn derive_sni_name_returns_none_when_sni_disabled() {
+        let server = server_with_psk("client-id", &[0u8; 16]);
+
+        assert_eq!(derive_sni_name(&server).expect("SNI should derive"), None);
+    }
+
+    #[test]
+    fn derive_sni_name_uses_domain_when_sni_enabled() {
+        let mut server = server_with_psk("client-id", &[0u8; 16]);
+        server.sni_enabled = Some(true);
+        server.domain_name = Some("tacacs.example.com".to_owned());
+
+        assert_eq!(
+            derive_sni_name(&server).expect("SNI should derive"),
+            Some("tacacs.example.com")
+        );
+    }
+
+    #[test]
+    fn derive_sni_name_errors_when_enabled_without_domain() {
+        let mut server = server_with_psk("client-id", &[0u8; 16]);
+        server.sni_enabled = Some(true);
+
+        let error = derive_sni_name(&server).expect_err("missing SNI domain should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("sni-enabled requires domain-name"));
     }
 }

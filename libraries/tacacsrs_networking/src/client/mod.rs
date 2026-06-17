@@ -490,11 +490,7 @@ impl TacacsClient {
 }
 
 fn packet_obfuscation_key(server: &TacacsPlusServer) -> Option<Vec<u8>> {
-    if server.is_tls() {
-        None
-    } else {
-        server.obfuscation_key()
-    }
+    server.obfuscation_key()
 }
 
 fn accounting_watchdog_preflight_request() -> AccountingRequest {
@@ -524,7 +520,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
 
-    use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
+    use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerType};
     use tacacsrs_messages::accounting::reply::AccountingReply;
     use tacacsrs_messages::accounting::request::AccountingRequest;
     use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
@@ -536,7 +532,7 @@ mod tests {
     use tacacsrs_messages::packet::{Packet, PacketTrait};
     use tacacsrs_messages::traits::TacacsBodyTrait;
 
-    use super::TacacsClient;
+    use super::{TacacsClient, packet_obfuscation_key};
     use crate::codec::{PacketReadResult, PacketReader, PacketReaderTrait};
     use crate::establish::{ConnectOptions, ConnectPreflight};
     use crate::single_connect::SingleConnectionState;
@@ -681,6 +677,17 @@ mod tests {
             .unwrap();
 
         assert_eq!(client.single_connection_state().await, SingleConnectionState::Initial);
+    }
+
+    #[test]
+    fn packet_obfuscation_key_uses_shared_secret_for_tls_servers() {
+        let server =
+            TacacsPlusServerBuilder::new("test", TacacsPlusServerType::all(), "10.0.0.1", 49)
+                .with_tls_server_authentication()
+                .with_shared_secret_alongside_tls("legacy-secret")
+                .build();
+
+        assert_eq!(packet_obfuscation_key(&server), Some(b"legacy-secret".to_vec()));
     }
 
     #[tokio::test]

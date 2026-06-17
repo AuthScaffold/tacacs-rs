@@ -101,7 +101,7 @@ are translated into OpenSSL supported-group names and used to send TLS 1.3
 `psk_dhe_ke` key shares. When the leaf-list is empty, the transport leaves the
 OpenSSL group list unchanged and preserves the existing PSK-only behaviour.
 
-### `server-authentication/tls13-epsks` — The Trust Policy
+### `server-authentication/tls13-epsks` — Model Placeholder
 
 ```
 leaf tls13-epsks {
@@ -110,10 +110,11 @@ leaf tls13-epsks {
 }
 ```
 
-This is a **policy flag** (presence = enabled). It declares that successful
-completion of a PSK handshake is sufficient to authenticate the server — no
-CA certificates or certificate pinning needed. No additional configuration is
-required because the key is inherently the same one in `client-identity`.
+This leaf exists in the TLS client YANG model, but this transport does not
+require or consume it. TACACS+ PSK selection is driven by
+`client-identity/tls13-epsk`; if that EPSK is configured and accepted by the
+server, the TLS 1.3 handshake authenticates the server through the PSK Finished
+MAC. The generated TACACS+ YANG input is not expected to supply this leaf.
 
 ### Why Both Nodes Exist
 
@@ -122,8 +123,9 @@ independent containers because other auth types (certificate, raw-public-key)
 genuinely support asymmetric combinations (e.g., client authenticates with a
 certificate while verifying the server via CA trust chain).
 
-For the PSK case specifically, this separation is **structural only** — it does
-not enable mixed PSK + certificate authentication. RFC 8446 §4.1.1 is explicit:
+For the PSK case specifically, this separation is structural only for this
+transport — it does not enable mixed PSK + certificate authentication. RFC 8446
+§4.1.1 is explicit:
 
 > "When authenticating via a certificate, the server will send the Certificate
 > (Section 4.4.2) and CertificateVerify (Section 4.4.3) messages. In TLS 1.3
@@ -188,11 +190,12 @@ accepted.
 
 ```
 tls_psk/
-├── mod.rs              — crate-internal API surface + create_psk_ssl_context()
-├── config_builder.rs   — PskConfigurationBuilder: SslContext → SslStream
-├── from_server.rs      — YANG config → PskIdentity + handshake orchestration
-├── psk_identity.rs     — PskIdentity type (identity label + key bytes)
-├── tls_psk.rs          — Transport trait impl for SslStream<TcpStream>
+├── mod.rs              — crate-internal API surface + Transport impl
+├── context.rs          — OpenSSL SslContext construction + hash/group projections
+├── config.rs           — PskClientConfig: validated SslContext → SslStream
+├── from_server.rs      — TacacsPlusServer PSK selection + connection establishment
+├── tls13_epsk.rs       — validation/accessors for the YANG TLS 1.3 EPSK node
+├── ffi/ — OpenSSL TLS 1.3 PSK callback + SSL_SESSION FFI bridge
 └── readme.md           — this file
 ```
 
@@ -203,19 +206,17 @@ TacacsPlusServer (YANG config)
         │
         ▼
 from_server::establish_from_server()
-        │  extracts external-identity + cleartext-symmetric-key
+        │  selects client-identity.tls13-epsk
         ▼
-PskIdentity::new(identity, key)
-        │  validates: non-empty, no NUL, key ≥ 16 bytes
-        ▼
-PskConfigurationBuilder::new(psk)
-        │  applies psk-dhe-ke OpenSSL group list when configured
+PskClientConfig::prepare(epsk)
+        │  validates EPSK fields and builds the OpenSSL context before async handshake work
         │
         ▼
-create_psk_ssl_context()
-        │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK callback, optional groups
+      context::create_psk_ssl_context()
+        │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK use-session callback,
+        │  hash-matched ciphersuite, optional psk-dhe-ke groups
         ▼
-SslStream::connect(tcp_stream)
+PskClientConfig::connect(address, tcp_stream)
         │  OpenSSL performs TLS 1.3 PSK handshake
         ▼
 SslStream<TcpStream> implements Transport
@@ -226,13 +227,23 @@ tokio::io::split() → (ReadHalf, WriteHalf)
 
 ### OpenSSL PSK Callback
 
-The `set_psk_client_callback` closure is invoked by OpenSSL during the handshake
-when it needs PSK material. It writes:
+The `openssl` crate's safe callback API only covers the legacy TLS 1.2-style PSK
+callback and cannot attach the digest required by a TLS 1.3 external PSK. This
+module therefore registers OpenSSL's TLS 1.3 `SSL_CTX_set_psk_use_session_callback`
+directly and stores callback state in `SSL_CTX` ex-data.
 
-1. The identity string (null-terminated) into the identity buffer — this becomes
-   the `PskIdentity.identity` field in the `pre_shared_key` extension.
-2. The raw key bytes into the PSK buffer — OpenSSL uses this to compute the
-   binder HMAC and derive traffic keys.
+When OpenSSL asks for the client PSK session, the callback:
+
+1. Verifies the requested digest matches the configured EPSK hash.
+2. Looks up the configured TLS 1.3 ciphersuite using OpenSSL standard names.
+2. Looks up the configured TLS 1.3 ciphersuite using OpenSSL standard names.
+3. Builds a synthetic `SSL_SESSION` with TLS 1.3, the selected cipher, and the
+  PSK bytes copied as the session master key.
+4. Returns the PSK identity bytes and transfers the new `SSL_SESSION` to OpenSSL.
+
+This is the client-side counterpart to server implementations that use
+`SSL_CTX_set_psk_find_session_callback`, such as the .NET OpenSSL proof of
+concept in `Networking-AAA/src/OpenSsl`.
 
 ### Transport Trait
 
@@ -246,13 +257,13 @@ because `SslStream` does not support owned splitting.
 
 | Concern | Mitigation |
 |---------|-----------|
-| Key length | `PskIdentity::new()` rejects keys shorter than 16 bytes (128 bits) per RFC 9257 §6 |
-| Identity injection | NUL bytes in identity are rejected (OpenSSL uses C strings) |
-| Forward secrecy | Existing configs remain PSK-only. Configure `tacacsrs:psk-dhe-ke-groups` to negotiate `psk_dhe_ke` and add ephemeral (EC)DHE key material. |
+| Key length | EPSK validation rejects keys shorter than 16 bytes (128 bits) per RFC 9257 §6 |
+| Identity injection | NUL bytes in identity are rejected before OpenSSL callback registration |
+| Forward secrecy | An empty `tacacsrs:psk-dhe-ke-groups` list configures OpenSSL to allow and prefer PSK-only key exchange. Configure one or more groups to negotiate `psk_dhe_ke` and add ephemeral (EC)DHE key material. |
 | Unsupported groups | OpenSSL group-list setup errors are surfaced before the handshake with the configured group list in the message. |
 | Certificate verification | Explicitly set to `SslVerifyMode::NONE` — intentional for PSK, where authentication comes from the shared secret, not certificates |
-| Key logging | `PskIdentity` implements a custom `Debug` that redacts the key bytes |
-| Ciphersuites | Restricted to `TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256` (AEAD-only, no CBC) |
+| Key logging | The PSK transport does not log key material. The generated `Tls13Epsk` model contains inline key bytes, so do not debug-log the full model. |
+| Ciphersuites | Restricted to the configured EPSK hash: SHA-256 uses `TLS_AES_128_GCM_SHA256`; SHA-384 uses `TLS_AES_256_GCM_SHA384` |
 
 ## Feature Flag
 
@@ -277,7 +288,7 @@ propagates: `tacon` → `tacacsrs-networking` → OpenSSL.
   - Defines the `tls13-epsk` grouping and `server-auth-tls13-epsk` feature
 - **ietf-tls-client@2024-10-10.yang** (RFC 9645)
   - `client-ident-tls13-epsk` feature: client presents EPSK identity
-  - `server-auth-tls13-epsk` feature: client trusts server via PSK
+  - `server-auth-tls13-epsk` feature: model support for PSK-based server auth
 - **ietf-system-tacacs-plus@2026-03-31.yang** (RFC 9950)
   - `grouping tls13-epsk`: the EPSK tuple configuration
-  - `leaf tls13-epsks` in `server-authentication`: the trust policy flag
+  - `leaf tls13-epsks` in `server-authentication`: currently unused placeholder in this transport
