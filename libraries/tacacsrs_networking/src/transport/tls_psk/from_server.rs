@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
-use tacacsrs_config::{TacacsPlusServer, Tls13Epsk};
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, Tls13Epsk};
 
 use super::PskClientConfig;
 
@@ -39,12 +39,17 @@ pub(crate) async fn establish_from_server(
     tcp_stream: TcpStream,
 ) -> Result<SslStream<TcpStream>> {
     let epsk = tls13_epsk(server)?;
+    ensure_tls13_epsk_server_authentication(server)?;
+    let server_name = derive_sni_name(server)?;
 
-    log::debug!("Negotiating TLS-PSK handshake with {address}");
+    log::debug!(
+        "Negotiating TLS-PSK handshake with {address} (SNI: {})",
+        server_name.unwrap_or("disabled")
+    );
 
     let tls_stream = PskClientConfig::prepare(epsk)
         .context("Invalid TLS PSK OpenSSL configuration")?
-        .connect(address, tcp_stream)
+        .connect(address, server_name, tcp_stream)
         .await
         .inspect_err(|e| log::warn!("TLS-PSK handshake with {address} failed: {e:#}"))
         .context("Failed to establish TLS PSK connection")?;
@@ -61,11 +66,38 @@ fn tls13_epsk(server: &TacacsPlusServer) -> Result<&Tls13Epsk> {
         .ok_or_else(|| anyhow::anyhow!("server has no TLS 1.3 PSK client-identity"))
 }
 
+fn ensure_tls13_epsk_server_authentication(server: &TacacsPlusServer) -> Result<()> {
+    if server
+        .server_authentication
+        .as_ref()
+        .and_then(|server_authentication| server_authentication.tls13_epsks)
+        == Some(true)
+    {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "server-authentication.tls13-epsks must be configured to trust TLS 1.3 PSK server authentication"
+    )
+}
+
+fn derive_sni_name(server: &TacacsPlusServer) -> Result<Option<&str>> {
+    if !server.sni_enabled() {
+        return Ok(None);
+    }
+
+    server
+        .domain_name
+        .as_deref()
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("sni-enabled requires domain-name to be configured"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tacacsrs_config::generated::tacacs_plus::{
-        EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity,
+        EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
     };
     use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
 
@@ -109,6 +141,15 @@ mod tests {
         server
     }
 
+    fn trust_tls13_epsk_server_authentication(server: &mut TacacsPlusServer) {
+        server.server_authentication = Some(TlsClientServerAuthentication {
+            credentials_reference: None,
+            ca_certs: None,
+            ee_certs: None,
+            tls13_epsks: Some(true),
+        });
+    }
+
     fn epsk(server: &TacacsPlusServer) -> &Tls13Epsk {
         tls13_epsk(server).expect("tls13 epsk")
     }
@@ -139,5 +180,55 @@ mod tests {
     fn tls13_epsk_errors_when_missing() {
         let server = server_template();
         assert!(tls13_epsk(&server).is_err());
+    }
+
+    #[test]
+    fn ensure_tls13_epsk_server_authentication_accepts_trust_policy() {
+        let mut server = server_with_psk("client-id", &[0u8; 16]);
+        trust_tls13_epsk_server_authentication(&mut server);
+
+        ensure_tls13_epsk_server_authentication(&server).expect("trust policy should be accepted");
+    }
+
+    #[test]
+    fn ensure_tls13_epsk_server_authentication_errors_when_missing() {
+        let server = server_with_psk("client-id", &[0u8; 16]);
+        let error = ensure_tls13_epsk_server_authentication(&server)
+            .expect_err("missing trust policy should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("server-authentication.tls13-epsks"));
+    }
+
+    #[test]
+    fn derive_sni_name_returns_none_when_sni_disabled() {
+        let server = server_with_psk("client-id", &[0u8; 16]);
+
+        assert_eq!(derive_sni_name(&server).expect("SNI should derive"), None);
+    }
+
+    #[test]
+    fn derive_sni_name_uses_domain_when_sni_enabled() {
+        let mut server = server_with_psk("client-id", &[0u8; 16]);
+        server.sni_enabled = Some(true);
+        server.domain_name = Some("tacacs.example.com".to_owned());
+
+        assert_eq!(
+            derive_sni_name(&server).expect("SNI should derive"),
+            Some("tacacs.example.com")
+        );
+    }
+
+    #[test]
+    fn derive_sni_name_errors_when_enabled_without_domain() {
+        let mut server = server_with_psk("client-id", &[0u8; 16]);
+        server.sni_enabled = Some(true);
+
+        let error = derive_sni_name(&server).expect_err("missing SNI domain should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("sni-enabled requires domain-name"));
     }
 }

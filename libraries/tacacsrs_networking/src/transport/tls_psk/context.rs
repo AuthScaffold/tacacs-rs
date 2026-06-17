@@ -8,7 +8,7 @@ use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
 use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
 use tacacsrs_config::{EpskSupportedHash, PskDheKeSupportedGroup};
 
-use super::ffi::set_tls13_psk_use_session_callback;
+use super::ffi::{prefer_tls13_psk_only_key_exchange, set_tls13_psk_use_session_callback};
 use super::tls13_epsk;
 
 /// OpenSSL TLS 1.3 group list derived from `psk-dhe-ke-groups`.
@@ -94,6 +94,8 @@ pub(super) fn create_psk_ssl_context(
         ctx_builder
             .set_groups_list(groups.as_openssl_list())
             .map_err(|error| groups.unsupported_error(&error))?;
+    } else {
+        prefer_tls13_psk_only_key_exchange(&mut ctx_builder);
     }
 
     Ok(ctx_builder.build())
@@ -135,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn psk_dhe_ke_groups_preserves_psk_only_when_absent() {
+    fn psk_dhe_ke_groups_maps_absent_groups_to_psk_only() {
         assert_eq!(PskDheKeGroups::from_config(&[]), None);
     }
 

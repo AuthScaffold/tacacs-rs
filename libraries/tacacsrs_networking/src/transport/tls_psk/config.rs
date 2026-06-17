@@ -54,15 +54,26 @@ impl PskClientConfig {
     pub(crate) async fn connect(
         self,
         address: &str,
+        server_name: Option<&str>,
         stream: TcpStream,
     ) -> Result<SslStream<TcpStream>> {
-        let ssl = Ssl::new(&self.ssl_context).with_context(|| {
+        let mut ssl = Ssl::new(&self.ssl_context).with_context(|| {
             format!(
                 "OpenSSL failed to allocate TLS 1.3 PSK SSL object for {address} (identity: {}, hash: {})",
                 self.external_identity,
                 self.handshake_hash.as_rfc7951_str()
             )
         })?;
+
+        if let Some(server_name) = server_name {
+            ssl.set_hostname(server_name).with_context(|| {
+                format!(
+                    "OpenSSL failed to set TLS 1.3 PSK SNI for {address} (SNI: {server_name}, identity: {})",
+                    self.external_identity
+                )
+            })?;
+        }
+
         let mut tls_stream = SslStream::new(ssl, stream).with_context(|| {
             format!(
                 "OpenSSL failed to attach TLS 1.3 PSK SSL object to TCP stream for {address} (identity: {})",

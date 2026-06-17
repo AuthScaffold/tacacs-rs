@@ -190,7 +190,7 @@ accepted.
 tls_psk/
 ├── mod.rs              — crate-internal API surface + Transport impl
 ├── context.rs          — OpenSSL SslContext construction + hash/group projections
-├── config_builder.rs   — PskClientConfig: validated SslContext → SslStream
+├── config.rs           — PskClientConfig: validated SslContext → SslStream
 ├── from_server.rs      — TacacsPlusServer PSK selection + connection establishment
 ├── tls13_epsk.rs       — validation/accessors for the YANG TLS 1.3 EPSK node
 ├── ffi/ — OpenSSL TLS 1.3 PSK callback + SSL_SESSION FFI bridge
@@ -233,7 +233,8 @@ directly and stores callback state in `SSL_CTX` ex-data.
 When OpenSSL asks for the client PSK session, the callback:
 
 1. Verifies the requested digest matches the configured EPSK hash.
-2. Looks up the configured TLS 1.3 ciphersuite using the RFC 8446 wire ID.
+2. Looks up the configured TLS 1.3 ciphersuite using OpenSSL standard names.
+2. Looks up the configured TLS 1.3 ciphersuite using OpenSSL standard names.
 3. Builds a synthetic `SSL_SESSION` with TLS 1.3, the selected cipher, and the
   PSK bytes copied as the session master key.
 4. Returns the PSK identity bytes and transfers the new `SSL_SESSION` to OpenSSL.
@@ -256,7 +257,7 @@ because `SslStream` does not support owned splitting.
 |---------|-----------|
 | Key length | EPSK validation rejects keys shorter than 16 bytes (128 bits) per RFC 9257 §6 |
 | Identity injection | NUL bytes in identity are rejected before OpenSSL callback registration |
-| Forward secrecy | Existing configs remain PSK-only. Configure `tacacsrs:psk-dhe-ke-groups` to negotiate `psk_dhe_ke` and add ephemeral (EC)DHE key material. |
+| Forward secrecy | An empty `tacacsrs:psk-dhe-ke-groups` list configures OpenSSL to allow and prefer PSK-only key exchange. Configure one or more groups to negotiate `psk_dhe_ke` and add ephemeral (EC)DHE key material. |
 | Unsupported groups | OpenSSL group-list setup errors are surfaced before the handshake with the configured group list in the message. |
 | Certificate verification | Explicitly set to `SslVerifyMode::NONE` — intentional for PSK, where authentication comes from the shared secret, not certificates |
 | Key logging | The PSK transport does not log key material. The generated `Tls13Epsk` model contains inline key bytes, so do not debug-log the full model. |

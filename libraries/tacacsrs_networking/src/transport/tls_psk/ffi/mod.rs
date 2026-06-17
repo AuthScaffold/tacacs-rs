@@ -12,7 +12,7 @@ use openssl::ssl::{SslContext, SslContextBuilder, SslContextRef};
 use openssl_sys::{
     stack_st_SSL_CIPHER, EVP_MD, EVP_MD_get_type, EVP_sha256, EVP_sha384, OPENSSL_STACK,
     OPENSSL_sk_num, OPENSSL_sk_value, SSL, SSL_CIPHER, SSL_CIPHER_standard_name, SSL_CTX,
-    SSL_SESSION, SSL_SESSION_free, SSL_get_SSL_CTX, TLS1_3_VERSION,
+    SSL_CTX_set_options, SSL_SESSION, SSL_SESSION_free, SSL_get_SSL_CTX, TLS1_3_VERSION,
 };
 use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
 use tacacsrs_config::EpskSupportedHash;
@@ -30,6 +30,9 @@ type PskUseSessionCallback = unsafe extern "C" fn(
 struct OpenSslPskCallbackState {
     epsk: Tls13Epsk,
 }
+
+const SSL_OP_ALLOW_NO_DHE_KEX_BIT: u32 = 10;
+const SSL_OP_PREFER_NO_DHE_KEX_BIT: u32 = 35;
 
 extern "C" {
     fn SSL_CTX_set_psk_use_session_callback(
@@ -77,6 +80,18 @@ pub(crate) fn set_tls13_psk_use_session_callback(
     }
 
     Ok(())
+}
+
+/// Configures OpenSSL to offer and prefer TLS 1.3 PSK-only key exchange.
+pub(crate) fn prefer_tls13_psk_only_key_exchange(builder: &mut SslContextBuilder) {
+    let options = (1 << SSL_OP_ALLOW_NO_DHE_KEX_BIT) | (1 << SSL_OP_PREFER_NO_DHE_KEX_BIT);
+
+    // SAFETY: `builder.as_ptr()` is a live `SSL_CTX` owned by the builder. The
+    // option bit values are OpenSSL public ABI constants for allowing and
+    // preferring TLS 1.3 PSK key exchange without DHE.
+    unsafe {
+        SSL_CTX_set_options(builder.as_ptr(), options);
+    }
 }
 
 fn psk_config_index(

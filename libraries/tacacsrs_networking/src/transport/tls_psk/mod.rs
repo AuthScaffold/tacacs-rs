@@ -9,13 +9,13 @@
 //!
 //! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 
-mod config_builder;
+mod config;
 mod context;
 mod ffi;
 mod from_server;
 mod tls13_epsk;
 
-pub(crate) use config_builder::PskClientConfig;
+pub(crate) use config::PskClientConfig;
 pub(crate) use context::{EpskSupportedHashExt, PskDheKeGroups};
 pub(crate) use from_server::{establish_from_server, server_has_psk};
 
