@@ -71,8 +71,9 @@ Proxy mode is deliberately packet-transparent:
 - The downstream listener does not provide TACACS+ single-connection multiplexing.
 - The proxy rejects a downstream connection if packets on that connection switch to a different TACACS+ session id.
 - Packet bodies are forwarded unchanged. The proxy rewrites only the TACACS+ header session id so the downstream client's session id maps to the upstream session id selected by the networking layer.
-- Accounting and authorization sessions close after one reply. Authentication sessions can continue across challenge replies and close when the reply status is terminal or unsupported.
-- `FOLLOW` replies are forwarded to the downstream client, logged as unsupported in proxy mode, and then the connection is closed.
+- Accounting and authorization sessions close after one reply. Authentication sessions can continue across challenge replies and close when the reply status is terminal.
+- `FOLLOW` replies are forwarded to the downstream client and then the connection is closed. Per RFC 8907, authorization and accounting `FOLLOW` use the authentication `FOLLOW` behavior; authentication `FOLLOW` is treated like `FAIL`.
+- Authentication `RESTART` replies are forwarded to the downstream client and then the connection is closed. The proxy enforces one TACACS+ session id per downstream connection, so a restarted authentication sequence must reconnect with a new session.
 
 Proxy TCP endpoints must be loopback addresses. Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. The proxy endpoint must be different from `--listen-endpoint`.
 

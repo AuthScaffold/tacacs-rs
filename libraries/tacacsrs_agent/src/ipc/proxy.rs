@@ -26,7 +26,7 @@ use tacacsrs_networking::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::routing::{BoundServer, RoutingState};
+use crate::routing::{BoundServer, ClientGuard, RoutingState};
 use crate::runtime::shutdown_signal;
 
 #[cfg(unix)]
@@ -77,27 +77,11 @@ async fn serve_unix(
     socket_mode: u32,
 ) -> anyhow::Result<()> {
     let listener = listener::prepare_unix_listener(path, socket_mode).await?;
+    let socket_guard = listener::UnixSocketCleanupGuard::new(path);
 
     log::info!("Listening for TACACS+ proxy clients on Unix socket {}", path.display());
     let result = accept_loop(listener, state, format!("Unix socket {}", path.display())).await;
-
-    match tokio::fs::remove_file(path).await {
-        Ok(()) => {
-            log::debug!("Removed TACACS+ proxy Unix socket {}", path.display());
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            log::debug!(
-                "TACACS+ proxy Unix socket {} was already removed during shutdown",
-                path.display()
-            );
-        }
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!("Failed to remove TACACS+ proxy socket {}", path.display())
-            });
-        }
-    }
-
+    socket_guard.cleanup("TACACS+ proxy Unix socket").await?;
     result
 }
 
@@ -120,9 +104,10 @@ where
             }
             accepted = listener.accept_proxy_stream() => {
                 let (stream, peer_label) = accepted?;
+                let client_guard = state.start_client_request();
                 let state = Arc::clone(&state);
                 tokio::spawn(async move {
-                    if let Err(error) = handle_connection(stream, state, peer_label.clone()).await {
+                    if let Err(error) = handle_connection(stream, state, peer_label.clone(), client_guard).await {
                         log::warn!("TACACS+ proxy connection {peer_label} closed with error: {error:#}");
                     }
                 });
@@ -170,11 +155,11 @@ async fn handle_connection<Stream>(
     stream: Stream,
     state: Arc<RoutingState>,
     peer_label: String,
+    _client_guard: ClientGuard,
 ) -> anyhow::Result<()>
 where
     Stream: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let _client_guard = state.start_client_request();
     let bound_server = state.bind_server_for_new_session().await.with_context(|| {
         format!("Failed to bind TACACS+ proxy client {peer_label} to an upstream server")
     })?;
@@ -480,6 +465,9 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use tacacsrs_messages::accounting::reply::ACCOUNTING_REPLY_STATUS_OFFSET;
+    use tacacsrs_messages::authentication::reply::AUTHENTICATION_REPLY_STATUS_OFFSET;
+    use tacacsrs_messages::authorization::reply::AUTHORIZATION_REPLY_STATUS_OFFSET;
     use tacacsrs_messages::enumerations::{
         TacacsAuthenticationReplyFlags, TacacsMajorVersion, TacacsMinorVersion,
     };
@@ -674,6 +662,33 @@ mod tests {
                 ReplyAction::Complete,
             );
         }
+    }
+
+    #[test]
+    fn reply_action_classifies_unknown_statuses_as_unsupported() {
+        let mut accounting_body =
+            accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+        accounting_body[ACCOUNTING_REPLY_STATUS_OFFSET] = 0xff;
+        assert_eq!(
+            reply_action(&test_packet(TacacsType::TacPlusAccounting, 1, accounting_body)),
+            ReplyAction::Unsupported(0xff),
+        );
+
+        let mut authorization_body =
+            authorization_reply_body(TacacsAuthorizationStatus::TacPlusPassAdd);
+        authorization_body[AUTHORIZATION_REPLY_STATUS_OFFSET] = 0xff;
+        assert_eq!(
+            reply_action(&test_packet(TacacsType::TacPlusAuthorisation, 1, authorization_body)),
+            ReplyAction::Unsupported(0xff),
+        );
+
+        let mut authentication_body =
+            authentication_reply_body(TacacsAuthenticationStatus::TacPlusAuthenStatusPass);
+        authentication_body[AUTHENTICATION_REPLY_STATUS_OFFSET] = 0xff;
+        assert_eq!(
+            reply_action(&test_packet(TacacsType::TacPlusAuthentication, 1, authentication_body)),
+            ReplyAction::Unsupported(0xff),
+        );
     }
 
     #[test]

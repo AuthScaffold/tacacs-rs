@@ -25,12 +25,13 @@ use std::sync::atomic::Ordering;
 use anyhow::bail;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 
-use self::client_tracker::{ClientGuard, ClientTracker};
+use self::client_tracker::ClientTracker;
 use self::server_set::{ServerSet, servers_equivalent};
 use self::server_slot::ServerSlot;
 use crate::runtime::REQUIRED_SERVER_TYPES;
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
 
+pub(crate) use self::client_tracker::ClientGuard;
 pub(crate) use self::server_set::BoundServer;
 
 mod client_tracker;

@@ -1,7 +1,7 @@
 //! Unix domain socket IPC listener.
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
@@ -22,6 +22,7 @@ pub(crate) async fn serve(
     socket_mode: u32,
 ) -> anyhow::Result<()> {
     let listener = prepare_unix_listener(path, socket_mode).await?;
+    let socket_guard = UnixSocketCleanupGuard::new(path);
     let incoming = UnixListenerStream::new(listener);
     let grpc_service = GrpcService::new(Arc::clone(&state));
 
@@ -35,19 +36,70 @@ pub(crate) async fn serve(
 
     log::info!("Shutdown signal received; draining active IPC clients");
     state.wait_for_active_clients().await;
-    match tokio::fs::remove_file(path).await {
-        Ok(()) => {
-            log::debug!("Removed Unix socket {}", path.display());
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            log::debug!("Unix socket {} was already removed during shutdown", path.display());
-        }
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("Failed to remove socket {}", path.display()));
+    socket_guard.cleanup("Unix socket").await?;
+    Ok(())
+}
+
+pub(crate) struct UnixSocketCleanupGuard {
+    path: PathBuf,
+    should_cleanup: bool,
+}
+
+impl UnixSocketCleanupGuard {
+    #[must_use]
+    pub(crate) fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_owned(),
+            should_cleanup: true,
         }
     }
-    Ok(())
+
+    pub(crate) async fn cleanup(mut self, label: &str) -> anyhow::Result<()> {
+        match tokio::fs::remove_file(&self.path).await {
+            Ok(()) => {
+                log::debug!("Removed {label} {}", self.path.display());
+                self.disarm();
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                log::debug!("{label} {} was already removed during shutdown", self.path.display());
+                self.disarm();
+                Ok(())
+            }
+            Err(error) => Err(error)
+                .with_context(|| format!("Failed to remove {label} {}", self.path.display())),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.should_cleanup = false;
+    }
+}
+
+impl Drop for UnixSocketCleanupGuard {
+    fn drop(&mut self) {
+        if !self.should_cleanup {
+            return;
+        }
+
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {
+                log::debug!("Removed Unix socket {} during cancellation", self.path.display());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                log::debug!(
+                    "Unix socket {} was already removed during cancellation",
+                    self.path.display()
+                );
+            }
+            Err(error) => {
+                log::warn!(
+                    "Failed to remove Unix socket {} during cancellation: {error}",
+                    self.path.display()
+                );
+            }
+        }
+    }
 }
 
 /// Creates the Unix listener, safely handling either a live competing service
@@ -109,9 +161,10 @@ pub(crate) async fn prepare_unix_listener(
 
     let listener = tokio::net::UnixListener::bind(path)
         .with_context(|| format!("Failed to bind Unix socket {}", path.display()))?;
+    let mut socket_guard = UnixSocketCleanupGuard::new(path);
 
-    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(socket_mode))
-        .await
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(socket_mode))
         .with_context(|| format!("Failed to set permissions on socket {}", path.display()))?;
+    socket_guard.disarm();
     Ok(listener)
 }

@@ -31,5 +31,5 @@ pub(crate) async fn serve(endpoint: &IpcEndpoint, state: Arc<RoutingState>) -> a
     }
 }
 
-#[cfg(all(test, unix))]
-pub(crate) use unix::prepare_unix_listener;
+#[cfg(unix)]
+pub(crate) use unix::{UnixSocketCleanupGuard, prepare_unix_listener};
