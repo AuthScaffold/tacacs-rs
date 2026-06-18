@@ -70,6 +70,10 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         self.connection.stop_accepting_new_sessions().await;
     }
 
+    async fn create_raw_session(&self) -> anyhow::Result<tacacsrs_networking::ClientSession> {
+        self.create_session().await
+    }
+
     async fn send_accounting(
         &self,
         request: &AccountingOperation,

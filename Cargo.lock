@@ -1959,6 +1959,7 @@ dependencies = [
  "serde_json",
  "tacacsrs-agent-client",
  "tacacsrs-config",
+ "tacacsrs-flow-abstractions",
  "tacacsrs-flows",
  "tacacsrs-messages",
  "tacacsrs-networking",

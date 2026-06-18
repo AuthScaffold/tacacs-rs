@@ -27,7 +27,7 @@ use tacacsrs_config::TacacsPlus;
 
 use super::enumerate_supported_servers;
 use crate::config::ServiceConfig;
-use crate::ipc::listener;
+use crate::ipc::{listener, proxy};
 use crate::routing::RoutingState;
 use crate::upstream::{NetworkUpstreamConnector, UpstreamConnector};
 
@@ -139,15 +139,35 @@ impl TacacsClientService {
         };
 
         #[cfg(unix)]
-        let result = listener::serve(
-            &self.config.endpoint,
-            Arc::clone(&self.state),
-            self.config.socket_mode,
-        )
-        .await;
+        let result = match &self.config.proxy_endpoint {
+            Some(proxy_endpoint) => tokio::try_join!(
+                listener::serve(
+                    &self.config.endpoint,
+                    Arc::clone(&self.state),
+                    self.config.socket_mode,
+                ),
+                proxy::serve(proxy_endpoint, Arc::clone(&self.state), self.config.socket_mode,),
+            )
+            .map(|_| ()),
+            None => {
+                listener::serve(
+                    &self.config.endpoint,
+                    Arc::clone(&self.state),
+                    self.config.socket_mode,
+                )
+                .await
+            }
+        };
 
         #[cfg(not(unix))]
-        let result = listener::serve(&self.config.endpoint, Arc::clone(&self.state)).await;
+        let result = match &self.config.proxy_endpoint {
+            Some(proxy_endpoint) => tokio::try_join!(
+                listener::serve(&self.config.endpoint, Arc::clone(&self.state)),
+                proxy::serve(proxy_endpoint, Arc::clone(&self.state)),
+            )
+            .map(|_| ()),
+            None => listener::serve(&self.config.endpoint, Arc::clone(&self.state)).await,
+        };
 
         if let Some(task) = probe_task {
             task.abort();
@@ -240,6 +260,7 @@ mod tests {
             .expect("test config is valid");
         ServiceConfig {
             endpoint,
+            proxy_endpoint: None,
             tacacs_plus,
             preferred_probe_interval: Duration::from_millis(50),
             socket_mode: 0o660,

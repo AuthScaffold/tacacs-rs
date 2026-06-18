@@ -6,6 +6,7 @@ use tacacsrs_agent_client::{
     AuthorizationOperationResponse,
 };
 use tacacsrs_config::TacacsPlusServer;
+use tacacsrs_networking::ClientSession;
 
 #[async_trait]
 /// Abstracts a single persistent TACACS+ server connection used by the service.
@@ -24,6 +25,16 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// through the networking runtime. The service calls this when a datastore
     /// reload removes or replaces a server definition.
     async fn stop_accepting_new_sessions(&self);
+
+    /// Creates a raw TACACS+ packet session against this upstream server.
+    ///
+    /// The caller is responsible for sending and receiving TACACS+ packets over
+    /// the returned session and marking it complete when proxying finishes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a new upstream session cannot be created.
+    async fn create_raw_session(&self) -> anyhow::Result<ClientSession>;
 
     /// Sends one accounting request and returns the server's reply.
     ///

@@ -6,5 +6,6 @@
 
 mod grpc;
 pub(crate) mod listener;
+pub(crate) mod proxy;
 
 pub(crate) use grpc::GrpcService;

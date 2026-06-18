@@ -3,6 +3,7 @@ pub mod packet;
 pub mod constants;
 pub mod enumerations;
 pub mod accounting;
+pub mod authentication;
 pub mod authorization;
 pub mod traits;
 mod helpers;

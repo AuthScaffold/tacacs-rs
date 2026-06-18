@@ -72,6 +72,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) listen_endpoint: Option<String>,
 
+    /// Optional local TACACS+ proxy endpoint. Use a Unix socket path or loopback TCP address.
+    #[arg(long)]
+    pub(crate) proxy_endpoint: Option<String>,
+
     /// File mode applied to the Unix domain socket path (octal string, e.g. 660).
     #[cfg(unix)]
     #[arg(long, default_value = "660")]

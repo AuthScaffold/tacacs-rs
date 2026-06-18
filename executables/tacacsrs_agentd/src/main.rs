@@ -376,6 +376,19 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Linux deployments must use a Unix domain socket endpoint");
     }
 
+    let proxy_endpoint = cli
+        .proxy_endpoint
+        .as_deref()
+        .map(IpcEndpoint::from_str)
+        .transpose()?;
+
+    if let Some(proxy_endpoint) = &proxy_endpoint {
+        if proxy_endpoint == &endpoint {
+            anyhow::bail!("Proxy endpoint must be different from the IPC endpoint");
+        }
+        log::info!("TACACS+ proxy endpoint: {proxy_endpoint:?}");
+    }
+
     let datastore = build_datastore(&cli)?;
     let tacacs_plus = {
         let initial = datastore.load().await.with_context(|| {
@@ -402,6 +415,7 @@ async fn main() -> anyhow::Result<()> {
     let service = Arc::new(
         TacacsClientService::new(ServiceConfig {
             endpoint,
+            proxy_endpoint,
             tacacs_plus,
             preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
             #[cfg(unix)]
@@ -486,6 +500,7 @@ mod tests {
     fn test_service(config: TacacsPlus) -> TacacsClientService {
         TacacsClientService::new(ServiceConfig {
             endpoint: IpcEndpoint::Tcp("127.0.0.1:0".parse().expect("test endpoint is valid")),
+            proxy_endpoint: None,
             tacacs_plus: config,
             preferred_probe_interval: Duration::from_secs(1),
             #[cfg(unix)]

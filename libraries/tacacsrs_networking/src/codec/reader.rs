@@ -6,7 +6,7 @@ use tacacsrs_messages::{header::Header, packet::Packet};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// Result of reading a packet from the stream.
-pub(crate) enum PacketReadResult {
+pub enum PacketReadResult {
     /// Successfully read and parsed a packet.
     Success(Packet),
     /// Failed to read header from stream (connection closed or error).
@@ -40,7 +40,7 @@ pub(crate) enum PacketReadResult {
 /// and easier testing. Implementations can provide custom behavior for reading,
 /// parsing, and deobfuscating packets.
 #[async_trait]
-pub(crate) trait PacketReaderTrait: Send + Sync {
+pub trait PacketReaderTrait: Send + Sync {
     /// Reads a single packet from the provided reader.
     ///
     /// This method will:
@@ -61,7 +61,7 @@ pub(crate) trait PacketReaderTrait: Send + Sync {
 ///
 /// Handles reading packets from any async reader, including optional deobfuscation
 /// using the provided key.
-pub(crate) struct PacketReader {
+pub struct PacketReader {
     obfuscation_key: Option<Vec<u8>>,
 }
 
@@ -72,7 +72,7 @@ impl PacketReader {
     /// * `obfuscation_key` - Optional key used to deobfuscate incoming packets.
     ///   If `None`, packets are assumed to be unencrypted.
     #[must_use]
-    pub(crate) const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
+    pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
         Self { obfuscation_key }
     }
 }

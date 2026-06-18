@@ -17,6 +17,9 @@ use crate::enumerations::TacacsAccountingStatus;
 // |     data ...
 // +----------------+
 
+/// The byte offset of the status field within an accounting reply body.
+pub const ACCOUNTING_REPLY_STATUS_OFFSET: usize = 4;
+
 #[derive(Debug)]
 pub struct AccountingReply {
     pub status: TacacsAccountingStatus,
@@ -25,6 +28,16 @@ pub struct AccountingReply {
 }
 
 impl AccountingReply {
+    #[must_use]
+    pub fn status_from_packet(packet: &Packet) -> Option<u8> {
+        Self::status_from_bytes(packet.body())
+    }
+
+    #[must_use]
+    pub fn status_from_bytes(bytes: &[u8]) -> Option<u8> {
+        bytes.get(ACCOUNTING_REPLY_STATUS_OFFSET).copied()
+    }
+
     /// # Errors
     /// Returns an error if the packet body is too short or contains invalid fields.
     pub fn from_packet(packet: &Packet) -> Result<Self, anyhow::Error> {
@@ -159,6 +172,15 @@ pub mod tests {
     }
 
     #[test]
+    fn test_status_from_bytes() {
+        let bytes = generate_accounting_reply_data();
+
+        let status = AccountingReply::status_from_bytes(&bytes).unwrap();
+
+        assert_eq!(status, TacacsAccountingStatus::TacPlusAcctStatusSuccess as u8);
+    }
+
+    #[test]
     fn test_read_bytes_incorrect_status() {
         let mut data = generate_accounting_reply_data();
         data[4] = 0xff; // status is set to 0xff
@@ -223,6 +245,10 @@ pub mod tests {
         assert_eq!(reply.server_msg, "server_msg");
         assert_eq!(reply.data, "data");
         assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+        assert_eq!(
+            AccountingReply::status_from_packet(&packet),
+            Some(TacacsAccountingStatus::TacPlusAcctStatusSuccess as u8)
+        );
     }
 
     #[test]

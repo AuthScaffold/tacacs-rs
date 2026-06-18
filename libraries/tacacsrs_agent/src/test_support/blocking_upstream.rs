@@ -26,6 +26,10 @@ impl UpstreamConnection for BlockingConnection {
 
     async fn stop_accepting_new_sessions(&self) {}
 
+    async fn create_raw_session(&self) -> anyhow::Result<tacacsrs_networking::ClientSession> {
+        anyhow::bail!("blocking upstream {} does not implement raw proxy sessions", self.address)
+    }
+
     async fn send_accounting(
         &self,
         _request: &AccountingOperation,

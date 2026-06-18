@@ -6,10 +6,14 @@ use num_enum::TryFromPrimitive;
 
 use crate::enumerations::TacacsAuthorizationStatus;
 use crate::helpers::read_string;
+use crate::packet::{Packet, PacketTrait};
 use crate::traits::TacacsBodyTrait;
 
 const AUTHORIZATION_REPLY_MIN_LENGTH: usize = 6;
 const AUTHORIZATION_REPLY_ARG_SIZE_OFFSET: usize = 6;
+
+/// The byte offset of the status field within an authorization reply body.
+pub const AUTHORIZATION_REPLY_STATUS_OFFSET: usize = 0;
 
 //  1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8
 // +----------------+----------------+----------------+----------------+
@@ -39,6 +43,16 @@ pub struct AuthorizationReply {
 }
 
 impl AuthorizationReply {
+    #[must_use]
+    pub fn status_from_packet(packet: &Packet) -> Option<u8> {
+        Self::status_from_bytes(packet.body())
+    }
+
+    #[must_use]
+    pub fn status_from_bytes(data: &[u8]) -> Option<u8> {
+        data.get(AUTHORIZATION_REPLY_STATUS_OFFSET).copied()
+    }
+
     fn size_from_bytes(data: &[u8]) -> anyhow::Result<usize> {
         if data.len() < AUTHORIZATION_REPLY_MIN_LENGTH {
             anyhow::bail!(
@@ -167,5 +181,48 @@ mod tests {
         let decoded = AuthorizationReply::from_bytes(&reply.to_bytes().unwrap()).unwrap();
 
         assert_eq!(decoded, reply);
+    }
+
+    #[test]
+    fn authorization_reply_status_from_bytes() {
+        let reply = AuthorizationReply {
+            status: TacacsAuthorizationStatus::TacPlusPassAdd,
+            server_msg: "ok".to_owned(),
+            data: "display".to_owned(),
+            args: vec!["priv-lvl=15".to_owned()],
+        };
+        let body = reply.to_bytes().unwrap();
+
+        let status = AuthorizationReply::status_from_bytes(&body).unwrap();
+
+        assert_eq!(status, TacacsAuthorizationStatus::TacPlusPassAdd as u8);
+    }
+
+    #[test]
+    fn authorization_reply_status_from_packet() {
+        let reply = AuthorizationReply {
+            status: TacacsAuthorizationStatus::TacPlusPassRepl,
+            server_msg: "ok".to_owned(),
+            data: "display".to_owned(),
+            args: Vec::new(),
+        };
+        let body = reply.to_bytes().unwrap();
+        let packet = Packet::new(
+            crate::header::Header {
+                major_version: crate::enumerations::TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: crate::enumerations::TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                tacacs_type: crate::enumerations::TacacsType::TacPlusAuthorisation,
+                seq_no: 2,
+                flags: crate::enumerations::TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                session_id: 1,
+                length: u32::try_from(body.len()).unwrap(),
+            },
+            body,
+        )
+        .unwrap();
+
+        let status = AuthorizationReply::status_from_packet(&packet).unwrap();
+
+        assert_eq!(status, TacacsAuthorizationStatus::TacPlusPassRepl as u8);
     }
 }

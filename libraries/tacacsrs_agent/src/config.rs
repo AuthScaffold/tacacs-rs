@@ -37,6 +37,13 @@ pub struct ServiceConfig {
     /// developer workflows. Empty strings are rejected instead of defaulting.
     pub endpoint: IpcEndpoint,
 
+    /// Optional local TACACS+ proxy endpoint.
+    ///
+    /// When set, the service also accepts raw TACACS+ client connections on
+    /// this endpoint and proxies each downstream connection to one upstream
+    /// TACACS+ session. TCP proxy endpoints must be loopback-only.
+    pub proxy_endpoint: Option<IpcEndpoint>,
+
     /// Root TACACS+ configuration including upstream servers and any shared
     /// credential bundles.
     ///
