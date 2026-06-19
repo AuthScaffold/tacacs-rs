@@ -1,8 +1,9 @@
 //! Immutable configured server snapshots used by routing decisions.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use tacacsrs_config::TacacsPlusServer;
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tokio::sync::RwLock;
 
 use super::server_slot::ServerSlot;
@@ -27,6 +28,18 @@ pub(crate) struct BoundServer {
     pub(crate) index: usize,
     /// The upstream connection to use for this request.
     pub(crate) connection: Arc<dyn UpstreamConnection>,
+}
+
+impl BoundServer {
+    /// Returns the configured upstream server selected for this request.
+    pub(crate) fn server(&self) -> &TacacsPlusServer {
+        &self.server_set.servers[self.index].server
+    }
+
+    /// Returns the timeout configured on the selected upstream server.
+    pub(crate) fn timeout_duration(&self) -> Duration {
+        self.server().timeout_duration()
+    }
 }
 
 impl ServerSet {

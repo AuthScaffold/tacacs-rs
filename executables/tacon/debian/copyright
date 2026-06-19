@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: tacon
-Upstream-Contact: AuthScaffold <support@authscaffold.com>
+Upstream-Contact: https://github.com/AuthScaffold/tacacs-rs/discussions
 Source: https://github.com/AuthScaffold/tacacs-rs
 
 Files: *

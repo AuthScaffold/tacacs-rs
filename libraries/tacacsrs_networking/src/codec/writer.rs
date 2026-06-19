@@ -6,7 +6,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Result of writing a packet to the stream.
 #[derive(Debug)]
-pub(crate) enum PacketWriteResult {
+pub enum PacketWriteResult {
     /// Successfully wrote the packet.
     Success,
     /// Failed to write to stream.
@@ -19,7 +19,7 @@ pub(crate) enum PacketWriteResult {
 /// and easier testing. Implementations can provide custom behavior for obfuscating
 /// and writing packets.
 #[async_trait]
-pub(crate) trait PacketWriterTrait: Send + Sync {
+pub trait PacketWriterTrait: Send + Sync {
     /// Prepares a packet for writing by optionally obfuscating it.
     ///
     /// # Arguments
@@ -48,7 +48,7 @@ pub(crate) trait PacketWriterTrait: Send + Sync {
 ///
 /// Handles writing packets to any async writer, including optional obfuscation
 /// using the provided key.
-pub(crate) struct PacketWriter {
+pub struct PacketWriter {
     obfuscation_key: Option<Vec<u8>>,
 }
 
@@ -59,11 +59,13 @@ impl PacketWriter {
     /// * `obfuscation_key` - Optional key used to obfuscate outgoing packets.
     ///   If `None`, packets are sent unencrypted.
     #[must_use]
-    pub(crate) const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
+    pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
         Self { obfuscation_key }
     }
 
-    pub(crate) fn obfuscation_key(&self) -> Option<&[u8]> {
+    /// Returns the configured packet obfuscation key, if one is present.
+    #[must_use]
+    pub fn obfuscation_key(&self) -> Option<&[u8]> {
         self.obfuscation_key.as_deref()
     }
 }

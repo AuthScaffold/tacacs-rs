@@ -27,8 +27,8 @@
 //! request.
 
 mod connection;
-mod mapping;
+pub(crate) mod manager;
 mod network;
 
-pub(crate) use network::NetworkUpstreamConnector;
 pub(crate) use connection::{UpstreamConnection, UpstreamConnector};
+pub(crate) use network::NetworkUpstreamConnector;

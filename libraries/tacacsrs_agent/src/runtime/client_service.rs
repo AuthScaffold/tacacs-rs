@@ -1,7 +1,7 @@
 //! Runtime orchestration for the central TACACS+ client service.
 //!
 //! This module owns process-level behavior: startup validation, IPC listener
-//! graceful shutdown, and delegation into [`crate::routing::RoutingState`] for
+//! graceful shutdown, and delegation into [`crate::upstream::manager::UpstreamManager`] for
 //! per-client request handling and upstream failover decisions.
 //!
 //! # Startup sequence
@@ -19,17 +19,19 @@
 //! 2. In-flight RPC handlers run to completion.
 //! 3. The Unix socket path is removed (Unix only).
 
-#[cfg(all(test, unix))]
-use std::path::Path;
 use std::sync::Arc;
 
+use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
+use tokio::task::JoinSet;
 
-use super::enumerate_supported_servers;
+use super::{RequestTracker, enumerate_supported_servers};
 use crate::config::ServiceConfig;
-use crate::ipc::listener;
-use crate::routing::RoutingState;
+use crate::services::client_api::ClientApiService;
+use crate::services::tacacs_proxy::TacacsProxyService;
+use crate::services::ListenerOptions;
 use crate::upstream::{NetworkUpstreamConnector, UpstreamConnector};
+use crate::upstream::manager::UpstreamManager;
 
 /// Long-lived local TACACS+ client service.
 ///
@@ -58,7 +60,9 @@ pub struct TacacsClientService {
     /// Validated operator configuration snapshot.
     config: ServiceConfig,
     /// Shared failover state used by all IPC client handlers.
-    state: Arc<RoutingState>,
+    state: Arc<UpstreamManager>,
+    /// Shared request lifecycle tracker used for graceful shutdown draining.
+    request_tracker: Arc<RequestTracker>,
 }
 
 impl TacacsClientService {
@@ -69,15 +73,25 @@ impl TacacsClientService {
     ///
     /// Returns an error if credential-reference resolution fails.
     pub fn new(config: ServiceConfig) -> anyhow::Result<Self> {
+        #[cfg(unix)]
+        if config.enabled_services.client_api() {
+            ClientApiService::validate_endpoint(&config.endpoint)?;
+        }
+        validate_enabled_services(&config)?;
         let servers = enumerate_supported_servers(&config)?;
 
         let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector {
             disable_certificate_verification: config.disable_certificate_verification,
         });
         let state =
-            Arc::new(RoutingState::new(servers, connector, config.preferred_probe_interval));
+            Arc::new(UpstreamManager::new(servers, connector, config.preferred_probe_interval));
+        let request_tracker = Arc::new(RequestTracker::default());
 
-        Ok(Self { config, state })
+        Ok(Self {
+            config,
+            state,
+            request_tracker,
+        })
     }
 
     #[cfg(all(test, unix))]
@@ -85,12 +99,21 @@ impl TacacsClientService {
         config: ServiceConfig,
         connector: Arc<dyn UpstreamConnector>,
     ) -> anyhow::Result<Self> {
+        if config.enabled_services.client_api() {
+            ClientApiService::validate_endpoint(&config.endpoint)?;
+        }
+        validate_enabled_services(&config)?;
         let servers = enumerate_supported_servers(&config)?;
 
         let state =
-            Arc::new(RoutingState::new(servers, connector, config.preferred_probe_interval));
+            Arc::new(UpstreamManager::new(servers, connector, config.preferred_probe_interval));
+        let request_tracker = Arc::new(RequestTracker::default());
 
-        Ok(Self { config, state })
+        Ok(Self {
+            config,
+            state,
+            request_tracker,
+        })
     }
 
     /// Applies a validated TACACS+ configuration snapshot to the running service.
@@ -138,16 +161,7 @@ impl TacacsClientService {
             None
         };
 
-        #[cfg(unix)]
-        let result = listener::serve(
-            &self.config.endpoint,
-            Arc::clone(&self.state),
-            self.config.socket_mode,
-        )
-        .await;
-
-        #[cfg(not(unix))]
-        let result = listener::serve(&self.config.endpoint, Arc::clone(&self.state)).await;
+        let result = self.serve_enabled_services().await;
 
         if let Some(task) = probe_task {
             task.abort();
@@ -157,51 +171,95 @@ impl TacacsClientService {
         result
     }
 
-    #[cfg(all(test, unix))]
-    pub(super) async fn prepare_unix_listener(
-        &self,
-        path: &Path,
-    ) -> anyhow::Result<tokio::net::UnixListener> {
-        listener::prepare_unix_listener(path, self.config.socket_mode).await
+    async fn serve_enabled_services(&self) -> anyhow::Result<()> {
+        let listener_options = ListenerOptions::from_config(&self.config);
+        let mut tasks = JoinSet::new();
+        let mut service_count = 0;
+
+        if self.config.enabled_services.client_api() {
+            let service =
+                ClientApiService::new(Arc::clone(&self.state), Arc::clone(&self.request_tracker));
+            let endpoint = self.config.endpoint.clone();
+            tasks.spawn(async move { service.serve(&endpoint, listener_options).await });
+            service_count += 1;
+        }
+
+        if self.config.enabled_services.tacacs_proxy() {
+            let service =
+                TacacsProxyService::new(Arc::clone(&self.state), Arc::clone(&self.request_tracker));
+            let endpoint = proxy_endpoint(&self.config)?.clone();
+            tasks.spawn(async move { service.serve(&endpoint, listener_options).await });
+            service_count += 1;
+        }
+
+        if service_count == 0 {
+            anyhow::bail!("At least one runtime service must be enabled");
+        }
+
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tasks.abort_all();
+                    return Err(error);
+                }
+                Err(error) => {
+                    tasks.abort_all();
+                    return Err(anyhow::anyhow!("Runtime service task failed: {error}"));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
-#[cfg(test)]
+fn proxy_endpoint(config: &ServiceConfig) -> anyhow::Result<&IpcEndpoint> {
+    config
+        .proxy_endpoint
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("The TACACS+ proxy service requires a proxy endpoint"))
+}
+
+fn validate_enabled_services(config: &ServiceConfig) -> anyhow::Result<()> {
+    if config.enabled_services.is_empty() {
+        anyhow::bail!("At least one runtime service must be enabled");
+    }
+
+    if config.enabled_services.tacacs_proxy() && config.proxy_endpoint.is_none() {
+        anyhow::bail!("The TACACS+ proxy service requires a proxy endpoint");
+    }
+
+    if !config.enabled_services.tacacs_proxy() && config.proxy_endpoint.is_some() {
+        anyhow::bail!("A proxy endpoint was configured, but the TACACS+ proxy service is disabled");
+    }
+
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
 mod tests {
-    #[cfg(unix)]
     use std::collections::HashMap;
-    #[cfg(unix)]
     use std::sync::Arc;
-    #[cfg(unix)]
     use std::sync::atomic::{AtomicBool, Ordering};
-    #[cfg(unix)]
     use std::time::Duration;
 
-    #[cfg(unix)]
     use tacacsrs_agent_client::ipc;
-    #[cfg(unix)]
     use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
-    #[cfg(unix)]
     use tacacsrs_agent_client::{
         AuthorizationOperation, AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
     };
-    #[cfg(unix)]
     use tonic::Request;
 
-    #[cfg(unix)]
+    use crate::config::EnabledServices;
     use super::TacacsClientService;
-    #[cfg(unix)]
+    use crate::runtime::RequestTracker;
     use crate::runtime::REQUIRED_SERVER_TYPES;
-    #[cfg(unix)]
     use crate::config::ServiceConfig;
-    #[cfg(unix)]
-    use crate::ipc::GrpcService;
-    #[cfg(unix)]
-    use crate::routing::RoutingState;
-    #[cfg(unix)]
+    use crate::services::client_api::GrpcService;
     use crate::test_support::{FakeConnection, FakeConnector, build_request};
+    use crate::upstream::manager::UpstreamManager;
 
-    #[cfg(unix)]
     fn test_server(address: &str) -> tacacsrs_config::TacacsPlusServer {
         let (host, port) = match address.rsplit_once(':') {
             Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(49)),
@@ -225,7 +283,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     fn service_config(
         endpoint: IpcEndpoint,
         servers: Vec<tacacsrs_config::TacacsPlusServer>,
@@ -239,7 +296,9 @@ mod tests {
             .build()
             .expect("test config is valid");
         ServiceConfig {
+            enabled_services: EnabledServices::CLIENT_API,
             endpoint,
+            proxy_endpoint: None,
             tacacs_plus,
             preferred_probe_interval: Duration::from_millis(50),
             socket_mode: 0o660,
@@ -247,7 +306,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn service_uses_only_servers_supporting_runtime_operations() {
         let endpoint = test_endpoint("tacacs-service-runtime-filter");
@@ -263,7 +321,6 @@ mod tests {
         assert_eq!(service.state.server_count(), 1);
     }
 
-    #[cfg(unix)]
     #[test]
     fn service_accepts_config_without_fully_capable_server() {
         let endpoint = test_endpoint("tacacs-service-no-full-server");
@@ -279,7 +336,78 @@ mod tests {
         assert_eq!(service.state.server_count(), 0);
     }
 
-    #[cfg(unix)]
+    #[test]
+    fn service_rejects_tcp_client_api_endpoint_on_unix() {
+        let endpoint = IpcEndpoint::Tcp("127.0.0.1:0".parse().expect("test endpoint is valid"));
+        let config = service_config(endpoint, vec![test_server("primary:49")]);
+
+        let Err(error) = TacacsClientService::new(config) else {
+            panic!("service should reject TCP client API endpoints on Unix");
+        };
+
+        assert!(error
+            .to_string()
+            .contains("Unix client API endpoints must use a Unix domain socket"));
+    }
+
+    #[test]
+    fn service_accepts_tcp_proxy_endpoint_on_unix() {
+        let endpoint = test_endpoint("tacacs-service-proxy-tcp-client-api");
+        let mut config = service_config(endpoint, vec![test_server("primary:49")]);
+        config.enabled_services = EnabledServices::BOTH;
+        config.proxy_endpoint =
+            Some(IpcEndpoint::Tcp("127.0.0.1:0".parse().expect("test endpoint is valid")));
+
+        let service = TacacsClientService::new(config)
+            .expect("service should accept TCP proxy endpoints on Unix");
+
+        assert_eq!(service.state.server_count(), 1);
+    }
+
+    #[test]
+    fn service_accepts_proxy_only_with_tcp_client_api_endpoint_on_unix() {
+        let endpoint = IpcEndpoint::Tcp("127.0.0.1:0".parse().expect("test endpoint is valid"));
+        let mut config = service_config(endpoint, vec![test_server("primary:49")]);
+        config.enabled_services = EnabledServices::TACACS_PROXY;
+        config.proxy_endpoint =
+            Some(IpcEndpoint::Tcp("127.0.0.1:1".parse().expect("test endpoint is valid")));
+
+        let service = TacacsClientService::new(config)
+            .expect("proxy-only mode should not validate the disabled client API endpoint");
+
+        assert_eq!(service.state.server_count(), 1);
+    }
+
+    #[test]
+    fn service_rejects_no_enabled_runtime_services() {
+        let endpoint = test_endpoint("tacacs-service-no-services");
+        let mut config = service_config(endpoint, vec![test_server("primary:49")]);
+        config.enabled_services = EnabledServices::NONE;
+
+        let Err(error) = TacacsClientService::new(config) else {
+            panic!("service should reject configurations with no enabled services");
+        };
+
+        assert!(error
+            .to_string()
+            .contains("At least one runtime service must be enabled"));
+    }
+
+    #[test]
+    fn service_rejects_proxy_service_without_proxy_endpoint() {
+        let endpoint = test_endpoint("tacacs-service-proxy-without-endpoint");
+        let mut config = service_config(endpoint, vec![test_server("primary:49")]);
+        config.enabled_services = EnabledServices::TACACS_PROXY;
+
+        let Err(error) = TacacsClientService::new(config) else {
+            panic!("service should reject proxy mode without a proxy endpoint");
+        };
+
+        assert!(error
+            .to_string()
+            .contains("The TACACS+ proxy service requires a proxy endpoint"));
+    }
+
     fn test_endpoint(socket_name: &str) -> IpcEndpoint {
         let unique = format!(
             "{}-{}-{}.sock",
@@ -293,7 +421,6 @@ mod tests {
         IpcEndpoint::Unix(std::path::PathBuf::from("/tmp").join(unique))
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // real Unix socket + gRPC I/O
     async fn test_unix_socket_failover_and_preferred_recovery() {
@@ -354,7 +481,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // real Unix socket + gRPC I/O
     async fn test_authorization_rpc_uses_upstream_server() {
@@ -401,7 +527,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio sync/time not supported
     async fn test_authorization_rpc_failure_returns_service_error_oneof() {
@@ -415,12 +540,12 @@ mod tests {
             primary.address.clone(),
             Arc::clone(&primary),
         )])));
-        let state = Arc::new(RoutingState::new(
+        let state = Arc::new(UpstreamManager::new(
             vec![test_server("primary:49")],
             connector,
             Duration::from_millis(50),
         ));
-        let service = GrpcService::new(state);
+        let service = GrpcService::new(state, Arc::new(RequestTracker::default()));
         let request = AuthorizationOperation::builder("admin", 0)
             .port("pts/1")
             .remote_address("127.0.0.1")
@@ -442,71 +567,5 @@ mod tests {
         assert_eq!(error.server, "primary:49");
         assert!(error.retriable);
         assert!(error.message.contains("simulated failure"));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    #[cfg_attr(miri, ignore)] // real Unix socket + filesystem I/O
-    async fn test_existing_socket_path_is_not_unlinked() {
-        let primary = Arc::new(FakeConnection {
-            address: "primary:49".to_owned(),
-            usable: AtomicBool::new(true),
-            fail_next_request: AtomicBool::new(false),
-        });
-
-        let connector = Arc::new(FakeConnector::new(HashMap::from([(
-            primary.address.clone(),
-            Arc::clone(&primary),
-        )])));
-
-        let endpoint = test_endpoint("tacacs-service-existing-socket");
-        let path = match &endpoint {
-            IpcEndpoint::Unix(path) => path.clone(),
-            IpcEndpoint::Tcp(_) => unreachable!(),
-        };
-
-        let existing_listener = tokio::net::UnixListener::bind(&path).unwrap();
-        let config = service_config(endpoint, vec![test_server("primary:49")]);
-
-        let service = TacacsClientService::new_with_connector(config, connector).unwrap();
-        let error = service.serve().await.unwrap_err();
-        assert!(error.to_string().contains("already accepting connections"));
-
-        drop(existing_listener);
-        let _ = tokio::fs::remove_file(path).await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    #[cfg_attr(miri, ignore)] // real Unix socket + filesystem I/O
-    async fn test_stale_socket_path_is_replaced() {
-        let primary = Arc::new(FakeConnection {
-            address: "primary:49".to_owned(),
-            usable: AtomicBool::new(true),
-            fail_next_request: AtomicBool::new(false),
-        });
-
-        let connector = Arc::new(FakeConnector::new(HashMap::from([(
-            primary.address.clone(),
-            Arc::clone(&primary),
-        )])));
-
-        let endpoint = test_endpoint("tacacs-service-stale-socket");
-        let path = match &endpoint {
-            IpcEndpoint::Unix(path) => path.clone(),
-            IpcEndpoint::Tcp(_) => unreachable!(),
-        };
-
-        let stale_listener = tokio::net::UnixListener::bind(&path).unwrap();
-        drop(stale_listener);
-
-        let config = service_config(endpoint, vec![test_server("primary:49")]);
-
-        let service = TacacsClientService::new_with_connector(config, connector).unwrap();
-        let listener = service.prepare_unix_listener(&path).await.unwrap();
-        drop(listener);
-
-        assert!(tokio::fs::try_exists(&path).await.unwrap());
-        let _ = tokio::fs::remove_file(path).await;
     }
 }

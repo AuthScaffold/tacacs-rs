@@ -17,6 +17,59 @@ use std::time::Duration;
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
 
+/// Runtime services hosted by the TACACS+ client service process.
+///
+/// The client API is the local gRPC/protobuf service used by `tacon`,
+/// `session-wrapper`, and other typed local consumers. The TACACS+ proxy is a
+/// sibling service that accepts raw TACACS+ packets and forwards them upstream.
+/// At least one service must be enabled for the process to do useful work.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct EnabledServices {
+    client_api: bool,
+    tacacs_proxy: bool,
+}
+
+impl EnabledServices {
+    /// Only host the local client API service.
+    pub const CLIENT_API: Self = Self::new(true, false);
+
+    /// Only host the raw TACACS+ proxy service.
+    pub const TACACS_PROXY: Self = Self::new(false, true);
+
+    /// Host both the local client API service and the raw TACACS+ proxy service.
+    pub const BOTH: Self = Self::new(true, true);
+
+    /// Host no runtime services.
+    pub const NONE: Self = Self::new(false, false);
+
+    /// Creates a runtime service selection.
+    #[must_use]
+    pub const fn new(client_api: bool, tacacs_proxy: bool) -> Self {
+        Self {
+            client_api,
+            tacacs_proxy,
+        }
+    }
+
+    /// Returns a value indicating whether the local client API service is enabled.
+    #[must_use]
+    pub const fn client_api(self) -> bool {
+        self.client_api
+    }
+
+    /// Returns a value indicating whether no runtime services are enabled.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        !self.client_api && !self.tacacs_proxy
+    }
+
+    /// Returns a value indicating whether the raw TACACS+ proxy service is enabled.
+    #[must_use]
+    pub const fn tacacs_proxy(self) -> bool {
+        self.tacacs_proxy
+    }
+}
+
 /// Configuration for the long-lived TACACS+ client service process.
 ///
 /// The service consumes this once at startup. Validation that requires cross-
@@ -25,17 +78,31 @@ use tacacsrs_config::TacacsPlus;
 ///
 /// # Required fields
 ///
+/// - **`enabled_services`** — the local runtime services to host. At least one
+///   service must be enabled.
 /// - **`tacacs_plus`** — the YANG-modelled root configuration. The order of
 ///   `tacacs_plus.server` determines failover priority (index 0 is preferred)
 ///   when one or more accounting-capable servers are configured.
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
-    /// Local IPC endpoint exposed to local consumers.
+    /// Runtime services to host in this process.
+    pub enabled_services: EnabledServices,
+
+    /// Local IPC endpoint exposed to local consumers when the client API
+    /// service is enabled.
     ///
-    /// Unix builds accept filesystem paths such as `/run/tacacs/tacacs.sock`. All
-    /// platforms accept a TCP socket address such as `127.0.0.1:9049` for
-    /// developer workflows. Empty strings are rejected instead of defaulting.
+    /// Unix builds must use filesystem paths such as
+    /// `/run/tacacs/tacacs.sock`. Non-Unix builds accept a loopback TCP socket
+    /// address such as `127.0.0.1:9049` for developer workflows. Empty strings
+    /// are rejected instead of defaulting.
     pub endpoint: IpcEndpoint,
+
+    /// Optional local TACACS+ proxy endpoint.
+    ///
+    /// When the TACACS+ proxy service is enabled, this endpoint accepts raw
+    /// TACACS+ client connections and proxies each downstream connection to
+    /// one upstream TACACS+ session. TCP proxy endpoints must be loopback-only.
+    pub proxy_endpoint: Option<IpcEndpoint>,
 
     /// Root TACACS+ configuration including upstream servers and any shared
     /// credential bundles.

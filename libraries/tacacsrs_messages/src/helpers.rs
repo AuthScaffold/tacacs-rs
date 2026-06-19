@@ -1,6 +1,24 @@
 use std::io::{Cursor, Read};
 use anyhow::Context;
 
+pub fn read_bytes(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<Vec<u8>, anyhow::Error> {
+    // Cursor position is bounded by packet data length which fits in usize.
+    #[allow(clippy::cast_possible_truncation)]
+    let remaining_buffer = cursor.get_ref().len() - cursor.position() as usize;
+    if remaining_buffer < len {
+        return Err(anyhow::Error::msg(
+            "Not enough data to read bytes. Remaining buffer too short",
+        ));
+    }
+
+    let mut buffer = vec![0; len];
+    cursor
+        .read_exact(&mut buffer)
+        .with_context(|| format!("Unable to read {len} bytes from cursor"))?;
+
+    Ok(buffer)
+}
+
 pub fn read_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<String, anyhow::Error> {
     // Cursor position is bounded by packet data length which fits in usize.
     #[allow(clippy::cast_possible_truncation)]

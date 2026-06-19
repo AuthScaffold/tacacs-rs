@@ -32,6 +32,7 @@ tacacsrs-agentd \
     --server-addr tacacs1.example.com:49 \
     --server-addr tacacs2.example.com:49 \
     --listen-endpoint /run/tacacs/tacacs.sock \
+    --proxy-endpoint /run/tacacs/tacacs-proxy.sock \
     --shared-secret "shared_secret"
 ```
 
@@ -57,7 +58,41 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--listen-endpoint <ENDPOINT>` | `/run/tacacs/tacacs.sock` | Unix socket path (Linux) or TCP address (other platforms) |
+| `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Optional TACACS+ proxy listener on a Unix socket path or loopback TCP address |
+| `--service-mode <MODE>` | `client-api`, or `both` when `--proxy-endpoint` is set | Runtime services to host: `client-api`, `tacacs-proxy`, or `both` |
 | `--socket-mode <MODE>` | `660` | File permission mode for the Unix socket (octal) |
+
+### Runtime Service Modes
+
+`tacacsrs-agentd` can host the typed local client API, the raw TACACS+ proxy, or both services in one process:
+
+| Mode | Services hosted | Required endpoint flags |
+|------|-----------------|-------------------------|
+| `client-api` | gRPC/protobuf client API only | `--listen-endpoint` optional; defaults to the platform local endpoint |
+| `tacacs-proxy` | raw TACACS+ proxy only | `--proxy-endpoint` required |
+| `both` | client API and raw TACACS+ proxy | `--proxy-endpoint` required; `--listen-endpoint` optional |
+
+If `--service-mode` is omitted, the daemon preserves the old behavior: it runs `client-api` by default, and switches to `both` when `--proxy-endpoint` is supplied. Configurations with no hosted services are rejected.
+
+### TACACS+ Proxy Mode
+
+When the TACACS+ proxy service is enabled, `tacacsrs-agentd` accepts local TACACS+ client connections and presents itself like a TACACS+ server. This is intended for clients that already speak TACACS+ directly and need a migration path onto the agent without using the gRPC IPC protocol.
+
+For a host-by-host cutover plan from plain TACACS+ clients such as `pam_tacplus` or `audisp-tacplus`, see the [Plain TACACS+ to TACACS+ over TLS Transition Guide](tacacs-plus-tls-transition.md).
+
+Proxy mode is deliberately packet-transparent:
+
+- Each accepted downstream connection is mapped to one upstream TACACS+ session.
+- The downstream listener does not provide TACACS+ single-connection multiplexing.
+- The proxy rejects a downstream connection if packets on that connection switch to a different TACACS+ session id.
+- Packet bodies are forwarded unchanged. The proxy rewrites only the TACACS+ header session id so the downstream client's session id maps to the upstream session id selected by the networking layer.
+- Accounting and authorization sessions close after one reply. Authentication sessions can continue across challenge replies and close when the reply status is terminal.
+- `FOLLOW` replies are forwarded to the downstream client and then the connection is closed. Per RFC 8907, authorization and accounting `FOLLOW` use the authentication `FOLLOW` behavior; authentication `FOLLOW` is treated like `FAIL`.
+- Authentication `RESTART` replies are forwarded to the downstream client and then the connection is closed. The proxy enforces one TACACS+ session id per downstream connection, so a restarted authentication sequence must reconnect with a new session.
+
+Proxy TCP endpoints must be loopback addresses. Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. When `client-api` and `tacacs-proxy` run together, the proxy endpoint must be different from `--listen-endpoint`.
+
+The downstream TACACS+ shared-secret behavior follows the upstream server selected for that connection. If the selected upstream server has a `shared-secret`, the proxy uses that secret to deobfuscate downstream packets and obfuscate replies. If the selected upstream server has no shared secret, downstream packets must be sent with the unencrypted flag. When configured upstream servers use different shared secrets, a reconnect or failover can select a server with a different downstream secret; keep upstream shared secrets identical when using proxy mode.
 
 ### Upstream Encryption
 
@@ -70,6 +105,8 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | `--insecure-disable-certificate-verification` | Skip TLS cert verification |
 | `--psk-identity <ID>` | TLS 1.3 pre-shared key identity *(requires `psk` feature)* |
 | `--psk-key <KEY>` | TLS 1.3 pre-shared key *(requires `psk` feature)* |
+| `--psk-key-exchange <MODE>` | Select `psk-dhe` or explicit `psk-only` interoperability mode *(requires `psk` feature)* |
+| `--psk-key-exchange-groups <GROUP[,GROUP...]>` | Comma-separated PSK-DHE supported groups in preferred order, for example `secp384r1,secp256r1` *(requires `psk` feature)* |
 
 ### TLS Client Certificates and Keys
 
@@ -149,6 +186,8 @@ The daemon communicates with clients via gRPC over Unix domain sockets (Linux) o
 
 **Error responses** include a `retriable` flag. When `true`, the client should retry the request — this typically means the daemon is reconnecting to a different upstream server.
 
+The optional TACACS+ proxy endpoint is separate from IPC. It accepts raw TACACS+ packets and is configured with `--proxy-endpoint`.
+
 ## Deployment Examples
 
 ### Systemd Service
@@ -211,6 +250,40 @@ tacacsrs-agentd \
     --shared-secret "shared_secret" \
     --listen-endpoint /run/tacacs/tacacs.sock \
     -vv
+```
+
+### Local TACACS+ Proxy
+
+```bash
+tacacsrs-agentd \
+    --server-addr tacacs1.example.com:49 \
+    --server-addr tacacs2.example.com:49 \
+    --listen-endpoint /run/tacacs/tacacs.sock \
+    --proxy-endpoint /run/tacacs/tacacs-proxy.sock \
+    --socket-mode 660 \
+    --shared-secret "shared_secret"
+```
+
+For proxy-only deployments, select the proxy service explicitly:
+
+```bash
+tacacsrs-agentd \
+    --server-addr tacacs1.example.com:49 \
+    --server-addr tacacs2.example.com:49 \
+    --service-mode tacacs-proxy \
+    --proxy-endpoint /run/tacacs/tacacs-proxy.sock \
+    --socket-mode 660 \
+    --shared-secret "shared_secret"
+```
+
+On non-Linux development hosts, use a loopback TCP proxy endpoint:
+
+```bash
+tacacsrs-agentd \
+    --server-addr 192.0.2.20:49 \
+    --listen-endpoint 127.0.0.1:9049 \
+    --proxy-endpoint 127.0.0.1:9050 \
+    --shared-secret "shared_secret"
 ```
 
 ### Loading a YANG JSON config

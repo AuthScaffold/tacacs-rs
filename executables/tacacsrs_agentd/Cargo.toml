@@ -40,8 +40,8 @@ workspace = true
 
 # Debian package metadata
 [package.metadata.deb]
-maintainer = "AuthScaffold <support@authscaffold.com>"
-copyright = "2024, AuthScaffold <support@authscaffold.com>"
+maintainer = "AuthScaffold <github-discussions@authscaffold.com>"
+copyright = "2024, AuthScaffold"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
 tacacsrs-agentd is a long-running local TACACS+ client service. It maintains \

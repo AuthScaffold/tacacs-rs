@@ -265,6 +265,7 @@ async fn get_or_connect_ipc_client(
         Some(existing.clone())
     } else {
         *cached = Some(connected.clone());
+        drop(cached);
         Some(connected)
     }
 }

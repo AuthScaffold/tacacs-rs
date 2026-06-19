@@ -1,12 +1,11 @@
-//! Internal state machine for IPC request routing and TACACS+ server failover.
+//! Internal service for upstream TACACS+ server selection and failover.
 //!
-//! `RoutingState` is shared by all listener tasks. It owns the currently
-//! preferred server index, cached upstream connections, and the active-client
-//! drain tracking used during graceful shutdown.
+//! `UpstreamManager` is shared by all listener tasks. It owns the currently
+//! preferred server index and cached upstream connections.
 //!
 //! # Concurrency model
 //!
-//! Multiple IPC handlers may call into `RoutingState` simultaneously. The
+//! Multiple IPC handlers may call into `UpstreamManager` simultaneously. The
 //! design uses fine-grained locking to minimize contention:
 //!
 //! | Lock | Scope | Purpose |
@@ -25,13 +24,13 @@ use std::sync::atomic::Ordering;
 use anyhow::bail;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 
-use self::client_tracker::{ClientGuard, ClientTracker};
-use self::server_set::{BoundServer, ServerSet, servers_equivalent};
+use self::server_set::{ServerSet, servers_equivalent};
 use self::server_slot::ServerSlot;
 use crate::runtime::REQUIRED_SERVER_TYPES;
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
 
-mod client_tracker;
+pub(crate) use self::server_set::BoundServer;
+
 mod server_set;
 mod server_slot;
 
@@ -51,18 +50,16 @@ mod server_slot;
 /// router use one ordered failover list for accounting and authorization
 /// today; if per-operation routing is introduced later, this type is the seam
 /// where separate catalogs should be added.
-pub(crate) struct RoutingState {
+pub(crate) struct UpstreamManager {
     /// Current immutable server-set snapshot used by new IPC requests.
     server_set: StdRwLock<Arc<ServerSet>>,
     /// Factory for creating new upstream connections.
     connector: Arc<dyn UpstreamConnector>,
     /// Interval between preferred-server recovery probes.
     preferred_probe_interval: std::time::Duration,
-    /// Tracks in-flight IPC handlers for graceful shutdown draining.
-    client_tracker: Arc<ClientTracker>,
 }
 
-impl RoutingState {
+impl UpstreamManager {
     /// Creates shared failover state for the service runtime.
     ///
     /// The runtime may start with zero configured accounting-capable upstream
@@ -77,7 +74,7 @@ impl RoutingState {
             servers
                 .iter()
                 .all(|server| server.supports_server_type(REQUIRED_SERVER_TYPES)),
-            "RoutingState expects servers to support the full current TACACS+ operation set"
+            "UpstreamManager expects servers to support the full current TACACS+ operation set"
         );
         let servers = servers
             .into_iter()
@@ -88,7 +85,6 @@ impl RoutingState {
             server_set: StdRwLock::new(Arc::new(ServerSet::new(servers, 0))),
             connector,
             preferred_probe_interval,
-            client_tracker: Arc::new(ClientTracker::default()),
         }
     }
 
@@ -359,10 +355,8 @@ impl RoutingState {
     /// raw transport. Dedicated versus single-connection behavior is handled
     /// inside `tacacsrs-networking` when an operation creates a session.
     ///
-    /// This method does not notify IPC clients directly; callers translate any
-    /// returned error into a retriable
-    /// [`tacacsrs_agent_client::ServiceError`] for
-    /// the affected IPC request.
+    /// This method returns upstream boundary errors only; each consuming
+    /// service decides how to translate those errors for its own callers.
     async fn ensure_connection(
         &self,
         server_slot: &Arc<ServerSlot>,
@@ -460,22 +454,10 @@ impl RoutingState {
         }
     }
 
-    /// Registers one active IPC request and returns a guard held by the caller
-    /// until the request has finished.
-    pub(crate) fn start_client_request(&self) -> ClientGuard {
-        self.client_tracker.start_guard()
-    }
-
     /// Records a request failure against the server snapshot that request used.
     pub(crate) async fn note_bound_server_failure(&self, bound_server: &BoundServer) {
         self.note_failure(&bound_server.server_set, bound_server.index)
             .await;
-    }
-
-    /// Waits for all IPC client handlers to complete after the listener has
-    /// stopped accepting new connections.
-    pub(crate) async fn wait_for_active_clients(&self) {
-        self.client_tracker.wait_for_zero().await;
     }
 }
 
@@ -487,14 +469,9 @@ mod tests {
     use std::time::Duration;
 
     use tacacsrs_config::TacacsPlusServer;
-    use tokio::sync::Notify;
-
-    use super::RoutingState;
+    use super::UpstreamManager;
     use crate::runtime::REQUIRED_SERVER_TYPES;
-    use crate::test_support::{
-        BlockingConnection, BlockingConnector, FakeConnection, FakeConnector,
-        build_authorization_request, build_request,
-    };
+    use crate::test_support::{FakeConnection, FakeConnector};
     use crate::upstream::UpstreamConnector;
 
     fn test_server(address: &str) -> TacacsPlusServer {
@@ -545,7 +522,7 @@ mod tests {
             (third.address.clone(), Arc::clone(&third)),
         ])));
 
-        let state = RoutingState::new(
+        let state = UpstreamManager::new(
             vec![
                 test_server("server-a:49"),
                 test_server("server-b:49"),
@@ -584,7 +561,7 @@ mod tests {
             (third.address.clone(), Arc::clone(&third)),
         ])));
 
-        let state = RoutingState::new(
+        let state = UpstreamManager::new(
             vec![
                 test_server("server-a:49"),
                 test_server("server-b:49"),
@@ -624,7 +601,7 @@ mod tests {
             (second.address.clone(), Arc::clone(&second)),
         ])));
 
-        let state = RoutingState::new(
+        let state = UpstreamManager::new(
             vec![test_server("server-a:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(25),
@@ -663,7 +640,7 @@ mod tests {
             (second.address.clone(), Arc::clone(&second)),
         ])));
 
-        let state = RoutingState::new(
+        let state = UpstreamManager::new(
             vec![test_server("server-a:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(25),
@@ -707,7 +684,7 @@ mod tests {
             .with_connect_delay(Duration::from_millis(25)),
         );
 
-        let state = Arc::new(RoutingState::new(
+        let state = Arc::new(UpstreamManager::new(
             vec![test_server("server-a:49"), test_server("server-b:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(200),
@@ -729,206 +706,5 @@ mod tests {
         assert_eq!(connector.connect_attempts_for(&first.address).await, 1);
         assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
         assert_eq!(connector.max_in_flight_connects(), 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // ClientTracker / drain-wait tests
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
-    async fn test_drain_returns_immediately_with_no_active_clients() {
-        let release = Arc::new(Notify::new());
-        let connector = Arc::new(BlockingConnector {
-            connection: Arc::new(BlockingConnection {
-                address: "server:49".to_owned(),
-                release,
-            }),
-        });
-        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
-        let state =
-            RoutingState::new(vec![test_server("server:49")], connector, Duration::from_secs(60));
-
-        // No requests in flight — drain should return immediately.
-        tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients())
-            .await
-            .expect("wait_for_active_clients should return immediately with no active clients");
-    }
-
-    #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
-    async fn test_drain_waits_for_in_flight_request_then_completes() {
-        let release = Arc::new(Notify::new());
-        let connector = Arc::new(BlockingConnector {
-            connection: Arc::new(BlockingConnection {
-                address: "server:49".to_owned(),
-                release: Arc::clone(&release),
-            }),
-        });
-        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
-        let state = Arc::new(RoutingState::new(
-            vec![test_server("server:49")],
-            connector,
-            Duration::from_secs(60),
-        ));
-        state.warm_connections().await;
-
-        // Spawn an in-flight request that blocks inside send_accounting.
-        let state_bg = Arc::clone(&state);
-        let request_handle = tokio::spawn(async move {
-            state_bg
-                .execute_accounting_request(build_request())
-                .await
-                .unwrap();
-        });
-
-        // Give the spawned task time to enter send_accounting and acquire the guard.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Drain should NOT complete while the request is in flight.
-        let drain_result =
-            tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients()).await;
-        assert!(
-            drain_result.is_err(),
-            "wait_for_active_clients should block while a request is in flight"
-        );
-
-        // Release the blocked request so the guard drops.
-        release.notify_waiters();
-        request_handle.await.unwrap();
-
-        // Now drain should complete promptly.
-        tokio::time::timeout(Duration::from_millis(100), state.wait_for_active_clients())
-            .await
-            .expect("wait_for_active_clients should complete after all requests finish");
-    }
-
-    #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
-    async fn test_drain_completes_when_guard_drops_between_check_and_await() {
-        // Regression test for the lost-wakeup race: the guard drops (and
-        // notifies) in the window between the load-check and the notified().await
-        // inside wait_for_zero. The fix ensures the Notify future is registered
-        // before the recheck so no wakeup is lost.
-        let release = Arc::new(Notify::new());
-        let connector = Arc::new(BlockingConnector {
-            connection: Arc::new(BlockingConnection {
-                address: "server:49".to_owned(),
-                release: Arc::clone(&release),
-            }),
-        });
-        #[allow(unknown_lints, clippy::duration_suboptimal_units)]
-        let state = Arc::new(RoutingState::new(
-            vec![test_server("server:49")],
-            connector,
-            Duration::from_secs(60),
-        ));
-        state.warm_connections().await;
-
-        // Spawn a request then release it almost immediately so the guard drop
-        // races with the drain waiter.
-        let state_bg = Arc::clone(&state);
-        let request_handle = tokio::spawn(async move {
-            state_bg
-                .execute_accounting_request(build_request())
-                .await
-                .unwrap();
-        });
-
-        // Yield briefly to let the task start.
-        tokio::task::yield_now().await;
-
-        // Release the request immediately — the guard will drop while the drain
-        // waiter is still setting up, exercising the race window.
-        release.notify_waiters();
-        request_handle.await.unwrap();
-
-        // Drain must still complete; a lost wakeup would cause this to hang.
-        tokio::time::timeout(Duration::from_millis(200), state.wait_for_active_clients())
-            .await
-            .expect("wait_for_active_clients must not hang after a racing guard drop");
-    }
-
-    #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
-    async fn test_authorization_request_uses_configured_upstream_server() {
-        let connection = Arc::new(FakeConnection {
-            address: "server:49".to_owned(),
-            usable: AtomicBool::new(true),
-            fail_next_request: AtomicBool::new(false),
-        });
-        let connector = Arc::new(FakeConnector::new(HashMap::from([(
-            "server:49".to_owned(),
-            Arc::clone(&connection),
-        )])));
-
-        let state = RoutingState::new(
-            vec![test_server("server:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
-            Duration::from_millis(200),
-        );
-
-        let response = state
-            .execute_authorization_request(build_authorization_request())
-            .await
-            .unwrap();
-
-        assert_eq!(response.server, "server:49");
-        assert_eq!(connector.connect_attempts_for("server:49").await, 1);
-    }
-
-    #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
-    async fn test_authorization_failure_returns_service_error_and_fails_over() {
-        let primary = Arc::new(FakeConnection {
-            address: "primary:49".to_owned(),
-            usable: AtomicBool::new(true),
-            fail_next_request: AtomicBool::new(true),
-        });
-        let secondary = Arc::new(FakeConnection {
-            address: "secondary:49".to_owned(),
-            usable: AtomicBool::new(true),
-            fail_next_request: AtomicBool::new(false),
-        });
-        let connector = Arc::new(FakeConnector::new(HashMap::from([
-            ("primary:49".to_owned(), Arc::clone(&primary)),
-            ("secondary:49".to_owned(), Arc::clone(&secondary)),
-        ])));
-
-        let state = RoutingState::new(
-            vec![test_server("primary:49"), test_server("secondary:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
-            Duration::from_millis(200),
-        );
-
-        let error = state
-            .execute_authorization_request(build_authorization_request())
-            .await
-            .unwrap_err();
-        assert_eq!(error.server.as_deref(), Some("primary:49"));
-        assert!(error.retriable);
-
-        let response = state
-            .execute_authorization_request(build_authorization_request())
-            .await
-            .unwrap();
-        assert_eq!(response.server, "secondary:49");
-    }
-
-    #[tokio::test]
-    async fn test_request_without_configured_servers_returns_waiting_error() {
-        let state = RoutingState::new(
-            Vec::new(),
-            Arc::new(FakeConnector::new(HashMap::new())) as Arc<dyn UpstreamConnector>,
-            Duration::from_millis(200),
-        );
-
-        let error = state
-            .execute_authorization_request(build_authorization_request())
-            .await
-            .unwrap_err();
-
-        assert!(error.retriable);
-        assert!(error.message.contains("waiting for initial configuration"));
     }
 }

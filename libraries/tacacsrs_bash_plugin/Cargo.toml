@@ -19,8 +19,8 @@ tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 libc = "0.2"
 
 [package.metadata.deb]
-maintainer = "AuthScaffold <support@authscaffold.com>"
-copyright = "2024, AuthScaffold <support@authscaffold.com>"
+maintainer = "AuthScaffold <github-discussions@authscaffold.com>"
+copyright = "2024, AuthScaffold"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
 tacacsrs-bash-plugin is a SONiC bash execve authorization plugin backed by the \

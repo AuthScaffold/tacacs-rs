@@ -66,11 +66,12 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
 pub enum TacacsAuthenticationAction {
     TacPlusAuthenLogin = 0x1,
     TacPlusAuthenChpass = 0x2,
-    TacPlusAuthenSendauth = 0x3,
+    TacPlusAuthenSendauth = 0x4,
 }
 
 impl fmt::Display for TacacsAuthenticationAction {
@@ -165,7 +166,8 @@ impl fmt::Display for TacacsAuthenticationService {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
 pub enum TacacsAuthenticationStatus {
     TacPlusAuthenStatusPass = 0x1,
     TacPlusAuthenStatusFail = 0x2,
@@ -210,8 +212,17 @@ impl fmt::Display for TacacsAuthenticationStatus {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct TacacsAuthenicationReplyFlags: u8 {
-        const TAC_PLUS_AUTHEN_FLAG_NOECHO = 0x1;
+    pub struct TacacsAuthenticationReplyFlags: u8 {
+        const TAC_PLUS_REPLY_FLAG_NOECHO = 0x1;
+    }
+}
+
+pub type TacacsAuthenicationReplyFlags = TacacsAuthenticationReplyFlags;
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TacacsAuthenticationContinueFlags: u8 {
+        const TAC_PLUS_CONTINUE_FLAG_ABORT = 0x01;
     }
 }
 

@@ -1,0 +1,19 @@
+[book]
+authors = ["AuthScaffold"]
+language = "en"
+multilingual = false
+src = "docs"
+title = "TACACS-rs Documentation"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "rust"
+edit-url-template = "https://github.com/AuthScaffold/tacacs-rs/edit/main/{path}"
+git-repository-url = "https://github.com/AuthScaffold/tacacs-rs"
+site-url = "/tacacs-rs/"
+
+[output.html.search]
+enable = true

@@ -39,8 +39,8 @@ workspace = true
 
 # Debian package metadata
 [package.metadata.deb]
-maintainer = "AuthScaffold <support@authscaffold.com>"
-copyright = "2024, AuthScaffold <support@authscaffold.com>"
+maintainer = "AuthScaffold <github-discussions@authscaffold.com>"
+copyright = "2024, AuthScaffold"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
 Tacon is a command-line TACACS+ client for authentication, authorization, and \

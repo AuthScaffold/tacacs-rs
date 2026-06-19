@@ -7,5 +7,5 @@
 mod reader;
 mod writer;
 
-pub(crate) use reader::{PacketReadResult, PacketReader, PacketReaderTrait};
-pub(crate) use writer::{PacketWriteResult, PacketWriter, PacketWriterTrait};
+pub use reader::{PacketReadResult, PacketReader, PacketReaderTrait};
+pub use writer::{PacketWriteResult, PacketWriter, PacketWriterTrait};
