@@ -31,8 +31,7 @@ impl ProxyListener<tokio::net::UnixStream> for tokio::net::UnixListener {
             .context("Failed to accept Unix TACACS+ proxy connection")?;
         let peer_label = address
             .as_pathname()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "anonymous-unix-peer".to_owned());
+            .map_or_else(|| "anonymous-unix-peer".to_owned(), |path| path.display().to_string());
         Ok((stream, peer_label))
     }
 }

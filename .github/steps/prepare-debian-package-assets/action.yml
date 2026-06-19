@@ -65,7 +65,7 @@ runs:
         VERSIONS='${{ inputs.versions }}'
         VERSION=$(echo "$VERSIONS" | jq -r --arg pkg "$PKG" '.[$pkg] // "0.0.0-dev"' | tr -d '\r')
         TAG_PREFIX="${PKG}-"
-        MAINTAINER="AuthScaffold <support@authscaffold.com>"
+        MAINTAINER="AuthScaffold <github-discussions@authscaffold.com>"
         CHANGELOG="${PKG_DIR}/debian/changelog"
 
         mapfile -t TAGS < <(git tag --list "${TAG_PREFIX}*" --sort=v:refname)

@@ -364,7 +364,7 @@ function Get-ChangelogLines {
 
     $version = '0.0.0-dev'
     $tagPrefix = "$($Config.PackageName)-"
-    $maintainer = 'AuthScaffold <support@authscaffold.com>'
+    $maintainer = 'AuthScaffold <github-discussions@authscaffold.com>'
     $tags = @(Get-GitLogLines -Arguments @('tag', '--list', "$tagPrefix*", '--sort=v:refname'))
     $lines = New-Object System.Collections.ArrayList
 

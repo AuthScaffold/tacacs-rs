@@ -341,9 +341,8 @@ mod tests {
         let endpoint = IpcEndpoint::Tcp("127.0.0.1:0".parse().expect("test endpoint is valid"));
         let config = service_config(endpoint, vec![test_server("primary:49")]);
 
-        let error = match TacacsClientService::new(config) {
-            Ok(_) => panic!("service should reject TCP client API endpoints on Unix"),
-            Err(error) => error,
+        let Err(error) = TacacsClientService::new(config) else {
+            panic!("service should reject TCP client API endpoints on Unix");
         };
 
         assert!(error
@@ -385,9 +384,8 @@ mod tests {
         let mut config = service_config(endpoint, vec![test_server("primary:49")]);
         config.enabled_services = EnabledServices::NONE;
 
-        let error = match TacacsClientService::new(config) {
-            Ok(_) => panic!("service should reject configurations with no enabled services"),
-            Err(error) => error,
+        let Err(error) = TacacsClientService::new(config) else {
+            panic!("service should reject configurations with no enabled services");
         };
 
         assert!(error
@@ -401,9 +399,8 @@ mod tests {
         let mut config = service_config(endpoint, vec![test_server("primary:49")]);
         config.enabled_services = EnabledServices::TACACS_PROXY;
 
-        let error = match TacacsClientService::new(config) {
-            Ok(_) => panic!("service should reject proxy mode without a proxy endpoint"),
-            Err(error) => error,
+        let Err(error) = TacacsClientService::new(config) else {
+            panic!("service should reject proxy mode without a proxy endpoint");
         };
 
         assert!(error

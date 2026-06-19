@@ -402,19 +402,21 @@ mod tests {
         let session_id = session.session_id();
 
         // Verify session is in the registry
-        {
+        let contains_session = {
             let channels = session_manager.duplex_channels.read().await;
-            assert!(channels.contains_key(&session_id));
-        }
+            channels.contains_key(&session_id)
+        };
+        assert!(contains_session);
 
         // Complete the session - this should remove it from the registry
         session.complete().await;
 
         // Verify session was removed from the registry
-        {
+        let contains_session = {
             let channels = session_manager.duplex_channels.read().await;
-            assert!(!channels.contains_key(&session_id));
-        }
+            channels.contains_key(&session_id)
+        };
+        assert!(!contains_session);
     }
 
     #[tokio::test]
@@ -469,8 +471,11 @@ mod tests {
 
         assert!(result.is_err());
 
-        let channels = session_manager.duplex_channels.read().await;
-        assert!(!channels.contains_key(&session_id));
+        let contains_session = {
+            let channels = session_manager.duplex_channels.read().await;
+            channels.contains_key(&session_id)
+        };
+        assert!(!contains_session);
 
         drop(session);
     }

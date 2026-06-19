@@ -59,6 +59,7 @@ tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
 
 ## Documentation
 
+- [GitHub Discussions](https://github.com/AuthScaffold/tacacs-rs/discussions) is the preferred place for questions, support, design discussion, and migration help.
 - [tacon Usage Guide](docs/tacon.md) — CLI client reference, connection modes, batch execution
 - [tacacsrs-agentd Usage Guide](docs/tacacsrs-agentd.md) — Central service deployment, failover, IPC protocol
 - [Plain TACACS+ to TACACS+ over TLS Transition Guide](docs/tacacs-plus-tls-transition.md) — Local proxy cutover plan for `pam_tacplus`, `audisp-tacplus`, and similar clients

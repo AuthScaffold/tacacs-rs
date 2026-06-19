@@ -357,12 +357,18 @@ mod tests {
         .await
         .expect("proxy connection should complete");
 
-        let received_packets = fake_session.received_packets.lock().await;
-        assert_eq!(received_packets.len(), 1);
-        assert_eq!(received_packets[0].header().session_id, upstream_session_id);
-        assert_eq!(received_packets[0].body(), request.body());
+        let (received_len, received_session_id, received_body) = {
+            let received_packets = fake_session.received_packets.lock().await;
+            (
+                received_packets.len(),
+                received_packets[0].header().session_id,
+                received_packets[0].body().clone(),
+            )
+        };
+        assert_eq!(received_len, 1);
+        assert_eq!(received_session_id, upstream_session_id);
+        assert_eq!(received_body.as_slice(), request.body().as_slice());
         assert!(fake_session.is_complete().await);
-        drop(received_packets);
 
         let downstream_reply = read_packet(&mut client_stream).await;
         assert_eq!(downstream_reply.header().session_id, downstream_session_id);
@@ -407,9 +413,12 @@ mod tests {
             _ => panic!("expected downstream session-id rejection"),
         }
 
-        let received_packets = fake_session.received_packets.lock().await;
-        assert_eq!(received_packets.len(), 1);
-        assert_eq!(received_packets[0].header().session_id, upstream_session_id);
+        let (received_len, received_session_id) = {
+            let received_packets = fake_session.received_packets.lock().await;
+            (received_packets.len(), received_packets[0].header().session_id)
+        };
+        assert_eq!(received_len, 1);
+        assert_eq!(received_session_id, upstream_session_id);
         assert!(fake_session.is_complete().await);
     }
 }

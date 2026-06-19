@@ -17,16 +17,17 @@ pub(crate) struct ListenerOptions {
 }
 
 impl ListenerOptions {
-    pub(crate) fn from_config(_config: &ServiceConfig) -> Self {
+    pub(crate) fn from_config(config: &ServiceConfig) -> Self {
         #[cfg(unix)]
         {
             Self {
-                socket_mode: _config.socket_mode,
+                socket_mode: config.socket_mode,
             }
         }
 
         #[cfg(not(unix))]
         {
+            let _ = config;
             Self {}
         }
     }
