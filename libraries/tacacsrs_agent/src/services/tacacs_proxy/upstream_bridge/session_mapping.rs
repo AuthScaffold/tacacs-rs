@@ -1,11 +1,11 @@
 //! TACACS+ session-id mapping helpers for the raw proxy.
 
-use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_messages::packet::Packet;
 
-pub(super) fn rewrite_session_id(packet: &Packet, session_id: u32) -> anyhow::Result<Packet> {
-    let mut header = packet.header().clone();
+pub(super) fn rewrite_session_id(packet: Packet, session_id: u32) -> anyhow::Result<Packet> {
+    let (mut header, body) = packet.into_parts();
     header.session_id = session_id;
-    Packet::new(header, packet.body().clone())
+    Packet::new(header, body)
 }
 
 #[cfg(test)]
@@ -37,13 +37,17 @@ mod tests {
     #[test]
     fn rewrite_session_id_preserves_body_and_header_fields() {
         let packet = test_packet(TacacsType::TacPlusAccounting, 0x1111_2222, b"body".to_vec());
+        let tacacs_type = packet.header().tacacs_type;
+        let seq_no = packet.header().seq_no;
+        let flags = packet.header().flags;
+        let body = packet.body().clone();
 
-        let rewritten = rewrite_session_id(&packet, 0x3333_4444).unwrap();
+        let rewritten = rewrite_session_id(packet, 0x3333_4444).unwrap();
 
         assert_eq!(rewritten.header().session_id, 0x3333_4444);
-        assert_eq!(rewritten.header().tacacs_type, packet.header().tacacs_type);
-        assert_eq!(rewritten.header().seq_no, packet.header().seq_no);
-        assert_eq!(rewritten.header().flags, packet.header().flags);
-        assert_eq!(rewritten.body(), packet.body());
+        assert_eq!(rewritten.header().tacacs_type, tacacs_type);
+        assert_eq!(rewritten.header().seq_no, seq_no);
+        assert_eq!(rewritten.header().flags, flags);
+        assert_eq!(rewritten.body(), &body);
     }
 }

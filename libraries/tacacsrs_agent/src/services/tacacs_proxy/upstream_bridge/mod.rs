@@ -151,7 +151,7 @@ where
         }
 
         let downstream_session_id = downstream_session_id.expect("session id was just set");
-        let upstream_packet = rewrite_session_id(&downstream_packet, upstream_session_id)
+        let upstream_packet = rewrite_session_id(downstream_packet, upstream_session_id)
             .map_err(ProxyConnectionError::Downstream)?;
         upstream_session
             .send_packet(upstream_packet)
@@ -164,7 +164,7 @@ where
 
         let upstream_reply = read_upstream_packet(upstream_session, timeout).await?;
         let action = reply_action(&upstream_reply);
-        let downstream_reply = rewrite_session_id(&upstream_reply, downstream_session_id)
+        let downstream_reply = rewrite_session_id(upstream_reply, downstream_session_id)
             .map_err(ProxyConnectionError::Upstream)?;
         write_downstream_packet(writer, stream, downstream_reply).await?;
 

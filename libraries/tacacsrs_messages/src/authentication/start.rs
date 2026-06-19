@@ -180,6 +180,24 @@ mod tests {
     }
 
     #[test]
+    fn authentication_start_accepts_standard_sendauth_action() {
+        let body = vec![
+            0x04,
+            15,
+            TacacsAuthenticationType::TacPlusAuthenTypeAscii as u8,
+            TacacsAuthenticationService::TacPlusAuthenSvcLogin as u8,
+            0,
+            0,
+            0,
+            0,
+        ];
+
+        let decoded = AuthenticationStart::from_bytes(&body).unwrap();
+
+        assert_eq!(decoded.action, TacacsAuthenticationAction::TacPlusAuthenSendauth);
+    }
+
+    #[test]
     fn authentication_start_from_packet_validates_length() {
         let body = vec![
             TacacsAuthenticationAction::TacPlusAuthenLogin as u8,

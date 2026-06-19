@@ -6,6 +6,7 @@ use tacacsrs_messages::{header::Header, packet::Packet};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// Result of reading a packet from the stream.
+#[derive(Debug)]
 pub enum PacketReadResult {
     /// Successfully read and parsed a packet.
     Success(Packet),

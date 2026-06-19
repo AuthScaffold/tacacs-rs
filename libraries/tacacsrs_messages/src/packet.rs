@@ -44,6 +44,12 @@ impl Packet {
         Ok(Self { header, body })
     }
 
+    /// Consumes the packet and returns its header and body.
+    #[must_use]
+    pub fn into_parts(self) -> (Header, Vec<u8>) {
+        (self.header, self.body)
+    }
+
     /// # Panics
     /// Panics if the obfuscated body length is inconsistent with the header.
     #[must_use]
