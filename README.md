@@ -59,9 +59,11 @@ tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
 
 ## Documentation
 
+- [Documentation site](https://authscaffold.github.io/tacacs-rs/) - Browsable static site generated from the project guides with mdBook
 - [GitHub Discussions](https://github.com/AuthScaffold/tacacs-rs/discussions) is the preferred place for questions, support, design discussion, and migration help.
 - [tacon Usage Guide](docs/tacon.md) — CLI client reference, connection modes, batch execution
 - [tacacsrs-agentd Usage Guide](docs/tacacsrs-agentd.md) — Central service deployment, failover, IPC protocol
+- [YANG Config Guide](docs/yang-config-guide.md) — RFC 7951 TACACS+ configuration shape, parsing APIs, and TLS credential formats
 - [Plain TACACS+ to TACACS+ over TLS Transition Guide](docs/tacacs-plus-tls-transition.md) — Local proxy cutover plan for `pam_tacplus`, `audisp-tacplus`, and similar clients
 - [tacacsrs-agent-ipc-emulator README](libraries/tacacsrs_agent_ipc_emulator/README.md) — Rego policy format and in-process/out-of-process IPC emulator usage
 - [tacacsrs-config README](libraries/tacacsrs_config/README.md) — YANG JSON schema support, codegen workflow, parsing APIs
