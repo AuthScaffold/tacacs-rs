@@ -78,6 +78,8 @@ If `--service-mode` is omitted, the daemon preserves the old behavior: it runs `
 
 When the TACACS+ proxy service is enabled, `tacacsrs-agentd` accepts local TACACS+ client connections and presents itself like a TACACS+ server. This is intended for clients that already speak TACACS+ directly and need a migration path onto the agent without using the gRPC IPC protocol.
 
+For a host-by-host cutover plan from plain TACACS+ clients such as `pam_tacplus` or `audisp-tacplus`, see the [Plain TACACS+ to TACACS+ over TLS Transition Guide](tacacs-plus-tls-transition.md).
+
 Proxy mode is deliberately packet-transparent:
 
 - Each accepted downstream connection is mapped to one upstream TACACS+ session.
@@ -103,6 +105,8 @@ The downstream TACACS+ shared-secret behavior follows the upstream server select
 | `--insecure-disable-certificate-verification` | Skip TLS cert verification |
 | `--psk-identity <ID>` | TLS 1.3 pre-shared key identity *(requires `psk` feature)* |
 | `--psk-key <KEY>` | TLS 1.3 pre-shared key *(requires `psk` feature)* |
+| `--psk-key-exchange <MODE>` | Select `psk-dhe` or explicit `psk-only` interoperability mode *(requires `psk` feature)* |
+| `--psk-key-exchange-groups <GROUP[,GROUP...]>` | Comma-separated PSK-DHE supported groups in preferred order, for example `secp384r1,secp256r1` *(requires `psk` feature)* |
 
 ### TLS Client Certificates and Keys
 

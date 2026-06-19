@@ -1,13 +1,36 @@
 # TACACS-rs
 
-`tacacs-rs` is a Rust implementation of the TACACS+ protocol, providing authentication, authorization, and accounting (AAA) services for network infrastructure. It supports both traditional TACACS+ with obfuscation and modern TACACS+ over TLS 1.3.
+`tacacs-rs` is a Rust implementation of the TACACS+ protocol and a suite of products for TACACS+ operations across network infrastructure. The key products are `tacacsrs-agent`, which provides a TACACS+ TCP proxy and a gRPC-based AAA service built around TACACS+ authentication, authorization, and accounting semantics, and `tacon`, an interactive TACACS+ test application for exercising plain TCP, TLS, TLS mTLS, TLS PSK, and TLS PSK-DHE operation modes. The workspace also includes configuration parsing, agent daemon packaging, IPC emulation, and integration surfaces for operating TACACS+ services.
+
+## TACACS+ Proxy for `pam_tacplus`, `audisp-tacplus`, and Legacy TACACS+ Clients
+
+`tacacsrs-agentd` can operate as a local TACACS+ compatibility proxy for clients that cannot initiate TACACS+ over TLS themselves, including [`pam_tacplus`](https://github.com/kravietz/pam_tacplus), [`audisp-tacplus`](https://github.com/daveolson53/audisp-tacplus), and other classic TACACS+ TCP integrations.
+
+The proxy accepts ordinary TACACS+ packets on a loopback TCP endpoint, preserves the downstream TACACS+ packet model expected by existing PAM and auditd integrations, and establishes upstream TACACS+ over TLS 1.3 to one or more servers. This lets the local integration boundary stay stable while transport security, ordered failover, connection reuse, and TLS credential handling move into the daemon. Upstream modes include server-authenticated TLS, mTLS, TLS 1.3 PSK-DHE, and explicit TLS 1.3 PSK-only interoperability mode.
+
+```bash
+tacacsrs-agentd \
+  --server-addr tacacs1.example.com:449 \
+  --service-mode tacacs-proxy \
+  --proxy-endpoint 127.0.0.1:9049 \
+  --shared-secret "$TACACS_SHARED_SECRET" \
+  --use-tls
+```
+
+The proxy is intended to allow users of existing libraries to seamlessly transition to the newer RFC 9887 TLS upstream:
+
+- For `pam_tacplus` TLS migration, keep the PAM module in place and repoint its `server=` setting to the loopback TACACS+ proxy.
+- For `audisp-tacplus` TACACS+ over TLS accounting, keep the auditd plugin and TACACS+ accounting fields unchanged while the daemon forwards the accounting packets upstream over TLS.
+
+See the [Plain TACACS+ to TACACS+ over TLS Transition Guide](docs/tacacs-plus-tls-transition.md) for the full host-by-host cutover plan.
 
 ## Components
 
 | Component | Description |
 |-----------|-------------|
-| **tacon** | CLI client for sending TACACS+ requests (accounting, authentication, authorization) |
-| **tacacsrs-agentd** | Central service daemon that manages persistent TACACS+ connections with automatic failover |
+| **tacacsrs-agent** | Core agent library providing the TACACS+ TCP proxy and gRPC-based AAA service for local consumers |
+| **tacon** | Interactive TACACS+ test application for authentication, authorization, accounting, and transport validation across plain TCP, TLS, TLS mTLS, TLS PSK, and TLS PSK-DHE |
+| **tacacsrs-agentd** | Central daemon executable that hosts `tacacsrs-agent`, maintains persistent upstream connections, and provides automatic failover |
 | **tacacsrs-agent-ipc-emulatord** | OPA/Rego-driven gRPC IPC emulator for integration tests that exercise `ServiceClient` clients without a live daemon |
 | **tacacsrs-config** | YANG JSON configuration crate for `ietf-system-tacacs-plus` parsing, validation, and runtime mapping |
 | **session-wrapper** | Linux session wrapper POC for TACACS+ command authorization via seccomp user notifications |
@@ -38,6 +61,7 @@ tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
 
 - [tacon Usage Guide](docs/tacon.md) — CLI client reference, connection modes, batch execution
 - [tacacsrs-agentd Usage Guide](docs/tacacsrs-agentd.md) — Central service deployment, failover, IPC protocol
+- [Plain TACACS+ to TACACS+ over TLS Transition Guide](docs/tacacs-plus-tls-transition.md) — Local proxy cutover plan for `pam_tacplus`, `audisp-tacplus`, and similar clients
 - [tacacsrs-agent-ipc-emulator README](libraries/tacacsrs_agent_ipc_emulator/README.md) — Rego policy format and in-process/out-of-process IPC emulator usage
 - [tacacsrs-config README](libraries/tacacsrs_config/README.md) — YANG JSON schema support, codegen workflow, parsing APIs
 - [session-wrapper README](executables/session_wrapper/README.md) — Linux seccomp session wrapper architecture and current allow-all behavior
