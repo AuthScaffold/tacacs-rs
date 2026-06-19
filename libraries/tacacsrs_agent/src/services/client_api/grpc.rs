@@ -1,4 +1,4 @@
-//! Tonic gRPC service adapter for local TACACS+ agent IPC.
+//! Tonic gRPC service adapter for the local client API.
 
 use std::sync::Arc;
 
@@ -7,22 +7,30 @@ use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
 use tacacsrs_agent_client::{AccountingOperation, AuthorizationOperation};
 use tonic::{Request, Response, Status};
 
-use crate::routing::RoutingState;
+use crate::runtime::RequestTracker;
+use crate::services::client_api::upstream_bridge::UpstreamBridge;
+use crate::upstream::manager::UpstreamManager;
 
-/// Thin gRPC service adapter that delegates every RPC into the shared routing
-/// state.
+/// Thin gRPC service adapter that delegates every RPC into the client API upstream bridge.
 ///
 /// Each [`tonic`] handler registers itself as an active client and forwards the
-/// decoded request into the routing/failover machinery.
+/// decoded request into the upstream bridge.
 #[derive(Clone)]
 pub(crate) struct GrpcService {
-    state: Arc<RoutingState>,
+    upstream_bridge: UpstreamBridge,
+    request_tracker: Arc<RequestTracker>,
 }
 
 impl GrpcService {
-    /// Creates a gRPC adapter over the shared routing state.
-    pub(crate) fn new(state: Arc<RoutingState>) -> Self {
-        Self { state }
+    /// Creates a gRPC adapter over the shared upstream manager.
+    pub(crate) fn new(
+        upstream_manager: Arc<UpstreamManager>,
+        request_tracker: Arc<RequestTracker>,
+    ) -> Self {
+        Self {
+            upstream_bridge: UpstreamBridge::new(upstream_manager),
+            request_tracker,
+        }
     }
 }
 
@@ -30,8 +38,8 @@ impl GrpcService {
 impl TacacsAgent for GrpcService {
     /// Handles one unary accounting RPC from a local IPC client.
     ///
-    /// Decodes the protobuf request, delegates to [`RoutingState`] for server
-    /// selection and upstream execution, and encodes the result into the oneof
+    /// Decodes the protobuf request, delegates to the upstream bridge for
+    /// upstream execution, and encodes the result into the oneof
     /// `AccountingReply` envelope. Transport-level gRPC errors are returned as
     /// [`Status`]; application-level errors are returned inside the
     /// `ServiceError` variant of the reply.
@@ -43,12 +51,17 @@ impl TacacsAgent for GrpcService {
             log::warn!("Invalid IPC accounting request: {error}");
             Status::invalid_argument(error.to_string())
         })?;
+        let _request_guard = self.request_tracker.start_request();
         log::debug!(
             "Received IPC accounting request: user={}, cmd={}",
             request.user,
             request.command,
         );
-        let result = match self.state.execute_accounting_request(request).await {
+        let result = match self
+            .upstream_bridge
+            .execute_accounting_request(request)
+            .await
+        {
             Ok(response) => {
                 log::debug!(
                     "IPC accounting request completed: server={}, status={:?}",
@@ -71,8 +84,8 @@ impl TacacsAgent for GrpcService {
 
     /// Handles one unary authorization RPC from a local IPC client.
     ///
-    /// Decodes the protobuf request, delegates to [`RoutingState`] for server
-    /// selection and upstream execution, and encodes the result into the oneof
+    /// Decodes the protobuf request, delegates to the upstream bridge for
+    /// upstream execution, and encodes the result into the oneof
     /// `AuthorizationReply` envelope.
     async fn authorization(
         &self,
@@ -82,6 +95,7 @@ impl TacacsAgent for GrpcService {
             log::warn!("Invalid IPC authorization request: {error}");
             Status::invalid_argument(error.to_string())
         })?;
+        let _request_guard = self.request_tracker.start_request();
         log::debug!(
             "Received IPC authorization request: user={}, service={}, cmd={}",
             request.user,
@@ -89,7 +103,11 @@ impl TacacsAgent for GrpcService {
             request.command().unwrap_or("<missing>"),
         );
 
-        let result = match self.state.execute_authorization_request(request).await {
+        let result = match self
+            .upstream_bridge
+            .execute_authorization_request(request)
+            .await
+        {
             Ok(response) => {
                 log::debug!(
                     "IPC authorization request completed: server={}, status={:?}",

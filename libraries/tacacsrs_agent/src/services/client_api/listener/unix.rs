@@ -2,15 +2,13 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgentServer;
 use tokio_stream::wrappers::UnixListenerStream;
 
-use crate::ipc::GrpcService;
-use crate::routing::RoutingState;
 use crate::runtime::shutdown_signal;
+use crate::services::client_api::ClientApiService;
 
 /// Serves Unix domain socket IPC clients until shutdown is requested.
 ///
@@ -18,24 +16,23 @@ use crate::runtime::shutdown_signal;
 /// waits for active RPC handlers to drain, and then removes the socket path.
 pub(crate) async fn serve(
     path: &Path,
-    state: Arc<RoutingState>,
+    service: ClientApiService,
     socket_mode: u32,
 ) -> anyhow::Result<()> {
     let listener = prepare_unix_listener(path, socket_mode).await?;
     let socket_guard = UnixSocketCleanupGuard::new(path);
     let incoming = UnixListenerStream::new(listener);
-    let grpc_service = GrpcService::new(Arc::clone(&state));
 
     log::info!("Listening for IPC clients on Unix socket {}", path.display());
 
     tonic::transport::Server::builder()
-        .add_service(TacacsAgentServer::new(grpc_service))
+        .add_service(TacacsAgentServer::new(service.grpc_service()))
         .serve_with_incoming_shutdown(incoming, shutdown_signal())
         .await
         .with_context(|| format!("Unix IPC server {} failed", path.display()))?;
 
     log::info!("Shutdown signal received; draining active IPC clients");
-    state.wait_for_active_clients().await;
+    service.wait_for_active_requests().await;
     socket_guard.cleanup("Unix socket").await?;
     Ok(())
 }
@@ -167,4 +164,52 @@ pub(crate) async fn prepare_unix_listener(
         .with_context(|| format!("Failed to set permissions on socket {}", path.display()))?;
     socket_guard.disarm();
     Ok(listener)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::prepare_unix_listener;
+
+    fn test_socket_path(socket_name: &str) -> PathBuf {
+        let unique = format!(
+            "{}-{}-{}.sock",
+            socket_name,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after Unix epoch")
+                .as_nanos()
+        );
+        PathBuf::from("/tmp").join(unique)
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // real Unix socket + filesystem I/O
+    async fn prepare_unix_listener_rejects_active_socket_path() {
+        let path = test_socket_path("tacacs-listener-existing-socket");
+        let existing_listener = tokio::net::UnixListener::bind(&path).unwrap();
+
+        let error = prepare_unix_listener(&path, 0o660).await.unwrap_err();
+
+        assert!(error.to_string().contains("already accepting connections"));
+        drop(existing_listener);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // real Unix socket + filesystem I/O
+    async fn prepare_unix_listener_replaces_stale_socket_path() {
+        let path = test_socket_path("tacacs-listener-stale-socket");
+        let stale_listener = tokio::net::UnixListener::bind(&path).unwrap();
+        drop(stale_listener);
+
+        let listener = prepare_unix_listener(&path, 0o660).await.unwrap();
+        drop(listener);
+
+        assert!(tokio::fs::try_exists(&path).await.unwrap());
+        let _ = tokio::fs::remove_file(path).await;
+    }
 }

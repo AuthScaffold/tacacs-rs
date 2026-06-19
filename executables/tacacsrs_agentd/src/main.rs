@@ -8,7 +8,7 @@ use anyhow::Context;
 use clap::Parser;
 use futures_util::StreamExt;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-use tacacsrs_agent::{ServiceConfig, TacacsClientService};
+use tacacsrs_agent::{EnabledServices, ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerExt,
@@ -20,7 +20,7 @@ use tacacsrs_sonic::{SonicConfigDb, SonicConnection, DEFAULT_REDIS_URL};
 mod cli;
 mod systemd_notify;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, ServiceMode};
 #[cfg(feature = "psk")]
 use crate::cli::PskKeyExchange;
 use crate::systemd_notify::SystemdNotifier;
@@ -260,6 +260,20 @@ fn base_server_builder_from_address(
         .with_timeout(timeout)
 }
 
+fn enabled_services_from_cli(cli: &Cli) -> EnabledServices {
+    match cli.service_mode.unwrap_or_else(|| {
+        if cli.proxy_endpoint.is_some() {
+            ServiceMode::Both
+        } else {
+            ServiceMode::ClientApi
+        }
+    }) {
+        ServiceMode::ClientApi => EnabledServices::CLIENT_API,
+        ServiceMode::TacacsProxy => EnabledServices::TACACS_PROXY,
+        ServiceMode::Both => EnabledServices::BOTH,
+    }
+}
+
 fn tacacs_plus_from_config(path: &std::path::Path) -> anyhow::Result<TacacsPlus> {
     tacacsrs_config::parse_yang_json_file(path)
         .with_context(|| format!("Failed to load config from {}", path.display()))
@@ -361,6 +375,7 @@ fn spawn_change_listener(
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_logger(cli.verbose);
+    let enabled_services = enabled_services_from_cli(&cli);
 
     let endpoint = cli
         .listen_endpoint
@@ -369,10 +384,14 @@ async fn main() -> anyhow::Result<()> {
         .transpose()?
         .unwrap_or_else(IpcEndpoint::default_local);
 
-    log::info!("IPC endpoint: {endpoint:?}");
+    if enabled_services.client_api() {
+        log::info!("Client API endpoint: {endpoint:?}");
+    } else {
+        log::info!("Client API service disabled");
+    }
 
     #[cfg(unix)]
-    if matches!(endpoint, IpcEndpoint::Tcp(_)) {
+    if enabled_services.client_api() && matches!(endpoint, IpcEndpoint::Tcp(_)) {
         anyhow::bail!("Linux deployments must use a Unix domain socket endpoint");
     }
 
@@ -383,10 +402,20 @@ async fn main() -> anyhow::Result<()> {
         .transpose()?;
 
     if let Some(proxy_endpoint) = &proxy_endpoint {
-        if proxy_endpoint == &endpoint {
+        if enabled_services.client_api() && proxy_endpoint == &endpoint {
             anyhow::bail!("Proxy endpoint must be different from the IPC endpoint");
         }
+    }
+
+    if enabled_services.tacacs_proxy() {
+        let Some(proxy_endpoint) = &proxy_endpoint else {
+            anyhow::bail!("The TACACS+ proxy service requires --proxy-endpoint");
+        };
         log::info!("TACACS+ proxy endpoint: {proxy_endpoint:?}");
+    } else if proxy_endpoint.is_some() {
+        anyhow::bail!(
+            "--proxy-endpoint requires --service-mode tacacs-proxy or --service-mode both"
+        );
     }
 
     let datastore = build_datastore(&cli)?;
@@ -414,6 +443,7 @@ async fn main() -> anyhow::Result<()> {
 
     let service = Arc::new(
         TacacsClientService::new(ServiceConfig {
+            enabled_services,
             endpoint,
             proxy_endpoint,
             tacacs_plus,
@@ -444,8 +474,11 @@ mod tests {
     use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{Cli, apply_config_change, tacacs_plus_from_cli, tacacs_plus_from_config};
-    use tacacsrs_agent::{ServiceConfig, TacacsClientService};
+    use super::{
+        Cli, apply_config_change, enabled_services_from_cli, tacacs_plus_from_cli,
+        tacacs_plus_from_config,
+    };
+    use tacacsrs_agent::{EnabledServices, ServiceConfig, TacacsClientService};
     use tacacsrs_agent_client::IpcEndpoint;
     #[cfg(feature = "psk")]
     use tacacsrs_config::PskDheKeSupportedGroup;
@@ -499,7 +532,8 @@ mod tests {
 
     fn test_service(config: TacacsPlus) -> TacacsClientService {
         TacacsClientService::new(ServiceConfig {
-            endpoint: IpcEndpoint::Tcp("127.0.0.1:0".parse().expect("test endpoint is valid")),
+            enabled_services: EnabledServices::CLIENT_API,
+            endpoint: IpcEndpoint::default_local(),
             proxy_endpoint: None,
             tacacs_plus: config,
             preferred_probe_interval: Duration::from_secs(1),
@@ -556,6 +590,51 @@ mod tests {
 
         let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
         assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
+    }
+
+    #[test]
+    fn service_mode_defaults_to_client_api_without_proxy_endpoint() {
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--shared-secret",
+            "secret1",
+        ]);
+
+        assert_eq!(enabled_services_from_cli(&cli), EnabledServices::CLIENT_API);
+    }
+
+    #[test]
+    fn service_mode_defaults_to_both_with_proxy_endpoint() {
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--shared-secret",
+            "secret1",
+            "--proxy-endpoint",
+            "127.0.0.1:9050",
+        ]);
+
+        assert_eq!(enabled_services_from_cli(&cli), EnabledServices::BOTH);
+    }
+
+    #[test]
+    fn service_mode_accepts_proxy_only() {
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--shared-secret",
+            "secret1",
+            "--service-mode",
+            "tacacs-proxy",
+            "--proxy-endpoint",
+            "127.0.0.1:9050",
+        ]);
+
+        assert_eq!(enabled_services_from_cli(&cli), EnabledServices::TACACS_PROXY);
     }
 
     #[tokio::test]

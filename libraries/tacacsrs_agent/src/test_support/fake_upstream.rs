@@ -11,11 +11,12 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tacacsrs_agent_client::{
-    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
-    AuthorizationOperation, AuthorizationOperationResponse, AuthorizationResponseStatus,
-};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
+use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_messages::accounting::request::AccountingRequest;
+use tacacsrs_messages::authorization::reply::AuthorizationReply;
+use tacacsrs_messages::authorization::request::AuthorizationRequest;
+use tacacsrs_messages::enumerations::{TacacsAccountingStatus, TacacsAuthorizationStatus};
 use tokio::sync::Mutex;
 
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
@@ -43,34 +44,32 @@ impl UpstreamConnection for FakeConnection {
 
     async fn send_accounting(
         &self,
-        _request: &AccountingOperation,
-    ) -> anyhow::Result<AccountingOperationResponse> {
+        _request: AccountingRequest,
+    ) -> anyhow::Result<AccountingReply> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
             anyhow::bail!("simulated failure from {}", self.address);
         }
 
-        Ok(AccountingOperationResponse {
-            server: self.address.clone(),
-            status: AccountingResponseStatus::Success,
-            server_message: format!("handled by {}", self.address),
+        Ok(AccountingReply {
+            status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            server_msg: format!("handled by {}", self.address),
             data: String::new(),
         })
     }
 
     async fn send_authorization(
         &self,
-        _request: &AuthorizationOperation,
-    ) -> anyhow::Result<AuthorizationOperationResponse> {
+        _request: AuthorizationRequest,
+    ) -> anyhow::Result<AuthorizationReply> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
             anyhow::bail!("simulated failure from {}", self.address);
         }
 
-        Ok(AuthorizationOperationResponse {
-            server: self.address.clone(),
-            status: AuthorizationResponseStatus::PassAdd,
-            server_message: format!("authorized by {}", self.address),
+        Ok(AuthorizationReply {
+            status: TacacsAuthorizationStatus::TacPlusPassAdd,
+            server_msg: format!("authorized by {}", self.address),
             args: Vec::new(),
             data: String::new(),
         })

@@ -1,12 +1,22 @@
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Parser};
-#[cfg(feature = "psk")]
-use clap::ValueEnum;
+use clap::{ArgGroup, Parser, ValueEnum};
 #[cfg(feature = "psk")]
 use clap::builder::TypedValueParser as _;
 #[cfg(feature = "psk")]
 use tacacsrs_config::PskDheKeSupportedGroup;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub(crate) enum ServiceMode {
+    /// Host only the local client API service.
+    ClientApi,
+
+    /// Host only the raw TACACS+ proxy service.
+    TacacsProxy,
+
+    /// Host both local client API and raw TACACS+ proxy services.
+    Both,
+}
 
 #[cfg(feature = "psk")]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
@@ -75,6 +85,10 @@ pub(crate) struct Cli {
     /// Optional local TACACS+ proxy endpoint. Use a Unix socket path or loopback TCP address.
     #[arg(long)]
     pub(crate) proxy_endpoint: Option<String>,
+
+    /// Runtime service mode. Defaults to client-api, or both when --proxy-endpoint is set.
+    #[arg(long, value_enum)]
+    pub(crate) service_mode: Option<ServiceMode>,
 
     /// File mode applied to the Unix domain socket path (octal string, e.g. 660).
     #[cfg(unix)]

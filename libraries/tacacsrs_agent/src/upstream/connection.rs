@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tacacsrs_agent_client::{
-    AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
-    AuthorizationOperationResponse,
-};
 use tacacsrs_config::TacacsPlusServer;
+use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_messages::accounting::request::AccountingRequest;
+use tacacsrs_messages::authorization::reply::AuthorizationReply;
+use tacacsrs_messages::authorization::request::AuthorizationRequest;
 use tacacsrs_networking::ClientSession;
 
 #[async_trait]
@@ -42,10 +42,7 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     ///
     /// Returns an error if the session cannot be created or the accounting
     /// exchange fails at the TACACS+ protocol level.
-    async fn send_accounting(
-        &self,
-        request: &AccountingOperation,
-    ) -> anyhow::Result<AccountingOperationResponse>;
+    async fn send_accounting(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply>;
 
     /// Sends one authorization request and returns the server's reply.
     ///
@@ -55,14 +52,14 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// exchange fails at the TACACS+ protocol level.
     async fn send_authorization(
         &self,
-        request: &AuthorizationOperation,
-    ) -> anyhow::Result<AuthorizationOperationResponse>;
+        request: AuthorizationRequest,
+    ) -> anyhow::Result<AuthorizationReply>;
 }
 
 #[async_trait]
 /// Creates upstream connections for a configured TACACS+ server.
 ///
-/// The connector is called by [`RoutingState`](crate::routing::RoutingState)
+/// The connector is called by [`UpstreamManager`](crate::upstream::manager::UpstreamManager)
 /// whenever a fresh upstream connection manager is needed, such as during
 /// startup warm-up or after a previous operation failed.
 pub(crate) trait UpstreamConnector: Send + Sync {

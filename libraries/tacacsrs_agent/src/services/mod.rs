@@ -1,0 +1,38 @@
+//! Internal runtime services.
+//!
+//! Each child module owns a distinct service boundary used by
+//! [`crate::runtime::TacacsClientService`]: local client API and raw TACACS+
+//! proxying.
+
+use crate::config::ServiceConfig;
+
+pub(crate) mod client_api;
+pub(crate) mod tacacs_proxy;
+
+/// Platform-specific listener settings shared by runtime services.
+#[derive(Clone, Copy)]
+pub(crate) struct ListenerOptions {
+    #[cfg(unix)]
+    socket_mode: u32,
+}
+
+impl ListenerOptions {
+    pub(crate) fn from_config(_config: &ServiceConfig) -> Self {
+        #[cfg(unix)]
+        {
+            Self {
+                socket_mode: _config.socket_mode,
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            Self {}
+        }
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn socket_mode(self) -> u32 {
+        self.socket_mode
+    }
+}

@@ -4,6 +4,13 @@
 
 For full deployment and failover guidance, see [../../docs/tacacsrs-agentd.md](../../docs/tacacsrs-agentd.md).
 
+## Runtime Service Modes
+
+Use `--service-mode client-api`, `--service-mode tacacs-proxy`, or
+`--service-mode both` to choose which local runtime services are hosted. If the
+flag is omitted, the daemon runs `client-api` by default and runs `both` when
+`--proxy-endpoint` is supplied. Proxy modes require `--proxy-endpoint`.
+
 ## TLS Client Certificates and Keys
 
 Use `--client-certificate` and `--client-key` with `--use-tls` when the upstream TACACS+ server requires the daemon to present a TLS client identity.

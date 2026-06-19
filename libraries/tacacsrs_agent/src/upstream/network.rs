@@ -2,19 +2,15 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tacacsrs_agent_client::{
-    AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
-    AuthorizationOperationResponse,
-};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_flows::accounting::AccountingFlow;
 use tacacsrs_flows::authorization::AuthorizationFlow;
+use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_messages::accounting::request::AccountingRequest;
+use tacacsrs_messages::authorization::reply::AuthorizationReply;
+use tacacsrs_messages::authorization::request::AuthorizationRequest;
 use tacacsrs_networking::{ConnectOptions, ConnectPreflight, TacacsClient};
 
-use super::mapping::{
-    build_accounting_request, build_authorization_request, to_accounting_response,
-    to_authorization_response,
-};
 use super::connection::{UpstreamConnection, UpstreamConnector};
 
 /// Production connector backed by [`tacacsrs_networking`].
@@ -74,20 +70,15 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         self.create_session().await
     }
 
-    async fn send_accounting(
-        &self,
-        request: &AccountingOperation,
-    ) -> anyhow::Result<AccountingOperationResponse> {
+    async fn send_accounting(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply> {
         log_session_start(
             "accounting",
             &self.server_address,
-            &format!("user={}, cmd={}", request.user, request.command),
+            &format!("user={}, args={}", request.user, request.args.len()),
         );
 
         let session = self.create_session().await?;
-        let response = session
-            .send_accounting_request(build_accounting_request(request))
-            .await;
+        let response = session.send_accounting_request(request).await;
 
         match &response {
             Ok(resp) => {
@@ -103,31 +94,21 @@ impl UpstreamConnection for TacacsUpstreamConnection {
             }
         }
 
-        let response =
-            response.with_context(|| shared_failure_context("accounting", &self.server_address))?;
-
-        Ok(to_accounting_response(&self.server_address, response))
+        response.with_context(|| shared_failure_context("accounting", &self.server_address))
     }
 
     async fn send_authorization(
         &self,
-        request: &AuthorizationOperation,
-    ) -> anyhow::Result<AuthorizationOperationResponse> {
+        request: AuthorizationRequest,
+    ) -> anyhow::Result<AuthorizationReply> {
         log_session_start(
             "authorization",
             &self.server_address,
-            &format!(
-                "user={}, service={}, cmd={}",
-                request.user,
-                request.service().unwrap_or("<missing>"),
-                request.command().unwrap_or("<missing>"),
-            ),
+            &format!("user={}, args={}", request.user, request.args.len()),
         );
 
         let session = self.create_session().await?;
-        let response = session
-            .send_authorization_request(build_authorization_request(request)?)
-            .await;
+        let response = session.send_authorization_request(request).await;
 
         match &response {
             Ok(resp) => {
@@ -143,10 +124,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
             }
         }
 
-        let response = response
-            .with_context(|| shared_failure_context("authorization", &self.server_address))?;
-
-        to_authorization_response(&self.server_address, response)
+        response.with_context(|| shared_failure_context("authorization", &self.server_address))
     }
 }
 

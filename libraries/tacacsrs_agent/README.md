@@ -24,13 +24,34 @@ that both the server and local consumers share the same protocol definitions.
 ```text
 tacacsrs_agent
 ├── config           - public runtime configuration
-├── ipc              - Tonic gRPC adapter and local listener transports
-│   └── listener     - Unix socket and loopback TCP binding
-├── operations       - typed accounting and authorization execution hooks
-├── routing          - server snapshots, failover, cache, probes, and drains
-├── runtime          - TacacsClientService lifecycle and hot reload
-├── test_support     - fake and blocking upstream fixtures for tests
-└── upstream         - TACACS+ network execution and protocol mapping
+├── runtime          - TacacsClientService lifecycle, hot reload, and drains
+├── services         - internal service boundaries
+│   ├── client_api   - local client-facing gRPC service and IPC transports
+│   │   ├── service  - ClientApiService runtime dependency owner
+│   │   ├── grpc     - Tonic TacacsAgent adapter
+│   │   ├── listener - endpoint dispatch and shutdown drain
+│   │   │   ├── tcp  - loopback TCP binding for non-Unix builds
+│   │   │   └── unix - Unix socket binding and cleanup
+│   │   └── upstream_bridge
+│   │                - client API operation/protocol mapping and failover bridge
+│   └── tacacs_proxy - raw TACACS+ proxy service
+│       ├── service   - TacacsProxyService runtime dependency owner
+│       ├── listener  - endpoint dispatch, accept loop, and shutdown drain
+│       │   ├── tcp   - loopback TCP binding
+│       │   └── unix  - Unix socket binding and cleanup
+│       └── upstream_bridge
+│           ├── packet_io
+│           │          - downstream/upstream TACACS+ packet read/write helpers
+│           ├── reply_action
+│           │          - reply status classification for session completion
+│           ├── session_mapping
+│           │          - TACACS+ session-id rewriting
+│           └── error - downstream/upstream connection error boundary
+├── upstream         - TACACS+ upstream service boundary
+│   ├── manager      - server snapshots, failover, cache, and probes
+│   ├── connection   - upstream connection and connector traits
+│   └── network      - production TCP/TLS upstream connector
+└── test_support     - fake upstream fixtures for tests
 ```
 
 ## Architecture overview
@@ -50,17 +71,25 @@ tacacsrs_agent
        v
 ┌──────────────────────────────┐
 │ TacacsClientService          │
-│ - listener lifecycle         │
-│ - graceful shutdown          │
+│ - service orchestration      │
+│ - hot reload                 │
+│ - graceful shutdown tracking │
 └──────┬───────────────────────┘
-       │ delegates request binding + failover
+  │ starts client API service
        v
 ┌──────────────────────────────┐
-│ RoutingState                 │
+│ services::client_api         │
+│ - gRPC transport             │
+│ - typed operation execution  │
+│ - ServiceError mapping       │
+└──────┬───────────────────────┘
+  │ binds requests
+  v
+┌──────────────────────────────┐
+│ UpstreamManager              │
 │ - active server selection    │
 │ - preferred server probing   │
-│ - request execution          │
-│ - active client tracking     │
+│ - connection cache           │
 └──────┬───────────────────────┘
        │ creates / reuses sessions
        v
@@ -75,6 +104,14 @@ tacacsrs_agent
 │ TACACS+ Server(s)            │
 └──────────────────────────────┘
 ```
+
+On Unix, the client API gRPC service accepts only Unix socket endpoints. The raw
+TACACS+ proxy is a sibling runtime service with its own endpoint policy: when
+`EnabledServices` includes the proxy service, `TacacsClientService` starts
+`services::tacacs_proxy`; when it includes both services, the proxy runs
+alongside `services::client_api`. The proxy may bind either a Unix socket or
+loopback TCP endpoint on Unix. The proxy uses its own `upstream_bridge` because
+it forwards packet sessions rather than typed RPC operations.
 
 ## Request activity diagram
 
@@ -97,7 +134,10 @@ local IPC listener accepts client
 GrpcService decodes the request
   |
   v
-RoutingState chooses the active server
+client_api::upstream_bridge maps the typed operation
+  |
+  v
+UpstreamManager chooses the active server
   |
   +--> no responsive server
   |      |
@@ -212,9 +252,9 @@ start at once against a relatively small TACACS+ server pool. If no server is
 reachable during startup, the service still starts and later IPC requests retry
 failover on demand.
 
-Per-server reconnect attempts are serialized inside the routing layer. When many
-IPC requests arrive at once, they share one in-flight reconnect attempt for a
-given TACACS+ server instead of generating a burst of duplicate TLS handshakes.
+Per-server reconnect attempts are serialized inside the upstream manager. When
+many IPC requests arrive at once, they share one in-flight reconnect attempt for
+a given TACACS+ server instead of generating a burst of duplicate TLS handshakes.
 After that reconnect attempt finishes, queued callers reuse the cached
 connection if it succeeded, or fail over without immediately retrying the same
 server again for that same burst of IPC work if it failed.
@@ -224,8 +264,8 @@ server again for that same burst of IPC work if it failed.
 Each accepted IPC connection currently carries a single unary RPC exchange:
 
 1. Decode one protobuf accounting or authorization request.
-2. Select the upstream server for that IPC session.
-3. Execute the request against that bound server.
+2. Map the typed operation through `services::client_api::upstream_bridge`.
+3. Select the upstream server for that request through `UpstreamManager`.
 4. Encode one protobuf reply envelope.
 
 ## Protocol source of truth

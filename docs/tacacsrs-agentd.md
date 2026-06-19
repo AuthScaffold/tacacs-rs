@@ -59,11 +59,24 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 |------|---------|-------------|
 | `--listen-endpoint <ENDPOINT>` | `/run/tacacs/tacacs.sock` | Unix socket path (Linux) or TCP address (other platforms) |
 | `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Optional TACACS+ proxy listener on a Unix socket path or loopback TCP address |
+| `--service-mode <MODE>` | `client-api`, or `both` when `--proxy-endpoint` is set | Runtime services to host: `client-api`, `tacacs-proxy`, or `both` |
 | `--socket-mode <MODE>` | `660` | File permission mode for the Unix socket (octal) |
+
+### Runtime Service Modes
+
+`tacacsrs-agentd` can host the typed local client API, the raw TACACS+ proxy, or both services in one process:
+
+| Mode | Services hosted | Required endpoint flags |
+|------|-----------------|-------------------------|
+| `client-api` | gRPC/protobuf client API only | `--listen-endpoint` optional; defaults to the platform local endpoint |
+| `tacacs-proxy` | raw TACACS+ proxy only | `--proxy-endpoint` required |
+| `both` | client API and raw TACACS+ proxy | `--proxy-endpoint` required; `--listen-endpoint` optional |
+
+If `--service-mode` is omitted, the daemon preserves the old behavior: it runs `client-api` by default, and switches to `both` when `--proxy-endpoint` is supplied. Configurations with no hosted services are rejected.
 
 ### TACACS+ Proxy Mode
 
-When `--proxy-endpoint` is set, `tacacsrs-agentd` also accepts local TACACS+ client connections and presents itself like a TACACS+ server. This is intended for clients that already speak TACACS+ directly and need a migration path onto the agent without using the gRPC IPC protocol.
+When the TACACS+ proxy service is enabled, `tacacsrs-agentd` accepts local TACACS+ client connections and presents itself like a TACACS+ server. This is intended for clients that already speak TACACS+ directly and need a migration path onto the agent without using the gRPC IPC protocol.
 
 Proxy mode is deliberately packet-transparent:
 
@@ -75,7 +88,7 @@ Proxy mode is deliberately packet-transparent:
 - `FOLLOW` replies are forwarded to the downstream client and then the connection is closed. Per RFC 8907, authorization and accounting `FOLLOW` use the authentication `FOLLOW` behavior; authentication `FOLLOW` is treated like `FAIL`.
 - Authentication `RESTART` replies are forwarded to the downstream client and then the connection is closed. The proxy enforces one TACACS+ session id per downstream connection, so a restarted authentication sequence must reconnect with a new session.
 
-Proxy TCP endpoints must be loopback addresses. Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. The proxy endpoint must be different from `--listen-endpoint`.
+Proxy TCP endpoints must be loopback addresses. Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. When `client-api` and `tacacs-proxy` run together, the proxy endpoint must be different from `--listen-endpoint`.
 
 The downstream TACACS+ shared-secret behavior follows the upstream server selected for that connection. If the selected upstream server has a `shared-secret`, the proxy uses that secret to deobfuscate downstream packets and obfuscate replies. If the selected upstream server has no shared secret, downstream packets must be sent with the unencrypted flag. When configured upstream servers use different shared secrets, a reconnect or failover can select a server with a different downstream secret; keep upstream shared secrets identical when using proxy mode.
 
@@ -242,6 +255,18 @@ tacacsrs-agentd \
     --server-addr tacacs1.example.com:49 \
     --server-addr tacacs2.example.com:49 \
     --listen-endpoint /run/tacacs/tacacs.sock \
+    --proxy-endpoint /run/tacacs/tacacs-proxy.sock \
+    --socket-mode 660 \
+    --shared-secret "shared_secret"
+```
+
+For proxy-only deployments, select the proxy service explicitly:
+
+```bash
+tacacsrs-agentd \
+    --server-addr tacacs1.example.com:49 \
+    --server-addr tacacs2.example.com:49 \
+    --service-mode tacacs-proxy \
     --proxy-endpoint /run/tacacs/tacacs-proxy.sock \
     --socket-mode 660 \
     --shared-secret "shared_secret"
