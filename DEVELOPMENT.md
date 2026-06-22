@@ -290,147 +290,87 @@ new version tags, add a `norelease`, `no-release`, or `skip-release` label to
 the merged PR. You can also include `[norelease]`, `[no-release]`, or
 `[skip-release]` in the head commit message. Main branch CI still runs, but it
 skips release version injection, tag creation, and GitHub release publication.
+It also skips updates to the generated `release/versions` branch.
 
 ### Release Workflow
 
-Triggered automatically when a version tag (`v*.*.*`) is pushed. Builds release binaries for:
+Main branch CI is the release workflow. On a push to `main`, GitHub Actions:
 
-- `x86_64-unknown-linux-gnu`
-- `x86_64-pc-windows-msvc`
-
-Additionally, the release workflow generates:
-
-- **Software Bill of Materials (SBOM)** in CycloneDX format (both JSON and XML)
-  - Compliant with supply chain security requirements
-  - Includes all dependencies and their licenses
-  - Separate SBOM files for each workspace crate (tacon, tacacsrs-messages, tacacsrs-networking)
+1. Checks the release policy. `[norelease]`, `[no-release]`, `[skip-release]`, or matching PR labels skip release outputs while still running CI.
+2. Computes versions from existing git tags with `.github/steps/compute-versions`.
+3. Injects the computed version map into `Cargo.toml` files in CI before official builds.
+4. Builds release binaries, Debian packages, SBOMs, checksums, and release assets.
+5. Creates and pushes any new library semver tags and executable CalVer tags.
+6. Creates the GitHub Release for the primary executable release tag.
+7. Updates the generated `release/versions` branch with final Cargo package metadata populated.
 
 ## Releasing
 
 ### Version Management
 
-This project uses **workspace version inheritance**. The version is defined once in the root `Cargo.toml`:
+Committed package manifests on `main` use `0.0.0-dev`. Do not add a follow-up
+version commit to `main` during normal development or release work.
 
-```toml
-[workspace.package]
-version = "0.1.0"
-```
+Real release versions are derived from git tags:
 
-All member crates inherit this version via `version.workspace = true`.
+- Libraries receive semver versions and tags of the form `<crate>-vX.Y.Z`.
+- Executables receive CalVer versions of the form `YYYY.MMDD.BUILD` and tags of the form `<binary>-YYYY.MMDD.BUILD`.
+- `tacacsrs-agentd` shares the primary `tacon` CalVer version in the current release workflow.
 
-### Release Process (GitHub Actions)
+The official build pipeline injects the computed version map before compiling and packaging. This keeps Cargo metadata, CLI version output, Debian package versions, and release assets consistent without committing release versions back to `main`.
 
-We use [cargo-bins/release-pr](https://github.com/cargo-bins/release-pr) to create release PRs, which are then reviewed and merged to trigger the full release workflow.
+### Release Versions Branch
 
-#### Prerequisites
+The `release/versions` branch is a generated source branch for consumers who want to clone and build with released Cargo package versions already populated.
 
-Ensure your repository settings allow GitHub Actions to create PRs:
-1. Go to **Settings** > **Actions** > **General**
-2. Under "Workflow permissions", enable **"Allow GitHub Actions to create and approve pull requests"**
+Release automation creates or rewrites that branch after successful release tagging. The release tags remain on the original `main` commit; the generated version commit exists only on `release/versions` and is not merged back to `main`.
 
-#### 1. Open a Release PR
+Use `release/versions` for clone-and-build release source checkouts. Use `main` for development.
 
-1. Go to **Actions** > **"Open Release PR"** workflow
-2. Click **"Run workflow"**
-3. Enter the version:
-   - Exact version: `1.2.3`
-   - Bump level: `patch`, `minor`, or `major`
-4. Optionally select a specific crate (leave empty for all crates)
-5. Click **"Run workflow"**
+### Release Process
 
-This creates a PR that:
-- Updates version numbers in `Cargo.toml` files
-- Runs `cargo publish --dry-run` to validate the release
-- Includes a section for writing release notes
-- Is labeled with `release` for automation
+1. Merge the development change to `main`.
+2. Main CI computes release versions from the previous tags and the changed crate paths.
+3. If there are release changes and CI succeeds, the release job creates the new tags and GitHub Release.
+4. The same release job updates `release/versions` with the computed final versions injected into `Cargo.toml`.
 
-#### 2. Review the Release PR
-
-- Review the version changes
-- Edit the PR description to add release notes
-- Request reviews from team members
-- Ensure all CI checks pass
-
-#### 3. Merge to Release
-
-When the PR is merged:
-1. The release workflow automatically triggers
-2. Builds release binaries for all platforms
-3. Generates Software Bill of Materials (SBOM) in CycloneDX format
-4. Creates and pushes the git tag (`vX.Y.Z`)
-5. Generates SHA256 checksums for all artifacts
-6. Creates a GitHub Release with all artifacts (binaries, checksums, and SBOMs)
-
-Release artifacts include:
-- Pre-built binaries for each platform
-- SHA256 checksums file
-- SBOM files in both JSON and XML formats (for supply chain compliance)
-
-### Alternative: Manual Tag Release
-
-You can still trigger releases by pushing a tag directly:
-
-```bash
-# Create and push a tag
-git tag -a v1.2.3 -m "Release v1.2.3"
-git push origin v1.2.3
-```
-
-Or use `cargo-release` locally:
-
-```bash
-# Install (one-time)
-cargo install cargo-release
-
-# Dry run first
-cargo release patch --dry-run
-
-# Execute release
-cargo release patch --execute
-```
+For CI, LDE, documentation, or other non-release changes, use the no-release labels or commit markers described above.
 
 ### Pre-release Versions
 
-For alpha/beta/rc releases, use the full version string:
-
-- Via GitHub Actions: Enter `0.2.0-alpha.1` as the version
-- Via tag: `git tag -a v0.2.0-alpha.1 -m "Pre-release v0.2.0-alpha.1"`
-
-Tags containing `-` are automatically marked as pre-releases on GitHub.
+Pull request CI computes `dev` pre-release versions and injects them into the CI checkout before building artifacts. These versions are for validation artifacts only. They are not tagged, committed, or pushed to `release/versions`.
 
 ### Troubleshooting Releases
 
-**Release PR not triggering the release workflow?**
+**Unexpected release tags would be created?**
 
-Ensure the PR has the `release` label and the PR title contains the version (e.g., `release: v1.2.3`).
+Add a `norelease`, `no-release`, or `skip-release` label to the PR before merging, or include `[norelease]`, `[no-release]`, or `[skip-release]` in the head commit message.
 
 **Tag already exists?**
 
-```bash
-# Delete local tag
-git tag -d vX.Y.Z
+Delete the conflicting local and remote tag, then rerun the release workflow only after confirming the tag was created by mistake.
 
-# Delete remote tag (if pushed)
-git push origin :refs/tags/vX.Y.Z
+```bash
+git tag -d <tag-name>
+git push origin :refs/tags/<tag-name>
 ```
 
-**Need to cancel a release PR?**
+**`release/versions` failed to update?**
 
-Simply close the PR without merging. No changes will be made to the repository.
+Check whether branch protection allows `github-actions[bot]` to update or force-update the generated branch. If protection is required, add an exception for the release workflow or update the branch through an approved automation token.
 
 ## Project Structure
 
 ```
 tacacs-rs/
-├── Cargo.toml              # Workspace root with shared version
-├── release.toml            # cargo-release configuration
+├── Cargo.toml              # Workspace root and shared package metadata
+├── release-plz.toml        # git-only release-plz configuration
 ├── rustfmt.toml            # Formatting configuration
 ├── .github/
 │   ├── workflows/          # CI/CD workflows
 │   │   ├── ci.yml          # Main branch CI
 │   │   ├── pullrequest_workflow.yml
-│   │   ├── release.yml     # Release automation
-│   │   └── reusable-*.yml  # Shared workflow components
+│   │   └── reusable-pipeline.yml
 │   └── steps/              # Reusable composite actions
 ├── executables/
 │   └── tacon/              # CLI application
