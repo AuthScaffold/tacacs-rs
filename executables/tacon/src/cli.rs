@@ -110,7 +110,7 @@ pub struct Cli {
     #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
     pub psk_identity: Option<String>,
 
-    /// Pre-shared key for TLS 1.3 PSK authentication
+    /// Base64-encoded pre-shared key for TLS 1.3 PSK authentication
     #[cfg(feature = "psk")]
     #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
     pub psk_key: Option<String>,

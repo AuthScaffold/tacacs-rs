@@ -1,4 +1,6 @@
 use anyhow::Context;
+#[cfg(feature = "psk")]
+use base64::Engine as _;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tacacsrs_config::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerExt,
@@ -154,12 +156,8 @@ fn populate_security_from_cli(
         if let (Some(psk_identity), Some(psk_key)) =
             (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
         {
-            let tls_builder = apply_psk_key_exchange(
-                cli,
-                builder,
-                psk_identity.clone(),
-                psk_key.as_bytes().to_vec(),
-            )?;
+            let psk_key = decode_cli_psk_key(psk_key)?;
+            let tls_builder = apply_psk_key_exchange(cli, builder, psk_identity.clone(), psk_key)?;
 
             if options.allows(&ValidationRelaxation::AllowTlsWithSharedSecret) {
                 if let Some(ref secret) = cli.shared_secret {
@@ -222,6 +220,13 @@ fn populate_security_from_cli(
             None => builder.build(),
         })
     }
+}
+
+#[cfg(feature = "psk")]
+fn decode_cli_psk_key(psk_key: &str) -> anyhow::Result<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD
+        .decode(psk_key)
+        .context("--psk-key must be standard base64-encoded PSK bytes")
 }
 
 #[cfg(feature = "psk")]
@@ -754,6 +759,21 @@ mod tests {
     }
 
     #[cfg(feature = "psk")]
+    fn tls13_epsk_key(cli: &Cli) -> Vec<u8> {
+        let mut root = tacacs_plus_from_cli(cli).expect("PSK config should build");
+        root.server
+            .remove(0)
+            .client_identity
+            .expect("client identity")
+            .tls13_epsk
+            .expect("tls13 epsk")
+            .inline_definition
+            .expect("inline key")
+            .cleartext_symmetric_key
+            .expect("symmetric key")
+    }
+
+    #[cfg(feature = "psk")]
     #[test]
     fn tacacs_plus_from_cli_defaults_psk_to_dhe_groups() {
         let cli = Cli::parse_from([
@@ -764,7 +784,7 @@ mod tests {
             "--psk-identity",
             "client",
             "--psk-key",
-            "secret",
+            "c2VjcmV0",
             "accounting",
             "--user",
             "alice",
@@ -783,6 +803,60 @@ mod tests {
 
     #[cfg(feature = "psk")]
     #[test]
+    fn tacacs_plus_from_cli_decodes_base64_psk_key() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "c2VjcmV0",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        assert_eq!(tls13_epsk_key(&cli), b"secret");
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
+    fn tacacs_plus_from_cli_rejects_invalid_base64_psk_key() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "not base64!!!",
+            "accounting",
+            "--user",
+            "alice",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.50",
+            "show",
+        ]);
+
+        let error = tacacs_plus_from_cli(&cli).expect_err("invalid base64 PSK should fail");
+
+        assert!(error
+            .to_string()
+            .contains("--psk-key must be standard base64-encoded PSK bytes"));
+    }
+
+    #[cfg(feature = "psk")]
+    #[test]
     fn tacacs_plus_from_cli_allows_psk_only_mode() {
         let cli = Cli::parse_from([
             "tacon",
@@ -792,7 +866,7 @@ mod tests {
             "--psk-identity",
             "client",
             "--psk-key",
-            "secret",
+            "c2VjcmV0",
             "--psk-key-exchange",
             "psk-only",
             "accounting",
@@ -819,7 +893,7 @@ mod tests {
             "--psk-identity",
             "client",
             "--psk-key",
-            "secret",
+            "c2VjcmV0",
             "--psk-key-exchange-groups",
             "secp256r1,x25519",
             "accounting",
@@ -849,7 +923,7 @@ mod tests {
             "--psk-identity",
             "client",
             "--psk-key",
-            "secret",
+            "c2VjcmV0",
             "--psk-key-exchange",
             "psk-only",
             "--psk-key-exchange-groups",
