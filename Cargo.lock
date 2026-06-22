@@ -2133,6 +2133,7 @@ name = "tacon"
 version = "0.0.0-dev"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
  "clap_mangen",
  "env_logger",
