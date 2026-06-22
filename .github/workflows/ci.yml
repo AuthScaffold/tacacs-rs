@@ -163,6 +163,34 @@ jobs:
 
           git push origin --tags
 
+      # ── Publish generated source branch with final Cargo metadata ──
+      - name: Prepare release versions branch
+        run: git checkout -B release/versions "$GITHUB_SHA"
+
+      - name: Inject release versions
+        uses: ./.github/steps/inject-versions
+        with:
+          versions: ${{ needs.compute-versions.outputs.versions }}
+
+      - name: Publish release versions branch
+        shell: bash
+        run: |
+          git add -- Cargo.toml libraries/*/Cargo.toml executables/*/Cargo.toml
+
+          if git diff --cached --quiet; then
+            echo "No release version changes to publish"
+            exit 0
+          fi
+
+          git commit -m "chore: populate release versions"
+
+          if git ls-remote --exit-code --heads origin release/versions >/dev/null 2>&1; then
+            git fetch origin +release/versions:refs/remotes/origin/release/versions
+            git push --force-with-lease=refs/heads/release/versions origin HEAD:refs/heads/release/versions
+          else
+            git push origin HEAD:refs/heads/release/versions
+          fi
+
       # ── Download artifacts built by the pipeline ──
       - name: Download release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

@@ -95,6 +95,19 @@ cargo build --release --package tacon
 sudo cp target/release/tacon /usr/local/bin/
 ```
 
+The `main` branch keeps Cargo package versions at `0.0.0-dev` for development.
+To build from source with released version metadata already populated, clone the
+generated `release/versions` branch:
+
+```bash
+git clone https://github.com/AuthScaffold/tacacs-rs.git --branch release/versions
+cd tacacs-rs
+cargo build --release --package tacon
+```
+
+The `release/versions` branch is updated by release automation and may be
+rewritten. Use `main` for development work.
+
 ### Basic Usage
 
 ```bash
