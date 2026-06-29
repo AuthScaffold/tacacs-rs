@@ -154,7 +154,7 @@ fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
                 .iter()
                 .enumerate()
                 .map(|(i, addr)| {
-                    let builder = base_server_builder_from_address(addr, i, timeout);
+                    let builder = base_server_builder_from_address(addr, i, timeout, cli.dedicated);
                     match cli.psk_key_exchange {
                         Some(PskKeyExchange::PskOnly) => builder.with_tls13_epsk_psk_only(
                             psk_identity.clone(),
@@ -186,9 +186,11 @@ fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
             .iter()
             .enumerate()
             .map(|(i, addr)| match cli.shared_secret.clone() {
-                Some(shared_secret) => base_server_builder_from_address(addr, i, timeout)
-                    .with_shared_secret(shared_secret),
-                None => base_server_builder_from_address(addr, i, timeout),
+                Some(shared_secret) => {
+                    base_server_builder_from_address(addr, i, timeout, cli.dedicated)
+                        .with_shared_secret(shared_secret)
+                }
+                None => base_server_builder_from_address(addr, i, timeout, cli.dedicated),
             })
             .collect()
     };
@@ -236,14 +238,15 @@ fn tls_cert_server_builders_from_cli(
         .enumerate()
         .map(|(i, addr)| {
             if client_cert_der.is_some() || client_key_der.is_some() {
-                base_server_builder_from_address(addr, i, timeout)
+                base_server_builder_from_address(addr, i, timeout, cli.dedicated)
                     .with_tls_client_certificate_with_key_format(
                         client_cert_der.clone(),
                         client_key_der.clone(),
                         client_key_format,
                     )
             } else {
-                base_server_builder_from_address(addr, i, timeout).with_tls_server_authentication()
+                base_server_builder_from_address(addr, i, timeout, cli.dedicated)
+                    .with_tls_server_authentication()
             }
         })
         .collect())
@@ -253,11 +256,13 @@ fn base_server_builder_from_address(
     addr: &str,
     index: usize,
     timeout: u16,
+    dedicated: bool,
 ) -> TacacsPlusServerBuilder {
     let (host, port) = parse_host_port(addr, 49);
 
     TacacsPlusServerBuilder::new(format!("server-{index}"), TacacsPlusServerType::all(), host, port)
         .with_timeout(timeout)
+        .with_single_connection(!dedicated)
 }
 
 fn enabled_services_from_cli(cli: &Cli) -> EnabledServices {
@@ -590,6 +595,35 @@ mod tests {
 
         let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
         assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
+    }
+
+    #[test]
+    fn tacacs_plus_from_cli_enables_single_connection_negotiation() {
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--shared-secret",
+            "secret1",
+        ]);
+
+        let root = tacacs_plus_from_cli(&cli).expect("CLI config should load");
+        assert!(root.server[0].single_connection);
+    }
+
+    #[test]
+    fn tacacs_plus_from_cli_dedicated_disables_single_connection_negotiation() {
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--shared-secret",
+            "secret1",
+            "--dedicated",
+        ]);
+
+        let root = tacacs_plus_from_cli(&cli).expect("CLI config should load");
+        assert!(!root.server[0].single_connection);
     }
 
     #[test]
