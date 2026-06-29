@@ -130,6 +130,13 @@ impl TacacsPlusServerBuilder {
         self
     }
 
+    /// Enables or disables TACACS+ single-connection negotiation for this server.
+    #[must_use]
+    pub fn with_single_connection(mut self, single_connection: bool) -> Self {
+        self.server.single_connection = single_connection;
+        self
+    }
+
     /// Selects obfuscation mode using the supplied shared secret.
     ///
     /// This clears any previously configured TLS identity fields. To add a

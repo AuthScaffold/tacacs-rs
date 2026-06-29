@@ -7,14 +7,11 @@ use anyhow::Context;
 use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::packet::PacketTrait;
-use tacacsrs_networking::{PacketReader, PacketWriter};
+use tacacsrs_networking::PacketWriter;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use self::error::ProxyConnectionError;
-use self::packet_io::{
-    read_downstream_packet, read_upstream_packet, validate_downstream_obfuscation,
-    write_downstream_packet,
-};
+use self::packet_io::{read_downstream_packet, read_upstream_packet, write_downstream_packet};
 use self::reply_action::{ReplyAction, reply_action};
 use self::session_mapping::rewrite_session_id;
 use crate::runtime::RequestGuard;
@@ -46,13 +43,16 @@ impl UpstreamBridge {
     where
         Stream: AsyncRead + AsyncWrite + Unpin + Send,
     {
-        let bound_server = self
-            .upstream_manager
-            .bind_server_for_new_session()
-            .await
-            .with_context(|| {
-                format!("Failed to bind TACACS+ proxy client {peer_label} to an upstream server")
-            })?;
+        let bound_server = match self.upstream_manager.bind_server_for_new_session().await {
+            Ok(bound_server) => bound_server,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to bind TACACS+ proxy client {peer_label} to an upstream server"
+                    )
+                });
+            }
+        };
 
         log::debug!(
             "Proxying TACACS+ client {peer_label} via {} (server index {})",
@@ -60,7 +60,9 @@ impl UpstreamBridge {
             bound_server.index,
         );
 
-        match proxy_bound_connection(stream, &bound_server).await {
+        let result = proxy_bound_connection(stream, &bound_server).await;
+
+        match result {
             Ok(()) => Ok(()),
             Err(ProxyConnectionError::Upstream(error)) => {
                 self.upstream_manager
@@ -86,13 +88,14 @@ where
         .shared_secret
         .as_ref()
         .map(|secret| secret.as_bytes().to_vec());
-    let upstream_session = bound_server
-        .connection
-        .create_raw_session()
-        .await
-        .map_err(|error| {
-            ProxyConnectionError::Upstream(error.context("Failed to create upstream proxy session"))
-        })?;
+    let upstream_session = match bound_server.connection.create_raw_session().await {
+        Ok(upstream_session) => upstream_session,
+        Err(error) => {
+            return Err(ProxyConnectionError::Upstream(
+                error.context("Failed to create upstream proxy session"),
+            ));
+        }
+    };
 
     proxy_connection_with_session(stream, server, timeout, obfuscation_key, &upstream_session).await
 }
@@ -108,11 +111,9 @@ where
     Stream: AsyncRead + AsyncWrite + Unpin + Send,
     Session: ClientSessionFlowIoTrait + Sync + ?Sized,
 {
-    let reader = PacketReader::new(obfuscation_key.clone());
     let writer = PacketWriter::new(obfuscation_key);
     let result =
-        proxy_connection_loop(&mut stream, server, timeout, &reader, &writer, upstream_session)
-            .await;
+        proxy_connection_loop(&mut stream, server, timeout, &writer, upstream_session).await;
 
     upstream_session.complete().await;
     result
@@ -122,7 +123,6 @@ async fn proxy_connection_loop<Stream, Session>(
     stream: &mut Stream,
     server: &TacacsPlusServer,
     timeout: Duration,
-    reader: &PacketReader,
     writer: &PacketWriter,
     upstream_session: &Session,
 ) -> Result<(), ProxyConnectionError>
@@ -134,8 +134,18 @@ where
     let upstream_session_id = upstream_session.session_id();
 
     loop {
-        let downstream_packet = read_downstream_packet(reader, stream, timeout).await?;
-        validate_downstream_obfuscation(&downstream_packet, server)?;
+        let downstream_packet = match read_downstream_packet(
+            stream,
+            timeout,
+            server.shared_secret.as_ref().map(String::as_bytes),
+        )
+        .await
+        {
+            Ok(packet) => packet,
+            Err(error) => return Err(error),
+        };
+        let downstream_reply_obfuscation = downstream_packet.reply_obfuscation;
+        let downstream_packet = downstream_packet.packet;
 
         let packet_session_id = downstream_packet.header().session_id;
         match downstream_session_id {
@@ -151,22 +161,31 @@ where
         }
 
         let downstream_session_id = downstream_session_id.expect("session id was just set");
-        let upstream_packet = rewrite_session_id(downstream_packet, upstream_session_id)
-            .map_err(ProxyConnectionError::Downstream)?;
-        upstream_session
-            .send_packet(upstream_packet)
-            .await
-            .map_err(|error| {
-                ProxyConnectionError::Upstream(
-                    error.context("Failed to send proxied packet upstream"),
-                )
-            })?;
+        let upstream_packet = match rewrite_session_id(downstream_packet, upstream_session_id) {
+            Ok(packet) => packet,
+            Err(error) => {
+                return Err(ProxyConnectionError::Downstream(error));
+            }
+        };
 
-        let upstream_reply = read_upstream_packet(upstream_session, timeout).await?;
+        if let Err(error) = upstream_session.send_packet(upstream_packet).await {
+            return Err(ProxyConnectionError::Upstream(
+                error.context("Failed to send proxied packet upstream"),
+            ));
+        }
+
+        let upstream_reply = match read_upstream_packet(upstream_session, timeout).await {
+            Ok(packet) => packet,
+            Err(error) => return Err(error),
+        };
+
         let action = reply_action(&upstream_reply);
-        let downstream_reply = rewrite_session_id(upstream_reply, downstream_session_id)
-            .map_err(ProxyConnectionError::Upstream)?;
-        write_downstream_packet(writer, stream, downstream_reply).await?;
+        let downstream_reply = match rewrite_session_id(upstream_reply, downstream_session_id) {
+            Ok(packet) => packet,
+            Err(error) => return Err(ProxyConnectionError::Upstream(error)),
+        };
+        write_downstream_packet(writer, stream, downstream_reply, downstream_reply_obfuscation)
+            .await?;
 
         match action {
             ReplyAction::Continue => {}
@@ -330,6 +349,12 @@ mod tests {
         }
     }
 
+    fn test_server_with_secret(secret: &str) -> TacacsPlusServer {
+        let mut server = test_server();
+        server.shared_secret = Some(secret.to_owned());
+        server
+    }
+
     #[tokio::test]
     async fn proxy_connection_maps_session_id_and_preserves_body() {
         let downstream_session_id = 0x1111_2222;
@@ -372,6 +397,95 @@ mod tests {
 
         let downstream_reply = read_packet(&mut client_stream).await;
         assert_eq!(downstream_reply.header().session_id, downstream_session_id);
+        assert_eq!(downstream_reply.body(), &reply_body);
+    }
+
+    #[tokio::test]
+    async fn proxy_connection_preserves_unobfuscated_downstream_reply() {
+        let downstream_session_id = 0x1111_2222;
+        let upstream_session_id = 0x3333_4444;
+        let secret = "proxy-secret";
+        let request = test_packet(
+            TacacsType::TacPlusAccounting,
+            downstream_session_id,
+            b"request-body".to_vec(),
+        );
+        let reply_body = accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+        let upstream_reply =
+            test_packet(TacacsType::TacPlusAccounting, upstream_session_id, reply_body.clone());
+        let fake_session = FakeProxySession::new(upstream_session_id, vec![upstream_reply]);
+        let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
+
+        write_packet(&mut client_stream, &request).await;
+
+        proxy_connection_with_session(
+            proxy_stream,
+            &test_server_with_secret(secret),
+            Duration::from_secs(1),
+            Some(secret.as_bytes().to_vec()),
+            &fake_session,
+        )
+        .await
+        .expect("proxy connection should complete");
+
+        let downstream_reply = read_packet(&mut client_stream).await;
+        assert!(downstream_reply
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
+        assert_eq!(downstream_reply.header().session_id, downstream_session_id);
+        assert_eq!(downstream_reply.body(), &reply_body);
+    }
+
+    #[tokio::test]
+    async fn proxy_connection_preserves_obfuscated_downstream_reply() {
+        let downstream_session_id = 0x1111_2222;
+        let upstream_session_id = 0x3333_4444;
+        let secret = "proxy-secret";
+        let request_body = b"request-body".to_vec();
+        let request =
+            test_packet(TacacsType::TacPlusAccounting, downstream_session_id, request_body.clone())
+                .to_obfuscated(secret.as_bytes());
+        let reply_body = accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+        let upstream_reply =
+            test_packet(TacacsType::TacPlusAccounting, upstream_session_id, reply_body.clone());
+        let fake_session = FakeProxySession::new(upstream_session_id, vec![upstream_reply]);
+        let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
+
+        write_packet(&mut client_stream, &request).await;
+
+        proxy_connection_with_session(
+            proxy_stream,
+            &test_server_with_secret(secret),
+            Duration::from_secs(1),
+            Some(secret.as_bytes().to_vec()),
+            &fake_session,
+        )
+        .await
+        .expect("proxy connection should complete");
+
+        let (received_len, received_session_id, received_flags, received_body) = {
+            let received_packets = fake_session.received_packets.lock().await;
+            (
+                received_packets.len(),
+                received_packets[0].header().session_id,
+                received_packets[0].header().flags,
+                received_packets[0].body().clone(),
+            )
+        };
+        assert_eq!(received_len, 1);
+        assert_eq!(received_session_id, upstream_session_id);
+        assert!(received_flags.contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
+        assert_eq!(received_body, request_body);
+
+        let raw_downstream_reply = read_packet(&mut client_stream).await;
+        assert!(!raw_downstream_reply
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
+        assert_eq!(raw_downstream_reply.header().session_id, downstream_session_id);
+
+        let downstream_reply = raw_downstream_reply.to_deobfuscated(secret.as_bytes());
         assert_eq!(downstream_reply.body(), &reply_body);
     }
 

@@ -40,6 +40,7 @@ fn psk_dhe_ke_supported_group_parser(
         })
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
 #[command(about = "Central TACACS+ client service for local consumers")]
@@ -55,6 +56,7 @@ pub(crate) struct Cli {
         "server_addresses", "shared_secret", "use_tls",
         "client_certificate", "client_key",
         "insecure_disable_certificate_verification",
+        "dedicated",
         "sonic", "sonic_redis_url", "sonic_redis_db",
     ])]
     pub(crate) config: Option<PathBuf>,
@@ -118,6 +120,10 @@ pub(crate) struct Cli {
     /// Timeout, in seconds, for establishing a new upstream TACACS+ connection.
     #[arg(long, default_value_t = 5)]
     pub(crate) connect_timeout_seconds: u64,
+
+    /// Use a dedicated upstream connection per request instead of TACACS+ single-connection mode.
+    #[arg(long, requires = "server_addresses", conflicts_with = "sonic")]
+    pub(crate) dedicated: bool,
 
     /// Probe interval, in seconds, used when checking whether the preferred server has recovered.
     #[arg(long, default_value_t = 30)]
