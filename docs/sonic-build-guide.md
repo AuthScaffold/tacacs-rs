@@ -107,6 +107,38 @@ Reference that path from `/etc/bash_plugins.conf`:
 plugin=/usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so
 ```
 
+## Container image
+
+For container-based delivery of the agent, a multi-stage container build for
+`tacacsrs-agentd` lives under `containers/tacacsrs-agentd/`. It compiles the
+daemon from source with the `psk` feature and ships a minimal glibc runtime
+image, so it stays compatible with SONiC's Debian userspace.
+
+Build and test the image with the container Makefiles (run from a Linux
+environment or WSL with Docker BuildKit available):
+
+```bash
+# Build just the agent image
+make -C containers/tacacsrs-agentd build
+
+# Run the agent daemon test suite inside the build container
+make -C containers/tacacsrs-agentd test
+
+# Build every container image in the repo
+make -C containers build
+```
+
+The image name, tag, and registry are overridable:
+
+```bash
+make -C containers/tacacsrs-agentd build REGISTRY=<your-registry> BUILD_VERSION=<version>
+```
+
+The toolchain and runtime base images are `docker buildx` build arguments
+(`BUILDER_IMAGE` and `RUNTIME_IMAGE`), so downstream builders can substitute
+their own bases without editing the Dockerfile. The default `ENTRYPOINT`/`CMD`
+mirrors the SONiC systemd unit and can be overridden at `docker run` time.
+
 ## Verification
 
 Before enabling SONiC command authorization broadly, verify that:
