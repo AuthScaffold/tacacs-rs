@@ -27,7 +27,6 @@ Generates SBOM files to comply with supply chain security requirements, includin
     describe: binaries
     target: x86_64-pc-windows-msvc
     target-in-filename: 'true'
-    features: psk
 ```
 
 ## Inputs

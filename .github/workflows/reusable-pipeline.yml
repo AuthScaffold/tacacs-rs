@@ -58,10 +58,10 @@ on:
         required: false
         default: |
           [
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "psk", "sbom_describe": "binaries", "man_page_name": "tacon", "debian_package": true},
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-agentd-linux-gnu-x86_64", "package_name": "tacacsrs-agentd", "package_root": "executables/tacacsrs_agentd", "artifact_name": "tacacsrs-agentd", "artifact_kind": "bin", "features": "psk", "sbom_describe": "binaries", "man_page_name": "tacacsrs-agentd", "debian_package": true},
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries", "man_page_name": "tacon", "debian_package": true},
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-agentd-linux-gnu-x86_64", "package_name": "tacacsrs-agentd", "package_root": "executables/tacacsrs_agentd", "artifact_name": "tacacsrs-agentd", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries", "man_page_name": "tacacsrs-agentd", "debian_package": true},
             {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-bash-plugin-linux-gnu-x86_64", "package_name": "tacacsrs-bash-plugin", "package_root": "libraries/tacacsrs_bash_plugin", "artifact_name": "tacacsrs_bash_plugin", "artifact_kind": "cdylib", "features": "", "sbom_describe": "all-cargo-targets", "man_page_name": "", "debian_package": true},
-            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "psk", "sbom_describe": "binaries", "man_page_name": "tacon", "debian_package": false}
+            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries", "man_page_name": "tacon", "debian_package": false}
           ]
         type: string
       versions:
@@ -349,7 +349,7 @@ jobs:
           target: ${{ matrix.config.target }}
 
       - name: Collect OpenSSL runtime DLLs
-        if: runner.os == 'Windows' && contains(matrix.config.features, 'psk')
+        if: runner.os == 'Windows'
         uses: ./.github/steps/collect-openssl-runtime
 
       - name: Package SBOMs

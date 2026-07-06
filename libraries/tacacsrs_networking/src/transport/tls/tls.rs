@@ -1,9 +1,9 @@
 use tokio::net::TcpStream;
-use tokio_rustls::client::TlsStream;
+use tokio_openssl::SslStream;
 
 use crate::transport::abstractions::Transport;
 
-impl Transport for TlsStream<TcpStream> {
+impl Transport for SslStream<TcpStream> {
     type ReadHalf = tokio::io::ReadHalf<Self>;
     type WriteHalf = tokio::io::WriteHalf<Self>;
 

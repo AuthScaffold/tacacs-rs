@@ -9,10 +9,8 @@ use crate::address::parse_host_port;
 use crate::files::{load_client_certificate, load_client_private_key};
 use crate::model::{
     CertKeyIdentity, CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityMode,
-    CliServerInput,
+    CliServerInput, PskKeyExchangeMode, PskKeyMaterial,
 };
-#[cfg(feature = "psk")]
-use crate::model::{PskKeyExchangeMode, PskKeyMaterial};
 
 /// Loads a [`TacacsPlus`] root from a YANG JSON string with the supplied validation options.
 ///
@@ -99,7 +97,6 @@ fn server_from_cli_input(
             let tls_builder = tls_client_certificate_builder(builder, identity)?;
             tls_builder_with_optional_shared_secret(tls_builder, shared_secret, options).build()
         }
-        #[cfg(feature = "psk")]
         CliSecurityMode::TlsPsk {
             identity,
             key,
@@ -149,7 +146,6 @@ fn tls_client_certificate_builder(
     ))
 }
 
-#[cfg(feature = "psk")]
 fn psk_builder(
     builder: TacacsPlusServerBuilder,
     identity: String,
