@@ -106,11 +106,13 @@ jobs:
     permissions:
       checks: write
       contents: read
-      packages: read
+      packages: write
     with:
       include-fmt: false
       include-proto-compat: false
       include-outdated: false
+      include-container-publish: ${{ github.event_name == 'push' && github.repository_owner == 'AuthScaffold' && needs.release-policy.outputs.skip-release != 'true' && needs.compute-versions.outputs.has-release == 'true' }}
+      container-registry: ghcr.io/authscaffold
       products: |
         [
           {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "psk", "sbom_describe": "binaries", "man_page_name": "tacon", "debian_package": true},
