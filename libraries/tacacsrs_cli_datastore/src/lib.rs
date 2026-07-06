@@ -18,5 +18,4 @@ pub use model::{
     CertKeyIdentity, CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs,
     CliSecurityMode, CliServerInput, PskKeyExchangeMode, PskKeyMaterial, TlsServerName,
 };
-#[cfg(feature = "psk")]
 pub use model::CliPskInputs;

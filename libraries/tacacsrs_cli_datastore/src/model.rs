@@ -1,11 +1,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-#[cfg(feature = "psk")]
 use anyhow::Context;
-#[cfg(feature = "psk")]
 use base64::Engine as _;
-#[cfg(feature = "psk")]
 use tacacsrs_config::PskDheKeSupportedGroup;
 use tacacsrs_config::{TacacsPlusServerType, ValidationOptions};
 
@@ -151,7 +148,6 @@ impl CliSecurity {
             };
         }
 
-        #[cfg(feature = "psk")]
         if let Some(psk) = inputs.psk {
             return Self {
                 mode: CliSecurityMode::TlsPsk {
@@ -163,7 +159,6 @@ impl CliSecurity {
                 shared_secret,
             };
         }
-
         let mode = match (inputs.client_certificate, inputs.client_key) {
             (Some(certificate_path), Some(private_key_path)) => {
                 CliSecurityMode::TlsClientCertificate {
@@ -196,7 +191,6 @@ pub enum CliSecurityMode {
     /// TLS with a client certificate identity read from disk.
     TlsClientCertificate { identity: CertKeyIdentity },
     /// TLS 1.3 with an externally provisioned pre-shared key.
-    #[cfg(feature = "psk")]
     TlsPsk {
         identity: String,
         key: PskKeyMaterial,
@@ -216,12 +210,10 @@ pub struct CliSecurityInputs {
     pub shared_secret: Option<String>,
     pub client_certificate: Option<PathBuf>,
     pub client_key: Option<PathBuf>,
-    #[cfg(feature = "psk")]
     pub psk: Option<CliPskInputs>,
 }
 
 /// TLS 1.3 PSK inputs collected from an executable's parsed CLI.
-#[cfg(feature = "psk")]
 #[derive(Debug, Clone)]
 pub struct CliPskInputs {
     pub identity: String,
@@ -265,7 +257,6 @@ pub enum PskKeyMaterial {
 }
 
 impl PskKeyMaterial {
-    #[cfg(feature = "psk")]
     pub(crate) fn into_bytes(self) -> anyhow::Result<Vec<u8>> {
         match self {
             Self::Raw(bytes) => Ok(bytes),

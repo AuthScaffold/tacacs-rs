@@ -11,12 +11,11 @@ The shared CI and release pipeline produces these Debian packages:
 
 | Package | Source crate | Install path | Notes |
 | --- | --- | --- | --- |
-| `tacon` | `executables/tacon` | `/usr/bin/tacon` | Linux package builds enable the `psk` feature. |
-| `tacacsrs-agentd` | `executables/tacacsrs_agentd` | `/usr/sbin/tacacsrs-agentd` | Linux package builds enable the `psk` feature. |
+| `tacon` | `executables/tacon` | `/usr/bin/tacon` | Includes OpenSSL-backed TLS and TLS 1.3 PSK support. |
+| `tacacsrs-agentd` | `executables/tacacsrs_agentd` | `/usr/sbin/tacacsrs-agentd` | Includes OpenSSL-backed TLS and TLS 1.3 PSK support. |
 | `tacacsrs-bash-plugin` | `libraries/tacacsrs_bash_plugin` | `/usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so` | SONiC bash execve plugin shared library package. |
 
-Windows archives are produced separately and may enable PSK support when the
-required OpenSSL toolchain is available.
+Windows archives are produced separately and include the required OpenSSL runtime DLLs.
 
 ## Prerequisites
 
@@ -37,8 +36,8 @@ WSL or another Linux environment so the outputs are GNU/Linux artifacts.
 Build the Linux release artifacts before invoking `cargo deb --no-build`:
 
 ```bash
-cargo build --release --target x86_64-unknown-linux-gnu -p tacon --features psk
-cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-agentd --features psk
+cargo build --release --target x86_64-unknown-linux-gnu -p tacon
+cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-agentd
 cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-bash-plugin
 ```
 
@@ -130,7 +129,7 @@ The bash plugin package should contain:
 ### Missing OpenSSL headers while building Linux executable packages
 
 Install `pkg-config` and `libssl-dev`, then rebuild `tacon` and
-`tacacsrs-agentd` with `--features psk`.
+`tacacsrs-agentd`.
 
 ### Missing generated man page during packaging
 

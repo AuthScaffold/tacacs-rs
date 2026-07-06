@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{ArgGroup, Parser, ValueEnum};
-#[cfg(feature = "psk")]
 use clap::builder::TypedValueParser as _;
-#[cfg(feature = "psk")]
 use tacacsrs_config::PskDheKeSupportedGroup;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
@@ -18,7 +16,6 @@ pub(crate) enum ServiceMode {
     Both,
 }
 
-#[cfg(feature = "psk")]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub(crate) enum PskKeyExchange {
     /// Use TLS 1.3 PSK with ephemeral (EC)DHE key exchange.
@@ -30,7 +27,6 @@ pub(crate) enum PskKeyExchange {
     PskOnly,
 }
 
-#[cfg(feature = "psk")]
 fn psk_dhe_ke_supported_group_parser(
 ) -> impl clap::builder::TypedValueParser<Value = PskDheKeSupportedGroup> {
     clap::builder::PossibleValuesParser::new(PskDheKeSupportedGroup::ALLOWED_VALUES.iter().copied())
@@ -133,21 +129,17 @@ pub(crate) struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub(crate) verbose: u8,
 
-    #[cfg(feature = "psk")]
     #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
     pub(crate) psk_identity: Option<String>,
 
-    #[cfg(feature = "psk")]
     #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key"])]
     pub(crate) psk_key: Option<String>,
 
     /// TLS 1.3 PSK key-exchange mode.
-    #[cfg(feature = "psk")]
     #[arg(long, value_enum, requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
     pub(crate) psk_key_exchange: Option<PskKeyExchange>,
 
     /// Comma-separated TLS 1.3 PSK-DHE groups in preferred order.
-    #[cfg(feature = "psk")]
     #[arg(
         long,
         value_delimiter = ',',

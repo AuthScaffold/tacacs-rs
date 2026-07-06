@@ -18,16 +18,3 @@ mod tls13_epsk;
 pub(crate) use config::PskClientConfig;
 pub(crate) use context::{EpskSupportedHashExt, PskDheKeGroups};
 pub(crate) use from_server::{establish_from_server, server_has_psk};
-
-use tokio::net::TcpStream;
-
-use crate::transport::abstractions::Transport;
-
-impl Transport for tokio_openssl::SslStream<TcpStream> {
-    type ReadHalf = tokio::io::ReadHalf<Self>;
-    type WriteHalf = tokio::io::WriteHalf<Self>;
-
-    fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
-        tokio::io::split(self)
-    }
-}

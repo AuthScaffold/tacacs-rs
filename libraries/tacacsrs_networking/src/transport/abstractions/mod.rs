@@ -28,7 +28,7 @@ pub(crate) trait Transport: Send + 'static {
 mod tests {
     use super::*;
     use tokio::net::TcpStream;
-    use tokio_rustls::client::TlsStream;
+    use tokio_openssl::SslStream;
 
     // Compile-time check that TcpStream implements Transport
     #[allow(dead_code)]
@@ -41,20 +41,13 @@ mod tests {
 
     // Compile-time check that TlsStream implements Transport
     #[allow(dead_code)]
-    fn check_tls(s: TlsStream<TcpStream>) {
+    fn check_tls(s: SslStream<TcpStream>) {
         assert_transport(s);
     }
 
     // Compile-time check that MockTransport implements Transport
     #[allow(dead_code)]
     fn check_mock(s: crate::transport::mock::MockTransport) {
-        assert_transport(s);
-    }
-
-    // Compile-time check that OpenSSL-backed SslStream implements Transport
-    #[cfg(feature = "psk")]
-    #[allow(dead_code)]
-    fn check_openssl(s: tokio_openssl::SslStream<TcpStream>) {
         assert_transport(s);
     }
 }

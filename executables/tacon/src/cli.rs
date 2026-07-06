@@ -1,7 +1,5 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
-#[cfg(feature = "psk")]
 use clap::builder::TypedValueParser as _;
-#[cfg(feature = "psk")]
 use tacacsrs_config::PskDheKeSupportedGroup;
 
 /// Validation relaxation that loosens a specific YANG constraint.
@@ -22,7 +20,6 @@ pub enum ValidationRelaxation {
 }
 
 /// TLS 1.3 PSK key-exchange behavior.
-#[cfg(feature = "psk")]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub enum PskKeyExchange {
     /// Use TLS 1.3 PSK with ephemeral (EC)DHE key exchange.
@@ -34,7 +31,6 @@ pub enum PskKeyExchange {
     PskOnly,
 }
 
-#[cfg(feature = "psk")]
 fn psk_dhe_ke_supported_group_parser(
 ) -> impl clap::builder::TypedValueParser<Value = PskDheKeSupportedGroup> {
     clap::builder::PossibleValuesParser::new(PskDheKeSupportedGroup::ALLOWED_VALUES.iter().copied())
@@ -106,22 +102,18 @@ pub struct Cli {
     pub insecure_disable_certificate_verification: bool,
 
     /// PSK identity string sent to the server during the TLS 1.3 handshake
-    #[cfg(feature = "psk")]
     #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
     pub psk_identity: Option<String>,
 
     /// Base64-encoded pre-shared key for TLS 1.3 PSK authentication
-    #[cfg(feature = "psk")]
     #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
     pub psk_key: Option<String>,
 
     /// TLS 1.3 PSK key-exchange mode.
-    #[cfg(feature = "psk")]
     #[arg(long, value_enum, requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key", "service_endpoint"])]
     pub psk_key_exchange: Option<PskKeyExchange>,
 
     /// Comma-separated TLS 1.3 PSK-DHE groups in preferred order.
-    #[cfg(feature = "psk")]
     #[arg(
         long,
         value_delimiter = ',',
@@ -327,7 +319,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(feature = "psk")]
     #[test]
     fn test_psk_key_exchange_mode_parses() {
         let result = Cli::try_parse_from([
@@ -349,7 +340,6 @@ mod tests {
         assert_eq!(result.unwrap().psk_key_exchange, Some(PskKeyExchange::PskOnly));
     }
 
-    #[cfg(feature = "psk")]
     #[test]
     fn test_psk_key_exchange_groups_parse_comma_separated_values() {
         let result = Cli::try_parse_from([
@@ -379,7 +369,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "psk")]
     #[test]
     fn test_psk_key_exchange_groups_reject_unknown_group() {
         let result = Cli::try_parse_from([

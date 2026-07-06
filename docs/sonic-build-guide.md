@@ -18,8 +18,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
 Build the SONiC-relevant artifacts from a Linux environment with GNU targets:
 
 ```bash
-cargo build --release --target x86_64-unknown-linux-gnu -p tacon --features psk
-cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-agentd --features psk
+cargo build --release --target x86_64-unknown-linux-gnu -p tacon
+cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-agentd
 cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-bash-plugin
 ```
 

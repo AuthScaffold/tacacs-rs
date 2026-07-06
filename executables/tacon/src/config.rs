@@ -5,7 +5,6 @@ use tacacsrs_cli_datastore::{
     CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
     tacacs_plus_from_cli_input, tacacs_plus_from_file as shared_tacacs_plus_from_file,
 };
-#[cfg(feature = "psk")]
 use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
 use tacacsrs_config::{
     TacacsPlus, TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType, ValidationOptions,
@@ -13,7 +12,6 @@ use tacacsrs_config::{
 };
 
 use crate::cli::{Cli, Command};
-#[cfg(feature = "psk")]
 use crate::cli::PskKeyExchange;
 
 /// Builds a single-server [`TacacsPlus`] root from CLI flags for direct-mode connections.
@@ -75,12 +73,10 @@ fn cli_security_from_cli(cli: &Cli) -> CliSecurity {
         shared_secret: cli.shared_secret.clone(),
         client_certificate: cli.client_certificate.clone().map(PathBuf::from),
         client_key: cli.client_key.clone().map(PathBuf::from),
-        #[cfg(feature = "psk")]
         psk: cli_psk_inputs(cli),
     })
 }
 
-#[cfg(feature = "psk")]
 fn cli_psk_inputs(cli: &Cli) -> Option<CliPskInputs> {
     let identity = cli.psk_identity.as_ref()?;
     let key = cli.psk_key.as_ref()?;
@@ -221,7 +217,6 @@ mod tests {
 
     use super::{render_yang_config, select_first_server_for_type, tacacs_plus_from_cli};
     use crate::cli::Cli;
-    #[cfg(feature = "psk")]
     use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::{TacacsPlusServerType, ValidationOptions, crypto_types::PrivateKeyFormat};
     use tacacsrs_cli_datastore::tacacs_plus_from_str;
@@ -567,7 +562,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "psk")]
     fn tls13_epsk_groups(cli: &Cli) -> Vec<PskDheKeSupportedGroup> {
         let mut root = tacacs_plus_from_cli(cli).expect("PSK config should build");
         root.server
@@ -579,7 +573,6 @@ mod tests {
             .psk_dhe_ke_groups
     }
 
-    #[cfg(feature = "psk")]
     fn tls13_epsk_key(cli: &Cli) -> Vec<u8> {
         let mut root = tacacs_plus_from_cli(cli).expect("PSK config should build");
         root.server
@@ -594,7 +587,6 @@ mod tests {
             .expect("symmetric key")
     }
 
-    #[cfg(feature = "psk")]
     #[test]
     fn tacacs_plus_from_cli_defaults_psk_to_dhe_groups() {
         let cli = Cli::parse_from([
@@ -622,7 +614,6 @@ mod tests {
         assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp256r1)));
     }
 
-    #[cfg(feature = "psk")]
     #[test]
     fn tacacs_plus_from_cli_decodes_base64_psk_key() {
         let cli = Cli::parse_from([
@@ -647,7 +638,6 @@ mod tests {
         assert_eq!(tls13_epsk_key(&cli), b"secret");
     }
 
-    #[cfg(feature = "psk")]
     #[test]
     fn tacacs_plus_from_cli_rejects_invalid_base64_psk_key() {
         let cli = Cli::parse_from([
@@ -676,7 +666,6 @@ mod tests {
             .contains("--psk-key must be standard base64-encoded PSK bytes"));
     }
 
-    #[cfg(feature = "psk")]
     #[test]
     fn tacacs_plus_from_cli_allows_psk_only_mode() {
         let cli = Cli::parse_from([
@@ -703,7 +692,6 @@ mod tests {
         assert!(tls13_epsk_groups(&cli).is_empty());
     }
 
-    #[cfg(feature = "psk")]
     #[test]
     fn tacacs_plus_from_cli_uses_custom_psk_dhe_groups() {
         let cli = Cli::parse_from([
@@ -733,7 +721,6 @@ mod tests {
         assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::X25519)));
     }
 
-    #[cfg(feature = "psk")]
     #[test]
     fn tacacs_plus_from_cli_rejects_psk_only_with_groups() {
         let cli = Cli::parse_from([

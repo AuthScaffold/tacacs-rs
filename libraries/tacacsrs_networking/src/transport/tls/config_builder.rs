@@ -1,31 +1,28 @@
-use std::sync::Arc;
-
-use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use tokio_rustls::rustls;
-
-use super::danger::NoCertificateVerification;
+use openssl::pkey::{PKey, Private};
+use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
+use openssl::x509::X509;
 
 /// Internal builder used by [`super::establish_from_server`] to assemble a
-/// [`rustls::ClientConfig`] from configuration material that has already been
-/// extracted from a [`tacacsrs_config::TacacsPlusServer`].
+/// [`SslContext`] from configuration material that has already been extracted
+/// from a [`tacacsrs_config::TacacsPlusServer`].
 ///
 /// This type is intentionally **not** part of the public API: all callers must
 /// drive TLS connection construction through
 /// [`crate::establish::establish_stream`], which guarantees that the YANG
 /// configuration model is the single source of truth for transport parameters.
 pub(crate) struct TlsConfigurationBuilder {
-    root_cert_store: rustls::RootCertStore,
-    certificate_chain: Option<Vec<CertificateDer<'static>>>,
-    private_key: Option<PrivateKeyDer<'static>>,
+    root_certificates: Vec<X509>,
+    certificate_chain: Option<Vec<X509>>,
+    private_key: Option<PKey<Private>>,
     disable_certificate_verification: bool,
 }
 
 impl TlsConfigurationBuilder {
-    /// Creates a new builder seeded with the default web PKI root store and no
+    /// Creates a new builder seeded with OpenSSL's default trust paths and no
     /// client authentication.
     pub(crate) fn new() -> Self {
         Self {
-            root_cert_store: crate::helpers::default_root_cert_store(),
+            root_certificates: Vec::new(),
             certificate_chain: None,
             private_key: None,
             disable_certificate_verification: false,
@@ -33,20 +30,20 @@ impl TlsConfigurationBuilder {
     }
 
     /// Replaces the trust anchors used to verify the server certificate.
-    pub(crate) fn with_root_certificates(mut self, root_cert_store: rustls::RootCertStore) -> Self {
-        self.root_cert_store = root_cert_store;
+    pub(crate) fn with_root_certificates(mut self, root_certificates: Vec<X509>) -> Self {
+        self.root_certificates = root_certificates;
         self
     }
 
     /// Sets the client authentication certificate chain and private key,
-    /// already decoded into the appropriate `rustls` DER variants.
+    /// already decoded into OpenSSL certificate and key objects.
     pub(crate) fn with_client_auth_der(
         mut self,
-        cert_chain: Vec<CertificateDer<'static>>,
-        key_der: PrivateKeyDer<'static>,
+        cert_chain: Vec<X509>,
+        key: PKey<Private>,
     ) -> Self {
         self.certificate_chain = Some(cert_chain);
-        self.private_key = Some(key_der);
+        self.private_key = Some(key);
         self
     }
 
@@ -57,45 +54,50 @@ impl TlsConfigurationBuilder {
         self
     }
 
-    /// Builds the `rustls` client configuration.
+    /// Builds the OpenSSL client context.
     ///
     /// # Errors
     ///
     /// Returns an error if a certificate chain was provided without a private
-    /// key, or if `rustls` rejects the supplied client authentication
-    /// material.
-    pub(crate) fn build(self) -> anyhow::Result<rustls::ClientConfig> {
-        let supported_tls_versions = vec![&rustls::version::TLS13];
+    /// key, or if OpenSSL rejects the supplied TLS material.
+    pub(crate) fn build(self) -> anyhow::Result<SslContext> {
+        let mut builder = SslContext::builder(SslMethod::tls_client())?;
 
-        let config =
-            rustls::ClientConfig::builder_with_protocol_versions(supported_tls_versions.as_slice())
-                .with_root_certificates(self.root_cert_store);
-
-        let mut config = match self.certificate_chain {
-            Some(cert_chain) => match self.private_key {
-                Some(key_der) => config.with_client_auth_cert(cert_chain, key_der)?,
-                None => {
-                    return Err(anyhow::Error::msg("Private key not provided"));
-                }
-            },
-            None => config.with_no_client_auth(),
-        };
-
-        // TLS 1.2 session resumption is unconditionally disabled because the
-        // workspace only negotiates TLS 1.3.
-        config.resumption = config
-            .resumption
-            .tls12_resumption(rustls::client::Tls12Resumption::Disabled);
+        builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
+        builder.set_max_proto_version(Some(SslVersion::TLS1_3))?;
 
         if self.disable_certificate_verification {
-            config
-                .dangerous()
-                .set_certificate_verifier(Arc::new(NoCertificateVerification::new(
-                    rustls::crypto::aws_lc_rs::default_provider(),
-                )));
+            builder.set_verify(SslVerifyMode::NONE);
+        } else {
+            builder.set_verify(SslVerifyMode::PEER);
+            if self.root_certificates.is_empty() {
+                builder.set_default_verify_paths()?;
+            } else {
+                let store = builder.cert_store_mut();
+                for cert in self.root_certificates {
+                    store.add_cert(cert)?;
+                }
+            }
         }
 
-        Ok(config)
+        if let Some(mut cert_chain) = self.certificate_chain {
+            let Some(key) = self.private_key else {
+                anyhow::bail!("Private key not provided");
+            };
+            if cert_chain.is_empty() {
+                anyhow::bail!("Client certificate chain not provided");
+            }
+
+            let leaf = cert_chain.remove(0);
+            builder.set_certificate(&leaf)?;
+            for cert in cert_chain {
+                builder.add_extra_chain_cert(cert)?;
+            }
+            builder.set_private_key(&key)?;
+            builder.check_private_key()?;
+        }
+
+        Ok(builder.build())
     }
 }
 
@@ -104,7 +106,8 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+    use openssl::pkey::{PKey, Private};
+    use openssl::x509::X509;
 
     use super::TlsConfigurationBuilder;
 
@@ -115,21 +118,19 @@ mod tests {
             .join(file_name)
     }
 
-    fn sample_client_auth_der() -> (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>) {
+    fn sample_client_auth_der() -> (Vec<X509>, PKey<Private>) {
         let cert_pem = fs::read_to_string(sample_path("client.crt")).expect("sample cert exists");
         let key_pem = fs::read_to_string(sample_path("client.key")).expect("sample key exists");
 
-        let cert_chain = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
-            .collect::<Result<Vec<_>, _>>()
-            .expect("sample cert PEM should parse");
+        let cert_chain =
+            X509::stack_from_pem(cert_pem.as_bytes()).expect("sample cert PEM should parse");
         let key_der =
-            PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).expect("sample key PEM should parse");
+            PKey::private_key_from_pem(key_pem.as_bytes()).expect("sample key PEM should parse");
 
         (cert_chain, key_der)
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // aws-lc-rs FFI in ClientConfig crypto provider
     fn with_client_auth_der_accepts_valid_der() {
         let (cert_chain, key_der) = sample_client_auth_der();
 
@@ -141,14 +142,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // aws-lc-rs FFI in ClientConfig crypto provider
     fn build_without_client_auth_succeeds() {
         let config = TlsConfigurationBuilder::new().build();
         assert!(config.is_ok(), "unexpected error: {config:?}");
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // aws-lc-rs FFI in ClientConfig crypto provider
     fn build_with_disabled_verification_succeeds() {
         let config = TlsConfigurationBuilder::new()
             .with_certificate_verification_disabled(true)

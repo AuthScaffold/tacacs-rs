@@ -2,20 +2,20 @@
 //! [`TacacsPlusServer`] configuration.
 //!
 //! This module owns the translation from the YANG-derived configuration model
-//! to the lower-level TLS primitives (`rustls::RootCertStore`, DER certificate
-//! chains, `PrivateKeyDer`, SNI server names). It exists so the establishment
+//! to the lower-level TLS primitives (OpenSSL trust stores, DER certificate
+//! chains, private keys, SNI server names). It exists so the establishment
 //! dispatcher does not need to understand certificate or key encoding details.
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
-use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use openssl::ec::EcKey;
+use openssl::pkey::{PKey, Private};
+use openssl::rsa::Rsa;
+use openssl::x509::X509;
 use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_config::TacacsPlusServerExt;
 use tacacsrs_config::crypto_types::PrivateKeyFormat;
 use tokio::net::TcpStream;
-use tokio_rustls::client::TlsStream;
-use tokio_rustls::rustls;
+use tokio_openssl::SslStream;
 
 use super::TlsConfigurationBuilder;
 use super::connect_tls;
@@ -34,14 +34,13 @@ use crate::helpers::{data_contains_pem_header, tls_server_name};
 /// # Errors
 ///
 /// Returns an error if any TLS material in the configuration cannot be parsed,
-/// the resulting `rustls::ClientConfig` cannot be built, or the TLS handshake
-/// fails.
+/// the resulting OpenSSL context cannot be built, or the TLS handshake fails.
 pub(crate) async fn establish_from_server(
     server: &TacacsPlusServer,
     address: &str,
     tcp_stream: TcpStream,
     disable_certificate_verification: bool,
-) -> Result<TlsStream<TcpStream>> {
+) -> Result<SslStream<TcpStream>> {
     let sni_name = derive_sni_name(server, address);
     log::debug!("Negotiating TLS handshake with {address} (SNI: {sni_name})");
 
@@ -59,12 +58,10 @@ pub(crate) async fn establish_from_server(
         builder = builder.with_certificate_verification_disabled(true);
     }
 
-    let tls_config = Arc::new(
-        builder
-            .build()
-            .inspect_err(|e| log::warn!("Failed to build TLS config for {address}: {e:#}"))
-            .context("Failed to build TLS configuration")?,
-    );
+    let tls_config = builder
+        .build()
+        .inspect_err(|e| log::warn!("Failed to build TLS config for {address}: {e:#}"))
+        .context("Failed to build TLS configuration")?;
 
     let tls_stream = connect_tls(&tls_config, tcp_stream, sni_name)
         .await
@@ -88,16 +85,16 @@ fn derive_sni_name<'a>(server: &'a TacacsPlusServer, address: &'a str) -> &'a st
     tls_server_name(address)
 }
 
-/// Builds a custom [`rustls::RootCertStore`] from the server's `ca-certs` and
+/// Builds custom OpenSSL trust anchors from the server's `ca-certs` and
 /// `ee-certs` inline definitions. Returns `Ok(None)` if no custom CA material
 /// is configured (in which case the default web PKI roots will be used).
-fn build_root_cert_store(server: &TacacsPlusServer) -> Result<Option<rustls::RootCertStore>> {
+fn build_root_cert_store(server: &TacacsPlusServer) -> Result<Option<Vec<X509>>> {
     let Some(ref sa) = server.server_authentication else {
         return Ok(None);
     };
 
     let mut has_certs = false;
-    let mut root_store = rustls::RootCertStore::empty();
+    let mut root_store = Vec::new();
 
     if let Some(ref ca) = sa.ca_certs {
         if let Some(ref inline) = ca.inline_definition {
@@ -130,7 +127,7 @@ fn build_root_cert_store(server: &TacacsPlusServer) -> Result<Option<rustls::Roo
 fn extract_client_auth(
     server: &TacacsPlusServer,
     address: &str,
-) -> Result<Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>> {
+) -> Result<Option<(Vec<X509>, PKey<Private>)>> {
     let Some(ref ci) = server.client_identity else {
         return Ok(None);
     };
@@ -156,18 +153,16 @@ fn extract_client_auth(
 }
 
 /// Adds a DER-encoded certificate to a root cert store.
-fn add_cert_to_store(cert_data: &[u8], store: &mut rustls::RootCertStore) -> Result<()> {
+fn add_cert_to_store(cert_data: &[u8], store: &mut Vec<X509>) -> Result<()> {
     let certs = parse_certificate_data(cert_data)?;
     for cert in certs {
-        store
-            .add(cert)
-            .map_err(|e| anyhow::anyhow!("failed to add certificate to root store: {e}"))?;
+        store.push(cert);
     }
     Ok(())
 }
 
 /// Parses DER-encoded certificate data.
-fn parse_certificate_data(data: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
+fn parse_certificate_data(data: &[u8]) -> Result<Vec<X509>> {
     if data.is_empty() {
         anyhow::bail!("certificate DER data is empty");
     }
@@ -176,7 +171,7 @@ fn parse_certificate_data(data: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
         anyhow::bail!("PEM-encoded certificates are not supported; provide DER bytes");
     }
 
-    Ok(vec![CertificateDer::from(data.to_vec())])
+    Ok(vec![X509::from_der(data).context("failed to parse DER certificate")?])
 }
 
 /// Parses DER-encoded private key data using the YANG `private-key-format`
@@ -189,7 +184,7 @@ fn parse_certificate_data(data: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
 fn parse_private_key_data(
     data: &[u8],
     private_key_format: Option<&PrivateKeyFormat>,
-) -> Result<PrivateKeyDer<'static>> {
+) -> Result<PKey<Private>> {
     if data.is_empty() {
         anyhow::bail!("private key DER data is empty");
     }
@@ -199,22 +194,24 @@ fn parse_private_key_data(
     }
 
     if let Some(fmt) = private_key_format {
-        let der_bytes = data.to_vec();
-
         return match fmt {
             PrivateKeyFormat::RsaPrivateKeyFormat => {
-                Ok(PrivateKeyDer::Pkcs1(rustls_pki_types::PrivatePkcs1KeyDer::from(der_bytes)))
+                let key = Rsa::private_key_from_der(data)
+                    .context("failed to parse DER RSA private key")?;
+                PKey::from_rsa(key).context("failed to convert RSA private key")
             }
             PrivateKeyFormat::EcPrivateKeyFormat => {
-                Ok(PrivateKeyDer::Sec1(rustls_pki_types::PrivateSec1KeyDer::from(der_bytes)))
+                let key = EcKey::private_key_from_der(data)
+                    .context("failed to parse DER EC private key")?;
+                PKey::from_ec_key(key).context("failed to convert EC private key")
             }
             PrivateKeyFormat::OneAsymmetricKeyFormat => {
-                Ok(PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(der_bytes)))
+                PKey::private_key_from_der(data).context("failed to parse DER PKCS#8 private key")
             }
         };
     }
 
-    Ok(PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(data.to_vec())))
+    PKey::private_key_from_der(data).context("failed to parse DER PKCS#8 private key")
 }
 
 #[cfg(test)]
@@ -257,8 +254,19 @@ mod tests {
 
     #[test]
     fn parse_certificate_data_der_bytes() {
-        let der = b"\x30\x82\x01\x00fake-der-cert-data";
-        let result = parse_certificate_data(der);
+        let cert_pem = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("examples")
+                .join("samples")
+                .join("client.crt"),
+        )
+        .expect("sample cert exists");
+        let der = X509::from_pem(&cert_pem)
+            .expect("sample cert PEM should parse")
+            .to_der()
+            .expect("sample cert should serialize as DER");
+
+        let result = parse_certificate_data(&der);
         assert!(result.is_ok());
     }
 

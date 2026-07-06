@@ -2,8 +2,8 @@
 
 This module implements TLS 1.3 External Pre-Shared Key (EPSK) transport for
 TACACS+ connections, gated behind the `psk` feature flag. It uses OpenSSL (via
-`openssl` and `tokio-openssl` crates) because the default `rustls` backend does
-not yet support TLS 1.3 external PSKs.
+`openssl` and `tokio-openssl` crates), matching the certificate-based TLS
+transport backend used by the default build.
 
 ## Background: What is TLS-PSK?
 
@@ -267,9 +267,8 @@ because `SslStream` does not support owned splitting.
 
 ## Feature Flag
 
-This entire module is gated behind `#[cfg(feature = "psk")]`. Without it, the
-build uses rustls (pure Rust) and requires no OpenSSL dependency. The feature
-propagates: `tacon` → `tacacsrs-networking` → OpenSSL.
+This module is always compiled because OpenSSL is the shared TLS backend for
+certificate-based TLS and TLS 1.3 external PSK support.
 
 ## References
 

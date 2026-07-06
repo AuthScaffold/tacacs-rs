@@ -152,17 +152,13 @@ injects them during builds through `.github/steps/compute-versions` and
 
 ## Feature Flags and Platforms
 
-- The `psk` feature enables TLS 1.3 pre-shared key support through OpenSSL in
-  `tacacsrs-networking` and propagates through `tacon`, `tacacsrs-agent`, and
-  `tacacsrs-agentd`.
-- Default builds should remain pure Rust and avoid external OpenSSL requirements.
+- Default builds use dynamically linked OpenSSL for certificate-based TLS and
+  TLS 1.3 pre-shared key support.
 - Library features must be additive: enabling a feature may add capability, but
   must not remove or change unrelated public API behavior.
-- Use `#[cfg(feature = "psk")]` and platform `cfg`s narrowly around code that
-  truly needs them.
-- Windows CI may build release artifacts with `psk`; Linux GNU release artifacts
-  build the executable Debian packages with `psk` and package
-  `tacacsrs-bash-plugin` without additional feature flags.
+- Use platform `cfg`s narrowly around code that truly needs them.
+- Windows CI packages OpenSSL runtime DLLs with release artifacts; Linux GNU
+  release artifacts dynamically link against the system OpenSSL packages.
 - `session-wrapper` is Linux x86_64-specific. On Windows, validate it through WSL
   with paths mapped under `/mnt/<drive>/...`.
 

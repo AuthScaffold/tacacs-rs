@@ -127,7 +127,6 @@ pub(crate) async fn establish_stream(
 
     // TLS-PSK must be checked before general TLS because `is_tls()` also
     // returns true when only PSK material is configured.
-    #[cfg(feature = "psk")]
     if crate::transport::tls_psk::server_has_psk(server) {
         let stream =
             crate::transport::tls_psk::establish_from_server(server, &address, tcp_stream).await?;

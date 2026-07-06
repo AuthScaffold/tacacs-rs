@@ -10,7 +10,6 @@
 //! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 
 mod config_builder;
-mod danger;
 mod from_server;
 #[allow(clippy::module_inception)]
 mod tls;
@@ -18,9 +17,11 @@ mod tls;
 pub(crate) use config_builder::TlsConfigurationBuilder;
 pub(crate) use from_server::establish_from_server;
 
-use std::net::IpAddr;
-use std::sync::Arc;
-use tokio_rustls::{rustls, TlsConnector};
+use anyhow::Context;
+use openssl::ssl::Ssl;
+use openssl::ssl::SslContext;
+use tokio::net::TcpStream;
+use tokio_openssl::SslStream;
 
 /// Establishes a TLS connection over an existing TCP stream.
 ///
@@ -37,24 +38,20 @@ use tokio_rustls::{rustls, TlsConnector};
 /// - The server name is neither a valid domain name nor IP address
 /// - The TLS handshake fails
 pub(crate) async fn connect_tls(
-    config: &Arc<rustls::ClientConfig>,
-    stream: tokio::net::TcpStream,
+    context: &SslContext,
+    stream: TcpStream,
     server_name: &str,
-) -> anyhow::Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>> {
-    let connector = TlsConnector::from(config.clone());
+) -> anyhow::Result<SslStream<TcpStream>> {
+    let mut ssl = Ssl::new(context).context("OpenSSL failed to allocate TLS SSL object")?;
+    ssl.set_hostname(server_name)
+        .with_context(|| format!("OpenSSL failed to set TLS SNI for {server_name}"))?;
 
-    // Try parsing as IP address first, then fall back to DNS name
-    let server_name = if let Ok(ip) = server_name.parse::<IpAddr>() {
-        rustls::pki_types::ServerName::IpAddress(ip.into())
-    } else {
-        rustls::pki_types::ServerName::try_from(server_name)
-            .map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid server name")
-            })?
-            .to_owned()
-    };
+    let mut stream = SslStream::new(ssl, stream)
+        .context("OpenSSL failed to attach TLS SSL object to TCP stream")?;
 
-    let stream: tokio_rustls::client::TlsStream<tokio::net::TcpStream> =
-        connector.connect(server_name, stream).await?;
+    SslStream::connect(std::pin::Pin::new(&mut stream))
+        .await
+        .context("OpenSSL TLS handshake failed")?;
+
     Ok(stream)
 }

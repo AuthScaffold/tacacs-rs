@@ -22,9 +22,5 @@ tokio = { version = "1.52.3", features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }
 tonic = "0.14.6"
 
-[features]
-default = []
-psk = ["tacacsrs-networking/psk"]
-
 [lints]
 workspace = true

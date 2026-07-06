@@ -74,9 +74,9 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-### Building with TLS 1.3 PSK Support (Optional)
+### Building with OpenSSL-backed TLS
 
-The `tacacsrs_networking` library includes optional TLS 1.3 Pre-Shared Key support behind the `psk` feature flag. This feature depends on OpenSSL and requires additional setup.
+The `tacacsrs_networking` library uses dynamically linked OpenSSL for certificate-based TLS. Optional TLS 1.3 Pre-Shared Key support remains behind the `psk` feature flag and uses additional OpenSSL APIs.
 
 #### Linux
 
@@ -89,8 +89,8 @@ sudo apt-get install libssl-dev pkg-config
 # Fedora/RHEL
 sudo dnf install openssl-devel
 
-# Build with PSK support
-cargo build --workspace --features tacacsrs-networking/psk
+# Build with OpenSSL-backed TLS and TLS 1.3 PSK support
+cargo build --workspace
 ```
 
 #### Windows
@@ -114,10 +114,10 @@ A pre-built OpenSSL installation is required. The recommended approach is to use
 
    Adjust the path to match your vcpkg installation location. The directory must contain `include/openssl` and `lib` subdirectories.
 
-4. Build with PSK support:
+4. Build:
 
    ```powershell
-   cargo build --features tacacsrs-networking/psk
+   cargo build --workspace
    ```
 
 Set `OPENSSL_DIR` permanently via **System Properties → Environment Variables** so it persists across terminals.
@@ -137,10 +137,8 @@ If you prefer not to use vcpkg, you can point to any pre-built OpenSSL installat
 $env:OPENSSL_DIR     = "C:\development\tools\openssl"
 $env:OPENSSL_LIB_DIR = "C:\development\tools\openssl\lib\VC\x64\MD"
 
-cargo build --features tacacsrs-networking/psk
+cargo build --workspace
 ```
-
-> **Tip:** Without the `psk` feature, the default build uses rustls (pure Rust) and requires no external dependencies.
 
 ## Running Tests
 
