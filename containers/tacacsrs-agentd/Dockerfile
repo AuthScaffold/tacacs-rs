@@ -29,9 +29,10 @@ ARG RUNTIME_IMAGE=docker.io/library/debian:bookworm-slim
 # -----------------------------------------------------------------------------
 FROM ${BUILDER_IMAGE} AS base
 
-# `pkg-config` and `libssl-dev` are required to build the `psk` feature, which
-# links against the system OpenSSL. `protoc` is provided by the vendored
-# `protoc-bin-vendored` crate, so it does not need to be installed here.
+# `pkg-config` and `libssl-dev` are required because `tacacsrs-networking`
+# links against the system OpenSSL for TLS and PSK support. `protoc` is
+# provided by the vendored `protoc-bin-vendored` crate, so it does not need
+# to be installed here.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         pkg-config \
@@ -57,7 +58,7 @@ COPY lde/containers/config/certificates/client.* ./libraries/tacacsrs_networking
 # test: run the agent daemon test suite
 # -----------------------------------------------------------------------------
 FROM base AS test
-ARG FEATURES=psk
+ARG FEATURES=
 # CACHEBUST lets `make test` force a fresh test run even when the source layers
 # are cached (pass --build-arg CACHEBUST=$(date +%s)).
 ARG CACHEBUST=0
@@ -71,7 +72,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # -----------------------------------------------------------------------------
 FROM base AS build
 ARG PROFILE=release
-ARG FEATURES=psk
+ARG FEATURES=
 # The cache mount speeds up rebuilds but is not part of the image layer, so the
 # freshly built binary is copied out of the cached target dir within the same
 # RUN before the mount is unmounted.
@@ -90,8 +91,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # -----------------------------------------------------------------------------
 FROM ${RUNTIME_IMAGE} AS runtime
 
-# `libssl3` satisfies the OpenSSL runtime for the `psk` feature and
-# `ca-certificates` provides the trust store for certificate-based TLS.
+# `libssl3` satisfies the OpenSSL runtime dependency for TLS and PSK support,
+# and `ca-certificates` provides the trust store for certificate-based TLS.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libssl3 \
