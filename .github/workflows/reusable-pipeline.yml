@@ -406,7 +406,7 @@ jobs:
   container-build:
     name: Container Build
     needs: [testing]
-    if: ${{ !cancelled() && !failure() && inputs.include-container-build && !inputs.include-container-publish }}
+    if: ${{ !cancelled() && !failure() && inputs.include-container-build }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -420,25 +420,6 @@ jobs:
           versions: ${{ inputs.versions }}
           registry: ${{ inputs.container-registry }}
           image-name: ${{ inputs.container-image-name }}
-
-  container-publish:
-    name: Container Publish
-    needs: [testing]
-    if: ${{ !cancelled() && !failure() && inputs.include-container-build && inputs.include-container-publish }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Build and publish tacacsrs-agentd container image
-        uses: ./.github/steps/container-image
-        with:
-          versions: ${{ inputs.versions }}
-          registry: ${{ inputs.container-registry }}
-          image-name: ${{ inputs.container-image-name }}
-          publish: 'true'
 
   finalize-release-assets:
     name: Finalize Release Assets
@@ -478,7 +459,6 @@ jobs:
       - testing
       - official-build
       - container-build
-      - container-publish
       - finalize-release-assets
     steps:
       - name: Check all jobs passed
