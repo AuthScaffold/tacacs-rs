@@ -1,0 +1,70 @@
+name: Container Image
+description: Build and optionally publish the tacacsrs-agentd container image
+
+inputs:
+  versions:
+    description: 'JSON map of crate-name to version. tacacsrs-agentd is used as the image tag when present.'
+    required: false
+    default: '{}'
+  registry:
+    description: 'Container registry and namespace used for image tags, for example ghcr.io/authscaffold'
+    required: true
+  image-name:
+    description: 'Container image repository name'
+    required: true
+  publish:
+    description: 'Push the image after a successful build'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Compute container image version
+      id: container-version
+      shell: bash
+      env:
+        VERSIONS: ${{ inputs.versions }}
+      run: |
+        set -euo pipefail
+
+        version=$(jq -r '."tacacsrs-agentd" // empty' <<< "${VERSIONS}")
+        if [ -z "${version}" ]; then
+          version=dev
+        fi
+
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+        echo "Using container image version: ${version}"
+
+    - name: Check Docker Buildx
+      shell: bash
+      run: docker buildx version
+
+    - name: Login to container registry
+      if: inputs.publish == 'true'
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        registry_host="${REGISTRY%%/*}"
+        echo "${GITHUB_TOKEN}" | docker login "${registry_host}" -u "${GITHUB_ACTOR}" --password-stdin
+
+    - name: Build tacacsrs-agentd container image
+      shell: bash
+      run: >-
+        make -C containers/tacacsrs-agentd build
+        BUILD_VERSION=${{ steps.container-version.outputs.version }}
+        REGISTRY=${{ inputs.registry }}
+        IMAGE_NAME=${{ inputs.image-name }}
+
+    - name: Publish tacacsrs-agentd container image
+      if: inputs.publish == 'true'
+      shell: bash
+      run: >-
+        make -C containers/tacacsrs-agentd push
+        BUILD_VERSION=${{ steps.container-version.outputs.version }}
+        REGISTRY=${{ inputs.registry }}
+        IMAGE_NAME=${{ inputs.image-name }}
