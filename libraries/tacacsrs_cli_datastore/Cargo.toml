@@ -1,0 +1,31 @@
+[package]
+name = "tacacsrs-cli-datastore"
+description = "CLI and file-backed datastore for TACACS+ configuration inputs."
+version = "0.0.0-dev"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+base64 = { version = "0.22", optional = true }
+futures-core = "0.3"
+futures-util = "0.3"
+log = "0.4"
+notify = "8.2.0"
+rustls-pki-types = "1.14.1"
+tacacsrs-config = { path = "../tacacsrs_config" }
+tacacsrs-datastore = { path = "../tacacsrs_datastore" }
+tokio = { version = "1.52.3", features = ["macros", "rt", "sync", "time"] }
+tokio-stream = "0.1"
+
+[features]
+default = []
+psk = ["dep:base64"]
+
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["full"] }
+
+[lints]
+workspace = true
