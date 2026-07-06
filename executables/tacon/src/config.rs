@@ -1,89 +1,20 @@
+use std::path::PathBuf;
+
 use anyhow::Context;
+use tacacsrs_cli_datastore::{
+    CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
+    tacacs_plus_from_cli_input, tacacs_plus_from_file as shared_tacacs_plus_from_file,
+};
 #[cfg(feature = "psk")]
-use base64::Engine as _;
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
 use tacacsrs_config::{
-    TacacsPlus, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerExt,
-    TacacsPlusServerType, ValidationOptions, YangConfigRoot, crypto_types::PrivateKeyFormat,
+    TacacsPlus, TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType, ValidationOptions,
+    YangConfigRoot,
 };
 
 use crate::cli::{Cli, Command};
 #[cfg(feature = "psk")]
 use crate::cli::PskKeyExchange;
-
-fn data_contains_pem_header(data: &[u8]) -> bool {
-    const PEM_HEADER: &[u8] = b"-----BEGIN";
-
-    data.windows(PEM_HEADER.len())
-        .any(|window| window == PEM_HEADER)
-}
-
-fn normalize_cli_certificate_data(data: &[u8]) -> anyhow::Result<Vec<u8>> {
-    if data.is_empty() {
-        anyhow::bail!("client certificate data is empty");
-    }
-
-    if !data_contains_pem_header(data) {
-        return Ok(data.to_vec());
-    }
-
-    let certificates = CertificateDer::pem_slice_iter(data)
-        .collect::<Result<Vec<_>, _>>()
-        .context("failed to parse PEM client certificate")?;
-
-    if certificates.len() != 1 {
-        anyhow::bail!("client certificate file must contain exactly one PEM certificate");
-    }
-
-    Ok(certificates[0].as_ref().to_vec())
-}
-
-fn normalize_cli_private_key_data(data: &[u8]) -> anyhow::Result<(Vec<u8>, PrivateKeyFormat)> {
-    if data.is_empty() {
-        anyhow::bail!("client private key data is empty");
-    }
-
-    let private_key = if data_contains_pem_header(data) {
-        PrivateKeyDer::from_pem_slice(data).context("failed to parse PEM client private key")?
-    } else {
-        PrivateKeyDer::try_from(data).map_err(|_| {
-            anyhow::anyhow!(
-                "unsupported DER client private key format; expected PKCS#1, SEC1, or PKCS#8"
-            )
-        })?
-    };
-
-    let private_key_format = match &private_key {
-        PrivateKeyDer::Pkcs1(_) => PrivateKeyFormat::RsaPrivateKeyFormat,
-        PrivateKeyDer::Sec1(_) => PrivateKeyFormat::EcPrivateKeyFormat,
-        PrivateKeyDer::Pkcs8(_) => PrivateKeyFormat::OneAsymmetricKeyFormat,
-        _ => anyhow::bail!("unsupported client private key format"),
-    };
-
-    Ok((private_key.secret_der().to_vec(), private_key_format))
-}
-
-fn parse_host_port(addr: &str, default_port: u16) -> (String, u16) {
-    if let Some(rest) = addr.strip_prefix('[') {
-        if let Some((host, after_bracket)) = rest.split_once(']') {
-            let port = after_bracket
-                .strip_prefix(':')
-                .and_then(|p| p.parse::<u16>().ok())
-                .unwrap_or(default_port);
-            return (host.to_owned(), port);
-        }
-    }
-
-    if addr.matches(':').count() == 1 {
-        if let Some((host, port_str)) = addr.rsplit_once(':') {
-            if let Ok(port) = port_str.parse::<u16>() {
-                return (host.to_owned(), port);
-            }
-        }
-    }
-
-    (addr.to_owned(), default_port)
-}
 
 /// Builds a single-server [`TacacsPlus`] root from CLI flags for direct-mode connections.
 ///
@@ -91,32 +22,26 @@ fn parse_host_port(addr: &str, default_port: u16) -> (String, u16) {
 ///
 /// Returns an error if `--server-addr` is not provided or the address cannot be parsed.
 pub fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
-    let options = validation_options_from_cli(cli);
-
     let server_addr = cli
         .server_addr
         .as_deref()
         .context("A TACACS+ server address is required for direct mode")?;
 
-    let (host, port) = parse_host_port(server_addr, 49);
-
-    let mut server = populate_security_from_cli(
-        cli,
-        TacacsPlusServerBuilder::new("cli", TacacsPlusServerType::all(), host, port)
-            .with_timeout(5),
-        &options,
-    )?;
-
+    let mut server = CliServerInput::new("cli", server_addr).with_single_connection(true);
     if let Some(tls_server_name) = cli.tls_server_name.as_ref() {
-        server.domain_name = Some(tls_server_name.clone());
-        server.sni_enabled = Some(true);
+        server = server.with_tls_server_name(tls_server_name.clone());
     }
 
-    server.single_connection = true;
+    let input = CliDatastoreInput::new(
+        CliConfigSource::Inline {
+            servers: vec![server],
+            security: cli_security_from_cli(cli),
+        },
+        "cli",
+    )
+    .with_validation_options(validation_options_from_cli(cli));
 
-    TacacsPlusBuilder::new()
-        .with_server(server)
-        .build_with_options(&options)
+    tacacs_plus_from_cli_input(&input)
 }
 
 fn validation_options_from_cli(cli: &Cli) -> ValidationOptions {
@@ -144,129 +69,31 @@ fn validation_options_from_cli(cli: &Cli) -> ValidationOptions {
         })
 }
 
-fn populate_security_from_cli(
-    cli: &Cli,
-    builder: TacacsPlusServerBuilder,
-    options: &ValidationOptions,
-) -> anyhow::Result<TacacsPlusServer> {
-    use tacacsrs_config::ValidationRelaxation;
-
-    if cli.use_tls {
+fn cli_security_from_cli(cli: &Cli) -> CliSecurity {
+    CliSecurity::from_cli_inputs(CliSecurityInputs {
+        use_tls: cli.use_tls,
+        shared_secret: cli.shared_secret.clone(),
+        client_certificate: cli.client_certificate.clone().map(PathBuf::from),
+        client_key: cli.client_key.clone().map(PathBuf::from),
         #[cfg(feature = "psk")]
-        if let (Some(psk_identity), Some(psk_key)) =
-            (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
-        {
-            let psk_key = decode_cli_psk_key(psk_key)?;
-            let tls_builder = apply_psk_key_exchange(cli, builder, psk_identity.clone(), psk_key)?;
-
-            if options.allows(&ValidationRelaxation::AllowTlsWithSharedSecret) {
-                if let Some(ref secret) = cli.shared_secret {
-                    return Ok(tls_builder
-                        .with_shared_secret_alongside_tls(secret.clone())
-                        .build());
-                }
-            }
-            return Ok(tls_builder.build());
-        }
-
-        let client_cert_der = cli
-            .client_certificate
-            .as_ref()
-            .map(|path| {
-                let cert_data = std::fs::read(path)
-                    .with_context(|| format!("Failed to read client certificate: {path}"))?;
-                normalize_cli_certificate_data(&cert_data)
-                    .with_context(|| format!("Failed to parse client certificate: {path}"))
-            })
-            .transpose()?;
-        let client_key = cli
-            .client_key
-            .as_ref()
-            .map(|path| {
-                let key_data = std::fs::read(path)
-                    .with_context(|| format!("Failed to read client key: {path}"))?;
-                normalize_cli_private_key_data(&key_data)
-                    .with_context(|| format!("Failed to parse client key: {path}"))
-            })
-            .transpose()?;
-
-        let (client_key_der, client_key_format) = match client_key {
-            Some((der_bytes, private_key_format)) => (Some(der_bytes), Some(private_key_format)),
-            None => (None, None),
-        };
-
-        let tls_builder = if client_cert_der.is_some() || client_key_der.is_some() {
-            builder.with_tls_client_certificate_with_key_format(
-                client_cert_der,
-                client_key_der,
-                client_key_format,
-            )
-        } else {
-            builder.with_tls_server_authentication()
-        };
-
-        if options.allows(&ValidationRelaxation::AllowTlsWithSharedSecret) {
-            if let Some(ref secret) = cli.shared_secret {
-                return Ok(tls_builder
-                    .with_shared_secret_alongside_tls(secret.clone())
-                    .build());
-            }
-        }
-
-        Ok(tls_builder.build())
-    } else {
-        Ok(match cli.shared_secret.clone() {
-            Some(shared_secret) => builder.with_shared_secret(shared_secret).build(),
-            None => builder.build(),
-        })
-    }
-}
-
-#[cfg(feature = "psk")]
-fn decode_cli_psk_key(psk_key: &str) -> anyhow::Result<Vec<u8>> {
-    base64::engine::general_purpose::STANDARD
-        .decode(psk_key)
-        .context("--psk-key must be standard base64-encoded PSK bytes")
-}
-
-#[cfg(feature = "psk")]
-fn apply_psk_key_exchange(
-    cli: &Cli,
-    builder: TacacsPlusServerBuilder,
-    psk_identity: String,
-    psk_key: Vec<u8>,
-) -> anyhow::Result<TacacsPlusServerBuilder> {
-    if matches!(cli.psk_key_exchange, Some(PskKeyExchange::PskOnly))
-        && !cli.psk_key_exchange_groups.is_empty()
-    {
-        anyhow::bail!(
-            "--psk-key-exchange psk-only cannot be combined with --psk-key-exchange-groups; remove the groups or use --psk-key-exchange psk-dhe"
-        );
-    }
-
-    Ok(match cli.psk_key_exchange {
-        Some(PskKeyExchange::PskOnly) => builder.with_tls13_epsk_psk_only(psk_identity, psk_key),
-        Some(PskKeyExchange::PskDhe) | None if !cli.psk_key_exchange_groups.is_empty() => builder
-            .with_tls13_epsk_with_psk_dhe_groups(
-                psk_identity,
-                psk_key,
-                cli.psk_key_exchange_groups.clone(),
-            ),
-        Some(PskKeyExchange::PskDhe) | None => builder.with_tls13_epsk(psk_identity, psk_key),
+        psk: cli_psk_inputs(cli),
     })
 }
 
-/// Loads a [`TacacsPlus`] root from a YANG JSON string with the supplied validation options.
-///
-/// # Errors
-///
-/// Returns an error if the config cannot be parsed.
-pub fn tacacs_plus_from_str(
-    contents: &str,
-    options: &ValidationOptions,
-) -> anyhow::Result<TacacsPlus> {
-    tacacsrs_config::parse_yang_json_with_options(contents, options)
-        .context("Failed to load config from provided YANG JSON")
+#[cfg(feature = "psk")]
+fn cli_psk_inputs(cli: &Cli) -> Option<CliPskInputs> {
+    let identity = cli.psk_identity.as_ref()?;
+    let key = cli.psk_key.as_ref()?;
+    Some(CliPskInputs {
+        identity: identity.clone(),
+        // tacon accepts the PSK as a standard base64 string on the command line.
+        key: PskKeyMaterial::StandardBase64(key.clone()),
+        exchange: match cli.psk_key_exchange {
+            Some(PskKeyExchange::PskOnly) => PskKeyExchangeMode::PskOnly,
+            Some(PskKeyExchange::PskDhe) | None => PskKeyExchangeMode::PskDhe,
+        },
+        groups: cli.psk_key_exchange_groups.clone(),
+    })
 }
 
 /// Loads a [`TacacsPlus`] root from a YANG JSON config file with the supplied validation options.
@@ -278,11 +105,7 @@ pub fn tacacs_plus_from_file(
     path: &std::path::Path,
     options: &ValidationOptions,
 ) -> anyhow::Result<TacacsPlus> {
-    let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read config from {}", path.display()))?;
-
-    tacacs_plus_from_str(&contents, options)
-        .with_context(|| format!("Failed to load config from {}", path.display()))
+    shared_tacacs_plus_from_file(path, options)
 }
 
 /// Resolves a [`TacacsPlus`] root configuration from either `--config` or CLI flags.
@@ -396,14 +219,12 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{
-        render_yang_config, select_first_server_for_type, tacacs_plus_from_cli,
-        tacacs_plus_from_str,
-    };
+    use super::{render_yang_config, select_first_server_for_type, tacacs_plus_from_cli};
     use crate::cli::Cli;
     #[cfg(feature = "psk")]
     use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::{TacacsPlusServerType, ValidationOptions, crypto_types::PrivateKeyFormat};
+    use tacacsrs_cli_datastore::tacacs_plus_from_str;
 
     fn sample_path(file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

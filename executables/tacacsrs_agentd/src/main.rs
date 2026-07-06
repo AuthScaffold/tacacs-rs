@@ -1,5 +1,6 @@
 #![allow(clippy::doc_markdown)]
 
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,14 +8,16 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::Parser;
 use futures_util::StreamExt;
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tacacsrs_agent::{EnabledServices, ServiceConfig, TacacsClientService};
 use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_config::{
-    TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerExt,
-    TacacsPlusServerType, crypto_types::PrivateKeyFormat,
+use tacacsrs_cli_datastore::{
+    CliConfigSource, CliDatastoreInput, CliFileDatastore, CliSecurity, CliSecurityInputs,
+    CliServerInput,
 };
-use tacacsrs_datastore::{ConfigChange, ConfigDatastore, StaticDatastore};
+#[cfg(feature = "psk")]
+use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
+use tacacsrs_config::TacacsPlusServerExt;
+use tacacsrs_datastore::{ConfigChange, ConfigDatastore};
 use tacacsrs_sonic::{SonicConfigDb, SonicConnection, DEFAULT_REDIS_URL};
 
 mod cli;
@@ -28,80 +31,6 @@ use crate::systemd_notify::SystemdNotifier;
 #[cfg(unix)]
 fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
     u32::from_str_radix(mode, 8).with_context(|| format!("Invalid socket mode: {mode}"))
-}
-
-fn data_contains_pem_header(data: &[u8]) -> bool {
-    const PEM_HEADER: &[u8] = b"-----BEGIN";
-
-    data.windows(PEM_HEADER.len())
-        .any(|window| window == PEM_HEADER)
-}
-
-fn normalize_cli_certificate_data(data: &[u8]) -> anyhow::Result<Vec<u8>> {
-    if data.is_empty() {
-        anyhow::bail!("client certificate data is empty");
-    }
-
-    if !data_contains_pem_header(data) {
-        return Ok(data.to_vec());
-    }
-
-    let certificates = CertificateDer::pem_slice_iter(data)
-        .collect::<Result<Vec<_>, _>>()
-        .context("failed to parse PEM client certificate")?;
-
-    if certificates.len() != 1 {
-        anyhow::bail!("client certificate file must contain exactly one PEM certificate");
-    }
-
-    Ok(certificates[0].as_ref().to_vec())
-}
-
-fn normalize_cli_private_key_data(data: &[u8]) -> anyhow::Result<(Vec<u8>, PrivateKeyFormat)> {
-    if data.is_empty() {
-        anyhow::bail!("client private key data is empty");
-    }
-
-    let private_key = if data_contains_pem_header(data) {
-        PrivateKeyDer::from_pem_slice(data).context("failed to parse PEM client private key")?
-    } else {
-        PrivateKeyDer::try_from(data).map_err(|_| {
-            anyhow::anyhow!(
-                "unsupported DER client private key format; expected PKCS#1, SEC1, or PKCS#8"
-            )
-        })?
-    };
-
-    let private_key_format = match &private_key {
-        PrivateKeyDer::Pkcs1(_) => PrivateKeyFormat::RsaPrivateKeyFormat,
-        PrivateKeyDer::Sec1(_) => PrivateKeyFormat::EcPrivateKeyFormat,
-        PrivateKeyDer::Pkcs8(_) => PrivateKeyFormat::OneAsymmetricKeyFormat,
-        _ => anyhow::bail!("unsupported client private key format"),
-    };
-
-    Ok((private_key.secret_der().to_vec(), private_key_format))
-}
-
-fn parse_host_port(addr: &str, default_port: u16) -> (String, u16) {
-    if let Some(rest) = addr.strip_prefix('[') {
-        if let Some((host, after_bracket)) = rest.split_once(']') {
-            let port = after_bracket
-                .strip_prefix(':')
-                .and_then(|p| p.parse::<u16>().ok())
-                .unwrap_or(default_port);
-            return (host.to_owned(), port);
-        }
-    }
-
-    if addr.matches(':').count() == 1 {
-        if let Some((host, port_str)) = addr.rsplit_once(':') {
-            if let Ok(port) = port_str.parse::<u16>() {
-                return (host.to_owned(), port);
-            }
-        }
-    }
-
-    (addr.to_owned(), default_port)
 }
 
 /// Initializes the logger based on verbosity level.
@@ -133,138 +62,6 @@ fn init_logger(verbose: u8) {
     }
 }
 
-/// Build the TACACS+ root configuration from CLI flags (legacy path, without a config file).
-fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
-    let timeout = u16::try_from(cli.connect_timeout_seconds).unwrap_or(u16::MAX);
-
-    let server_builders: Vec<TacacsPlusServerBuilder> = if cli.use_tls {
-        #[cfg(feature = "psk")]
-        if let (Some(psk_identity), Some(psk_key)) =
-            (cli.psk_identity.as_ref(), cli.psk_key.as_ref())
-        {
-            if matches!(cli.psk_key_exchange, Some(PskKeyExchange::PskOnly))
-                && !cli.psk_key_exchange_groups.is_empty()
-            {
-                anyhow::bail!(
-                    "--psk-key-exchange psk-only cannot be combined with --psk-key-exchange-groups; remove the groups or use --psk-key-exchange psk-dhe"
-                );
-            }
-
-            cli.server_addresses
-                .iter()
-                .enumerate()
-                .map(|(i, addr)| {
-                    let builder = base_server_builder_from_address(addr, i, timeout, cli.dedicated);
-                    match cli.psk_key_exchange {
-                        Some(PskKeyExchange::PskOnly) => builder.with_tls13_epsk_psk_only(
-                            psk_identity.clone(),
-                            psk_key.as_bytes().to_vec(),
-                        ),
-                        Some(PskKeyExchange::PskDhe) | None
-                            if !cli.psk_key_exchange_groups.is_empty() =>
-                        {
-                            builder.with_tls13_epsk_with_psk_dhe_groups(
-                                psk_identity.clone(),
-                                psk_key.as_bytes().to_vec(),
-                                cli.psk_key_exchange_groups.clone(),
-                            )
-                        }
-                        Some(PskKeyExchange::PskDhe) | None => builder
-                            .with_tls13_epsk(psk_identity.clone(), psk_key.as_bytes().to_vec()),
-                    }
-                })
-                .collect()
-        } else {
-            tls_cert_server_builders_from_cli(cli, timeout)?
-        }
-        #[cfg(not(feature = "psk"))]
-        {
-            tls_cert_server_builders_from_cli(cli, timeout)?
-        }
-    } else {
-        cli.server_addresses
-            .iter()
-            .enumerate()
-            .map(|(i, addr)| match cli.shared_secret.clone() {
-                Some(shared_secret) => {
-                    base_server_builder_from_address(addr, i, timeout, cli.dedicated)
-                        .with_shared_secret(shared_secret)
-                }
-                None => base_server_builder_from_address(addr, i, timeout, cli.dedicated),
-            })
-            .collect()
-    };
-
-    server_builders
-        .into_iter()
-        .fold(TacacsPlusBuilder::new(), TacacsPlusBuilder::with_server_builder)
-        .build()
-}
-
-/// Build TLS certificate-based server builders from CLI flags.
-fn tls_cert_server_builders_from_cli(
-    cli: &Cli,
-    timeout: u16,
-) -> anyhow::Result<Vec<TacacsPlusServerBuilder>> {
-    let client_cert_der = cli
-        .client_certificate
-        .as_ref()
-        .map(|path| {
-            let cert_data = std::fs::read(path)
-                .with_context(|| format!("Failed to read client certificate: {path}"))?;
-            normalize_cli_certificate_data(&cert_data)
-                .with_context(|| format!("Failed to parse client certificate: {path}"))
-        })
-        .transpose()?;
-    let client_key = cli
-        .client_key
-        .as_ref()
-        .map(|path| {
-            let key_data = std::fs::read(path)
-                .with_context(|| format!("Failed to read client key: {path}"))?;
-            normalize_cli_private_key_data(&key_data)
-                .with_context(|| format!("Failed to parse client key: {path}"))
-        })
-        .transpose()?;
-
-    let (client_key_der, client_key_format) = match client_key {
-        Some((der_bytes, private_key_format)) => (Some(der_bytes), Some(private_key_format)),
-        None => (None, None),
-    };
-
-    Ok(cli
-        .server_addresses
-        .iter()
-        .enumerate()
-        .map(|(i, addr)| {
-            if client_cert_der.is_some() || client_key_der.is_some() {
-                base_server_builder_from_address(addr, i, timeout, cli.dedicated)
-                    .with_tls_client_certificate_with_key_format(
-                        client_cert_der.clone(),
-                        client_key_der.clone(),
-                        client_key_format,
-                    )
-            } else {
-                base_server_builder_from_address(addr, i, timeout, cli.dedicated)
-                    .with_tls_server_authentication()
-            }
-        })
-        .collect())
-}
-
-fn base_server_builder_from_address(
-    addr: &str,
-    index: usize,
-    timeout: u16,
-    dedicated: bool,
-) -> TacacsPlusServerBuilder {
-    let (host, port) = parse_host_port(addr, 49);
-
-    TacacsPlusServerBuilder::new(format!("server-{index}"), TacacsPlusServerType::all(), host, port)
-        .with_timeout(timeout)
-        .with_single_connection(!dedicated)
-}
-
 fn enabled_services_from_cli(cli: &Cli) -> EnabledServices {
     match cli.service_mode.unwrap_or_else(|| {
         if cli.proxy_endpoint.is_some() {
@@ -279,17 +76,65 @@ fn enabled_services_from_cli(cli: &Cli) -> EnabledServices {
     }
 }
 
-fn tacacs_plus_from_config(path: &std::path::Path) -> anyhow::Result<TacacsPlus> {
-    tacacsrs_config::parse_yang_json_file(path)
-        .with_context(|| format!("Failed to load config from {}", path.display()))
+fn cli_datastore_input_from_cli(cli: &Cli) -> CliDatastoreInput {
+    let timeout = u16::try_from(cli.connect_timeout_seconds).unwrap_or(u16::MAX);
+    let servers = cli
+        .server_addresses
+        .iter()
+        .enumerate()
+        .map(|(index, address)| {
+            CliServerInput::new(format!("server-{index}"), address.clone())
+                .with_timeout_seconds(timeout)
+                .with_single_connection(!cli.dedicated)
+        })
+        .collect();
+
+    CliDatastoreInput::new(
+        CliConfigSource::Inline {
+            servers,
+            security: cli_security_from_cli(cli),
+        },
+        "cli",
+    )
+}
+
+fn cli_security_from_cli(cli: &Cli) -> CliSecurity {
+    CliSecurity::from_cli_inputs(CliSecurityInputs {
+        use_tls: cli.use_tls,
+        shared_secret: cli.shared_secret.clone(),
+        client_certificate: cli.client_certificate.clone().map(PathBuf::from),
+        client_key: cli.client_key.clone().map(PathBuf::from),
+        #[cfg(feature = "psk")]
+        psk: cli_psk_inputs(cli),
+    })
+}
+
+#[cfg(feature = "psk")]
+fn cli_psk_inputs(cli: &Cli) -> Option<CliPskInputs> {
+    let identity = cli.psk_identity.as_ref()?;
+    let key = cli.psk_key.as_ref()?;
+    Some(CliPskInputs {
+        identity: identity.clone(),
+        // agentd accepts the PSK as raw bytes on the command line.
+        key: PskKeyMaterial::Raw(key.as_bytes().to_vec()),
+        exchange: match cli.psk_key_exchange {
+            Some(PskKeyExchange::PskOnly) => PskKeyExchangeMode::PskOnly,
+            Some(PskKeyExchange::PskDhe) | None => PskKeyExchangeMode::PskDhe,
+        },
+        groups: cli.psk_key_exchange_groups.clone(),
+    })
 }
 
 /// Construct the [`ConfigDatastore`] selected by the operator on the CLI.
 ///
-/// File and CLI flag inputs are wrapped in a [`StaticDatastore`] so the rest
-/// of the daemon code path is identical regardless of where the config came
-/// from. `--sonic` selects the SONiC ConfigDB-backed datastore.
-fn build_datastore(cli: &Cli) -> anyhow::Result<Arc<dyn ConfigDatastore>> {
+/// File and CLI flag inputs are wrapped in a file-backed CLI datastore so YANG
+/// config and CLI-provided TLS certificate/key files can trigger hot reloads.
+/// `--sonic` selects the SONiC ConfigDB-backed datastore.
+///
+/// Construction is infallible: every datastore validates its configuration
+/// lazily in [`ConfigDatastore::load`], so configuration errors surface when
+/// the daemon performs its initial load rather than here.
+fn build_datastore(cli: &Cli) -> Arc<dyn ConfigDatastore> {
     if cli.sonic {
         let mut settings = SonicConnection::default();
         if let Some(url) = cli.sonic_redis_url.clone() {
@@ -305,17 +150,20 @@ fn build_datastore(cli: &Cli) -> anyhow::Result<Arc<dyn ConfigDatastore>> {
             settings.url,
             settings.db_index,
         );
-        return Ok(Arc::new(SonicConfigDb::new(settings)));
+        return Arc::new(SonicConfigDb::new(settings));
     }
 
     if let Some(ref config_path) = cli.config {
         log::info!("Loading YANG JSON configuration from {}", config_path.display());
-        let config = tacacs_plus_from_config(config_path)?;
-        return Ok(Arc::new(StaticDatastore::with_label(config, "file")));
+        return Arc::new(CliFileDatastore::new(CliDatastoreInput::new(
+            CliConfigSource::YangFile {
+                path: config_path.clone(),
+            },
+            "file",
+        )));
     }
 
-    let config = tacacs_plus_from_cli(cli)?;
-    Ok(Arc::new(StaticDatastore::with_label(config, "cli")))
+    Arc::new(CliFileDatastore::new(cli_datastore_input_from_cli(cli)))
 }
 
 async fn apply_config_change(
@@ -423,7 +271,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let datastore = build_datastore(&cli)?;
+    let datastore = build_datastore(&cli);
     let tacacs_plus = {
         let initial = datastore.load().await.with_context(|| {
             format!("Failed to load configuration from datastore '{}'", datastore.label())
@@ -479,10 +327,7 @@ mod tests {
     use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{
-        Cli, apply_config_change, enabled_services_from_cli, tacacs_plus_from_cli,
-        tacacs_plus_from_config,
-    };
+    use super::{Cli, apply_config_change, cli_datastore_input_from_cli, enabled_services_from_cli};
     use tacacsrs_agent::{EnabledServices, ServiceConfig, TacacsClientService};
     use tacacsrs_agent_client::IpcEndpoint;
     #[cfg(feature = "psk")]
@@ -490,7 +335,9 @@ mod tests {
     use tacacsrs_config::crypto_types::PrivateKeyFormat;
     use tacacsrs_config::{
         TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType,
+        ValidationOptions,
     };
+    use tacacsrs_cli_datastore::{tacacs_plus_from_cli_input, tacacs_plus_from_file};
     use tacacsrs_datastore::{ConfigChange, ConfigDelta};
 
     fn sample_path(file_name: &str) -> PathBuf {
@@ -574,7 +421,8 @@ mod tests {
             }"#,
         );
 
-        let root = tacacs_plus_from_config(&path).expect("config file should load");
+        let root = tacacs_plus_from_file(&path, &ValidationOptions::default())
+            .expect("config file should load");
         fs::remove_file(&path).ok();
 
         assert_eq!(root.server.len(), 2);
@@ -593,7 +441,8 @@ mod tests {
             "secret1",
         ]);
 
-        let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
+        let root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
+            .expect("plain-text shared secret should load");
         assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
     }
 
@@ -607,7 +456,8 @@ mod tests {
             "secret1",
         ]);
 
-        let root = tacacs_plus_from_cli(&cli).expect("CLI config should load");
+        let root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
+            .expect("CLI config should load");
         assert!(root.server[0].single_connection);
     }
 
@@ -622,7 +472,8 @@ mod tests {
             "--dedicated",
         ]);
 
-        let root = tacacs_plus_from_cli(&cli).expect("CLI config should load");
+        let root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
+            .expect("CLI config should load");
         assert!(!root.server[0].single_connection);
     }
 
@@ -708,7 +559,8 @@ mod tests {
             key_path.to_str().expect("path should be UTF-8"),
         ]);
 
-        let root = tacacs_plus_from_cli(&cli).expect("PEM client identity should load");
+        let root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
+            .expect("PEM client identity should load");
         let inline = root.server[0]
             .client_identity
             .as_ref()
@@ -723,7 +575,8 @@ mod tests {
 
     #[cfg(feature = "psk")]
     fn tls13_epsk_groups(cli: &Cli) -> Vec<PskDheKeSupportedGroup> {
-        let mut root = tacacs_plus_from_cli(cli).expect("PSK config should build");
+        let mut root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(cli))
+            .expect("PSK config should build");
         root.server
             .remove(0)
             .client_identity
@@ -812,7 +665,8 @@ mod tests {
             "secp384r1",
         ]);
 
-        let error = tacacs_plus_from_cli(&cli).expect_err("PSK-only plus groups should fail");
+        let error = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
+            .expect_err("PSK-only plus groups should fail");
         assert!(error.to_string().contains("--psk-key-exchange psk-only"));
         assert!(error.to_string().contains("--psk-key-exchange-groups"));
     }
