@@ -6,7 +6,11 @@ For architecture, CLI shape, and current implementation scope, see the [session-
 
 ## Current scope
 
-The session wrapper currently verifies process lifecycle and seccomp user notification wiring. TACACS+ authorization decisioning is intentionally stubbed as allow-all for now, so these smoke tests do not require a running `tacacsrs-agentd` service or TACACS+ server.
+These checks focus on process lifecycle, seccomp user notification wiring, and
+child/descendant supervision. The smoke tests below use fail-open behavior or
+the allow-all demo scripts so they can validate the Linux mediation path without
+a running `tacacsrs-agentd` service or TACACS+ server. They do not prove an
+end-to-end TACACS+ authorization policy.
 
 The trailing `COMMAND [ARGS]...` is the process that is executed under supervision. Smoke tests use small temporary scripts as the wrapped command.
 

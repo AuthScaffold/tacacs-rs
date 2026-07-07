@@ -2,17 +2,21 @@
 
 [Overview](index.md)
 
-# User Guides
+# Core Usage
 
-- [tacon Usage Guide](tacon.md)
-- [tacacsrs-agentd Usage Guide](tacacsrs-agentd.md)
-- [Plain TACACS+ to TACACS+ over TLS Transition Guide](tacacs-plus-tls-transition.md)
-- [YANG Config Guide](yang-config-guide.md)
+- [tacon CLI](tacon.md)
+- [tacacsrs-agentd Daemon](tacacsrs-agentd.md)
+- [YANG Configuration](yang-config-guide.md)
 
-# SONiC
+# Migration
+
+- [Plain TACACS+ to TACACS+ over TLS](tacacs-plus-tls-transition.md)
+
+# SONiC Integration
 
 - [Building for SONiC](sonic-build-guide.md)
 - [SONiC ConfigDB Integration](sonic-configdb-integration.md)
+- [Running tacacsrs-agentd as a SONiC Docker container](sonic-agentd-container.md)
 
 # Session Wrapper
 

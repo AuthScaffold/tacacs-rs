@@ -6,8 +6,9 @@ database index `4`) and reacting to ConfigDB changes via Redis keyspace
 notifications.
 
 This document covers the runtime side (how the daemon talks to ConfigDB).
-Building static binaries for SONiC is covered separately in
-[sonic-build-guide.md](./sonic-build-guide.md).
+Building static binaries and container images for SONiC is covered separately in
+[Building for SONiC](sonic-build-guide.md). Running the agent image on a SONiC
+host is covered in [Running tacacsrs-agentd as a SONiC Docker container](sonic-agentd-container.md).
 
 ## Architecture
 
