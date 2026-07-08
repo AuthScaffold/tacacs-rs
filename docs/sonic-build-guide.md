@@ -78,7 +78,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/tacacsrs-agentd --config /etc/tacacsrs/agentd.yaml
+ExecStart=/usr/local/bin/tacacsrs-agentd --config /etc/tacacsrs/tacacs.json
 Restart=on-failure
 RestartSec=2s
 
@@ -109,10 +109,14 @@ plugin=/usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so
 
 ## Container image
 
-For container-based delivery of the agent, a multi-stage container build for
-`tacacsrs-agentd` lives under `containers/tacacsrs-agentd/`. It compiles the
-daemon from source with the `psk` feature and ships a minimal glibc runtime
-image, so it stays compatible with SONiC's Debian userspace.
+For container-based delivery of the agent, this page covers building the image.
+Runtime flags, host networking, Redis socket access, and exposure checks are
+covered in [Running tacacsrs-agentd as a SONiC Docker container](sonic-agentd-container.md).
+
+The multi-stage container build for `tacacsrs-agentd` lives under
+`containers/tacacsrs-agentd/`. It compiles the daemon from source with the `psk`
+feature and ships a minimal glibc runtime image, so it stays compatible with
+SONiC's Debian userspace.
 
 Build and test the image with the container Makefiles (run from a Linux
 environment or WSL with Docker BuildKit available):

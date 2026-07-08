@@ -1,7 +1,6 @@
 [book]
 authors = ["AuthScaffold"]
 language = "en"
-multilingual = false
 src = "docs"
 title = "TACACS-rs Documentation"
 

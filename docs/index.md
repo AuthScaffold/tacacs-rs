@@ -2,21 +2,36 @@
 
 TACACS-rs is a Rust workspace for TACACS+ authentication, authorization, accounting, local agent IPC, SONiC integration, and compatibility surfaces for existing TACACS+ clients.
 
-This site collects the project guides into a browsable static documentation set. Start with the CLI and daemon guides for day-to-day usage, then use the configuration and platform guides for deployment-specific work.
+This site collects the project guides into a browsable static documentation set. The guides are organized by job: core tools first, then configuration and migration material, then platform-specific deployment guides.
 
-## Primary guides
+## Start here
 
-- [tacon Usage Guide](tacon.md) - CLI client reference, connection modes, batch execution, and debugging flags.
-- [tacacsrs-agentd Usage Guide](tacacsrs-agentd.md) - Central daemon deployment, local IPC, failover behavior, and TACACS+ proxy mode.
-- [YANG Config Guide](yang-config-guide.md) - RFC 7951 TACACS+ configuration shape, parsing APIs, credential bundles, and TLS key material formats.
-- [Plain TACACS+ to TACACS+ over TLS Transition Guide](tacacs-plus-tls-transition.md) - Host-by-host migration for existing plain TACACS+ clients.
+| Need | Guide |
+| ---- | ----- |
+| Send TACACS+ requests from the CLI | [tacon CLI](tacon.md) |
+| Run the central local agent | [tacacsrs-agentd Daemon](tacacsrs-agentd.md) |
+| Author RFC 7951 TACACS+ configuration | [YANG Configuration](yang-config-guide.md) |
+| Move existing plain TACACS+ clients behind the local proxy | [Plain TACACS+ to TACACS+ over TLS](tacacs-plus-tls-transition.md) |
+| Build or deploy on SONiC | [SONiC integration guides](#sonic-integration) |
+| Deploy command authorization for SSH sessions | [Session Wrapper Deployment Guide](session-wrapper.md) |
 
-## Platform and integration guides
+## Guide boundaries
 
-- [Building for SONiC](sonic-build-guide.md) - Linux GNU binaries and Debian packages for SONiC switches.
-- [SONiC ConfigDB Integration](sonic-configdb-integration.md) - Mapping SONiC TACACS+ ConfigDB data into TACACS-rs configuration.
-- [Session Wrapper Deployment Guide](session-wrapper.md) - SSH `ForceCommand` integration and command authorization flow.
-- [Session Wrapper Testing](session-wrapper-testing.md) - Linux smoke and integration checks for the session wrapper.
+- [tacon CLI](tacon.md) covers client invocation, connection modes, batch files, and exit behavior.
+- [tacacsrs-agentd Daemon](tacacsrs-agentd.md) covers daemon runtime behavior: local IPC, proxy mode, upstream encryption, connection reuse, and failover.
+- [YANG Configuration](yang-config-guide.md) covers the RFC 7951 configuration model, parsing APIs, credential bundles, and generated-type workflow.
+- [Plain TACACS+ to TACACS+ over TLS](tacacs-plus-tls-transition.md) covers operational migration for existing clients such as `pam_tacplus` and `audisp-tacplus`; it links back to the daemon guide for proxy reference details.
+
+## SONiC integration
+
+- [Building for SONiC](sonic-build-guide.md) covers Linux GNU binaries, Debian package-oriented validation, and container image builds.
+- [SONiC ConfigDB Integration](sonic-configdb-integration.md) covers CONFIG_DB schema mapping, Redis notifications, hot reload behavior, and local smoke tests.
+- [Running tacacsrs-agentd as a SONiC Docker container](sonic-agentd-container.md) covers the container run command, host networking rationale, Redis socket mount, and exposure checks.
+
+## Session wrapper
+
+- [Session Wrapper Deployment Guide](session-wrapper.md) covers SSH `ForceCommand`, login-shell integration, CLI options, security considerations, and troubleshooting.
+- [Session Wrapper Testing](session-wrapper-testing.md) covers Linux smoke tests and integration checks for process mediation and descendant supervision.
 
 ## Source repository
 
