@@ -11,6 +11,13 @@ Use `--service-mode client-api`, `--service-mode tacacs-proxy`, or
 flag is omitted, the daemon runs `client-api` by default and runs `both` when
 `--proxy-endpoint` is supplied. Proxy modes require `--proxy-endpoint`.
 
+When the raw TACACS+ proxy listens on a TCP endpoint, do not configure that same
+endpoint as an upstream TACACS+ server. Doing so would cause the proxy to send
+client traffic back into itself and can create a packet storm. To guard against
+this, the daemon removes upstream entries whose address and port parse or resolve
+to the local TCP proxy endpoint, including loopback IPv4, loopback IPv6, and
+hostnames such as `localhost`.
+
 ## TLS Client Certificates and Keys
 
 Use `--client-certificate` and `--client-key` with `--use-tls` when the upstream TACACS+ server requires the daemon to present a TLS client identity.

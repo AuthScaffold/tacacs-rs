@@ -20,10 +20,12 @@ use tacacsrs_datastore::{ConfigChange, ConfigDatastore};
 use tacacsrs_sonic::{SonicConfigDb, SonicConnection, DEFAULT_REDIS_URL};
 
 mod cli;
+mod config_filter;
 mod systemd_notify;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
+use crate::config_filter::{config_filter_from_runtime_options, TacacsPlusFilter};
 use crate::systemd_notify::SystemdNotifier;
 
 #[cfg(unix)]
@@ -166,6 +168,7 @@ async fn apply_config_change(
     label: &str,
     change: ConfigChange,
     service: &TacacsClientService,
+    config_filter: &dyn TacacsPlusFilter,
 ) -> anyhow::Result<()> {
     log::info!(
         "Datastore '{label}' reports configuration change: {} server(s); added={:?} removed={:?} modified={:?} root_metadata_changed={}",
@@ -175,7 +178,8 @@ async fn apply_config_change(
         change.delta.modified_servers,
         change.delta.root_metadata_changed,
     );
-    service.reload_tacacs_plus((*change.config).clone()).await
+    let config = config_filter.filter((*change.config).clone()).await;
+    service.reload_tacacs_plus(config).await
 }
 
 /// Spawn a background task that consumes [`ConfigDatastore::subscribe`]
@@ -184,6 +188,7 @@ fn spawn_change_listener(
     datastore: Arc<dyn ConfigDatastore>,
     service: Arc<TacacsClientService>,
     status_notifier: Arc<SystemdNotifier>,
+    config_filter: Arc<dyn TacacsPlusFilter>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let label = datastore.label();
@@ -196,7 +201,7 @@ fn spawn_change_listener(
         };
         log::info!("Subscribed to '{label}' configuration change notifications");
         while let Some(change) = stream.next().await {
-            match apply_config_change(label, change, &service).await {
+            match apply_config_change(label, change, &service, config_filter.as_ref()).await {
                 Ok(()) => {
                     log::info!(
                         "Applied datastore '{label}' configuration reload with {} upstream server(s) supporting authentication, authorization, and accounting",
@@ -266,6 +271,8 @@ async fn main() -> anyhow::Result<()> {
             "--proxy-endpoint requires --service-mode tacacs-proxy or --service-mode both"
         );
     }
+    let config_filter =
+        config_filter_from_runtime_options(enabled_services, proxy_endpoint.as_ref());
 
     let datastore = build_datastore(&cli);
     let tacacs_plus = {
@@ -273,7 +280,7 @@ async fn main() -> anyhow::Result<()> {
             format!("Failed to load configuration from datastore '{}'", datastore.label())
         })?;
         log::info!("Initial configuration loaded from datastore '{}'", datastore.label());
-        initial
+        config_filter.filter(initial).await
     };
 
     log::info!(
@@ -310,6 +317,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&datastore),
         Arc::clone(&service),
         Arc::clone(&status_notifier),
+        Arc::clone(&config_filter),
     );
     service.serve().await
 }
@@ -324,6 +332,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{Cli, apply_config_change, cli_datastore_input_from_cli, enabled_services_from_cli};
+    use crate::config_filter::{NoopTacacsPlusFilter, ProxySelfLoopFilter};
     use tacacsrs_agent::{EnabledServices, ServiceConfig, TacacsClientService};
     use tacacsrs_agent_client::IpcEndpoint;
     use tacacsrs_config::PskDheKeSupportedGroup;
@@ -529,9 +538,32 @@ mod tests {
             config: Arc::new(updated),
         };
 
-        apply_config_change("test", change, &service).await.unwrap();
+        apply_config_change("test", change, &service, &NoopTacacsPlusFilter)
+            .await
+            .unwrap();
 
         assert_eq!(service.server_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn apply_config_change_filters_proxy_self_loop_on_reload() {
+        let initial = test_config(&["192.0.2.10:49"]);
+        let service = test_service(initial.clone());
+        assert_eq!(service.server_count(), 1);
+
+        let updated = test_config(&["127.0.0.1:9050", "192.0.2.11:49"]);
+        let change = ConfigChange {
+            delta: ConfigDelta::diff(Some(&initial), &updated),
+            config: Arc::new(updated),
+        };
+        let filter =
+            ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket should parse"));
+
+        apply_config_change("test", change, &service, &filter)
+            .await
+            .unwrap();
+
+        assert_eq!(service.server_count(), 1);
     }
 
     #[test]
