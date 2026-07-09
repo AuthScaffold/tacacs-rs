@@ -18,6 +18,19 @@ this, the daemon removes upstream entries whose address and port parse or resolv
 to the local TCP proxy endpoint, including loopback IPv4, loopback IPv6, and
 hostnames such as `localhost`.
 
+If one or more local proxy endpoint rows are removed this way, the raw proxy
+uses the highest-priority matching row's resolved shared secret for downstream
+TACACS+ obfuscation. This includes secrets inherited from global configuration.
+If that highest-priority local proxy row has no shared secret, local clients are
+expected to send unobfuscated TACACS+ packets to the proxy even when lower-
+priority local rows or real upstream servers have shared secrets.
+
+Outside SONiC mode, use `--proxy-shared-secret` with `--proxy-endpoint` when
+raw TACACS+ proxy clients send obfuscated packets to the proxy. If the flag is
+omitted, local proxy clients are expected to send unobfuscated packets. A
+filtered local proxy endpoint row takes precedence over this CLI fallback if
+both are present.
+
 ## TLS Client Certificates and Keys
 
 Use `--client-certificate` and `--client-key` with `--use-tls` when the upstream TACACS+ server requires the daemon to present a TLS client identity.

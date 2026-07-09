@@ -84,6 +84,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) proxy_endpoint: Option<String>,
 
+    /// Shared secret expected from raw TACACS+ proxy clients.
+    #[arg(long, value_name = "SECRET", requires = "proxy_endpoint", conflicts_with = "sonic")]
+    pub(crate) proxy_shared_secret: Option<String>,
+
     /// Runtime service mode. Defaults to client-api, or both when --proxy-endpoint is set.
     #[arg(long, value_enum)]
     pub(crate) service_mode: Option<ServiceMode>,

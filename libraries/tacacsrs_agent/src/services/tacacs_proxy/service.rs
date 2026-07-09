@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use tacacsrs_agent_client::IpcEndpoint;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::RwLock;
 
 use super::listener;
 use super::upstream_bridge::UpstreamBridge;
+use crate::config::ProxyDownstreamObfuscation;
 use crate::runtime::{RequestGuard, RequestTracker};
 use crate::services::ListenerOptions;
 use crate::upstream::manager::UpstreamManager;
@@ -22,11 +24,12 @@ impl TacacsProxyService {
     /// Creates a raw TACACS+ proxy service over shared runtime state.
     pub(crate) fn new(
         upstream_manager: Arc<UpstreamManager>,
+        downstream_obfuscation: Arc<RwLock<ProxyDownstreamObfuscation>>,
         request_tracker: Arc<RequestTracker>,
     ) -> Self {
         Self {
             request_tracker,
-            upstream_bridge: UpstreamBridge::new(upstream_manager),
+            upstream_bridge: UpstreamBridge::new(upstream_manager, downstream_obfuscation),
         }
     }
 

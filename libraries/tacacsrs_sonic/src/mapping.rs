@@ -15,7 +15,7 @@
 //!                                                   passkey   "optional-shared-secret"
 //!                                                   src_intf  "Management0"
 //!
-//! TACPLUS_SERVER|192.0.2.10                         priority  "1"
+//! TACPLUS_SERVER|192.0.2.10                         priority  "64"
 //!                                                   tcp_port  "49"
 //!                                                   timeout   "10"
 //!                                                   use_tls   "true"
@@ -79,10 +79,10 @@ impl SonicTacacsTables {
 /// Translate a SONiC ConfigDB snapshot into the YANG `TacacsPlus` root.
 ///
 /// Each `TACPLUS_SERVER|<addr>` row becomes one
-/// [`tacacsrs_config::TacacsPlusServer`]. Servers are ordered by ascending
-/// `priority` (with stable address-based tiebreaking) so that the daemon's
-/// failover semantics — index 0 is preferred — line up with SONiC's
-/// administrator intent.
+/// [`tacacsrs_config::TacacsPlusServer`]. Servers are ordered by descending
+/// `priority` in SONiC's `1..64` range (with stable address-based
+/// tiebreaking) so that the daemon's failover semantics — index 0 is preferred
+/// — line up with SONiC's administrator intent.
 ///
 /// Per-row fields fall back to the matching `TACPLUS|global` field when the
 /// per-server value is absent (this matches SONiC's `pam_tacplus` behavior).
@@ -92,9 +92,9 @@ impl SonicTacacsTables {
 ///
 /// # Errors
 ///
-/// Returns an error if a row has an invalid numeric value
-/// (priority/port/timeout), or if the resulting non-empty configuration fails
-/// validation.
+/// Returns an error if a row has an invalid numeric value (priority, port, or
+/// timeout), if priority is outside SONiC's `1..64` range, or if the resulting
+/// non-empty configuration fails validation.
 pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Result<TacacsPlus> {
     if tables.servers.is_empty() {
         return Ok(TacacsPlus {
@@ -112,11 +112,11 @@ pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Re
         .map(|(address, fields)| SonicServerRow::from_hash(address, fields))
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    // SONiC convention: lower priority number = higher preference. Ties broken
-    // by lexicographic address so the order is deterministic in tests/logs.
+    // SONiC convention: priority is 1..64, and higher numbers are preferred.
+    // Ties are broken by lexicographic address for deterministic tests/logs.
     rows.sort_by(|a, b| {
-        a.priority
-            .cmp(&b.priority)
+        b.priority
+            .cmp(&a.priority)
             .then_with(|| a.address.cmp(&b.address))
     });
 
@@ -183,7 +183,7 @@ impl SonicGlobal {
 #[derive(Debug, Clone)]
 struct SonicServerRow {
     address: String,
-    priority: i64,
+    priority: u8,
     tcp_port: u16,
     timeout: Option<u16>,
     passkey: Option<String>,
@@ -201,7 +201,7 @@ impl SonicServerRow {
     fn from_hash(address: &str, hash: &SonicHash) -> anyhow::Result<Self> {
         let mut row = Self {
             address: address.to_string(),
-            priority: i64::MAX,
+            priority: 1,
             tcp_port: DEFAULT_TACACS_TCP_PORT,
             timeout: None,
             passkey: None,
@@ -218,9 +218,8 @@ impl SonicServerRow {
         for (key, value) in hash {
             match key.as_str() {
                 "priority" => {
-                    row.priority = value.parse::<i64>().with_context(|| {
-                        format!("TACPLUS_SERVER|{address}.priority='{value}' is not an integer")
-                    })?;
+                    row.priority = parse_priority(value)
+                        .with_context(|| format!("TACPLUS_SERVER|{address}.priority='{value}'"))?;
                 }
                 "tcp_port" => {
                     row.tcp_port = value.parse::<u16>().with_context(|| {
@@ -383,6 +382,16 @@ fn parse_timeout(value: &str) -> anyhow::Result<u16> {
         .with_context(|| format!("expected timeout in seconds, got '{value}'"))
 }
 
+fn parse_priority(value: &str) -> anyhow::Result<u8> {
+    let priority = value
+        .parse::<u8>()
+        .with_context(|| format!("expected priority in range 1..64, got '{value}'"))?;
+    if !(1..=64).contains(&priority) {
+        bail!("expected priority in range 1..64, got '{value}'");
+    }
+    Ok(priority)
+}
+
 fn parse_server_type(value: &str) -> anyhow::Result<TacacsPlusServerType> {
     let mut bits = TacacsPlusServerType::empty();
     for token in value.split(|c: char| c.is_whitespace() || c == ',' || c == '|') {
@@ -430,15 +439,15 @@ mod tests {
     fn maps_global_defaults_into_each_server() {
         let cfg = map_sonic_tables_to_tacacs_plus(&tables()).expect("mapping succeeds");
         assert_eq!(cfg.server.len(), 2);
-        // Lower priority -> higher preference (index 0).
-        assert_eq!(cfg.server[0].address, "192.0.2.10");
+        // Higher priority -> higher preference (index 0).
+        assert_eq!(cfg.server[0].address, "192.0.2.20");
         assert_eq!(cfg.server[0].port, 49);
         assert_eq!(cfg.server[0].timeout, 7);
-        assert_eq!(cfg.server[0].shared_secret.as_deref(), Some("default-secret"));
+        assert_eq!(cfg.server[0].shared_secret.as_deref(), Some("per-server-secret"));
 
-        // Per-server passkey overrides global.
-        assert_eq!(cfg.server[1].address, "192.0.2.20");
-        assert_eq!(cfg.server[1].shared_secret.as_deref(), Some("per-server-secret"));
+        // Per-server passkey absent -> falls back to global.
+        assert_eq!(cfg.server[1].address, "192.0.2.10");
+        assert_eq!(cfg.server[1].shared_secret.as_deref(), Some("default-secret"));
         // Per-server tcp_port absent -> default 49.
         assert_eq!(cfg.server[1].port, DEFAULT_TACACS_TCP_PORT);
         // Per-server timeout absent -> falls back to global.
@@ -466,11 +475,10 @@ mod tests {
     #[test]
     fn invalid_priority_is_an_error() {
         let mut servers = BTreeMap::new();
-        servers
-            .insert("192.0.2.99".to_string(), h(&[("priority", "not-a-number"), ("passkey", "x")]));
+        servers.insert("192.0.2.99".to_string(), h(&[("priority", "70"), ("passkey", "x")]));
         let tables = SonicTacacsTables::new(SonicHash::new(), servers);
         let err = map_sonic_tables_to_tacacs_plus(&tables).unwrap_err();
-        assert!(format!("{err:#}").contains("priority"));
+        assert!(format!("{err:#}").contains("1..64"));
     }
 
     #[test]
@@ -580,7 +588,7 @@ mod tests {
             .iter()
             .map(|s| s.address.clone())
             .collect::<Vec<_>>();
-        assert_eq!(order, vec!["192.0.2.10", "192.0.2.30", "192.0.2.20"]);
+        assert_eq!(order, vec!["192.0.2.20", "192.0.2.10", "192.0.2.30"]);
     }
 
     #[test]
@@ -595,7 +603,7 @@ mod tests {
         .expect("previous mapping succeeds");
 
         let mut new_servers = BTreeMap::new();
-        new_servers.insert("192.0.2.10".to_string(), h(&[("priority", "1"), ("passkey", "x")]));
+        new_servers.insert("192.0.2.10".to_string(), h(&[("priority", "10"), ("passkey", "x")]));
         new_servers.insert("192.0.2.20".to_string(), h(&[("priority", "5"), ("passkey", "x")]));
         let new =
             map_sonic_tables_to_tacacs_plus(&SonicTacacsTables::new(SonicHash::new(), new_servers))
