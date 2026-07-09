@@ -23,10 +23,11 @@ use std::sync::Arc;
 
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
+use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 
 use super::{RequestTracker, enumerate_supported_servers};
-use crate::config::ServiceConfig;
+use crate::config::{ProxyDownstreamObfuscation, ServiceConfig};
 use crate::services::client_api::ClientApiService;
 use crate::services::tacacs_proxy::TacacsProxyService;
 use crate::services::ListenerOptions;
@@ -61,6 +62,8 @@ pub struct TacacsClientService {
     config: ServiceConfig,
     /// Shared failover state used by all IPC client handlers.
     state: Arc<UpstreamManager>,
+    /// Shared downstream obfuscation policy for newly accepted raw proxy clients.
+    proxy_downstream_obfuscation: Arc<RwLock<ProxyDownstreamObfuscation>>,
     /// Shared request lifecycle tracker used for graceful shutdown draining.
     request_tracker: Arc<RequestTracker>,
 }
@@ -85,11 +88,14 @@ impl TacacsClientService {
         });
         let state =
             Arc::new(UpstreamManager::new(servers, connector, config.preferred_probe_interval));
+        let proxy_downstream_obfuscation =
+            Arc::new(RwLock::new(config.proxy_downstream_obfuscation.clone()));
         let request_tracker = Arc::new(RequestTracker::default());
 
         Ok(Self {
             config,
             state,
+            proxy_downstream_obfuscation,
             request_tracker,
         })
     }
@@ -107,11 +113,14 @@ impl TacacsClientService {
 
         let state =
             Arc::new(UpstreamManager::new(servers, connector, config.preferred_probe_interval));
+        let proxy_downstream_obfuscation =
+            Arc::new(RwLock::new(config.proxy_downstream_obfuscation.clone()));
         let request_tracker = Arc::new(RequestTracker::default());
 
         Ok(Self {
             config,
             state,
+            proxy_downstream_obfuscation,
             request_tracker,
         })
     }
@@ -123,10 +132,32 @@ impl TacacsClientService {
     /// Returns an error if credential-reference resolution fails. The existing
     /// runtime state is left unchanged on error.
     pub async fn reload_tacacs_plus(&self, tacacs_plus: TacacsPlus) -> anyhow::Result<()> {
+        let proxy_downstream_obfuscation = self.proxy_downstream_obfuscation.read().await.clone();
+        self.reload_tacacs_plus_with_proxy_downstream_obfuscation(
+            tacacs_plus,
+            proxy_downstream_obfuscation,
+        )
+        .await
+    }
+
+    /// Applies a TACACS+ snapshot plus raw proxy downstream obfuscation policy to the running service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if credential-reference resolution fails. The existing
+    /// runtime state is left unchanged on error.
+    pub async fn reload_tacacs_plus_with_proxy_downstream_obfuscation(
+        &self,
+        tacacs_plus: TacacsPlus,
+        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+    ) -> anyhow::Result<()> {
         let mut reload_config = self.config.clone();
         reload_config.tacacs_plus = tacacs_plus;
+        reload_config.proxy_downstream_obfuscation = proxy_downstream_obfuscation.clone();
         let servers = enumerate_supported_servers(&reload_config)?;
-        self.state.reload_servers(servers).await
+        self.state.reload_servers(servers).await?;
+        *self.proxy_downstream_obfuscation.write().await = proxy_downstream_obfuscation;
+        Ok(())
     }
 
     /// Returns the current number of accounting-capable upstream servers.
@@ -185,8 +216,11 @@ impl TacacsClientService {
         }
 
         if self.config.enabled_services.tacacs_proxy() {
-            let service =
-                TacacsProxyService::new(Arc::clone(&self.state), Arc::clone(&self.request_tracker));
+            let service = TacacsProxyService::new(
+                Arc::clone(&self.state),
+                Arc::clone(&self.proxy_downstream_obfuscation),
+                Arc::clone(&self.request_tracker),
+            );
             let endpoint = proxy_endpoint(&self.config)?.clone();
             tasks.spawn(async move { service.serve(&endpoint, listener_options).await });
             service_count += 1;
@@ -251,7 +285,7 @@ mod tests {
     };
     use tonic::Request;
 
-    use crate::config::EnabledServices;
+    use crate::config::{EnabledServices, ProxyDownstreamObfuscation};
     use super::TacacsClientService;
     use crate::runtime::RequestTracker;
     use crate::runtime::REQUIRED_SERVER_TYPES;
@@ -299,6 +333,7 @@ mod tests {
             enabled_services: EnabledServices::CLIENT_API,
             endpoint,
             proxy_endpoint: None,
+            proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
             tacacs_plus,
             preferred_probe_interval: Duration::from_millis(50),
             socket_mode: 0o660,

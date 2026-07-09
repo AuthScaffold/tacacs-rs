@@ -4,16 +4,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::packet::PacketTrait;
 use tacacsrs_networking::PacketWriter;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::RwLock;
 
 use self::error::ProxyConnectionError;
 use self::packet_io::{read_downstream_packet, read_upstream_packet, write_downstream_packet};
 use self::reply_action::{ReplyAction, reply_action};
 use self::session_mapping::rewrite_session_id;
+use crate::config::ProxyDownstreamObfuscation;
 use crate::runtime::RequestGuard;
 use crate::upstream::manager::{BoundServer, UpstreamManager};
 
@@ -26,12 +27,19 @@ mod session_mapping;
 #[derive(Clone)]
 pub(super) struct UpstreamBridge {
     upstream_manager: Arc<UpstreamManager>,
+    downstream_obfuscation: Arc<RwLock<ProxyDownstreamObfuscation>>,
 }
 
 impl UpstreamBridge {
     /// Creates a raw proxy upstream bridge over the shared upstream manager.
-    pub(super) fn new(upstream_manager: Arc<UpstreamManager>) -> Self {
-        Self { upstream_manager }
+    pub(super) fn new(
+        upstream_manager: Arc<UpstreamManager>,
+        downstream_obfuscation: Arc<RwLock<ProxyDownstreamObfuscation>>,
+    ) -> Self {
+        Self {
+            upstream_manager,
+            downstream_obfuscation,
+        }
     }
 
     pub(super) async fn handle_connection<Stream>(
@@ -60,7 +68,8 @@ impl UpstreamBridge {
             bound_server.index,
         );
 
-        let result = proxy_bound_connection(stream, &bound_server).await;
+        let downstream_obfuscation = self.downstream_obfuscation.read().await.clone();
+        let result = proxy_bound_connection(stream, &bound_server, downstream_obfuscation).await;
 
         match result {
             Ok(()) => Ok(()),
@@ -78,16 +87,13 @@ impl UpstreamBridge {
 async fn proxy_bound_connection<Stream>(
     stream: Stream,
     bound_server: &BoundServer,
+    downstream_obfuscation: ProxyDownstreamObfuscation,
 ) -> Result<(), ProxyConnectionError>
 where
     Stream: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let server = bound_server.server();
     let timeout = bound_server.timeout_duration();
-    let obfuscation_key = server
-        .shared_secret
-        .as_ref()
-        .map(|secret| secret.as_bytes().to_vec());
+    let obfuscation_key = downstream_obfuscation_key(&downstream_obfuscation);
     let upstream_session = match bound_server.connection.create_raw_session().await {
         Ok(upstream_session) => upstream_session,
         Err(error) => {
@@ -97,12 +103,21 @@ where
         }
     };
 
-    proxy_connection_with_session(stream, server, timeout, obfuscation_key, &upstream_session).await
+    proxy_connection_with_session(stream, timeout, obfuscation_key, &upstream_session).await
+}
+
+fn downstream_obfuscation_key(
+    downstream_obfuscation: &ProxyDownstreamObfuscation,
+) -> Option<Vec<u8>> {
+    match downstream_obfuscation {
+        ProxyDownstreamObfuscation::Unobfuscated => None,
+        ProxyDownstreamObfuscation::SharedSecret(shared_secret) => Some(shared_secret.as_str()),
+    }
+    .map(|secret| secret.as_bytes().to_vec())
 }
 
 async fn proxy_connection_with_session<Stream, Session>(
     mut stream: Stream,
-    server: &TacacsPlusServer,
     timeout: Duration,
     obfuscation_key: Option<Vec<u8>>,
     upstream_session: &Session,
@@ -111,9 +126,15 @@ where
     Stream: AsyncRead + AsyncWrite + Unpin + Send,
     Session: ClientSessionFlowIoTrait + Sync + ?Sized,
 {
-    let writer = PacketWriter::new(obfuscation_key);
-    let result =
-        proxy_connection_loop(&mut stream, server, timeout, &writer, upstream_session).await;
+    let writer = PacketWriter::new(obfuscation_key.clone());
+    let result = proxy_connection_loop(
+        &mut stream,
+        timeout,
+        obfuscation_key.as_deref(),
+        &writer,
+        upstream_session,
+    )
+    .await;
 
     upstream_session.complete().await;
     result
@@ -121,8 +142,8 @@ where
 
 async fn proxy_connection_loop<Stream, Session>(
     stream: &mut Stream,
-    server: &TacacsPlusServer,
     timeout: Duration,
+    downstream_obfuscation_key: Option<&[u8]>,
     writer: &PacketWriter,
     upstream_session: &Session,
 ) -> Result<(), ProxyConnectionError>
@@ -134,16 +155,11 @@ where
     let upstream_session_id = upstream_session.session_id();
 
     loop {
-        let downstream_packet = match read_downstream_packet(
-            stream,
-            timeout,
-            server.shared_secret.as_ref().map(String::as_bytes),
-        )
-        .await
-        {
-            Ok(packet) => packet,
-            Err(error) => return Err(error),
-        };
+        let downstream_packet =
+            match read_downstream_packet(stream, timeout, downstream_obfuscation_key).await {
+                Ok(packet) => packet,
+                Err(error) => return Err(error),
+            };
         let downstream_reply_obfuscation = downstream_packet.reply_obfuscation;
         let downstream_packet = downstream_packet.packet;
 
@@ -206,7 +222,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::time::Duration;
 
-    use tacacsrs_config::TacacsPlusServer;
     use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
     use tacacsrs_messages::accounting::reply::AccountingReply;
     use tacacsrs_messages::authentication::reply::AuthenticationReply;
@@ -328,31 +343,20 @@ mod tests {
         .unwrap()
     }
 
-    fn test_server() -> TacacsPlusServer {
-        TacacsPlusServer {
-            name: "server".to_owned(),
-            server_type: tacacsrs_config::TacacsPlusServerType::AUTHENTICATION
-                | tacacsrs_config::TacacsPlusServerType::AUTHORIZATION
-                | tacacsrs_config::TacacsPlusServerType::ACCOUNTING,
-            address: "127.0.0.1".to_owned(),
-            port: 49,
-            shared_secret: None,
-            timeout: 5,
-            single_connection: false,
-            domain_name: None,
-            sni_enabled: None,
-            client_identity: None,
-            server_authentication: None,
-            source_ip: None,
-            source_interface: None,
-            vrf_instance: None,
-        }
+    #[test]
+    fn downstream_obfuscation_uses_no_key_for_unobfuscated_clients() {
+        assert_eq!(downstream_obfuscation_key(&ProxyDownstreamObfuscation::Unobfuscated), None);
     }
 
-    fn test_server_with_secret(secret: &str) -> TacacsPlusServer {
-        let mut server = test_server();
-        server.shared_secret = Some(secret.to_owned());
-        server
+    #[test]
+    fn downstream_obfuscation_uses_configured_proxy_secret() {
+        assert_eq!(
+            downstream_obfuscation_key(&ProxyDownstreamObfuscation::SharedSecret(
+                "local-proxy-secret".to_owned(),
+            ),)
+            .as_deref(),
+            Some(b"local-proxy-secret".as_slice())
+        );
     }
 
     #[tokio::test]
@@ -372,15 +376,9 @@ mod tests {
 
         write_packet(&mut client_stream, &request).await;
 
-        proxy_connection_with_session(
-            proxy_stream,
-            &test_server(),
-            Duration::from_secs(1),
-            None,
-            &fake_session,
-        )
-        .await
-        .expect("proxy connection should complete");
+        proxy_connection_with_session(proxy_stream, Duration::from_secs(1), None, &fake_session)
+            .await
+            .expect("proxy connection should complete");
 
         let (received_len, received_session_id, received_body) = {
             let received_packets = fake_session.received_packets.lock().await;
@@ -420,7 +418,6 @@ mod tests {
 
         proxy_connection_with_session(
             proxy_stream,
-            &test_server_with_secret(secret),
             Duration::from_secs(1),
             Some(secret.as_bytes().to_vec()),
             &fake_session,
@@ -456,7 +453,6 @@ mod tests {
 
         proxy_connection_with_session(
             proxy_stream,
-            &test_server_with_secret(secret),
             Duration::from_secs(1),
             Some(secret.as_bytes().to_vec()),
             &fake_session,
@@ -513,7 +509,6 @@ mod tests {
 
         let result = proxy_connection_with_session(
             proxy_stream,
-            &test_server(),
             Duration::from_secs(1),
             None,
             &fake_session,

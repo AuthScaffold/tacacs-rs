@@ -79,7 +79,7 @@ impl SonicTacacsTables {
 /// Translate a SONiC ConfigDB snapshot into the YANG `TacacsPlus` root.
 ///
 /// Each `TACPLUS_SERVER|<addr>` row becomes one
-/// [`tacacsrs_config::TacacsPlusServer`]. Servers are ordered by ascending
+/// [`tacacsrs_config::TacacsPlusServer`]. Servers are ordered by descending
 /// `priority` (with stable address-based tiebreaking) so that the daemon's
 /// failover semantics — index 0 is preferred — line up with SONiC's
 /// administrator intent.
@@ -112,11 +112,11 @@ pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Re
         .map(|(address, fields)| SonicServerRow::from_hash(address, fields))
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    // SONiC convention: lower priority number = higher preference. Ties broken
+    // SONiC convention: higher priority number = higher preference. Ties broken
     // by lexicographic address so the order is deterministic in tests/logs.
     rows.sort_by(|a, b| {
-        a.priority
-            .cmp(&b.priority)
+        b.priority
+            .cmp(&a.priority)
             .then_with(|| a.address.cmp(&b.address))
     });
 
@@ -201,7 +201,7 @@ impl SonicServerRow {
     fn from_hash(address: &str, hash: &SonicHash) -> anyhow::Result<Self> {
         let mut row = Self {
             address: address.to_string(),
-            priority: i64::MAX,
+            priority: i64::MIN,
             tcp_port: DEFAULT_TACACS_TCP_PORT,
             timeout: None,
             passkey: None,
@@ -430,15 +430,15 @@ mod tests {
     fn maps_global_defaults_into_each_server() {
         let cfg = map_sonic_tables_to_tacacs_plus(&tables()).expect("mapping succeeds");
         assert_eq!(cfg.server.len(), 2);
-        // Lower priority -> higher preference (index 0).
-        assert_eq!(cfg.server[0].address, "192.0.2.10");
+        // Higher priority -> higher preference (index 0).
+        assert_eq!(cfg.server[0].address, "192.0.2.20");
         assert_eq!(cfg.server[0].port, 49);
         assert_eq!(cfg.server[0].timeout, 7);
-        assert_eq!(cfg.server[0].shared_secret.as_deref(), Some("default-secret"));
+        assert_eq!(cfg.server[0].shared_secret.as_deref(), Some("per-server-secret"));
 
-        // Per-server passkey overrides global.
-        assert_eq!(cfg.server[1].address, "192.0.2.20");
-        assert_eq!(cfg.server[1].shared_secret.as_deref(), Some("per-server-secret"));
+        // Per-server passkey absent -> falls back to global.
+        assert_eq!(cfg.server[1].address, "192.0.2.10");
+        assert_eq!(cfg.server[1].shared_secret.as_deref(), Some("default-secret"));
         // Per-server tcp_port absent -> default 49.
         assert_eq!(cfg.server[1].port, DEFAULT_TACACS_TCP_PORT);
         // Per-server timeout absent -> falls back to global.
@@ -580,7 +580,7 @@ mod tests {
             .iter()
             .map(|s| s.address.clone())
             .collect::<Vec<_>>();
-        assert_eq!(order, vec!["192.0.2.10", "192.0.2.30", "192.0.2.20"]);
+        assert_eq!(order, vec!["192.0.2.20", "192.0.2.10", "192.0.2.30"]);
     }
 
     #[test]
@@ -595,7 +595,7 @@ mod tests {
         .expect("previous mapping succeeds");
 
         let mut new_servers = BTreeMap::new();
-        new_servers.insert("192.0.2.10".to_string(), h(&[("priority", "1"), ("passkey", "x")]));
+        new_servers.insert("192.0.2.10".to_string(), h(&[("priority", "10"), ("passkey", "x")]));
         new_servers.insert("192.0.2.20".to_string(), h(&[("priority", "5"), ("passkey", "x")]));
         let new =
             map_sonic_tables_to_tacacs_plus(&SonicTacacsTables::new(SonicHash::new(), new_servers))

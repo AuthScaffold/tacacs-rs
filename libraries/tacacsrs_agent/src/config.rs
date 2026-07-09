@@ -70,6 +70,18 @@ impl EnabledServices {
     }
 }
 
+/// Downstream obfuscation policy for raw TACACS+ proxy clients.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub enum ProxyDownstreamObfuscation {
+    /// Expect downstream proxy clients to send unobfuscated TACACS+ packets.
+    #[default]
+    Unobfuscated,
+
+    /// Expect downstream proxy clients to use this shared secret for TACACS+
+    /// message obfuscation.
+    SharedSecret(String),
+}
+
 /// Configuration for the long-lived TACACS+ client service process.
 ///
 /// The service consumes this once at startup. Validation that requires cross-
@@ -103,6 +115,15 @@ pub struct ServiceConfig {
     /// TACACS+ client connections and proxies each downstream connection to
     /// one upstream TACACS+ session. TCP proxy endpoints must be loopback-only.
     pub proxy_endpoint: Option<IpcEndpoint>,
+
+    /// Obfuscation policy expected from raw TACACS+ proxy clients.
+    ///
+    /// This is intentionally separate from upstream server shared secrets:
+    /// the proxy has to deobfuscate and reobfuscate packets when rewriting
+    /// TACACS+ session IDs across the downstream/upstream boundary, so the
+    /// downstream client-facing choice is simply whether clients send
+    /// unobfuscated packets or packets obfuscated with a local proxy secret.
+    pub proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
 
     /// Root TACACS+ configuration including upstream servers and any shared
     /// credential bundles.

@@ -178,8 +178,13 @@ async fn apply_config_change(
         change.delta.modified_servers,
         change.delta.root_metadata_changed,
     );
-    let config = config_filter.filter((*change.config).clone()).await;
-    service.reload_tacacs_plus(config).await
+    let filtered = config_filter.filter((*change.config).clone()).await?;
+    service
+        .reload_tacacs_plus_with_proxy_downstream_obfuscation(
+            filtered.tacacs_plus,
+            filtered.proxy_downstream_obfuscation,
+        )
+        .await
 }
 
 /// Spawn a background task that consumes [`ConfigDatastore::subscribe`]
@@ -271,8 +276,11 @@ async fn main() -> anyhow::Result<()> {
             "--proxy-endpoint requires --service-mode tacacs-proxy or --service-mode both"
         );
     }
-    let config_filter =
-        config_filter_from_runtime_options(enabled_services, proxy_endpoint.as_ref());
+    let config_filter = config_filter_from_runtime_options(
+        enabled_services,
+        proxy_endpoint.as_ref(),
+        cli.proxy_shared_secret.clone(),
+    );
 
     let datastore = build_datastore(&cli);
     let tacacs_plus = {
@@ -280,8 +288,10 @@ async fn main() -> anyhow::Result<()> {
             format!("Failed to load configuration from datastore '{}'", datastore.label())
         })?;
         log::info!("Initial configuration loaded from datastore '{}'", datastore.label());
-        config_filter.filter(initial).await
+        config_filter.filter(initial).await?
     };
+    let proxy_downstream_obfuscation = tacacs_plus.proxy_downstream_obfuscation;
+    let tacacs_plus = tacacs_plus.tacacs_plus;
 
     log::info!(
         "Upstream servers: {} configured, probe interval: {}s",
@@ -302,6 +312,7 @@ async fn main() -> anyhow::Result<()> {
             enabled_services,
             endpoint,
             proxy_endpoint,
+            proxy_downstream_obfuscation,
             tacacs_plus,
             preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
             #[cfg(unix)]
@@ -333,7 +344,9 @@ mod tests {
 
     use super::{Cli, apply_config_change, cli_datastore_input_from_cli, enabled_services_from_cli};
     use crate::config_filter::{NoopTacacsPlusFilter, ProxySelfLoopFilter};
-    use tacacsrs_agent::{EnabledServices, ServiceConfig, TacacsClientService};
+    use tacacsrs_agent::{
+        EnabledServices, ProxyDownstreamObfuscation, ServiceConfig, TacacsClientService,
+    };
     use tacacsrs_agent_client::IpcEndpoint;
     use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::crypto_types::PrivateKeyFormat;
@@ -391,6 +404,7 @@ mod tests {
             enabled_services: EnabledServices::CLIENT_API,
             endpoint: IpcEndpoint::default_local(),
             proxy_endpoint: None,
+            proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
             tacacs_plus: config,
             preferred_probe_interval: Duration::from_secs(1),
             #[cfg(unix)]
@@ -526,6 +540,33 @@ mod tests {
         assert_eq!(enabled_services_from_cli(&cli), EnabledServices::TACACS_PROXY);
     }
 
+    #[test]
+    fn proxy_shared_secret_requires_proxy_endpoint() {
+        let result = Cli::try_parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--proxy-shared-secret",
+            "proxy-secret",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn proxy_shared_secret_conflicts_with_sonic_config_source() {
+        let result = Cli::try_parse_from([
+            "tacacsrs-agentd",
+            "--sonic",
+            "--proxy-endpoint",
+            "127.0.0.1:9050",
+            "--proxy-shared-secret",
+            "proxy-secret",
+        ]);
+
+        assert!(result.is_err());
+    }
+
     #[tokio::test]
     async fn apply_config_change_reloads_service_without_restart() {
         let initial = test_config(&["192.0.2.10:49"]);
@@ -538,7 +579,7 @@ mod tests {
             config: Arc::new(updated),
         };
 
-        apply_config_change("test", change, &service, &NoopTacacsPlusFilter)
+        apply_config_change("test", change, &service, &NoopTacacsPlusFilter::default())
             .await
             .unwrap();
 

@@ -20,5 +20,5 @@ pub mod upstream;
 #[cfg(test)]
 mod test_support;
 
-pub use config::{EnabledServices, ServiceConfig};
+pub use config::{EnabledServices, ProxyDownstreamObfuscation, ServiceConfig};
 pub use runtime::TacacsClientService;
