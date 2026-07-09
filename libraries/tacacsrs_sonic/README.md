@@ -71,6 +71,9 @@ From the repository root, the full local smoke test can be run with Podman:
 
 The manual equivalent is:
 
+SONiC TACACS+ server priorities are in the range `1..64`; higher values are
+preferred and are placed earlier in the daemon failover order.
+
 ```bash
 docker run --rm -p 6379:6379 redis
 redis-cli -n 4 CONFIG SET notify-keyspace-events KEA
@@ -78,7 +81,7 @@ redis-cli -n 4 CONFIG SET notify-keyspace-events KEA
 redis-cli -n 4 HSET 'TACPLUS|global' \
    timeout 5 auth_type pap src_intf Management0
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' \
-   priority 1 tcp_port 49 timeout 10 \
+   priority 64 tcp_port 49 timeout 10 \
    use_tls true domain_name tacacs-a.example.test \
    sni_enabled true single_connection true
 
@@ -92,7 +95,7 @@ computed delta:
 
 ```bash
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.20' \
-   priority 2 tcp_port 49
+   priority 32 tcp_port 49
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' timeout 20
 redis-cli -n 4 DEL 'TACPLUS_SERVER|192.0.2.20'
 ```

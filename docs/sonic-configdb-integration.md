@@ -51,7 +51,7 @@ TACPLUS|global
     src_intf    "Management0"     # default source interface
 
 TACPLUS_SERVER|192.0.2.10
-    priority           "1"        # lower = preferred (failover order)
+    priority           "64"       # higher = preferred; range is 1..64
     tcp_port           "49"
     timeout            "10"       # overrides TACPLUS|global.timeout
     passkey            "..."      # overrides TACPLUS|global.passkey
@@ -59,8 +59,10 @@ TACPLUS_SERVER|192.0.2.10
 
 Each `TACPLUS_SERVER` row becomes one `TacacsPlusServer` in the YANG
 configuration. Per-server fields fall back to the matching `TACPLUS|global`
-field when absent. The synthesized YANG `name` for each server is
-`sonic-server-<index>-<address>`.
+field when absent. SONiC `priority` values are in the range `1..64`; higher
+numbers are preferred and therefore appear earlier in the daemon's failover
+order. The synthesized YANG `name` for each server is
+`sonic-server-<address>`.
 
 ### Forward-compatible extension keys
 
@@ -68,16 +70,16 @@ Operators and SONiC schema maintainers can experiment with TLS-aware fields
 ahead of upstream ConfigDB schema work by adding the following keys to
 `TACPLUS_SERVER|<addr>`:
 
-| Key                 | YANG field          | Notes                                                                                          |
-|---------------------|---------------------|------------------------------------------------------------------------------------------------|
-| `use_tls`           | `server-authentication: {}` | Accepts the same boolean forms as `sni_enabled`; also supported on `TACPLUS|global` as a default |
-| `domain_name`       | `domain-name`       | Used as SNI hostname                                                                           |
-| `sni_enabled`       | `sni-enabled`       | `true`/`false`/`yes`/`no`/`1`/`0`                                                              |
-| `single_connection` | `single-connection` | Boolean                                                                                        |
-| `vrf_name`          | `vrf-instance`      | VRF name for outbound traffic                                                                  |
-| `src_ip`            | `source-ip`         | Mutually exclusive with `src_intf`                                                             |
-| `src_intf`          | `source-interface`  | Falls back to the global TACPLUS row                                                           |
-| `server_type`       | `server-type`       | Defaults to `all`; tokens accept `authentication`, `authorization`, `accounting`, or `all`     |
+| Key                 | YANG field                    | Notes                                                                                              |
+|---------------------|-------------------------------|----------------------------------------------------------------------------------------------------|
+| `use_tls`           | `server-authentication: {}`   | Accepts the same boolean forms as `sni_enabled`; also supported on the global TACPLUS row          |
+| `domain_name`       | `domain-name`                 | Used as SNI hostname                                                                               |
+| `sni_enabled`       | `sni-enabled`                 | `true`/`false`/`yes`/`no`/`1`/`0`                                                                  |
+| `single_connection` | `single-connection`           | Boolean                                                                                            |
+| `vrf_name`          | `vrf-instance`                | VRF name for outbound traffic                                                                      |
+| `src_ip`            | `source-ip`                   | Mutually exclusive with `src_intf`                                                                 |
+| `src_intf`          | `source-interface`            | Falls back to the global TACPLUS row                                                               |
+| `server_type`       | `server-type`                 | Defaults to `all`; tokens accept `authentication`, `authorization`, `accounting`, or `all`         |
 
 Unknown fields are logged at `warn` level and ignored, so legacy operator
 annotations on TACPLUS rows do not break the agent.
@@ -202,7 +204,7 @@ done
 redis-cli -n 4 HSET 'TACPLUS|global' \
     timeout 5 passkey shared-secret auth_type pap src_intf Management0
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' \
-    priority 1 tcp_port 49 timeout 10 passkey server-secret \
+    priority 64 tcp_port 49 timeout 10 passkey server-secret \
     domain_name tacacs-a.example.test sni_enabled true single_connection true
 ```
 
@@ -220,7 +222,7 @@ the expected delta:
 
 ```bash
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.20' \
-    priority 2 tcp_port 49 passkey backup-secret
+    priority 32 tcp_port 49 passkey backup-secret
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' timeout 20
 redis-cli -n 4 DEL 'TACPLUS_SERVER|192.0.2.20'
 redis-cli -n 4 HSET 'TACPLUS|global' timeout 7
