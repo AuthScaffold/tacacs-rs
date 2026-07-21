@@ -19,7 +19,7 @@ parking_lot = "0.12.5"
 openssl = "0.10.80"
 openssl-sys = "0.9.116"
 tokio-openssl = "0.6.5"
-foreign-types = "0.3.2"
+foreign-types = "0.5.0"
 
 [dev-dependencies]
 console-subscriber = "0.5.0"
