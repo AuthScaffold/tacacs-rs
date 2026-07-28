@@ -255,6 +255,14 @@ python verify_generated.py --clean
 
 The verifier compares canonical LF content so Windows and Linux checkouts produce the same result. `.gitattributes` keeps generation inputs and outputs at LF. Do not recreate `feature-flags.ini` with `--list-features` without reviewing every value because that command emits all discovered features as enabled and can erase deliberate `false` selections.
 
+The reviewed feature map enables RFC 9950 central keystore and central truststore support. Generated direct and bundled model paths include:
+
+- structured central asymmetric-key and certificate references for client certificate identity;
+- a central symmetric-key reference for TLS 1.3 EPSK while preserving identity, hash, context, target, and group fields;
+- central CA and end-entity certificate-bag references for server authentication.
+
+Do not hand-edit these shapes in `src/generated.rs`. `tacacsrs-config` validates generated inline-versus-central choices and preserves central values as opaque strings. It expands only config-local bundles. `tacacsrs-credential-resolution` owns provider-neutral request planning, secret-safe material, and closed result matching. SONiC reference grammar, filesystem retrieval, watching, permission checks, refresh policy, and runtime networking projection belong to the P3 provider/integration layer.
+
 After regenerating, run the workspace formatting, clippy, build, and test commands before committing to ensure the emitted code still matches repository expectations.
 
 ## CI/CD Overview

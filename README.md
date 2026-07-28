@@ -32,7 +32,8 @@ See the [Plain TACACS+ to TACACS+ over TLS Transition Guide](docs/tacacs-plus-tl
 | **tacon** | Interactive TACACS+ test application for authentication, authorization, accounting, and transport validation across plain TCP, TLS, TLS mTLS, TLS PSK, and TLS PSK-DHE |
 | **tacacsrs-agentd** | Central daemon executable that hosts `tacacsrs-agent`, maintains persistent upstream connections, and provides automatic failover |
 | **tacacsrs-agent-ipc-emulatord** | OPA/Rego-driven gRPC IPC emulator for integration tests that exercise `ServiceClient` clients without a live daemon |
-| **tacacsrs-config** | YANG JSON configuration crate for `ietf-system-tacacs-plus` parsing, validation, and runtime mapping |
+| **tacacsrs-config** | Open YANG JSON model for `ietf-system-tacacs-plus` parsing, validation, and config-local bundle enumeration |
+| **tacacsrs-credential-resolution** | Provider-neutral central credential plans, secret-safe resolved material, and closed request/result matching |
 | **session-wrapper** | Linux session wrapper POC for TACACS+ command authorization via seccomp user notifications |
 
 ## Workspace Architecture
@@ -53,9 +54,11 @@ tacacsrs-agent ────┬──► tacacsrs-agent-client
 
 tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
                                   └──► tacacsrs-agent-client
+
+tacacsrs-credential-resolution ──► tacacsrs-config
 ```
 
-`tacacsrs-config` is the entry point for RFC 7951 YANG JSON parsing. It owns the generated `ietf-system-tacacs-plus` Rust types, resolves credential references, validates YANG-specific choice constraints, and maps validated data into runtime connection settings shared by `tacon` and `tacacsrs-agentd`.
+`tacacsrs-config` is the entry point for RFC 7951 YANG JSON parsing. It owns the generated `ietf-system-tacacs-plus` Rust types, validates YANG-specific constraints, and expands config-local credential bundles while preserving external central references as opaque values. `tacacsrs-credential-resolution` turns those references into typed provider-neutral requests and validates resolved results. Provider-specific retrieval and runtime connection projection are separate integration concerns.
 
 ## Documentation
 
@@ -67,6 +70,7 @@ tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
 - [Plain TACACS+ to TACACS+ over TLS Transition Guide](docs/tacacs-plus-tls-transition.md) — Local proxy cutover plan for `pam_tacplus`, `audisp-tacplus`, and similar clients
 - [tacacsrs-agent-ipc-emulator README](libraries/tacacsrs_agent_ipc_emulator/README.md) — Rego policy format and in-process/out-of-process IPC emulator usage
 - [tacacsrs-config README](libraries/tacacsrs_config/README.md) — YANG JSON schema support, codegen workflow, parsing APIs
+- [tacacsrs-credential-resolution README](libraries/tacacsrs_credential_resolution/README.md) — Central credential planning, resolver contracts, and secret-safe material
 - [session-wrapper README](executables/session_wrapper/README.md) — Linux seccomp session wrapper architecture and current allow-all behavior
 - [Session Wrapper Deployment Guide](docs/session-wrapper.md) — SSH `ForceCommand` integration, configuration examples, security notes, troubleshooting
 - [Session Wrapper Testing](docs/session-wrapper-testing.md) — Linux smoke and integration checks for the session wrapper

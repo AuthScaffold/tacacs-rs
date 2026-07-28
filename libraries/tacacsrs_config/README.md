@@ -9,10 +9,11 @@
 - Validation logic for YANG-specific constraints and semantic checks on inline key material
 - Config-local credential bundle validation
 - Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
+- Secret-free inspection of central keystore and truststore references on enumerated servers
 - A reusable `TacacsPlusServerBuilder` for constructing `TacacsPlusServer` values in code
 - A project-owned YANG augmentation for TLS 1.3 PSK DHE key exchange group selection
 
-Any future external secret resolution and materialization should live in a separate runtime/provider crate rather than in `tacacsrs-config`.
+External secret resolution is defined by `tacacsrs-credential-resolution`. Provider implementations and runtime materialization remain outside `tacacsrs-config`.
 
 ## Parsing API
 
@@ -31,8 +32,9 @@ The primary entry points are:
 - `validate_credential_references(&TacacsPlus)` — validate config-local `credentials-reference` links into shared bundles
 - `enumerate_servers(&TacacsPlus)` — inline shared credential bundles onto each `TacacsPlusServer`
 - `enumerate_server(&TacacsPlus, &str)` — inline shared credential bundles for one named server
+- `inspect_central_references(&TacacsPlusServer)` — inspect opaque central references without retrieving secret material
 
-If external secret providers are introduced, enumerate the servers first and then pass the resulting `TacacsPlusServer` values to that runtime/provider layer.
+Enumerate servers before passing them to `tacacsrs-credential-resolution`. Planning rejects unresolved config-local bundle references with an enumerate-first error.
 
 ## Multi-layer design
 
@@ -66,10 +68,13 @@ validate_credential_references(&config)?;
 let server = enumerate_server(&config, "primary")?;
 ```
 
-### 3) External secret resolution (separate crate)
+### 3) Central credential resolution
 
-External secret providers are intentionally handled outside this crate.
-After enumeration, pass the resulting `TacacsPlusServer` values to a separate runtime/provider layer for any optional external validation and secret materialization.
+Pass each enumerated server to `tacacsrs_credential_resolution::ResolutionPlan::from_server`. The resolution crate extracts deterministic typed requests for central certificate-with-key, TLS 1.3 symmetric key, CA bag, and end-entity bag references. A `CredentialResolver` returns typed material, and `resolve_plan` validates the complete slot/variant-matched result set.
+
+Central references are opaque in both generic crates. They may contain spaces, slashes, traversal-like text, or provider-defined syntax. `tacacsrs-config` enforces generated YANG structure and inline-versus-central choices, but it does not apply SONiC identifier grammar, map references to paths, test existence or permissions, watch files, or retrieve secrets.
+
+P3 provides the SONiC-specific resolver and projects the closed result set into networking inputs.
 
 ### Module-oriented API (recommended for most users)
 
@@ -128,13 +133,14 @@ assert!(server.is_obfuscation());
 
 The builder is intentionally small. It is meant for runtime construction of valid server shapes, not as a replacement for schema validation or full YANG parsing.
 
-### Future external crypto integration
+### Central crypto integration boundary
 
 The intended long-term split is:
 
 - `tacacsrs-config` stays as the open configuration model. It owns RFC 7951 parsing, schema validation, bundle enumeration, and generated YANG types.
 - Small derived helpers that are valid before and after secret resolution belong here, in `extensions`, on top of `TacacsPlusServer` and other generated types.
-- External crypto providers should sit behind a separate boundary that consumes enumerated `TacacsPlusServer` values and returns a closed runtime representation with concrete material.
+- `tacacsrs-credential-resolution` consumes enumerated `TacacsPlusServer` values and returns a closed provider-neutral result set with concrete material.
+- Provider implementations and projection into connection-ready networking types remain integration-layer responsibilities.
 
 That keeps the generated config model optimized for round-tripping and reporting, while runtime code gets a provider-agnostic handoff with only the normalized fields needed to connect.
 
@@ -146,7 +152,7 @@ The crate includes runnable examples under `examples/`:
 - `quick_start_credential_refs.rs` — minimal end-to-end example showing bundle validation and enumeration
 - `pipeline_flow.rs` — explicit step-by-step parse/enumerate/external-resolution pipeline
 - `model_access.rs` — direct access to generated model types and flags
-- External secret-resolution examples should live in a separate runtime/provider crate if that integration is added later.
+- The provider-neutral central-resolution example lives in `tacacsrs-credential-resolution`.
 
 Run examples from the workspace root:
 
@@ -155,7 +161,7 @@ cargo run -p tacacsrs-config --example quick_start
 cargo run -p tacacsrs-config --example quick_start_credential_refs
 cargo run -p tacacsrs-config --example pipeline_flow
 cargo run -p tacacsrs-config --example model_access
-cargo run -p tacacsrs-config --example credential_references
+cargo run -p tacacsrs-credential-resolution --example central_resolution
 ```
 
 ## Public API surface
@@ -189,7 +195,7 @@ Validation checks include:
 - Credential references have matching definitions in the same config
 - Config-local credential references have matching definitions
 
-To resolve external credentials and materialize them for runtime use, introduce a separate runtime/provider layer after enumeration.
+To resolve central credentials, create a `ResolutionPlan` after enumeration and execute it through a `CredentialResolver`. Runtime projection remains outside both generic crates.
 
 This design separates parsing/validation from credential retrieval and enables round-trip safety.
 
@@ -222,7 +228,7 @@ For advanced use cases, these lower-level functions are available:
 
 ### 3) Runtime types
 
-If runtime secret-materialized server types are introduced later, they should live outside `tacacsrs-config` in a dedicated runtime/provider crate.
+Secret-bearing result types live in `tacacsrs-credential-resolution`; connection-ready server types remain outside `tacacsrs-config`.
 Shared derived helpers for the generated server model live in `TacacsPlusServerExt`.
 Programmatic construction helpers for the generated server model live in `TacacsPlusServerBuilder`.
 
