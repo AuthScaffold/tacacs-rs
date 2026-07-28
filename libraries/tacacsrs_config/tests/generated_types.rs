@@ -2,6 +2,12 @@ use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, Symmetric
 use tacacsrs_config::{parse_yang_json, PskDheKeSupportedGroup, TacacsPlusServerType};
 use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder};
 
+const _: () =
+    assert!(tacacsrs_config::ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY);
+const _: () = assert!(tacacsrs_config::Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY);
+const _: () =
+    assert!(tacacsrs_config::ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY);
+
 #[test]
 fn generated_central_certificate_shape_and_choice_metadata() {
     let certificate = tacacsrs_config::ClientIdentityCertificate {
@@ -15,7 +21,7 @@ fn generated_central_certificate_shape_and_choice_metadata() {
     };
     let bundle = tacacsrs_config::ClientCredentials {
         id: "bundle".to_owned(),
-        certificate: Some(certificate.clone()),
+        certificate: Some(certificate),
         tls13_epsk: None,
     };
 
@@ -26,7 +32,6 @@ fn generated_central_certificate_shape_and_choice_metadata() {
             ("central-keystore", &["central-keystore-reference"][..]),
         ],
     );
-    assert!(tacacsrs_config::ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY);
     let serialized = serde_json::to_value(bundle).expect("central certificate should serialize");
     assert_eq!(
         serialized["certificate"]["central-keystore-reference"]["asymmetric-key"],
@@ -63,7 +68,6 @@ fn generated_central_epsk_shape_preserves_protocol_metadata() {
             ("central-keystore", &["central-keystore-reference"][..]),
         ],
     );
-    assert!(tacacsrs_config::Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY);
     let serialized = serde_json::to_value(bundle).expect("central EPSK should serialize");
     let epsk = &serialized["tls13-epsk"];
     assert_eq!(epsk["central-keystore-reference"], "opaque-symmetric-key");
@@ -95,18 +99,9 @@ fn generated_central_trust_shape_is_shared_by_direct_and_bundle_ca_ee_fields() {
             ("central-truststore", &["central-truststore-reference"][..]),
         ],
     );
-    assert!(
-        tacacsrs_config::ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY
-    );
     let serialized = serde_json::to_value(bundle).expect("central trust should serialize");
-    assert_eq!(
-        serialized["ca-certs"]["central-truststore-reference"],
-        "opaque-certificate-bag",
-    );
-    assert_eq!(
-        serialized["ee-certs"]["central-truststore-reference"],
-        "opaque-certificate-bag",
-    );
+    assert_eq!(serialized["ca-certs"]["central-truststore-reference"], "opaque-certificate-bag",);
+    assert_eq!(serialized["ee-certs"]["central-truststore-reference"], "opaque-certificate-bag",);
 }
 
 // ---------------------------------------------------------------------------
