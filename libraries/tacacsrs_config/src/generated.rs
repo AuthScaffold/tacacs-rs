@@ -160,6 +160,12 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub inline_definition: Option<keystore::EndEntityCertWithKeyInlineDefinition>,
+        /// A reference to a specific certificate associated with
+        /// an asymmetric key stored in the central keystore.
+        #[serde(rename = "central-keystore-reference")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub central_keystore_reference: Option<keystore::EndEntityCertWithKeyCentralKeystoreReference>,
     }
 
     /// Choice constraints for [`ClientIdentityCertificate`].
@@ -169,6 +175,7 @@ pub mod tacacs_plus {
         /// Each inner slice is one case; at most one case may have fields set.
         pub const CHOICE_INLINE_OR_KEYSTORE: &[(&str, &[&str])] = &[
             ("inline", &["inline-definition"]),
+            ("central-keystore", &["central-keystore-reference"]),
         ];
         pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
     }
@@ -184,6 +191,12 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub inline_definition: Option<keystore::SymmetricKeyInlineDefinition>,
+        /// A reference to a symmetric key that exists in
+        /// the central keystore.
+        #[serde(rename = "central-keystore-reference")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub central_keystore_reference: Option<String>,
         /// A sequence of bytes used to identify an EPSK. A label for
         /// a PSK established externally.
         #[serde(rename = "external-identity")]
@@ -225,6 +238,7 @@ pub mod tacacs_plus {
         /// Each inner slice is one case; at most one case may have fields set.
         pub const CHOICE_INLINE_OR_KEYSTORE: &[(&str, &[&str])] = &[
             ("inline", &["inline-definition"]),
+            ("central-keystore", &["central-keystore-reference"]),
         ];
         pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
     }
@@ -275,6 +289,12 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub inline_definition: Option<truststore::CertsInlineDefinition>,
+        /// A reference to a certificate bag that exists in the
+        /// central truststore.
+        #[serde(rename = "central-truststore-reference")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub central_truststore_reference: Option<String>,
     }
 
     /// Choice constraints for [`ServerAuthenticationCaCerts`].
@@ -284,6 +304,7 @@ pub mod tacacs_plus {
         /// Each inner slice is one case; at most one case may have fields set.
         pub const CHOICE_INLINE_OR_TRUSTSTORE: &[(&str, &[&str])] = &[
             ("inline", &["inline-definition"]),
+            ("central-truststore", &["central-truststore-reference"]),
         ];
         pub const CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY: bool = true;
     }
@@ -603,6 +624,23 @@ pub mod keystore {
             ("cleartext-private-key", &["cleartext-private-key"]),
         ];
         pub const CHOICE_PRIVATE_KEY_TYPE_MANDATORY: bool = true;
+    }
+
+    /// A reference to a specific certificate associated with
+    /// an asymmetric key stored in the central keystore.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct EndEntityCertWithKeyCentralKeystoreReference {
+        /// A reference to an asymmetric key in the keystore.
+        #[serde(rename = "asymmetric-key")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub asymmetric_key: Option<String>,
+        /// A reference to a specific certificate of the
+        /// asymmetric key in the keystore.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub certificate: Option<String>,
     }
 
     /// A container to hold the local key definition.

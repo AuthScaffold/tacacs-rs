@@ -2,6 +2,113 @@ use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, Symmetric
 use tacacsrs_config::{parse_yang_json, PskDheKeSupportedGroup, TacacsPlusServerType};
 use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder};
 
+#[test]
+fn generated_central_certificate_shape_and_choice_metadata() {
+    let certificate = tacacsrs_config::ClientIdentityCertificate {
+        inline_definition: None,
+        central_keystore_reference: Some(
+            tacacsrs_config::keystore::EndEntityCertWithKeyCentralKeystoreReference {
+                asymmetric_key: Some("opaque-asymmetric-key".to_owned()),
+                certificate: Some("opaque-certificate".to_owned()),
+            },
+        ),
+    };
+    let bundle = tacacsrs_config::ClientCredentials {
+        id: "bundle".to_owned(),
+        certificate: Some(certificate.clone()),
+        tls13_epsk: None,
+    };
+
+    assert_eq!(
+        tacacsrs_config::ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
+        &[
+            ("inline", &["inline-definition"][..]),
+            ("central-keystore", &["central-keystore-reference"][..]),
+        ],
+    );
+    assert!(tacacsrs_config::ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY);
+    let serialized = serde_json::to_value(bundle).expect("central certificate should serialize");
+    assert_eq!(
+        serialized["certificate"]["central-keystore-reference"]["asymmetric-key"],
+        "opaque-asymmetric-key",
+    );
+    assert_eq!(
+        serialized["certificate"]["central-keystore-reference"]["certificate"],
+        "opaque-certificate",
+    );
+}
+
+#[test]
+fn generated_central_epsk_shape_preserves_protocol_metadata() {
+    let epsk = tacacsrs_config::Tls13Epsk {
+        inline_definition: None,
+        central_keystore_reference: Some("opaque-symmetric-key".to_owned()),
+        external_identity: "client@example.test".to_owned(),
+        hash: tacacsrs_config::EpskSupportedHash::Sha384,
+        context: Some("role-context".to_owned()),
+        target_protocol: Some(7),
+        target_kdf: Some(9),
+        psk_dhe_ke_groups: vec![PskDheKeSupportedGroup::Secp384r1],
+    };
+    let bundle = tacacsrs_config::ClientCredentials {
+        id: "bundle".to_owned(),
+        certificate: None,
+        tls13_epsk: Some(epsk),
+    };
+
+    assert_eq!(
+        tacacsrs_config::Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
+        &[
+            ("inline", &["inline-definition"][..]),
+            ("central-keystore", &["central-keystore-reference"][..]),
+        ],
+    );
+    assert!(tacacsrs_config::Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY);
+    let serialized = serde_json::to_value(bundle).expect("central EPSK should serialize");
+    let epsk = &serialized["tls13-epsk"];
+    assert_eq!(epsk["central-keystore-reference"], "opaque-symmetric-key");
+    assert_eq!(epsk["external-identity"], "client@example.test");
+    assert_eq!(epsk["hash"], "sha-384");
+    assert_eq!(epsk["context"], "role-context");
+    assert_eq!(epsk["target-protocol"], 7);
+    assert_eq!(epsk["target-kdf"], 9);
+    assert_eq!(epsk["tacacsrs:psk-dhe-ke-groups"][0], "secp384r1");
+}
+
+#[test]
+fn generated_central_trust_shape_is_shared_by_direct_and_bundle_ca_ee_fields() {
+    let trust = tacacsrs_config::ServerAuthenticationCaCerts {
+        inline_definition: None,
+        central_truststore_reference: Some("opaque-certificate-bag".to_owned()),
+    };
+    let bundle = tacacsrs_config::ServerCredentials {
+        id: "bundle".to_owned(),
+        ca_certs: Some(trust.clone()),
+        ee_certs: Some(trust),
+        tls13_epsks: None,
+    };
+
+    assert_eq!(
+        tacacsrs_config::ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
+        &[
+            ("inline", &["inline-definition"][..]),
+            ("central-truststore", &["central-truststore-reference"][..]),
+        ],
+    );
+    assert!(
+        tacacsrs_config::ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY
+    );
+    let serialized = serde_json::to_value(bundle).expect("central trust should serialize");
+    assert_eq!(
+        serialized["ca-certs"]["central-truststore-reference"],
+        "opaque-certificate-bag",
+    );
+    assert_eq!(
+        serialized["ee-certs"]["central-truststore-reference"],
+        "opaque-certificate-bag",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // PublicKeyFormat identity enum
 // ---------------------------------------------------------------------------
