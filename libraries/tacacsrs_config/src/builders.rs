@@ -11,6 +11,23 @@ pub const DEFAULT_PSK_DHE_KE_GROUPS: &[PskDheKeSupportedGroup] = &[
     PskDheKeSupportedGroup::Secp256r1,
 ];
 
+impl TacacsPlus {
+    /// Creates an empty TACACS+ root with no configured servers or credentials.
+    ///
+    /// This represents a runtime that is waiting for its first external
+    /// configuration snapshot. Operator-authored static configurations should
+    /// continue to use [`TacacsPlusBuilder::build`] so required-server and
+    /// credential validation is applied.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            client_credentials: Vec::new(),
+            server_credentials: Vec::new(),
+            server: Vec::new(),
+        }
+    }
+}
+
 /// Builder for constructing a [`TacacsPlus`] root configuration in code.
 ///
 /// This builder is the in-process counterpart to parsing YANG JSON via
@@ -38,11 +55,7 @@ impl TacacsPlusBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            root: TacacsPlus {
-                client_credentials: Vec::new(),
-                server_credentials: Vec::new(),
-                server: Vec::new(),
-            },
+            root: TacacsPlus::empty(),
         }
     }
 

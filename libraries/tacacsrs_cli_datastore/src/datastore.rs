@@ -6,8 +6,12 @@ use anyhow::Context;
 use async_trait::async_trait;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tacacsrs_config::TacacsPlus;
-use tacacsrs_datastore::{watch_to_change_stream, ConfigChangeStream, ConfigDatastore};
-use tokio::sync::{mpsc, watch};
+use tacacsrs_datastore::{
+    ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigChangeStream, ConfigDatastore,
+    ConfigDelta, DatastoreRuntimePolicy, InitialLoadPolicy,
+};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::builder::tacacs_plus_from_cli_input;
 use crate::model::CliDatastoreInput;
@@ -39,6 +43,16 @@ impl CliFileDatastore {
 
 #[async_trait]
 impl ConfigDatastore for CliFileDatastore {
+    fn runtime_policy(&self) -> DatastoreRuntimePolicy {
+        let change_notifications = if self.input.watched_paths().is_empty() {
+            ChangeNotificationMode::None
+        } else {
+            ChangeNotificationMode::Continuous
+        };
+
+        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, change_notifications)
+    }
+
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         tacacs_plus_from_cli_input(&self.input)
     }
@@ -50,7 +64,7 @@ impl ConfigDatastore for CliFileDatastore {
         }
 
         let initial = self.load().await.ok().map(Arc::new);
-        let (snapshot_tx, snapshot_rx) = watch::channel(initial);
+        let (change_tx, change_rx) = mpsc::channel(8);
         let (event_tx, mut event_rx) = mpsc::channel(32);
         let watch_dirs = watch_directories(&watched_paths);
         let mut watcher = RecommendedWatcher::new(
@@ -72,6 +86,7 @@ impl ConfigDatastore for CliFileDatastore {
         let datastore = self.clone();
         tokio::spawn(async move {
             let _watcher = watcher;
+            let mut previous = initial;
             while let Some(event) = event_rx.recv().await {
                 match event {
                     Ok(event) if event_touches_watched_path(&event, &watched_paths) => {
@@ -79,7 +94,17 @@ impl ConfigDatastore for CliFileDatastore {
                         while let Ok(Ok(_)) = event_rx.try_recv() {}
                         match datastore.load().await {
                             Ok(snapshot) => {
-                                if snapshot_tx.send(Some(Arc::new(snapshot))).is_err() {
+                                let snapshot = Arc::new(snapshot);
+                                let change = ConfigChange {
+                                    delta: ConfigDelta::diff(previous.as_deref(), &snapshot),
+                                    config: Arc::clone(&snapshot),
+                                };
+                                previous = Some(snapshot);
+                                if change_tx
+                                    .send(ConfigChangeEvent::Changed(change))
+                                    .await
+                                    .is_err()
+                                {
                                     log::debug!("CLI file datastore subscriber dropped; exiting");
                                     break;
                                 }
@@ -88,6 +113,13 @@ impl ConfigDatastore for CliFileDatastore {
                                 log::error!(
                                     "CLI file datastore reload failed; keeping previous configuration: {err:#}"
                                 );
+                                if change_tx
+                                    .send(ConfigChangeEvent::CandidateRejected)
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -99,7 +131,7 @@ impl ConfigDatastore for CliFileDatastore {
             }
         });
 
-        Ok(watch_to_change_stream(snapshot_rx))
+        Ok(Box::pin(ReceiverStream::new(change_rx)))
     }
 
     fn label(&self) -> &'static str {
@@ -201,12 +233,16 @@ mod tests {
 
     async fn next_change<S>(stream: &mut S) -> tacacsrs_datastore::ConfigChange
     where
-        S: Stream<Item = tacacsrs_datastore::ConfigChange> + Unpin,
+        S: Stream<Item = tacacsrs_datastore::ConfigChangeEvent> + Unpin,
     {
-        timeout(Duration::from_secs(5), futures_util::StreamExt::next(stream))
+        let event = timeout(Duration::from_secs(5), futures_util::StreamExt::next(stream))
             .await
             .expect("change should arrive")
-            .expect("stream should yield change")
+            .expect("stream should yield change");
+        let tacacsrs_datastore::ConfigChangeEvent::Changed(change) = event else {
+            panic!("expected a changed event");
+        };
+        change
     }
 
     #[tokio::test]
@@ -224,6 +260,55 @@ mod tests {
         fs::remove_file(path).ok();
 
         assert_eq!(change.config.server[0].address, "192.0.2.11");
+    }
+
+    #[tokio::test]
+    async fn subscribe_reports_rejected_candidate_after_invalid_file_update() {
+        let path = temp_config(&config("192.0.2.10"));
+        let input =
+            CliDatastoreInput::new(CliConfigSource::YangFile { path: path.clone() }, "file")
+                .with_debounce(Duration::from_millis(50));
+        let datastore = CliFileDatastore::new(input);
+        let mut stream = datastore.subscribe().await.expect("subscribe should work");
+
+        fs::write(&path, "not valid JSON").expect("config should update");
+
+        let event = timeout(Duration::from_secs(5), futures_util::StreamExt::next(&mut stream))
+            .await
+            .expect("rejection should arrive")
+            .expect("stream should yield rejection");
+        fs::remove_file(path).ok();
+
+        assert!(matches!(event, ConfigChangeEvent::CandidateRejected));
+    }
+
+    #[test]
+    fn runtime_policy_is_continuous_only_when_files_are_watched() {
+        let inline = CliFileDatastore::new(CliDatastoreInput::new(
+            CliConfigSource::Inline {
+                servers: vec![CliServerInput::new("server-0", "192.0.2.10:49")],
+                security: CliSecurity::from_cli_inputs(CliSecurityInputs::default()),
+            },
+            "cli",
+        ));
+        assert_eq!(
+            inline.runtime_policy(),
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None,)
+        );
+
+        let path = temp_config(&config("192.0.2.10"));
+        let file = CliFileDatastore::new(CliDatastoreInput::new(
+            CliConfigSource::YangFile { path: path.clone() },
+            "file",
+        ));
+        assert_eq!(
+            file.runtime_policy(),
+            DatastoreRuntimePolicy::new(
+                InitialLoadPolicy::FailFast,
+                ChangeNotificationMode::Continuous,
+            )
+        );
+        fs::remove_file(path).ok();
     }
 
     #[tokio::test]

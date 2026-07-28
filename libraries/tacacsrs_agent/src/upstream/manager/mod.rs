@@ -662,6 +662,57 @@ mod tests {
         assert!(!first.usable.load(Ordering::Relaxed));
     }
 
+    #[tokio::test(start_paused = true)]
+    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    async fn preferred_probe_started_with_zero_servers_recovers_after_reload() {
+        let preferred = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(false),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let backup = Arc::new(FakeConnection {
+            address: "server-b:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([
+            (preferred.address.clone(), Arc::clone(&preferred)),
+            (backup.address.clone(), Arc::clone(&backup)),
+        ])));
+        let state = Arc::new(UpstreamManager::new(
+            Vec::new(),
+            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(25),
+        ));
+        let probe = state.spawn_preferred_probe();
+        tokio::task::yield_now().await;
+
+        state
+            .reload_servers(vec![test_server("server-a:49"), test_server("server-b:49")])
+            .await
+            .expect("reload should succeed");
+        let failed_over = state
+            .bind_server_for_new_session()
+            .await
+            .expect("backup should bind");
+        assert_eq!(failed_over.connection.server_address(), backup.address);
+        preferred.usable.store(true, Ordering::Relaxed);
+
+        tokio::time::advance(Duration::from_millis(25)).await;
+        tokio::task::yield_now().await;
+        let recovered = state
+            .bind_server_for_new_session()
+            .await
+            .expect("preferred should recover");
+        assert_eq!(recovered.connection.server_address(), preferred.address);
+        assert_eq!(connector.connect_attempts_for(&preferred.address).await, 2);
+
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(connector.connect_attempts_for(&preferred.address).await, 2);
+        probe.abort();
+    }
+
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
     async fn test_concurrent_failover_coalesces_connection_attempts() {

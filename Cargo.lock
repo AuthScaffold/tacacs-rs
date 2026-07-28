@@ -2030,12 +2030,14 @@ name = "tacacsrs-agentd"
 version = "0.0.0-dev"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "clap_mangen",
  "console-subscriber",
  "env_logger",
  "futures-util",
  "log",
+ "rand",
  "rustls-pki-types",
  "tacacsrs-agent",
  "tacacsrs-agent-client",
@@ -2045,6 +2047,8 @@ dependencies = [
  "tacacsrs-networking",
  "tacacsrs-sonic",
  "tokio",
+ "tokio-stream",
+ "tokio-util",
 ]
 
 [[package]]

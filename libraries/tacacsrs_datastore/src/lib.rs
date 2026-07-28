@@ -128,8 +128,63 @@ pub struct ConfigChange {
     pub delta: ConfigDelta,
 }
 
-/// Stream of [`ConfigChange`] events returned by [`ConfigDatastore::subscribe`].
-pub type ConfigChangeStream = Pin<Box<dyn Stream<Item = ConfigChange> + Send + 'static>>;
+/// Typed event emitted by a datastore change subscription.
+#[derive(Debug, Clone)]
+pub enum ConfigChangeEvent {
+    /// A complete validated candidate snapshot is available.
+    Changed(ConfigChange),
+    /// The datastore observed a change but rejected the resulting candidate.
+    ///
+    /// Backends log their detailed error locally. The event intentionally
+    /// carries no error text or configuration value so health consumers cannot
+    /// expose addresses, credential references, or secrets.
+    CandidateRejected,
+}
+
+/// Stream of [`ConfigChangeEvent`] values returned by [`ConfigDatastore::subscribe`].
+pub type ConfigChangeStream = Pin<Box<dyn Stream<Item = ConfigChangeEvent> + Send + 'static>>;
+
+/// Behavior the runtime applies when the initial datastore load fails.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum InitialLoadPolicy {
+    /// Return the load error to the operator and stop startup.
+    FailFast,
+    /// Retry until a valid snapshot is available or shutdown is requested.
+    RetryUntilAvailable,
+}
+
+/// Change-notification guarantees provided by a datastore instance.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ChangeNotificationMode {
+    /// The datastore is immutable for the lifetime of the process.
+    None,
+    /// The datastore maintains a continuous subscription that must be restored
+    /// if setup fails or its stream ends.
+    Continuous,
+}
+
+/// Runtime behavior declared by a [`ConfigDatastore`] instance.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct DatastoreRuntimePolicy {
+    /// Initial-load failure behavior.
+    pub initial_load: InitialLoadPolicy,
+    /// Change-notification behavior.
+    pub change_notifications: ChangeNotificationMode,
+}
+
+impl DatastoreRuntimePolicy {
+    /// Creates a datastore runtime policy.
+    #[must_use]
+    pub const fn new(
+        initial_load: InitialLoadPolicy,
+        change_notifications: ChangeNotificationMode,
+    ) -> Self {
+        Self {
+            initial_load,
+            change_notifications,
+        }
+    }
+}
 
 /// Source of TACACS+ configuration for the agent runtime.
 ///
@@ -143,6 +198,13 @@ pub type ConfigChangeStream = Pin<Box<dyn Stream<Item = ConfigChange> + Send + '
 /// [`subscribe`]: ConfigDatastore::subscribe
 #[async_trait]
 pub trait ConfigDatastore: Send + Sync + 'static {
+    /// Declares how the runtime should supervise this datastore instance.
+    ///
+    /// This is an instance-level contract because a file-backed datastore may
+    /// be immutable when no referenced paths exist and continuously watched
+    /// when its effective configuration depends on files.
+    fn runtime_policy(&self) -> DatastoreRuntimePolicy;
+
     /// Load the current configuration snapshot.
     ///
     /// Called once at startup and may be called again by callers that wish to
@@ -211,6 +273,10 @@ impl StaticDatastore {
 
 #[async_trait]
 impl ConfigDatastore for StaticDatastore {
+    fn runtime_policy(&self) -> DatastoreRuntimePolicy {
+        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None)
+    }
+
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         Ok((*self.config).clone())
     }
@@ -244,7 +310,7 @@ pub fn watch_to_change_stream(
             delta,
         };
         previous = Some(snapshot);
-        Some(change)
+        Some(ConfigChangeEvent::Changed(change))
     });
     Box::pin(stream)
 }
@@ -273,6 +339,10 @@ mod tests {
         let loaded = store.load().await.expect("load should succeed");
         assert_eq!(loaded.server.len(), 1);
         assert_eq!(store.label(), "static");
+        assert_eq!(
+            store.runtime_policy(),
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None,)
+        );
 
         let mut stream = store.subscribe().await.expect("subscribe should succeed");
         assert!(stream.next().await.is_none(), "static stream should be empty");
@@ -333,7 +403,11 @@ mod tests {
         tx.send(Some(Arc::clone(&updated_arc)))
             .expect("send update");
 
-        let change = stream.next().await.expect("should receive change");
+        let ConfigChangeEvent::Changed(change) =
+            stream.next().await.expect("should receive change")
+        else {
+            panic!("expected a changed event");
+        };
         assert_eq!(change.delta.modified_servers, vec!["primary"]);
         assert_eq!(change.config.server[0].timeout, 7);
     }
@@ -348,10 +422,13 @@ mod tests {
         updated.server[0].timeout = 9;
         tx.send(Some(Arc::new(updated))).expect("send update");
 
-        let change = stream
+        let ConfigChangeEvent::Changed(change) = stream
             .next()
             .await
-            .expect("should receive first real update");
+            .expect("should receive first real update")
+        else {
+            panic!("expected a changed event");
+        };
         assert_eq!(change.delta.modified_servers, vec!["primary"]);
         assert_eq!(change.config.server[0].timeout, 9);
     }

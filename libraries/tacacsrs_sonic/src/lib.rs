@@ -10,8 +10,12 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_config::TacacsPlus;
-use tacacsrs_datastore::{watch_to_change_stream, ConfigChangeStream, ConfigDatastore};
-use tokio::sync::watch;
+use tacacsrs_datastore::{
+    ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigChangeStream, ConfigDatastore,
+    ConfigDelta, DatastoreRuntimePolicy, InitialLoadPolicy,
+};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 pub use mapping::{map_sonic_tables_to_tacacs_plus, sonic_server_name, SonicHash, SonicTacacsTables};
 pub use store::{
@@ -49,6 +53,13 @@ impl SonicConfigDb {
 
 #[async_trait]
 impl ConfigDatastore for SonicConfigDb {
+    fn runtime_policy(&self) -> DatastoreRuntimePolicy {
+        DatastoreRuntimePolicy::new(
+            InitialLoadPolicy::RetryUntilAvailable,
+            ChangeNotificationMode::Continuous,
+        )
+    }
+
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         let mut conn = self
             .settings
@@ -65,16 +76,23 @@ impl ConfigDatastore for SonicConfigDb {
     async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream> {
         let settings = self.settings.clone();
         let initial = self.load().await.ok().map(Arc::new);
-        let (tx, rx) = watch::channel(initial);
+        let (tx, rx) = mpsc::channel(8);
         let mut signal = spawn_change_notifier(settings.clone())
             .await
             .context("subscribe to SONiC ConfigDB keyspace notifications")?;
 
         tokio::spawn(async move {
+            let mut previous = initial;
             while signal.recv().await.is_some() {
                 match reload_with_retry(&settings).await {
                     Ok(snapshot) => {
-                        if tx.send(Some(Arc::new(snapshot))).is_err() {
+                        let snapshot = Arc::new(snapshot);
+                        let change = ConfigChange {
+                            delta: ConfigDelta::diff(previous.as_deref(), &snapshot),
+                            config: Arc::clone(&snapshot),
+                        };
+                        previous = Some(snapshot);
+                        if tx.send(ConfigChangeEvent::Changed(change)).await.is_err() {
                             log::debug!("SONiC datastore subscriber dropped; exiting");
                             break;
                         }
@@ -83,12 +101,15 @@ impl ConfigDatastore for SonicConfigDb {
                         log::error!(
                             "SONiC ConfigDB reload failed; keeping previous configuration: {err:#}"
                         );
+                        if tx.send(ConfigChangeEvent::CandidateRejected).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }
         });
 
-        Ok(watch_to_change_stream(rx))
+        Ok(Box::pin(ReceiverStream::new(rx)))
     }
 
     fn label(&self) -> &'static str {
@@ -125,4 +146,22 @@ async fn try_reload(settings: &SonicConnection) -> anyhow::Result<TacacsPlus> {
     let mut conn = settings.connect().await?;
     let snapshot = read_tacacs_tables(&mut conn).await?;
     map_sonic_tables_to_tacacs_plus(&snapshot)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_policy_retries_and_maintains_continuous_notifications() {
+        let datastore = SonicConfigDb::new(SonicConnection::default());
+
+        assert_eq!(
+            datastore.runtime_policy(),
+            DatastoreRuntimePolicy::new(
+                InitialLoadPolicy::RetryUntilAvailable,
+                ChangeNotificationMode::Continuous,
+            )
+        );
+    }
 }

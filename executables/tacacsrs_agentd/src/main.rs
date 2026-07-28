@@ -7,25 +7,29 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
-use futures_util::StreamExt;
-use tacacsrs_agent::{EnabledServices, ServiceConfig, TacacsClientService};
+use tacacsrs_agent::{
+    EnabledServices, ProxyDownstreamObfuscation, RuntimeHealthPublisher, ServiceConfig,
+    TacacsClientService,
+};
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_cli_datastore::{
     CliConfigSource, CliDatastoreInput, CliFileDatastore, CliSecurity, CliSecurityInputs,
     CliServerInput,
 };
 use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
-use tacacsrs_config::TacacsPlusServerExt;
-use tacacsrs_datastore::{ConfigChange, ConfigDatastore};
+use tacacsrs_datastore::{ConfigDatastore, InitialLoadPolicy};
 use tacacsrs_sonic::{SonicConfigDb, SonicConnection, DEFAULT_REDIS_URL};
+use tokio_util::sync::CancellationToken;
 
 mod cli;
 mod config_filter;
+mod config_supervisor;
 mod systemd_notify;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
-use crate::config_filter::{config_filter_from_runtime_options, TacacsPlusFilter};
+use crate::config_filter::{TacacsPlusFilter, config_filter_from_runtime_options};
+use crate::config_supervisor::ConfigSupervisor;
 use crate::systemd_notify::SystemdNotifier;
 
 #[cfg(unix)]
@@ -164,65 +168,68 @@ fn build_datastore(cli: &Cli) -> Arc<dyn ConfigDatastore> {
     Arc::new(CliFileDatastore::new(cli_datastore_input_from_cli(cli)))
 }
 
-async fn apply_config_change(
-    label: &str,
-    change: ConfigChange,
-    service: &TacacsClientService,
-    config_filter: &dyn TacacsPlusFilter,
-) -> anyhow::Result<()> {
-    log::info!(
-        "Datastore '{label}' reports configuration change: {} server(s); added={:?} removed={:?} modified={:?} root_metadata_changed={}",
-        change.config.server.len(),
-        change.delta.added_servers,
-        change.delta.removed_servers,
-        change.delta.modified_servers,
-        change.delta.root_metadata_changed,
-    );
-    let filtered = config_filter.filter((*change.config).clone()).await?;
-    service
-        .reload_tacacs_plus_with_proxy_downstream_obfuscation(
-            filtered.tacacs_plus,
-            filtered.proxy_downstream_obfuscation,
-        )
-        .await
-}
-
-/// Spawn a background task that consumes [`ConfigDatastore::subscribe`]
-/// events and applies each new snapshot to the running service.
-fn spawn_change_listener(
+async fn run_supervised_service(
     datastore: Arc<dyn ConfigDatastore>,
     service: Arc<TacacsClientService>,
-    status_notifier: Arc<SystemdNotifier>,
+    health: RuntimeHealthPublisher,
     config_filter: Arc<dyn TacacsPlusFilter>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let label = datastore.label();
-        let mut stream = match datastore.subscribe().await {
-            Ok(stream) => stream,
-            Err(error) => {
-                log::warn!("Datastore '{label}' does not support change notifications: {error:#}");
-                return;
-            }
-        };
-        log::info!("Subscribed to '{label}' configuration change notifications");
-        while let Some(change) = stream.next().await {
-            match apply_config_change(label, change, &service, config_filter.as_ref()).await {
-                Ok(()) => {
-                    log::info!(
-                        "Applied datastore '{label}' configuration reload with {} upstream server(s) supporting authentication, authorization, and accounting",
-                        service.server_count(),
-                    );
-                    status_notifier.publish_server_state(service.server_count());
+) -> anyhow::Result<()> {
+    let datastore_policy = datastore.runtime_policy();
+    let supervisor = ConfigSupervisor::new(
+        Arc::clone(&datastore),
+        Arc::clone(&service),
+        health.clone(),
+        config_filter,
+    );
+    let cancellation = CancellationToken::new();
+
+    if datastore_policy.initial_load == InitialLoadPolicy::FailFast {
+        supervisor.load_initial(&cancellation).await?;
+    }
+
+    let status_notifier = Arc::new(SystemdNotifier::from_env());
+    status_notifier.publish_server_state(service.server_count());
+    let status_task = {
+        let cancellation = cancellation.clone();
+        let status_notifier = Arc::clone(&status_notifier);
+        let mut health = health.subscribe();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = cancellation.cancelled() => return,
+                    result = health.changed() => {
+                        if result.is_err() {
+                            return;
+                        }
+                        status_notifier.publish_server_state(
+                            health.borrow().eligible_server_count(),
+                        );
+                    }
                 }
-                Err(error) => {
-                    log::error!(
-                        "Failed to apply datastore '{label}' configuration reload; keeping previous runtime state: {error:#}"
-                    );
-                }
             }
-        }
-        log::debug!("Datastore '{label}' change stream ended");
-    })
+        })
+    };
+
+    let supervisor_task = {
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move {
+            if datastore_policy.initial_load == InitialLoadPolicy::RetryUntilAvailable {
+                supervisor.run(&cancellation).await
+            } else {
+                supervisor.run_notifications(&cancellation).await;
+                Ok(())
+            }
+        })
+    };
+
+    let service_result = service.serve().await;
+    cancellation.cancel();
+    supervisor_task
+        .await
+        .context("Configuration supervisor task failed")??;
+    status_task.await.context("Systemd status task failed")?;
+
+    service_result
 }
 
 /// Starts the central TACACS+ client service process.
@@ -283,54 +290,26 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let datastore = build_datastore(&cli);
-    let tacacs_plus = {
-        let initial = datastore.load().await.with_context(|| {
-            format!("Failed to load configuration from datastore '{}'", datastore.label())
-        })?;
-        log::info!("Initial configuration loaded from datastore '{}'", datastore.label());
-        config_filter.filter(initial).await?
-    };
-    let proxy_downstream_obfuscation = tacacs_plus.proxy_downstream_obfuscation;
-    let tacacs_plus = tacacs_plus.tacacs_plus;
-
-    log::info!(
-        "Upstream servers: {} configured, probe interval: {}s",
-        tacacs_plus.server.len(),
-        cli.preferred_probe_interval_seconds,
-    );
-    for server in &tacacs_plus.server {
-        let security_label = if server.is_tls() {
-            "TLS"
-        } else {
-            "obfuscation"
-        };
-        log::info!("  {} ({}) -> {}:{}", server.name, security_label, server.address, server.port);
-    }
-
+    let health = RuntimeHealthPublisher::new(enabled_services);
+    let empty_tacacs_plus = tacacsrs_config::TacacsPlus::empty();
     let service = Arc::new(
-        TacacsClientService::new(ServiceConfig {
-            enabled_services,
-            endpoint,
-            proxy_endpoint,
-            proxy_downstream_obfuscation,
-            tacacs_plus,
-            preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
-            #[cfg(unix)]
-            socket_mode: parse_socket_mode(&cli.socket_mode)?,
-            disable_certificate_verification: cli.insecure_disable_certificate_verification,
-        })
+        TacacsClientService::waiting_for_configuration(
+            ServiceConfig {
+                enabled_services,
+                endpoint,
+                proxy_endpoint,
+                proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
+                tacacs_plus: empty_tacacs_plus,
+                preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
+                #[cfg(unix)]
+                socket_mode: parse_socket_mode(&cli.socket_mode)?,
+                disable_certificate_verification: cli.insecure_disable_certificate_verification,
+            },
+            health.clone(),
+        )
         .context("Failed to build TACACS+ client service configuration")?,
     );
-    let status_notifier = Arc::new(SystemdNotifier::from_env());
-    status_notifier.publish_server_state(service.server_count());
-
-    let _change_listener = spawn_change_listener(
-        Arc::clone(&datastore),
-        Arc::clone(&service),
-        Arc::clone(&status_notifier),
-        Arc::clone(&config_filter),
-    );
-    service.serve().await
+    run_supervised_service(datastore, service, health, config_filter).await
 }
 
 #[cfg(test)]
@@ -338,24 +317,14 @@ mod tests {
     use clap::Parser;
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{Cli, apply_config_change, cli_datastore_input_from_cli, enabled_services_from_cli};
-    use crate::config_filter::{NoopTacacsPlusFilter, ProxySelfLoopFilter};
-    use tacacsrs_agent::{
-        EnabledServices, ProxyDownstreamObfuscation, ServiceConfig, TacacsClientService,
-    };
-    use tacacsrs_agent_client::IpcEndpoint;
+    use super::{Cli, cli_datastore_input_from_cli, enabled_services_from_cli};
+    use tacacsrs_agent::EnabledServices;
     use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::crypto_types::PrivateKeyFormat;
-    use tacacsrs_config::{
-        TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType,
-        ValidationOptions,
-    };
+    use tacacsrs_config::ValidationOptions;
     use tacacsrs_cli_datastore::{tacacs_plus_from_cli_input, tacacs_plus_from_file};
-    use tacacsrs_datastore::{ConfigChange, ConfigDelta};
 
     fn sample_path(file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -376,42 +345,6 @@ mod tests {
         let path = std::env::temp_dir().join(format!("agentd-config-test-{unique}.json"));
         fs::write(&path, contents).expect("temp config should be written");
         path
-    }
-
-    fn test_config(addresses: &[&str]) -> TacacsPlus {
-        addresses
-            .iter()
-            .enumerate()
-            .map(|(index, address)| {
-                let (host, port) = address.rsplit_once(':').unwrap_or((*address, "49"));
-                TacacsPlusServerBuilder::new(
-                    format!("server-{index}"),
-                    TacacsPlusServerType::AUTHENTICATION
-                        | TacacsPlusServerType::AUTHORIZATION
-                        | TacacsPlusServerType::ACCOUNTING,
-                    host.to_owned(),
-                    port.parse().expect("test port should be valid"),
-                )
-                .with_shared_secret("test-secret".to_owned())
-            })
-            .fold(TacacsPlusBuilder::new(), TacacsPlusBuilder::with_server_builder)
-            .build()
-            .expect("test config should be valid")
-    }
-
-    fn test_service(config: TacacsPlus) -> TacacsClientService {
-        TacacsClientService::new(ServiceConfig {
-            enabled_services: EnabledServices::CLIENT_API,
-            endpoint: IpcEndpoint::default_local(),
-            proxy_endpoint: None,
-            proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
-            tacacs_plus: config,
-            preferred_probe_interval: Duration::from_secs(1),
-            #[cfg(unix)]
-            socket_mode: 0o660,
-            disable_certificate_verification: false,
-        })
-        .expect("test service should be valid")
     }
 
     #[test]
@@ -565,46 +498,6 @@ mod tests {
         ]);
 
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn apply_config_change_reloads_service_without_restart() {
-        let initial = test_config(&["192.0.2.10:49"]);
-        let service = test_service(initial.clone());
-        assert_eq!(service.server_count(), 1);
-
-        let updated = test_config(&["192.0.2.10:49", "192.0.2.11:49"]);
-        let change = ConfigChange {
-            delta: ConfigDelta::diff(Some(&initial), &updated),
-            config: Arc::new(updated),
-        };
-
-        apply_config_change("test", change, &service, &NoopTacacsPlusFilter::default())
-            .await
-            .unwrap();
-
-        assert_eq!(service.server_count(), 2);
-    }
-
-    #[tokio::test]
-    async fn apply_config_change_filters_proxy_self_loop_on_reload() {
-        let initial = test_config(&["192.0.2.10:49"]);
-        let service = test_service(initial.clone());
-        assert_eq!(service.server_count(), 1);
-
-        let updated = test_config(&["127.0.0.1:9050", "192.0.2.11:49"]);
-        let change = ConfigChange {
-            delta: ConfigDelta::diff(Some(&initial), &updated),
-            config: Arc::new(updated),
-        };
-        let filter =
-            ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket should parse"));
-
-        apply_config_change("test", change, &service, &filter)
-            .await
-            .unwrap();
-
-        assert_eq!(service.server_count(), 1);
     }
 
     #[test]
