@@ -3,9 +3,10 @@
 #[cfg(unix)]
 use anyhow::bail;
 use tacacsrs_agent_client::IpcEndpoint;
+use tokio::sync::watch;
 
 use super::ClientApiService;
-use crate::runtime::{ListenerRegistration, ShutdownReceiver};
+use crate::runtime::{ListenerRegistration, RuntimeHealthSnapshot, ShutdownReceiver};
 use crate::services::ListenerOptions;
 
 #[cfg(not(unix))]
@@ -21,6 +22,7 @@ pub(crate) async fn serve(
     options: ListenerOptions,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
+    health: watch::Receiver<RuntimeHealthSnapshot>,
 ) -> anyhow::Result<()> {
     match endpoint {
         IpcEndpoint::Unix(path) => {
@@ -30,6 +32,7 @@ pub(crate) async fn serve(
                 options.socket_mode(),
                 shutdown,
                 registration,
+                health,
             )
             .await
         }
@@ -58,9 +61,12 @@ pub(crate) async fn serve(
     _options: ListenerOptions,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
+    health: watch::Receiver<RuntimeHealthSnapshot>,
 ) -> anyhow::Result<()> {
     match endpoint {
-        IpcEndpoint::Tcp(address) => tcp::serve(*address, service, shutdown, registration).await,
+        IpcEndpoint::Tcp(address) => {
+            tcp::serve(*address, service, shutdown, registration, health).await
+        }
     }
 }
 

@@ -10,6 +10,9 @@ pub mod client;
 
 mod endpoint;
 
+/// Stable names used by standard gRPC health checks.
+pub mod health;
+
 /// Generated protobuf/gRPC types for the local IPC transport.
 ///
 /// The `.proto` file

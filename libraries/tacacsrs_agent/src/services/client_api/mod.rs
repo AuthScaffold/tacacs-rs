@@ -7,6 +7,7 @@
 //! manager.
 
 mod grpc;
+mod health;
 pub(crate) mod listener;
 mod service;
 mod upstream_bridge;

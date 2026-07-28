@@ -39,8 +39,10 @@ impl ClientApiService {
         shutdown: ShutdownReceiver,
         health: RuntimeHealthPublisher,
     ) -> anyhow::Result<()> {
+        let health_receiver = health.subscribe();
         let registration = ListenerRegistration::new(health, RuntimeService::ClientApi);
-        listener::serve(endpoint, self.clone(), options, shutdown, registration).await
+        listener::serve(endpoint, self.clone(), options, shutdown, registration, health_receiver)
+            .await
     }
 
     #[cfg(unix)]

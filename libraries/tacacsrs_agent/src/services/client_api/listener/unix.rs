@@ -5,9 +5,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgentServer;
+use tokio::sync::watch;
 use tokio_stream::wrappers::UnixListenerStream;
 
-use crate::runtime::{ListenerRegistration, ShutdownReceiver};
+use crate::runtime::{ListenerRegistration, RuntimeHealthSnapshot, ShutdownReceiver};
+use crate::services::client_api::health::StandardHealth;
 use crate::services::client_api::ClientApiService;
 
 /// Serves Unix domain socket IPC clients until shutdown is requested.
@@ -20,22 +22,29 @@ pub(crate) async fn serve(
     socket_mode: u32,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
+    health: watch::Receiver<RuntimeHealthSnapshot>,
 ) -> anyhow::Result<()> {
     let listener = prepare_unix_listener(path, socket_mode).await?;
     let socket_guard = UnixSocketCleanupGuard::new(path);
     let incoming = UnixListenerStream::new(listener);
+    let (standard_health, health_service) = StandardHealth::new(health).await;
+    let health_task = tokio::spawn(standard_health.run(shutdown.clone()));
     registration.mark_bound();
 
     log::info!("Listening for IPC clients on Unix socket {}", path.display());
 
     tonic::transport::Server::builder()
         .add_service(TacacsAgentServer::new(service.grpc_service()))
+        .add_service(health_service)
         .serve_with_incoming_shutdown(incoming, shutdown.wait())
         .await
         .with_context(|| format!("Unix IPC server {} failed", path.display()))?;
 
     log::info!("Shutdown signal received; draining active IPC clients");
     service.wait_for_active_requests().await;
+    health_task
+        .await
+        .context("Standard gRPC health bridge failed")?;
     socket_guard.cleanup("Unix socket").await?;
     Ok(())
 }
