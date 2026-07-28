@@ -9,7 +9,10 @@ use tokio::sync::RwLock;
 use super::listener;
 use super::upstream_bridge::UpstreamBridge;
 use crate::config::ProxyDownstreamObfuscation;
-use crate::runtime::{RequestGuard, RequestTracker};
+use crate::runtime::{
+    ListenerRegistration, RequestGuard, RequestTracker, RuntimeHealthPublisher, RuntimeService,
+    ShutdownReceiver,
+};
 use crate::services::ListenerOptions;
 use crate::upstream::manager::UpstreamManager;
 
@@ -38,8 +41,11 @@ impl TacacsProxyService {
         &self,
         endpoint: &IpcEndpoint,
         options: ListenerOptions,
+        shutdown: ShutdownReceiver,
+        health: RuntimeHealthPublisher,
     ) -> anyhow::Result<()> {
-        listener::serve(endpoint, self.clone(), options).await
+        let registration = ListenerRegistration::new(health, RuntimeService::TacacsProxy);
+        listener::serve(endpoint, self.clone(), options, shutdown, registration).await
     }
 
     pub(super) async fn handle_connection<Stream>(

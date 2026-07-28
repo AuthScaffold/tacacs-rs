@@ -5,6 +5,7 @@ use anyhow::bail;
 use tacacsrs_agent_client::IpcEndpoint;
 
 use super::ClientApiService;
+use crate::runtime::{ListenerRegistration, ShutdownReceiver};
 use crate::services::ListenerOptions;
 
 #[cfg(not(unix))]
@@ -18,9 +19,20 @@ pub(crate) async fn serve(
     endpoint: &IpcEndpoint,
     service: ClientApiService,
     options: ListenerOptions,
+    shutdown: ShutdownReceiver,
+    registration: ListenerRegistration,
 ) -> anyhow::Result<()> {
     match endpoint {
-        IpcEndpoint::Unix(path) => unix::serve(path, service, options.socket_mode()).await,
+        IpcEndpoint::Unix(path) => {
+            unix::serve(
+                path,
+                service,
+                options.socket_mode(),
+                shutdown,
+                registration,
+            )
+            .await
+        }
         IpcEndpoint::Tcp(address) => bail!(
             "Unix client API endpoints must use a Unix domain socket; TCP endpoint {address} is only supported for the TACACS+ proxy on Unix"
         ),
@@ -44,9 +56,11 @@ pub(crate) async fn serve(
     endpoint: &IpcEndpoint,
     service: ClientApiService,
     _options: ListenerOptions,
+    shutdown: ShutdownReceiver,
+    registration: ListenerRegistration,
 ) -> anyhow::Result<()> {
     match endpoint {
-        IpcEndpoint::Tcp(address) => tcp::serve(*address, service).await,
+        IpcEndpoint::Tcp(address) => tcp::serve(*address, service, shutdown, registration).await,
     }
 }
 

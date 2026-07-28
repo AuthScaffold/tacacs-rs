@@ -20,4 +20,4 @@ pub use health::{
 
 pub(crate) use server_catalog::{REQUIRED_SERVER_TYPES, enumerate_supported_servers};
 pub(crate) use request_tracker::{RequestGuard, RequestTracker};
-pub(crate) use shutdown::shutdown_signal;
+pub(crate) use shutdown::{ListenerRegistration, ShutdownCoordinator, ShutdownReceiver};

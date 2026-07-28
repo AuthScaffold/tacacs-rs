@@ -331,6 +331,12 @@ impl RuntimeHealthPublisher {
     fn update(&self, mutation: impl FnOnce(&mut RuntimeHealthSnapshot)) {
         let mut next = self.snapshot();
         mutation(&mut next);
+        if next.lifecycle == RuntimeLifecycle::Starting
+            && next.applied_configuration
+            && next.all_enabled_listeners_bound()
+        {
+            next.lifecycle = RuntimeLifecycle::Serving;
+        }
         if next != *self.sender.borrow() {
             self.sender.send_replace(next);
         }
@@ -375,6 +381,7 @@ mod tests {
 
         assert!(publisher.set_listener(RuntimeService::TacacsProxy, ListenerState::Bound));
         let snapshot = publisher.snapshot();
+        assert_eq!(snapshot.lifecycle(), RuntimeLifecycle::Serving);
         assert!(snapshot.is_startup_serving());
         assert!(snapshot.is_readiness_serving());
     }

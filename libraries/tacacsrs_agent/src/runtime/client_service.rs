@@ -26,7 +26,10 @@ use tacacsrs_config::TacacsPlus;
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 
-use super::{RequestTracker, RuntimeHealthPublisher, UpstreamAvailability, enumerate_supported_servers};
+use super::{
+    RequestTracker, RuntimeHealthPublisher, ShutdownCoordinator, UpstreamAvailability,
+    enumerate_supported_servers,
+};
 use crate::config::{ProxyDownstreamObfuscation, ServiceConfig};
 use crate::services::client_api::ClientApiService;
 use crate::services::tacacs_proxy::TacacsProxyService;
@@ -237,6 +240,14 @@ impl TacacsClientService {
     /// Returns an error if the IPC listener cannot be created or if the local
     /// endpoint configuration is invalid for the current platform.
     pub async fn serve(&self) -> anyhow::Result<()> {
+        let shutdown = ShutdownCoordinator::new(self.health.clone());
+        let signal_monitor = shutdown.spawn_process_signal_monitor();
+        let result = self.serve_with_shutdown(&shutdown).await;
+        signal_monitor.abort();
+        result
+    }
+
+    async fn serve_with_shutdown(&self, shutdown: &ShutdownCoordinator) -> anyhow::Result<()> {
         log::info!("Warming upstream TACACS+ connections");
         self.state.warm_connections().await;
         log::info!(
@@ -245,14 +256,17 @@ impl TacacsClientService {
         );
         let probe_task = self.state.spawn_preferred_probe();
 
-        let result = self.serve_enabled_services().await;
+        let result = self.serve_enabled_services(shutdown).await;
         probe_task.abort();
+        if result.is_ok() {
+            shutdown.mark_stopped();
+        }
 
         log::info!("TACACS+ client service has shut down");
         result
     }
 
-    async fn serve_enabled_services(&self) -> anyhow::Result<()> {
+    async fn serve_enabled_services(&self, shutdown: &ShutdownCoordinator) -> anyhow::Result<()> {
         let listener_options = ListenerOptions::from_config(&self.config);
         let mut tasks = JoinSet::new();
         let mut service_count = 0;
@@ -261,7 +275,13 @@ impl TacacsClientService {
             let service =
                 ClientApiService::new(Arc::clone(&self.state), Arc::clone(&self.request_tracker));
             let endpoint = self.config.endpoint.clone();
-            tasks.spawn(async move { service.serve(&endpoint, listener_options).await });
+            let shutdown = shutdown.subscribe();
+            let health = self.health.clone();
+            tasks.spawn(async move {
+                service
+                    .serve(&endpoint, listener_options, shutdown, health)
+                    .await
+            });
             service_count += 1;
         }
 
@@ -272,7 +292,13 @@ impl TacacsClientService {
                 Arc::clone(&self.request_tracker),
             );
             let endpoint = proxy_endpoint(&self.config)?.clone();
-            tasks.spawn(async move { service.serve(&endpoint, listener_options).await });
+            let shutdown = shutdown.subscribe();
+            let health = self.health.clone();
+            tasks.spawn(async move {
+                service
+                    .serve(&endpoint, listener_options, shutdown, health)
+                    .await
+            });
             service_count += 1;
         }
 
@@ -284,11 +310,13 @@ impl TacacsClientService {
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    tasks.abort_all();
+                    shutdown.fail();
+                    tasks.shutdown().await;
                     return Err(error);
                 }
                 Err(error) => {
-                    tasks.abort_all();
+                    shutdown.fail();
+                    tasks.shutdown().await;
                     return Err(anyhow::anyhow!("Runtime service task failed: {error}"));
                 }
             }
@@ -337,7 +365,10 @@ mod tests {
 
     use crate::config::{EnabledServices, ProxyDownstreamObfuscation};
     use super::TacacsClientService;
-    use crate::runtime::{REQUIRED_SERVER_TYPES, RequestTracker, RuntimeHealthPublisher};
+    use crate::runtime::{
+        ListenerState, REQUIRED_SERVER_TYPES, RequestTracker, RuntimeHealthPublisher,
+        RuntimeLifecycle, RuntimeService, ShutdownCoordinator,
+    };
     use crate::config::ServiceConfig;
     use crate::services::client_api::GrpcService;
     use crate::test_support::{FakeConnection, FakeConnector, build_request};
@@ -664,5 +695,99 @@ mod tests {
         assert_eq!(error.server, "primary:49");
         assert!(error.retriable);
         assert!(error.message.contains("simulated failure"));
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // real Unix socket + TCP listener
+    async fn both_listeners_bind_before_startup_serves_and_cleanup_on_shutdown() {
+        let endpoint = test_endpoint("tacacs-service-both-listeners");
+        let socket_path = match &endpoint {
+            IpcEndpoint::Unix(path) => path.clone(),
+            IpcEndpoint::Tcp(_) => unreachable!("Unix test endpoint"),
+        };
+        let mut config = service_config(endpoint, vec![test_server("primary:49")]);
+        config.enabled_services = EnabledServices::BOTH;
+        config.proxy_endpoint =
+            Some(IpcEndpoint::Tcp("127.0.0.1:0".parse().expect("proxy endpoint")));
+        let health = RuntimeHealthPublisher::new(EnabledServices::BOTH);
+        let upstream = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector =
+            Arc::new(FakeConnector::new(HashMap::from([(upstream.address.clone(), upstream)])));
+        let service = Arc::new(
+            TacacsClientService::new_with_connector(config, connector, health.clone())
+                .expect("service should build"),
+        );
+        let shutdown = ShutdownCoordinator::new(health.clone());
+        let task = {
+            let service = Arc::clone(&service);
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move { service.serve_with_shutdown(&shutdown).await })
+        };
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while health.snapshot().lifecycle() != RuntimeLifecycle::Serving {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both listeners should bind");
+        assert!(health.snapshot().is_startup_serving());
+        assert_eq!(health.snapshot().listener(RuntimeService::ClientApi), ListenerState::Bound,);
+        assert_eq!(health.snapshot().listener(RuntimeService::TacacsProxy), ListenerState::Bound,);
+
+        shutdown.initiate_shutdown();
+        task.await
+            .expect("task should join")
+            .expect("shutdown should succeed");
+
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Stopped);
+        assert_eq!(health.snapshot().listener(RuntimeService::ClientApi), ListenerState::Stopped,);
+        assert_eq!(health.snapshot().listener(RuntimeService::TacacsProxy), ListenerState::Stopped,);
+        assert!(!tokio::fs::try_exists(socket_path)
+            .await
+            .expect("inspect socket"));
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // real Unix socket + TCP listener
+    async fn listener_bind_failure_aborts_sibling_without_publishing_readiness() {
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("occupy proxy endpoint");
+        let occupied_address = occupied.local_addr().expect("occupied address");
+        let endpoint = test_endpoint("tacacs-service-bind-failure");
+        let socket_path = match &endpoint {
+            IpcEndpoint::Unix(path) => path.clone(),
+            IpcEndpoint::Tcp(_) => unreachable!("Unix test endpoint"),
+        };
+        let mut config = service_config(endpoint, vec![test_server("primary:49")]);
+        config.enabled_services = EnabledServices::BOTH;
+        config.proxy_endpoint = Some(IpcEndpoint::Tcp(occupied_address));
+        let health = RuntimeHealthPublisher::new(EnabledServices::BOTH);
+        let upstream = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector =
+            Arc::new(FakeConnector::new(HashMap::from([(upstream.address.clone(), upstream)])));
+        let service = TacacsClientService::new_with_connector(config, connector, health.clone())
+            .expect("service should build");
+        let shutdown = ShutdownCoordinator::new(health.clone());
+
+        let result = service.serve_with_shutdown(&shutdown).await;
+
+        assert!(result.is_err());
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+        assert!(!health.snapshot().is_readiness_serving());
+        assert_eq!(health.snapshot().listener(RuntimeService::ClientApi), ListenerState::Stopped,);
+        assert_eq!(health.snapshot().listener(RuntimeService::TacacsProxy), ListenerState::Stopped,);
+        assert!(!tokio::fs::try_exists(socket_path)
+            .await
+            .expect("inspect socket"));
     }
 }

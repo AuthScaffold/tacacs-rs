@@ -7,7 +7,7 @@ use anyhow::{Context, bail};
 use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgentServer;
 use tokio_stream::wrappers::UnixListenerStream;
 
-use crate::runtime::shutdown_signal;
+use crate::runtime::{ListenerRegistration, ShutdownReceiver};
 use crate::services::client_api::ClientApiService;
 
 /// Serves Unix domain socket IPC clients until shutdown is requested.
@@ -18,16 +18,19 @@ pub(crate) async fn serve(
     path: &Path,
     service: ClientApiService,
     socket_mode: u32,
+    shutdown: ShutdownReceiver,
+    registration: ListenerRegistration,
 ) -> anyhow::Result<()> {
     let listener = prepare_unix_listener(path, socket_mode).await?;
     let socket_guard = UnixSocketCleanupGuard::new(path);
     let incoming = UnixListenerStream::new(listener);
+    registration.mark_bound();
 
     log::info!("Listening for IPC clients on Unix socket {}", path.display());
 
     tonic::transport::Server::builder()
         .add_service(TacacsAgentServer::new(service.grpc_service()))
-        .serve_with_incoming_shutdown(incoming, shutdown_signal())
+        .serve_with_incoming_shutdown(incoming, shutdown.wait())
         .await
         .with_context(|| format!("Unix IPC server {} failed", path.display()))?;
 
