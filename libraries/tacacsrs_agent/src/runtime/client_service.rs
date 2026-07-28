@@ -128,8 +128,12 @@ impl TacacsClientService {
         let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector {
             disable_certificate_verification: config.disable_certificate_verification,
         });
-        let state =
-            Arc::new(UpstreamManager::new(servers, connector, config.preferred_probe_interval));
+        let state = Arc::new(UpstreamManager::new(
+            servers,
+            connector,
+            config.preferred_probe_interval,
+            health.clone(),
+        ));
         let proxy_downstream_obfuscation =
             Arc::new(RwLock::new(config.proxy_downstream_obfuscation.clone()));
         let request_tracker = Arc::new(RequestTracker::default());
@@ -163,8 +167,12 @@ impl TacacsClientService {
         let servers = enumerate_supported_servers(&config)?;
         let eligible_server_count = servers.len();
 
-        let state =
-            Arc::new(UpstreamManager::new(servers, connector, config.preferred_probe_interval));
+        let state = Arc::new(UpstreamManager::new(
+            servers,
+            connector,
+            config.preferred_probe_interval,
+            health.clone(),
+        ));
         let proxy_downstream_obfuscation =
             Arc::new(RwLock::new(config.proxy_downstream_obfuscation.clone()));
         let request_tracker = Arc::new(RequestTracker::default());
@@ -672,6 +680,7 @@ mod tests {
             vec![test_server("primary:49")],
             connector,
             Duration::from_millis(50),
+            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
         let service = GrpcService::new(state, Arc::new(RequestTracker::default()));
         let request = AuthorizationOperation::builder("admin", 0)

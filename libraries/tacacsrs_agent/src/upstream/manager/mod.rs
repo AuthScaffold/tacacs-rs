@@ -24,15 +24,17 @@ use std::sync::atomic::Ordering;
 use anyhow::bail;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 
+use self::availability::AvailabilityTracker;
 use self::server_set::{ServerSet, servers_equivalent};
 use self::server_slot::ServerSlot;
-use crate::runtime::REQUIRED_SERVER_TYPES;
+use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
 
 pub(crate) use self::server_set::BoundServer;
 
 mod server_set;
 mod server_slot;
+mod availability;
 
 /// Shared runtime state for all IPC client handlers spawned by the listener.
 ///
@@ -57,6 +59,8 @@ pub(crate) struct UpstreamManager {
     connector: Arc<dyn UpstreamConnector>,
     /// Interval between preferred-server recovery probes.
     preferred_probe_interval: std::time::Duration,
+    /// Race-safe aggregate upstream availability publisher.
+    availability: AvailabilityTracker,
 }
 
 impl UpstreamManager {
@@ -69,6 +73,7 @@ impl UpstreamManager {
         servers: Vec<TacacsPlusServer>,
         connector: Arc<dyn UpstreamConnector>,
         preferred_probe_interval: std::time::Duration,
+        health: RuntimeHealthPublisher,
     ) -> Self {
         debug_assert!(
             servers
@@ -85,6 +90,7 @@ impl UpstreamManager {
             server_set: StdRwLock::new(Arc::new(ServerSet::new(servers, 0))),
             connector,
             preferred_probe_interval,
+            availability: AvailabilityTracker::new(health),
         }
     }
 
@@ -116,6 +122,7 @@ impl UpstreamManager {
             );
             return;
         }
+        let availability_attempt = self.availability.begin_attempt();
         let start_index = *server_set.active_index.read().await;
 
         for offset in 0..server_set.server_count() {
@@ -123,6 +130,7 @@ impl UpstreamManager {
             match self.ensure_connection(&server_set.servers[index]).await {
                 Ok(connection) => {
                     *server_set.active_index.write().await = index;
+                    self.availability.available(availability_attempt);
                     log::info!(
                         "Initialized startup upstream connection using {}",
                         connection.server_address()
@@ -141,6 +149,7 @@ impl UpstreamManager {
         log::warn!(
             "Startup did not find a responsive TACACS+ server; requests will retry on demand"
         );
+        self.availability.unavailable(availability_attempt);
     }
 
     /// Returns the number of configured upstream TACACS+ servers.
@@ -161,6 +170,12 @@ impl UpstreamManager {
         servers: Vec<TacacsPlusServer>,
     ) -> anyhow::Result<()> {
         let previous = self.current_server_set();
+        let materially_changed = previous.server_count() != servers.len()
+            || previous
+                .servers
+                .iter()
+                .zip(&servers)
+                .any(|(old, new)| !servers_equivalent(&old.server, new));
         let previous_active_name = if previous.server_count() == 0 {
             None
         } else {
@@ -196,6 +211,9 @@ impl UpstreamManager {
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             *current = Arc::clone(&new_set);
+        }
+        if materially_changed {
+            self.availability.reset();
         }
 
         if new_set.server_count() == 0 {
@@ -254,8 +272,10 @@ impl UpstreamManager {
                     server_set.servers[active_index].server.socket_address(),
                 );
 
+                let availability_attempt = state.availability.begin_attempt();
                 match state.ensure_connection(&server_set.servers[0]).await {
                     Ok(connection) => {
+                        state.availability.available(availability_attempt);
                         log::info!(
                             "Preferred TACACS+ server {} recovered; routing new sessions back to it",
                             connection.server_address()
@@ -303,6 +323,7 @@ impl UpstreamManager {
                 "No TACACS+ servers are configured yet that support authentication, authorization, and accounting; waiting for initial configuration"
             );
         }
+        let availability_attempt = self.availability.begin_attempt();
         let start_index = *server_set.active_index.read().await;
 
         for offset in 0..server_set.server_count() {
@@ -310,6 +331,7 @@ impl UpstreamManager {
             match self.ensure_connection(&server_set.servers[index]).await {
                 Ok(connection) => {
                     *server_set.active_index.write().await = index;
+                    self.availability.available(availability_attempt);
                     return Ok(BoundServer {
                         server_set,
                         index,
@@ -329,6 +351,7 @@ impl UpstreamManager {
         log::error!(
             "All configured TACACS+ servers are currently non-responsive; failing IPC request"
         );
+        self.availability.unavailable(availability_attempt);
         bail!("No responsive TACACS+ servers are currently available");
     }
 
@@ -470,7 +493,8 @@ mod tests {
 
     use tacacsrs_config::TacacsPlusServer;
     use super::UpstreamManager;
-    use crate::runtime::REQUIRED_SERVER_TYPES;
+    use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
+    use crate::EnabledServices;
     use crate::test_support::{FakeConnection, FakeConnector};
     use crate::upstream::UpstreamConnector;
 
@@ -495,6 +519,10 @@ mod tests {
             source_interface: None,
             vrf_instance: None,
         }
+    }
+
+    fn test_health() -> RuntimeHealthPublisher {
+        RuntimeHealthPublisher::new(EnabledServices::CLIENT_API)
     }
 
     #[tokio::test]
@@ -530,6 +558,7 @@ mod tests {
             ],
             connector,
             Duration::from_millis(25),
+            test_health(),
         );
 
         let bound = state.bind_server_for_new_session().await.unwrap();
@@ -569,6 +598,7 @@ mod tests {
             ],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(25),
+            test_health(),
         );
 
         state.warm_connections().await;
@@ -605,6 +635,7 @@ mod tests {
             vec![test_server("server-a:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(25),
+            test_health(),
         );
 
         state.warm_connections().await;
@@ -644,6 +675,7 @@ mod tests {
             vec![test_server("server-a:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(25),
+            test_health(),
         );
 
         state.warm_connections().await;
@@ -679,10 +711,12 @@ mod tests {
             (preferred.address.clone(), Arc::clone(&preferred)),
             (backup.address.clone(), Arc::clone(&backup)),
         ])));
+        let health = test_health();
         let state = Arc::new(UpstreamManager::new(
             Vec::new(),
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(25),
+            health.clone(),
         ));
         let probe = state.spawn_preferred_probe();
         tokio::task::yield_now().await;
@@ -696,6 +730,17 @@ mod tests {
             .await
             .expect("backup should bind");
         assert_eq!(failed_over.connection.server_address(), backup.address);
+        assert_eq!(
+            health.snapshot().upstream_availability(),
+            crate::UpstreamAvailability::Available,
+        );
+
+        tokio::time::advance(Duration::from_millis(25)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            health.snapshot().upstream_availability(),
+            crate::UpstreamAvailability::Available,
+        );
         preferred.usable.store(true, Ordering::Relaxed);
 
         tokio::time::advance(Duration::from_millis(25)).await;
@@ -705,12 +750,84 @@ mod tests {
             .await
             .expect("preferred should recover");
         assert_eq!(recovered.connection.server_address(), preferred.address);
-        assert_eq!(connector.connect_attempts_for(&preferred.address).await, 2);
+        assert_eq!(connector.connect_attempts_for(&preferred.address).await, 3);
 
         tokio::time::advance(Duration::from_millis(100)).await;
         tokio::task::yield_now().await;
-        assert_eq!(connector.connect_attempts_for(&preferred.address).await, 2);
+        assert_eq!(connector.connect_attempts_for(&preferred.address).await, 3);
         probe.abort();
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio sync not supported
+    async fn aggregate_exhaustion_marks_upstreams_unavailable() {
+        let first = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(false),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let second = Arc::new(FakeConnection {
+            address: "server-b:49".to_owned(),
+            usable: AtomicBool::new(false),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([
+            (first.address.clone(), first),
+            (second.address.clone(), second),
+        ])));
+        let health = test_health();
+        let state = UpstreamManager::new(
+            vec![test_server("server-a:49"), test_server("server-b:49")],
+            connector,
+            Duration::from_millis(25),
+            health.clone(),
+        );
+
+        let result = state.bind_server_for_new_session().await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            health.snapshot().upstream_availability(),
+            crate::UpstreamAvailability::Unavailable,
+        );
+        assert!(health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&crate::DegradationReason::UpstreamsUnavailable));
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio sync not supported
+    async fn material_server_reload_resets_availability_to_unknown() {
+        let connection = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector =
+            Arc::new(FakeConnector::new(HashMap::from([(connection.address.clone(), connection)])));
+        let health = test_health();
+        let state = UpstreamManager::new(
+            vec![test_server("server-a:49")],
+            connector,
+            Duration::from_millis(25),
+            health.clone(),
+        );
+        state
+            .bind_server_for_new_session()
+            .await
+            .expect("server should bind");
+        assert_eq!(
+            health.snapshot().upstream_availability(),
+            crate::UpstreamAvailability::Available,
+        );
+
+        state
+            .reload_servers(vec![test_server("server-a:49"), test_server("server-b:49")])
+            .await
+            .expect("reload should succeed");
+
+        assert_eq!(health.snapshot().upstream_availability(), crate::UpstreamAvailability::Unknown,);
     }
 
     #[tokio::test]
@@ -739,6 +856,7 @@ mod tests {
             vec![test_server("server-a:49"), test_server("server-b:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(200),
+            test_health(),
         ));
 
         let mut tasks = Vec::new();

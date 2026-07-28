@@ -38,10 +38,11 @@ mod tests {
     use tacacsrs_config::TacacsPlusServer;
 
     use super::UpstreamBridge;
-    use crate::runtime::REQUIRED_SERVER_TYPES;
+    use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
     use crate::test_support::{FakeConnection, FakeConnector, build_authorization_request};
     use crate::upstream::UpstreamConnector;
     use crate::upstream::manager::UpstreamManager;
+    use crate::EnabledServices;
 
     fn test_server(address: &str) -> TacacsPlusServer {
         let (host, port) = match address.rsplit_once(':') {
@@ -84,6 +85,7 @@ mod tests {
             vec![test_server("server:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(200),
+            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
         let bridge = UpstreamBridge::new(Arc::clone(&state));
 
@@ -118,6 +120,7 @@ mod tests {
             vec![test_server("primary:49"), test_server("secondary:49")],
             Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(200),
+            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
         let bridge = UpstreamBridge::new(Arc::clone(&state));
 
@@ -141,6 +144,7 @@ mod tests {
             Vec::new(),
             Arc::new(FakeConnector::new(HashMap::new())) as Arc<dyn UpstreamConnector>,
             Duration::from_millis(200),
+            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
         let bridge = UpstreamBridge::new(Arc::clone(&state));
 
