@@ -27,6 +27,19 @@ pub(crate) enum PskKeyExchange {
     PskOnly,
 }
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, ValueEnum)]
+pub(crate) enum HostIntegrationMode {
+    /// Detect systemd from `NOTIFY_SOCKET`; otherwise use no host integration.
+    #[default]
+    Auto,
+
+    /// Disable all host-specific notifications.
+    None,
+
+    /// Require and publish systemd notifications.
+    Systemd,
+}
+
 fn psk_dhe_ke_supported_group_parser(
 ) -> impl clap::builder::TypedValueParser<Value = PskDheKeSupportedGroup> {
     clap::builder::PossibleValuesParser::new(PskDheKeSupportedGroup::ALLOWED_VALUES.iter().copied())
@@ -47,6 +60,10 @@ fn psk_dhe_ke_supported_group_parser(
         .args(["config", "server_addresses", "sonic"])
 ))]
 pub(crate) struct Cli {
+    /// Host process-manager integration mode.
+    #[arg(long, value_enum, default_value_t)]
+    pub(crate) host_integration: HostIntegrationMode,
+
     /// Path to a YANG JSON configuration file (ietf-system-tacacs-plus).
     #[arg(long, value_name = "FILE", conflicts_with_all = [
         "server_addresses", "shared_secret", "use_tls",

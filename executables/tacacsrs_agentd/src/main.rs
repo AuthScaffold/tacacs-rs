@@ -24,13 +24,13 @@ use tokio_util::sync::CancellationToken;
 mod cli;
 mod config_filter;
 mod config_supervisor;
-mod systemd_notify;
+mod host_integration;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
 use crate::config_filter::{TacacsPlusFilter, config_filter_from_runtime_options};
 use crate::config_supervisor::ConfigSupervisor;
-use crate::systemd_notify::SystemdNotifier;
+use crate::host_integration::HostIntegration;
 
 #[cfg(unix)]
 fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
@@ -173,6 +173,7 @@ async fn run_supervised_service(
     service: Arc<TacacsClientService>,
     health: RuntimeHealthPublisher,
     config_filter: Arc<dyn TacacsPlusFilter>,
+    host_integration: HostIntegration,
 ) -> anyhow::Result<()> {
     let datastore_policy = datastore.runtime_policy();
     let supervisor = ConfigSupervisor::new(
@@ -187,27 +188,9 @@ async fn run_supervised_service(
         supervisor.load_initial(&cancellation).await?;
     }
 
-    let status_notifier = Arc::new(SystemdNotifier::from_env());
-    status_notifier.publish_server_state(service.server_count());
-    let status_task = {
+    let mut host_task = {
         let cancellation = cancellation.clone();
-        let status_notifier = Arc::clone(&status_notifier);
-        let mut health = health.subscribe();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    () = cancellation.cancelled() => return,
-                    result = health.changed() => {
-                        if result.is_err() {
-                            return;
-                        }
-                        status_notifier.publish_server_state(
-                            health.borrow().eligible_server_count(),
-                        );
-                    }
-                }
-            }
-        })
+        tokio::spawn(host_integration.run(health.subscribe(), cancellation))
     };
 
     let supervisor_task = {
@@ -222,12 +205,24 @@ async fn run_supervised_service(
         })
     };
 
-    let service_result = service.serve().await;
+    let mut host_task_completed = false;
+    let service_result = tokio::select! {
+        result = service.serve() => result,
+        result = &mut host_task => {
+            host_task_completed = true;
+            match result.context("Host integration task failed")? {
+                Ok(()) => Err(anyhow::anyhow!("Host integration stopped unexpectedly")),
+                Err(error) => Err(error.context("Host integration failed")),
+            }
+        }
+    };
     cancellation.cancel();
     supervisor_task
         .await
         .context("Configuration supervisor task failed")??;
-    status_task.await.context("Systemd status task failed")?;
+    if !host_task_completed {
+        host_task.await.context("Host integration task failed")??;
+    }
 
     service_result
 }
@@ -241,6 +236,7 @@ async fn run_supervised_service(
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_logger(cli.verbose);
+    let host_integration = HostIntegration::from_environment(cli.host_integration)?;
     let enabled_services = enabled_services_from_cli(&cli);
 
     let endpoint = cli
@@ -309,7 +305,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .context("Failed to build TACACS+ client service configuration")?,
     );
-    run_supervised_service(datastore, service, health, config_filter).await
+    run_supervised_service(datastore, service, health, config_filter, host_integration).await
 }
 
 #[cfg(test)]
@@ -320,6 +316,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{Cli, cli_datastore_input_from_cli, enabled_services_from_cli};
+    use crate::cli::HostIntegrationMode;
     use tacacsrs_agent::EnabledServices;
     use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::crypto_types::PrivateKeyFormat;
@@ -439,6 +436,26 @@ mod tests {
         ]);
 
         assert_eq!(enabled_services_from_cli(&cli), EnabledServices::CLIENT_API);
+        assert_eq!(cli.host_integration, HostIntegrationMode::Auto);
+    }
+
+    #[test]
+    fn host_integration_accepts_explicit_none_and_systemd() {
+        for (value, expected) in [
+            ("none", HostIntegrationMode::None),
+            ("systemd", HostIntegrationMode::Systemd),
+        ] {
+            let cli = Cli::parse_from([
+                "tacacsrs-agentd",
+                "--server-addr",
+                "192.0.2.20:49",
+                "--shared-secret",
+                "secret1",
+                "--host-integration",
+                value,
+            ]);
+            assert_eq!(cli.host_integration, expected);
+        }
     }
 
     #[test]
