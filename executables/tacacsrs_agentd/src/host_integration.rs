@@ -29,9 +29,9 @@ impl SystemdCommand for ProcessSystemdCommand {
         let status = Command::new("systemd-notify")
             .args(arguments)
             .status()
-            .map_err(|_| anyhow::anyhow!("systemd-notify could not be executed"))?;
+            .map_err(|error| anyhow::anyhow!("failed to execute systemd-notify: {error}"))?;
         if !status.success() {
-            anyhow::bail!("systemd-notify returned an unsuccessful status");
+            anyhow::bail!("systemd-notify returned unsuccessful status: {status}");
         }
         Ok(())
     }
