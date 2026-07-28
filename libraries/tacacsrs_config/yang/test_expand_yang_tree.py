@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import configparser
+import os
 import subprocess
 import stat
-import os
 import tempfile
 import unittest
 from pathlib import Path
 
 from expand_yang_tree import _remove_readonly, _verify_repo_revision
+from verify_generated import load_manifest, verify_manifest
 
 
 class VerifyRepoRevisionTests(unittest.TestCase):
@@ -58,6 +60,56 @@ class VerifyRepoRevisionTests(unittest.TestCase):
         _remove_readonly(os.unlink, str(readonly_file), None)
 
         self.assertFalse(readonly_file.exists())
+
+
+class FeatureFlagScopeTests(unittest.TestCase):
+    def test_only_reviewed_optional_features_are_enabled(self) -> None:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(Path(__file__).with_name("feature-flags.ini"), encoding="utf-8")
+        actual = {
+            section: {name: parser.getboolean(section, name) for name in parser[section]}
+            for section in parser.sections()
+        }
+
+        self.assertEqual(
+            actual,
+            {
+                "ietf-system-tacacs-plus": {"credential-reference": True},
+                "ietf-crypto-types": {
+                    "certificate-expiration-notification": False,
+                    "cleartext-private-keys": True,
+                    "cleartext-symmetric-keys": True,
+                    "csr-generation": False,
+                    "encrypted-private-keys": False,
+                    "encrypted-symmetric-keys": False,
+                    "hidden-private-keys": False,
+                    "hidden-symmetric-keys": False,
+                },
+                "ietf-keystore": {
+                    "asymmetric-keys": True,
+                    "central-keystore-supported": True,
+                    "inline-definitions-supported": True,
+                    "symmetric-keys": True,
+                },
+                "ietf-tls-client": {
+                    "client-ident-raw-public-key": False,
+                    "client-ident-tls13-epsk": True,
+                    "server-auth-raw-public-key": False,
+                    "server-auth-tls13-epsk": True,
+                },
+                "ietf-tls-common": {"hello-params": False, "tls13": True},
+                "ietf-truststore": {
+                    "central-truststore-supported": True,
+                    "certificates": True,
+                    "inline-definitions-supported": True,
+                    "public-keys": True,
+                },
+                "tacacsrs": {"psk-dhe-ke-hello-params": True},
+            },
+        )
+
+    def test_generation_manifest_matches_reviewed_inputs_and_outputs(self) -> None:
+        verify_manifest(load_manifest())
 
 
 if __name__ == "__main__":

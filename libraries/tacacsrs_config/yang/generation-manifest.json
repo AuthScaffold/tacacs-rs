@@ -10,7 +10,7 @@
     "pyang": "2.7.1"
   },
   "artifacts": {
-    "feature-flags.ini": "03348e4c9108d6f1af4b7ba75e507c68cc5b0feb67028c08cf669b01bc73fd57",
+    "feature-flags.ini": "b26b330ef0da9d2de3ca4194ada15d5ed200f5774a4123c230d389ec8193f320",
     "expanded-tree.txt": "558fe1e18e052b5d56b7ca1ddac57dedb9ce59511a511d380a9a0d6fad8221d1",
     "../src/generated.rs": "5b4456b16fc6162899b737bdb7188e76acc8290839849e21d0f2be11a4540e23"
   }
