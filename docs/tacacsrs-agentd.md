@@ -61,6 +61,7 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Optional TACACS+ proxy listener on a Unix socket path or loopback TCP address |
 | `--service-mode <MODE>` | `client-api`, or `both` when `--proxy-endpoint` is set | Runtime services to host: `client-api`, `tacacs-proxy`, or `both` |
 | `--socket-mode <MODE>` | `660` | File permission mode for the Unix socket (octal) |
+| `--host-integration <MODE>` | `auto` | Host adapter: `auto`, `none`, or strict `systemd` |
 
 ### Runtime Service Modes
 
@@ -92,7 +93,7 @@ Proxy mode is deliberately packet-transparent:
 
 Proxy TCP endpoints must be loopback addresses. Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. When `client-api` and `tacacs-proxy` run together, the proxy endpoint must be different from `--listen-endpoint`.
 
-The downstream TACACS+ shared-secret behavior follows the upstream server selected for that connection. If the selected upstream server has a `shared-secret`, the proxy uses that secret to deobfuscate downstream packets and obfuscate replies. If the selected upstream server has no shared secret, downstream packets must be sent with the unencrypted flag. When configured upstream servers use different shared secrets, a reconnect or failover can select a server with a different downstream secret; keep upstream shared secrets identical when using proxy mode.
+Downstream TACACS+ obfuscation is independent of the selected upstream transport. In SONiC mode, the daemon filters rows that target its own loopback proxy and uses the highest-priority matching row's resolved `passkey` for the local hop. Outside SONiC mode, use `--proxy-shared-secret`. If neither source provides a local-hop secret, downstream clients must send unobfuscated TACACS+ packets. Upstream failover never changes the downstream secret.
 
 ### Upstream Encryption
 
@@ -173,6 +174,44 @@ When multiple IPC requests arrive simultaneously during a reconnect, only one co
 
 On startup the daemon attempts to connect to servers in order and stops at the first success. This prevents connection storms when many instances start simultaneously (e.g. during a fleet rollout). If no server is reachable at startup, the daemon still starts and requests will retry on demand.
 
+SONiC ConfigDB is supervised differently from local CLI or file input. The daemon binds enabled listeners with an empty runtime configuration, reports startup/readiness as not serving, and retries ConfigDB with capped jittered backoff. When Redis becomes available, the same process applies the first valid snapshot and becomes ready. Subscription failures and ended streams trigger a fresh load before resubscription; invalid candidates leave the previous known-good runtime configuration active and mark health degraded.
+
+## Health and Probes
+
+The Client API endpoint also serves the standard `grpc.health.v1.Health` protocol. No custom health protobuf or additional network listener is used.
+
+| Service name | Meaning |
+|---|---|
+| `tacacsrs.agent.health.v1.Startup` | A validated snapshot is applied and every enabled listener is bound |
+| `tacacsrs.agent.health.v1.Liveness` | The process is starting or serving and the Client API can answer |
+| `tacacsrs.agent.health.v1.Readiness` | Startup is complete and at least one eligible upstream is configured |
+| *(empty service name)* | Same as readiness |
+| `tacacsrs.agent.v1.TacacsAgent` | Same as readiness for the business RPC service |
+
+Current upstream reachability is diagnostic and does not gate readiness or liveness. During shutdown all names become `NOT_SERVING` before listeners stop accepting work.
+
+Use the packaged probe for Kubernetes exec probes and local diagnostics:
+
+```bash
+tacacsrs-agent-health \
+    --endpoint /run/tacacs/tacacs.sock \
+    --check readiness \
+    --timeout-seconds 2
+```
+
+| Exit code | Meaning |
+|---|---|
+| `0` | The selected health name is `SERVING` |
+| `1` | The selected health name is not serving or unknown |
+| `2` | Probe invocation or endpoint syntax is invalid |
+| `3` | Endpoint, timeout, transport, or protocol failure |
+
+The health endpoint exists only when `client-api` is enabled. A proxy-only process still publishes runtime state to logs and systemd but cannot use this gRPC probe.
+
+## Host Integration
+
+`--host-integration auto` selects systemd only when `NOTIFY_SOCKET` is present. `none` never invokes a host API and is the container setting. Explicit `systemd` requires both `NOTIFY_SOCKET` and `systemd-notify`; missing prerequisites and runtime notification failures are fatal. Systemd receives a waiting status before readiness, `READY=1` exactly once, sanitized degraded status updates, and `STOPPING=1` before listener drain.
+
 ## IPC Protocol
 
 The daemon communicates with clients via gRPC over Unix domain sockets (Linux) or loopback TCP (other platforms). The protocol is defined in protobuf:
@@ -199,12 +238,14 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
 ExecStart=/usr/local/bin/tacacsrs-agentd \
     --server-addr tacacs1.example.com:49 \
     --server-addr tacacs2.example.com:49 \
     --listen-endpoint /run/tacacs/tacacs.sock \
     --socket-mode 660 \
+    --host-integration systemd \
     --shared-secret "shared_secret" \
     --preferred-probe-interval-seconds 30
 Restart=on-failure

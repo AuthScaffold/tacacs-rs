@@ -252,25 +252,22 @@ cargo run -p tacacsrs-agentd -- \
 ```
 
 Mutating the Redis rows should produce the documented configuration-change log
-message. The current daemon observes changes but does not hot-swap upstream
-connections in place; restart `tacacsrs-agentd` to apply a changed server set.
+message. The daemon atomically applies each valid filtered snapshot to new
+sessions without restarting. In-flight sessions keep their existing server-set
+snapshot and connection handles.
 
 ## Hot reload behaviour
 
-When a TACPLUS-prefixed key changes in CONFIG_DB, the bridge:
+When a TACPLUS-prefixed key changes in CONFIG_DB, the runtime:
 
 1. Coalesces additional changes that arrive within a short debounce window.
 2. Re-reads the full TACPLUS / TACPLUS_SERVER tables.
 3. Validates the new snapshot against the YANG schema.
-4. Emits a `ConfigChange` event carrying the new snapshot and a delta
-   describing which servers were added, removed, or modified.
+4. Emits a typed changed or rejected event.
+5. Filters proxy self-loops and validates the complete candidate.
+6. Atomically replaces the server set for new sessions while preserving unchanged cached connections.
 
-The current daemon does not yet hot-swap upstream connections in place: it
-records the change and asks the operator to restart the service to apply
-the new configuration. This is the smallest safe step that keeps in-flight
-TACACS+ sessions intact, and the plumbing is shaped so that a future
-implementation can replace the listener body with an atomic state-rebuild
-without changing the surrounding lifecycle or the datastore contract.
+Invalid candidates leave the previous known-good configuration active and mark runtime health stale/degraded. If Redis is unavailable at process startup, enabled listeners still bind and liveness serves while startup/readiness remain not serving. The daemon retries with capped jittered backoff. Subscription setup failures and ended streams mark the snapshot stale, trigger a fresh load to cover missed changes, and resubscribe without exiting.
 
 ## Operational commands
 

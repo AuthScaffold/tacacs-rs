@@ -20,10 +20,12 @@ is the recommended mode for this agent.
 ```bash
 docker run --rm --network host \
     -v /var/run/redis/redis.sock:/var/run/redis/redis.sock \
+    -v /run/tacacs:/run/tacacs \
     -p 127.0.0.1:49:49 \
     ghcr.io/authscaffold/tacacsrs-agentd:2026.706.1 \
     --sonic \
     --service-mode both \
+    --host-integration none \
     --proxy-endpoint 127.0.0.1:49 \
     -vv
 ```
@@ -37,7 +39,9 @@ The flags mean:
 | `-p 127.0.0.1:49:49` | Harmless with host networking, but ignored by Docker because there is no separate container network namespace to publish from. |
 | `--sonic` | Load TACACS+ server configuration from SONiC CONFIG_DB, database `4`. |
 | `--service-mode both` | Run both the local client API and the raw TACACS+ proxy service. |
+| `--host-integration none` | Disable systemd notification inside the container. |
 | `--proxy-endpoint 127.0.0.1:49` | Bind the proxy on loopback only, so local SONiC clients can connect without exposing port `49` on external interfaces. |
+| `-v /run/tacacs:/run/tacacs` | Expose the Client API UDS and standard gRPC health service to host consumers and exec probes. |
 | `-vv` | Enable info-level logging. |
 
 Because `-p` is ignored in host networking mode, the command can also be written
@@ -46,9 +50,11 @@ without the publish flag:
 ```bash
 docker run --rm --network host \
     -v /var/run/redis/redis.sock:/var/run/redis/redis.sock \
+    -v /run/tacacs:/run/tacacs \
     ghcr.io/authscaffold/tacacsrs-agentd:2026.706.1 \
     --sonic \
     --service-mode both \
+    --host-integration none \
     --proxy-endpoint 127.0.0.1:49 \
     -vv
 ```
@@ -114,14 +120,22 @@ At least one `TACPLUS_SERVER` row must be present for upstream TACACS+ traffic.
 For the schema mapping and Redis notification details, see
 [SONiC ConfigDB Integration](sonic-configdb-integration.md).
 
+The process and Client API listener start even if Redis is temporarily unavailable. Startup and readiness remain not serving while the daemon retries ConfigDB with capped jittered backoff. A valid snapshot makes the same process ready without a restart. Upstream reachability does not gate readiness.
+
+Use the standard exec probe in the image:
+
+```bash
+tacacsrs-agent-health \
+    --endpoint /run/tacacs/tacacs.sock \
+    --check readiness \
+    --timeout-seconds 2
+```
+
 The startup log should include lines similar to:
 
 ```text
 Configured SONiC ConfigDB datastore: url='unix:///var/run/redis/redis.sock?db=4', db=4
-Initial configuration loaded from datastore 'sonic-configdb'
-Upstream servers: 1 configured, probe interval: 30s
 TACACS+ proxy endpoint: Tcp(127.0.0.1:49)
 ```
 
-If CONFIG_DB changes should be picked up live, enable Redis keyspace
-notifications as described in the ConfigDB integration guide.
+Enable Redis keyspace notifications as described in the ConfigDB integration guide. If the subscription fails or ends, the daemon retains its known-good configuration, reloads to cover missed events, and resubscribes.
