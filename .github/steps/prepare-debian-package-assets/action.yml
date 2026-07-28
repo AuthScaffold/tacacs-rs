@@ -32,6 +32,26 @@ runs:
         cp "$PACKAGE_DIR/${SBOM_BASENAME}.json" "${{ inputs.package-root }}/debian/sbom.json"
         cp "$PACKAGE_DIR/${SBOM_BASENAME}.xml" "${{ inputs.package-root }}/debian/sbom.xml"
 
+        # Copy any additional binaries built alongside the primary artifact.
+        # These are binaries defined in src/bin/ of the package that are not
+        # the primary artifact. cargo-deb expects them in target/release/.
+        PKG_BIN_DIR="${{ inputs.package-root }}/src/bin"
+        if [[ -d "$PKG_BIN_DIR" ]]; then
+          for RS_FILE in "$PKG_BIN_DIR"/*.rs; do
+            [[ -f "$RS_FILE" ]] || continue
+            BIN_NAME="$(basename "$RS_FILE" .rs)"
+            if [[ "$BIN_NAME" == "$ARTIFACT_BASENAME" ]]; then
+              continue
+            fi
+            BIN_SRC="target/${{ inputs.target }}/${PROFILE}/${BIN_NAME}"
+            if [[ -f "$BIN_SRC" ]]; then
+              cp "$BIN_SRC" "target/release/${BIN_NAME}"
+              chmod +x "target/release/${BIN_NAME}"
+              echo "Copied additional binary: ${BIN_NAME}"
+            fi
+          done
+        fi
+
     - name: Copy generated man page and compress Debian assets
       shell: bash
       run: |
