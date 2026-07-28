@@ -471,4 +471,21 @@ mod tests {
             ListenerState::Disabled
         );
     }
+
+    #[test]
+    fn snapshot_debug_output_contains_no_configuration_or_secret_values() {
+        let publisher = RuntimeHealthPublisher::new(EnabledServices::BOTH);
+        publisher.set_degraded(DegradationReason::CredentialResolutionFailed, true);
+        let output = format!("{:?}", publisher.snapshot());
+
+        for forbidden in [
+            "redis://",
+            "unix://",
+            "192.0.2.10",
+            "credential-reference",
+            "test-secret",
+        ] {
+            assert!(!output.contains(forbidden), "snapshot exposed {forbidden}");
+        }
+    }
 }

@@ -64,7 +64,15 @@ async fn tcp_probe_exit_codes_are_stable() {
     task.await.expect("server task should join");
     let unavailable = run_probe(&endpoint, "readiness", 2).await;
     assert_eq!(unavailable.status.code(), Some(EXIT_CHECK_ERROR));
-    assert!(!String::from_utf8_lossy(&unavailable.stderr).contains("192.0.2."));
+    let diagnostic = String::from_utf8_lossy(&unavailable.stderr);
+    for forbidden in [
+        "redis://",
+        "192.0.2.10",
+        "credential-reference",
+        "test-secret",
+    ] {
+        assert!(!diagnostic.contains(forbidden), "probe output exposed {forbidden}");
+    }
 }
 
 #[tokio::test]

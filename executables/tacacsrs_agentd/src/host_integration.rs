@@ -299,6 +299,16 @@ mod tests {
         assert!(calls
             .iter()
             .any(|call| call.contains(&"--stopping".to_owned())));
+        let command_text = format!("{calls:?}");
+        for forbidden in [
+            "redis://",
+            "unix://",
+            "192.0.2.10",
+            "credential-reference",
+            "test-secret",
+        ] {
+            assert!(!command_text.contains(forbidden), "systemd arguments exposed {forbidden}");
+        }
     }
 
     #[tokio::test]

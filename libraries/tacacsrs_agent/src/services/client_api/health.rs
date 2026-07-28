@@ -35,6 +35,7 @@ impl StandardHealth {
             tokio::select! {
                 () = shutdown.clone().wait() => {
                     self.publish_current().await;
+                    self.close_watches().await;
                     return;
                 }
                 result = self.receiver.changed() => {
@@ -68,6 +69,18 @@ impl StandardHealth {
             ServingStatus::NotServing
         };
         self.reporter.set_service_status(service_name, status).await;
+    }
+
+    async fn close_watches(&mut self) {
+        for service_name in [
+            STARTUP_HEALTH_SERVICE,
+            LIVENESS_HEALTH_SERVICE,
+            READINESS_HEALTH_SERVICE,
+            OVERALL_HEALTH_SERVICE,
+            TACACS_AGENT_HEALTH_SERVICE,
+        ] {
+            self.reporter.clear_service_status(service_name).await;
+        }
     }
 }
 
@@ -161,5 +174,6 @@ mod tests {
             WireServingStatus::NotServing,
         );
         bridge.await.expect("bridge should stop");
+        assert!(tokio_stream::StreamExt::next(&mut stream).await.is_none());
     }
 }

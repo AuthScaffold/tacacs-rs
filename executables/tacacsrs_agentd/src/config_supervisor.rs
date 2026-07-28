@@ -511,6 +511,11 @@ mod tests {
         let result = supervisor.load_initial(&CancellationToken::new()).await;
 
         assert!(result.is_err());
+        let public_error = result
+            .expect_err("fail-fast should return an error")
+            .to_string();
+        assert!(!public_error.contains("scripted load failure"));
+        assert!(!public_error.contains("test-secret"));
         assert_eq!(datastore.load_count.load(Ordering::Relaxed), 1);
         assert_eq!(health.snapshot().datastore(), DatastoreState::Unavailable);
     }
@@ -679,5 +684,38 @@ mod tests {
             .expect("supervisor should stop");
 
         assert_eq!(service.server_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_after_stream_end_retries_load_before_resubscribing() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(
+                InitialLoadPolicy::RetryUntilAvailable,
+                ChangeNotificationMode::Continuous,
+            ),
+            [LoadStep::Config(1), LoadStep::Error, LoadStep::Config(2)],
+            [SubscriptionStep::Empty, SubscriptionStep::Pending],
+        ));
+        let (supervisor, health, service) = supervisor(Arc::clone(&datastore), Duration::ZERO);
+        let cancellation = CancellationToken::new();
+        let child = cancellation.clone();
+
+        let task = tokio::spawn(async move { supervisor.run(&child).await });
+        timeout(Duration::from_secs(1), async {
+            while datastore.subscribe_count.load(Ordering::Relaxed) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("supervisor should recover and resubscribe");
+        cancellation.cancel();
+        task.await
+            .expect("task should join")
+            .expect("supervisor should stop");
+
+        assert_eq!(datastore.load_count.load(Ordering::Relaxed), 3);
+        assert_eq!(datastore.subscribe_count.load(Ordering::Relaxed), 2);
+        assert_eq!(service.server_count(), 2);
+        assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
     }
 }

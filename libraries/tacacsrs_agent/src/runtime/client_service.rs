@@ -799,4 +799,52 @@ mod tests {
             .await
             .expect("inspect socket"));
     }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // real Unix socket + listener drain
+    async fn shutdown_withdraws_health_before_active_requests_finish_draining() {
+        let endpoint = test_endpoint("tacacs-service-active-drain");
+        let config = service_config(endpoint, vec![test_server("primary:49")]);
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let upstream = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector =
+            Arc::new(FakeConnector::new(HashMap::from([(upstream.address.clone(), upstream)])));
+        let service = Arc::new(
+            TacacsClientService::new_with_connector(config, connector, health.clone())
+                .expect("service should build"),
+        );
+        let active_request = service.request_tracker.start_request();
+        let shutdown = ShutdownCoordinator::new(health.clone());
+        let mut task = {
+            let service = Arc::clone(&service);
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move { service.serve_with_shutdown(&shutdown).await })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while health.snapshot().lifecycle() != RuntimeLifecycle::Serving {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("listener should bind");
+
+        shutdown.initiate_shutdown();
+        tokio::task::yield_now().await;
+
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Draining);
+        assert!(!health.snapshot().is_liveness_serving());
+        assert!(tokio::time::timeout(Duration::from_millis(25), &mut task)
+            .await
+            .is_err());
+
+        drop(active_request);
+        task.await
+            .expect("task should join")
+            .expect("drain should complete");
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Stopped);
+    }
 }
