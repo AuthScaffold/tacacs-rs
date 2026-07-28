@@ -26,7 +26,7 @@ runs:
             ${BUILD_PROFILE_FLAG} \
             --target "${{ inputs.target }}" \
             --package "${{ inputs.package-name }}" \
-            --bin "${{ inputs.artifact-name }}" \
+            --bins \
             ${FEATURE_ARGS}
         elif [[ "${{ inputs.artifact-kind }}" == "cdylib" ]]; then
           cargo build \
