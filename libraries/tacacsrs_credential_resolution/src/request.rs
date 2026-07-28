@@ -191,8 +191,9 @@ impl ResolutionPlan {
     ///
     /// # Errors
     ///
-    /// Returns [`ResolutionError::EnumerationRequired`] if config-local bundle
-    /// references remain. Returns [`ResolutionError::IncompleteRequest`] when
+    /// Returns [`ResolutionErrorKind::EnumerationRequired`](crate::ResolutionErrorKind::EnumerationRequired)
+    /// if config-local bundle references remain. Returns
+    /// [`ResolutionErrorKind::IncompleteRequest`](crate::ResolutionErrorKind::IncompleteRequest) when
     /// the generated RFC model preserves a central container that lacks the
     /// fields needed to form a provider request.
     pub fn from_server(server: &TacacsPlusServer) -> Result<Self, ResolutionError> {

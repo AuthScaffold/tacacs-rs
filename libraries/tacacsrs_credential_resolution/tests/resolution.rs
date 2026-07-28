@@ -204,6 +204,93 @@ fn planning_requires_enumeration_and_rejects_incomplete_request() {
 }
 
 #[test]
+fn resolution_plan_covers_all_variants_after_bundle_enumeration() {
+    let config = parse_yang_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "client-credentials": [
+                    {
+                        "id": "certificate-bundle",
+                        "certificate": {
+                            "central-keystore-reference": {
+                                "asymmetric-key": "../opaque bundle key",
+                                "certificate": "opaque bundle certificate"
+                            }
+                        }
+                    },
+                    {
+                        "id": "epsk-bundle",
+                        "tls13-epsk": {
+                            "central-keystore-reference": "opaque bundle symmetric key",
+                            "external-identity": "bundle@example.test"
+                        }
+                    }
+                ],
+                "server-credentials": [{
+                    "id": "trust-bundle",
+                    "ca-certs": {"central-truststore-reference": "opaque bundle CA"},
+                    "ee-certs": {"central-truststore-reference": "opaque bundle EE"}
+                }],
+                "server": [
+                    {
+                        "name": "certificate-server",
+                        "server-type": "accounting",
+                        "address": "10.0.5.5",
+                        "port": 49,
+                        "client-identity": {"credentials-reference": "certificate-bundle"},
+                        "server-authentication": {"credentials-reference": "trust-bundle"}
+                    },
+                    {
+                        "name": "epsk-server",
+                        "server-type": "accounting",
+                        "address": "10.0.5.6",
+                        "port": 49,
+                        "client-identity": {"credentials-reference": "epsk-bundle"}
+                    }
+                ]
+            }
+        }"#,
+    )
+    .expect("bundle config should parse");
+    let servers = enumerate_servers(&config).expect("bundles should enumerate");
+    let certificate_plan = ResolutionPlan::from_server(&servers[0]).expect("certificate plan");
+    let epsk_plan = ResolutionPlan::from_server(&servers[1]).expect("EPSK plan");
+
+    assert_eq!(
+        certificate_plan
+            .requests()
+            .iter()
+            .map(tacacsrs_credential_resolution::CredentialRequest::kind)
+            .collect::<Vec<_>>(),
+        [
+            CredentialKind::CertificateWithKey,
+            CredentialKind::CaCertificateBag,
+            CredentialKind::EeCertificateBag,
+        ]
+    );
+    assert_eq!(
+        certificate_plan.requests()[0]
+            .reference()
+            .certificate_with_key(),
+        Some((Some("../opaque bundle key"), Some("opaque bundle certificate"),))
+    );
+    assert_eq!(
+        certificate_plan.requests()[1].reference().certificate_bag(),
+        Some("opaque bundle CA")
+    );
+    assert_eq!(
+        certificate_plan.requests()[2].reference().certificate_bag(),
+        Some("opaque bundle EE")
+    );
+    assert_eq!(epsk_plan.requests().len(), 1);
+    assert_eq!(epsk_plan.requests()[0].kind(), CredentialKind::SymmetricKey);
+    assert_eq!(
+        epsk_plan.requests()[0].reference().symmetric_key(),
+        Some("opaque bundle symmetric key")
+    );
+}
+
+#[test]
 fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
     let plan = ResolutionPlan::from_server(&certificate_and_trust_server()).expect("plan");
     let slots = plan.requests();
