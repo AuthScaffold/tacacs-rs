@@ -2067,6 +2067,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tacacsrs-credential-resolution"
+version = "0.0.0-dev"
+dependencies = [
+ "async-trait",
+ "tacacsrs-config",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "tacacsrs-datastore"
 version = "0.0.0-dev"
 dependencies = [
