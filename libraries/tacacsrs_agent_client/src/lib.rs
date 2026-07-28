@@ -10,6 +10,9 @@ pub mod client;
 
 mod endpoint;
 
+/// Stable names used by standard gRPC health checks.
+pub mod health;
+
 /// Generated protobuf/gRPC types for the local IPC transport.
 ///
 /// The `.proto` file
@@ -32,6 +35,7 @@ pub mod protocol;
 
 pub use client::ServiceClient;
 pub use endpoint::IpcEndpoint;
+pub use health::HealthClient;
 pub use protocol::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus, AuthorizationArg,
     AuthorizationKey, AuthorizationOperation, AuthorizationOperationResponse,

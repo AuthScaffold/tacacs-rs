@@ -1,11 +1,10 @@
 [Unit]
 Description=Central TACACS+ client service for local consumers (SONiC)
 Documentation=https://github.com/AuthScaffold/tacacs-rs
-# SONiC stores configuration in Redis (CONFIG_DB). Wait for the database
-# service so that ConfigDB is ready before we attempt to read TACPLUS tables.
-Requires=database.service
+# SONiC stores configuration in Redis (CONFIG_DB). Ordering normally avoids an
+# initial retry, but the daemon also survives database startup and restarts.
 After=database.service network-online.target
-Wants=network-online.target
+Wants=database.service network-online.target
 
 [Service]
 # Keep the unit in "activating" with a clear status line until SONiC pushes
@@ -17,6 +16,7 @@ ExecStart=/usr/sbin/tacacsrs-agentd \
     --sonic \
     --listen-endpoint /run/tacacs/tacacs.sock \
     --socket-mode 666 \
+    --host-integration systemd \
     -vv
 
 # Recreate the socket after restart and tear it down on stop.
@@ -28,8 +28,8 @@ TimeoutStartSec=0
 TimeoutStopSec=15s
 
 # SONiC keyspace notifications must be enabled on Redis for hot reload to
-# work; the agent will start without them but will only react to changes on
-# restart.
+# work. The agent retries subscription setup and reloads before resubscribing
+# after a notification stream ends.
 #   redis-cli -n 4 CONFIG SET notify-keyspace-events KEA
 
 # Hardening (loose defaults compatible with SONiC's privileged service model;

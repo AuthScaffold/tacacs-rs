@@ -1,11 +1,125 @@
-//! Process shutdown signal handling for the long-lived agent runtime.
+//! Shared process shutdown and listener lifecycle coordination.
+//!
+//! One coordinator owns the operating-system signal wait. Listener tasks hold
+//! cloneable receivers and registration guards:
+//!
+//! ```text
+//! SIGTERM / Ctrl-C
+//!        |
+//!        v
+//! lifecycle=Draining -> broadcast -> stop accepting -> drain -> Stopped
+//! ```
+
+use tokio::sync::watch;
+
+use super::{ListenerState, RuntimeHealthPublisher, RuntimeLifecycle, RuntimeService};
+
+/// Broadcasts one ordered shutdown transition to all runtime tasks.
+#[derive(Debug, Clone)]
+pub(crate) struct ShutdownCoordinator {
+    sender: watch::Sender<bool>,
+    health: RuntimeHealthPublisher,
+}
+
+impl ShutdownCoordinator {
+    /// Creates a coordinator for one service runtime.
+    #[must_use]
+    pub(crate) fn new(health: RuntimeHealthPublisher) -> Self {
+        let (sender, _) = watch::channel(false);
+        Self { sender, health }
+    }
+
+    /// Returns a receiver for one listener or background task.
+    #[must_use]
+    pub(crate) fn subscribe(&self) -> ShutdownReceiver {
+        ShutdownReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
+
+    /// Starts the single operating-system signal monitor.
+    pub(crate) fn spawn_process_signal_monitor(&self) -> tokio::task::JoinHandle<()> {
+        let coordinator = self.clone();
+        tokio::spawn(async move {
+            process_shutdown_signal().await;
+            coordinator.initiate_shutdown();
+        })
+    }
+
+    /// Withdraws health before broadcasting graceful shutdown.
+    pub(crate) fn initiate_shutdown(&self) {
+        self.health.set_lifecycle(RuntimeLifecycle::Draining);
+        self.sender.send_replace(true);
+    }
+
+    /// Publishes fatal runtime failure and broadcasts cancellation.
+    pub(crate) fn fail(&self) {
+        self.health.set_lifecycle(RuntimeLifecycle::Failed);
+        self.sender.send_replace(true);
+    }
+
+    /// Publishes final stopped state after all listener tasks have ended.
+    pub(crate) fn mark_stopped(&self) {
+        self.health.set_lifecycle(RuntimeLifecycle::Stopped);
+    }
+}
+
+/// Cloneable shutdown subscription for one runtime task.
+#[derive(Debug, Clone)]
+pub(crate) struct ShutdownReceiver {
+    receiver: watch::Receiver<bool>,
+}
+
+impl ShutdownReceiver {
+    /// Waits until shutdown is broadcast or the coordinator is dropped.
+    pub(crate) async fn wait(mut self) {
+        if *self.receiver.borrow() {
+            return;
+        }
+
+        while self.receiver.changed().await.is_ok() {
+            if *self.receiver.borrow() {
+                return;
+            }
+        }
+    }
+}
+
+/// Publishes listener state and guarantees `Stopped` on every return path.
+#[derive(Debug)]
+pub(crate) struct ListenerRegistration {
+    health: RuntimeHealthPublisher,
+    service: RuntimeService,
+}
+
+impl ListenerRegistration {
+    /// Registers an enabled listener and publishes `Binding` before bind work.
+    #[must_use]
+    pub(crate) fn new(health: RuntimeHealthPublisher, service: RuntimeService) -> Self {
+        let accepted = health.set_listener(service, ListenerState::Binding);
+        debug_assert!(accepted, "cannot register a disabled listener");
+        Self { health, service }
+    }
+
+    /// Publishes that the endpoint is configured and accepting work.
+    pub(crate) fn mark_bound(&self) {
+        let accepted = self.health.set_listener(self.service, ListenerState::Bound);
+        debug_assert!(accepted, "cannot bind a disabled listener");
+    }
+}
+
+impl Drop for ListenerRegistration {
+    fn drop(&mut self) {
+        let accepted = self
+            .health
+            .set_listener(self.service, ListenerState::Stopped);
+        debug_assert!(accepted, "cannot stop a disabled listener");
+    }
+}
 
 /// Waits for a process termination signal that should stop the service from
-/// accepting new IPC clients.
-///
-/// Unix builds listen for both `SIGTERM` and Ctrl-C. Other platforms fall back
-/// to Ctrl-C only.
-pub(crate) async fn shutdown_signal() {
+/// accepting new local clients.
+async fn process_shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -29,5 +143,38 @@ pub(crate) async fn shutdown_signal() {
     {
         let _ = tokio::signal::ctrl_c().await;
         log::info!("Received Ctrl-C; initiating graceful shutdown");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::EnabledServices;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn shutdown_withdraws_health_before_receiver_completes() {
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let coordinator = ShutdownCoordinator::new(health.clone());
+        let receiver = coordinator.subscribe();
+
+        coordinator.initiate_shutdown();
+        receiver.wait().await;
+
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Draining);
+        assert!(!health.snapshot().is_liveness_serving());
+    }
+
+    #[test]
+    fn listener_registration_publishes_stopped_on_drop() {
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let registration = ListenerRegistration::new(health.clone(), RuntimeService::ClientApi);
+        assert_eq!(health.snapshot().listener(RuntimeService::ClientApi), ListenerState::Binding,);
+
+        registration.mark_bound();
+        assert_eq!(health.snapshot().listener(RuntimeService::ClientApi), ListenerState::Bound,);
+
+        drop(registration);
+        assert_eq!(health.snapshot().listener(RuntimeService::ClientApi), ListenerState::Stopped,);
     }
 }

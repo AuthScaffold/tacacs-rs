@@ -21,4 +21,8 @@ pub mod upstream;
 mod test_support;
 
 pub use config::{EnabledServices, ProxyDownstreamObfuscation, ServiceConfig};
-pub use runtime::TacacsClientService;
+pub use runtime::{
+    DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher,
+    RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, TacacsClientService,
+    UpstreamAvailability,
+};

@@ -53,13 +53,12 @@ Keep these in the legacy client configuration:
 
 ## Shared Secret Compatibility
 
-Proxy mode currently uses the selected upstream server's TACACS+ shared secret
-for the downstream client connection too. That means:
+The downstream client hop has its own TACACS+ obfuscation policy and does not follow the selected upstream server:
 
-- Keep the legacy client `secret=` value and the `tacacsrs-agentd --shared-secret` value aligned.
-- Use the same TACACS+ shared secret across the upstream servers used by one proxy deployment.
-- Avoid a cutover where the local client secret differs from the upstream server secret unless the proxy gains a separate downstream-secret setting.
-- If the upstream TLS server disables TACACS+ packet obfuscation entirely, verify whether the legacy client can send unencrypted TACACS+ packets before relying on proxy mode.
+- Outside SONiC mode, keep the legacy client `secret=` value aligned with `tacacsrs-agentd --proxy-shared-secret`.
+- In SONiC mode, configure the local loopback proxy row with the legacy client secret. The daemon filters that self-targeting row from the upstream set and uses its resolved `passkey` for downstream obfuscation.
+- If neither source provides a downstream secret, verify that the legacy client can send TACACS+ packets with the unencrypted flag.
+- Upstream servers may use different classic shared secrets or TLS credentials; failover does not change the local client secret.
 
 TLS protects the upstream connection, but it does not replace the downstream
 TACACS+ packet format expected by `pam_tacplus` or `audisp-tacplus`.

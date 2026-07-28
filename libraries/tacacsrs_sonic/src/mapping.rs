@@ -97,11 +97,7 @@ impl SonicTacacsTables {
 /// non-empty configuration fails validation.
 pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Result<TacacsPlus> {
     if tables.servers.is_empty() {
-        return Ok(TacacsPlus {
-            client_credentials: Vec::new(),
-            server_credentials: Vec::new(),
-            server: Vec::new(),
-        });
+        return Ok(TacacsPlus::empty());
     }
 
     let global = SonicGlobal::from_hash(&tables.global)?;

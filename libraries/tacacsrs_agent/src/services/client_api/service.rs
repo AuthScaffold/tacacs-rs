@@ -6,7 +6,9 @@ use tacacsrs_agent_client::IpcEndpoint;
 
 use super::GrpcService;
 use super::listener;
-use crate::runtime::RequestTracker;
+use crate::runtime::{
+    ListenerRegistration, RequestTracker, RuntimeHealthPublisher, RuntimeService, ShutdownReceiver,
+};
 use crate::services::ListenerOptions;
 use crate::upstream::manager::UpstreamManager;
 
@@ -34,8 +36,13 @@ impl ClientApiService {
         &self,
         endpoint: &IpcEndpoint,
         options: ListenerOptions,
+        shutdown: ShutdownReceiver,
+        health: RuntimeHealthPublisher,
     ) -> anyhow::Result<()> {
-        listener::serve(endpoint, self.clone(), options).await
+        let health_receiver = health.subscribe();
+        let registration = ListenerRegistration::new(health, RuntimeService::ClientApi);
+        listener::serve(endpoint, self.clone(), options, shutdown, registration, health_receiver)
+            .await
     }
 
     #[cfg(unix)]

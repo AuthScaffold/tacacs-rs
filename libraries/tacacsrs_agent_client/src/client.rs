@@ -18,13 +18,7 @@
 //! connection overhead.
 
 use anyhow::{Context, anyhow};
-#[cfg(unix)]
-use http::Uri;
-#[cfg(unix)]
-use hyper_util::rt::TokioIo;
-use tonic::transport::{Channel, Endpoint};
-#[cfg(unix)]
-use tower::service_fn;
+use tonic::transport::Channel;
 
 use crate::ipc;
 use crate::ipc::tacacs_agent_client::TacacsAgentClient;
@@ -32,10 +26,8 @@ use crate::protocol::{
     AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
     AuthorizationOperationResponse, ServiceError,
 };
+use crate::endpoint::connect_channel;
 use crate::IpcEndpoint;
-
-#[cfg(unix)]
-const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 
 /// Convenience wrapper for making local IPC calls to the central service.
 ///
@@ -107,32 +99,7 @@ impl ServiceClient {
     /// Returns an error if the IPC connection cannot be established (socket
     /// missing, service not running, etc.).
     pub async fn connect(endpoint: IpcEndpoint) -> anyhow::Result<Self> {
-        let channel = match &endpoint {
-            #[cfg(unix)]
-            IpcEndpoint::Unix(path) => {
-                let path = path.clone();
-                let connect_path = path.clone();
-                Endpoint::try_from(UDS_GRPC_CONNECT_URI)
-                    .context("Failed to build Unix IPC gRPC endpoint")?
-                    .connect_with_connector(service_fn(move |_: Uri| {
-                        let path = connect_path.clone();
-                        async move {
-                            tokio::net::UnixStream::connect(path)
-                                .await
-                                .map(TokioIo::new)
-                        }
-                    }))
-                    .await
-                    .with_context(|| {
-                        format!("Failed to connect to service socket {}", path.display())
-                    })?
-            }
-            IpcEndpoint::Tcp(address) => Endpoint::from_shared(format!("http://{address}"))
-                .context("Failed to build TCP IPC gRPC endpoint")?
-                .connect()
-                .await
-                .with_context(|| format!("Failed to connect to service endpoint {address}"))?,
-        };
+        let channel = connect_channel(&endpoint).await?;
         Ok(Self { channel })
     }
 

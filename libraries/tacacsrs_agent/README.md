@@ -221,8 +221,9 @@ On Unix systems the listener follows this startup sequence:
 6. begin serving IPC clients
 ```
 
-Shutdown stops accepting new IPC connections first, waits for active RPCs to
-finish, and then removes the Unix socket path.
+One coordinator receives SIGTERM or Ctrl-C, changes the shared lifecycle to `Draining`, and then broadcasts shutdown to every listener. Registration guards publish `Binding`, `Bound`, and `Stopped` on every return path. Shutdown stops accepting new local work, waits for active gRPC and raw proxy requests to finish, removes Unix socket paths, and finally publishes `Stopped`. A listener bind or accept-loop failure marks fatal health, cancels siblings, and waits for their guards and cleanup before returning.
+
+The same typed watch-backed snapshot drives startup, liveness, readiness, datastore freshness, upstream availability, standard gRPC health, host integration, and operator status. It contains typed flags and counts only; configuration values, server identities, credential references, and raw errors stay outside the shared state.
 
 ## Configuration details
 

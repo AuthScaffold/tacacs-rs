@@ -64,14 +64,22 @@ async fn main() -> anyhow::Result<()> {
         .context("subscribe to SONiC ConfigDB changes")?;
 
     let mut observed = 0usize;
-    while let Some(change) = changes.next().await {
+    while let Some(event) = changes.next().await {
         observed += 1;
         println!("change_event: {observed}");
-        println!("  added_servers: {:?}", change.delta.added_servers);
-        println!("  removed_servers: {:?}", change.delta.removed_servers);
-        println!("  modified_servers: {:?}", change.delta.modified_servers);
-        println!("  root_metadata_changed: {}", change.delta.root_metadata_changed);
-        print_snapshot("current", &change.config);
+        match event {
+            tacacsrs_datastore::ConfigChangeEvent::Changed(change) => {
+                println!("  result: changed");
+                println!("  added_servers: {:?}", change.delta.added_servers);
+                println!("  removed_servers: {:?}", change.delta.removed_servers);
+                println!("  modified_servers: {:?}", change.delta.modified_servers);
+                println!("  root_metadata_changed: {}", change.delta.root_metadata_changed);
+                print_snapshot("current", &change.config);
+            }
+            tacacsrs_datastore::ConfigChangeEvent::CandidateRejected => {
+                println!("  result: candidate_rejected");
+            }
+        }
 
         if cli
             .max_events

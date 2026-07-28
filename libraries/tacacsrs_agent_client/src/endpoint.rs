@@ -19,6 +19,16 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Context, bail};
+#[cfg(unix)]
+use http::Uri;
+#[cfg(unix)]
+use hyper_util::rt::TokioIo;
+use tonic::transport::{Channel, Endpoint};
+#[cfg(unix)]
+use tower::service_fn;
+
+#[cfg(unix)]
+const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 
 /// Local IPC endpoint used between local consumers and the central service.
 ///
@@ -107,6 +117,39 @@ impl FromStr for IpcEndpoint {
             .parse::<SocketAddr>()
             .with_context(|| format!("Invalid IPC endpoint: {value}"))?;
         Ok(Self::Tcp(socket_addr))
+    }
+}
+
+/// Establishes a reusable gRPC channel to a local IPC endpoint.
+///
+/// # Errors
+///
+/// Returns an error when the endpoint cannot be represented as a gRPC
+/// transport or the local socket cannot be reached.
+pub async fn connect_channel(endpoint: &IpcEndpoint) -> anyhow::Result<Channel> {
+    match endpoint {
+        #[cfg(unix)]
+        IpcEndpoint::Unix(path) => {
+            let path = path.clone();
+            let connect_path = path.clone();
+            Endpoint::try_from(UDS_GRPC_CONNECT_URI)
+                .context("Failed to build Unix IPC gRPC endpoint")?
+                .connect_with_connector(service_fn(move |_: Uri| {
+                    let path = connect_path.clone();
+                    async move {
+                        tokio::net::UnixStream::connect(path)
+                            .await
+                            .map(TokioIo::new)
+                    }
+                }))
+                .await
+                .with_context(|| format!("Failed to connect to service socket {}", path.display()))
+        }
+        IpcEndpoint::Tcp(address) => Endpoint::from_shared(format!("http://{address}"))
+            .context("Failed to build TCP IPC gRPC endpoint")?
+            .connect()
+            .await
+            .with_context(|| format!("Failed to connect to service endpoint {address}")),
     }
 }
 

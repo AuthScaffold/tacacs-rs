@@ -4,6 +4,21 @@
 
 For full deployment and failover guidance, see [../../docs/tacacsrs-agentd.md](../../docs/tacacsrs-agentd.md).
 
+## Health and Host Integration
+
+When the Client API is enabled, its existing endpoint also serves standard `grpc.health.v1.Health` names for startup, liveness, readiness, the overall empty name, and `tacacsrs.agent.v1.TacacsAgent`. Use the packaged probe:
+
+```bash
+tacacsrs-agent-health \
+    --endpoint /run/tacacs/tacacs.sock \
+    --check readiness \
+    --timeout-seconds 2
+```
+
+Use `--host-integration none` in containers. `auto` selects systemd only when `NOTIFY_SOCKET` is present. Explicit `systemd` requires the notification socket and helper, sends `READY=1` once, and sends `STOPPING=1` before listener drain.
+
+SONiC ConfigDB startup and notification subscriptions are supervised. The daemon may bind listeners before Redis exists, retries with capped jittered backoff, applies valid snapshots without restarting, and retains the previous known-good configuration after invalid reloads or subscription outages.
+
 ## Runtime Service Modes
 
 Use `--service-mode client-api`, `--service-mode tacacs-proxy`, or

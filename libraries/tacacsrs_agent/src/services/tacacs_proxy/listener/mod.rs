@@ -4,7 +4,7 @@ use tacacsrs_agent_client::IpcEndpoint;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::TacacsProxyService;
-use crate::runtime::shutdown_signal;
+use crate::runtime::{ListenerRegistration, ShutdownReceiver};
 use crate::services::ListenerOptions;
 
 mod tcp;
@@ -16,10 +16,14 @@ pub(super) async fn serve(
     endpoint: &IpcEndpoint,
     service: TacacsProxyService,
     options: ListenerOptions,
+    shutdown: ShutdownReceiver,
+    registration: ListenerRegistration,
 ) -> anyhow::Result<()> {
     match endpoint {
-        IpcEndpoint::Unix(path) => unix::serve(path, service, options.socket_mode()).await,
-        IpcEndpoint::Tcp(address) => tcp::serve(*address, service).await,
+        IpcEndpoint::Unix(path) => {
+            unix::serve(path, service, options.socket_mode(), shutdown, registration).await
+        }
+        IpcEndpoint::Tcp(address) => tcp::serve(*address, service, shutdown, registration).await,
     }
 }
 
@@ -28,9 +32,11 @@ pub(super) async fn serve(
     endpoint: &IpcEndpoint,
     service: TacacsProxyService,
     _options: ListenerOptions,
+    shutdown: ShutdownReceiver,
+    registration: ListenerRegistration,
 ) -> anyhow::Result<()> {
     match endpoint {
-        IpcEndpoint::Tcp(address) => tcp::serve(*address, service).await,
+        IpcEndpoint::Tcp(address) => tcp::serve(*address, service, shutdown, registration).await,
     }
 }
 
@@ -38,12 +44,13 @@ async fn accept_loop<Listener, Stream>(
     listener: Listener,
     service: TacacsProxyService,
     endpoint_label: String,
+    shutdown: ShutdownReceiver,
 ) -> anyhow::Result<()>
 where
     Listener: ProxyListener<Stream>,
     Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let mut shutdown = Box::pin(shutdown_signal());
+    let mut shutdown = Box::pin(shutdown.wait());
 
     loop {
         tokio::select! {
