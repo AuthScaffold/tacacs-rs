@@ -1985,6 +1985,7 @@ dependencies = [
  "protoc-bin-vendored",
  "tokio",
  "tonic",
+ "tonic-health",
  "tonic-prost",
  "tonic-prost-build",
  "tower",
@@ -2050,6 +2051,8 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "tonic",
+ "tonic-health",
 ]
 
 [[package]]

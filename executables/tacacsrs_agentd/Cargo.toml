@@ -26,10 +26,14 @@ tacacsrs-sonic = { path = "../../libraries/tacacsrs_sonic" }
 tokio = { version = "1.52.3", features = ["full"] }
 tokio-stream = "0.1.18"
 tokio-util = "0.7.18"
+tonic-health = "0.14.6"
 
 [features]
 default = []
 console = ["console-subscriber"]
+
+[dev-dependencies]
+tonic = "0.14.6"
 
 [build-dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
@@ -58,6 +62,7 @@ priority = "optional"
 maintainer-scripts = "debian/maintainer-scripts"
 assets = [
     ["target/release/tacacsrs-agentd", "usr/sbin/", "755"],
+    ["target/release/tacacsrs-agent-health", "usr/bin/", "755"],
     ["debian/tacacsrs-agentd-config.ini", "etc/tacacsrs-agentd/config.ini", "644"],
     ["sonic/tacacsrs-agentd.service", "lib/systemd/system/tacacsrs-agentd.service", "644"],
     ["../../docs/tacacsrs-agentd.md", "usr/share/doc/tacacsrs-agentd/README.md", "644"],

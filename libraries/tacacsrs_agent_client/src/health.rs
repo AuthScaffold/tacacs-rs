@@ -1,5 +1,12 @@
 //! Stable service names used with the standard gRPC health protocol.
 
+use tonic_health::pb::HealthCheckRequest;
+use tonic_health::pb::health_check_response::ServingStatus;
+use tonic_health::pb::health_client::HealthClient as GrpcHealthClient;
+
+use crate::endpoint::connect_channel;
+use crate::IpcEndpoint;
+
 /// Overall health service name. The empty name follows the gRPC health
 /// protocol convention and maps to agent readiness.
 pub const OVERALL_HEALTH_SERVICE: &str = "";
@@ -15,3 +22,40 @@ pub const LIVENESS_HEALTH_SERVICE: &str = "tacacsrs.agent.health.v1.Liveness";
 
 /// Readiness probe service name.
 pub const READINESS_HEALTH_SERVICE: &str = "tacacsrs.agent.health.v1.Readiness";
+
+/// Standard gRPC health client over the same local transport as [`crate::ServiceClient`].
+#[derive(Debug, Clone)]
+pub struct HealthClient {
+    client: GrpcHealthClient<tonic::transport::Channel>,
+}
+
+impl HealthClient {
+    /// Connects to the standard health service on a local IPC endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the local endpoint cannot be reached.
+    pub async fn connect(endpoint: &IpcEndpoint) -> anyhow::Result<Self> {
+        let channel = connect_channel(endpoint).await?;
+        Ok(Self {
+            client: GrpcHealthClient::new(channel),
+        })
+    }
+
+    /// Checks one standard gRPC health service name.
+    ///
+    /// # Errors
+    ///
+    /// Returns the standard gRPC status for unknown names and protocol or
+    /// transport failures.
+    pub async fn check(&mut self, service_name: &str) -> Result<ServingStatus, tonic::Status> {
+        let response = self
+            .client
+            .check(HealthCheckRequest {
+                service: service_name.to_owned(),
+            })
+            .await?
+            .into_inner();
+        Ok(ServingStatus::try_from(response.status).unwrap_or(ServingStatus::Unknown))
+    }
+}
