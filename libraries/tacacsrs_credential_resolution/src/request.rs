@@ -223,6 +223,11 @@ impl ResolutionPlan {
     pub fn is_empty(&self) -> bool {
         self.requests.is_empty()
     }
+
+    #[cfg(test)]
+    pub(crate) fn reverse_requests_for_test(&mut self) {
+        self.requests.reverse();
+    }
 }
 
 impl fmt::Debug for ResolutionPlan {

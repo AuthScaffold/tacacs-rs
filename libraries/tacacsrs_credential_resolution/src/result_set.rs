@@ -1,5 +1,6 @@
 //! Closed request/result association and variant validation.
 
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::fmt;
 
 use crate::{
@@ -39,7 +40,7 @@ struct ResolvedEntry {
 
 /// Complete validated result set for one resolution plan.
 pub struct ResolvedCredentialSet {
-    entries: Vec<ResolvedEntry>,
+    entries: BTreeMap<RequestSlot, ResolvedEntry>,
 }
 
 impl ResolvedCredentialSet {
@@ -52,22 +53,29 @@ impl ResolvedCredentialSet {
         plan: &ResolutionPlan,
         responses: impl IntoIterator<Item = ResolvedResponse>,
     ) -> Result<Self, ResolutionError> {
-        let mut by_slot: Vec<Option<ResolvedCredential>> =
-            std::iter::repeat_with(|| None).take(plan.len()).collect();
+        let expected_slots = plan
+            .requests()
+            .iter()
+            .map(crate::CredentialRequest::slot)
+            .collect::<BTreeSet<_>>();
+        let mut responses_by_slot = BTreeMap::new();
         for response in responses {
-            let index = response.slot.index();
-            let Some(target) = by_slot.get_mut(index) else {
+            if !expected_slots.contains(&response.slot) {
                 return Err(ResolutionError::unexpected_response(response.slot));
-            };
-            if target.is_some() {
-                return Err(ResolutionError::duplicate_response(response.slot));
             }
-            *target = Some(response.credential);
+            match responses_by_slot.entry(response.slot) {
+                Entry::Vacant(entry) => {
+                    entry.insert(response.credential);
+                }
+                Entry::Occupied(_) => {
+                    return Err(ResolutionError::duplicate_response(response.slot));
+                }
+            }
         }
 
-        let mut entries = Vec::with_capacity(plan.len());
+        let mut entries = BTreeMap::new();
         for request in plan.requests() {
-            let Some(credential) = by_slot[request.slot().index()].take() else {
+            let Some(credential) = responses_by_slot.remove(&request.slot()) else {
                 return Err(ResolutionError::missing_response(
                     request.slot(),
                     request.context().clone(),
@@ -83,11 +91,14 @@ impl ResolvedCredentialSet {
                     actual,
                 ));
             }
-            entries.push(ResolvedEntry {
-                context: request.context().clone(),
-                kind: request.kind(),
-                credential,
-            });
+            entries.insert(
+                request.slot(),
+                ResolvedEntry {
+                    context: request.context().clone(),
+                    kind: request.kind(),
+                    credential,
+                },
+            );
         }
         Ok(Self { entries })
     }
@@ -107,15 +118,13 @@ impl ResolvedCredentialSet {
     /// Returns resolved material by request slot.
     #[must_use]
     pub fn credential(&self, slot: RequestSlot) -> Option<&ResolvedCredential> {
-        self.entries
-            .get(slot.index())
-            .map(|entry| &entry.credential)
+        self.entries.get(&slot).map(|entry| &entry.credential)
     }
 
     /// Returns the stable secret-free context for a request slot.
     #[must_use]
     pub fn context(&self, slot: RequestSlot) -> Option<&RequestContext> {
-        self.entries.get(slot.index()).map(|entry| &entry.context)
+        self.entries.get(&slot).map(|entry| &entry.context)
     }
 }
 
@@ -124,12 +133,105 @@ impl fmt::Debug for ResolvedCredentialSet {
         let entries = self
             .entries
             .iter()
-            .enumerate()
-            .map(|(slot, entry)| (slot, &entry.context, entry.kind))
+            .map(|(slot, entry)| (*slot, &entry.context, entry.kind))
             .collect::<Vec<_>>();
         formatter
             .debug_struct("ResolvedCredentialSet")
             .field("entries", &entries)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tacacsrs_config::parse_yang_json;
+
+    use super::*;
+    use crate::{CertificateBagMaterial, CertificateWithKeyMaterial, PublicBytes, SecretBytes};
+
+    #[test]
+    fn lookup_uses_request_slot_when_plan_iteration_order_changes() {
+        let config = parse_yang_json(
+            r#"{
+                "ietf-system-tacacs-plus:tacacs-plus": {
+                    "server": [{
+                        "name": "reordered-plan",
+                        "server-type": "accounting",
+                        "address": "192.0.2.40",
+                        "port": 49,
+                        "client-identity": {
+                            "certificate": {
+                                "central-keystore-reference": {
+                                    "asymmetric-key": "key-reference",
+                                    "certificate": "certificate-reference"
+                                }
+                            }
+                        },
+                        "server-authentication": {
+                            "ca-certs": {"central-truststore-reference": "ca-reference"},
+                            "ee-certs": {"central-truststore-reference": "ee-reference"}
+                        }
+                    }]
+                }
+            }"#,
+        )
+        .expect("central credential config");
+        let mut plan = ResolutionPlan::from_server(&config.server[0]).expect("resolution plan");
+        plan.reverse_requests_for_test();
+
+        let responses = plan.requests().iter().map(|request| {
+            let credential = match request.kind() {
+                CredentialKind::CertificateWithKey => {
+                    ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+                        certificate: PublicBytes::new(b"certificate".to_vec()),
+                        private_key: SecretBytes::new(b"private-key".to_vec()),
+                    })
+                }
+                CredentialKind::CaCertificateBag => {
+                    ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
+                        certificates: vec![PublicBytes::new(b"ca".to_vec())],
+                    })
+                }
+                CredentialKind::EeCertificateBag => {
+                    ResolvedCredential::EeCertificateBag(CertificateBagMaterial {
+                        certificates: vec![PublicBytes::new(b"ee".to_vec())],
+                    })
+                }
+                CredentialKind::SymmetricKey => unreachable!("test plan has no symmetric key"),
+            };
+            ResolvedResponse::new(request.slot(), credential)
+        });
+
+        let result = ResolvedCredentialSet::from_responses(&plan, responses)
+            .expect("responses should match reordered plan");
+
+        assert_eq!(
+            result
+                .credential(RequestSlot::from_index(0))
+                .expect("slot 0")
+                .kind(),
+            CredentialKind::CertificateWithKey,
+        );
+        assert_eq!(
+            result
+                .credential(RequestSlot::from_index(1))
+                .expect("slot 1")
+                .kind(),
+            CredentialKind::CaCertificateBag,
+        );
+        assert_eq!(
+            result
+                .credential(RequestSlot::from_index(2))
+                .expect("slot 2")
+                .kind(),
+            CredentialKind::EeCertificateBag,
+        );
+        assert_eq!(
+            result
+                .context(RequestSlot::from_index(0))
+                .expect("slot 0 context")
+                .field_path(),
+            "client-identity/certificate",
+        );
     }
 }
