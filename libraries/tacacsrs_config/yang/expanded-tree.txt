@@ -9,45 +9,55 @@ module: ietf-system-tacacs-plus
        |     |  +--rw certificate
        |     |     +--rw (inline-or-keystore)
        |     |        +--:(inline) {inline-definitions-supported}?
-       |     |           +--rw inline-definition
-       |     |              +--rw public-key-format?             identityref
-       |     |              +--rw public-key?                    binary
-       |     |              +--rw private-key-format?            identityref
-       |     |              +--rw (private-key-type)
-       |     |              |  +--:(cleartext-private-key) {cleartext-private-keys}?
-       |     |              |     +--rw cleartext-private-key?   binary
-       |     |              +--rw cert-data?                     end-entity-cert-cms
+       |     |        |  +--rw inline-definition
+       |     |        |     +--rw public-key-format?             identityref
+       |     |        |     +--rw public-key?                    binary
+       |     |        |     +--rw private-key-format?            identityref
+       |     |        |     +--rw (private-key-type)
+       |     |        |     |  +--:(cleartext-private-key) {cleartext-private-keys}?
+       |     |        |     |     +--rw cleartext-private-key?   binary
+       |     |        |     +--rw cert-data?                     end-entity-cert-cms
+       |     |        +--:(central-keystore) {central-keystore-supported,asymmetric-keys}?
+       |     |           +--rw central-keystore-reference
+       |     |              +--rw asymmetric-key?   ks:central-asymmetric-key-ref {central-keystore-supported,asymmetric-keys}?
+       |     |              +--rw certificate?      -> /ks:keystore/asymmetric-keys/asymmetric-key[ks:name = current()/../asymmetric-key]/certificates/certificate/name
        |     +--:(tls13-epsk) {tlsc:client-ident-tls13-epsk}?
        |        +--rw tls13-epsk
        |           +--rw (inline-or-keystore)
        |           |  +--:(inline) {inline-definitions-supported}?
-       |           |     +--rw inline-definition
-       |           |        +--rw key-format?                      identityref
-       |           |        +--rw (key-type)
-       |           |           +--:(cleartext-symmetric-key)
-       |           |              +--rw cleartext-symmetric-key?   binary {cleartext-symmetric-keys}?
-       |           +--rw external-identity          string
-       |           +--rw hash?                      tlscmn:epsk-supported-hash
-       |           +--rw context?                   string
-       |           +--rw target-protocol?           uint16
-       |           +--rw target-kdf?                uint16
-       |           +--rw trs:psk-dhe-ke-groups*     psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
+       |           |  |  +--rw inline-definition
+       |           |  |     +--rw key-format?                      identityref
+       |           |  |     +--rw (key-type)
+       |           |  |        +--:(cleartext-symmetric-key)
+       |           |  |           +--rw cleartext-symmetric-key?   binary {cleartext-symmetric-keys}?
+       |           |  +--:(central-keystore) {central-keystore-supported,symmetric-keys}?
+       |           |     +--rw central-keystore-reference?   ks:central-symmetric-key-ref
+       |           +--rw external-identity                   string
+       |           +--rw hash?                               tlscmn:epsk-supported-hash
+       |           +--rw context?                            string
+       |           +--rw target-protocol?                    uint16
+       |           +--rw target-kdf?                         uint16
+       |           +--rw trs:psk-dhe-ke-groups*              psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
        +--rw server-credentials* [id] {credential-reference}?
        |  +--rw id             string
        |  +--rw ca-certs!
        |  |  +--rw (inline-or-truststore)
        |  |     +--:(inline) {inline-definitions-supported}?
-       |  |        +--rw inline-definition
-       |  |           +--rw certificate* [name]
-       |  |              +--rw name         string
-       |  |              +--rw cert-data    trust-anchor-cert-cms
+       |  |     |  +--rw inline-definition
+       |  |     |     +--rw certificate* [name]
+       |  |     |        +--rw name         string
+       |  |     |        +--rw cert-data    trust-anchor-cert-cms
+       |  |     +--:(central-truststore) {central-truststore-supported,certificates}?
+       |  |        +--rw central-truststore-reference?   ts:central-certificate-bag-ref
        |  +--rw ee-certs!
        |  |  +--rw (inline-or-truststore)
        |  |     +--:(inline) {inline-definitions-supported}?
-       |  |        +--rw inline-definition
-       |  |           +--rw certificate* [name]
-       |  |              +--rw name         string
-       |  |              +--rw cert-data    trust-anchor-cert-cms
+       |  |     |  +--rw inline-definition
+       |  |     |     +--rw certificate* [name]
+       |  |     |        +--rw name         string
+       |  |     |        +--rw cert-data    trust-anchor-cert-cms
+       |  |     +--:(central-truststore) {central-truststore-supported,certificates}?
+       |  |        +--rw central-truststore-reference?   ts:central-certificate-bag-ref
        |  +--rw tls13-epsks?   empty {tlsc:server-auth-tls13-epsk}?
        +--rw server* [name]
           +--rw name                           string
@@ -68,29 +78,35 @@ module: ietf-system-tacacs-plus
           |  |  |           |  +--rw certificate
           |  |  |           |     +--rw (inline-or-keystore)
           |  |  |           |        +--:(inline) {inline-definitions-supported}?
-          |  |  |           |           +--rw inline-definition
-          |  |  |           |              +--rw public-key-format?             identityref
-          |  |  |           |              +--rw public-key?                    binary
-          |  |  |           |              +--rw private-key-format?            identityref
-          |  |  |           |              +--rw (private-key-type)
-          |  |  |           |              |  +--:(cleartext-private-key) {cleartext-private-keys}?
-          |  |  |           |              |     +--rw cleartext-private-key?   binary
-          |  |  |           |              +--rw cert-data?                     end-entity-cert-cms
+          |  |  |           |        |  +--rw inline-definition
+          |  |  |           |        |     +--rw public-key-format?             identityref
+          |  |  |           |        |     +--rw public-key?                    binary
+          |  |  |           |        |     +--rw private-key-format?            identityref
+          |  |  |           |        |     +--rw (private-key-type)
+          |  |  |           |        |     |  +--:(cleartext-private-key) {cleartext-private-keys}?
+          |  |  |           |        |     |     +--rw cleartext-private-key?   binary
+          |  |  |           |        |     +--rw cert-data?                     end-entity-cert-cms
+          |  |  |           |        +--:(central-keystore) {central-keystore-supported,asymmetric-keys}?
+          |  |  |           |           +--rw central-keystore-reference
+          |  |  |           |              +--rw asymmetric-key?   ks:central-asymmetric-key-ref {central-keystore-supported,asymmetric-keys}?
+          |  |  |           |              +--rw certificate?      -> /ks:keystore/asymmetric-keys/asymmetric-key[ks:name = current()/../asymmetric-key]/certificates/certificate/name
           |  |  |           +--:(tls13-epsk) {tlsc:client-ident-tls13-epsk}?
           |  |  |              +--rw tls13-epsk
           |  |  |                 +--rw (inline-or-keystore)
           |  |  |                 |  +--:(inline) {inline-definitions-supported}?
-          |  |  |                 |     +--rw inline-definition
-          |  |  |                 |        +--rw key-format?                      identityref
-          |  |  |                 |        +--rw (key-type)
-          |  |  |                 |           +--:(cleartext-symmetric-key)
-          |  |  |                 |              +--rw cleartext-symmetric-key?   binary {cleartext-symmetric-keys}?
-          |  |  |                 +--rw external-identity          string
-          |  |  |                 +--rw hash?                      tlscmn:epsk-supported-hash
-          |  |  |                 +--rw context?                   string
-          |  |  |                 +--rw target-protocol?           uint16
-          |  |  |                 +--rw target-kdf?                uint16
-          |  |  |                 +--rw trs:psk-dhe-ke-groups*     psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
+          |  |  |                 |  |  +--rw inline-definition
+          |  |  |                 |  |     +--rw key-format?                      identityref
+          |  |  |                 |  |     +--rw (key-type)
+          |  |  |                 |  |        +--:(cleartext-symmetric-key)
+          |  |  |                 |  |           +--rw cleartext-symmetric-key?   binary {cleartext-symmetric-keys}?
+          |  |  |                 |  +--:(central-keystore) {central-keystore-supported,symmetric-keys}?
+          |  |  |                 |     +--rw central-keystore-reference?   ks:central-symmetric-key-ref
+          |  |  |                 +--rw external-identity                   string
+          |  |  |                 +--rw hash?                               tlscmn:epsk-supported-hash
+          |  |  |                 +--rw context?                            string
+          |  |  |                 +--rw target-protocol?                    uint16
+          |  |  |                 +--rw target-kdf?                         uint16
+          |  |  |                 +--rw trs:psk-dhe-ke-groups*              psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
           |  |  +--rw server-authentication
           |  |     +--rw (ref-or-explicit)?
           |  |        +--:(ref)
@@ -99,17 +115,21 @@ module: ietf-system-tacacs-plus
           |  |           +--rw ca-certs!
           |  |           |  +--rw (inline-or-truststore)
           |  |           |     +--:(inline) {inline-definitions-supported}?
-          |  |           |        +--rw inline-definition
-          |  |           |           +--rw certificate* [name]
-          |  |           |              +--rw name         string
-          |  |           |              +--rw cert-data    trust-anchor-cert-cms
+          |  |           |     |  +--rw inline-definition
+          |  |           |     |     +--rw certificate* [name]
+          |  |           |     |        +--rw name         string
+          |  |           |     |        +--rw cert-data    trust-anchor-cert-cms
+          |  |           |     +--:(central-truststore) {central-truststore-supported,certificates}?
+          |  |           |        +--rw central-truststore-reference?   ts:central-certificate-bag-ref
           |  |           +--rw ee-certs!
           |  |           |  +--rw (inline-or-truststore)
           |  |           |     +--:(inline) {inline-definitions-supported}?
-          |  |           |        +--rw inline-definition
-          |  |           |           +--rw certificate* [name]
-          |  |           |              +--rw name         string
-          |  |           |              +--rw cert-data    trust-anchor-cert-cms
+          |  |           |     |  +--rw inline-definition
+          |  |           |     |     +--rw certificate* [name]
+          |  |           |     |        +--rw name         string
+          |  |           |     |        +--rw cert-data    trust-anchor-cert-cms
+          |  |           |     +--:(central-truststore) {central-truststore-supported,certificates}?
+          |  |           |        +--rw central-truststore-reference?   ts:central-certificate-bag-ref
           |  |           +--rw tls13-epsks?             empty {tlsc:server-auth-tls13-epsk}?
           |  +--:(obfuscation)
           |     +--rw shared-secret?           string

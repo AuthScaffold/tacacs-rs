@@ -36,9 +36,11 @@ import configparser
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 
 from pyang import context
@@ -47,12 +49,14 @@ from pyang import syntax
 from pyang import util
 
 YANG_MODELS_REPO = "https://github.com/YangModels/yang.git"
+YANG_MODELS_COMMIT = "97ca2414920c0de09171327b84aa11395f79e284"
 
 TACACS_ROOT_MODULE = "ietf-system-tacacs-plus"
 TACACS_MODULE = "ietf-system-tacacs-plus@2026-03-31.yang"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-CACHE_DIR = SCRIPT_DIR / ".yang-cache"
+CACHE_ROOT = SCRIPT_DIR / ".yang-cache"
+CACHE_DIR = CACHE_ROOT / sys.platform
 PLUGIN_DIR = SCRIPT_DIR / "plugins"
 LOCAL_YANG_DIR = SCRIPT_DIR / "modules"
 
@@ -61,6 +65,20 @@ TREE_FEATURE_GROUP_RE = re.compile(r"\{([^{}]+)\}\?")
 
 def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
+
+
+def _remove_readonly(
+    function: Callable[[str], object],
+    path: str,
+    _exc_info: object,
+) -> None:
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
+
+
+def clean_cache() -> None:
+    if CACHE_DIR.exists():
+        shutil.rmtree(CACHE_DIR, onerror=_remove_readonly)
 
 
 def _local_yang_modules() -> list[Path]:
@@ -296,19 +314,52 @@ def write_output(content: str, output_path: Path | None) -> None:
         print(content)
 
 
-def ensure_repo(url: str, name: str, sparse_paths: list[str] | None = None) -> Path:
-    """Clone a repo into the cache directory (shallow, optionally sparse)."""
+def _verify_repo_revision(repo_path: Path, expected_commit: str) -> None:
+    actual_commit = _run(["git", "rev-parse", "HEAD"], cwd=str(repo_path)).stdout.strip()
+    if actual_commit != expected_commit:
+        raise RuntimeError(
+            f"cached repository {repo_path} is at {actual_commit}, expected {expected_commit}; "
+            "rerun with --clean to deliberately refresh it"
+        )
+
+    symbolic_head = subprocess.run(
+        ["git", "symbolic-ref", "-q", "HEAD"],
+        cwd=str(repo_path),
+        capture_output=True,
+        text=True,
+    )
+    if symbolic_head.returncode == 0:
+        raise RuntimeError(
+            f"cached repository {repo_path} is attached to {symbolic_head.stdout.strip()}, "
+            "expected detached HEAD; rerun with --clean"
+        )
+    if symbolic_head.returncode != 1:
+        raise RuntimeError(f"failed to inspect cached repository HEAD at {repo_path}")
+
+
+def ensure_repo(
+    url: str,
+    name: str,
+    commit: str,
+    sparse_paths: list[str] | None = None,
+) -> Path:
+    """Clone an exact revision into the cache and verify its detached HEAD."""
     dest = CACHE_DIR / name
     if dest.exists():
+        _verify_repo_revision(dest, commit)
         return dest
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     if sparse_paths:
-        _run(["git", "clone", "--depth", "1", "--filter=blob:none", "--sparse", url, str(dest)])
+        _run(["git", "clone", "--filter=blob:none", "--sparse", "--no-checkout", url, str(dest)])
         _run(["git", "sparse-checkout", "set"] + sparse_paths, cwd=str(dest))
     else:
-        _run(["git", "clone", "--depth", "1", url, str(dest)])
+        _run(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dest)])
+
+    _run(["git", "fetch", "--depth", "1", "origin", commit], cwd=str(dest))
+    _run(["git", "checkout", "--detach", commit], cwd=str(dest))
+    _verify_repo_revision(dest, commit)
 
     return dest
 
@@ -370,12 +421,17 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.clean and CACHE_DIR.exists():
-        shutil.rmtree(CACHE_DIR)
+        clean_cache()
         print(f"Removed cache directory: {CACHE_DIR}", file=sys.stderr)
 
     # Clone required repos
     print("Fetching YANG modules (cached after first run)...", file=sys.stderr)
-    yang_models = ensure_repo(YANG_MODELS_REPO, "yang-models", sparse_paths=["standard/ietf/RFC"])
+    yang_models = ensure_repo(
+        YANG_MODELS_REPO,
+        "yang-models",
+        YANG_MODELS_COMMIT,
+        sparse_paths=["standard/ietf/RFC"],
+    )
 
     # Build search paths
     rfc_yang_dir = yang_models / "standard" / "ietf" / "RFC"

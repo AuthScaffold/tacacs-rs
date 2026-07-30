@@ -1,4 +1,5 @@
 pub mod generated;
+mod central_references;
 pub mod extensions;
 pub mod builders;
 pub mod validation;
@@ -8,6 +9,10 @@ pub(crate) mod serde_helpers;
 mod statistics;
 
 pub use enumeration::{enumerate_server, enumerate_servers, validate_credential_references};
+pub use central_references::{
+    CentralCredentialReference, CentralCredentialSlot, CentralCredentialUsage,
+    EnumerationRequiredError, UnexpandedCredentialField, inspect_central_references,
+};
 pub use validation::{ValidationOptions, ValidationRelaxation};
 
 // Re-export key types from generated module for convenience
@@ -89,6 +94,10 @@ pub mod pipeline {
 
 /// Runtime projection API used by networking/client code.
 pub mod runtime {
+    pub use crate::central_references::{
+        CentralCredentialReference, CentralCredentialSlot, CentralCredentialUsage,
+        EnumerationRequiredError, UnexpandedCredentialField, inspect_central_references,
+    };
     pub use crate::enumeration::{enumerate_server, enumerate_servers};
     pub use crate::builders::{TacacsPlusBuilder, TacacsPlusServerBuilder};
     pub use crate::extensions::TacacsPlusServerExt;

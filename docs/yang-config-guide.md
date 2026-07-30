@@ -10,10 +10,11 @@ Use this guide when you need to author, validate, or consume TACACS+ server conf
 - RFC 7951 JSON parsing into the generated TACACS+ model.
 - Validation for required server data, unique addresses, TLS choice constraints, SNI requirements, key format identities, base64-encoded key material, and config-local credential references.
 - Bundle enumeration helpers that inline local `client-credentials` and `server-credentials` references onto server entries.
+- Secret-free inspection of central keystore and truststore references.
 - A `TacacsPlusServerBuilder` for constructing valid server definitions in Rust.
 - A project-owned TACACS+/TLS augmentation for TLS 1.3 PSK-DHE key exchange group selection.
 
-External secret providers are intentionally kept outside this crate. Parse and enumerate configuration first, then pass the resulting server values to a runtime or provider layer that can materialize external secrets.
+Central references remain opaque in this crate. Parse and enumerate configuration first, then use `tacacsrs-credential-resolution` to build provider-neutral requests and validate resolved results. Provider-specific retrieval and runtime projection remain separate integration concerns.
 
 ## Basic JSON shape
 
@@ -59,6 +60,7 @@ The primary entry points are:
 | `validate_credential_references(&TacacsPlus)` | Validate config-local credential bundle references. |
 | `enumerate_servers(&TacacsPlus)` | Inline shared credential bundles onto every server. |
 | `enumerate_server(&TacacsPlus, &str)` | Inline shared credential bundles for one named server. |
+| `inspect_central_references(&TacacsPlusServer)` | Inspect typed central usages without retrieving material. |
 
 The module-oriented API is also available for callers that want grouped imports:
 
@@ -98,9 +100,11 @@ let server = enumerate_server(&config, "primary")?;
 # anyhow::Ok::<()>(())
 ```
 
-### External secret resolution
+### Central credential resolution
 
-External secret material should be resolved after enumeration by a separate runtime or provider layer. That keeps the generated configuration model safe for logging, reporting, and round-tripping while runtime code receives normalized server values.
+Build `tacacsrs_credential_resolution::ResolutionPlan` values after enumeration. The resolution crate emits deterministic requests for central certificate-with-key, TLS 1.3 symmetric key, CA bag, and end-entity bag usages. Its async resolver contract returns secret-safe typed material, and `resolve_plan` rejects incomplete or mismatched result sets.
+
+Neither generic crate interprets a central string as a SONiC identifier or filesystem path. P3 supplies provider retrieval, refresh behavior, and projection into networking inputs.
 
 ## Programmatic server construction
 

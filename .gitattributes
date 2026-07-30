@@ -1,6 +1,12 @@
 *.sh text eol=lf
 *.service text eol=lf
 
+libraries/tacacsrs_config/src/generated.rs text eol=lf
+libraries/tacacsrs_config/yang/*.ini text eol=lf
+libraries/tacacsrs_config/yang/*.json text eol=lf
+libraries/tacacsrs_config/yang/*.py text eol=lf
+libraries/tacacsrs_config/yang/*.txt text eol=lf
+
 executables/*/debian/maintainer-scripts/* text eol=lf
 libraries/*/debian/maintainer-scripts/* text eol=lf
 

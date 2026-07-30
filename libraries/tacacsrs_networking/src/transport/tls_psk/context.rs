@@ -133,6 +133,7 @@ mod tests {
                 key_format: None,
                 cleartext_symmetric_key: Some(b"resolved-psk-bytes-with-enough-length".to_vec()),
             }),
+            central_keystore_reference: None,
         }
     }
 

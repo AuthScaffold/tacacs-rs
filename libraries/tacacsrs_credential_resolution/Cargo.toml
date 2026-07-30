@@ -1,0 +1,20 @@
+[package]
+name = "tacacsrs-credential-resolution"
+description = "Provider-neutral central credential request and resolution contracts for TACACS+ configuration."
+version = "0.0.0-dev"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+tacacsrs-config = { path = "../tacacsrs_config" }
+zeroize = "1.9.0"
+
+[dev-dependencies]
+serde = "1.0.228"
+static_assertions = "1.1.0"
+tokio = { version = "1.52.3", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

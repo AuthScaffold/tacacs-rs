@@ -207,6 +207,7 @@ impl TacacsPlusServerBuilder {
                     cleartext_private_key,
                     cert_data,
                 }),
+                central_keystore_reference: None,
             }),
             tls13_epsk: None,
         });
@@ -259,6 +260,7 @@ impl TacacsPlusServerBuilder {
                     key_format: None,
                     cleartext_symmetric_key: Some(cleartext_symmetric_key),
                 }),
+                central_keystore_reference: None,
                 external_identity: external_identity.into(),
                 hash: EpskSupportedHash::Sha256,
                 context: None,

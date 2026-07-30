@@ -120,6 +120,7 @@ mod tests {
                     key_format: None,
                     cleartext_symmetric_key: Some(key.to_vec()),
                 }),
+                central_keystore_reference: None,
             }),
         });
         server

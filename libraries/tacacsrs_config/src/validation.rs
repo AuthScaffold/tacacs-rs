@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
 use crate::generated::tacacs_plus::{
-    ClientCredentials, ClientIdentityCertificate, ServerAuthenticationCaCerts, TacacsPlus,
-    TacacsPlusServer, Tls13Epsk, TlsClientClientIdentity, TlsClientServerAuthentication,
+    ClientCredentials, ClientIdentityCertificate, ServerAuthenticationCaCerts, ServerCredentials,
+    TacacsPlus, TacacsPlusServer, Tls13Epsk, TlsClientClientIdentity,
+    TlsClientServerAuthentication,
 };
 
 // ---------------------------------------------------------------------------
@@ -148,6 +149,9 @@ pub fn validate_config_with_options(
         validate_client_credentials(credentials)?;
         reject_unsupported_credentials_features(&credentials.id, credentials)?;
     }
+    for credentials in &config.server_credentials {
+        validate_server_credentials(credentials)?;
+    }
 
     crate::enumeration::validate_credential_references(config)?;
 
@@ -241,23 +245,11 @@ fn validate_client_identity(
     )?;
 
     if let Some(ref certificate) = client_identity.certificate {
-        validate_choice(
-            &server.name,
-            "client-identity/certificate",
-            ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
-            ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-            &[certificate.inline_definition.is_some()],
-        )?;
+        validate_certificate_choice(&server.name, "client-identity/certificate", certificate)?;
     }
 
     if let Some(ref tls13_epsk) = client_identity.tls13_epsk {
-        validate_choice(
-            &server.name,
-            "client-identity/tls13-epsk",
-            Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
-            Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-            &[tls13_epsk.inline_definition.is_some()],
-        )?;
+        validate_epsk_choice(&server.name, "client-identity/tls13-epsk", tls13_epsk)?;
     }
 
     Ok(())
@@ -284,23 +276,11 @@ fn validate_server_authentication(
     )?;
 
     if let Some(ref ca_certs) = server_authentication.ca_certs {
-        validate_choice(
-            &server.name,
-            "server-authentication/ca-certs",
-            ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
-            ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
-            &[ca_certs.inline_definition.is_some()],
-        )?;
+        validate_trust_choice(&server.name, "server-authentication/ca-certs", ca_certs)?;
     }
 
     if let Some(ref ee_certs) = server_authentication.ee_certs {
-        validate_choice(
-            &server.name,
-            "server-authentication/ee-certs",
-            ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
-            ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
-            &[ee_certs.inline_definition.is_some()],
-        )?;
+        validate_trust_choice(&server.name, "server-authentication/ee-certs", ee_certs)?;
     }
 
     Ok(())
@@ -332,26 +312,75 @@ fn validate_client_credentials(credentials: &ClientCredentials) -> anyhow::Resul
     )?;
 
     if let Some(ref certificate) = credentials.certificate {
-        validate_choice(
+        validate_certificate_choice(
             &credentials.id,
             "client-credentials/certificate",
-            ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
-            ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-            &[certificate.inline_definition.is_some()],
+            certificate,
         )?;
     }
 
     if let Some(ref tls13_epsk) = credentials.tls13_epsk {
-        validate_choice(
-            &credentials.id,
-            "client-credentials/tls13-epsk",
-            Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
-            Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-            &[tls13_epsk.inline_definition.is_some()],
-        )?;
+        validate_epsk_choice(&credentials.id, "client-credentials/tls13-epsk", tls13_epsk)?;
     }
 
     Ok(())
+}
+
+fn validate_server_credentials(credentials: &ServerCredentials) -> anyhow::Result<()> {
+    if let Some(ref ca_certs) = credentials.ca_certs {
+        validate_trust_choice(&credentials.id, "server-credentials/ca-certs", ca_certs)?;
+    }
+    if let Some(ref ee_certs) = credentials.ee_certs {
+        validate_trust_choice(&credentials.id, "server-credentials/ee-certs", ee_certs)?;
+    }
+    Ok(())
+}
+
+fn validate_certificate_choice(
+    context: &str,
+    field_path: &str,
+    certificate: &ClientIdentityCertificate,
+) -> anyhow::Result<()> {
+    validate_choice(
+        context,
+        field_path,
+        ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
+        ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
+        &[
+            certificate.inline_definition.is_some(),
+            certificate.central_keystore_reference.is_some(),
+        ],
+    )
+}
+
+fn validate_epsk_choice(context: &str, field_path: &str, epsk: &Tls13Epsk) -> anyhow::Result<()> {
+    validate_choice(
+        context,
+        field_path,
+        Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
+        Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
+        &[
+            epsk.inline_definition.is_some(),
+            epsk.central_keystore_reference.is_some(),
+        ],
+    )
+}
+
+fn validate_trust_choice(
+    context: &str,
+    field_path: &str,
+    certificates: &ServerAuthenticationCaCerts,
+) -> anyhow::Result<()> {
+    validate_choice(
+        context,
+        field_path,
+        ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
+        ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
+        &[
+            certificates.inline_definition.is_some(),
+            certificates.central_truststore_reference.is_some(),
+        ],
+    )
 }
 
 fn validate_choice(
@@ -396,7 +425,9 @@ fn reject_unsupported_inline_features(
     ci: &TlsClientClientIdentity,
 ) -> anyhow::Result<()> {
     if let Some(ref epsk) = ci.tls13_epsk {
-        reject_unsupported_epsk_derivation(context, epsk)?;
+        if epsk.inline_definition.is_some() {
+            reject_unsupported_epsk_derivation(context, epsk)?;
+        }
     }
     Ok(())
 }
@@ -407,7 +438,9 @@ fn reject_unsupported_credentials_features(
     creds: &ClientCredentials,
 ) -> anyhow::Result<()> {
     if let Some(ref epsk) = creds.tls13_epsk {
-        reject_unsupported_epsk_derivation(context, epsk)?;
+        if epsk.inline_definition.is_some() {
+            reject_unsupported_epsk_derivation(context, epsk)?;
+        }
     }
     Ok(())
 }

@@ -85,6 +85,156 @@ fn enumerate_servers_inlines_credential_bundles() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // One snapshot assertion covers every preserved nested field.
+fn enumerate_servers_preserves_all_nested_central_references_and_metadata() {
+    let config = parse_yang_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "client-credentials": [
+                    {
+                        "id": "central-cert",
+                        "certificate": {
+                            "central-keystore-reference": {
+                                "asymmetric-key": "opaque/asymmetric key",
+                                "certificate": "opaque certificate"
+                            }
+                        }
+                    },
+                    {
+                        "id": "central-epsk",
+                        "tls13-epsk": {
+                            "central-keystore-reference": "opaque symmetric key",
+                            "external-identity": "client@example.test",
+                            "hash": "sha-384",
+                            "context": "provider context",
+                            "target-protocol": 7,
+                            "target-kdf": 9,
+                            "tacacsrs:psk-dhe-ke-groups": ["secp384r1", "x25519"]
+                        }
+                    }
+                ],
+                "server-credentials": [
+                    {
+                        "id": "central-trust",
+                        "ca-certs": {
+                            "central-truststore-reference": "opaque CA bag"
+                        },
+                        "ee-certs": {
+                            "central-truststore-reference": "opaque EE bag"
+                        }
+                    }
+                ],
+                "server": [
+                    {
+                        "name": "certificate-server",
+                        "server-type": "accounting",
+                        "address": "10.0.0.10",
+                        "port": 49,
+                        "client-identity": {"credentials-reference": "central-cert"},
+                        "server-authentication": {"credentials-reference": "central-trust"}
+                    },
+                    {
+                        "name": "epsk-server",
+                        "server-type": "accounting",
+                        "address": "10.0.0.11",
+                        "port": 49,
+                        "client-identity": {"credentials-reference": "central-epsk"}
+                    }
+                ]
+            }
+        }"#,
+    )
+    .expect("central bundle config should parse");
+
+    let enumerated = enumerate_servers(&config).expect("enumeration should succeed");
+    let certificate_identity = enumerated[0]
+        .client_identity
+        .as_ref()
+        .expect("certificate identity");
+    assert!(certificate_identity.credentials_reference.is_none());
+    let certificate_reference = certificate_identity
+        .certificate
+        .as_ref()
+        .and_then(|certificate| certificate.central_keystore_reference.as_ref())
+        .expect("central certificate reference");
+    assert_eq!(certificate_reference.asymmetric_key.as_deref(), Some("opaque/asymmetric key"));
+    assert_eq!(certificate_reference.certificate.as_deref(), Some("opaque certificate"));
+
+    let server_authentication = enumerated[0]
+        .server_authentication
+        .as_ref()
+        .expect("server authentication");
+    assert!(server_authentication.credentials_reference.is_none());
+    assert_eq!(
+        server_authentication
+            .ca_certs
+            .as_ref()
+            .and_then(|certificates| certificates.central_truststore_reference.as_deref()),
+        Some("opaque CA bag")
+    );
+    assert_eq!(
+        server_authentication
+            .ee_certs
+            .as_ref()
+            .and_then(|certificates| certificates.central_truststore_reference.as_deref()),
+        Some("opaque EE bag")
+    );
+
+    let epsk_identity = enumerated[1]
+        .client_identity
+        .as_ref()
+        .expect("EPSK identity");
+    assert!(epsk_identity.credentials_reference.is_none());
+    let epsk = epsk_identity.tls13_epsk.as_ref().expect("central EPSK");
+    assert_eq!(epsk.central_keystore_reference.as_deref(), Some("opaque symmetric key"));
+    assert_eq!(epsk.external_identity, "client@example.test");
+    assert_eq!(epsk.hash, tacacsrs_config::EpskSupportedHash::Sha384);
+    assert_eq!(epsk.context.as_deref(), Some("provider context"));
+    assert_eq!(epsk.target_protocol, Some(7));
+    assert_eq!(epsk.target_kdf, Some(9));
+    assert_eq!(
+        epsk.psk_dhe_ke_groups,
+        [
+            tacacsrs_config::PskDheKeSupportedGroup::Secp384r1,
+            tacacsrs_config::PskDheKeSupportedGroup::X25519,
+        ]
+    );
+}
+
+#[test]
+fn central_references_are_not_validated_as_local_bundle_ids() {
+    let root = pipeline::parse_root_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": [{
+                    "name": "central-direct",
+                    "server-type": "accounting",
+                    "address": "10.0.0.12",
+                    "port": 49,
+                    "client-identity": {
+                        "certificate": {
+                            "central-keystore-reference": {
+                                "asymmetric-key": "missing-local-bundle",
+                                "certificate": "also-not-local"
+                            }
+                        }
+                    },
+                    "server-authentication": {
+                        "ca-certs": {
+                            "central-truststore-reference": "not-a-local-server-bundle"
+                        }
+                    }
+                }]
+            }
+        }"#,
+    )
+    .expect("raw central references should parse");
+
+    validate_credential_references(&root.tacacs_plus)
+        .expect("external central references are not config-local bundle IDs");
+}
+
+#[test]
 fn validate_credential_references_collects_missing_client_bundle_ref() {
     let root = pipeline::parse_root_json(
         r#"{

@@ -439,7 +439,7 @@ fn reject_missing_inline_or_keystore_choice() {
     let err = parse_yang_json(json).unwrap_err();
     assert!(
         err.to_string()
-            .contains("client-identity/certificate requires one of [inline]"),
+            .contains("client-identity/certificate requires one of [inline, central-keystore]"),
         "unexpected error: {err}",
     );
 }
@@ -464,8 +464,9 @@ fn reject_missing_inline_or_truststore_choice() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert!(
-        err.to_string()
-            .contains("server-authentication/ca-certs requires one of [inline]"),
+        err.to_string().contains(
+            "server-authentication/ca-certs requires one of [inline, central-truststore]"
+        ),
         "unexpected error: {err}",
     );
 }
@@ -1245,39 +1246,37 @@ fn expected_client_identity_choice_mappings() -> [(&'static str, &'static [&'sta
         (
             "ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY",
             &[
-                r#"
+                r"
                 validate_choice(
-                    &server.name,
-                    "client-identity/certificate",
+                    context,
+                    field_path,
                     ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
                     ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-                "#,
+                ",
                 r#"
-                validate_choice(
+                validate_certificate_choice(
                     &credentials.id,
                     "client-credentials/certificate",
-                    ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE,
-                    ClientIdentityCertificate::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
                 "#,
+                r#"validate_certificate_choice(&server.name, "client-identity/certificate", certificate)"#,
             ],
         ),
         (
             "Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY",
             &[
-                r#"
+                r"
                 validate_choice(
-                    &server.name,
-                    "client-identity/tls13-epsk",
+                    context,
+                    field_path,
                     Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
                     Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
-                "#,
+                ",
                 r#"
-                validate_choice(
+                validate_epsk_choice(
                     &credentials.id,
                     "client-credentials/tls13-epsk",
-                    Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE,
-                    Tls13Epsk::CHOICE_INLINE_OR_KEYSTORE_MANDATORY,
                 "#,
+                r#"validate_epsk_choice(&server.name, "client-identity/tls13-epsk", tls13_epsk)"#,
             ],
         ),
     ]
@@ -1297,13 +1296,27 @@ fn expected_server_auth_choice_mappings() -> [(&'static str, &'static [&'static 
         ),
         (
             "ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY",
-            &[r#"
+            &[
+                r"
                 validate_choice(
-                    &server.name,
-                    "server-authentication/ca-certs",
+                    context,
+                    field_path,
                     ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE,
                     ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY,
-                "#],
+                ",
+                r#"validate_trust_choice(&server.name, "server-authentication/ca-certs", ca_certs)"#,
+                r#"validate_trust_choice(&server.name, "server-authentication/ee-certs", ee_certs)"#,
+                r#"
+                validate_trust_choice(
+                    &credentials.id,
+                    "server-credentials/ca-certs",
+                "#,
+                r#"
+                validate_trust_choice(
+                    &credentials.id,
+                    "server-credentials/ee-certs",
+                "#,
+            ],
         ),
     ]
 }
@@ -1587,7 +1600,11 @@ fn reject_tls13_epsk_with_multiple_choice_sources() {
     }"#;
 
     let err = parse_yang_json(json).unwrap_err();
-    assert_unknown_field_error(&err, "central-keystore-reference");
+    assert!(
+        err.to_string()
+            .contains("client-identity/tls13-epsk allows only one of [inline, central-keystore]"),
+        "unexpected error: {err}",
+    );
 }
 
 // ---------------------------------------------------------------------------

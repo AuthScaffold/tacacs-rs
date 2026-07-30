@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "https://github.com/YangModels/yang.git",
+    "commit": "97ca2414920c0de09171327b84aa11395f79e284",
+    "module": "standard/ietf/RFC/ietf-system-tacacs-plus@2026-03-31.yang",
+    "moduleSha256": "2a58836b7117320f847eb5965f851c9a83d2a13180ecd2f5a62daff5f607f9fd"
+  },
+  "tools": {
+    "pyang": "2.7.1"
+  },
+  "artifacts": {
+    "feature-flags.ini": "b26b330ef0da9d2de3ca4194ada15d5ed200f5774a4123c230d389ec8193f320",
+    "expanded-tree.txt": "720d1e975551b31c9c1acefd5602995d35b6e022b5194894355760c8c4cb86f0",
+    "../src/generated.rs": "b08ec4522d028cfb22fe7bbee0baf89e6943c2b5f29a0558a12d48130f0f4607"
+  }
+}
