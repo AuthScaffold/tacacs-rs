@@ -18,8 +18,12 @@
 //! TACPLUS_SERVER|192.0.2.10                         priority  "64"
 //!                                                   tcp_port  "49"
 //!                                                   timeout   "10"
-//!                                                   use_tls   "true"
 //!                                                   passkey   "optional-per-server-secret"
+//!
+//! TACPLUS_SERVER_TLS|tacacs.example.test            priority  "48"
+//!                                                   tcp_port  "449"
+//!                                                   psk_identity "client"
+//!                                                   psk_secret_ref "epsk-object"
 //! ```
 //!
 //! See [`crate`] documentation for the schema extensions that the bridge
@@ -30,7 +34,8 @@ use std::net::IpAddr;
 
 use anyhow::{bail, Context};
 use tacacsrs_config::{
-    TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType,
+    EpskSupportedHash, PskDheKeSupportedGroup, TacacsPlus, TacacsPlusBuilder,
+    TacacsPlusServerBuilder, TacacsPlusServerType, Tls13Epsk, TlsClientClientIdentity,
     ValidationOptions, ValidationRelaxation,
 };
 
@@ -155,12 +160,6 @@ impl SonicForwarderRow {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum SonicEpskHash {
-    Sha256,
-    Sha384,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum SonicPskKeyExchange {
     PskDhe,
     PskOnly,
@@ -168,9 +167,18 @@ enum SonicPskKeyExchange {
 
 #[derive(Debug, Clone)]
 struct SonicTlsServerRow {
+    address: String,
     normalized_host: NormalizedHost,
     priority: u8,
     tcp_port: u16,
+    timeout: u16,
+    domain_name: Option<String>,
+    sni_enabled: bool,
+    single_connection: bool,
+    psk_identity: String,
+    psk_secret_ref: String,
+    psk_hash: EpskSupportedHash,
+    psk_dhe_groups: Vec<PskDheKeSupportedGroup>,
 }
 
 impl SonicTlsServerRow {
@@ -197,29 +205,31 @@ impl SonicTlsServerRow {
             .with_context(|| format!("{row_name}.priority"))?;
         let tcp_port =
             parse_optional_port(&row_name, hash.get("tcp_port"), DEFAULT_TACACS_TLS_PORT)?;
-        let _timeout = hash
+        let timeout = hash
             .get("timeout")
             .map_or(Ok(DEFAULT_TIMEOUT_SECONDS), |value| parse_timeout(value))
             .with_context(|| format!("{row_name}.timeout"))?;
-        let domain_name = optional_non_empty_field(&row_name, hash, "domain_name")?;
+        let domain_name =
+            optional_non_empty_field(&row_name, hash, "domain_name")?.map(str::to_owned);
         let sni_enabled =
             parse_optional_bool(&row_name, "sni_enabled", hash.get("sni_enabled"), false)?;
         if sni_enabled && domain_name.is_none() {
             bail!("{row_name}.sni_enabled requires domain_name");
         }
-        let _single_connection = parse_optional_bool(
+        let single_connection = parse_optional_bool(
             &row_name,
             "single_connection",
             hash.get("single_connection"),
             false,
         )?;
-        let _psk_identity = required_non_empty_field(&row_name, hash, "psk_identity")?;
-        let psk_secret_ref = required_non_empty_field(&row_name, hash, "psk_secret_ref")?;
-        validate_opaque_id(psk_secret_ref)
+        let psk_identity = required_non_empty_field(&row_name, hash, "psk_identity")?.to_owned();
+        let psk_secret_ref =
+            required_non_empty_field(&row_name, hash, "psk_secret_ref")?.to_owned();
+        validate_opaque_id(&psk_secret_ref)
             .with_context(|| format!("{row_name}.psk_secret_ref is invalid"))?;
-        let _psk_hash = match hash.get("psk_hash").map_or("sha-256", String::as_str) {
-            "sha-256" => SonicEpskHash::Sha256,
-            "sha-384" => SonicEpskHash::Sha384,
+        let psk_hash = match hash.get("psk_hash").map_or("sha-256", String::as_str) {
+            "sha-256" => EpskSupportedHash::Sha256,
+            "sha-384" => EpskSupportedHash::Sha384,
             _ => bail!("{row_name}.psk_hash is unsupported"),
         };
         let psk_key_exchange = match hash
@@ -230,17 +240,33 @@ impl SonicTlsServerRow {
             "psk-only" => SonicPskKeyExchange::PskOnly,
             _ => bail!("{row_name}.psk_key_exchange is unsupported"),
         };
-        let psk_key_exchange_groups = hash
+        let configured_groups = hash
             .get("psk_key_exchange_groups")
             .map_or_else(|| Ok(Vec::new()), |value| parse_psk_groups(&row_name, value))?;
-        if psk_key_exchange == SonicPskKeyExchange::PskOnly && !psk_key_exchange_groups.is_empty() {
+        if psk_key_exchange == SonicPskKeyExchange::PskOnly && !configured_groups.is_empty() {
             bail!("{row_name}.psk-only cannot configure DHE groups");
         }
+        let psk_dhe_groups = match psk_key_exchange {
+            SonicPskKeyExchange::PskOnly => Vec::new(),
+            SonicPskKeyExchange::PskDhe if configured_groups.is_empty() => {
+                tacacsrs_config::builders::DEFAULT_PSK_DHE_KE_GROUPS.to_vec()
+            }
+            SonicPskKeyExchange::PskDhe => configured_groups,
+        };
 
         Ok(Self {
+            address: address.to_owned(),
             normalized_host: normalize_host(address),
             priority,
             tcp_port,
+            timeout,
+            domain_name,
+            sni_enabled,
+            single_connection,
+            psk_identity,
+            psk_secret_ref,
+            psk_hash,
+            psk_dhe_groups,
         })
     }
 
@@ -249,6 +275,35 @@ impl SonicTlsServerRow {
             host: self.normalized_host.clone(),
             port: self.tcp_port,
         }
+    }
+
+    fn to_server(&self) -> tacacsrs_config::TacacsPlusServer {
+        let mut server = TacacsPlusServerBuilder::new(
+            sonic_server_name(&self.address),
+            TacacsPlusServerType::all(),
+            self.address.clone(),
+            self.tcp_port,
+        )
+        .with_timeout(self.timeout)
+        .build();
+        server.domain_name.clone_from(&self.domain_name);
+        server.sni_enabled = Some(self.sni_enabled);
+        server.single_connection = self.single_connection;
+        server.client_identity = Some(TlsClientClientIdentity {
+            credentials_reference: None,
+            certificate: None,
+            tls13_epsk: Some(Tls13Epsk {
+                inline_definition: None,
+                central_keystore_reference: Some(self.psk_secret_ref.clone()),
+                external_identity: self.psk_identity.clone(),
+                hash: self.psk_hash,
+                context: None,
+                target_protocol: None,
+                target_kdf: None,
+                psk_dhe_ke_groups: self.psk_dhe_groups.clone(),
+            }),
+        });
+        server
     }
 }
 
@@ -262,9 +317,8 @@ impl SonicTlsServerRow {
 ///
 /// Per-row fields fall back to the matching `TACPLUS|global` field when the
 /// per-server value is absent (this matches SONiC's `pam_tacplus` behavior).
-/// The forward-compatible `use_tls` extension key selects the same empty
-/// `server-authentication` TLS container that `tacon --use-tls` constructs
-/// when no explicit client/server certificate material is configured.
+/// TLS rows map to RFC 9950 central-keystore EPSK references. The mapper never
+/// reads provider files or places resolved key bytes into generated values.
 ///
 /// # Errors
 ///
@@ -283,8 +337,8 @@ pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Re
             SonicCandidateRow::Compatibility(row) => {
                 builder = builder.with_server(row.to_server(&parsed.global));
             }
-            SonicCandidateRow::Tls(_) => {
-                bail!("TACPLUS_SERVER_TLS mapping requires P3.3 central-reference projection");
+            SonicCandidateRow::Tls(row) => {
+                builder = builder.with_server(row.to_server());
             }
         }
     }
@@ -671,31 +725,20 @@ fn validate_opaque_id(value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn parse_psk_groups(row: &str, value: &str) -> anyhow::Result<Vec<String>> {
-    const SUPPORTED: &[&str] = &[
-        "x25519",
-        "secp256r1",
-        "secp384r1",
-        "secp521r1",
-        "ffdhe2048",
-        "ffdhe3072",
-        "ffdhe4096",
-        "ffdhe6144",
-        "ffdhe8192",
-    ];
+fn parse_psk_groups(row: &str, value: &str) -> anyhow::Result<Vec<PskDheKeSupportedGroup>> {
     if value.is_empty() {
         bail!("{row}.psk_key_exchange_groups must not be empty");
     }
     let mut seen = BTreeSet::new();
     let mut groups = Vec::new();
     for group in value.split(':') {
-        if !SUPPORTED.contains(&group) {
-            bail!("{row}.psk_key_exchange_groups contains an unsupported group");
-        }
         if !seen.insert(group) {
             bail!("{row}.psk_key_exchange_groups contains a duplicate group");
         }
-        groups.push(group.to_owned());
+        let parsed = PskDheKeSupportedGroup::from_rfc7951_str(group).ok_or_else(|| {
+            anyhow::anyhow!("{row}.psk_key_exchange_groups contains an unsupported group")
+        })?;
+        groups.push(parsed);
     }
     Ok(groups)
 }
@@ -1022,6 +1065,123 @@ mod tests {
             ))
             .expect_err("invalid TLS row must fail");
         }
+    }
+
+    #[test]
+    fn tls_epsk_row_maps_to_central_rfc_identity_without_inline_material() {
+        let mut tls = BTreeMap::new();
+        tls.insert(
+            "tacacs.example.test".to_owned(),
+            h(&[
+                ("priority", "48"),
+                ("tcp_port", "449"),
+                ("timeout", "10"),
+                ("domain_name", "sni.example.test"),
+                ("sni_enabled", "true"),
+                ("single_connection", "true"),
+                ("psk_identity", "client-identity"),
+                ("psk_secret_ref", "epsk-object-01"),
+                ("psk_hash", "sha-384"),
+                ("psk_key_exchange", "psk-dhe"),
+                ("psk_key_exchange_groups", "x25519:secp384r1"),
+            ]),
+        );
+        let config = map_sonic_tables_to_tacacs_plus(&SonicTacacsTables::with_extended_tables(
+            SonicHash::new(),
+            BTreeMap::new(),
+            tls,
+            SonicHash::new(),
+        ))
+        .expect("central EPSK mapping");
+
+        let server = &config.server[0];
+        assert_eq!(server.address, "tacacs.example.test");
+        assert_eq!(server.port, 449);
+        assert_eq!(server.timeout, 10);
+        assert_eq!(server.domain_name.as_deref(), Some("sni.example.test"));
+        assert_eq!(server.sni_enabled, Some(true));
+        assert!(server.single_connection);
+        assert!(server.shared_secret.is_none());
+        assert!(server.server_authentication.is_none());
+        let epsk = server
+            .client_identity
+            .as_ref()
+            .and_then(|identity| identity.tls13_epsk.as_ref())
+            .expect("central EPSK identity");
+        assert!(epsk.inline_definition.is_none());
+        assert_eq!(epsk.central_keystore_reference.as_deref(), Some("epsk-object-01"));
+        assert_eq!(epsk.external_identity, "client-identity");
+        assert_eq!(epsk.hash, EpskSupportedHash::Sha384);
+        assert_eq!(
+            epsk.psk_dhe_ke_groups,
+            [
+                PskDheKeSupportedGroup::X25519,
+                PskDheKeSupportedGroup::Secp384r1
+            ]
+        );
+    }
+
+    #[test]
+    fn tls_epsk_exchange_defaults_and_psk_only_map_distinctly() {
+        let mut tls = BTreeMap::new();
+        tls.insert("dhe.example.test".to_owned(), tls_fields("48"));
+        tls.insert(
+            "only.example.test".to_owned(),
+            h(&[
+                ("priority", "32"),
+                ("psk_identity", "client"),
+                ("psk_secret_ref", "epsk-only"),
+                ("psk_key_exchange", "psk-only"),
+            ]),
+        );
+        let config = map_sonic_tables_to_tacacs_plus(&SonicTacacsTables::with_extended_tables(
+            SonicHash::new(),
+            BTreeMap::new(),
+            tls,
+            SonicHash::new(),
+        ))
+        .expect("EPSK exchange mapping");
+
+        let dhe = config.server[0]
+            .client_identity
+            .as_ref()
+            .and_then(|identity| identity.tls13_epsk.as_ref())
+            .expect("default DHE EPSK");
+        assert_eq!(dhe.psk_dhe_ke_groups, tacacsrs_config::builders::DEFAULT_PSK_DHE_KE_GROUPS);
+        assert_eq!(dhe.hash, EpskSupportedHash::Sha256);
+
+        let psk_only = config.server[1]
+            .client_identity
+            .as_ref()
+            .and_then(|identity| identity.tls13_epsk.as_ref())
+            .expect("PSK-only EPSK");
+        assert!(psk_only.psk_dhe_ke_groups.is_empty());
+    }
+
+    #[test]
+    fn mixed_tcp_and_tls_projection_preserves_typed_priority_order() {
+        let mut compatibility = BTreeMap::new();
+        compatibility.insert("192.0.2.10".to_owned(), h(&[("priority", "16")]));
+        let mut tls = BTreeMap::new();
+        tls.insert("tls.example.test".to_owned(), tls_fields("48"));
+        let config = map_sonic_tables_to_tacacs_plus(&SonicTacacsTables::with_extended_tables(
+            SonicHash::new(),
+            compatibility,
+            tls,
+            SonicHash::new(),
+        ))
+        .expect("mixed projection");
+
+        assert_eq!(
+            config
+                .server
+                .iter()
+                .map(|server| server.address.as_str())
+                .collect::<Vec<_>>(),
+            ["tls.example.test", "192.0.2.10"]
+        );
+        assert!(config.server[0].client_identity.is_some());
+        assert!(config.server[1].client_identity.is_none());
     }
 
     #[test]

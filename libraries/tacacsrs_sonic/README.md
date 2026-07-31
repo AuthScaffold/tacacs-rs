@@ -32,10 +32,10 @@ only TLS 1.3 EPSK fields reviewed by the central-agent HLD. Certificate and
 mTLS references, cipher-suite overrides, certificate-verification overrides,
 TLS-row `passkey`, and unknown fields are rejected instead of ignored.
 
-P3.2 validates and orders typed TLS rows but deliberately stops before mapping
-them into RFC central references. P3.3 owns that projection. This temporary
-boundary prevents a TLS row from falling through to plain TCP or an empty TLS
-configuration while the mapping is incomplete.
+Validated TLS rows map to RFC 9950 central-keystore EPSK references. The
+generated model retains the opaque object ID, external identity, hash, SNI,
+connection policy, and exchange groups. It contains no inline or resolved key
+bytes. Credential files are not read by this mapper.
 
 ## Compatibility isolation
 
