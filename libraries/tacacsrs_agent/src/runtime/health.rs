@@ -98,6 +98,8 @@ pub enum DegradationReason {
     CandidateConfigurationRejected,
     /// Credential resolution failed for a candidate configuration.
     CredentialResolutionFailed,
+    /// Validated listener or host-binding settings require process restart.
+    RestartRequired,
     /// Every eligible upstream failed an authoritative connection attempt.
     UpstreamsUnavailable,
     /// A runtime invariant or internal component failed.
@@ -428,6 +430,27 @@ mod tests {
         let snapshot = publisher.snapshot();
         assert!(snapshot.is_readiness_serving());
         assert_eq!(snapshot.datastore(), DatastoreState::Stale);
+    }
+
+    #[test]
+    fn restart_required_is_degraded_without_withdrawing_readiness() {
+        let publisher = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        publisher.set_applied_configuration(true);
+        publisher.set_eligible_server_count(1);
+        assert!(publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+
+        publisher.set_degraded(DegradationReason::RestartRequired, true);
+        assert!(publisher.snapshot().is_readiness_serving());
+        assert!(publisher
+            .snapshot()
+            .degradation_reasons()
+            .contains(&DegradationReason::RestartRequired));
+
+        publisher.set_degraded(DegradationReason::RestartRequired, false);
+        assert!(!publisher
+            .snapshot()
+            .degradation_reasons()
+            .contains(&DegradationReason::RestartRequired));
     }
 
     #[test]

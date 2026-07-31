@@ -174,9 +174,13 @@ When multiple IPC requests arrive simultaneously during a reconnect, only one co
 
 On startup the daemon attempts to connect to servers in order and stops at the first success. This prevents connection storms when many instances start simultaneously (e.g. during a fleet rollout). If no server is reachable at startup, the daemon still starts and requests will retry on demand.
 
-SONiC ConfigDB is supervised differently from local CLI or file input. The daemon binds enabled listeners with an empty runtime configuration, reports startup/readiness as not serving, and retries ConfigDB and credential dependencies with capped jittered backoff. Each candidate is loaded, filtered, bundle-enumerated, completely resolved through the SONiC provider, and projected into closed runtime servers before one atomic apply. A missing provider root or object therefore cannot apply a partial server list.
+SONiC ConfigDB is supervised differently from local CLI or file input. Before constructing the service, the daemon waits for a valid `TACPLUS_FORWARDER|global` row and uses its loopback address and port for the raw TACACS+ proxy listener. SONiC mode always hosts both the Client API and proxy. A conflicting `--proxy-endpoint` or non-`both` service mode is rejected. Ctrl-C or SIGTERM cancels this pre-bind retry.
+
+After forwarder bootstrap, the daemon binds both listeners with an empty upstream runtime configuration, reports startup/readiness as not serving, and retries server and credential dependencies with capped jittered backoff. Each candidate is loaded, filtered, bundle-enumerated, completely resolved through the SONiC provider, and projected into closed runtime servers before one atomic apply. A missing provider root or object therefore cannot apply a partial server list.
 
 When Redis and every referenced credential become available, the same process applies the first complete snapshot and becomes ready. Subscription failures and ended streams trigger a fresh load before resubscription. Invalid ConfigDB or credential candidates leave the previous known-good runtime configuration active and mark health degraded. The reload-safe provider reopens the root for each candidate, so a credential mount that appears after startup and an explicitly replaced provider root can recover without restarting the process.
+
+Post-bind forwarder changes are validated with the same complete ConfigDB snapshot as live upstream changes. Upstream server and credential updates continue to apply, while changed or deleted forwarder settings leave active endpoints unchanged and add a sanitized restart-required degradation. Restoring the bound values clears that degradation; malformed rows are rejected without claiming either listener changed.
 
 ## Health and Probes
 

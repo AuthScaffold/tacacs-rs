@@ -266,6 +266,10 @@ impl ConfigSupervisor {
                     Some(ConfigChangeEvent::CandidateRejected) => {
                         self.mark_candidate_rejected();
                     }
+                    Some(ConfigChangeEvent::RestartRequired { required }) => {
+                        self.health
+                            .set_degraded(DegradationReason::RestartRequired, required);
+                    }
                     None => {
                         log::warn!(
                             "Datastore '{}' continuous change stream ended; reconnecting",
@@ -403,6 +407,7 @@ mod tests {
         Empty,
         Pending,
         RejectedThenPending,
+        RestartThenPending,
     }
 
     struct ScriptedDatastore {
@@ -464,6 +469,10 @@ mod tests {
                 SubscriptionStep::Pending => Ok(Box::pin(tokio_stream::pending())),
                 SubscriptionStep::RejectedThenPending => Ok(Box::pin(
                     tokio_stream::once(ConfigChangeEvent::CandidateRejected)
+                        .chain(tokio_stream::pending()),
+                )),
+                SubscriptionStep::RestartThenPending => Ok(Box::pin(
+                    tokio_stream::once(ConfigChangeEvent::RestartRequired { required: true })
                         .chain(tokio_stream::pending()),
                 )),
             }
@@ -855,6 +864,48 @@ mod tests {
 
         assert_eq!(service.server_count(), 1);
         assert_eq!(health.snapshot().datastore(), DatastoreState::Stale);
+    }
+
+    #[tokio::test]
+    async fn restart_required_retains_known_good_configuration_and_readiness() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(
+                InitialLoadPolicy::FailFast,
+                ChangeNotificationMode::Continuous,
+            ),
+            [LoadStep::Config(1)],
+            [SubscriptionStep::RestartThenPending],
+        ));
+        let (supervisor, health, service) = supervisor(Arc::clone(&datastore), Duration::ZERO);
+        let cancellation = CancellationToken::new();
+        let child = cancellation.clone();
+
+        supervisor
+            .load_initial(&cancellation)
+            .await
+            .expect("initial load");
+        assert!(health.set_listener(
+            tacacsrs_agent::RuntimeService::ClientApi,
+            tacacsrs_agent::ListenerState::Bound,
+        ));
+        let task = tokio::spawn(async move { supervisor.run_notifications(&child).await });
+        timeout(Duration::from_secs(1), async {
+            while !health
+                .snapshot()
+                .degradation_reasons()
+                .contains(&DegradationReason::RestartRequired)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("restart requirement should be published");
+        cancellation.cancel();
+        task.await.expect("task should join");
+
+        assert_eq!(service.server_count(), 1);
+        assert!(health.snapshot().is_readiness_serving());
+        assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
     }
 
     #[tokio::test]

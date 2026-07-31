@@ -20,8 +20,8 @@ use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
 use tacacsrs_datastore::{ConfigDatastore, InitialLoadPolicy};
 use tacacsrs_credential_resolution::CredentialResolver;
 use tacacsrs_sonic::{
-    DEFAULT_REDIS_URL, SonicConfigDb, SonicConnection, SonicCredentialPolicy,
-    SonicCredentialResolver, SonicCredentialRoots,
+    SonicConfigDb, SonicConnection, SonicCredentialPolicy, SonicCredentialResolver,
+    SonicCredentialRoots,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -71,6 +71,9 @@ fn init_logger(verbose: u8) {
 }
 
 fn enabled_services_from_cli(cli: &Cli) -> EnabledServices {
+    if cli.sonic {
+        return EnabledServices::BOTH;
+    }
     match cli.service_mode.unwrap_or_else(|| {
         if cli.proxy_endpoint.is_some() {
             ServiceMode::Both
@@ -82,6 +85,79 @@ fn enabled_services_from_cli(cli: &Cli) -> EnabledServices {
         ServiceMode::TacacsProxy => EnabledServices::TACACS_PROXY,
         ServiceMode::Both => EnabledServices::BOTH,
     }
+}
+
+fn sonic_connection_from_cli(cli: &Cli) -> SonicConnection {
+    let mut settings = SonicConnection::default();
+    if let Some(url) = cli.sonic_redis_url.clone() {
+        settings.url = url;
+    }
+    if let Some(db) = cli.sonic_redis_db {
+        settings.db_index = db;
+    }
+    settings
+}
+
+async fn wait_for_sonic_forwarder(
+    settings: &SonicConnection,
+) -> anyhow::Result<tacacsrs_sonic::SonicForwarderSettings> {
+    let mut delay = Duration::from_millis(250);
+    loop {
+        let load = tokio::select! {
+            load = settings.load_forwarder_settings() => load,
+            signal = bootstrap_shutdown_signal() => {
+                signal?;
+                anyhow::bail!("shutdown requested during SONiC forwarder bootstrap");
+            }
+        };
+        if let Ok(forwarder) = load {
+            return Ok(forwarder);
+        }
+        log::warn!("SONiC forwarder settings are unavailable; retrying before bind");
+        tokio::select! {
+            () = tokio::time::sleep(delay) => {}
+            signal = bootstrap_shutdown_signal() => {
+                signal?;
+                anyhow::bail!("shutdown requested during SONiC forwarder bootstrap");
+            }
+        }
+        delay = delay.saturating_mul(2).min(Duration::from_secs(30));
+    }
+}
+
+async fn bootstrap_shutdown_signal() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate()).context("register SIGTERM handler")?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result.context("register Ctrl-C handler"),
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("register Ctrl-C handler")
+    }
+}
+
+async fn sonic_forwarder_from_cli(
+    cli: &Cli,
+) -> anyhow::Result<Option<tacacsrs_sonic::SonicForwarderSettings>> {
+    if !cli.sonic {
+        return Ok(None);
+    }
+    if cli
+        .service_mode
+        .is_some_and(|mode| mode != ServiceMode::Both)
+    {
+        anyhow::bail!("SONiC central-agent mode requires --service-mode both");
+    }
+    Ok(Some(wait_for_sonic_forwarder(&sonic_connection_from_cli(cli)).await?))
 }
 
 fn cli_datastore_input_from_cli(cli: &Cli) -> CliDatastoreInput {
@@ -140,23 +216,17 @@ fn cli_psk_inputs(cli: &Cli) -> Option<CliPskInputs> {
 /// Construction is infallible: every datastore validates its configuration
 /// lazily in [`ConfigDatastore::load`], so configuration errors surface when
 /// the daemon performs its initial load rather than here.
-fn build_datastore(cli: &Cli) -> Arc<dyn ConfigDatastore> {
+fn build_datastore(
+    cli: &Cli,
+    sonic_forwarder: Option<tacacsrs_sonic::SonicForwarderSettings>,
+) -> Arc<dyn ConfigDatastore> {
     if cli.sonic {
-        let mut settings = SonicConnection::default();
-        if let Some(url) = cli.sonic_redis_url.clone() {
-            settings.url = url;
-        } else {
-            settings.url = DEFAULT_REDIS_URL.to_string();
-        }
-        if let Some(db) = cli.sonic_redis_db {
-            settings.db_index = db;
-        }
-        log::info!(
-            "Configured SONiC ConfigDB datastore: url='{}', db={}",
-            settings.url,
-            settings.db_index,
-        );
-        return Arc::new(SonicConfigDb::new(settings));
+        let settings = sonic_connection_from_cli(cli);
+        log::info!("Configured SONiC ConfigDB datastore (database index {})", settings.db_index);
+        return Arc::new(match sonic_forwarder {
+            Some(forwarder) => SonicConfigDb::with_bound_forwarder(settings, forwarder),
+            None => SonicConfigDb::new(settings),
+        });
     }
 
     if let Some(ref config_path) = cli.config {
@@ -255,6 +325,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_logger(cli.verbose);
     let host_integration = HostIntegration::from_environment(cli.host_integration)?;
+    let sonic_forwarder = sonic_forwarder_from_cli(&cli).await?;
     let enabled_services = enabled_services_from_cli(&cli);
 
     let endpoint = cli
@@ -275,11 +346,24 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Linux deployments must use a Unix domain socket endpoint");
     }
 
-    let proxy_endpoint = cli
+    let configured_proxy_endpoint = cli
         .proxy_endpoint
         .as_deref()
         .map(IpcEndpoint::from_str)
         .transpose()?;
+    let proxy_endpoint = match sonic_forwarder {
+        Some(forwarder) => {
+            let endpoint = IpcEndpoint::Tcp(forwarder.socket_address());
+            if configured_proxy_endpoint
+                .as_ref()
+                .is_some_and(|configured| configured != &endpoint)
+            {
+                anyhow::bail!("CLI proxy endpoint conflicts with TACPLUS_FORWARDER|global");
+            }
+            Some(endpoint)
+        }
+        None => configured_proxy_endpoint,
+    };
 
     if let Some(proxy_endpoint) = &proxy_endpoint {
         if enabled_services.client_api() && proxy_endpoint == &endpoint {
@@ -303,7 +387,7 @@ async fn main() -> anyhow::Result<()> {
         cli.proxy_shared_secret.clone(),
     );
 
-    let datastore = build_datastore(&cli);
+    let datastore = build_datastore(&cli, sonic_forwarder);
     let health = RuntimeHealthPublisher::new(enabled_services);
     let empty_tacacs_plus = tacacsrs_config::TacacsPlus::empty();
     let service = Arc::new(
@@ -520,6 +604,13 @@ mod tests {
         ]);
 
         assert_eq!(enabled_services_from_cli(&cli), EnabledServices::TACACS_PROXY);
+    }
+
+    #[test]
+    fn sonic_mode_always_enables_client_api_and_proxy() {
+        let cli = Cli::parse_from(["tacacsrs-agentd", "--sonic"]);
+
+        assert_eq!(enabled_services_from_cli(&cli), EnabledServices::BOTH);
     }
 
     #[test]

@@ -126,13 +126,21 @@ struct EndpointIdentity {
     port: u16,
 }
 
-#[derive(Debug, Clone)]
-struct SonicForwarderRow {
-    endpoint: EndpointIdentity,
+/// Validated bind-time local forwarder settings.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SonicForwarderSettings {
+    listen_address: IpAddr,
+    listen_port: u16,
 }
 
-impl SonicForwarderRow {
-    fn from_hash(hash: &SonicHash) -> anyhow::Result<Option<Self>> {
+impl SonicForwarderSettings {
+    /// Parses `TACPLUS_FORWARDER|global`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unknown fields, a missing/non-loopback address,
+    /// or an invalid port.
+    pub fn from_hash(hash: &SonicHash) -> anyhow::Result<Option<Self>> {
         if hash.is_empty() {
             return Ok(None);
         }
@@ -144,18 +152,46 @@ impl SonicForwarderRow {
         )?;
         let listen_address =
             required_non_empty_field("TACPLUS_FORWARDER|global", hash, "local_listen_address")?;
-        let host = normalize_host(listen_address);
-        if host != NormalizedHost::Loopback {
+        let listen_address = listen_address
+            .parse::<IpAddr>()
+            .context("TACPLUS_FORWARDER|global.local_listen_address must be an IP address")?;
+        if !listen_address.is_loopback() {
             bail!("TACPLUS_FORWARDER|global.local_listen_address must be loopback");
         }
-        let port = parse_optional_port(
+        let listen_port = parse_optional_port(
             "TACPLUS_FORWARDER|global",
             hash.get("local_listen_port"),
             DEFAULT_TACACS_TCP_PORT,
         )?;
         Ok(Some(Self {
-            endpoint: EndpointIdentity { host, port },
+            listen_address,
+            listen_port,
         }))
+    }
+
+    /// Returns the configured loopback address.
+    #[must_use]
+    pub const fn listen_address(self) -> IpAddr {
+        self.listen_address
+    }
+
+    /// Returns the configured listener TCP port.
+    #[must_use]
+    pub const fn listen_port(self) -> u16 {
+        self.listen_port
+    }
+
+    /// Returns the complete local proxy endpoint.
+    #[must_use]
+    pub const fn socket_address(self) -> std::net::SocketAddr {
+        std::net::SocketAddr::new(self.listen_address, self.listen_port)
+    }
+
+    fn endpoint(self) -> EndpointIdentity {
+        EndpointIdentity {
+            host: NormalizedHost::Loopback,
+            port: self.listen_port,
+        }
     }
 }
 
@@ -389,14 +425,14 @@ struct ParsedSonicTables {
 impl ParsedSonicTables {
     fn from_tables(tables: &SonicTacacsTables) -> anyhow::Result<Self> {
         let global = SonicGlobal::from_hash(&tables.global)?;
-        let forwarder = SonicForwarderRow::from_hash(&tables.forwarder)?;
+        let forwarder = SonicForwarderSettings::from_hash(&tables.forwarder)?;
         let mut candidates = Vec::with_capacity(tables.servers.len() + tables.tls_servers.len());
 
         for (address, fields) in &tables.servers {
             let row = SonicServerRow::from_hash(address, fields)?;
             if forwarder
                 .as_ref()
-                .is_some_and(|settings| row.endpoint() == settings.endpoint)
+                .is_some_and(|settings| row.endpoint() == settings.endpoint())
             {
                 continue;
             }
@@ -407,7 +443,7 @@ impl ParsedSonicTables {
             let row = SonicTlsServerRow::from_hash(address, fields)?;
             if forwarder
                 .as_ref()
-                .is_some_and(|settings| row.endpoint() == settings.endpoint)
+                .is_some_and(|settings| row.endpoint() == settings.endpoint())
             {
                 bail!("TACPLUS_SERVER_TLS|{address} targets the local forwarder endpoint");
             }
@@ -1038,6 +1074,32 @@ mod tests {
         ))
         .expect_err("non-loopback listener must fail");
         assert!(error.to_string().contains("must be loopback"));
+    }
+
+    #[test]
+    fn forwarder_settings_apply_default_port_and_support_ipv6_loopback() {
+        let settings = SonicForwarderSettings::from_hash(&h(&[("local_listen_address", "::1")]))
+            .expect("valid forwarder")
+            .expect("configured forwarder");
+
+        assert_eq!(settings.listen_address(), "::1".parse::<IpAddr>().expect("IPv6"));
+        assert_eq!(settings.listen_port(), 49);
+        assert_eq!(settings.socket_address(), "[::1]:49".parse().expect("socket"));
+    }
+
+    #[test]
+    fn deleted_and_malformed_forwarder_rows_are_distinct() {
+        assert_eq!(
+            SonicForwarderSettings::from_hash(&SonicHash::new()).expect("deleted row"),
+            None
+        );
+
+        let error = SonicForwarderSettings::from_hash(&h(&[
+            ("local_listen_address", "127.0.0.1"),
+            ("local_listen_port", "0"),
+        ]))
+        .expect_err("zero port must be rejected");
+        assert!(error.to_string().contains("1..65535"));
     }
 
     #[test]

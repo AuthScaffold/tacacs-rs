@@ -80,6 +80,9 @@ async fn main() -> anyhow::Result<()> {
             tacacsrs_datastore::ConfigChangeEvent::CandidateRejected => {
                 println!("  result: candidate_rejected");
             }
+            tacacsrs_datastore::ConfigChangeEvent::RestartRequired { required } => {
+                println!("  restart_required: {required}");
+            }
         }
 
         if cli

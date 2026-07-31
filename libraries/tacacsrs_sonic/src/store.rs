@@ -15,7 +15,7 @@ use redis::AsyncCommands;
 use tokio::sync::mpsc;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::mapping::{SonicHash, SonicTacacsTables};
+use crate::mapping::{SonicForwarderSettings, SonicHash, SonicTacacsTables};
 
 /// Default Redis URL when the operator does not override it.
 ///
@@ -89,6 +89,30 @@ impl SonicConnection {
     pub fn keyspace_pattern(&self) -> String {
         format!("__keyspace@{}__:TACPLUS*", self.db_index)
     }
+
+    /// Loads validated bind-time forwarder settings before listener creation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ConfigDB is unavailable or the global forwarder
+    /// row is missing or invalid.
+    pub async fn load_forwarder_settings(&self) -> anyhow::Result<SonicForwarderSettings> {
+        let mut connection = self.connect().await?;
+        read_forwarder_settings(&mut connection)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("TACPLUS_FORWARDER|global is required"))
+    }
+}
+
+async fn read_forwarder_settings(
+    conn: &mut MultiplexedConnection,
+) -> anyhow::Result<Option<SonicForwarderSettings>> {
+    let key = format!("{TACPLUS_FORWARDER_TABLE}|global");
+    let fields: SonicHash = conn
+        .hgetall(&key)
+        .await
+        .with_context(|| format!("HGETALL failed for {key}"))?;
+    SonicForwarderSettings::from_hash(&fields)
 }
 
 /// Read all TACACS+ tables from ConfigDB into an in-memory snapshot.

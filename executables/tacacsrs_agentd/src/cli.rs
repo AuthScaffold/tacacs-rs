@@ -78,8 +78,7 @@ pub(crate) struct Cli {
     #[arg(long = "server-addr", conflicts_with_all = ["sonic", "sonic_redis_url", "sonic_redis_db"])]
     pub(crate) server_addresses: Vec<String>,
 
-    /// Source TACACS+ configuration from `SONiC` `ConfigDB` (`TACPLUS` /
-    /// `TACPLUS_SERVER` Redis tables).
+    /// Source TACACS+ and local forwarder configuration from `SONiC` `ConfigDB`.
     #[arg(long)]
     pub(crate) sonic: bool,
 
@@ -97,7 +96,7 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) listen_endpoint: Option<String>,
 
-    /// Optional local TACACS+ proxy endpoint. Use a Unix socket path or loopback TCP address.
+    /// Optional local TACACS+ proxy endpoint. `SONiC` mode loads this from `ConfigDB`.
     #[arg(long)]
     pub(crate) proxy_endpoint: Option<String>,
 
@@ -105,7 +104,7 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "SECRET", requires = "proxy_endpoint", conflicts_with = "sonic")]
     pub(crate) proxy_shared_secret: Option<String>,
 
-    /// Runtime service mode. Defaults to client-api, or both when --proxy-endpoint is set.
+    /// Runtime service mode. `SONiC` mode requires both services.
     #[arg(long, value_enum)]
     pub(crate) service_mode: Option<ServiceMode>,
 

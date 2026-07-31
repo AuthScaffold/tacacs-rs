@@ -139,6 +139,14 @@ pub enum ConfigChangeEvent {
     /// carries no error text or configuration value so health consumers cannot
     /// expose addresses, credential references, or secrets.
     CandidateRejected,
+    /// A validated host-binding setting changed but cannot be applied live.
+    ///
+    /// The current bound resources remain active until process restart. No
+    /// configuration values are included in this event.
+    RestartRequired {
+        /// Whether the current validated settings differ from bound resources.
+        required: bool,
+    },
 }
 
 /// Stream of [`ConfigChangeEvent`] values returned by [`ConfigDatastore::subscribe`].
