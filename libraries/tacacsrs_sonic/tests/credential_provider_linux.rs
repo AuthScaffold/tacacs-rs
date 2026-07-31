@@ -228,6 +228,39 @@ async fn deferred_certificate_requests_are_rejected_without_accessing_acms() {
     assert_eq!(error.kind(), ResolutionErrorKind::InvalidMaterial);
 }
 
+#[tokio::test]
+async fn reloadable_provider_recovers_when_protected_root_appears() {
+    let temp = tempfile::tempdir().expect("temporary parent");
+    if fs::metadata(temp.path()).expect("parent metadata").uid() != 0 {
+        return;
+    }
+    let root = temp.path().join("late-epsk-root");
+    let provider = SonicCredentialResolver::reloadable(
+        SonicCredentialRoots::new(&root, temp.path().join("unused-acms-root")),
+        SonicCredentialPolicy::production_from_root_group(),
+    );
+    let plan = epsk_plan("late-object");
+
+    let error = provider
+        .resolve(&plan.requests()[0])
+        .await
+        .expect_err("missing root must be unavailable");
+    assert_eq!(error.kind(), ResolutionErrorKind::Unavailable);
+
+    fs::create_dir(&root).expect("create late root");
+    configure_mode(&root, 0o750);
+    write_object(&root, "late-object", &[0x88; 32]);
+
+    let material = provider
+        .resolve(&plan.requests()[0])
+        .await
+        .expect("reloadable provider recovers");
+    let ResolvedCredential::SymmetricKey(secret) = material else {
+        panic!("expected symmetric key");
+    };
+    assert_eq!(secret.expose_secret(), &[0x88; 32]);
+}
+
 #[test]
 fn root_metadata_is_validated_before_provider_construction() {
     let (_temp, root, policy) = create_root();

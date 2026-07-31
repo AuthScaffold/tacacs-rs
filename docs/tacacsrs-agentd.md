@@ -174,7 +174,9 @@ When multiple IPC requests arrive simultaneously during a reconnect, only one co
 
 On startup the daemon attempts to connect to servers in order and stops at the first success. This prevents connection storms when many instances start simultaneously (e.g. during a fleet rollout). If no server is reachable at startup, the daemon still starts and requests will retry on demand.
 
-SONiC ConfigDB is supervised differently from local CLI or file input. The daemon binds enabled listeners with an empty runtime configuration, reports startup/readiness as not serving, and retries ConfigDB with capped jittered backoff. When Redis becomes available, the same process applies the first valid snapshot and becomes ready. Subscription failures and ended streams trigger a fresh load before resubscription; invalid candidates leave the previous known-good runtime configuration active and mark health degraded.
+SONiC ConfigDB is supervised differently from local CLI or file input. The daemon binds enabled listeners with an empty runtime configuration, reports startup/readiness as not serving, and retries ConfigDB and credential dependencies with capped jittered backoff. Each candidate is loaded, filtered, bundle-enumerated, completely resolved through the SONiC provider, and projected into closed runtime servers before one atomic apply. A missing provider root or object therefore cannot apply a partial server list.
+
+When Redis and every referenced credential become available, the same process applies the first complete snapshot and becomes ready. Subscription failures and ended streams trigger a fresh load before resubscription. Invalid ConfigDB or credential candidates leave the previous known-good runtime configuration active and mark health degraded. The reload-safe provider reopens the root for each candidate, so a credential mount that appears after startup and an explicitly replaced provider root can recover without restarting the process.
 
 ## Health and Probes
 

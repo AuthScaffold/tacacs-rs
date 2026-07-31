@@ -2023,6 +2023,7 @@ dependencies = [
  "tacacsrs-agent-client",
  "tacacsrs-cli-datastore",
  "tacacsrs-config",
+ "tacacsrs-credential-resolution",
  "tacacsrs-datastore",
  "tacacsrs-networking",
  "tacacsrs-sonic",

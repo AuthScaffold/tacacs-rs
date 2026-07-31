@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
-use tacacsrs_credential_resolution::RuntimeServer;
+use tacacsrs_credential_resolution::{CredentialResolver, RuntimeServer};
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 
@@ -123,7 +123,7 @@ impl TacacsClientService {
                 "Runtime health and service configuration must enable the same local services"
             );
         }
-        let servers = enumerate_supported_servers(&config)?;
+        let servers = enumerate_supported_servers(&config.tacacs_plus)?;
         let eligible_server_count = servers.len();
 
         let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector {
@@ -165,7 +165,7 @@ impl TacacsClientService {
                 "Runtime health and service configuration must enable the same local services"
             );
         }
-        let servers = enumerate_supported_servers(&config)?;
+        let servers = enumerate_supported_servers(&config.tacacs_plus)?;
         let eligible_server_count = servers.len();
 
         let state = Arc::new(UpstreamManager::new(
@@ -218,7 +218,7 @@ impl TacacsClientService {
         let mut reload_config = self.config.clone();
         reload_config.tacacs_plus = tacacs_plus;
         reload_config.proxy_downstream_obfuscation = proxy_downstream_obfuscation.clone();
-        let servers = enumerate_supported_servers(&reload_config)?;
+        let servers = enumerate_supported_servers(&reload_config.tacacs_plus)?;
         let eligible_server_count = servers.len();
         self.state.reload_servers(servers).await?;
         *self.proxy_downstream_obfuscation.write().await = proxy_downstream_obfuscation;
@@ -252,6 +252,33 @@ impl TacacsClientService {
         self.health
             .set_upstream_availability(UpstreamAvailability::Unknown);
         Ok(())
+    }
+
+    /// Resolves and atomically applies one complete TACACS+ candidate.
+    ///
+    /// All config-local bundles are enumerated and every eligible central
+    /// credential is resolved before the current runtime server set changes.
+    /// A failure leaves the prior server set and proxy policy untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when enumeration or any credential resolution fails.
+    pub async fn resolve_and_reload_tacacs_plus_with_proxy_downstream_obfuscation(
+        &self,
+        tacacs_plus: TacacsPlus,
+        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+        resolver: &dyn CredentialResolver,
+    ) -> anyhow::Result<()> {
+        let servers = enumerate_supported_servers(&tacacs_plus)?;
+        let mut runtime_servers = Vec::with_capacity(servers.len());
+        for server in servers {
+            runtime_servers.push(Arc::new(RuntimeServer::resolve(server, resolver).await?));
+        }
+        self.reload_runtime_servers_with_proxy_downstream_obfuscation(
+            runtime_servers,
+            proxy_downstream_obfuscation,
+        )
+        .await
     }
 
     /// Returns the current number of accounting-capable upstream servers.

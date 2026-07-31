@@ -48,7 +48,7 @@ impl RuntimeServer {
     /// request/result matching fails.
     pub async fn resolve(
         config: TacacsPlusServer,
-        resolver: &impl CredentialResolver,
+        resolver: &dyn CredentialResolver,
     ) -> Result<Self, ResolutionError> {
         let plan = ResolutionPlan::from_server(&config)?;
         let credentials = resolve_plan(&plan, resolver).await?;

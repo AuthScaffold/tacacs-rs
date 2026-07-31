@@ -14,6 +14,7 @@ use tacacsrs_credential_resolution::{
 use tacacsrs_credential_resolution::SecretBytes;
 
 /// Production credential roots used by the SONiC central agent.
+#[derive(Clone)]
 pub struct SonicCredentialRoots {
     epsk: PathBuf,
     acms: PathBuf,
@@ -67,7 +68,7 @@ impl fmt::Debug for SonicCredentialRoots {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SonicCredentialPolicy {
     expected_uid: u32,
-    expected_gid: u32,
+    expected_gid: Option<u32>,
     root_mode: u32,
     file_mode: u32,
     max_epsk_bytes: usize,
@@ -79,7 +80,7 @@ impl SonicCredentialPolicy {
     pub const fn production(group_gid: u32) -> Self {
         Self {
             expected_uid: 0,
-            expected_gid: group_gid,
+            expected_gid: Some(group_gid),
             root_mode: 0o750,
             file_mode: 0o640,
             max_epsk_bytes: 4096,
@@ -91,7 +92,19 @@ impl SonicCredentialPolicy {
     pub const fn new(owner_uid: u32, group_gid: u32) -> Self {
         Self {
             expected_uid: owner_uid,
-            expected_gid: group_gid,
+            expected_gid: Some(group_gid),
+            root_mode: 0o750,
+            file_mode: 0o640,
+            max_epsk_bytes: 4096,
+        }
+    }
+
+    /// Creates production policy that trusts the root-owned directory's group.
+    #[must_use]
+    pub const fn production_from_root_group() -> Self {
+        Self {
+            expected_uid: 0,
+            expected_gid: None,
             root_mode: 0o750,
             file_mode: 0o640,
             max_epsk_bytes: 4096,
@@ -131,7 +144,7 @@ pub struct SonicCredentialResolver {
     roots: SonicCredentialRoots,
     policy: SonicCredentialPolicy,
     #[cfg(target_os = "linux")]
-    epsk_root: Arc<rustix::fd::OwnedFd>,
+    epsk_root: Option<Arc<rustix::fd::OwnedFd>>,
 }
 
 impl SonicCredentialResolver {
@@ -147,17 +160,32 @@ impl SonicCredentialResolver {
     ) -> Result<Self, SonicCredentialInitializationError> {
         #[cfg(target_os = "linux")]
         {
-            let root = linux::open_root(roots.epsk(), policy)?;
+            let (root, root_gid) = linux::open_root(roots.epsk(), policy)?;
+            let policy = SonicCredentialPolicy {
+                expected_gid: Some(root_gid),
+                ..policy
+            };
             Ok(Self {
                 roots,
                 policy,
-                epsk_root: Arc::new(root),
+                epsk_root: Some(Arc::new(root)),
             })
         }
         #[cfg(not(target_os = "linux"))]
         {
             let _ = (roots, policy);
             Err(SonicCredentialInitializationError::UnsupportedPlatform)
+        }
+    }
+
+    /// Creates a provider that opens and validates roots during each reload.
+    #[must_use]
+    pub fn reloadable(roots: SonicCredentialRoots, policy: SonicCredentialPolicy) -> Self {
+        Self {
+            roots,
+            policy,
+            #[cfg(target_os = "linux")]
+            epsk_root: None,
         }
     }
 
@@ -196,22 +224,49 @@ impl CredentialResolver for SonicCredentialResolver {
 
         #[cfg(target_os = "linux")]
         {
-            let root = Arc::clone(&self.epsk_root);
-            let policy = self.policy;
+            let root = self.epsk_root.as_ref().map(Arc::clone);
+            let roots = self.roots.clone();
+            let configured_policy = self.policy;
             let reference = reference.to_owned();
-            let bytes =
-                tokio::task::spawn_blocking(move || linux::read_epsk(&root, &reference, policy))
-                    .await
-                    .map_err(|_| {
-                        ResolutionError::provider(ProviderErrorKind::Unavailable, request.context())
-                    })?
-                    .map_err(|kind| ResolutionError::provider(kind, request.context()))?;
+            let bytes = tokio::task::spawn_blocking(move || {
+                let (root, policy) = match root {
+                    Some(root) => (root, configured_policy),
+                    None => {
+                        let (root, root_gid) = linux::open_root(roots.epsk(), configured_policy)
+                            .map_err(map_initialization_error)?;
+                        (
+                            Arc::new(root),
+                            SonicCredentialPolicy {
+                                expected_gid: Some(root_gid),
+                                ..configured_policy
+                            },
+                        )
+                    }
+                };
+                linux::read_epsk(&root, &reference, policy)
+            })
+            .await
+            .map_err(|_| {
+                ResolutionError::provider(ProviderErrorKind::Unavailable, request.context())
+            })?
+            .map_err(|kind| ResolutionError::provider(kind, request.context()))?;
             Ok(ResolvedCredential::SymmetricKey(SecretBytes::new(bytes)))
         }
         #[cfg(not(target_os = "linux"))]
         {
             let _ = reference;
             Err(ResolutionError::provider(ProviderErrorKind::Unavailable, request.context()))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn map_initialization_error(error: SonicCredentialInitializationError) -> ProviderErrorKind {
+    match error {
+        SonicCredentialInitializationError::RootUnavailable
+        | SonicCredentialInitializationError::UnsupportedPlatform => ProviderErrorKind::Unavailable,
+        SonicCredentialInitializationError::InvalidRootMetadata => {
+            ProviderErrorKind::InvalidMaterial
         }
     }
 }
@@ -232,7 +287,7 @@ mod linux {
     pub(super) fn open_root(
         path: &Path,
         policy: SonicCredentialPolicy,
-    ) -> Result<OwnedFd, SonicCredentialInitializationError> {
+    ) -> Result<(OwnedFd, u32), SonicCredentialInitializationError> {
         let root = open(
             path,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -242,12 +297,14 @@ mod linux {
         let stat = fstat(&root).map_err(|_| SonicCredentialInitializationError::RootUnavailable)?;
         if FileType::from_raw_mode(stat.st_mode) != FileType::Directory
             || stat.st_uid != policy.expected_uid
-            || stat.st_gid != policy.expected_gid
+            || policy
+                .expected_gid
+                .is_some_and(|expected| stat.st_gid != expected)
             || stat.st_mode & 0o7777 != policy.root_mode
         {
             return Err(SonicCredentialInitializationError::InvalidRootMetadata);
         }
-        Ok(root)
+        Ok((root, stat.st_gid))
     }
 
     pub(super) fn read_epsk(
@@ -314,7 +371,7 @@ mod linux {
         let size = usize::try_from(stat.st_size).map_err(|_| ProviderErrorKind::InvalidMaterial)?;
         if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
             || stat.st_uid != policy.expected_uid
-            || stat.st_gid != policy.expected_gid
+            || policy.expected_gid != Some(stat.st_gid)
             || stat.st_mode & 0o7777 != policy.file_mode
             || stat.st_nlink != 1
             || stat.st_size < 16

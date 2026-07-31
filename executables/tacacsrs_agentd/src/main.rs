@@ -18,7 +18,11 @@ use tacacsrs_cli_datastore::{
 };
 use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
 use tacacsrs_datastore::{ConfigDatastore, InitialLoadPolicy};
-use tacacsrs_sonic::{SonicConfigDb, SonicConnection, DEFAULT_REDIS_URL};
+use tacacsrs_credential_resolution::CredentialResolver;
+use tacacsrs_sonic::{
+    DEFAULT_REDIS_URL, SonicConfigDb, SonicConnection, SonicCredentialPolicy,
+    SonicCredentialResolver, SonicCredentialRoots,
+};
 use tokio_util::sync::CancellationToken;
 
 mod cli;
@@ -173,14 +177,28 @@ async fn run_supervised_service(
     service: Arc<TacacsClientService>,
     health: RuntimeHealthPublisher,
     config_filter: Arc<dyn TacacsPlusFilter>,
+    credential_resolver: Option<Arc<dyn CredentialResolver>>,
     host_integration: HostIntegration,
 ) -> anyhow::Result<()> {
     let datastore_policy = datastore.runtime_policy();
-    let supervisor = ConfigSupervisor::new(
-        Arc::clone(&datastore),
-        Arc::clone(&service),
-        health.clone(),
-        config_filter,
+    let supervisor = credential_resolver.map_or_else(
+        || {
+            ConfigSupervisor::new(
+                Arc::clone(&datastore),
+                Arc::clone(&service),
+                health.clone(),
+                Arc::clone(&config_filter),
+            )
+        },
+        |resolver| {
+            ConfigSupervisor::new_with_credential_resolver(
+                Arc::clone(&datastore),
+                Arc::clone(&service),
+                health.clone(),
+                Arc::clone(&config_filter),
+                resolver,
+            )
+        },
     );
     let cancellation = CancellationToken::new();
 
@@ -305,7 +323,21 @@ async fn main() -> anyhow::Result<()> {
         )
         .context("Failed to build TACACS+ client service configuration")?,
     );
-    run_supervised_service(datastore, service, health, config_filter, host_integration).await
+    let credential_resolver = cli.sonic.then(|| {
+        Arc::new(SonicCredentialResolver::reloadable(
+            SonicCredentialRoots::default(),
+            SonicCredentialPolicy::production_from_root_group(),
+        )) as Arc<dyn CredentialResolver>
+    });
+    run_supervised_service(
+        datastore,
+        service,
+        health,
+        config_filter,
+        credential_resolver,
+        host_integration,
+    )
+    .await
 }
 
 #[cfg(test)]

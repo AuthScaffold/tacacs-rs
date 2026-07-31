@@ -20,6 +20,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use tacacsrs_agent::{DatastoreState, DegradationReason, RuntimeHealthPublisher, TacacsClientService};
 use tacacsrs_config::TacacsPlus;
+use tacacsrs_credential_resolution::CredentialResolver;
 use tacacsrs_datastore::{
     ChangeNotificationMode, ConfigChangeEvent, ConfigDatastore, InitialLoadPolicy,
 };
@@ -74,6 +75,7 @@ pub(crate) struct ConfigSupervisor {
     health: RuntimeHealthPublisher,
     config_filter: Arc<dyn TacacsPlusFilter>,
     backoff: Arc<dyn RetryBackoff>,
+    credential_resolver: Option<Arc<dyn CredentialResolver>>,
 }
 
 impl ConfigSupervisor {
@@ -94,6 +96,25 @@ impl ConfigSupervisor {
         )
     }
 
+    /// Creates a supervisor that resolves all central credentials before apply.
+    #[must_use]
+    pub(crate) fn new_with_credential_resolver(
+        datastore: Arc<dyn ConfigDatastore>,
+        service: Arc<TacacsClientService>,
+        health: RuntimeHealthPublisher,
+        config_filter: Arc<dyn TacacsPlusFilter>,
+        credential_resolver: Arc<dyn CredentialResolver>,
+    ) -> Self {
+        Self::with_backoff_and_resolver(
+            datastore,
+            service,
+            health,
+            config_filter,
+            Arc::new(ExponentialBackoff::production()),
+            Some(credential_resolver),
+        )
+    }
+
     fn with_backoff(
         datastore: Arc<dyn ConfigDatastore>,
         service: Arc<TacacsClientService>,
@@ -101,12 +122,24 @@ impl ConfigSupervisor {
         config_filter: Arc<dyn TacacsPlusFilter>,
         backoff: Arc<dyn RetryBackoff>,
     ) -> Self {
+        Self::with_backoff_and_resolver(datastore, service, health, config_filter, backoff, None)
+    }
+
+    fn with_backoff_and_resolver(
+        datastore: Arc<dyn ConfigDatastore>,
+        service: Arc<TacacsClientService>,
+        health: RuntimeHealthPublisher,
+        config_filter: Arc<dyn TacacsPlusFilter>,
+        backoff: Arc<dyn RetryBackoff>,
+        credential_resolver: Option<Arc<dyn CredentialResolver>>,
+    ) -> Self {
         Self {
             datastore,
             service,
             health,
             config_filter,
             backoff,
+            credential_resolver,
         }
     }
 
@@ -265,18 +298,31 @@ impl ConfigSupervisor {
                 self.datastore.label(),
             );
         })?;
-        self.service
-            .reload_tacacs_plus_with_proxy_downstream_obfuscation(
-                filtered.tacacs_plus,
-                filtered.proxy_downstream_obfuscation,
-            )
-            .await
-            .map_err(|_| {
-                log::warn!(
-                    "Datastore '{}' configuration candidate was rejected by runtime validation",
-                    self.datastore.label(),
-                );
-            })
+        let apply = match self.credential_resolver.as_deref() {
+            Some(resolver) => {
+                self.service
+                    .resolve_and_reload_tacacs_plus_with_proxy_downstream_obfuscation(
+                        filtered.tacacs_plus,
+                        filtered.proxy_downstream_obfuscation,
+                        resolver,
+                    )
+                    .await
+            }
+            None => {
+                self.service
+                    .reload_tacacs_plus_with_proxy_downstream_obfuscation(
+                        filtered.tacacs_plus,
+                        filtered.proxy_downstream_obfuscation,
+                    )
+                    .await
+            }
+        };
+        apply.map_err(|_| {
+            log::warn!(
+                "Datastore '{}' configuration candidate was rejected by runtime validation",
+                self.datastore.label(),
+            );
+        })
     }
 
     async fn wait_for_retry(&self, attempt: u32, cancellation: &CancellationToken) -> bool {
@@ -334,6 +380,10 @@ mod tests {
     use tacacsrs_agent::{EnabledServices, ProxyDownstreamObfuscation, ServiceConfig};
     use tacacsrs_agent_client::IpcEndpoint;
     use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
+    use tacacsrs_config::{EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity};
+    use tacacsrs_credential_resolution::{
+        CredentialRequest, ProviderErrorKind, ResolutionError, ResolvedCredential, SecretBytes,
+    };
     use tacacsrs_datastore::{ConfigChangeStream, DatastoreRuntimePolicy};
     use tokio::time::timeout;
 
@@ -344,6 +394,7 @@ mod tests {
     enum LoadStep {
         Error,
         Config(usize),
+        CentralConfig(usize),
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -395,6 +446,7 @@ mod tests {
             match step {
                 LoadStep::Error => anyhow::bail!("scripted load failure"),
                 LoadStep::Config(server_count) => Ok(test_config(server_count)),
+                LoadStep::CentralConfig(server_count) => Ok(central_test_config(server_count)),
             }
         }
 
@@ -428,6 +480,58 @@ mod tests {
     impl RetryBackoff for FixedBackoff {
         fn delay(&self, _attempt: u32) -> Duration {
             self.0
+        }
+    }
+
+    struct SelectiveResolver {
+        rejected_server: Mutex<Option<String>>,
+    }
+
+    struct InitiallyUnavailableResolver {
+        failures_remaining: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl CredentialResolver for InitiallyUnavailableResolver {
+        async fn resolve(
+            &self,
+            request: &CredentialRequest,
+        ) -> Result<ResolvedCredential, ResolutionError> {
+            if self
+                .failures_remaining
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| count.checked_sub(1))
+                .is_ok()
+            {
+                return Err(ResolutionError::provider(
+                    ProviderErrorKind::Unavailable,
+                    request.context(),
+                ));
+            }
+            Ok(ResolvedCredential::SymmetricKey(SecretBytes::new(b"resolved-after-retry".to_vec())))
+        }
+    }
+
+    #[async_trait]
+    impl CredentialResolver for SelectiveResolver {
+        async fn resolve(
+            &self,
+            request: &CredentialRequest,
+        ) -> Result<ResolvedCredential, ResolutionError> {
+            if self
+                .rejected_server
+                .lock()
+                .expect("resolver lock")
+                .as_deref()
+                == Some(request.context().server_name())
+            {
+                return Err(ResolutionError::provider(
+                    ProviderErrorKind::Unavailable,
+                    request.context(),
+                ));
+            }
+            Ok(ResolvedCredential::SymmetricKey(SecretBytes::new(
+                b"resolved-supervisor-secret".to_vec(),
+            )))
         }
     }
 
@@ -467,6 +571,29 @@ mod tests {
             .expect("test config")
     }
 
+    fn central_test_config(server_count: usize) -> TacacsPlus {
+        let mut config = test_config(server_count);
+        for (index, server) in config.server.iter_mut().enumerate() {
+            server.shared_secret = None;
+            server.port = 449;
+            server.client_identity = Some(TlsClientClientIdentity {
+                credentials_reference: None,
+                certificate: None,
+                tls13_epsk: Some(Tls13Epsk {
+                    inline_definition: None,
+                    central_keystore_reference: Some(format!("object-{index}")),
+                    external_identity: "client".to_owned(),
+                    hash: EpskSupportedHash::Sha256,
+                    context: None,
+                    target_protocol: None,
+                    target_kdf: None,
+                    psk_dhe_ke_groups: Vec::new(),
+                }),
+            });
+        }
+        config
+    }
+
     fn supervisor(
         datastore: Arc<ScriptedDatastore>,
         backoff: Duration,
@@ -497,6 +624,80 @@ mod tests {
             Arc::new(FixedBackoff(backoff)),
         );
         (supervisor, health, service)
+    }
+
+    #[tokio::test]
+    async fn resolved_candidate_applies_only_after_every_credential_succeeds() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (_, health, service) = supervisor(Arc::clone(&datastore), Duration::ZERO);
+        let resolver = Arc::new(SelectiveResolver {
+            rejected_server: Mutex::new(Some("server-1".to_owned())),
+        });
+        let supervisor = ConfigSupervisor::with_backoff_and_resolver(
+            datastore,
+            Arc::clone(&service),
+            health,
+            Arc::new(NoopTacacsPlusFilter::default()),
+            Arc::new(FixedBackoff(Duration::ZERO)),
+            Some(Arc::clone(&resolver) as Arc<dyn CredentialResolver>),
+        );
+
+        supervisor
+            .apply_candidate(test_config(1))
+            .await
+            .expect("known-good inline candidate");
+        assert_eq!(service.server_count(), 1);
+
+        assert!(supervisor
+            .apply_candidate(central_test_config(2))
+            .await
+            .is_err());
+        assert_eq!(service.server_count(), 1);
+
+        *resolver.rejected_server.lock().expect("resolver lock") = None;
+        supervisor
+            .apply_candidate(central_test_config(2))
+            .await
+            .expect("fully resolved candidate");
+        assert_eq!(service.server_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn initial_credential_unavailability_retries_complete_snapshot_before_apply() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(
+                InitialLoadPolicy::RetryUntilAvailable,
+                ChangeNotificationMode::None,
+            ),
+            [LoadStep::CentralConfig(1), LoadStep::CentralConfig(1)],
+            [],
+        ));
+        let (_, health, service) = supervisor(Arc::clone(&datastore), Duration::ZERO);
+        let resolver = Arc::new(InitiallyUnavailableResolver {
+            failures_remaining: AtomicUsize::new(1),
+        });
+        let supervisor = ConfigSupervisor::with_backoff_and_resolver(
+            Arc::clone(&datastore) as Arc<dyn ConfigDatastore>,
+            Arc::clone(&service),
+            health.clone(),
+            Arc::new(NoopTacacsPlusFilter::default()),
+            Arc::new(FixedBackoff(Duration::ZERO)),
+            Some(resolver as Arc<dyn CredentialResolver>),
+        );
+
+        supervisor
+            .load_initial(&CancellationToken::new())
+            .await
+            .expect("initial resolution eventually succeeds");
+
+        assert_eq!(datastore.load_count.load(Ordering::Relaxed), 2);
+        assert_eq!(service.server_count(), 1);
+        assert!(health.snapshot().has_applied_configuration());
+        assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
     }
 
     #[tokio::test]
