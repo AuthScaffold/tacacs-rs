@@ -20,12 +20,13 @@ use tokio_stream::wrappers::ReceiverStream;
 pub use mapping::{map_sonic_tables_to_tacacs_plus, sonic_server_name, SonicHash, SonicTacacsTables};
 pub use store::{
     read_tacacs_tables, spawn_change_notifier, SonicConnection, DEFAULT_REDIS_URL,
-    TACPLUS_GLOBAL_TABLE, TACPLUS_SERVER_TABLE,
+    TACPLUS_FORWARDER_TABLE, TACPLUS_GLOBAL_TABLE, TACPLUS_SERVER_TABLE, TACPLUS_SERVER_TLS_TABLE,
 };
 
 /// SONiC ConfigDB-backed [`ConfigDatastore`] implementation.
 ///
-/// Reads `TACPLUS|global` and `TACPLUS_SERVER|*` from CONFIG_DB and emits a
+/// Reads the compatibility, TLS upstream, and forwarder TACACS+ tables from
+/// CONFIG_DB and emits a
 /// [`tacacsrs_datastore::ConfigChange`] every time a TACPLUS-prefixed key
 /// changes (subject to the configured debounce window).
 ///
@@ -68,7 +69,7 @@ impl ConfigDatastore for SonicConfigDb {
             .context("connect to SONiC ConfigDB for initial load")?;
         let snapshot = read_tacacs_tables(&mut conn)
             .await
-            .context("read TACPLUS / TACPLUS_SERVER tables from ConfigDB")?;
+            .context("read complete TACACS+ tables from ConfigDB")?;
         map_sonic_tables_to_tacacs_plus(&snapshot)
             .context("map SONiC ConfigDB tables to YANG TACACS+ configuration")
     }

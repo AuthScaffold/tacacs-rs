@@ -27,6 +27,12 @@ pub const TACPLUS_SERVER_TABLE: &str = "TACPLUS_SERVER";
 /// CONFIG_DB key prefix for the global table.
 pub const TACPLUS_GLOBAL_TABLE: &str = "TACPLUS";
 
+/// CONFIG_DB key prefix for TLS 1.3 EPSK upstream servers.
+pub const TACPLUS_SERVER_TLS_TABLE: &str = "TACPLUS_SERVER_TLS";
+
+/// CONFIG_DB key for central-agent bind-time settings.
+pub const TACPLUS_FORWARDER_TABLE: &str = "TACPLUS_FORWARDER";
+
 /// Connection settings for the SONiC ConfigDB Redis instance.
 #[derive(Debug, Clone)]
 pub struct SonicConnection {
@@ -78,7 +84,7 @@ impl SonicConnection {
     }
 }
 
-/// Read both TACACS+ tables from ConfigDB into an in-memory snapshot.
+/// Read all TACACS+ tables from ConfigDB into an in-memory snapshot.
 ///
 /// # Errors
 ///
@@ -93,6 +99,12 @@ pub async fn read_tacacs_tables(
         .hgetall(&global_key)
         .await
         .with_context(|| format!("HGETALL failed for {global_key}"))?;
+
+    let forwarder_key = format!("{TACPLUS_FORWARDER_TABLE}|global");
+    let forwarder: SonicHash = conn
+        .hgetall(&forwarder_key)
+        .await
+        .with_context(|| format!("HGETALL failed for {forwarder_key}"))?;
 
     let server_pattern = format!("{TACPLUS_SERVER_TABLE}|*");
     let server_keys: Vec<String> = conn
@@ -112,7 +124,25 @@ pub async fn read_tacacs_tables(
         servers.insert(addr.to_string(), fields);
     }
 
-    Ok(SonicTacacsTables::new(global, servers))
+    let tls_server_pattern = format!("{TACPLUS_SERVER_TLS_TABLE}|*");
+    let tls_server_keys: Vec<String> = conn
+        .keys(&tls_server_pattern)
+        .await
+        .with_context(|| format!("KEYS failed for {tls_server_pattern}"))?;
+
+    let mut tls_servers = std::collections::BTreeMap::new();
+    for key in tls_server_keys {
+        let Some(address) = key.strip_prefix(&format!("{TACPLUS_SERVER_TLS_TABLE}|")) else {
+            continue;
+        };
+        let fields: SonicHash = conn
+            .hgetall(&key)
+            .await
+            .with_context(|| format!("HGETALL failed for {key}"))?;
+        tls_servers.insert(address.to_string(), fields);
+    }
+
+    Ok(SonicTacacsTables::with_extended_tables(global, servers, tls_servers, forwarder))
 }
 
 /// Spawn a background task that subscribes to TACPLUS keyspace notifications

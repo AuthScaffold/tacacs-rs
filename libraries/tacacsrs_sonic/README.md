@@ -10,48 +10,51 @@ shared `ietf-system-tacacs-plus` YANG configuration consumed by the agent.
 
 ## What the bridge does
 
-1. Reads the legacy SONiC `TACPLUS|global` and `TACPLUS_SERVER|<addr>` tables.
-2. Maps each row into a [`tacacsrs_config::TacacsPlusServer`].
-3. Subscribes to Redis keyspace notifications (`__keyspace@4__:TACPLUS*`) and
+1. Reads `TACPLUS|global`, compatibility `TACPLUS_SERVER|<addr>`, version-1
+   `TACPLUS_SERVER_TLS|<addr>`, and `TACPLUS_FORWARDER|global` as one snapshot.
+2. Parses raw Redis hashes into private typed rows before producing any RFC
+   configuration.
+3. Filters normalized loopback self-targets, rejects cross-table ambiguity,
+   and orders mixed candidates by descending priority plus a stable normalized
+   name/endpoint tie-breaker.
+4. Maps compatibility rows into [`tacacsrs_config::TacacsPlusServer`] values.
+5. Subscribes to Redis keyspace notifications (`__keyspace@4__:TACPLUS*`) and
    re-emits a [`tacacsrs_datastore::ConfigChange`] when relevant keys change.
 
-All of the parsing and field-mapping logic is exposed as pure functions in the
-[`mapping`] module and is fully unit-tested without a live Redis. The Redis
-client only handles I/O.
+Parsing and field mapping are implemented as pure functions in the [`mapping`]
+module and are fully unit-tested without a live Redis. The Redis client only
+handles I/O.
 
-## SONiC capability gap
+## Version-1 TLS boundary
 
-SONiC's existing TACACS+ ConfigDB schema does not yet expose the full
-TLS-related fields that the YANG `ietf-system-tacacs-plus` model supports
-(client identity certificates, server authentication trust anchors, TLS 1.3
-ePSKs, SNI, etc.). The mapping documents what would have to be added to
-ConfigDB to enable the richer YANG features; today the bridge supports plain
-TCP with an optional shared-secret / obfuscation key plus a forward-compatible
-`use_tls` extension that selects the same empty `server-authentication`
-container as `tacon --use-tls` when no explicit certificate material is
-configured.
+The new TLS table is isolated from legacy compatibility rows. Version 1 accepts
+only TLS 1.3 EPSK fields reviewed by the central-agent HLD. Certificate and
+mTLS references, cipher-suite overrides, certificate-verification overrides,
+TLS-row `passkey`, and unknown fields are rejected instead of ignored.
 
-## Schema extensions
+P3.2 validates and orders typed TLS rows but deliberately stops before mapping
+them into RFC central references. P3.3 owns that projection. This temporary
+boundary prevents a TLS row from falling through to plain TCP or an empty TLS
+configuration while the mapping is incomplete.
 
-The mapping recognizes a small forward-compatible extension on top of the
-upstream SONiC schema so that operators can experiment with the TLS-capable
-YANG model without waiting for SONiC ConfigDB updates:
+## Compatibility isolation
+
+Existing `TACPLUS` and `TACPLUS_SERVER` rows retain plain TCP/shared-secret
+behavior. The mapper rejects the former provisional `use_tls`, `domain_name`,
+and `sni_enabled` fields in those tables. TLS configuration belongs only in
+`TACPLUS_SERVER_TLS`.
 
 | Extension key on `TACPLUS_SERVER|<addr>` | YANG field                             |
 |------------------------------------------|----------------------------------------|
-| `use_tls`                                | `server-authentication: {}`            |
-| `domain_name`                            | `domain-name` (used for SNI)           |
-| `sni_enabled`                            | `sni-enabled`                          |
 | `single_connection`                      | `single-connection`                    |
 | `vrf_name`                               | `vrf-instance`                         |
 | `src_intf` (also on `global`)            | `source-interface`                     |
 | `src_ip`                                 | `source-ip`                            |
 | `server_type`                            | `server-type` bitset, defaults to `all`|
 
-The `use_tls` key is also accepted on `TACPLUS|global` and falls back to each
-server row when the row does not override it. Unknown keys are ignored with a
-`warn!` log so legacy SONiC builds with extra operator-specific keys do not
-cause the bridge to fail at startup.
+Unknown compatibility keys remain tolerated for existing SONiC deployments,
+but their values are never logged. TLS and forwarder tables are strict because
+unknown fields there can change security behavior.
 
 ## Example watcher
 
@@ -75,15 +78,13 @@ SONiC TACACS+ server priorities are in the range `1..64`; higher values are
 preferred and are placed earlier in the daemon failover order.
 
 ```bash
-docker run --rm -p 6379:6379 redis
+podman run --rm -p 6379:6379 redis
 redis-cli -n 4 CONFIG SET notify-keyspace-events KEA
 
 redis-cli -n 4 HSET 'TACPLUS|global' \
    timeout 5 auth_type pap src_intf Management0
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' \
-   priority 64 tcp_port 49 timeout 10 \
-   use_tls true domain_name tacacs-a.example.test \
-   sni_enabled true single_connection true
+   priority 64 tcp_port 49 timeout 10 single_connection true
 
 cargo run -p tacacsrs-sonic --example configdb_watch -- \
    --redis-url redis://127.0.0.1:6379 \
@@ -101,7 +102,5 @@ redis-cli -n 4 DEL 'TACPLUS_SERVER|192.0.2.20'
 ```
 
 The example intentionally reports only whether a shared secret is configured;
-it never prints secret values. Rows without a per-server or global `passkey`
-are treated as plain TCP unless `use_tls` is enabled, in which case the bridge
-emits the empty YANG `server-authentication` container used for TLS without
-explicit certificate material.
+it never prints secret values. Compatibility rows without a per-server or
+global `passkey` are treated as unobfuscated plain TCP.
