@@ -1,6 +1,7 @@
 //! Closed resolution plans built from provider-neutral config inspection slots.
 
 use std::fmt;
+use std::sync::Arc;
 
 use tacacsrs_config::{
     CentralCredentialReference, CentralCredentialSlot, CentralCredentialUsage, TacacsPlusServer,
@@ -184,6 +185,7 @@ impl fmt::Debug for CredentialRequest {
 /// Ordered closed request plan for one direct or enumerated server.
 pub struct ResolutionPlan {
     requests: Vec<CredentialRequest>,
+    identity: Arc<()>,
 }
 
 impl ResolutionPlan {
@@ -203,7 +205,10 @@ impl ResolutionPlan {
             .enumerate()
             .map(|(index, slot)| request_from_slot(RequestSlot(index), slot))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { requests })
+        Ok(Self {
+            requests,
+            identity: Arc::new(()),
+        })
     }
 
     /// Returns all requests in deterministic field order.
@@ -224,6 +229,10 @@ impl ResolutionPlan {
         self.requests.is_empty()
     }
 
+    pub(crate) fn identity(&self) -> &Arc<()> {
+        &self.identity
+    }
+
     #[cfg(test)]
     pub(crate) fn reverse_requests_for_test(&mut self) {
         self.requests.reverse();
@@ -235,7 +244,7 @@ impl fmt::Debug for ResolutionPlan {
         formatter
             .debug_struct("ResolutionPlan")
             .field("requests", &self.requests)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

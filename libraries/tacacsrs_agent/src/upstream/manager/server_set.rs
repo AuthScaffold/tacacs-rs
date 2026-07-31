@@ -33,7 +33,7 @@ pub(crate) struct BoundServer {
 impl BoundServer {
     /// Returns the configured upstream server selected for this request.
     pub(crate) fn server(&self) -> &TacacsPlusServer {
-        &self.server_set.servers[self.index].server
+        self.server_set.servers[self.index].server.config()
     }
 
     /// Returns the timeout configured on the selected upstream server.
@@ -52,12 +52,5 @@ impl ServerSet {
 
     pub(super) fn server_count(&self) -> usize {
         self.servers.len()
-    }
-}
-
-pub(super) fn servers_equivalent(left: &TacacsPlusServer, right: &TacacsPlusServer) -> bool {
-    match (serde_json::to_value(left), serde_json::to_value(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
     }
 }

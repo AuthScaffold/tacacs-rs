@@ -8,6 +8,7 @@ description = "TACACS+ transport layer with TCP, TLS, and PSK support"
 
 [dependencies]
 tacacsrs-config = { path = "../tacacsrs_config" }
+tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 tokio = { version = "1.52.3", features = ["full"] }
 tacacsrs-messages = { path = "../tacacsrs_messages" }

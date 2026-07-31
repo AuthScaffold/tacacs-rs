@@ -6,6 +6,7 @@ mod material;
 mod request;
 mod resolver;
 mod result_set;
+mod runtime_server;
 
 pub use error::{ProviderErrorKind, ResolutionError, ResolutionErrorKind};
 pub use fake::FakeCredentialResolver;
@@ -19,3 +20,4 @@ pub use request::{
 };
 pub use resolver::{CredentialResolver, resolve_plan};
 pub use result_set::{ResolvedCredentialSet, ResolvedResponse};
+pub use runtime_server::RuntimeServer;

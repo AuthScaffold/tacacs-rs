@@ -3,7 +3,7 @@
 use std::ffi::CStr;
 use std::os::raw::{c_int, c_uchar};
 use std::ptr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use foreign_types::ForeignTypeRef;
@@ -14,8 +14,8 @@ use openssl_sys::{
     OPENSSL_sk_num, OPENSSL_sk_value, SSL, SSL_CIPHER, SSL_CIPHER_standard_name, SSL_CTX,
     SSL_CTX_set_options, SSL_SESSION, SSL_SESSION_free, SSL_get_SSL_CTX, TLS1_3_VERSION,
 };
-use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
 use tacacsrs_config::EpskSupportedHash;
+use tacacsrs_credential_resolution::RuntimeServer;
 
 use super::{tls13_epsk, EpskSupportedHashExt};
 
@@ -28,7 +28,7 @@ type PskUseSessionCallback = unsafe extern "C" fn(
 ) -> c_int;
 
 struct OpenSslPskCallbackState {
-    epsk: Tls13Epsk,
+    runtime: Arc<RuntimeServer>,
 }
 
 const SSL_OP_ALLOW_NO_DHE_KEX_BIT: u32 = 10;
@@ -64,10 +64,10 @@ extern "C" {
 /// EPSK hash bound to the synthetic `SSL_SESSION`.
 pub(crate) fn set_tls13_psk_use_session_callback(
     builder: &mut SslContextBuilder,
-    epsk: &Tls13Epsk,
+    runtime: Arc<RuntimeServer>,
 ) -> Result<()> {
     let index = psk_config_index().context("failed to allocate OpenSSL PSK ex-data index")?;
-    let state = OpenSslPskCallbackState { epsk: epsk.clone() };
+    let state = OpenSslPskCallbackState { runtime };
 
     builder.set_ex_data(index, state);
 
@@ -126,7 +126,11 @@ unsafe extern "C" fn psk_use_session_callback(
         return 0;
     };
 
-    let identity_bytes = state.epsk.external_identity.as_bytes();
+    let Ok(epsk) = tls13_epsk::config(&state.runtime) else {
+        log::error!(target: module_path!(), "TLS 1.3 PSK callback has no configuration");
+        return 0;
+    };
+    let identity_bytes = epsk.external_identity.as_bytes();
     // SAFETY: OpenSSL consumes these out-parameters before the callback
     // returns. The identity bytes live in the context ex-data for the lifetime
     // of the `SSL_CTX`, and `callback_session` transfers ownership of a newly
@@ -139,9 +143,8 @@ unsafe extern "C" fn psk_use_session_callback(
 
     log::debug!(
         target: module_path!(),
-        "Provided TLS 1.3 PSK session (identity: {}, hash: {})",
-        state.epsk.external_identity,
-        state.epsk.hash.as_rfc7951_str()
+        "Provided TLS 1.3 PSK session (hash: {})",
+        epsk.hash.as_rfc7951_str()
     );
 
     1
@@ -152,7 +155,13 @@ unsafe fn build_callback_session(
     digest: *const EVP_MD,
     state: &OpenSslPskCallbackState,
 ) -> Option<*mut SSL_SESSION> {
-    let handshake_hash = state.epsk.hash;
+    let handshake_hash = match tls13_epsk::config(&state.runtime) {
+        Ok(epsk) => epsk.hash,
+        Err(error) => {
+            log::error!(target: module_path!(), "TLS 1.3 EPSK callback configuration failed: {error}");
+            return None;
+        }
+    };
 
     if !digest.is_null() && !handshake_hash.matches_digest(digest) {
         log::warn!(
@@ -202,7 +211,7 @@ unsafe fn create_session(
     state: &OpenSslPskCallbackState,
     cipher: *const SSL_CIPHER,
 ) -> Option<*mut SSL_SESSION> {
-    let key = match tls13_epsk::symmetric_key(&state.epsk) {
+    let key = match tls13_epsk::symmetric_key(&state.runtime) {
         Ok(key) => key,
         Err(error) => {
             log::error!(target: module_path!(), "TLS 1.3 EPSK callback has no symmetric key: {error}");

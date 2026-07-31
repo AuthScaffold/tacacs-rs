@@ -21,11 +21,12 @@
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::sync::atomic::Ordering;
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
+use tacacsrs_credential_resolution::RuntimeServer;
 
 use self::availability::AvailabilityTracker;
-use self::server_set::{ServerSet, servers_equivalent};
+use self::server_set::ServerSet;
 use self::server_slot::ServerSlot;
 use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
@@ -75,10 +76,27 @@ impl UpstreamManager {
         preferred_probe_interval: std::time::Duration,
         health: RuntimeHealthPublisher,
     ) -> Self {
+        let servers = servers
+            .into_iter()
+            .map(|server| {
+                RuntimeServer::inline(server)
+                    .map(Arc::new)
+                    .expect("initial service configuration must contain inline credentials only")
+            })
+            .collect();
+        Self::new_runtime(servers, connector, preferred_probe_interval, health)
+    }
+
+    pub(crate) fn new_runtime(
+        servers: Vec<Arc<RuntimeServer>>,
+        connector: Arc<dyn UpstreamConnector>,
+        preferred_probe_interval: std::time::Duration,
+        health: RuntimeHealthPublisher,
+    ) -> Self {
         debug_assert!(
             servers
                 .iter()
-                .all(|server| server.supports_server_type(REQUIRED_SERVER_TYPES)),
+                .all(|server| server.config().supports_server_type(REQUIRED_SERVER_TYPES)),
             "UpstreamManager expects servers to support the full current TACACS+ operation set"
         );
         let servers = servers
@@ -140,7 +158,7 @@ impl UpstreamManager {
                 Err(error) => {
                     log::warn!(
                         "Initial connection attempt to {} failed: {error}",
-                        server_set.servers[index].server.socket_address()
+                        server_set.servers[index].socket_address()
                     );
                 }
             }
@@ -169,18 +187,33 @@ impl UpstreamManager {
         &self,
         servers: Vec<TacacsPlusServer>,
     ) -> anyhow::Result<()> {
+        let servers = servers
+            .into_iter()
+            .map(|server| {
+                RuntimeServer::inline(server)
+                    .map(Arc::new)
+                    .context("runtime reload requires central credentials to be resolved first")
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        self.reload_runtime_servers(servers).await
+    }
+
+    pub(crate) async fn reload_runtime_servers(
+        &self,
+        servers: Vec<Arc<RuntimeServer>>,
+    ) -> anyhow::Result<()> {
         let previous = self.current_server_set();
         let materially_changed = previous.server_count() != servers.len()
             || previous
                 .servers
                 .iter()
                 .zip(&servers)
-                .any(|(old, new)| !servers_equivalent(&old.server, new));
+                .any(|(old, new)| !runtime_servers_reusable(&old.server, new));
         let previous_active_name = if previous.server_count() == 0 {
             None
         } else {
             let active_index = *previous.active_index.read().await;
-            Some(previous.servers[active_index].server.name.clone())
+            Some(previous.servers[active_index].name().to_owned())
         };
 
         let mut new_server_slots = Vec::with_capacity(servers.len());
@@ -188,9 +221,7 @@ impl UpstreamManager {
             let reusable = previous
                 .servers
                 .iter()
-                .find(|state| {
-                    state.server.name == server.name && servers_equivalent(&state.server, &server)
-                })
+                .find(|state| runtime_servers_reusable(&state.server, &server))
                 .cloned();
             new_server_slots.push(reusable.unwrap_or_else(|| Arc::new(ServerSlot::new(server))));
         }
@@ -200,7 +231,7 @@ impl UpstreamManager {
             .and_then(|active_name| {
                 new_server_slots
                     .iter()
-                    .position(|state| state.server.name == active_name)
+                    .position(|state| state.name() == active_name)
             })
             .unwrap_or(0);
         let new_set = Arc::new(ServerSet::new(new_server_slots, new_active_index));
@@ -225,7 +256,7 @@ impl UpstreamManager {
                 "Reloaded TACACS+ upstream server set: {} server(s), active index {} ({})",
                 new_set.server_count(),
                 new_active_index,
-                new_set.servers[new_active_index].server.socket_address(),
+                new_set.servers[new_active_index].socket_address(),
             );
         }
 
@@ -261,15 +292,15 @@ impl UpstreamManager {
                 if active_index == 0 {
                     log::trace!(
                         "Preferred server probe: already using preferred server {}",
-                        server_set.servers[0].server.socket_address(),
+                        server_set.servers[0].socket_address(),
                     );
                     continue;
                 }
 
                 log::debug!(
                     "Probing preferred server {} (currently failed over to {})",
-                    server_set.servers[0].server.socket_address(),
-                    server_set.servers[active_index].server.socket_address(),
+                    server_set.servers[0].socket_address(),
+                    server_set.servers[active_index].socket_address(),
                 );
 
                 let availability_attempt = state.availability.begin_attempt();
@@ -285,7 +316,7 @@ impl UpstreamManager {
                     Err(error) => {
                         log::debug!(
                             "Preferred TACACS+ server {} probe failed: {error:#}",
-                            server_set.servers[0].server.socket_address(),
+                            server_set.servers[0].socket_address(),
                         );
                     }
                 }
@@ -341,7 +372,7 @@ impl UpstreamManager {
                 Err(error) => {
                     log::warn!(
                         "TACACS+ server {} is non-responsive: {error}",
-                        server_set.servers[index].server.socket_address()
+                        server_set.servers[index].socket_address()
                     );
                     self.note_failure(&server_set, index).await;
                 }
@@ -388,7 +419,7 @@ impl UpstreamManager {
         if let Some(existing) = existing_conn {
             log::debug!(
                 "Reusing cached upstream connection manager for {}",
-                server_slot.server.socket_address()
+                server_slot.socket_address()
             );
             return Ok(existing);
         }
@@ -402,7 +433,7 @@ impl UpstreamManager {
         if let Some(existing) = existing_conn {
             log::debug!(
                 "Reusing cached upstream connection manager for {} after waiting on another reconnect",
-                server_slot.server.socket_address()
+                server_slot.socket_address()
             );
             return Ok(existing);
         }
@@ -414,20 +445,24 @@ impl UpstreamManager {
         {
             log::debug!(
                 "Skipping duplicate reconnect to {}; another attempt already completed",
-                server_slot.server.socket_address(),
+                server_slot.socket_address(),
             );
             bail!(
                 "Another reconnect attempt for TACACS+ server {} already completed for this request wave",
-                server_slot.server.socket_address()
+                server_slot.socket_address()
             );
         }
 
-        log::debug!("Opening upstream connection to {}", server_slot.server.socket_address());
-        match self.connector.connect(&server_slot.server).await {
+        log::debug!("Opening upstream connection to {}", server_slot.socket_address());
+        match self
+            .connector
+            .connect(Arc::clone(&server_slot.server))
+            .await
+        {
             Ok(connection) => {
                 log::info!(
                     "Upstream connection to {} established successfully",
-                    server_slot.server.socket_address(),
+                    server_slot.socket_address(),
                 );
                 *server_slot.connection.write().await = Some(Arc::clone(&connection));
                 server_slot
@@ -438,7 +473,7 @@ impl UpstreamManager {
             Err(error) => {
                 log::warn!(
                     "Failed to connect to upstream TACACS+ server {}: {error:#}",
-                    server_slot.server.socket_address(),
+                    server_slot.socket_address(),
                 );
                 *server_slot.connection.write().await = None;
                 server_slot
@@ -470,8 +505,8 @@ impl UpstreamManager {
             let next_index = (index + 1) % server_set.server_count();
             log::info!(
                 "Failing over new IPC sessions from {} to {}",
-                server_set.servers[index].server.socket_address(),
-                server_set.servers[next_index].server.socket_address()
+                server_set.servers[index].socket_address(),
+                server_set.servers[next_index].socket_address()
             );
             *active_index = next_index;
         }
@@ -484,15 +519,28 @@ impl UpstreamManager {
     }
 }
 
+fn runtime_servers_reusable(left: &RuntimeServer, right: &RuntimeServer) -> bool {
+    if left.has_resolved_credentials() || right.has_resolved_credentials() {
+        return false;
+    }
+    match (serde_json::to_value(left.config()), serde_json::to_value(right.config())) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use tacacsrs_credential_resolution::{
+        FakeCredentialResolver, ResolutionPlan, ResolvedCredential, RuntimeServer, SecretBytes,
+    };
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use tacacsrs_config::TacacsPlusServer;
-    use super::UpstreamManager;
+    use super::{UpstreamManager, runtime_servers_reusable};
     use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
     use crate::EnabledServices;
     use crate::test_support::{FakeConnection, FakeConnector};
@@ -519,6 +567,56 @@ mod tests {
             source_interface: None,
             vrf_instance: None,
         }
+    }
+
+    async fn resolved_runtime(secret: &[u8]) -> RuntimeServer {
+        let server = tacacsrs_config::parse_yang_json(
+            r#"{
+                "ietf-system-tacacs-plus:tacacs-plus": {
+                    "server": [{
+                        "name": "rotation-test",
+                        "server-type": "authentication authorization accounting",
+                        "address": "192.0.2.70",
+                        "port": 449,
+                        "client-identity": {
+                            "tls13-epsk": {
+                                "central-keystore-reference": "same-object-id",
+                                "external-identity": "client"
+                            }
+                        }
+                    }]
+                }
+            }"#,
+        )
+        .expect("central config")
+        .server
+        .remove(0);
+        let plan = ResolutionPlan::from_server(&server).expect("plan");
+        let resolver = FakeCredentialResolver::new().with_response(
+            plan.requests()[0].slot(),
+            ResolvedCredential::SymmetricKey(SecretBytes::new(secret.to_vec())),
+        );
+        RuntimeServer::resolve(server, &resolver)
+            .await
+            .expect("resolved runtime")
+    }
+
+    #[tokio::test]
+    async fn centrally_resolved_servers_are_never_reused_by_reference_equivalence() {
+        let first = resolved_runtime(b"first-secret-material").await;
+        let replacement = resolved_runtime(b"replacement-secret").await;
+
+        assert!(!runtime_servers_reusable(&first, &replacement));
+        assert_ne!(
+            first
+                .tls13_epsk_secret()
+                .expect("first secret")
+                .expose_secret(),
+            replacement
+                .tls13_epsk_secret()
+                .expect("replacement secret")
+                .expose_secret()
+        );
     }
 
     fn test_health() -> RuntimeHealthPublisher {

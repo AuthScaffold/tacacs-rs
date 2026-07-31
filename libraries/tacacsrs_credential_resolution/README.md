@@ -22,6 +22,17 @@ ResolutionPlan -> CredentialResolver -> ResolvedCredentialSet
        +-- stable server/field context         +-- validated slots and variants
 ```
 
+`RuntimeServer::resolve` performs that complete flow and returns a closed
+runtime aggregate. Its generated `TacacsPlusServer` retains central references
+and remains separately serializable; its `ResolvedCredentialSet` owns
+non-serializable zeroizing material. `RuntimeServer::inline` is the explicit
+path for existing inline/file/CLI configuration and rejects unresolved central
+references.
+
+Runtime servers are intentionally not `Clone`. Services share them through
+`Arc`, and a result set is bound to the exact plan instance that produced it.
+This prevents material from one reference snapshot being attached to another.
+
 P3 supplies the `SONiC` provider and projects the closed result set into runtime networking inputs.
 
 ## Workflow
@@ -30,7 +41,7 @@ P3 supplies the `SONiC` provider and projects the closed result set into runtime
 2. Enumerate config-local client and server credential bundles.
 3. Build a `ResolutionPlan` for each enumerated server.
 4. Execute the plan with a `CredentialResolver`.
-5. Consume the validated `ResolvedCredentialSet` by request slot.
+5. Project the generated server and validated result into `RuntimeServer`.
 
 Planning emits deterministic requests for certificate-with-key, TLS 1.3 symmetric key, CA certificate bag, and end-entity certificate bag usages. It rejects unexpanded local bundle references and structurally incomplete central certificate requests. Result-set construction rejects missing, duplicate, unexpected, and wrong-variant responses.
 

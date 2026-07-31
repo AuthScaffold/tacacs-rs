@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
+use tacacsrs_config::TacacsPlusServerExt;
+use tacacsrs_credential_resolution::RuntimeServer;
 use tacacsrs_flows::accounting::AccountingFlow;
 use tacacsrs_flows::authorization::AuthorizationFlow;
 use tacacsrs_messages::accounting::reply::AccountingReply;
@@ -27,14 +28,14 @@ pub(crate) struct NetworkUpstreamConnector {
 impl UpstreamConnector for NetworkUpstreamConnector {
     async fn connect(
         &self,
-        server: &TacacsPlusServer,
+        server: Arc<RuntimeServer>,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        let address = server.socket_address();
+        let address = server.config().socket_address();
         let options = ConnectOptions::default()
             .with_certificate_verification_disabled(self.disable_certificate_verification)
-            .with_timeout(server.timeout_duration())
+            .with_timeout(server.config().timeout_duration())
             .with_preflight(ConnectPreflight::AccountingWatchdog);
-        let connection = TacacsClient::connect(server.clone(), options).await?;
+        let connection = TacacsClient::connect_runtime(server, options).await?;
 
         Ok(Arc::new(TacacsUpstreamConnection {
             server_address: address,

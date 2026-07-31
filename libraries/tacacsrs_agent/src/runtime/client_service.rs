@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
+use tacacsrs_credential_resolution::RuntimeServer;
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 
@@ -220,6 +221,31 @@ impl TacacsClientService {
         let servers = enumerate_supported_servers(&reload_config)?;
         let eligible_server_count = servers.len();
         self.state.reload_servers(servers).await?;
+        *self.proxy_downstream_obfuscation.write().await = proxy_downstream_obfuscation;
+        self.health.set_eligible_server_count(eligible_server_count);
+        self.health.set_applied_configuration(true);
+        self.health
+            .set_upstream_availability(UpstreamAvailability::Unknown);
+        Ok(())
+    }
+
+    /// Atomically applies a complete set of resolved runtime servers plus proxy policy.
+    ///
+    /// New requests observe the complete replacement only after every server
+    /// has already been validated and resolved by the caller. Existing bound
+    /// requests continue against the prior immutable server set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime server set cannot be applied. The
+    /// previous runtime state remains active on error.
+    pub async fn reload_runtime_servers_with_proxy_downstream_obfuscation(
+        &self,
+        servers: Vec<Arc<RuntimeServer>>,
+        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+    ) -> anyhow::Result<()> {
+        let eligible_server_count = servers.len();
+        self.state.reload_runtime_servers(servers).await?;
         *self.proxy_downstream_obfuscation.write().await = proxy_downstream_obfuscation;
         self.health.set_eligible_server_count(eligible_server_count);
         self.health.set_applied_configuration(true);

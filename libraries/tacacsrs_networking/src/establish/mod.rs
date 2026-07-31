@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
+use tacacsrs_credential_resolution::RuntimeServer;
 
 use crate::helpers::connect_tcp;
 use crate::transport::BoxedTransport;
@@ -102,9 +103,10 @@ impl ConnectOptions {
 /// - the selected backend rejects the configured material or fails to
 ///   complete its handshake
 pub(crate) async fn establish_stream(
-    server: &TacacsPlusServer,
+    runtime: std::sync::Arc<RuntimeServer>,
     options: &ConnectOptions,
 ) -> Result<BoxedTransport> {
+    let server = runtime.config();
     let address = server.socket_address();
 
     let security_label = security_label(server);
@@ -129,7 +131,7 @@ pub(crate) async fn establish_stream(
     // returns true when only PSK material is configured.
     if crate::transport::tls_psk::server_has_psk(server) {
         let stream =
-            crate::transport::tls_psk::establish_from_server(server, &address, tcp_stream).await?;
+            crate::transport::tls_psk::establish_from_server(runtime, &address, tcp_stream).await?;
         return Ok(BoxedTransport::new(stream));
     }
 

@@ -13,6 +13,8 @@ pub enum ResolutionErrorKind {
     EnumerationRequired,
     /// A generated central container cannot form a usable request.
     IncompleteRequest,
+    /// A central request cannot use the inline-only runtime constructor.
+    ResolutionRequired,
     /// Provider could not find requested material.
     NotFound,
     /// Provider denied access to requested material.
@@ -67,6 +69,16 @@ pub struct ResolutionError {
 }
 
 impl ResolutionError {
+    pub(crate) fn resolution_required(context: RequestContext, expected: CredentialKind) -> Self {
+        Self {
+            kind: ResolutionErrorKind::ResolutionRequired,
+            context: Some(context),
+            slot: None,
+            expected: Some(expected),
+            actual: None,
+        }
+    }
+
     pub(crate) fn incomplete_request(context: RequestContext, expected: CredentialKind) -> Self {
         Self {
             kind: ResolutionErrorKind::IncompleteRequest,

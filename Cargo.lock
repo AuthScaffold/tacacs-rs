@@ -1941,6 +1941,7 @@ dependencies = [
  "serde_json",
  "tacacsrs-agent-client",
  "tacacsrs-config",
+ "tacacsrs-credential-resolution",
  "tacacsrs-flow-abstractions",
  "tacacsrs-flows",
  "tacacsrs-messages",
@@ -2078,6 +2079,7 @@ version = "0.0.0-dev"
 dependencies = [
  "async-trait",
  "serde",
+ "serde_json",
  "static_assertions",
  "tacacsrs-config",
  "tokio",
@@ -2146,6 +2148,7 @@ dependencies = [
  "parking_lot",
  "rand",
  "tacacsrs-config",
+ "tacacsrs-credential-resolution",
  "tacacsrs-flow-abstractions",
  "tacacsrs-messages",
  "tokio",

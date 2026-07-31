@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tacacsrs_config::TacacsPlusServer;
+use tacacsrs_credential_resolution::RuntimeServer;
 use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::authorization::reply::AuthorizationReply;
@@ -71,6 +71,6 @@ pub(crate) trait UpstreamConnector: Send + Sync {
     /// connection setup fails.
     async fn connect(
         &self,
-        server: &TacacsPlusServer,
+        server: Arc<RuntimeServer>,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
 }
