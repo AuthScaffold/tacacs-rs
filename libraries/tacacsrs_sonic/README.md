@@ -76,6 +76,15 @@ version 1. The reserved ACMS root defaults to `/etc/sonic/credentials`, but no
 ACMS path, symlink, or certificate parsing behavior is implemented until the
 deferred schema and stable-link contract is reviewed.
 
+The datastore watches the EPSK root and its parent alongside Redis keyspace
+notifications. Only reviewed opaque object names and root events trigger;
+materializer temporary names and access-only events are ignored. Filesystem and
+ConfigDB bursts are debounced and always cause a complete snapshot reload,
+credential re-resolution, and atomic runtime candidate apply. The watcher never
+patches bytes into an active runtime. This supports immutable-ID ConfigDB
+switches and explicit same-ID atomic replacement while preserving the prior
+runtime on missing or rejected material.
+
 ## Example watcher
 
 The `configdb_watch` example demonstrates the crate's runtime contract: it

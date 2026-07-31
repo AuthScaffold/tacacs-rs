@@ -6,12 +6,14 @@
 //! Redis keyspace notifications on `__keyspace@<db>__:TACPLUS*`.
 
 use std::time::Duration;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use futures_util::StreamExt;
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
 use tokio::sync::mpsc;
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::mapping::{SonicHash, SonicTacacsTables};
 
@@ -43,6 +45,8 @@ pub struct SonicConnection {
     /// Debounce window applied to keyspace notifications. Multiple changes
     /// arriving within this window are coalesced into a single reload.
     pub debounce: Duration,
+    /// EPSK root watched for same-ID atomic replacement.
+    pub credential_watch_root: Option<PathBuf>,
 }
 
 impl Default for SonicConnection {
@@ -51,6 +55,9 @@ impl Default for SonicConnection {
             url: DEFAULT_REDIS_URL.to_string(),
             db_index: 4,
             debounce: Duration::from_millis(250),
+            credential_watch_root: Some(PathBuf::from(
+                crate::SonicCredentialRoots::DEFAULT_EPSK_ROOT,
+            )),
         }
     }
 }
@@ -212,4 +219,130 @@ pub async fn spawn_change_notifier(
     });
 
     Ok(rx)
+}
+
+/// Watches the reviewed EPSK root and emits debounced complete-reload signals.
+///
+/// # Errors
+///
+/// Returns an error if the root or its parent cannot be watched.
+pub async fn spawn_credential_change_notifier(
+    root: PathBuf,
+    debounce: Duration,
+) -> anyhow::Result<mpsc::Receiver<()>> {
+    let (event_tx, mut event_rx) = mpsc::channel(32);
+    let mut watcher = RecommendedWatcher::new(
+        move |event| {
+            if event_tx.blocking_send(event).is_err() {
+                log::debug!("SONiC credential watcher consumer dropped");
+            }
+        },
+        Config::default(),
+    )
+    .context("create SONiC credential watcher")?;
+    watcher
+        .watch(&root, RecursiveMode::NonRecursive)
+        .context("watch SONiC EPSK root")?;
+    if let Some(parent) = root.parent() {
+        watcher
+            .watch(parent, RecursiveMode::NonRecursive)
+            .context("watch SONiC EPSK parent")?;
+    }
+
+    let (signal_tx, signal_rx) = mpsc::channel(1);
+    tokio::spawn(async move {
+        let _watcher = watcher;
+        while let Some(event) = event_rx.recv().await {
+            let relevant = match event {
+                Ok(event) => event_touches_credential_object(&event, &root),
+                Err(_) => true,
+            };
+            if !relevant {
+                continue;
+            }
+            if debounce > Duration::ZERO {
+                tokio::time::sleep(debounce).await;
+            }
+            while event_rx.try_recv().is_ok() {}
+            if signal_tx.send(()).await.is_err() {
+                break;
+            }
+        }
+    });
+    Ok(signal_rx)
+}
+
+fn event_touches_credential_object(event: &Event, root: &Path) -> bool {
+    if matches!(event.kind, EventKind::Access(_)) {
+        return false;
+    }
+    event.paths.iter().any(|path| {
+        if path == root {
+            return true;
+        }
+        path.parent() == Some(root)
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_opaque_object_id)
+    })
+}
+
+fn is_opaque_object_id(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    value.len() <= 64
+        && first.is_ascii_alphanumeric()
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+#[cfg(test)]
+mod tests {
+    use notify::event::{AccessKind, EventAttributes, ModifyKind};
+
+    use super::*;
+
+    fn event(kind: EventKind, path: &str) -> Event {
+        Event {
+            kind,
+            paths: vec![PathBuf::from(path)],
+            attrs: EventAttributes::default(),
+        }
+    }
+
+    #[test]
+    fn credential_event_filter_accepts_objects_and_root_but_ignores_temporary_and_access() {
+        let root = Path::new("/credentials/epsk");
+        assert!(event_touches_credential_object(
+            &event(
+                EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Any)),
+                "/credentials/epsk/object-1"
+            ),
+            root,
+        ));
+        assert!(event_touches_credential_object(
+            &event(EventKind::Modify(ModifyKind::Any), "/credentials/epsk"),
+            root,
+        ));
+        assert!(!event_touches_credential_object(
+            &event(EventKind::Modify(ModifyKind::Any), "/credentials/epsk/.object-1.tmp"),
+            root,
+        ));
+        assert!(!event_touches_credential_object(
+            &event(EventKind::Access(AccessKind::Any), "/credentials/epsk/object-1"),
+            root,
+        ));
+    }
+
+    #[test]
+    fn opaque_object_filter_matches_reviewed_grammar() {
+        for valid in ["a", "A1", "object-1", "object_1"] {
+            assert!(is_opaque_object_id(valid));
+        }
+        for invalid in ["", "_object", "-object", ".tmp", "a/b", "../a"] {
+            assert!(!is_opaque_object_id(invalid));
+        }
+    }
 }

@@ -229,19 +229,18 @@ impl CredentialResolver for SonicCredentialResolver {
             let configured_policy = self.policy;
             let reference = reference.to_owned();
             let bytes = tokio::task::spawn_blocking(move || {
-                let (root, policy) = match root {
-                    Some(root) => (root, configured_policy),
-                    None => {
-                        let (root, root_gid) = linux::open_root(roots.epsk(), configured_policy)
-                            .map_err(map_initialization_error)?;
-                        (
-                            Arc::new(root),
-                            SonicCredentialPolicy {
-                                expected_gid: Some(root_gid),
-                                ..configured_policy
-                            },
-                        )
-                    }
+                let (root, policy) = if let Some(root) = root {
+                    (root, configured_policy)
+                } else {
+                    let (root, root_gid) = linux::open_root(roots.epsk(), configured_policy)
+                        .map_err(map_initialization_error)?;
+                    (
+                        Arc::new(root),
+                        SonicCredentialPolicy {
+                            expected_gid: Some(root_gid),
+                            ..configured_policy
+                        },
+                    )
                 };
                 linux::read_epsk(&root, &reference, policy)
             })

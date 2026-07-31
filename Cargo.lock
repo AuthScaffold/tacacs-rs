@@ -2165,6 +2165,7 @@ dependencies = [
  "clap",
  "futures-util",
  "log",
+ "notify",
  "redis",
  "rustix",
  "tacacsrs-config",

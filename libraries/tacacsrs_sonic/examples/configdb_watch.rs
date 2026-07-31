@@ -39,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
         url: cli.redis_url,
         db_index: cli.redis_db,
         debounce: Duration::from_millis(cli.debounce_ms),
+        credential_watch_root: None,
     };
     let datastore = SonicConfigDb::new(settings);
 
