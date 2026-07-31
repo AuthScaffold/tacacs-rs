@@ -237,6 +237,60 @@ mod tests {
             .unwrap_or_else(|| panic!("{context} missing"))
     }
 
+    async fn seed_redis(connection: &mut redis::aio::MultiplexedConnection) {
+        redis::cmd("FLUSHDB")
+            .query_async::<()>(connection)
+            .await
+            .expect("flush test database");
+        redis::cmd("CONFIG")
+            .arg("SET")
+            .arg("notify-keyspace-events")
+            .arg("Kgh")
+            .query_async::<()>(connection)
+            .await
+            .expect("enable keyspace notifications");
+        connection
+            .hset_multiple::<_, _, _, ()>(
+                "TACPLUS_FORWARDER|global",
+                &[
+                    ("local_listen_address", "127.0.0.1"),
+                    ("local_listen_port", "49"),
+                ],
+            )
+            .await
+            .expect("seed forwarder");
+        connection
+            .hset_multiple::<_, _, _, ()>(
+                "TACPLUS_SERVER|192.0.2.10",
+                &[("priority", "1"), ("passkey", "x")],
+            )
+            .await
+            .expect("seed server");
+        connection
+            .hset_multiple::<_, _, _, ()>(
+                "TACPLUS_SERVER_TLS|192.0.2.20",
+                &[
+                    ("priority", "3"),
+                    ("psk_identity", "client"),
+                    ("psk_secret_ref", "epsk-object"),
+                ],
+            )
+            .await
+            .expect("seed TLS server");
+    }
+
+    async fn set_field(
+        connection: &mut redis::aio::MultiplexedConnection,
+        key: &str,
+        field: &str,
+        value: &str,
+    ) {
+        connection
+            .hset::<_, _, _, ()>(key, field, value)
+            .await
+            .expect("set Redis field");
+    }
+
     #[test]
     fn runtime_policy_retries_and_maintains_continuous_notifications() {
         let datastore = SonicConfigDb::new(SonicConnection::default());
@@ -262,56 +316,44 @@ mod tests {
             credential_watch_root: None,
         };
         let mut connection = settings.connect().await.expect("connect test Redis");
-        redis::cmd("FLUSHDB")
-            .query_async::<()>(&mut connection)
-            .await
-            .expect("flush test database");
-        redis::cmd("CONFIG")
-            .arg("SET")
-            .arg("notify-keyspace-events")
-            .arg("Kgh")
-            .query_async::<()>(&mut connection)
-            .await
-            .expect("enable keyspace notifications");
-        connection
-            .hset_multiple::<_, _, _, ()>(
-                "TACPLUS_FORWARDER|global",
-                &[
-                    ("local_listen_address", "127.0.0.1"),
-                    ("local_listen_port", "49"),
-                ],
-            )
-            .await
-            .expect("seed forwarder");
-        connection
-            .hset_multiple::<_, _, _, ()>(
-                "TACPLUS_SERVER|192.0.2.10",
-                &[("priority", "1"), ("passkey", "x")],
-            )
-            .await
-            .expect("seed server");
+        seed_redis(&mut connection).await;
 
         let bound = settings
             .load_forwarder_settings()
             .await
             .expect("load bound forwarder");
         let datastore = SonicConfigDb::with_bound_forwarder(settings, bound);
+        let initial = datastore.load().await.expect("initial complete snapshot");
+        assert_eq!(initial.server.len(), 2);
+        assert!(initial.server.iter().any(|server| {
+            server
+                .client_identity
+                .as_ref()
+                .and_then(|identity| identity.tls13_epsk.as_ref())
+                .is_some()
+        }));
         let mut events = datastore.subscribe().await.expect("subscribe");
 
-        connection
-            .hset::<_, _, _, ()>("TACPLUS_FORWARDER|global", "local_listen_port", "50")
-            .await
-            .expect("change forwarder");
-        connection
-            .hset::<_, _, _, ()>("TACPLUS_SERVER|192.0.2.10", "priority", "2")
-            .await
-            .expect("change server");
+        set_field(&mut connection, "TACPLUS_FORWARDER|global", "local_listen_port", "50").await;
+        set_field(&mut connection, "TACPLUS_SERVER|192.0.2.10", "timeout", "6").await;
+        set_field(&mut connection, "TACPLUS_SERVER_TLS|192.0.2.20", "timeout", "7").await;
         let changed = next_event(&mut events, "changed event").await;
         let ConfigChangeEvent::Changed(changed) = changed else {
             panic!("expected changed event");
         };
-        assert_eq!(changed.config.server[0].port, 49);
-        assert_eq!(changed.config.server[0].name, sonic_server_name("192.0.2.10"));
+        assert_eq!(changed.config.server.len(), 2);
+        assert_eq!(changed.config.server[0].address, "192.0.2.20");
+        assert_eq!(changed.config.server[0].timeout, 7);
+        assert_eq!(changed.config.server[1].name, sonic_server_name("192.0.2.10"));
+        assert_eq!(changed.config.server[1].timeout, 6);
+        assert!(changed
+            .delta
+            .modified_servers
+            .contains(&sonic_server_name("192.0.2.10")));
+        assert!(changed
+            .delta
+            .modified_servers
+            .contains(&sonic_server_name("192.0.2.20")));
         assert!(matches!(
             next_event(&mut events, "restart event").await,
             ConfigChangeEvent::RestartRequired { required: true }
@@ -349,10 +391,7 @@ mod tests {
             ConfigChangeEvent::RestartRequired { required: false }
         ));
 
-        connection
-            .hset::<_, _, _, ()>("TACPLUS_FORWARDER|global", "local_listen_port", "0")
-            .await
-            .expect("write malformed forwarder");
+        set_field(&mut connection, "TACPLUS_FORWARDER|global", "local_listen_port", "0").await;
         assert!(matches!(
             next_event(&mut events, "rejected candidate").await,
             ConfigChangeEvent::CandidateRejected

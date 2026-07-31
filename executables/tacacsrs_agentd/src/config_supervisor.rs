@@ -304,13 +304,17 @@ impl ConfigSupervisor {
         })?;
         let apply = match self.credential_resolver.as_deref() {
             Some(resolver) => {
-                self.service
+                let result = self
+                    .service
                     .resolve_and_reload_tacacs_plus_with_proxy_downstream_obfuscation(
                         filtered.tacacs_plus,
                         filtered.proxy_downstream_obfuscation,
                         resolver,
                     )
-                    .await
+                    .await;
+                self.health
+                    .set_degraded(DegradationReason::CredentialResolutionFailed, result.is_err());
+                result
             }
             None => {
                 self.service
@@ -649,7 +653,7 @@ mod tests {
         let supervisor = ConfigSupervisor::with_backoff_and_resolver(
             datastore,
             Arc::clone(&service),
-            health,
+            health.clone(),
             Arc::new(NoopTacacsPlusFilter::default()),
             Arc::new(FixedBackoff(Duration::ZERO)),
             Some(Arc::clone(&resolver) as Arc<dyn CredentialResolver>),
@@ -666,6 +670,10 @@ mod tests {
             .await
             .is_err());
         assert_eq!(service.server_count(), 1);
+        assert!(health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&DegradationReason::CredentialResolutionFailed));
 
         *resolver.rejected_server.lock().expect("resolver lock") = None;
         supervisor
@@ -673,6 +681,10 @@ mod tests {
             .await
             .expect("fully resolved candidate");
         assert_eq!(service.server_count(), 2);
+        assert!(!health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&DegradationReason::CredentialResolutionFailed));
     }
 
     #[tokio::test]

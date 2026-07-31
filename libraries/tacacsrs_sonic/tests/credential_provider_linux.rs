@@ -46,6 +46,7 @@ fn resolver(root: &Path, policy: SonicCredentialPolicy) -> SonicCredentialResolv
 }
 
 fn epsk_plan(reference: &str) -> ResolutionPlan {
+    let reference = serde_json::to_string(reference).expect("serialize reference");
     let json = format!(
         r#"{{
             "ietf-system-tacacs-plus:tacacs-plus": {{
@@ -56,7 +57,7 @@ fn epsk_plan(reference: &str) -> ResolutionPlan {
                     "port": 449,
                     "client-identity": {{
                         "tls13-epsk": {{
-                            "central-keystore-reference": "{reference}",
+                            "central-keystore-reference": {reference},
                             "external-identity": "client"
                         }}
                     }}
@@ -118,6 +119,7 @@ async fn unsafe_epsk_objects_are_rejected_with_sanitized_errors() {
             write_object(root, "wrong-mode", &[0x11; 32]);
             configure_mode(&root.join("wrong-mode"), 0o644);
         }),
+        ("empty-object", |root| write_object(root, "empty-object", &[])),
         ("short-object", |root| write_object(root, "short-object", &[0x22; 15])),
         ("oversized", |root| write_object(root, "oversized", &vec![0x33; 4097])),
         ("directory", |root| {
@@ -204,7 +206,17 @@ async fn missing_and_invalid_references_fail_before_secret_reads() {
         .expect_err("missing object must fail");
     assert_eq!(error.kind(), ResolutionErrorKind::NotFound);
 
-    for invalid in ["../escape", "/absolute", "contains/slash", "_bad-start"] {
+    for invalid in [
+        "../escape",
+        "/absolute",
+        "C:\\absolute",
+        "contains/slash",
+        "contains\\slash",
+        "_bad-start",
+        "-bad-start",
+        "nonascii-é",
+        &"a".repeat(65),
+    ] {
         let plan = epsk_plan(invalid);
         let error = provider
             .resolve(&plan.requests()[0])
@@ -213,6 +225,44 @@ async fn missing_and_invalid_references_fail_before_secret_reads() {
         assert_eq!(error.kind(), ResolutionErrorKind::InvalidMaterial);
         assert!(!error.to_string().contains(invalid));
     }
+}
+
+#[tokio::test]
+async fn opaque_id_boundaries_resolve_only_from_the_epsk_root() {
+    let (temp, root, policy) = create_root();
+    let acms_root = temp.path().join("acms");
+    fs::create_dir(&acms_root).expect("create ACMS root");
+    configure_mode(&acms_root, 0o750);
+    let one_byte_id = "a";
+    let maximum_id = format!("b{}", "_".repeat(63));
+    write_object(&root, one_byte_id, &[0x81; 16]);
+    write_object(&root, &maximum_id, &[0x82; 32]);
+    write_object(&acms_root, "acms-only", &[0x83; 32]);
+    let provider =
+        SonicCredentialResolver::open(SonicCredentialRoots::new(&root, &acms_root), policy)
+            .expect("open provider");
+
+    for (id, expected) in [
+        (one_byte_id, &[0x81; 16][..]),
+        (&maximum_id, &[0x82; 32][..]),
+    ] {
+        let plan = epsk_plan(id);
+        let ResolvedCredential::SymmetricKey(secret) = provider
+            .resolve(&plan.requests()[0])
+            .await
+            .expect("boundary ID resolves")
+        else {
+            panic!("expected symmetric key");
+        };
+        assert_eq!(secret.expose_secret(), expected);
+    }
+
+    let plan = epsk_plan("acms-only");
+    let error = provider
+        .resolve(&plan.requests()[0])
+        .await
+        .expect_err("EPSK requests cannot read the ACMS root");
+    assert_eq!(error.kind(), ResolutionErrorKind::NotFound);
 }
 
 #[tokio::test]

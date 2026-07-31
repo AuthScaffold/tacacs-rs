@@ -311,6 +311,15 @@ mod linux {
         reference: &str,
         policy: SonicCredentialPolicy,
     ) -> Result<Vec<u8>, ProviderErrorKind> {
+        read_epsk_with_hook(root, reference, policy, || {})
+    }
+
+    fn read_epsk_with_hook(
+        root: &OwnedFd,
+        reference: &str,
+        policy: SonicCredentialPolicy,
+        after_initial_metadata: impl FnOnce(),
+    ) -> Result<Vec<u8>, ProviderErrorKind> {
         validate_object_id(reference)?;
         let fd = openat(
             root,
@@ -321,6 +330,7 @@ mod linux {
         .map_err(map_open_error)?;
         let before = fstat(&fd).map_err(|_| ProviderErrorKind::Unavailable)?;
         validate_file_metadata(&before, policy)?;
+        after_initial_metadata();
 
         let mut file = File::from(fd);
         let mut bytes = Vec::new();
@@ -390,6 +400,37 @@ mod linux {
             | rustix::io::Errno::NODEV
             | rustix::io::Errno::ISDIR => ProviderErrorKind::InvalidMaterial,
             _ => ProviderErrorKind::Unavailable,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::fs;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        use super::*;
+
+        #[test]
+        fn metadata_change_during_read_is_rejected_without_returning_bytes() {
+            let temp = tempfile::tempdir().expect("temporary root");
+            let root_path = temp.path().join("epsk");
+            fs::create_dir(&root_path).expect("create root");
+            fs::set_permissions(&root_path, fs::Permissions::from_mode(0o750))
+                .expect("set root mode");
+            let object_path = root_path.join("race-object");
+            fs::write(&object_path, [0x41; 32]).expect("write object");
+            fs::set_permissions(&object_path, fs::Permissions::from_mode(0o640))
+                .expect("set object mode");
+            let metadata = fs::metadata(&root_path).expect("root metadata");
+            let policy = SonicCredentialPolicy::new(metadata.uid(), metadata.gid());
+            let (root, _) = open_root(&root_path, policy).expect("open root");
+
+            let error = read_epsk_with_hook(&root, "race-object", policy, || {
+                fs::write(&object_path, [0x42; 48]).expect("replace open inode contents");
+            })
+            .expect_err("concurrent metadata change must fail");
+
+            assert_eq!(error, ProviderErrorKind::Unavailable);
         }
     }
 }

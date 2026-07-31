@@ -55,3 +55,37 @@ async fn watcher_reports_provider_root_replacement() {
         .expect("root replacement signal timeout")
         .expect("root replacement signal stream");
 }
+
+#[tokio::test]
+async fn watcher_coalesces_delete_recreate_and_root_replacement_races() {
+    let temp = tempfile::tempdir().expect("temporary credential parent");
+    let root = temp.path().join("epsk");
+    fs::create_dir(&root).expect("create EPSK root");
+    let object = root.join("object-1");
+    fs::write(&object, b"first-valid-material").expect("seed object");
+    let debounce = Duration::from_millis(40);
+    let mut signals = spawn_credential_change_notifier(root.clone(), debounce)
+        .await
+        .expect("start credential watcher");
+
+    fs::remove_file(&object).expect("delete object");
+    fs::write(&object, b"second-valid-material").expect("recreate object");
+    fs::rename(&root, temp.path().join("epsk-old")).expect("move old root");
+    fs::create_dir(&root).expect("recreate root");
+    fs::write(root.join("object-1"), b"final-valid-material").expect("write final object");
+
+    tokio::time::timeout(Duration::from_secs(2), signals.recv())
+        .await
+        .expect("race signal timeout")
+        .expect("race signal stream");
+    assert!(
+        tokio::time::timeout(debounce.saturating_mul(3), signals.recv())
+            .await
+            .is_err(),
+        "race burst should coalesce to one signal"
+    );
+    assert_eq!(
+        fs::read(root.join("object-1")).expect("read final object"),
+        b"final-valid-material"
+    );
+}

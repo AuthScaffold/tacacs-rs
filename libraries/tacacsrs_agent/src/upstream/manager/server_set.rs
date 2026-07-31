@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
+#[cfg(test)]
+use tacacsrs_credential_resolution::RuntimeServer;
 use tokio::sync::RwLock;
 
 use super::server_slot::ServerSlot;
@@ -34,6 +36,11 @@ impl BoundServer {
     /// Returns the configured upstream server selected for this request.
     pub(crate) fn server(&self) -> &TacacsPlusServer {
         self.server_set.servers[self.index].server.config()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_server(&self) -> &RuntimeServer {
+        &self.server_set.servers[self.index].server
     }
 
     /// Returns the timeout configured on the selected upstream server.

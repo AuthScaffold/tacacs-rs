@@ -540,7 +540,7 @@ mod tests {
     use std::time::Duration;
 
     use tacacsrs_config::TacacsPlusServer;
-    use super::{UpstreamManager, runtime_servers_reusable};
+    use super::{BoundServer, UpstreamManager, runtime_servers_reusable};
     use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
     use crate::EnabledServices;
     use crate::test_support::{FakeConnection, FakeConnector};
@@ -569,28 +569,29 @@ mod tests {
         }
     }
 
-    async fn resolved_runtime(secret: &[u8]) -> RuntimeServer {
-        let server = tacacsrs_config::parse_yang_json(
-            r#"{
-                "ietf-system-tacacs-plus:tacacs-plus": {
-                    "server": [{
+    async fn resolved_runtime(reference: &str, secret: &[u8]) -> RuntimeServer {
+        let json = format!(
+            r#"{{
+                "ietf-system-tacacs-plus:tacacs-plus": {{
+                    "server": [{{
                         "name": "rotation-test",
                         "server-type": "authentication authorization accounting",
                         "address": "192.0.2.70",
                         "port": 449,
-                        "client-identity": {
-                            "tls13-epsk": {
-                                "central-keystore-reference": "same-object-id",
+                        "client-identity": {{
+                            "tls13-epsk": {{
+                                "central-keystore-reference": "{reference}",
                                 "external-identity": "client"
-                            }
-                        }
-                    }]
-                }
-            }"#,
-        )
-        .expect("central config")
-        .server
-        .remove(0);
+                            }}
+                        }}
+                    }}]
+                }}
+            }}"#,
+        );
+        let server = tacacsrs_config::parse_yang_json(&json)
+            .expect("central config")
+            .server
+            .remove(0);
         let plan = ResolutionPlan::from_server(&server).expect("plan");
         let resolver = FakeCredentialResolver::new().with_response(
             plan.requests()[0].slot(),
@@ -601,10 +602,18 @@ mod tests {
             .expect("resolved runtime")
     }
 
+    fn bound_secret(bound: &BoundServer) -> &[u8] {
+        bound
+            .runtime_server()
+            .tls13_epsk_secret()
+            .expect("resolved secret")
+            .expose_secret()
+    }
+
     #[tokio::test]
     async fn centrally_resolved_servers_are_never_reused_by_reference_equivalence() {
-        let first = resolved_runtime(b"first-secret-material").await;
-        let replacement = resolved_runtime(b"replacement-secret").await;
+        let first = resolved_runtime("same-object-id", b"first-secret-material").await;
+        let replacement = resolved_runtime("same-object-id", b"replacement-secret").await;
 
         assert!(!runtime_servers_reusable(&first, &replacement));
         assert_ne!(
@@ -617,6 +626,50 @@ mod tests {
                 .expect("replacement secret")
                 .expose_secret()
         );
+    }
+
+    #[tokio::test]
+    async fn resolved_rotation_replaces_new_bindings_and_preserves_existing_snapshots() {
+        let first = Arc::new(resolved_runtime("object-a", b"first-secret-material").await);
+        let second = Arc::new(resolved_runtime("object-b", b"second-secret-material").await);
+        let rollback = Arc::new(resolved_runtime("object-a", b"first-secret-material").await);
+        let connection = Arc::new(FakeConnection {
+            address: "192.0.2.70:449".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            connection.address.clone(),
+            Arc::clone(&connection),
+        )])));
+        let state = UpstreamManager::new_runtime(
+            vec![Arc::clone(&first)],
+            connector,
+            Duration::from_secs(1),
+            test_health(),
+        );
+
+        let first_binding = state.bind_server_for_new_session().await.expect("bind A");
+        state
+            .reload_runtime_servers(vec![second])
+            .await
+            .expect("apply B");
+        connection.usable.store(true, Ordering::Relaxed);
+        let second_binding = state.bind_server_for_new_session().await.expect("bind B");
+        state
+            .reload_runtime_servers(vec![rollback])
+            .await
+            .expect("roll back to A");
+        connection.usable.store(true, Ordering::Relaxed);
+        let rollback_binding = state
+            .bind_server_for_new_session()
+            .await
+            .expect("bind rollback A");
+
+        assert_eq!(bound_secret(&first_binding), b"first-secret-material");
+        assert_eq!(bound_secret(&second_binding), b"second-secret-material");
+        assert_eq!(bound_secret(&rollback_binding), b"first-secret-material");
+        assert_eq!(bound_secret(&first_binding), b"first-secret-material");
     }
 
     fn test_health() -> RuntimeHealthPublisher {

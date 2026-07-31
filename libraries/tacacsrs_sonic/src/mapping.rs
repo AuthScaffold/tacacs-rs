@@ -453,11 +453,11 @@ impl ParsedSonicTables {
         let mut logical_names = BTreeSet::new();
         let mut endpoints = BTreeSet::new();
         for candidate in &candidates {
-            if !logical_names.insert(candidate.normalized_host().clone()) {
-                bail!("TACACS+ candidate has a duplicate normalized logical name");
-            }
             if !endpoints.insert(candidate.endpoint()) {
                 bail!("TACACS+ candidate has a duplicate normalized endpoint");
+            }
+            if !logical_names.insert(candidate.normalized_host().clone()) {
+                bail!("TACACS+ candidate has a duplicate normalized logical name");
             }
         }
 
@@ -1012,6 +1012,29 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_loopback_forms_filter_only_the_active_forwarder_port() {
+        for address in ["127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"] {
+            let mut compatibility = BTreeMap::new();
+            compatibility.insert(address.to_owned(), h(&[("priority", "64"), ("tcp_port", "49")]));
+            compatibility
+                .insert("127.0.0.1".to_owned(), h(&[("priority", "32"), ("tcp_port", "50")]));
+            let parsed = ParsedSonicTables::from_tables(&SonicTacacsTables::with_extended_tables(
+                SonicHash::new(),
+                compatibility,
+                BTreeMap::new(),
+                h(&[
+                    ("local_listen_address", "127.0.0.1"),
+                    ("local_listen_port", "49"),
+                ]),
+            ))
+            .expect("loopback compatibility snapshot");
+
+            assert_eq!(parsed.candidates.len(), 1, "address {address}");
+            assert_eq!(parsed.candidates[0].endpoint().port, 50);
+        }
+    }
+
+    #[test]
     fn tls_self_target_and_cross_table_duplicates_are_rejected() {
         let mut tls = BTreeMap::new();
         tls.insert("::ffff:127.0.0.1".to_owned(), tls_fields("48"));
@@ -1041,6 +1064,20 @@ mod tests {
         assert!(error
             .to_string()
             .contains("duplicate normalized logical name"));
+
+        let mut compatibility = BTreeMap::new();
+        compatibility
+            .insert("192.0.2.10".to_owned(), h(&[("priority", "16"), ("tcp_port", "449")]));
+        let mut tls = BTreeMap::new();
+        tls.insert("::ffff:192.0.2.10".to_owned(), tls_fields("48"));
+        let error = ParsedSonicTables::from_tables(&SonicTacacsTables::with_extended_tables(
+            SonicHash::new(),
+            compatibility,
+            tls,
+            SonicHash::new(),
+        ))
+        .expect_err("normalized duplicate endpoints must fail");
+        assert!(error.to_string().contains("duplicate normalized endpoint"));
     }
 
     #[test]
@@ -1126,6 +1163,32 @@ mod tests {
                 SonicHash::new(),
             ))
             .expect_err("invalid TLS row must fail");
+        }
+    }
+
+    #[test]
+    fn deferred_certificate_and_mutual_tls_fields_are_explicitly_rejected() {
+        for field in [
+            "client_certificate_ref",
+            "client_private_key_ref",
+            "server_ca_certificate_ref",
+            "server_end_entity_certificate_ref",
+            "mutual_tls_enabled",
+        ] {
+            let mut fields = tls_fields("48");
+            fields.insert(field.to_owned(), "sensitive-deferred-value".to_owned());
+            let mut tls = BTreeMap::new();
+            tls.insert("192.0.2.20".to_owned(), fields);
+            let error = ParsedSonicTables::from_tables(&SonicTacacsTables::with_extended_tables(
+                SonicHash::new(),
+                BTreeMap::new(),
+                tls,
+                SonicHash::new(),
+            ))
+            .expect_err("deferred certificate field must fail");
+            let message = error.to_string();
+            assert!(message.contains(field));
+            assert!(!message.contains("sensitive-deferred-value"));
         }
     }
 
