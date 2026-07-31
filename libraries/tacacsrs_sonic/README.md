@@ -56,6 +56,26 @@ Unknown compatibility keys remain tolerated for existing SONiC deployments,
 but their values are never logged. TLS and forwarder tables are strict because
 unknown fields there can change security behavior.
 
+## Credential provider
+
+`SonicCredentialResolver` implements the provider-neutral
+`CredentialResolver` contract for version-1 EPSKs. Production resolves opaque
+IDs beneath `/etc/sonic/tacacs/credentials/epsk`; callers inject the target
+`aaaagent` group ID through `SonicCredentialPolicy::production`.
+
+The Linux provider pre-opens a root-owned `0750` directory without following a
+symlink. Each grammar-validated one-segment ID is opened relative to that
+descriptor with `O_NOFOLLOW`, `O_NONBLOCK`, and `O_CLOEXEC`. Before returning a
+zeroizing `SecretBytes`, it requires a regular file with one link, exact
+`root:<aaaagent-gid>` ownership, mode `0640`, and a bounded length from 16
+through 4096 bytes. Metadata identity, size, and timestamps must remain stable
+across the read. Errors expose only typed request context.
+
+Certificate-with-key and trust-bag requests are rejected as unsupported by
+version 1. The reserved ACMS root defaults to `/etc/sonic/credentials`, but no
+ACMS path, symlink, or certificate parsing behavior is implemented until the
+deferred schema and stable-link contract is reviewed.
+
 ## Example watcher
 
 The `configdb_watch` example demonstrates the crate's runtime contract: it

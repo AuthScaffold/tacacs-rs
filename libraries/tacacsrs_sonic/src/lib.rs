@@ -2,6 +2,7 @@
 #![allow(clippy::doc_markdown, clippy::ignored_unit_patterns)]
 
 pub mod mapping;
+mod provider;
 pub mod store;
 
 use std::sync::Arc;
@@ -18,6 +19,10 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 pub use mapping::{map_sonic_tables_to_tacacs_plus, sonic_server_name, SonicHash, SonicTacacsTables};
+pub use provider::{
+    SonicCredentialInitializationError, SonicCredentialPolicy, SonicCredentialResolver,
+    SonicCredentialRoots,
+};
 pub use store::{
     read_tacacs_tables, spawn_change_notifier, SonicConnection, DEFAULT_REDIS_URL,
     TACPLUS_FORWARDER_TABLE, TACPLUS_GLOBAL_TABLE, TACPLUS_SERVER_TABLE, TACPLUS_SERVER_TLS_TABLE,

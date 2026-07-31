@@ -2162,8 +2162,11 @@ dependencies = [
  "futures-util",
  "log",
  "redis",
+ "rustix",
  "tacacsrs-config",
+ "tacacsrs-credential-resolution",
  "tacacsrs-datastore",
+ "tempfile",
  "tokio",
  "tokio-stream",
 ]
