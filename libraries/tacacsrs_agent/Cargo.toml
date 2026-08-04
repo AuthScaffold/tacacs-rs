@@ -23,6 +23,7 @@ tonic = "0.14.6"
 tonic-health = "0.14.6"
 
 [dev-dependencies]
+tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 tokio = { version = "1.52.3", features = ["test-util"] }
 
 [lints]

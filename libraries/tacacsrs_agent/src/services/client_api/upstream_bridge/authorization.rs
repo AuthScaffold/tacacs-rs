@@ -20,10 +20,10 @@ impl RoutedOperation for AuthorizationRoute {
 
     async fn send(
         connection: &dyn UpstreamConnection,
-        request: &Self::Request,
+        request: Self::Request,
     ) -> anyhow::Result<Self::Response> {
         let reply = connection
-            .send_authorization(build_authorization_request(request)?)
+            .send_authorization(build_authorization_request(&request)?)
             .await?;
         to_authorization_response(connection.server_address(), reply)
     }

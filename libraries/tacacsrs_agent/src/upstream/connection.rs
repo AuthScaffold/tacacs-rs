@@ -3,10 +3,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_messages::authentication::reply::AuthenticationReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::authorization::reply::AuthorizationReply;
 use tacacsrs_messages::authorization::request::AuthorizationRequest;
 use tacacsrs_networking::ClientConversation;
+use tacacsrs_flows::authentication::PapAuthenticationExchange;
 
 #[async_trait]
 /// Abstracts a single persistent TACACS+ server connection used by the service.
@@ -43,6 +45,12 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// Returns an error if the session cannot be created or the accounting
     /// exchange fails at the TACACS+ protocol level.
     async fn send_accounting(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply>;
+
+    /// Executes one fixed PAP authentication exchange.
+    async fn authenticate_pap(
+        &self,
+        exchange: PapAuthenticationExchange,
+    ) -> anyhow::Result<AuthenticationReply>;
 
     /// Sends one authorization request and returns the server's reply.
     ///

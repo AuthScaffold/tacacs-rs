@@ -13,10 +13,15 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_messages::authentication::reply::AuthenticationReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::authorization::reply::AuthorizationReply;
 use tacacsrs_messages::authorization::request::AuthorizationRequest;
-use tacacsrs_messages::enumerations::{TacacsAccountingStatus, TacacsAuthorizationStatus};
+use tacacsrs_messages::enumerations::{
+    TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
+    TacacsAuthorizationStatus,
+};
+use tacacsrs_flows::authentication::PapAuthenticationExchange;
 use tokio::sync::Mutex;
 
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
@@ -55,6 +60,22 @@ impl UpstreamConnection for FakeConnection {
             status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             server_msg: format!("handled by {}", self.address),
             data: String::new(),
+        })
+    }
+
+    async fn authenticate_pap(
+        &self,
+        _exchange: PapAuthenticationExchange,
+    ) -> anyhow::Result<AuthenticationReply> {
+        if self.fail_next_request.swap(false, Ordering::Relaxed) {
+            self.usable.store(false, Ordering::Relaxed);
+            anyhow::bail!("simulated failure from {}", self.address);
+        }
+        Ok(AuthenticationReply {
+            status: TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
+            flags: TacacsAuthenticationReplyFlags::empty(),
+            server_msg: format!("authenticated by {}", self.address),
+            data: Vec::new(),
         })
     }
 

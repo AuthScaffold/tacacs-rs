@@ -4,8 +4,10 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_flows::accounting::AccountingExchange;
+use tacacsrs_flows::authentication::PapAuthenticationExchange;
 use tacacsrs_flows::authorization::AuthorizationExchange;
 use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_messages::authentication::reply::AuthenticationReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::authorization::reply::AuthorizationReply;
 use tacacsrs_messages::authorization::request::AuthorizationRequest;
@@ -100,6 +102,16 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         }
 
         response.with_context(|| shared_failure_context("accounting", &self.server_address))
+    }
+
+    async fn authenticate_pap(
+        &self,
+        exchange: PapAuthenticationExchange,
+    ) -> anyhow::Result<AuthenticationReply> {
+        self.connection
+            .execute(exchange)
+            .await
+            .with_context(|| shared_failure_context("PAP authentication", &self.server_address))
     }
 
     async fn send_authorization(

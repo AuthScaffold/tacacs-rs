@@ -1,8 +1,8 @@
 use std::os::raw::c_int;
 
 use tacacsrs_agent_client::{
-    AuthorizationArg, AuthorizationKey, AuthorizationOperation, AuthorizationResponseStatus,
-    IpcEndpoint, ServiceClient,
+    AuthorizationArg, AuthorizationAuthenticationContext, AuthorizationKey, AuthorizationOperation,
+    AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
 };
 
 use crate::config::{format_endpoint, ipc_endpoint};
@@ -30,6 +30,7 @@ pub(crate) fn authorize_command(
         port: port.to_owned(),
         remote_address: remote_address.to_owned(),
         privilege_level: 15,
+        authentication_context: AuthorizationAuthenticationContext::TacacsAscii,
         args: authorization_args(command, argv),
     };
 
