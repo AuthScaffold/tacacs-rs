@@ -10,6 +10,7 @@ description = "TACACS+ protocol flow implementations decoupled from transport/se
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
 tacacsrs-networking = { path = "../tacacsrs_networking" }
+tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 
 [lints]
 workspace = true

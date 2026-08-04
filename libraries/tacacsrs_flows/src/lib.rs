@@ -5,4 +5,5 @@
 //! multiplexing, timeout, and lifecycle behavior.
 
 pub mod accounting;
+pub mod authentication;
 pub mod authorization;

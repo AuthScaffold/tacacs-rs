@@ -2104,6 +2104,7 @@ dependencies = [
  "anyhow",
  "tacacsrs-messages",
  "tacacsrs-networking",
+ "tacacsrs-secrets",
 ]
 
 [[package]]
