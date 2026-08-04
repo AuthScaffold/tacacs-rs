@@ -1941,7 +1941,6 @@ dependencies = [
  "serde_json",
  "tacacsrs-agent-client",
  "tacacsrs-config",
- "tacacsrs-flow-abstractions",
  "tacacsrs-flows",
  "tacacsrs-messages",
  "tacacsrs-networking",
@@ -2099,25 +2098,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "tacacsrs-flow-abstractions"
-version = "0.0.0-dev"
-dependencies = [
- "anyhow",
- "async-trait",
- "tacacsrs-messages",
-]
-
-[[package]]
 name = "tacacsrs-flows"
 version = "0.0.0-dev"
 dependencies = [
  "anyhow",
- "async-trait",
- "log",
- "tacacsrs-flow-abstractions",
  "tacacsrs-messages",
  "tacacsrs-networking",
- "tokio",
 ]
 
 [[package]]
@@ -2147,7 +2133,7 @@ dependencies = [
  "parking_lot",
  "rand",
  "tacacsrs-config",
- "tacacsrs-flow-abstractions",
+ "tacacsrs-flows",
  "tacacsrs-messages",
  "tokio",
  "tokio-openssl",

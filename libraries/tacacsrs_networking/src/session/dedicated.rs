@@ -135,7 +135,6 @@ impl SingleConnectPromotion {
 pub(crate) struct DedicatedSession {
     connection: Mutex<Option<BoxedDedicatedConnection>>,
     session_id: u32,
-    next_sequence_number: Mutex<u8>,
     expected_response_sequence: Mutex<Option<u8>>,
     complete: AtomicBool,
     single_connect_promotion: Option<SingleConnectPromotion>,
@@ -150,7 +149,6 @@ impl DedicatedSession {
         Self {
             connection: Mutex::new(Some(DedicatedConnection::new(transport, obfuscation_key))),
             session_id: random_nonzero_session_id(),
-            next_sequence_number: Mutex::new(1),
             expected_response_sequence: Mutex::new(None),
             complete: AtomicBool::new(false),
             single_connect_promotion,
@@ -159,17 +157,6 @@ impl DedicatedSession {
 
     pub(crate) const fn session_id(&self) -> u32 {
         self.session_id
-    }
-
-    pub(crate) fn is_complete(&self) -> bool {
-        self.complete.load(Ordering::Acquire)
-    }
-
-    pub(crate) async fn next_sequence_number(&self) -> u8 {
-        let mut sequence_number = self.next_sequence_number.lock().await;
-        let current = *sequence_number;
-        *sequence_number = current.wrapping_add(2);
-        current
     }
 
     pub(crate) async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {

@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "libraries/tacacsrs_messages",
     "libraries/tacacsrs_networking",
-    "libraries/tacacsrs_flow_abstractions",
     "libraries/tacacsrs_flows",
     "libraries/tacacsrs_agent_client",
     "libraries/tacacsrs_agent_ipc_emulator",

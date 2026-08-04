@@ -1,18 +1,11 @@
-//! Public client session facade.
+//! Internal client session transport facade.
 
-use async_trait::async_trait;
-
-use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::packet::Packet;
 
 use super::{DedicatedSession, SharedSession};
 
-/// A client session returned by [`TacacsClient`](crate::TacacsClient).
-///
-/// This type implements [`ClientSessionFlowIoTrait`] and hides whether the
-/// current operation is running over a dedicated stream or a shared multiplexed
-/// connection.
-pub struct ClientSession {
+/// Hides whether an operation uses a dedicated or shared transport.
+pub(crate) struct ClientSession {
     inner: ClientSessionInner,
 }
 
@@ -70,38 +63,5 @@ impl ClientSession {
             ClientSessionInner::Shared(session) => session.complete().await,
             ClientSessionInner::Dedicated(session) => session.complete().await,
         }
-    }
-}
-
-#[async_trait]
-impl ClientSessionFlowIoTrait for ClientSession {
-    async fn is_complete(&self) -> bool {
-        match &self.inner {
-            ClientSessionInner::Shared(session) => session.is_complete().await,
-            ClientSessionInner::Dedicated(session) => session.is_complete(),
-        }
-    }
-
-    async fn next_sequence_number(&self) -> u8 {
-        match &self.inner {
-            ClientSessionInner::Shared(session) => session.next_sequence_number().await,
-            ClientSessionInner::Dedicated(session) => session.next_sequence_number().await,
-        }
-    }
-
-    fn session_id(&self) -> u32 {
-        Self::session_id(self)
-    }
-
-    async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {
-        Self::send_packet(self, packet).await
-    }
-
-    async fn receive_packet(&self) -> anyhow::Result<Packet> {
-        Self::receive_packet(self).await
-    }
-
-    async fn complete(&self) {
-        Self::complete(self).await;
     }
 }

@@ -17,12 +17,7 @@ async fn execute_single_request_dedicated(
     connection: &Connection,
     request: &BatchRequest,
 ) -> Result<String, String> {
-    let session = connection
-        .create_session()
-        .await
-        .map_err(|error| format!("Session creation failed: {error}"))?;
-
-    execute_single_request(session, request).await
+    execute_single_request(connection, request).await
 }
 
 async fn establish_dedicated_connection(

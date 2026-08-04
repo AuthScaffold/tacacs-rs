@@ -2,8 +2,8 @@
 //!
 //! [`DedicatedConnection`] writes packets and reads responses over one raw
 //! transport without spawning background tasks or managing multiplexed sessions.
-//! It is intentionally packet-level: request/reply body construction belongs in
-//! flow crates layered on top of [`ClientSessionFlowIoTrait`](tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait).
+//! Request/reply body construction belongs to fixed exchange descriptors or
+//! mutable client conversations layered above this runtime.
 
 use std::sync::Arc;
 
@@ -22,8 +22,7 @@ use super::MultiplexedConnection;
 ///
 /// Unlike [`MultiplexedConnection`], this type does not spawn background tasks and
 /// does not multiplex sessions. Higher-level code can wrap it in a
-/// [`ClientSessionFlowIoTrait`](tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait)
-/// implementation when it wants to run protocol flows over a one-shot stream.
+/// internal facade when it needs to run an exchange over a one-shot stream.
 pub(crate) struct DedicatedConnection<R, W> {
     reader_half: R,
     writer_half: W,

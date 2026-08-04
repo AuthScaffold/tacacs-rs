@@ -5,11 +5,9 @@ use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
-use tacacsrs_messages::enumerations::TacacsFlags;
-
-use tacacsrs_networking::ClientSession;
 
 use crate::commands::accounting::send_accounting_request;
+use crate::connection::Connection;
 
 use super::super::progress::{ProgressConfig, ProgressTracker};
 use super::super::types::{AccountingRequest, BatchRequest, LoadTestResult};
@@ -33,7 +31,7 @@ pub(super) fn to_service_accounting_request(request: &AccountingRequest) -> Acco
 
 /// Executes a single batch request on a session
 pub(super) async fn execute_single_request(
-    session: ClientSession,
+    connection: &Connection,
     request: &BatchRequest,
 ) -> Result<String, String> {
     match request {
@@ -45,13 +43,12 @@ pub(super) async fn execute_single_request(
             };
 
             match send_accounting_request(
-                session,
+                connection,
                 &req.user,
                 &req.port,
                 &req.rem_addr,
                 &req.cmd,
                 cmd_args,
-                TacacsFlags::empty(),
             )
             .await
             {

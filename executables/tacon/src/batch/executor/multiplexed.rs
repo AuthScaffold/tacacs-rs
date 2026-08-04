@@ -2,7 +2,7 @@ use anyhow::Context;
 use futures::future::join_all;
 
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_networking::{ConnectOptions, ClientSession};
+use tacacsrs_networking::ConnectOptions;
 
 use crate::connection::{establish_connection, Connection};
 
@@ -24,12 +24,7 @@ pub(super) async fn execute_sequential_multiplexed(
     for (index, request) in requests.iter().enumerate() {
         log::info!("Executing request {}/{}", index + 1, requests.len());
 
-        let session = connection
-            .create_session()
-            .await
-            .context("Failed to create session for batch request")?;
-
-        let result = execute_single_request(session, request).await;
+        let result = execute_single_request(&connection, request).await;
         results.push(RequestResult {
             index,
             request_type: request.type_name(),
@@ -47,31 +42,19 @@ pub(super) async fn execute_parallel_multiplexed(
 ) -> anyhow::Result<Vec<RequestResult>> {
     log::info!("Executing {} requests in parallel on multiplexed connection", requests.len());
 
-    let mut session_futures = Vec::with_capacity(requests.len());
-    for _ in requests {
-        session_futures.push(connection.create_session());
-    }
-
-    let sessions: Vec<ClientSession> = join_all(session_futures)
-        .await
-        .into_iter()
-        .enumerate()
-        .map(|(index, result)| {
-            result.with_context(|| format!("Failed to create session for request {}", index + 1))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
     let futures: Vec<_> = requests
         .iter()
-        .zip(sessions)
         .enumerate()
-        .map(|(index, (request, session))| async move {
-            log::info!("Starting parallel request {}", index + 1);
-            let result = execute_single_request(session, request).await;
-            RequestResult {
-                index,
-                request_type: request.type_name(),
-                result,
+        .map(|(index, request)| {
+            let connection = connection.clone();
+            async move {
+                log::info!("Starting parallel request {}", index + 1);
+                let result = execute_single_request(&connection, request).await;
+                RequestResult {
+                    index,
+                    request_type: request.type_name(),
+                    result,
+                }
             }
         })
         .collect();
@@ -118,11 +101,7 @@ async fn execute_load_test_single(
     rep: usize,
     idx: usize,
 ) -> Result<(), String> {
-    let session = connection.create_session().await.map_err(|error| {
-        format!("Session creation failed at rep {}, request {}: {}", rep + 1, idx + 1, error)
-    })?;
-
-    execute_single_request(session, request)
+    execute_single_request(connection, request)
         .await
         .map(|_| ())
         .map_err(|error| {

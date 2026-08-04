@@ -2,17 +2,13 @@ use std::sync::Arc;
 use std::vec;
 
 use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerType};
-use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
-use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_flows::accounting::AccountingExchange;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
-    TacacsAuthenticationType, TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
+    TacacsAuthenticationType,
 };
-use tacacsrs_messages::header::Header;
-use tacacsrs_messages::packet::{Packet, PacketTrait};
-use tacacsrs_messages::traits::TacacsBodyTrait;
-use tacacsrs_networking::{ConnectOptions, TacacsClient, ClientSession};
+use tacacsrs_networking::{ConnectOptions, TacacsClient};
 use tokio::task::JoinHandle;
 
 #[tokio::main]
@@ -35,27 +31,11 @@ async fn main() -> anyhow::Result<()> {
     let connection = Arc::new(TacacsClient::connect(server, ConnectOptions::default()).await?);
     let session_count = 100_000;
 
-    let session_creation = (0..session_count).map(|_| {
-        let conn = Arc::clone(&connection);
-        tokio::spawn(async move { conn.create_session().await })
-    });
-
-    let mut sessions = Vec::<ClientSession>::with_capacity(session_count);
-    for session in session_creation {
-        let session = match session.await? {
-            Ok(session) => session,
-            Err(e) => {
-                println!("Failed to create session: {e}");
-                return Err(e);
-            }
-        };
-
-        sessions.push(session);
-    }
-
-    let handles: Vec<JoinHandle<anyhow::Result<()>>> = sessions
-        .into_iter()
-        .map(|session| tokio::spawn(async move { send_test_request(session).await }))
+    let handles: Vec<JoinHandle<anyhow::Result<()>>> = (0..session_count)
+        .map(|_| {
+            let connection = Arc::clone(&connection);
+            tokio::spawn(async move { send_test_request(&connection).await })
+        })
         .collect();
 
     for handle in handles {
@@ -65,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn send_test_request(session: ClientSession) -> anyhow::Result<()> {
+async fn send_test_request(connection: &TacacsClient) -> anyhow::Result<()> {
     let accounting_request = AccountingRequest {
         flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
         authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
@@ -78,42 +58,10 @@ async fn send_test_request(session: ClientSession) -> anyhow::Result<()> {
         args: vec!["cmd=test".to_string()],
     };
 
-    send_accounting_request(&session, accounting_request).await?;
+    connection
+        .execute(AccountingExchange::new(accounting_request))
+        .await?;
     Ok(())
-}
-
-async fn send_accounting_request(
-    session: &(impl ClientSessionFlowIoTrait + Sync),
-    request: AccountingRequest,
-) -> anyhow::Result<AccountingReply> {
-    if session.is_complete().await {
-        return Err(anyhow::Error::msg(
-            "Cannot send accounting request: session is already complete",
-        ));
-    }
-
-    let sequence_number = session.next_sequence_number().await;
-    let data = request.to_bytes()?;
-    let length = u32::try_from(data.len())
-        .map_err(|_| anyhow::Error::msg("Accounting request payload exceeds u32 length"))?;
-    let packet = Packet::new(
-        Header {
-            major_version: TacacsMajorVersion::TacacsPlusMajor1,
-            minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
-            tacacs_type: TacacsType::TacPlusAccounting,
-            seq_no: sequence_number,
-            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-            session_id: session.session_id(),
-            length,
-        },
-        data,
-    )?;
-
-    session.send_packet(packet).await?;
-    let response = session.receive_packet().await?;
-    let reply = AccountingReply::from_bytes(response.body())?;
-    session.complete().await;
-    Ok(reply)
 }
 
 use log::{Level, Metadata, Record};
