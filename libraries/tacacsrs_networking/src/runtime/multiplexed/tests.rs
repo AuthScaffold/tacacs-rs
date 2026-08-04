@@ -207,6 +207,7 @@ async fn conversation_enforces_multi_round_sequence_progression() {
     let mut conversation = ClientConversation::new(crate::session::ClientSession::shared(session));
 
     let conversation_task = tokio::spawn(async move {
+        assert_eq!(conversation.session_id(), Some(session_id));
         let first = conversation
             .round_trip(conversation_packet(session_id, 1))
             .await
@@ -216,6 +217,7 @@ async fn conversation_enforces_multi_round_sequence_progression() {
             .await
             .unwrap();
         conversation.complete().await;
+        assert_eq!(conversation.session_id(), None);
         (first, second)
     });
 

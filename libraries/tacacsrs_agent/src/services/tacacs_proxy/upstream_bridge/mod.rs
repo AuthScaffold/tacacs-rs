@@ -31,7 +31,7 @@ const REPLY_QUEUE_CAPACITY: usize = 32;
 
 #[async_trait]
 trait ProxyConversation: Send {
-    fn session_id(&self) -> u32;
+    fn session_id(&self) -> Option<u32>;
     async fn round_trip(&mut self, packet: Packet) -> anyhow::Result<Packet>;
     async fn complete(&mut self);
 }
@@ -69,7 +69,7 @@ struct SessionReply {
 
 #[async_trait]
 impl ProxyConversation for ClientConversation {
-    fn session_id(&self) -> u32 {
+    fn session_id(&self) -> Option<u32> {
         Self::session_id(self)
     }
 
@@ -308,8 +308,13 @@ async fn run_proxy_session_inner<Conversation>(
 where
     Conversation: ProxyConversation,
 {
+    let upstream_session_id = conversation.session_id().ok_or_else(|| {
+        ProxyConnectionError::Upstream(anyhow::anyhow!(
+            "Upstream TACACS+ conversation completed before proxy session started"
+        ))
+    })?;
     while let Some(request) = packets.recv().await {
-        let upstream_packet = rewrite_session_id(request.packet, conversation.session_id());
+        let upstream_packet = rewrite_session_id(request.packet, upstream_session_id);
         let upstream_reply =
             tokio::time::timeout(timeout, conversation.round_trip(upstream_packet))
                 .await
@@ -407,7 +412,11 @@ where
     Conversation: ProxyConversation + ?Sized,
 {
     let mut downstream_session_id = None;
-    let upstream_session_id = upstream_conversation.session_id();
+    let upstream_session_id = upstream_conversation.session_id().ok_or_else(|| {
+        ProxyConnectionError::Upstream(anyhow::anyhow!(
+            "Upstream TACACS+ conversation completed before proxy session started"
+        ))
+    })?;
 
     loop {
         let downstream_packet =
@@ -519,8 +528,8 @@ mod tests {
 
     #[async_trait]
     impl ProxyConversation for FakeProxySession {
-        fn session_id(&self) -> u32 {
-            self.session_id
+        fn session_id(&self) -> Option<u32> {
+            (!self.is_complete()).then_some(self.session_id)
         }
 
         async fn round_trip(&mut self, packet: Packet) -> anyhow::Result<Packet> {

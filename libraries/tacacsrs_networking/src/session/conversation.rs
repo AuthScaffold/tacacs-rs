@@ -29,13 +29,10 @@ impl ClientConversation {
         }
     }
 
-    /// Returns the session identifier assigned to this conversation.
+    /// Returns the active session identifier, or `None` after completion.
     #[must_use]
-    pub fn session_id(&self) -> u32 {
-        self.session
-            .as_ref()
-            .map(ClientSession::session_id)
-            .unwrap_or_default()
+    pub fn session_id(&self) -> Option<u32> {
+        self.session.as_ref().map(ClientSession::session_id)
     }
 
     /// Sends one request and receives its matching reply.

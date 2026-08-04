@@ -903,7 +903,7 @@ impl From<PapAuthenticationOperation> for ipc::PapAuthenticationRequest {
     fn from(value: PapAuthenticationOperation) -> Self {
         Self {
             user: value.user,
-            password: value.password.expose_secret().to_vec(),
+            password: value.password.into_unprotected_vec(),
             port: value.port,
             remote_address: value.remote_address,
             privilege_level: value.privilege_level,
