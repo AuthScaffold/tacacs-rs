@@ -1,0 +1,13 @@
+[package]
+name = "tacacsrs-secrets"
+version = "0.0.0-dev"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Zeroizing secret ownership for tacacs-rs workspace crates"
+
+[dependencies]
+zeroize = "1.9.0"
+
+[lints]
+workspace = true

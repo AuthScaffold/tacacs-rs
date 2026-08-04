@@ -64,13 +64,17 @@ fn accounting_request(user: &str, command: &str) -> AccountingOperation {
 }
 
 fn authorization_request(command: &str) -> AuthorizationOperation {
-    AuthorizationOperation::builder("admin", 15)
-        .port("tty0")
-        .remote_address("127.0.0.1")
-        .key_value(AuthorizationKey::Service, true, "shell")
-        .key_value(AuthorizationKey::Cmd, true, command)
-        .build()
-        .expect("authorization operation should build")
+    AuthorizationOperation::builder(
+        "admin",
+        15,
+        tacacsrs_agent_client::AuthorizationAuthenticationContext::TacacsAscii,
+    )
+    .port("tty0")
+    .remote_address("127.0.0.1")
+    .key_value(AuthorizationKey::Service, true, "shell")
+    .key_value(AuthorizationKey::Cmd, true, command)
+    .build()
+    .expect("authorization operation should build")
 }
 
 fn state_from(rego: &str) -> EmulatorState {
@@ -289,14 +293,18 @@ async fn policy_data_drives_authorization_denylist() {
 
     let denied = client
         .send_authorization(
-            AuthorizationOperation::builder("admin", 15)
-                .port("tty0")
-                .remote_address("127.0.0.1")
-                .key_value(AuthorizationKey::Service, true, "shell")
-                .key_value(AuthorizationKey::Cmd, true, "/usr/bin/git")
-                .key_value(AuthorizationKey::CmdArg, false, "--force")
-                .build()
-                .expect("authorization operation should build"),
+            AuthorizationOperation::builder(
+                "admin",
+                15,
+                tacacsrs_agent_client::AuthorizationAuthenticationContext::TacacsAscii,
+            )
+            .port("tty0")
+            .remote_address("127.0.0.1")
+            .key_value(AuthorizationKey::Service, true, "shell")
+            .key_value(AuthorizationKey::Cmd, true, "/usr/bin/git")
+            .key_value(AuthorizationKey::CmdArg, false, "--force")
+            .build()
+            .expect("authorization operation should build"),
         )
         .await
         .expect("denied request should still return a response");

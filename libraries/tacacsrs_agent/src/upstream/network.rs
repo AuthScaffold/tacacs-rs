@@ -3,9 +3,11 @@ use std::sync::Arc;
 use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_flows::accounting::AccountingFlow;
-use tacacsrs_flows::authorization::AuthorizationFlow;
+use tacacsrs_flows::accounting::AccountingExchange;
+use tacacsrs_flows::authentication::PapAuthenticationExchange;
+use tacacsrs_flows::authorization::AuthorizationExchange;
 use tacacsrs_messages::accounting::reply::AccountingReply;
+use tacacsrs_messages::authentication::reply::AuthenticationReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::authorization::reply::AuthorizationReply;
 use tacacsrs_messages::authorization::request::AuthorizationRequest;
@@ -66,8 +68,11 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         self.connection.stop_accepting_new_sessions().await;
     }
 
-    async fn create_raw_session(&self) -> anyhow::Result<tacacsrs_networking::ClientSession> {
-        self.create_session().await
+    async fn open_conversation(&self) -> anyhow::Result<tacacsrs_networking::ClientConversation> {
+        self.connection
+            .open_conversation()
+            .await
+            .with_context(|| format!("Failed to open conversation on {}", self.server_address))
     }
 
     async fn send_accounting(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply> {
@@ -77,8 +82,10 @@ impl UpstreamConnection for TacacsUpstreamConnection {
             &format!("user={}, args={}", request.user, request.args.len()),
         );
 
-        let session = self.create_session().await?;
-        let response = session.send_accounting_request(request).await;
+        let response = self
+            .connection
+            .execute(AccountingExchange::new(request))
+            .await;
 
         match &response {
             Ok(resp) => {
@@ -97,6 +104,16 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         response.with_context(|| shared_failure_context("accounting", &self.server_address))
     }
 
+    async fn authenticate_pap(
+        &self,
+        exchange: PapAuthenticationExchange,
+    ) -> anyhow::Result<AuthenticationReply> {
+        self.connection
+            .execute(exchange)
+            .await
+            .with_context(|| shared_failure_context("PAP authentication", &self.server_address))
+    }
+
     async fn send_authorization(
         &self,
         request: AuthorizationRequest,
@@ -107,8 +124,10 @@ impl UpstreamConnection for TacacsUpstreamConnection {
             &format!("user={}, args={}", request.user, request.args.len()),
         );
 
-        let session = self.create_session().await?;
-        let response = session.send_authorization_request(request).await;
+        let response = self
+            .connection
+            .execute(AuthorizationExchange::new(request))
+            .await;
 
         match &response {
             Ok(resp) => {
@@ -125,15 +144,6 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         }
 
         response.with_context(|| shared_failure_context("authorization", &self.server_address))
-    }
-}
-
-impl TacacsUpstreamConnection {
-    async fn create_session(&self) -> anyhow::Result<tacacsrs_networking::ClientSession> {
-        self.connection
-            .create_session()
-            .await
-            .with_context(|| format!("Failed to create session on {}", self.server_address))
     }
 }
 

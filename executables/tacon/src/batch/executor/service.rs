@@ -1,13 +1,17 @@
 use futures::future::join_all;
 use std::sync::Arc;
 
-use tacacsrs_agent_client::ServiceClient;
+use tacacsrs_agent_client::{
+    AuthorizationAuthenticationContext as IpcAuthorizationContext, AuthorizationOperation,
+    ServiceClient,
+};
 
 use super::common::{
     load_test_iterations, run_load_test, service_client, to_service_accounting_request,
 };
 use super::super::progress::print_load_test_summary;
 use super::super::types::{BatchFile, BatchRequest, LoadTestConfig, RequestResult};
+use super::super::types::AuthorizationAuthenticationContext;
 
 async fn execute_single_request_via_service(
     client: &ServiceClient,
@@ -20,12 +24,36 @@ async fn execute_single_request_via_service(
             .map(|response| format!("Accounting success: {response:?}"))
             .map_err(|error| format!("Accounting failed: {error}")),
         BatchRequest::Authentication(req) => {
-            log::warn!("Authentication not yet implemented for user: {}", req.user);
-            Err(format!("Authentication not yet implemented (user: {})", req.user))
+            Err(format!(
+                "PAP authentication is not supported in batch files; use the authentication command with a prompt or --password-stdin (user: {})",
+                req.user
+            ))
         }
         BatchRequest::Authorization(req) => {
-            log::warn!("Authorization not yet implemented for user: {}", req.user);
-            Err(format!("Authorization not yet implemented (user: {})", req.user))
+            let context = match req.authentication_context {
+                AuthorizationAuthenticationContext::Ascii => IpcAuthorizationContext::TacacsAscii,
+                AuthorizationAuthenticationContext::Pap => IpcAuthorizationContext::TacacsPap,
+                AuthorizationAuthenticationContext::Unauthenticated => {
+                    IpcAuthorizationContext::Unauthenticated
+                }
+            };
+            let mut builder = AuthorizationOperation::builder(
+                req.user.clone(),
+                u32::from(req.privilege_level),
+                context,
+            )
+            .port(req.port.clone())
+            .remote_address(req.rem_addr.clone())
+            .service("shell");
+            builder = match &req.cmd {
+                Some(command) => builder.command(command).command_args(req.cmd_args.clone()),
+                None => builder.command(""),
+            };
+            client
+                .send_authorization(builder.build().map_err(|error| error.to_string())?)
+                .await
+                .map(|response| format!("Authorization success: {response:?}"))
+                .map_err(|error| format!("Authorization failed: {error}"))
         }
     }
 }

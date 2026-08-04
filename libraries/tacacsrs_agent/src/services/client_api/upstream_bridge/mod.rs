@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::upstream::manager::UpstreamManager;
 
 mod accounting;
+mod authentication;
 mod authorization;
 mod mapping;
 mod routed;
@@ -36,6 +37,8 @@ mod tests {
     use std::time::Duration;
 
     use tacacsrs_config::TacacsPlusServer;
+    use tacacsrs_agent_client::{AuthenticationResponseStatus, PapAuthenticationOperation};
+    use tacacsrs_secrets::SecretBytes;
 
     use super::UpstreamBridge;
     use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
@@ -96,6 +99,40 @@ mod tests {
 
         assert_eq!(response.server, "server:49");
         assert_eq!(connector.connect_attempts_for("server:49").await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_pap_authentication_uses_configured_upstream_server() {
+        let connection = Arc::new(FakeConnection {
+            address: "server:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            "server:49".to_owned(),
+            Arc::clone(&connection),
+        )])));
+        let state = Arc::new(UpstreamManager::new(
+            vec![test_server("server:49")],
+            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Duration::from_millis(200),
+            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+        ));
+        let bridge = UpstreamBridge::new(state);
+
+        let response = bridge
+            .execute_pap_authentication_request(PapAuthenticationOperation {
+                user: "admin".to_owned(),
+                password: SecretBytes::new(b"secret".to_vec()),
+                port: "tty0".to_owned(),
+                remote_address: "192.0.2.1".to_owned(),
+                privilege_level: 15,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.server, "server:49");
+        assert_eq!(response.status, AuthenticationResponseStatus::Pass);
     }
 
     #[tokio::test]

@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_messages::packet::Packet;
 use tacacsrs_messages::packet::PacketTrait;
@@ -13,41 +12,7 @@ pub enum PacketWriteResult {
     WriteError(std::io::Error),
 }
 
-/// Trait for writing TACACS+ packets to a stream.
-///
-/// This trait abstracts the packet writing logic to allow for dependency injection
-/// and easier testing. Implementations can provide custom behavior for obfuscating
-/// and writing packets.
-#[async_trait]
-pub trait PacketWriterTrait: Send + Sync {
-    /// Prepares a packet for writing by optionally obfuscating it.
-    ///
-    /// # Arguments
-    /// * `packet` - The packet to prepare
-    ///
-    /// # Returns
-    /// The packet (potentially obfuscated) ready to be written.
-    fn prepare_packet(&self, packet: Packet) -> Packet;
-
-    /// Writes a single packet to the provided writer.
-    ///
-    /// # Arguments
-    /// * `writer` - A mutable reference to an async writer
-    /// * `packet` - The packet to write
-    ///
-    /// # Returns
-    /// A `PacketWriteResult` indicating success or failure.
-    async fn write_packet(
-        &self,
-        writer: &mut (dyn AsyncWrite + Unpin + Send),
-        packet: Packet,
-    ) -> PacketWriteResult;
-}
-
-/// Default implementation of `PacketWriterTrait` for writing TACACS+ packets.
-///
-/// Handles writing packets to any async writer, including optional obfuscation
-/// using the provided key.
+/// Writes TACACS+ packets, including optional body obfuscation.
 pub struct PacketWriter {
     obfuscation_key: Option<Vec<u8>>,
 }
@@ -68,11 +33,10 @@ impl PacketWriter {
     pub fn obfuscation_key(&self) -> Option<&[u8]> {
         self.obfuscation_key.as_deref()
     }
-}
 
-#[async_trait]
-impl PacketWriterTrait for PacketWriter {
-    fn prepare_packet(&self, mut packet: Packet) -> Packet {
+    /// Applies configured TACACS+ body obfuscation in place.
+    #[must_use]
+    pub fn prepare_packet(&self, mut packet: Packet) -> Packet {
         let session_id = packet.header().session_id;
         let is_packet_deobfuscated = packet
             .header()
@@ -82,7 +46,7 @@ impl PacketWriterTrait for PacketWriter {
         if let Some(key) = &self.obfuscation_key {
             if is_packet_deobfuscated {
                 packet = packet.to_obfuscated(key);
-                log::info!(
+                log::trace!(
                     target: "tacacsrs_networking::codec::writer::prepare_packet",
                     "Obfuscated packet for session id {session_id}"
                 );
@@ -92,17 +56,25 @@ impl PacketWriterTrait for PacketWriter {
         packet
     }
 
-    async fn write_packet(
+    /// Encodes and writes one TACACS+ packet without allocating a combined
+    /// header-and-body buffer.
+    pub async fn write_packet<Writer>(
         &self,
-        writer: &mut (dyn AsyncWrite + Unpin + Send),
+        writer: &mut Writer,
         packet: Packet,
-    ) -> PacketWriteResult {
+    ) -> PacketWriteResult
+    where
+        Writer: AsyncWrite + Unpin + ?Sized,
+    {
         let packet = self.prepare_packet(packet);
-        let bytes = packet.to_bytes();
+        let header = packet.header().to_bytes();
 
-        match writer.write_all(&bytes).await {
+        if let Err(error) = writer.write_all(&header).await {
+            return PacketWriteResult::WriteError(error);
+        }
+        match writer.write_all(packet.body()).await {
             Ok(()) => PacketWriteResult::Success,
-            Err(e) => PacketWriteResult::WriteError(e),
+            Err(error) => PacketWriteResult::WriteError(error),
         }
     }
 }

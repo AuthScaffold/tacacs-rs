@@ -130,10 +130,14 @@ pub struct AuthenticationRequest {
 
     /// Remote address of the client
     pub rem_addr: String,
+}
 
-    /// Password (for PAP) or other credentials
-    #[serde(default)]
-    pub password: Option<String>,
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthorizationAuthenticationContext {
+    Ascii,
+    Pap,
+    Unauthenticated,
 }
 
 /// Arguments for an authorization request
@@ -150,6 +154,11 @@ pub struct AuthorizationRequest {
     /// Remote address of the client
     pub rem_addr: String,
 
+    #[serde(default = "default_privilege_level")]
+    pub privilege_level: u8,
+
+    pub authentication_context: AuthorizationAuthenticationContext,
+
     /// Command to authorize
     #[serde(default)]
     pub cmd: Option<String>,
@@ -157,14 +166,10 @@ pub struct AuthorizationRequest {
     /// Command arguments to authorize
     #[serde(default)]
     pub cmd_args: Vec<String>,
-
-    /// Service type (e.g., "shell")
-    #[serde(default = "default_service")]
-    pub service: String,
 }
 
-fn default_service() -> String {
-    "shell".to_owned()
+const fn default_privilege_level() -> u8 {
+    15
 }
 
 /// Result of executing a single batch request
@@ -263,14 +268,14 @@ mod tests {
                     "type": "authentication",
                     "user": "user2",
                     "port": "tty1",
-                    "rem_addr": "10.0.0.2",
-                    "password": "secret"
+                    "rem_addr": "10.0.0.2"
                 },
                 {
                     "type": "authorization",
                     "user": "user3",
                     "port": "tty2",
                     "rem_addr": "10.0.0.3",
+                    "authentication_context": "pap",
                     "cmd": "show running-config"
                 }
             ]
@@ -293,7 +298,8 @@ mod tests {
                     "type": "authorization",
                     "user": "admin",
                     "port": "console",
-                    "rem_addr": "local"
+                    "rem_addr": "local",
+                    "authentication_context": "pap"
                 }
             ]
         }"#;
@@ -306,7 +312,7 @@ mod tests {
 
         match &batch.requests[0] {
             BatchRequest::Authorization(req) => {
-                assert_eq!(req.service, "shell"); // default
+                assert_eq!(req.privilege_level, 15);
                 assert!(req.cmd.is_none());
                 assert!(req.cmd_args.is_empty());
             }

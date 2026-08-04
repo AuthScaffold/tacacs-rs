@@ -53,6 +53,9 @@ package tacacsrs.agent.v1;
 // authorization. Future operations (authentication) may be added as new RPCs
 // without breaking existing calls.
 service TacacsAgent {
+  // Authenticates one username/password pair using the fixed PAP exchange.
+  rpc AuthenticatePap(PapAuthenticationRequest) returns (PapAuthenticationReply);
+
   // Records a shell command execution against the configured TACACS+ server
   // pool.
   //
@@ -72,6 +75,35 @@ service TacacsAgent {
   // AuthorizationReply envelope containing either an authorization decision or
   // a structured service error.
   rpc Authorization(AuthorizationRequest) returns (AuthorizationReply);
+}
+
+message PapAuthenticationRequest {
+  string user = 1;
+  bytes password = 2;
+  string port = 3;
+  string remote_address = 4;
+  uint32 privilege_level = 5;
+}
+
+enum AuthenticationStatus {
+  AUTHENTICATION_STATUS_UNSPECIFIED = 0;
+  AUTHENTICATION_STATUS_PASS = 1;
+  AUTHENTICATION_STATUS_FAIL = 2;
+  AUTHENTICATION_STATUS_ERROR = 7;
+}
+
+message PapAuthenticationResponse {
+  string server = 1;
+  AuthenticationStatus status = 2;
+  string server_message = 3;
+  bytes data = 4;
+}
+
+message PapAuthenticationReply {
+  oneof result {
+    PapAuthenticationResponse response = 1;
+    ServiceError error = 2;
+  }
 }
 
 // Client-supplied inputs for a TACACS+ accounting operation.
@@ -203,6 +235,14 @@ message AuthorizationRequest {
   // `service` MUST be included. When service is `shell`, `cmd` MUST be
   // included; multiple `cmd-arg` values are order-dependent.
   repeated AuthorizationArg args = 5;
+  AuthorizationAuthenticationContext authentication_context = 6;
+}
+
+enum AuthorizationAuthenticationContext {
+  AUTHORIZATION_AUTHENTICATION_CONTEXT_UNSPECIFIED = 0;
+  AUTHORIZATION_AUTHENTICATION_CONTEXT_TACACS_ASCII = 1;
+  AUTHORIZATION_AUTHENTICATION_CONTEXT_TACACS_PAP = 2;
+  AUTHORIZATION_AUTHENTICATION_CONTEXT_UNAUTHENTICATED = 3;
 }
 
 // TACACS+ authorization reply status values from RFC 8907 §6.2.

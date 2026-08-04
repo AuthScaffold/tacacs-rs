@@ -64,8 +64,10 @@ _PATH_DEP_RE = re.compile(
 def parse_cargo_toml(path: Path) -> tuple[str, list[str]]:
     """Return ``(crate_name, [workspace_dep_names])`` from a Cargo.toml.
 
-    Only ``path = "..."`` dependencies that point inside the workspace
-    ``libraries/`` directory are considered workspace deps.
+    Normal and build ``path = "..."`` dependencies that point inside the
+    workspace ``libraries/`` directory are considered workspace deps.
+    Dev-dependencies are excluded because they do not participate in release
+    dependency propagation and Cargo permits reverse dev-dependency edges.
     """
     text = path.read_text(encoding="utf-8")
     name = ""
@@ -85,7 +87,6 @@ def parse_cargo_toml(path: Path) -> tuple[str, list[str]]:
         if stripped.startswith("["):
             in_deps = stripped in (
                 "[dependencies]",
-                "[dev-dependencies]",
                 "[build-dependencies]",
             ) or stripped.startswith("[dependencies.")
             continue

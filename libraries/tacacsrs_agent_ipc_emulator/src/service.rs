@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tacacsrs_agent_client::ipc;
 use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
+use tacacsrs_agent_client::PapAuthenticationOperation;
 use tokio::sync::{oneshot, Mutex};
 use tonic::{Request, Response, Status};
 
@@ -50,6 +51,21 @@ impl AgentService {
 
 #[tonic::async_trait]
 impl TacacsAgent for AgentService {
+    async fn authenticate_pap(
+        &self,
+        request: Request<ipc::PapAuthenticationRequest>,
+    ) -> Result<Response<ipc::PapAuthenticationReply>, Status> {
+        let _request = PapAuthenticationOperation::try_from(request.into_inner())
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        Ok(Response::new(ipc::PapAuthenticationReply {
+            result: Some(ipc::pap_authentication_reply::Result::Error(ipc::ServiceError {
+                message: "PAP authentication is not supported by the policy emulator".to_owned(),
+                server: "ipc-emulator".to_owned(),
+                retriable: false,
+            })),
+        }))
+    }
+
     async fn accounting(
         &self,
         request: Request<ipc::AccountingRequest>,

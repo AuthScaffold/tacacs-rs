@@ -235,6 +235,38 @@ class TestParseCargoToml:
         assert name == "lib-a"
         assert deps == []
 
+    def test_reverse_dev_dependency_does_not_create_release_cycle(
+        self, tmp_path: Path,
+    ) -> None:
+        """A reverse dev edge may support examples without changing release order."""
+        libs = tmp_path / "libraries"
+        networking = libs / "networking"
+        flows = libs / "flows"
+        networking.mkdir(parents=True)
+        flows.mkdir(parents=True)
+
+        (networking / "Cargo.toml").write_text(textwrap.dedent("""\
+            [package]
+            name = "networking"
+            version = "0.1.0"
+
+            [dev-dependencies]
+            flows = { path = "../flows" }
+        """), encoding="utf-8")
+        (flows / "Cargo.toml").write_text(textwrap.dedent("""\
+            [package]
+            name = "flows"
+            version = "0.1.0"
+
+            [dependencies]
+            networking = { path = "../networking" }
+        """), encoding="utf-8")
+
+        crates = discover_libraries(tmp_path)
+        assert crates["networking"].workspace_deps == []
+        assert crates["flows"].workspace_deps == ["networking"]
+        assert topological_sort(crates) == ["networking", "flows"]
+
 
 # ---------------------------------------------------------------------------
 # Unit tests: dependency graph

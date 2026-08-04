@@ -38,6 +38,8 @@ pub use endpoint::IpcEndpoint;
 pub use health::HealthClient;
 pub use protocol::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus, AuthorizationArg,
-    AuthorizationKey, AuthorizationOperation, AuthorizationOperationResponse,
-    AuthorizationRequestBuilder, AuthorizationResponseStatus, ServiceError,
+    AuthenticationResponseStatus, AuthorizationAuthenticationContext, AuthorizationKey,
+    AuthorizationOperation, AuthorizationOperationResponse, AuthorizationRequestBuilder,
+    AuthorizationResponseStatus, PapAuthenticationOperation, PapAuthenticationOperationResponse,
+    ServiceError,
 };

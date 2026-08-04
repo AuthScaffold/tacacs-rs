@@ -20,10 +20,10 @@ impl RoutedOperation for AccountingRoute {
 
     async fn send(
         connection: &dyn UpstreamConnection,
-        request: &Self::Request,
+        request: Self::Request,
     ) -> anyhow::Result<Self::Response> {
         let reply = connection
-            .send_accounting(build_accounting_request(request))
+            .send_accounting(build_accounting_request(&request))
             .await?;
         Ok(to_accounting_response(connection.server_address(), reply))
     }

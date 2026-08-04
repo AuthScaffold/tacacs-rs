@@ -3,6 +3,7 @@ use std::io::Cursor;
 use anyhow::Context;
 use byteorder::ReadBytesExt;
 use num_enum::TryFromPrimitive;
+use zeroize::Zeroize;
 
 use crate::enumerations::{
     TacacsAuthenticationAction, TacacsAuthenticationService, TacacsAuthenticationType,
@@ -28,7 +29,7 @@ const AUTHENTICATION_START_MIN_LENGTH: usize = 8;
 // |    data...
 // +----------------+----------------+----------------+----------------+
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AuthenticationStart {
     pub action: TacacsAuthenticationAction,
     pub priv_lvl: u8,
@@ -38,6 +39,29 @@ pub struct AuthenticationStart {
     pub port: String,
     pub rem_address: String,
     pub data: Vec<u8>,
+}
+
+impl std::fmt::Debug for AuthenticationStart {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthenticationStart")
+            .field("action", &self.action)
+            .field("priv_lvl", &self.priv_lvl)
+            .field("authen_type", &self.authen_type)
+            .field("authen_service", &self.authen_service)
+            .field("user", &self.user)
+            .field("port", &self.port)
+            .field("rem_address", &self.rem_address)
+            .field("data_length", &self.data.len())
+            .field("data", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for AuthenticationStart {
+    fn drop(&mut self) {
+        self.data.zeroize();
+    }
 }
 
 impl AuthenticationStart {
@@ -177,6 +201,25 @@ mod tests {
         let decoded = AuthenticationStart::from_bytes(&start.to_bytes().unwrap()).unwrap();
 
         assert_eq!(decoded, start);
+    }
+
+    #[test]
+    fn authentication_start_debug_redacts_data() {
+        let start = AuthenticationStart {
+            action: TacacsAuthenticationAction::TacPlusAuthenLogin,
+            priv_lvl: 15,
+            authen_type: TacacsAuthenticationType::TacPlusAuthenTypePap,
+            authen_service: TacacsAuthenticationService::TacPlusAuthenSvcLogin,
+            user: "admin".to_owned(),
+            port: "tty1".to_owned(),
+            rem_address: "192.0.2.10".to_owned(),
+            data: b"not-in-debug-output".to_vec(),
+        };
+
+        let debug = format!("{start:?}");
+        assert!(!debug.contains("not-in-debug-output"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("data_length: 19"));
     }
 
     #[test]

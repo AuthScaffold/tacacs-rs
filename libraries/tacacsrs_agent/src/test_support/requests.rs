@@ -2,7 +2,7 @@
 
 #[cfg(unix)]
 use tacacsrs_agent_client::AccountingOperation;
-use tacacsrs_agent_client::AuthorizationOperation;
+use tacacsrs_agent_client::{AuthorizationAuthenticationContext, AuthorizationOperation};
 
 #[cfg(unix)]
 pub(crate) fn build_request() -> AccountingOperation {
@@ -16,7 +16,7 @@ pub(crate) fn build_request() -> AccountingOperation {
 }
 
 pub(crate) fn build_authorization_request() -> AuthorizationOperation {
-    AuthorizationOperation::builder("admin", 15)
+    AuthorizationOperation::builder("admin", 15, AuthorizationAuthenticationContext::TacacsAscii)
         .port("tty0")
         .remote_address("127.0.0.1")
         .service("shell")

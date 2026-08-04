@@ -639,14 +639,18 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let client = ServiceClient::connect(endpoint.clone()).await.unwrap();
-        let request = AuthorizationOperation::builder("admin", 0)
-            .port("pts/1")
-            .remote_address("127.0.0.1")
-            .service("shell")
-            .command("/bin/echo")
-            .command_arg("hello")
-            .build()
-            .unwrap();
+        let request = AuthorizationOperation::builder(
+            "admin",
+            0,
+            tacacsrs_agent_client::AuthorizationAuthenticationContext::TacacsAscii,
+        )
+        .port("pts/1")
+        .remote_address("127.0.0.1")
+        .service("shell")
+        .command("/bin/echo")
+        .command_arg("hello")
+        .build()
+        .unwrap();
         let response = client.send_authorization(request).await.unwrap();
 
         assert_eq!(response.server, "primary:49");
@@ -683,14 +687,18 @@ mod tests {
             RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
         let service = GrpcService::new(state, Arc::new(RequestTracker::default()));
-        let request = AuthorizationOperation::builder("admin", 0)
-            .port("pts/1")
-            .remote_address("127.0.0.1")
-            .service("shell")
-            .command("/bin/echo")
-            .command_arg("hello")
-            .build()
-            .unwrap();
+        let request = AuthorizationOperation::builder(
+            "admin",
+            0,
+            tacacsrs_agent_client::AuthorizationAuthenticationContext::TacacsAscii,
+        )
+        .port("pts/1")
+        .remote_address("127.0.0.1")
+        .service("shell")
+        .command("/bin/echo")
+        .command_arg("hello")
+        .build()
+        .unwrap();
 
         let reply = service
             .authorization(Request::new((&request).into()))

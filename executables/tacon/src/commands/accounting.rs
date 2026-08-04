@@ -4,9 +4,11 @@ use anyhow::Context;
 use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
-    TacacsAuthenticationType, TacacsFlags,
+    TacacsAuthenticationType,
 };
-use tacacsrs_flows::accounting::AccountingFlow;
+use tacacsrs_flows::accounting::AccountingExchange;
+
+use crate::connection::Connection;
 
 /// Sends an accounting request to record command execution.
 ///
@@ -22,22 +24,18 @@ use tacacsrs_flows::accounting::AccountingFlow;
 /// # Returns
 ///
 /// The accounting reply from the server, or an error if the request failed.
-pub async fn send_accounting_request<SessionIo>(
-    session: SessionIo,
+pub async fn send_accounting_request(
+    connection: &Connection,
     user: &str,
     port: &str,
     rem_address: &str,
     cmd: &str,
     cmd_args: Option<&Vec<String>>,
-    custom_flags: TacacsFlags,
-) -> anyhow::Result<AccountingReply>
-where
-    SessionIo: AccountingFlow,
-{
+) -> anyhow::Result<AccountingReply> {
     let request = build_accounting_request(user, port, rem_address, cmd, cmd_args);
 
-    let response = session
-        .send_accounting_request_with_flags(request, custom_flags)
+    let response = connection
+        .execute(AccountingExchange::new(request))
         .await
         .context("Failed to send accounting request")?;
 

@@ -24,7 +24,8 @@ use crate::ipc;
 use crate::ipc::tacacs_agent_client::TacacsAgentClient;
 use crate::protocol::{
     AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
-    AuthorizationOperationResponse, ServiceError,
+    AuthorizationOperationResponse, PapAuthenticationOperation, PapAuthenticationOperationResponse,
+    ServiceError,
 };
 use crate::endpoint::connect_channel;
 use crate::IpcEndpoint;
@@ -135,6 +136,36 @@ impl ServiceClient {
             }
             ipc::accounting_reply::Result::Error(error) => {
                 Err(service_error_as_anyhow("Accounting", &ServiceError::from_proto(error)))
+            }
+        }
+    }
+
+    /// Authenticates one username/password pair using PAP.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the gRPC exchange fails or the service returns a
+    /// structured upstream error.
+    pub async fn authenticate_pap(
+        &self,
+        request: PapAuthenticationOperation,
+    ) -> anyhow::Result<PapAuthenticationOperationResponse> {
+        let mut client = TacacsAgentClient::new(self.channel.clone());
+        let reply = client
+            .authenticate_pap(ipc::PapAuthenticationRequest::from(request))
+            .await
+            .context("Failed to execute PAP authentication RPC")?
+            .into_inner();
+
+        match reply
+            .result
+            .context("PAP authentication RPC returned no result")?
+        {
+            ipc::pap_authentication_reply::Result::Response(response) => {
+                PapAuthenticationOperationResponse::from_proto(response)
+            }
+            ipc::pap_authentication_reply::Result::Error(error) => {
+                Err(service_error_as_anyhow("PAP authentication", &ServiceError::from_proto(error)))
             }
         }
     }
