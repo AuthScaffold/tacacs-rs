@@ -6,7 +6,7 @@ use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::authorization::reply::AuthorizationReply;
 use tacacsrs_messages::authorization::request::AuthorizationRequest;
-use tacacsrs_networking::ClientSession;
+use tacacsrs_networking::ClientConversation;
 
 #[async_trait]
 /// Abstracts a single persistent TACACS+ server connection used by the service.
@@ -34,7 +34,7 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if a new upstream session cannot be created.
-    async fn create_raw_session(&self) -> anyhow::Result<ClientSession>;
+    async fn open_conversation(&self) -> anyhow::Result<ClientConversation>;
 
     /// Sends one accounting request and returns the server's reply.
     ///

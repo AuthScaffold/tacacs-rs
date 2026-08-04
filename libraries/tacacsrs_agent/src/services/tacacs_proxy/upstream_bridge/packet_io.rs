@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::constants::{TACACS_HEADER_LENGTH, TACACS_MAX_BODY_LENGTH};
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_messages::header::Header;
@@ -40,27 +39,6 @@ where
             ))
         })?
         .map_err(ProxyConnectionError::Downstream)
-}
-
-pub(super) async fn read_upstream_packet<Session>(
-    upstream_session: &Session,
-    timeout: Duration,
-) -> Result<Packet, ProxyConnectionError>
-where
-    Session: ClientSessionFlowIoTrait + Sync + ?Sized,
-{
-    tokio::time::timeout(timeout, upstream_session.receive_packet())
-        .await
-        .map_err(|_| {
-            ProxyConnectionError::Upstream(anyhow::anyhow!(
-                "Timed out waiting for upstream TACACS+ reply after {timeout:?}"
-            ))
-        })?
-        .map_err(|error| {
-            ProxyConnectionError::Upstream(
-                error.context("Failed to receive upstream TACACS+ reply"),
-            )
-        })
 }
 
 pub(super) async fn write_downstream_packet<Stream>(

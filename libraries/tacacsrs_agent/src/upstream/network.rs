@@ -66,8 +66,11 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         self.connection.stop_accepting_new_sessions().await;
     }
 
-    async fn create_raw_session(&self) -> anyhow::Result<tacacsrs_networking::ClientSession> {
-        self.create_session().await
+    async fn open_conversation(&self) -> anyhow::Result<tacacsrs_networking::ClientConversation> {
+        self.connection
+            .open_conversation()
+            .await
+            .with_context(|| format!("Failed to open conversation on {}", self.server_address))
     }
 
     async fn send_accounting(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply> {

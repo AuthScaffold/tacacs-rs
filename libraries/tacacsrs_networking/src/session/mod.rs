@@ -7,12 +7,14 @@
 
 mod channel;
 mod client;
+mod conversation;
 mod dedicated;
 mod id;
 mod manager;
 mod shared;
 
 pub use client::ClientSession;
+pub use conversation::ClientConversation;
 pub(crate) use channel::DuplexChannel;
 pub(crate) use dedicated::{DedicatedSession, SingleConnectPromotion};
 pub(crate) use id::{ReservedSessionId, SessionIdAllocator, random_nonzero_session_id};

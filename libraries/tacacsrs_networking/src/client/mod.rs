@@ -25,7 +25,9 @@ use crate::establish::{self, ConnectOptions, ConnectPreflight};
 use crate::exchange::FixedExchange;
 use crate::runtime::MultiplexedConnection;
 use crate::single_connect::SingleConnectionState;
-use crate::session::{ClientSession, DedicatedSession, SharedSession, SingleConnectPromotion};
+use crate::session::{
+    ClientConversation, ClientSession, DedicatedSession, SharedSession, SingleConnectPromotion,
+};
 use crate::transport::BoxedTransport;
 
 /// A configured TACACS+ client connection that transparently chooses between
@@ -247,6 +249,16 @@ impl TacacsClient {
         let result = execute_on_session(&session, exchange).await;
         session.complete().await;
         result
+    }
+
+    /// Opens a sequential packet conversation for transparent proxying and
+    /// interactive TACACS+ authentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a dedicated or shared session cannot be created.
+    pub async fn open_conversation(&self) -> anyhow::Result<ClientConversation> {
+        self.create_session().await.map(ClientConversation::new)
     }
 
     /// Stops the cached shared connection from accepting new sessions.

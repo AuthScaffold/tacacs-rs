@@ -7,15 +7,15 @@ use tacacsrs_messages::header::Header;
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 
 use super::MultiplexedConnection;
-use crate::session::{ExpectedResponseHeader, PacketDispatchError};
+use crate::session::{ClientConversation, ExpectedResponseHeader, PacketDispatchError};
 
-fn request(session_id: u32) -> Packet {
+fn conversation_packet(session_id: u32, seq_no: u8) -> Packet {
     Packet::new(
         Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
             minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
             tacacs_type: TacacsType::TacPlusAuthorisation,
-            seq_no: 1,
+            seq_no,
             flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
             session_id,
             length: 0,
@@ -23,6 +23,10 @@ fn request(session_id: u32) -> Packet {
         Vec::new(),
     )
     .unwrap()
+}
+
+fn request(session_id: u32) -> Packet {
+    conversation_packet(session_id, 1)
 }
 
 fn reply(session_id: u32) -> Packet {
@@ -193,6 +197,81 @@ async fn delivered_fixed_reply_remains_active_until_completion() {
     tokio::time::timeout(Duration::from_millis(250), &mut close)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn conversation_enforces_multi_round_sequence_progression() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let session = connection.create_session().await.unwrap();
+    let session_id = session.session_id();
+    let mut conversation = ClientConversation::new(crate::session::ClientSession::shared(session));
+
+    let conversation_task = tokio::spawn(async move {
+        let first = conversation
+            .round_trip(conversation_packet(session_id, 1))
+            .await
+            .unwrap();
+        let second = conversation
+            .round_trip(conversation_packet(session_id, 3))
+            .await
+            .unwrap();
+        conversation.complete().await;
+        (first, second)
+    });
+
+    tokio::task::yield_now().await;
+    connection
+        .session_manager
+        .send_message_to_session(conversation_packet(session_id, 2))
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+    connection
+        .session_manager
+        .send_message_to_session(conversation_packet(session_id, 4))
+        .await
+        .unwrap();
+
+    let (first, second) = conversation_task.await.unwrap();
+    assert_eq!(first.header().seq_no, 2);
+    assert_eq!(second.header().seq_no, 4);
+    assert!(matches!(
+        connection
+            .session_manager
+            .send_message_to_session(conversation_packet(session_id, 6))
+            .await,
+        Err(PacketDispatchError::UnknownSession(id)) if id == session_id
+    ));
+}
+
+#[tokio::test]
+async fn invalid_conversation_reply_completes_session() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let session = connection.create_session().await.unwrap();
+    let session_id = session.session_id();
+    let mut conversation = ClientConversation::new(crate::session::ClientSession::shared(session));
+
+    let conversation_task = tokio::spawn(async move {
+        conversation
+            .round_trip(conversation_packet(session_id, 1))
+            .await
+    });
+    tokio::task::yield_now().await;
+    connection
+        .session_manager
+        .send_message_to_session(conversation_packet(session_id, 4))
+        .await
+        .unwrap();
+
+    assert!(conversation_task.await.unwrap().is_err());
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        connection
+            .session_manager
+            .send_message_to_session(conversation_packet(session_id, 2))
+            .await,
+        Err(PacketDispatchError::UnknownSession(id)) if id == session_id
+    ));
 }
 
 #[tokio::test]

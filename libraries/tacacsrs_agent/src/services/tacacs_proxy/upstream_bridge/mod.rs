@@ -4,14 +4,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
-use tacacsrs_messages::packet::PacketTrait;
-use tacacsrs_networking::PacketWriter;
+use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_networking::{ClientConversation, PacketWriter};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::RwLock;
 
 use self::error::ProxyConnectionError;
-use self::packet_io::{read_downstream_packet, read_upstream_packet, write_downstream_packet};
+use self::packet_io::{read_downstream_packet, write_downstream_packet};
 use self::reply_action::{ReplyAction, reply_action};
 use self::session_mapping::rewrite_session_id;
 use crate::config::ProxyDownstreamObfuscation;
@@ -22,6 +21,26 @@ mod error;
 mod packet_io;
 mod reply_action;
 mod session_mapping;
+
+trait ProxyConversation {
+    fn session_id(&self) -> u32;
+    async fn round_trip(&mut self, packet: Packet) -> anyhow::Result<Packet>;
+    async fn complete(&mut self);
+}
+
+impl ProxyConversation for ClientConversation {
+    fn session_id(&self) -> u32 {
+        Self::session_id(self)
+    }
+
+    async fn round_trip(&mut self, packet: Packet) -> anyhow::Result<Packet> {
+        Self::round_trip(self, packet).await
+    }
+
+    async fn complete(&mut self) {
+        Self::complete(self).await;
+    }
+}
 
 /// Bridges raw TACACS+ proxy streams onto managed upstream sessions.
 #[derive(Clone)]
@@ -94,16 +113,17 @@ where
 {
     let timeout = bound_server.timeout_duration();
     let obfuscation_key = downstream_obfuscation_key(&downstream_obfuscation);
-    let upstream_session = match bound_server.connection.create_raw_session().await {
-        Ok(upstream_session) => upstream_session,
+    let mut upstream_conversation = match bound_server.connection.open_conversation().await {
+        Ok(upstream_conversation) => upstream_conversation,
         Err(error) => {
             return Err(ProxyConnectionError::Upstream(
-                error.context("Failed to create upstream proxy session"),
+                error.context("Failed to open upstream proxy conversation"),
             ));
         }
     };
 
-    proxy_connection_with_session(stream, timeout, obfuscation_key, &upstream_session).await
+    proxy_connection_with_conversation(stream, timeout, obfuscation_key, &mut upstream_conversation)
+        .await
 }
 
 fn downstream_obfuscation_key(
@@ -116,15 +136,15 @@ fn downstream_obfuscation_key(
     .map(|secret| secret.as_bytes().to_vec())
 }
 
-async fn proxy_connection_with_session<Stream, Session>(
+async fn proxy_connection_with_conversation<Stream, Conversation>(
     mut stream: Stream,
     timeout: Duration,
     obfuscation_key: Option<Vec<u8>>,
-    upstream_session: &Session,
+    upstream_conversation: &mut Conversation,
 ) -> Result<(), ProxyConnectionError>
 where
     Stream: AsyncRead + AsyncWrite + Unpin + Send,
-    Session: ClientSessionFlowIoTrait + Sync + ?Sized,
+    Conversation: ProxyConversation + ?Sized,
 {
     let writer = PacketWriter::new(obfuscation_key.clone());
     let result = proxy_connection_loop(
@@ -132,27 +152,27 @@ where
         timeout,
         obfuscation_key.as_deref(),
         &writer,
-        upstream_session,
+        upstream_conversation,
     )
     .await;
 
-    upstream_session.complete().await;
+    upstream_conversation.complete().await;
     result
 }
 
-async fn proxy_connection_loop<Stream, Session>(
+async fn proxy_connection_loop<Stream, Conversation>(
     stream: &mut Stream,
     timeout: Duration,
     downstream_obfuscation_key: Option<&[u8]>,
     writer: &PacketWriter,
-    upstream_session: &Session,
+    upstream_conversation: &mut Conversation,
 ) -> Result<(), ProxyConnectionError>
 where
     Stream: AsyncRead + AsyncWrite + Unpin + Send,
-    Session: ClientSessionFlowIoTrait + Sync + ?Sized,
+    Conversation: ProxyConversation + ?Sized,
 {
     let mut downstream_session_id = None;
-    let upstream_session_id = upstream_session.session_id();
+    let upstream_session_id = upstream_conversation.session_id();
 
     loop {
         let downstream_packet =
@@ -184,16 +204,19 @@ where
             }
         };
 
-        if let Err(error) = upstream_session.send_packet(upstream_packet).await {
-            return Err(ProxyConnectionError::Upstream(
-                error.context("Failed to send proxied packet upstream"),
-            ));
-        }
-
-        let upstream_reply = match read_upstream_packet(upstream_session, timeout).await {
-            Ok(packet) => packet,
-            Err(error) => return Err(error),
-        };
+        let upstream_reply =
+            tokio::time::timeout(timeout, upstream_conversation.round_trip(upstream_packet))
+                .await
+                .map_err(|_| {
+                    ProxyConnectionError::Upstream(anyhow::anyhow!(
+                        "Timed out waiting for upstream TACACS+ round trip after {timeout:?}"
+                    ))
+                })?
+                .map_err(|error| {
+                    ProxyConnectionError::Upstream(
+                        error.context("Failed to complete upstream TACACS+ round trip"),
+                    )
+                })?;
 
         let action = reply_action(&upstream_reply);
         let downstream_reply = match rewrite_session_id(upstream_reply, downstream_session_id) {
@@ -219,10 +242,9 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
     use tacacsrs_messages::accounting::reply::AccountingReply;
     use tacacsrs_messages::authentication::reply::AuthenticationReply;
     use tacacsrs_messages::enumerations::{
@@ -241,7 +263,6 @@ mod tests {
     #[derive(Default)]
     struct FakeProxySession {
         complete: AtomicBool,
-        next_sequence_number: AtomicU8,
         received_packets: Mutex<Vec<Packet>>,
         replies: Mutex<VecDeque<Packet>>,
         session_id: u32,
@@ -251,34 +272,24 @@ mod tests {
         fn new(session_id: u32, replies: Vec<Packet>) -> Self {
             Self {
                 complete: AtomicBool::new(false),
-                next_sequence_number: AtomicU8::new(1),
                 received_packets: Mutex::default(),
                 replies: Mutex::new(replies.into()),
                 session_id,
             }
         }
-    }
 
-    #[async_trait::async_trait]
-    impl ClientSessionFlowIoTrait for FakeProxySession {
-        async fn is_complete(&self) -> bool {
+        fn is_complete(&self) -> bool {
             self.complete.load(Ordering::Acquire)
         }
+    }
 
-        async fn next_sequence_number(&self) -> u8 {
-            self.next_sequence_number.fetch_add(2, Ordering::AcqRel)
-        }
-
+    impl ProxyConversation for FakeProxySession {
         fn session_id(&self) -> u32 {
             self.session_id
         }
 
-        async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {
+        async fn round_trip(&mut self, packet: Packet) -> anyhow::Result<Packet> {
             self.received_packets.lock().await.push(packet);
-            Ok(())
-        }
-
-        async fn receive_packet(&self) -> anyhow::Result<Packet> {
             self.replies
                 .lock()
                 .await
@@ -286,7 +297,7 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("missing fake proxy reply"))
         }
 
-        async fn complete(&self) {
+        async fn complete(&mut self) {
             self.complete.store(true, Ordering::Release);
         }
     }
@@ -371,14 +382,19 @@ mod tests {
         let reply_body = accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess);
         let upstream_reply =
             test_packet(TacacsType::TacPlusAccounting, upstream_session_id, reply_body.clone());
-        let fake_session = FakeProxySession::new(upstream_session_id, vec![upstream_reply]);
+        let mut fake_session = FakeProxySession::new(upstream_session_id, vec![upstream_reply]);
         let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
 
         write_packet(&mut client_stream, &request).await;
 
-        proxy_connection_with_session(proxy_stream, Duration::from_secs(1), None, &fake_session)
-            .await
-            .expect("proxy connection should complete");
+        proxy_connection_with_conversation(
+            proxy_stream,
+            Duration::from_secs(1),
+            None,
+            &mut fake_session,
+        )
+        .await
+        .expect("proxy connection should complete");
 
         let (received_len, received_session_id, received_body) = {
             let received_packets = fake_session.received_packets.lock().await;
@@ -391,7 +407,7 @@ mod tests {
         assert_eq!(received_len, 1);
         assert_eq!(received_session_id, upstream_session_id);
         assert_eq!(received_body.as_slice(), request.body().as_slice());
-        assert!(fake_session.is_complete().await);
+        assert!(fake_session.is_complete());
 
         let downstream_reply = read_packet(&mut client_stream).await;
         assert_eq!(downstream_reply.header().session_id, downstream_session_id);
@@ -411,16 +427,16 @@ mod tests {
         let reply_body = accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess);
         let upstream_reply =
             test_packet(TacacsType::TacPlusAccounting, upstream_session_id, reply_body.clone());
-        let fake_session = FakeProxySession::new(upstream_session_id, vec![upstream_reply]);
+        let mut fake_session = FakeProxySession::new(upstream_session_id, vec![upstream_reply]);
         let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
 
         write_packet(&mut client_stream, &request).await;
 
-        proxy_connection_with_session(
+        proxy_connection_with_conversation(
             proxy_stream,
             Duration::from_secs(1),
             Some(secret.as_bytes().to_vec()),
-            &fake_session,
+            &mut fake_session,
         )
         .await
         .expect("proxy connection should complete");
@@ -446,16 +462,16 @@ mod tests {
         let reply_body = accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess);
         let upstream_reply =
             test_packet(TacacsType::TacPlusAccounting, upstream_session_id, reply_body.clone());
-        let fake_session = FakeProxySession::new(upstream_session_id, vec![upstream_reply]);
+        let mut fake_session = FakeProxySession::new(upstream_session_id, vec![upstream_reply]);
         let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
 
         write_packet(&mut client_stream, &request).await;
 
-        proxy_connection_with_session(
+        proxy_connection_with_conversation(
             proxy_stream,
             Duration::from_secs(1),
             Some(secret.as_bytes().to_vec()),
-            &fake_session,
+            &mut fake_session,
         )
         .await
         .expect("proxy connection should complete");
@@ -501,17 +517,17 @@ mod tests {
             upstream_session_id,
             authentication_reply_body(TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass),
         );
-        let fake_session = FakeProxySession::new(upstream_session_id, vec![continue_reply]);
+        let mut fake_session = FakeProxySession::new(upstream_session_id, vec![continue_reply]);
         let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
 
         write_packet(&mut client_stream, &first_request).await;
         write_packet(&mut client_stream, &second_request).await;
 
-        let result = proxy_connection_with_session(
+        let result = proxy_connection_with_conversation(
             proxy_stream,
             Duration::from_secs(1),
             None,
-            &fake_session,
+            &mut fake_session,
         )
         .await;
 
@@ -528,6 +544,6 @@ mod tests {
         };
         assert_eq!(received_len, 1);
         assert_eq!(received_session_id, upstream_session_id);
-        assert!(fake_session.is_complete().await);
+        assert!(fake_session.is_complete());
     }
 }
