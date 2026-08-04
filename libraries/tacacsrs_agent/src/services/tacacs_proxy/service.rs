@@ -55,7 +55,7 @@ impl TacacsProxyService {
         request_guard: RequestGuard,
     ) -> anyhow::Result<()>
     where
-        Stream: AsyncRead + AsyncWrite + Unpin + Send,
+        Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         self.upstream_bridge
             .handle_connection(stream, peer_label, request_guard)

@@ -2,6 +2,7 @@ use std::fmt;
 
 use zeroize::Zeroize;
 
+use crate::enumerations::TacacsFlags;
 use crate::{constants::TACACS_HEADER_LENGTH, header::Header};
 use crate::obfuscation::{convert, convert_inplace};
 
@@ -52,6 +53,13 @@ impl Packet {
     #[must_use]
     pub fn with_session_id(mut self, session_id: u32) -> Self {
         self.header.session_id = session_id;
+        self
+    }
+
+    /// Replaces packet flags without copying its body.
+    #[must_use]
+    pub fn with_flags(mut self, flags: TacacsFlags) -> Self {
+        self.header.flags = flags;
         self
     }
 
