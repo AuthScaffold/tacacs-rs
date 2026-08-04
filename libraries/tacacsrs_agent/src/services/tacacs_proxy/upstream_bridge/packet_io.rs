@@ -8,7 +8,7 @@ use tacacsrs_messages::constants::{TACACS_HEADER_LENGTH, TACACS_MAX_BODY_LENGTH}
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_messages::header::Header;
 use tacacsrs_messages::packet::{Packet, PacketTrait};
-use tacacsrs_networking::{PacketWriteResult, PacketWriter, PacketWriterTrait};
+use tacacsrs_networking::{PacketWriteResult, PacketWriter};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 use super::error::ProxyConnectionError;

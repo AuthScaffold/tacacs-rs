@@ -12,10 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use tacacsrs_messages::packet::Packet;
 
-use crate::codec::{
-    PacketReadResult, PacketReader, PacketReaderTrait, PacketWriteResult, PacketWriter,
-    PacketWriterTrait,
-};
+use crate::codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 use crate::transport::Transport;
 
 use super::MultiplexedConnection;

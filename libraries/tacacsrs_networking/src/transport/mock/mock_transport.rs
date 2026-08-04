@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 
 use tacacsrs_messages::packet::PacketTrait;
 
-use crate::codec::{PacketReadResult, PacketReader, PacketReaderTrait};
+use crate::codec::{PacketReadResult, PacketReader};
 use crate::transport::abstractions::Transport;
 
 use super::channel_reader::ChannelReader;

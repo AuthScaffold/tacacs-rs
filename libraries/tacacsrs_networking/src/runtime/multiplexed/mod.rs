@@ -8,7 +8,7 @@
 //! The connection handler separates concerns:
 //! - **Transport**: The underlying stream (TCP, TLS, etc.) - see [`transport`](crate::transport)
 //! - **Session Management**: Creating and tracking sessions inside this module
-//! - **Packet I/O**: Reading and writing packets - see [`PacketReaderTrait`] and [`PacketWriterTrait`]
+//! - **Packet I/O**: Reading and writing packets - see [`PacketReader`] and [`PacketWriter`]
 //!
 //! This module is crate-private. External callers should create
 //! [`TacacsClient`](crate::TacacsClient) and run higher-level
@@ -20,7 +20,7 @@ use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::task;
 
-use crate::codec::{PacketReadResult, PacketReader, PacketReaderTrait, PacketWriter, PacketWriterTrait};
+use crate::codec::{PacketReadResult, PacketReader, PacketWriter};
 
 mod write_loop;
 
@@ -42,8 +42,8 @@ use self::write_loop::run_write_loop;
 /// The connection is designed to be wrapped in an `Arc` and shared across tasks.
 pub(crate) struct MultiplexedConnection {
     session_manager: Arc<SessionManager>,
-    packet_reader: Arc<dyn PacketReaderTrait>,
-    packet_writer: Arc<dyn PacketWriterTrait>,
+    packet_reader: PacketReader,
+    packet_writer: PacketWriter,
 }
 
 impl MultiplexedConnection {
@@ -53,8 +53,8 @@ impl MultiplexedConnection {
         let key = obfuscation_key.map(<[u8]>::to_vec);
         Self {
             session_manager: Arc::new(SessionManager::new()),
-            packet_reader: Arc::new(PacketReader::new(key.clone())),
-            packet_writer: Arc::new(PacketWriter::new(key)),
+            packet_reader: PacketReader::new(key.clone()),
+            packet_writer: PacketWriter::new(key),
         }
     }
 
@@ -67,8 +67,8 @@ impl MultiplexedConnection {
         let key = obfuscation_key.map(<[u8]>::to_vec);
         Self {
             session_manager: Arc::new(SessionManager::with_state(SingleConnectionState::Supported)),
-            packet_reader: Arc::new(PacketReader::new(key.clone())),
-            packet_writer: Arc::new(PacketWriter::new(key)),
+            packet_reader: PacketReader::new(key.clone()),
+            packet_writer: PacketWriter::new(key),
         }
     }
 
@@ -115,7 +115,7 @@ impl MultiplexedConnection {
 
         let write_future = async {
             match run_write_loop(
-                self.packet_writer.as_ref(),
+                &self.packet_writer,
                 receiver,
                 writer,
                 Arc::clone(&self.session_manager),

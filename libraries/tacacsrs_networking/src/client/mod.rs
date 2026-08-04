@@ -611,7 +611,7 @@ mod tests {
     use tacacsrs_messages::traits::TacacsBodyTrait;
 
     use super::{TacacsClient, accounting_watchdog_preflight_request, packet_obfuscation_key};
-    use crate::codec::{PacketReadResult, PacketReader, PacketReaderTrait};
+    use crate::codec::{PacketReadResult, PacketReader};
     use crate::establish::{ConnectOptions, ConnectPreflight};
     use crate::exchange::FixedExchange;
     use crate::single_connect::SingleConnectionState;

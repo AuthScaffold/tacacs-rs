@@ -350,7 +350,7 @@ impl SessionManager {
 
         let (duplex_channel, session_id) = self.create_channel().await?;
 
-        log::info!(
+        log::trace!(
             target: "tacacsrs_networking::session::manager::create_session",
             "Created session with id: {session_id}"
         );
@@ -361,7 +361,7 @@ impl SessionManager {
     pub(crate) async fn remove_session(&self, session_id: u32) {
         let mut duplex_channels = self.duplex_channels.write().await;
         if duplex_channels.remove(&session_id).is_some() {
-            log::info!(
+            log::trace!(
                 target: "tacacsrs_networking::session::manager::remove_session",
                 "Removed session {session_id} from duplex_channels registry"
             );
@@ -442,7 +442,7 @@ impl SessionManager {
 
         match target {
             DispatchTarget::Conversation(sender) => {
-                log::info!(
+                log::trace!(
                     target: "tacacsrs_networking::session::manager::send_message_to_session",
                     "Found client channel for session id {session_id}, forwarding packet"
                 );

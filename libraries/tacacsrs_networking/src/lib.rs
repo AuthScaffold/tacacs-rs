@@ -17,10 +17,7 @@ mod single_connect;
 mod transport;
 
 pub use client::TacacsClient;
-pub use codec::{
-    PacketReadResult, PacketReader, PacketReaderTrait, PacketWriteResult, PacketWriter,
-    PacketWriterTrait,
-};
+pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use establish::{ConnectOptions, ConnectPreflight};
 pub use exchange::FixedExchange;
 pub use session::ClientSession;

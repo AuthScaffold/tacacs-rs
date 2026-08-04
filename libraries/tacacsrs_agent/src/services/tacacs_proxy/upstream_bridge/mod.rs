@@ -232,7 +232,7 @@ mod tests {
     use tacacsrs_messages::header::Header;
     use tacacsrs_messages::packet::{Packet, PacketTrait};
     use tacacsrs_messages::traits::TacacsBodyTrait;
-    use tacacsrs_networking::{PacketReadResult, PacketReader, PacketReaderTrait};
+    use tacacsrs_networking::{PacketReadResult, PacketReader};
     use tokio::io::AsyncWriteExt;
     use tokio::sync::Mutex;
 
