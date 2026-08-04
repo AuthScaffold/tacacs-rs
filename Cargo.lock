@@ -2079,8 +2079,8 @@ dependencies = [
  "serde",
  "static_assertions",
  "tacacsrs-config",
+ "tacacsrs-secrets",
  "tokio",
- "zeroize",
 ]
 
 [[package]]
@@ -2115,6 +2115,7 @@ dependencies = [
  "byteorder",
  "md-5",
  "num_enum",
+ "zeroize",
 ]
 
 [[package]]
@@ -2137,6 +2138,13 @@ dependencies = [
  "tacacsrs-messages",
  "tokio",
  "tokio-openssl",
+]
+
+[[package]]
+name = "tacacsrs-secrets"
+version = "0.0.0-dev"
+dependencies = [
+ "zeroize",
 ]
 
 [[package]]

@@ -2,10 +2,8 @@
 
 use tacacsrs_messages::packet::Packet;
 
-pub(super) fn rewrite_session_id(packet: Packet, session_id: u32) -> anyhow::Result<Packet> {
-    let (mut header, body) = packet.into_parts();
-    header.session_id = session_id;
-    Packet::new(header, body)
+pub(super) fn rewrite_session_id(packet: Packet, session_id: u32) -> Packet {
+    packet.with_session_id(session_id)
 }
 
 #[cfg(test)]
@@ -40,9 +38,9 @@ mod tests {
         let tacacs_type = packet.header().tacacs_type;
         let seq_no = packet.header().seq_no;
         let flags = packet.header().flags;
-        let body = packet.body().clone();
+        let body = packet.body().to_vec();
 
-        let rewritten = rewrite_session_id(packet, 0x3333_4444).unwrap();
+        let rewritten = rewrite_session_id(packet, 0x3333_4444);
 
         assert_eq!(rewritten.header().session_id, 0x3333_4444);
         assert_eq!(rewritten.header().tacacs_type, tacacs_type);

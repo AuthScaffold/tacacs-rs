@@ -256,7 +256,7 @@ impl DedicatedSession {
 fn with_single_connect_flag(packet: &Packet) -> anyhow::Result<Packet> {
     let mut header = packet.header().clone();
     header.flags |= TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
-    Packet::new(header, packet.body().clone())
+    Packet::new(header, packet.body().to_vec())
 }
 
 #[cfg(test)]

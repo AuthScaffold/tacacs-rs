@@ -197,12 +197,7 @@ where
         }
 
         let downstream_session_id = downstream_session_id.expect("session id was just set");
-        let upstream_packet = match rewrite_session_id(downstream_packet, upstream_session_id) {
-            Ok(packet) => packet,
-            Err(error) => {
-                return Err(ProxyConnectionError::Downstream(error));
-            }
-        };
+        let upstream_packet = rewrite_session_id(downstream_packet, upstream_session_id);
 
         let upstream_reply =
             tokio::time::timeout(timeout, upstream_conversation.round_trip(upstream_packet))
@@ -219,10 +214,7 @@ where
                 })?;
 
         let action = reply_action(&upstream_reply);
-        let downstream_reply = match rewrite_session_id(upstream_reply, downstream_session_id) {
-            Ok(packet) => packet,
-            Err(error) => return Err(ProxyConnectionError::Upstream(error)),
-        };
+        let downstream_reply = rewrite_session_id(upstream_reply, downstream_session_id);
         write_downstream_packet(writer, stream, downstream_reply, downstream_reply_obfuscation)
             .await?;
 
@@ -401,12 +393,12 @@ mod tests {
             (
                 received_packets.len(),
                 received_packets[0].header().session_id,
-                received_packets[0].body().clone(),
+                received_packets[0].body().to_vec(),
             )
         };
         assert_eq!(received_len, 1);
         assert_eq!(received_session_id, upstream_session_id);
-        assert_eq!(received_body.as_slice(), request.body().as_slice());
+        assert_eq!(received_body.as_slice(), request.body());
         assert!(fake_session.is_complete());
 
         let downstream_reply = read_packet(&mut client_stream).await;
@@ -482,7 +474,7 @@ mod tests {
                 received_packets.len(),
                 received_packets[0].header().session_id,
                 received_packets[0].header().flags,
-                received_packets[0].body().clone(),
+                received_packets[0].body().to_vec(),
             )
         };
         assert_eq!(received_len, 1);

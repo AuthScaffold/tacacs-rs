@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 async-trait = "0.1"
 tacacsrs-config = { path = "../tacacsrs_config" }
-zeroize = "1.9.0"
+tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 
 [dev-dependencies]
 serde = "1.0.228"
