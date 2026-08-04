@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
 use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
@@ -6,6 +7,23 @@ use tacacsrs_messages::header::Header;
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 
 use super::MultiplexedConnection;
+use crate::session::{ExpectedResponseHeader, PacketDispatchError};
+
+fn request(session_id: u32) -> Packet {
+    Packet::new(
+        Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+            tacacs_type: TacacsType::TacPlusAuthorisation,
+            seq_no: 1,
+            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            session_id,
+            length: 0,
+        },
+        Vec::new(),
+    )
+    .unwrap()
+}
 
 fn reply(session_id: u32) -> Packet {
     Packet::new(
@@ -73,6 +91,108 @@ async fn completed_session_rejects_late_reply() {
         .send_message_to_session(reply(session_id))
         .await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn routes_out_of_order_fixed_replies_by_session_id() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let first = connection.create_session().await.unwrap();
+    let second = connection.create_session().await.unwrap();
+    let first_receiver = connection
+        .session_manager
+        .prepare_fixed_response(
+            first.session_id(),
+            ExpectedResponseHeader::for_request(&request(first.session_id())),
+        )
+        .await
+        .unwrap();
+    let second_receiver = connection
+        .session_manager
+        .prepare_fixed_response(
+            second.session_id(),
+            ExpectedResponseHeader::for_request(&request(second.session_id())),
+        )
+        .await
+        .unwrap();
+
+    connection
+        .session_manager
+        .send_message_to_session(reply(second.session_id()))
+        .await
+        .unwrap();
+    connection
+        .session_manager
+        .send_message_to_session(reply(first.session_id()))
+        .await
+        .unwrap();
+
+    let first_reply = first_receiver.await.unwrap().unwrap();
+    let second_reply = second_receiver.await.unwrap().unwrap();
+    assert_eq!(first_reply.header().session_id, first.session_id());
+    assert_eq!(second_reply.header().session_id, second.session_id());
+
+    first.complete().await;
+    second.complete().await;
+}
+
+#[tokio::test]
+async fn rejects_invalid_fixed_response_metadata() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let session = connection.create_session().await.unwrap();
+    let receiver = connection
+        .session_manager
+        .prepare_fixed_response(
+            session.session_id(),
+            ExpectedResponseHeader::for_request(&request(session.session_id())),
+        )
+        .await
+        .unwrap();
+    let invalid_reply = request(session.session_id());
+
+    let dispatch = connection
+        .session_manager
+        .send_message_to_session(invalid_reply)
+        .await;
+    assert!(matches!(dispatch, Err(PacketDispatchError::ProtocolViolation { .. })));
+    assert!(receiver.await.unwrap().is_err());
+
+    session.complete().await;
+}
+
+#[tokio::test]
+async fn delivered_fixed_reply_remains_active_until_completion() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let session = connection.create_session().await.unwrap();
+    let receiver = connection
+        .session_manager
+        .prepare_fixed_response(
+            session.session_id(),
+            ExpectedResponseHeader::for_request(&request(session.session_id())),
+        )
+        .await
+        .unwrap();
+
+    connection
+        .session_manager
+        .set_single_connection_state(false)
+        .await;
+    connection
+        .session_manager
+        .send_message_to_session(reply(session.session_id()))
+        .await
+        .unwrap();
+    receiver.await.unwrap().unwrap();
+
+    let close = connection.session_manager.wait_for_close();
+    tokio::pin!(close);
+    assert!(tokio::time::timeout(Duration::from_millis(25), &mut close)
+        .await
+        .is_err());
+
+    session.complete().await;
+    tokio::time::timeout(Duration::from_millis(250), &mut close)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

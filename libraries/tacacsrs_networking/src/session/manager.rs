@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::sync::Arc;
 
+use tacacsrs_messages::enumerations::{TacacsMajorVersion, TacacsMinorVersion, TacacsType};
 use tacacsrs_messages::packet::{Packet, PacketTrait};
-use tokio::sync::{Mutex, Notify, RwLock, mpsc};
+use tokio::sync::{Mutex, Notify, RwLock, mpsc, oneshot};
 
 use crate::single_connect::SingleConnectionState;
 
@@ -10,9 +13,100 @@ use super::{DuplexChannel, ReservedSessionId, SessionIdAllocator, SharedSession}
 
 #[derive(Debug)]
 struct ActiveSessionEntry {
-    sender: mpsc::Sender<Packet>,
+    route: ActiveSessionRoute,
     _reservation: ReservedSessionId,
 }
+
+#[derive(Debug)]
+enum ActiveSessionRoute {
+    Conversation(mpsc::Sender<Packet>),
+    Fixed {
+        sender: Option<oneshot::Sender<anyhow::Result<Packet>>>,
+        expected: ExpectedResponseHeader,
+    },
+}
+
+enum DispatchTarget {
+    Conversation(mpsc::Sender<Packet>),
+    Fixed {
+        sender: oneshot::Sender<anyhow::Result<Packet>>,
+        expected: ExpectedResponseHeader,
+    },
+}
+
+/// Header metadata a fixed exchange requires from its single reply.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExpectedResponseHeader {
+    major_version: TacacsMajorVersion,
+    minor_version: TacacsMinorVersion,
+    tacacs_type: TacacsType,
+    seq_no: u8,
+}
+
+impl ExpectedResponseHeader {
+    pub(crate) fn for_request(packet: &Packet) -> Self {
+        let header = packet.header();
+        Self {
+            major_version: header.major_version,
+            minor_version: header.minor_version,
+            tacacs_type: header.tacacs_type,
+            seq_no: header.seq_no.wrapping_add(1),
+        }
+    }
+
+    fn validate(self, packet: &Packet) -> anyhow::Result<()> {
+        let header = packet.header();
+        if header.major_version != self.major_version
+            || header.minor_version != self.minor_version
+            || header.tacacs_type != self.tacacs_type
+            || header.seq_no != self.seq_no
+        {
+            anyhow::bail!(
+                "unexpected TACACS+ response header for session {:#x}: seq_no={}, type={}, version={:?}.{:?}; expected seq_no={}, type={}, version={:?}.{:?}",
+                header.session_id,
+                header.seq_no,
+                header.tacacs_type,
+                header.major_version,
+                header.minor_version,
+                self.seq_no,
+                self.tacacs_type,
+                self.major_version,
+                self.minor_version,
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Classifies packet dispatch failures for connection-lifetime decisions.
+#[derive(Debug)]
+pub(crate) enum PacketDispatchError {
+    UnknownSession(u32),
+    SessionClosed(u32),
+    ProtocolViolation { session_id: u32, message: String },
+}
+
+impl fmt::Display for PacketDispatchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownSession(session_id) => {
+                write!(formatter, "no route for TACACS+ session {session_id:#x}")
+            }
+            Self::SessionClosed(session_id) => {
+                write!(formatter, "route for TACACS+ session {session_id:#x} is closed")
+            }
+            Self::ProtocolViolation {
+                session_id,
+                message,
+            } => write!(
+                formatter,
+                "protocol violation for TACACS+ session {session_id:#x}: {message}"
+            ),
+        }
+    }
+}
+
+impl Error for PacketDispatchError {}
 
 #[derive(Debug)]
 pub(crate) struct SessionManager {
@@ -71,13 +165,39 @@ impl SessionManager {
             duplex_channels.insert(
                 session_id,
                 ActiveSessionEntry {
-                    sender: session_sender,
+                    route: ActiveSessionRoute::Conversation(session_sender),
                     _reservation: reserved_session_id,
                 },
             );
         }
 
         Ok((duplex_channel, session_id))
+    }
+
+    /// Replaces a conversation inbox with a one-shot fixed response route.
+    pub(crate) async fn prepare_fixed_response(
+        &self,
+        session_id: u32,
+        expected: ExpectedResponseHeader,
+    ) -> anyhow::Result<oneshot::Receiver<anyhow::Result<Packet>>> {
+        let (sender, receiver) = oneshot::channel();
+        let mut routes = self.duplex_channels.write().await;
+        let entry = routes
+            .get_mut(&session_id)
+            .ok_or_else(|| anyhow::anyhow!("no route for TACACS+ session {session_id:#x}"))?;
+
+        match entry.route {
+            ActiveSessionRoute::Conversation(_) => {
+                entry.route = ActiveSessionRoute::Fixed {
+                    sender: Some(sender),
+                    expected,
+                };
+                Ok(receiver)
+            }
+            ActiveSessionRoute::Fixed { .. } => {
+                anyhow::bail!("TACACS+ session {session_id:#x} already awaits a fixed response")
+            }
+        }
     }
 
     pub(crate) async fn can_create_sessions(&self) -> bool {
@@ -295,17 +415,33 @@ impl SessionManager {
 
     /// # Errors
     /// Returns an error if the session is not found in the registry.
-    pub(crate) async fn send_message_to_session(&self, packet: Packet) -> anyhow::Result<()> {
+    pub(crate) async fn send_message_to_session(
+        &self,
+        packet: Packet,
+    ) -> Result<(), PacketDispatchError> {
         let session_id = packet.header().session_id;
-        let sender = {
-            let duplex_channels = self.duplex_channels.read().await;
-            duplex_channels
-                .get(&session_id)
-                .map(|entry| entry.sender.clone())
+        let target = {
+            let mut routes = self.duplex_channels.write().await;
+            match routes.get_mut(&session_id) {
+                Some(ActiveSessionEntry {
+                    route: ActiveSessionRoute::Conversation(sender),
+                    ..
+                }) => DispatchTarget::Conversation(sender.clone()),
+                Some(ActiveSessionEntry {
+                    route: ActiveSessionRoute::Fixed { sender, expected },
+                    ..
+                }) => DispatchTarget::Fixed {
+                    sender: sender
+                        .take()
+                        .ok_or(PacketDispatchError::SessionClosed(session_id))?,
+                    expected: *expected,
+                },
+                None => return Err(PacketDispatchError::UnknownSession(session_id)),
+            }
         };
 
-        match sender {
-            Some(sender) => {
+        match target {
+            DispatchTarget::Conversation(sender) => {
                 log::info!(
                     target: "tacacsrs_networking::session::manager::send_message_to_session",
                     "Found client channel for session id {session_id}, forwarding packet"
@@ -321,12 +457,24 @@ impl SessionManager {
                             "Failed to send packet to client channel for session id: {session_id} due to error: {e}"
                         );
 
-                        Err(anyhow::Error::msg("Failed to send packet to client channel"))
+                        Err(PacketDispatchError::SessionClosed(session_id))
                     }
                 }
             }
+            DispatchTarget::Fixed { sender, expected } => {
+                if let Err(error) = expected.validate(&packet) {
+                    let message = error.to_string();
+                    let _ = sender.send(Err(error));
+                    return Err(PacketDispatchError::ProtocolViolation {
+                        session_id,
+                        message,
+                    });
+                }
 
-            None => Err(anyhow::Error::msg("No client channel found for session id")),
+                sender
+                    .send(Ok(packet))
+                    .map_err(|_| PacketDispatchError::SessionClosed(session_id))
+            }
         }
     }
 }

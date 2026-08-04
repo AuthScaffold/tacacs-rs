@@ -541,8 +541,7 @@ where
         body,
     )?;
 
-    session.send_packet(request).await?;
-    let response = session.receive_packet().await?;
+    let response = session.fixed_round_trip(request).await?;
     let header = response.header();
 
     if header.session_id != session_id

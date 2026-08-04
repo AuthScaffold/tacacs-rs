@@ -25,7 +25,7 @@ use crate::codec::{PacketReadResult, PacketReader, PacketReaderTrait, PacketWrit
 mod write_loop;
 
 use crate::single_connect::{LocalSingleConnectState, SingleConnectFlag, SingleConnectionState};
-use crate::session::{SessionManager, SharedSession};
+use crate::session::{PacketDispatchError, SessionManager, SharedSession};
 
 use self::write_loop::run_write_loop;
 
@@ -252,7 +252,20 @@ impl MultiplexedConnection {
                 .process_packet(flag, &self.session_manager)
                 .await;
 
-            let _ = self.session_manager.send_message_to_session(packet).await;
+            match self.session_manager.send_message_to_session(packet).await {
+                Ok(()) => {}
+                Err(
+                    PacketDispatchError::UnknownSession(_) | PacketDispatchError::SessionClosed(_),
+                ) => {
+                    log::debug!(
+                        target: "tacacsrs_networking::runtime::multiplexed::read_handler",
+                        "Ignoring response for a session that is no longer active"
+                    );
+                }
+                Err(error @ PacketDispatchError::ProtocolViolation { .. }) => {
+                    return Err(error.into());
+                }
+            }
         }
     }
 

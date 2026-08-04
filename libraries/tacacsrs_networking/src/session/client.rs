@@ -55,6 +55,16 @@ impl ClientSession {
         }
     }
 
+    pub(crate) async fn fixed_round_trip(&self, packet: Packet) -> anyhow::Result<Packet> {
+        match &self.inner {
+            ClientSessionInner::Shared(session) => session.fixed_round_trip(packet).await,
+            ClientSessionInner::Dedicated(session) => {
+                session.send_packet(packet).await?;
+                session.receive_packet().await
+            }
+        }
+    }
+
     pub(crate) async fn complete(&self) {
         match &self.inner {
             ClientSessionInner::Shared(session) => session.complete().await,

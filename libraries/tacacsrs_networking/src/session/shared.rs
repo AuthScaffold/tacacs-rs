@@ -1,12 +1,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use anyhow::Context;
 use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 
 use tacacsrs_messages::packet::Packet;
 
-use super::{DuplexChannel, SessionManager};
+use super::{DuplexChannel, ExpectedResponseHeader, SessionManager};
 
 pub(crate) struct SharedSession {
     id: u32,
@@ -88,6 +89,20 @@ impl SharedSession {
 
     pub(crate) async fn receive_packet(&self) -> anyhow::Result<Packet> {
         self.duplex_channel.receive_packet().await
+    }
+
+    pub(crate) async fn fixed_round_trip(&self, packet: Packet) -> anyhow::Result<Packet> {
+        let manager = self
+            .manager
+            .as_ref()
+            .context("shared TACACS+ session has no session manager")?;
+        let expected = ExpectedResponseHeader::for_request(&packet);
+        let receiver = manager.prepare_fixed_response(self.id, expected).await?;
+
+        self.send_packet(packet).await?;
+        receiver
+            .await
+            .context("shared TACACS+ connection closed before the fixed response arrived")?
     }
 
     #[cfg(test)]

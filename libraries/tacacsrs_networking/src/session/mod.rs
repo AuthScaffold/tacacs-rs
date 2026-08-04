@@ -16,5 +16,5 @@ pub use client::ClientSession;
 pub(crate) use channel::DuplexChannel;
 pub(crate) use dedicated::{DedicatedSession, SingleConnectPromotion};
 pub(crate) use id::{ReservedSessionId, SessionIdAllocator, random_nonzero_session_id};
-pub(crate) use manager::SessionManager;
+pub(crate) use manager::{ExpectedResponseHeader, PacketDispatchError, SessionManager};
 pub(crate) use shared::SharedSession;
