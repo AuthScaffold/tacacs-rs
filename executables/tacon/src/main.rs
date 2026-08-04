@@ -15,6 +15,8 @@ use tacacsrs_networking::ConnectOptions;
 
 use cli::{Cli, Command};
 use commands::accounting::send_accounting_request;
+use commands::authentication::{authenticate_direct, authenticate_service, read_password};
+use commands::authorization::{authorize_direct, authorize_service};
 use connection::{Connection, establish_connection, establish_dedicated_connection};
 
 /// Initializes the logger based on verbosity level
@@ -56,14 +58,27 @@ async fn execute_command(command: &Command, connection: &Connection) -> anyhow::
             .await?;
         }
 
-        Command::Authentication { args: _ } => {
-            log::info!("Authentication command not yet implemented");
-            println!("Authentication command not yet implemented");
+        Command::Authentication {
+            args,
+            password_stdin,
+            privilege_level,
+        } => {
+            let password = read_password(*password_stdin)?;
+            let response =
+                authenticate_direct(connection, args, *privilege_level, password).await?;
+            println!("Received PAP authentication response: {response:#?}");
         }
 
-        Command::Authorization { args: _ } => {
-            log::info!("Authorization command not yet implemented");
-            println!("Authorization command not yet implemented");
+        Command::Authorization {
+            args,
+            authentication_context,
+            privilege_level,
+            mode,
+        } => {
+            let response =
+                authorize_direct(connection, args, *privilege_level, *authentication_context, mode)
+                    .await?;
+            println!("Received authorization response: {response:#?}");
         }
 
         Command::Batch { .. } => {
@@ -102,13 +117,25 @@ async fn execute_command_via_service(endpoint: &str, command: &Command) -> anyho
 
             println!("Received accounting response: {response:#?}");
         }
-        Command::Authentication { .. } => {
-            log::info!("Authentication command not yet implemented");
-            println!("Authentication command not yet implemented");
+        Command::Authentication {
+            args,
+            password_stdin,
+            privilege_level,
+        } => {
+            let password = read_password(*password_stdin)?;
+            let response = authenticate_service(&client, args, *privilege_level, password).await?;
+            println!("Received PAP authentication response: {response:#?}");
         }
-        Command::Authorization { .. } => {
-            log::info!("Authorization command not yet implemented");
-            println!("Authorization command not yet implemented");
+        Command::Authorization {
+            args,
+            authentication_context,
+            privilege_level,
+            mode,
+        } => {
+            let response =
+                authorize_service(&client, args, *privilege_level, *authentication_context, mode)
+                    .await?;
+            println!("Received authorization response: {response:#?}");
         }
         Command::Batch { .. } => {
             unreachable!(
@@ -211,44 +238,8 @@ async fn execute_command_dedicated(
     command: &Command,
 ) -> anyhow::Result<()> {
     log::info!("Running in dedicated connection mode");
-
-    match command {
-        Command::Accounting {
-            args,
-            cmd,
-            cmd_args,
-        } => {
-            let connection = establish_dedicated_connection(server, options).await?;
-
-            let result = send_accounting_request(
-                &connection,
-                &args.user,
-                &args.port,
-                &args.rem_addr,
-                cmd,
-                cmd_args.as_ref(),
-            )
-            .await
-            .context("Dedicated accounting request failed")?;
-
-            log::info!("Received accounting response: {result:?}");
-        }
-
-        Command::Authentication { .. } => {
-            bail!("Authentication is not yet implemented");
-        }
-        Command::Authorization { .. } => {
-            bail!("Authorization is not yet implemented");
-        }
-        Command::Batch { .. } => {
-            unreachable!("Batch is handled before this point");
-        }
-        Command::DumpYangConfig => {
-            unreachable!("dump-yang-config is handled in run() before dedicated execution");
-        }
-    }
-
-    Ok(())
+    let connection = establish_dedicated_connection(server, options).await?;
+    execute_command(command, &connection).await
 }
 
 #[tokio::main]

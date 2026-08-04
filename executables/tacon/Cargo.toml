@@ -15,6 +15,7 @@ clap = { version = "4.6.1", features = ["derive"] }
 env_logger = "0.11.10"
 futures = "0.3"
 log = "0.4"
+rpassword = "7.4.0"
 rustls-pki-types = "1.14.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -24,6 +25,7 @@ tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
 tacacsrs-messages = { path = "../../libraries/tacacsrs_messages" }
 tacacsrs-flows = { path = "../../libraries/tacacsrs_flows" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
+tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
 tokio = { version = "1.52.3", features = ["full"] }
 
 [build-dependencies]

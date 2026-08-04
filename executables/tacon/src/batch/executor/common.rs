@@ -5,12 +5,16 @@ use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
+use tacacsrs_flows::authorization::{AuthenticationContext, AuthorizationExchange};
 
 use crate::commands::accounting::send_accounting_request;
 use crate::connection::Connection;
 
 use super::super::progress::{ProgressConfig, ProgressTracker};
-use super::super::types::{AccountingRequest, BatchRequest, LoadTestResult};
+use super::super::types::{
+    AccountingRequest, AuthorizationAuthenticationContext, AuthorizationRequest, BatchRequest,
+    LoadTestResult,
+};
 
 pub(super) async fn service_client(endpoint: &str) -> anyhow::Result<ServiceClient> {
     let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
@@ -26,6 +30,36 @@ pub(super) fn to_service_accounting_request(request: &AccountingRequest) -> Acco
         remote_address: request.rem_addr.clone(),
         command: request.cmd.clone(),
         command_arguments: request.cmd_args.clone(),
+    }
+}
+
+pub(super) fn direct_authorization_exchange(
+    request: &AuthorizationRequest,
+) -> AuthorizationExchange {
+    let context = match request.authentication_context {
+        AuthorizationAuthenticationContext::Ascii => AuthenticationContext::TacacsAscii,
+        AuthorizationAuthenticationContext::Pap => AuthenticationContext::TacacsPap,
+        AuthorizationAuthenticationContext::Unauthenticated => {
+            AuthenticationContext::Unauthenticated
+        }
+    };
+    match &request.cmd {
+        Some(command) => AuthorizationExchange::shell_command(
+            context,
+            request.user.clone(),
+            request.port.clone(),
+            request.rem_addr.clone(),
+            request.privilege_level,
+            command.clone(),
+            request.cmd_args.clone(),
+        ),
+        None => AuthorizationExchange::shell_session(
+            context,
+            request.user.clone(),
+            request.port.clone(),
+            request.rem_addr.clone(),
+            request.privilege_level,
+        ),
     }
 }
 
@@ -57,13 +91,16 @@ pub(super) async fn execute_single_request(
             }
         }
         BatchRequest::Authentication(req) => {
-            log::warn!("Authentication not yet implemented for user: {}", req.user);
-            Err(format!("Authentication not yet implemented (user: {})", req.user))
+            Err(format!(
+                "PAP authentication is not supported in batch files; use the authentication command with a prompt or --password-stdin (user: {})",
+                req.user
+            ))
         }
-        BatchRequest::Authorization(req) => {
-            log::warn!("Authorization not yet implemented for user: {}", req.user);
-            Err(format!("Authorization not yet implemented (user: {})", req.user))
-        }
+        BatchRequest::Authorization(req) => connection
+            .execute(direct_authorization_exchange(req))
+            .await
+            .map(|response| format!("Authorization success: {response:?}"))
+            .map_err(|error| format!("Authorization failed: {error}")),
     }
 }
 
