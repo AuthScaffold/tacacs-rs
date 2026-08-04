@@ -25,7 +25,9 @@ use crate::codec::{PacketReadResult, PacketReader, PacketWriter};
 mod write_loop;
 
 use crate::single_connect::{LocalSingleConnectState, SingleConnectFlag, SingleConnectionState};
-use crate::session::{PacketDispatchError, SessionManager, SharedSession};
+use crate::session::{
+    ExpectedResponseHeader, PacketDispatchError, SessionManager, SharedFixedSession, SharedSession,
+};
 
 use self::write_loop::run_write_loop;
 
@@ -279,6 +281,13 @@ impl MultiplexedConnection {
 
     pub(crate) async fn create_session(self: &Arc<Self>) -> anyhow::Result<SharedSession> {
         self.session_manager.create_session().await
+    }
+
+    pub(crate) async fn create_fixed_session(
+        self: &Arc<Self>,
+        expected: ExpectedResponseHeader,
+    ) -> anyhow::Result<SharedFixedSession> {
+        self.session_manager.create_fixed_session(expected).await
     }
 
     pub(crate) async fn single_connection_state(self: &Arc<Self>) -> SingleConnectionState {

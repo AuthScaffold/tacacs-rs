@@ -304,3 +304,48 @@ async fn shared_session_routing_burst_baseline() {
         f64::from(EXCHANGE_COUNT) / elapsed.as_secs_f64(),
     );
 }
+
+#[tokio::test]
+#[ignore = "manual direct fixed routing baseline"]
+async fn direct_fixed_routing_burst_baseline() {
+    const EXCHANGE_COUNT: u32 = 512;
+
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let mut outbound = connection.session_manager.take_receiver().await.unwrap();
+    let drain_task = tokio::spawn(async move { while outbound.recv().await.is_some() {} });
+    let started = Instant::now();
+    let mut sessions = Vec::with_capacity(usize::try_from(EXCHANGE_COUNT).unwrap());
+
+    for _ in 0..EXCHANGE_COUNT {
+        sessions.push(
+            connection
+                .create_fixed_session(ExpectedResponseHeader::fixed(
+                    TacacsType::TacPlusAuthorisation,
+                    TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                ))
+                .await
+                .unwrap(),
+        );
+    }
+    for session in sessions.iter().rev() {
+        connection
+            .session_manager
+            .send_message_to_session(reply(session.session_id()))
+            .await
+            .unwrap();
+    }
+    for session in sessions {
+        session
+            .round_trip(request(session.session_id()))
+            .await
+            .unwrap();
+        session.complete().await;
+    }
+
+    let elapsed = started.elapsed();
+    eprintln!(
+        "direct fixed routing baseline: {EXCHANGE_COUNT} exchanges in {elapsed:?} ({:.0} exchanges/s)",
+        f64::from(EXCHANGE_COUNT) / elapsed.as_secs_f64(),
+    );
+    drain_task.abort();
+}

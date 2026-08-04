@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, Notify, RwLock, mpsc, oneshot};
 
 use crate::single_connect::SingleConnectionState;
 
-use super::{DuplexChannel, ReservedSessionId, SessionIdAllocator, SharedSession};
+use super::{DuplexChannel, ReservedSessionId, SessionIdAllocator, SharedFixedSession, SharedSession};
 
 #[derive(Debug)]
 struct ActiveSessionEntry {
@@ -44,6 +44,16 @@ pub(crate) struct ExpectedResponseHeader {
 }
 
 impl ExpectedResponseHeader {
+    pub(crate) const fn fixed(tacacs_type: TacacsType, minor_version: TacacsMinorVersion) -> Self {
+        Self {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version,
+            tacacs_type,
+            seq_no: 2,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn for_request(packet: &Packet) -> Self {
         let header = packet.header();
         Self {
@@ -175,6 +185,7 @@ impl SessionManager {
     }
 
     /// Replaces a conversation inbox with a one-shot fixed response route.
+    #[cfg(test)]
     pub(crate) async fn prepare_fixed_response(
         &self,
         session_id: u32,
@@ -356,6 +367,33 @@ impl SessionManager {
         );
 
         Ok(SharedSession::new_with_manager(session_id, duplex_channel, Some(Arc::clone(self))))
+    }
+
+    /// Creates a fixed one-shot route without allocating a per-session mpsc channel.
+    pub(crate) async fn create_fixed_session(
+        self: &Arc<Self>,
+        expected: ExpectedResponseHeader,
+    ) -> anyhow::Result<SharedFixedSession> {
+        self.try_begin_session().await?;
+        let reservation = self.session_id_allocator.reserve_generated();
+        let session_id = reservation.get();
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.duplex_channels.write().await.insert(
+            session_id,
+            ActiveSessionEntry {
+                route: ActiveSessionRoute::Fixed {
+                    sender: Some(response_sender),
+                    expected,
+                },
+                _reservation: reservation,
+            },
+        );
+        Ok(SharedFixedSession::new(
+            session_id,
+            self.sender.clone(),
+            response_receiver,
+            Arc::clone(self),
+        ))
     }
 
     pub(crate) async fn remove_session(&self, session_id: u32) {

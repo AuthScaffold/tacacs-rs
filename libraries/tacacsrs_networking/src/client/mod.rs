@@ -26,7 +26,8 @@ use crate::exchange::FixedExchange;
 use crate::runtime::MultiplexedConnection;
 use crate::single_connect::SingleConnectionState;
 use crate::session::{
-    ClientConversation, ClientSession, DedicatedSession, SharedSession, SingleConnectPromotion,
+    ClientConversation, ClientSession, DedicatedSession, ExpectedResponseHeader,
+    SingleConnectPromotion,
 };
 use crate::transport::BoxedTransport;
 
@@ -198,6 +199,20 @@ impl TacacsClient {
     /// Returns an error if no shared session can be created and a fresh
     /// dedicated transport cannot be opened.
     async fn create_session(&self) -> anyhow::Result<ClientSession> {
+        self.create_session_for(None).await
+    }
+
+    async fn create_fixed_session(
+        &self,
+        expected: ExpectedResponseHeader,
+    ) -> anyhow::Result<ClientSession> {
+        self.create_session_for(Some(expected)).await
+    }
+
+    async fn create_session_for(
+        &self,
+        expected: Option<ExpectedResponseHeader>,
+    ) -> anyhow::Result<ClientSession> {
         if !self.server.single_connection {
             return Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?));
         }
@@ -224,11 +239,11 @@ impl TacacsClient {
 
         // Stage 2: hot path. A confirmed, healthy shared connection can create
         // a session without serializing every caller on the recovery mutex.
-        if let Some(session) = self.try_create_shared_session().await {
-            return Ok(ClientSession::shared(session));
+        if let Some(session) = self.try_create_shared_session(expected).await {
+            return Ok(session);
         }
 
-        self.create_session_after_shared_miss().await
+        self.create_session_after_shared_miss(expected).await
     }
 
     /// Executes one fixed TACACS+ request/reply exchange.
@@ -245,7 +260,9 @@ impl TacacsClient {
     where
         Exchange: FixedExchange,
     {
-        let session = self.create_session().await?;
+        let expected =
+            ExpectedResponseHeader::fixed(exchange.packet_type(), exchange.minor_version());
+        let session = self.create_fixed_session(expected).await?;
         let result = execute_on_session(&session, exchange).await;
         session.complete().await;
         result
@@ -273,7 +290,10 @@ impl TacacsClient {
         }
     }
 
-    async fn create_session_after_shared_miss(&self) -> anyhow::Result<ClientSession> {
+    async fn create_session_after_shared_miss(
+        &self,
+        expected: Option<ExpectedResponseHeader>,
+    ) -> anyhow::Result<ClientSession> {
         // Stage 3: the failed shared attempt may have changed client state. For
         // example, a graceful server shutdown becomes NotSupported, while a hard
         // disconnect returns to Initial so the next connection can negotiate.
@@ -297,8 +317,8 @@ impl TacacsClient {
 
         // Stage 5: another task may have restored the shared cache while this
         // one waited for the recovery lock.
-        if let Some(session) = self.try_create_shared_session().await {
-            return Ok(ClientSession::shared(session));
+        if let Some(session) = self.try_create_shared_session(expected).await {
+            return Ok(session);
         }
 
         // Stage 6: final fallback. This opens at most one fresh dedicated
@@ -422,7 +442,10 @@ impl TacacsClient {
         }
     }
 
-    async fn try_create_shared_session(&self) -> Option<SharedSession> {
+    async fn try_create_shared_session(
+        &self,
+        expected: Option<ExpectedResponseHeader>,
+    ) -> Option<ClientSession> {
         let connection = self.shared_connection.read().await.clone()?;
 
         if !connection.can_create_sessions().await {
@@ -432,7 +455,13 @@ impl TacacsClient {
             return None;
         }
 
-        let session = connection.create_session().await;
+        let session = match expected {
+            Some(expected) => connection
+                .create_fixed_session(expected)
+                .await
+                .map(ClientSession::shared_fixed),
+            None => connection.create_session().await.map(ClientSession::shared),
+        };
 
         match session {
             Ok(session) => Some(session),
