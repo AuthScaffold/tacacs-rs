@@ -9,6 +9,7 @@
 mod client;
 mod codec;
 mod establish;
+mod exchange;
 mod helpers;
 mod runtime;
 mod session;
@@ -21,4 +22,5 @@ pub use codec::{
     PacketWriterTrait,
 };
 pub use establish::{ConnectOptions, ConnectPreflight};
+pub use exchange::FixedExchange;
 pub use session::ClientSession;

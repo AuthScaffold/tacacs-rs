@@ -3,8 +3,44 @@ use log::info;
 use tacacsrs_flow_abstractions::authorization::{build_authorization_packet, parse_authorization_reply};
 use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::authorization::{reply::AuthorizationReply, request::AuthorizationRequest};
-use tacacsrs_messages::enumerations::TacacsFlags;
+use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMinorVersion, TacacsType};
 use tacacsrs_messages::packet::PacketTrait;
+use tacacsrs_messages::traits::TacacsBodyTrait;
+use tacacsrs_networking::FixedExchange;
+
+/// One fixed TACACS+ authorization request/reply exchange.
+#[derive(Debug)]
+pub struct AuthorizationExchange {
+    request: AuthorizationRequest,
+}
+
+impl AuthorizationExchange {
+    /// Creates an authorization exchange from its protocol request body.
+    #[must_use]
+    pub const fn new(request: AuthorizationRequest) -> Self {
+        Self { request }
+    }
+}
+
+impl FixedExchange for AuthorizationExchange {
+    type Reply = AuthorizationReply;
+
+    fn packet_type(&self) -> TacacsType {
+        TacacsType::TacPlusAuthorisation
+    }
+
+    fn minor_version(&self) -> TacacsMinorVersion {
+        TacacsMinorVersion::TacacsPlusMinorVerDefault
+    }
+
+    fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
+        self.request.to_bytes()
+    }
+
+    fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
+        AuthorizationReply::from_bytes(body)
+    }
+}
 
 /// Fixed TACACS+ client authorization flow.
 ///
@@ -161,6 +197,25 @@ mod tests {
             data: String::new(),
             args: vec!["priv-lvl=15".to_owned()],
         }
+    }
+
+    #[test]
+    fn fixed_exchange_encodes_request_and_decodes_reply() -> anyhow::Result<()> {
+        let exchange = AuthorizationExchange::new(authorization_request());
+
+        assert_eq!(exchange.packet_type(), TacacsType::TacPlusAuthorisation);
+        assert_eq!(exchange.minor_version(), TacacsMinorVersion::TacacsPlusMinorVerDefault);
+        let request = AuthorizationRequest::from_bytes(&exchange.encode_request()?)?;
+        assert_eq!(request.user, "admin");
+        assert_eq!(request.args, vec!["service=shell", "cmd=show"]);
+
+        let reply = authorization_reply();
+        let reply_body = reply.to_bytes()?;
+        let decoded = exchange.decode_reply(&reply_body)?;
+        assert_eq!(decoded.status, TacacsAuthorizationStatus::TacPlusPassAdd);
+        assert_eq!(decoded.args, vec!["priv-lvl=15"]);
+
+        Ok(())
     }
 
     #[tokio::test]

@@ -16,10 +16,13 @@ use tacacsrs_flow_abstractions::accounting::{build_accounting_packet, parse_acco
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
-    TacacsAuthenticationService, TacacsAuthenticationType, TacacsFlags,
+    TacacsAuthenticationService, TacacsAuthenticationType, TacacsFlags, TacacsMajorVersion,
 };
+use tacacsrs_messages::header::Header;
+use tacacsrs_messages::packet::{Packet, PacketTrait};
 
 use crate::establish::{self, ConnectOptions, ConnectPreflight};
+use crate::exchange::FixedExchange;
 use crate::runtime::MultiplexedConnection;
 use crate::single_connect::SingleConnectionState;
 use crate::session::{ClientSession, DedicatedSession, SharedSession, SingleConnectPromotion};
@@ -224,6 +227,26 @@ impl TacacsClient {
         }
 
         self.create_session_after_shared_miss().await
+    }
+
+    /// Executes one fixed TACACS+ request/reply exchange.
+    ///
+    /// Networking assigns the session identifier and request sequence number,
+    /// validates the complete reply header, and completes the underlying
+    /// session on every success or error path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when session creation, request serialization, packet
+    /// I/O, response validation, or reply parsing fails.
+    pub async fn execute<Exchange>(&self, exchange: Exchange) -> anyhow::Result<Exchange::Reply>
+    where
+        Exchange: FixedExchange,
+    {
+        let session = self.create_session().await?;
+        let result = execute_on_session(&session, exchange).await;
+        session.complete().await;
+        result
     }
 
     /// Stops the cached shared connection from accepting new sessions.
@@ -489,6 +512,63 @@ impl TacacsClient {
     }
 }
 
+async fn execute_on_session<Exchange>(
+    session: &ClientSession,
+    exchange: Exchange,
+) -> anyhow::Result<Exchange::Reply>
+where
+    Exchange: FixedExchange,
+{
+    const REQUEST_SEQUENCE_NUMBER: u8 = 1;
+    const RESPONSE_SEQUENCE_NUMBER: u8 = 2;
+
+    let session_id = session.session_id();
+    let packet_type = exchange.packet_type();
+    let minor_version = exchange.minor_version();
+    let body = exchange.encode_request()?;
+    let length = u32::try_from(body.len())
+        .context("fixed TACACS+ request body exceeds the protocol length field")?;
+    let request = Packet::new(
+        Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version,
+            tacacs_type: packet_type,
+            seq_no: REQUEST_SEQUENCE_NUMBER,
+            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            session_id,
+            length,
+        },
+        body,
+    )?;
+
+    session.send_packet(request).await?;
+    let response = session.receive_packet().await?;
+    let header = response.header();
+
+    if header.session_id != session_id
+        || header.seq_no != RESPONSE_SEQUENCE_NUMBER
+        || header.tacacs_type != packet_type
+        || header.major_version != TacacsMajorVersion::TacacsPlusMajor1
+        || header.minor_version != minor_version
+    {
+        anyhow::bail!(
+            "unexpected fixed TACACS+ response header: session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}; expected session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}",
+            header.session_id,
+            header.seq_no,
+            header.tacacs_type,
+            header.major_version,
+            header.minor_version,
+            session_id,
+            RESPONSE_SEQUENCE_NUMBER,
+            packet_type,
+            TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version,
+        );
+    }
+
+    exchange.decode_reply(response.body())
+}
+
 fn packet_obfuscation_key(server: &TacacsPlusServer) -> Option<Vec<u8>> {
     server.obfuscation_key()
 }
@@ -523,7 +603,6 @@ mod tests {
     use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerType};
     use tacacsrs_messages::accounting::reply::AccountingReply;
     use tacacsrs_messages::accounting::request::AccountingRequest;
-    use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
     use tacacsrs_messages::enumerations::{
         TacacsAccountingFlags, TacacsAccountingStatus, TacacsFlags, TacacsMajorVersion,
         TacacsMinorVersion, TacacsType,
@@ -532,10 +611,33 @@ mod tests {
     use tacacsrs_messages::packet::{Packet, PacketTrait};
     use tacacsrs_messages::traits::TacacsBodyTrait;
 
-    use super::{TacacsClient, packet_obfuscation_key};
+    use super::{TacacsClient, accounting_watchdog_preflight_request, packet_obfuscation_key};
     use crate::codec::{PacketReadResult, PacketReader, PacketReaderTrait};
     use crate::establish::{ConnectOptions, ConnectPreflight};
+    use crate::exchange::FixedExchange;
     use crate::single_connect::SingleConnectionState;
+
+    struct TestAccountingExchange(AccountingRequest);
+
+    impl FixedExchange for TestAccountingExchange {
+        type Reply = AccountingReply;
+
+        fn packet_type(&self) -> TacacsType {
+            TacacsType::TacPlusAccounting
+        }
+
+        fn minor_version(&self) -> TacacsMinorVersion {
+            TacacsMinorVersion::TacacsPlusMinorVerDefault
+        }
+
+        fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
+            self.0.to_bytes()
+        }
+
+        fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
+            AccountingReply::from_bytes(body)
+        }
+    }
 
     fn server_template() -> TacacsPlusServer {
         TacacsPlusServer {
@@ -691,6 +793,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn executes_fixed_exchange_over_dedicated_transport() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener_address = listener.local_addr().unwrap();
+        let (mut request_receiver, server_task) =
+            spawn_accounting_server(listener, 1, TacacsFlags::empty());
+
+        let mut server = server_template();
+        server.address = listener_address.ip().to_string();
+        server.port = listener_address.port();
+        server.single_connection = false;
+        let client = TacacsClient::connect(server, ConnectOptions::default())
+            .await
+            .unwrap();
+
+        let reply = client
+            .execute(TestAccountingExchange(accounting_watchdog_preflight_request()))
+            .await
+            .unwrap();
+        assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+
+        let request = receive_request(&mut request_receiver).await;
+        assert_eq!(request.header().seq_no, 1);
+        assert_eq!(request.header().tacacs_type, TacacsType::TacPlusAccounting);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn accounting_watchdog_preflight_establishes_shared_connection_when_echoed() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let listener_address = listener.local_addr().unwrap();
@@ -722,11 +851,14 @@ mod tests {
         assert_eq!(client.single_connection_state().await, SingleConnectionState::Supported);
         assert!(client.shared_connection.read().await.is_some());
 
-        let session = client.create_session().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), run_session_exchange(&session))
-            .await
-            .unwrap();
-        session.complete().await;
+        let reply = tokio::time::timeout(
+            Duration::from_secs(1),
+            client.execute(TestAccountingExchange(accounting_watchdog_preflight_request())),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
 
         let real_session_packet = receive_request(&mut request_receiver).await;
         assert!(!real_session_packet

@@ -3,8 +3,44 @@ use log::info;
 use tacacsrs_flow_abstractions::accounting::{build_accounting_packet, parse_accounting_reply};
 use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
-use tacacsrs_messages::enumerations::TacacsFlags;
+use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMinorVersion, TacacsType};
 use tacacsrs_messages::packet::PacketTrait;
+use tacacsrs_messages::traits::TacacsBodyTrait;
+use tacacsrs_networking::FixedExchange;
+
+/// One fixed TACACS+ accounting request/reply exchange.
+#[derive(Debug)]
+pub struct AccountingExchange {
+    request: AccountingRequest,
+}
+
+impl AccountingExchange {
+    /// Creates an accounting exchange from its protocol request body.
+    #[must_use]
+    pub const fn new(request: AccountingRequest) -> Self {
+        Self { request }
+    }
+}
+
+impl FixedExchange for AccountingExchange {
+    type Reply = AccountingReply;
+
+    fn packet_type(&self) -> TacacsType {
+        TacacsType::TacPlusAccounting
+    }
+
+    fn minor_version(&self) -> TacacsMinorVersion {
+        TacacsMinorVersion::TacacsPlusMinorVerDefault
+    }
+
+    fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
+        self.request.to_bytes()
+    }
+
+    fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
+        AccountingReply::from_bytes(body)
+    }
+}
 
 /// Fixed TACACS+ client accounting flow.
 ///
@@ -159,9 +195,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_send_accounting_request_flow() -> anyhow::Result<()> {
-        let request = AccountingRequest {
+    fn accounting_request() -> AccountingRequest {
+        AccountingRequest {
             flags: TacacsAccountingFlags::START,
             authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
             priv_lvl: 0,
@@ -171,7 +206,35 @@ mod tests {
             port: "test".to_owned(),
             rem_address: "1.1.1.1".to_owned(),
             args: vec!["service=shell".to_owned(), "cmd=test".to_owned()],
-        };
+        }
+    }
+
+    #[test]
+    fn fixed_exchange_encodes_request_and_decodes_reply() -> anyhow::Result<()> {
+        let exchange = AccountingExchange::new(accounting_request());
+
+        assert_eq!(exchange.packet_type(), TacacsType::TacPlusAccounting);
+        assert_eq!(exchange.minor_version(), TacacsMinorVersion::TacacsPlusMinorVerDefault);
+        let request = AccountingRequest::from_bytes(&exchange.encode_request()?)?;
+        assert_eq!(request.user, "admin");
+        assert_eq!(request.args, vec!["service=shell", "cmd=test"]);
+
+        let reply_body = AccountingReply {
+            status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            server_msg: "accepted".to_owned(),
+            data: String::new(),
+        }
+        .to_bytes()?;
+        let reply = exchange.decode_reply(&reply_body)?;
+        assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+        assert_eq!(reply.server_msg, "accepted");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_send_accounting_request_flow() -> anyhow::Result<()> {
+        let request = accounting_request();
 
         let accounting_reply = AccountingReply {
             status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,

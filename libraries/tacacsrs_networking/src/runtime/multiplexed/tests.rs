@@ -78,11 +78,11 @@ async fn completed_session_rejects_late_reply() {
 #[tokio::test]
 #[ignore = "manual multiplexed routing baseline"]
 async fn shared_session_routing_burst_baseline() {
-    const EXCHANGE_COUNT: usize = 512;
+    const EXCHANGE_COUNT: u32 = 512;
 
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
     let started = Instant::now();
-    let mut sessions = Vec::with_capacity(EXCHANGE_COUNT);
+    let mut sessions = Vec::with_capacity(usize::try_from(EXCHANGE_COUNT).unwrap());
 
     for _ in 0..EXCHANGE_COUNT {
         sessions.push(connection.create_session().await.unwrap());
@@ -102,6 +102,6 @@ async fn shared_session_routing_burst_baseline() {
     let elapsed = started.elapsed();
     eprintln!(
         "shared routing baseline: {EXCHANGE_COUNT} exchanges in {elapsed:?} ({:.0} exchanges/s)",
-        EXCHANGE_COUNT as f64 / elapsed.as_secs_f64(),
+        f64::from(EXCHANGE_COUNT) / elapsed.as_secs_f64(),
     );
 }
