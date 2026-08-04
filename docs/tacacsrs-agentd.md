@@ -40,8 +40,8 @@ Then from any client on the same host:
 
 ```bash
 tacon --service-endpoint /run/tacacs/tacacs.sock \
-    --user admin --port tty0 --rem-addr 10.0.0.1 \
-    accounting "show version"
+    accounting --user admin --port tty0 --rem-addr 10.0.0.1 \
+    "show version"
 ```
 
 ## Command-Line Options
@@ -81,15 +81,17 @@ When the TACACS+ proxy service is enabled, `tacacsrs-agentd` accepts local TACAC
 
 For a host-by-host cutover plan from plain TACACS+ clients such as `pam_tacplus` or `audisp-tacplus`, see the [Plain TACACS+ to TACACS+ over TLS Transition Guide](tacacs-plus-tls-transition.md).
 
-Proxy mode is deliberately packet-transparent:
+Proxy mode preserves TACACS+ packet bodies while managing session routing:
 
-- Each accepted downstream connection is mapped to one upstream TACACS+ session.
-- The downstream listener does not provide TACACS+ single-connection multiplexing.
-- The proxy rejects a downstream connection if packets on that connection switch to a different TACACS+ session id.
-- Packet bodies are forwarded unchanged. The proxy rewrites only the TACACS+ header session id so the downstream client's session id maps to the upstream session id selected by the networking layer.
-- Accounting and authorization sessions close after one reply. Authentication sessions can continue across challenge replies and close when the reply status is terminal.
+- A downstream connection may carry multiple concurrent TACACS+ session IDs.
+- Each downstream session owns one sequential upstream conversation with independent sequence validation.
+- Different sessions may receive replies out of request order. One downstream writer serializes the resulting packets onto the TCP stream.
+- Per-session input and connection reply queues are bounded to apply backpressure.
+- Packet bodies are forwarded unchanged. The proxy rewrites only session IDs and the locally advertised single-connect flag.
+- The proxy advertises single-connect support based on its own downstream multiplexer, not the selected upstream server's flag.
+- Accounting and authorization conversations close after one reply. Authentication conversations continue across challenge replies and close when the reply status is terminal.
 - `FOLLOW` replies are forwarded to the downstream client and then the connection is closed. Per RFC 8907, authorization and accounting `FOLLOW` use the authentication `FOLLOW` behavior; authentication `FOLLOW` is treated like `FAIL`.
-- Authentication `RESTART` replies are forwarded to the downstream client and then the connection is closed. The proxy enforces one TACACS+ session id per downstream connection, so a restarted authentication sequence must reconnect with a new session.
+- Authentication `RESTART` replies are forwarded and complete that session. A restarted sequence uses a new session ID and sequence number 1 as required by RFC 8907; the downstream TCP connection may remain open.
 
 Proxy TCP endpoints must be loopback addresses. Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. When `client-api` and `tacacs-proxy` run together, the proxy endpoint must be different from `--listen-endpoint`.
 
@@ -220,8 +222,14 @@ The daemon communicates with clients via gRPC over Unix domain sockets (Linux) o
 
 | RPC             | Description                          |
 |-----------------|--------------------------------------|
+| `AuthenticatePap` | Authenticate one username/password pair with fixed PAP |
 | `Accounting`    | Record user activity (unary)         |
 | `Authorization` | Check command authorization (unary)  |
+
+Typed authentication intentionally exposes PAP only. Interactive ASCII remains
+available through the raw TACACS+ proxy. Authorization requests carry explicit
+ASCII, PAP, or unauthenticated context; shell-session profile retrieval uses
+`service=shell` with an empty `cmd` value.
 
 **Error responses** include a `retriable` flag. When `true`, the client should retry the request — this typically means the daemon is reconnecting to a different upstream server.
 

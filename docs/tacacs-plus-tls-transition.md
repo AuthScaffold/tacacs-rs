@@ -71,6 +71,14 @@ it does not require privileged bind rights. Use `127.0.0.1:49` only when the
 legacy client cannot be pointed at a non-standard port and the daemon has the
 required permissions.
 
+PAP places the password in the TACACS+ Authentication START body. The proxy and
+typed `AuthenticatePap` RPC permit PAP over the operator-configured upstream
+transport for interoperability, but classic TACACS+ obfuscation is not
+confidentiality. Use TLS 1.3 upstream and restrict the local proxy endpoint to
+the host. The proxy can multiplex multiple downstream TACACS+ session IDs on
+one local connection while preserving each authentication conversation's
+sequence order.
+
 ### TLS Server Authentication
 
 ```bash

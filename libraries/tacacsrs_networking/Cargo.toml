@@ -11,7 +11,6 @@ tacacsrs-config = { path = "../tacacsrs_config" }
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 tokio = { version = "1.52.3", features = ["full"] }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
-async-trait = "0.1.89"
 rand = "0.10.1"
 log = "0.4.30"
 parking_lot = "0.12.5"
