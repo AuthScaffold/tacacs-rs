@@ -216,10 +216,7 @@ async fn reconcile_existing_socket_path(path: &Path) -> anyhow::Result<()> {
     };
 
     if !metadata.file_type().is_socket() {
-        bail!(
-            "Refusing to remove existing {} because it is not a Unix socket",
-            path.display()
-        );
+        bail!("Refusing to remove existing {} because it is not a Unix socket", path.display());
     }
 
     match tokio::net::UnixStream::connect(path).await {
@@ -346,7 +343,10 @@ mod tests {
         let error = prepare_unix_listener(&path, 0o660).await.unwrap_err();
 
         assert!(error.to_string().contains("not a Unix socket"));
-        assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert!(tokio::fs::try_exists(&target).await.unwrap());
         cleanup_paths(&path).await;
         cleanup_paths(&target).await;
@@ -360,7 +360,9 @@ mod tests {
         let (listener, guard) = prepare_unix_listener(&path, 0o660).await.unwrap();
 
         let error = prepare_unix_listener(&path, 0o660).await.unwrap_err();
-        assert!(error.to_string().contains("locked by another service instance"));
+        assert!(error
+            .to_string()
+            .contains("locked by another service instance"));
         assert!(is_socket(&path));
 
         drop(listener);

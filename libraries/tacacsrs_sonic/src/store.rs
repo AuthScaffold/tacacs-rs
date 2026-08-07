@@ -192,14 +192,10 @@ fn parse_snapshot(reply: redis::Value) -> anyhow::Result<SonicTacacsTables> {
     if sections.len() != 4 {
         bail!("ConfigDB snapshot reply had an unexpected number of sections");
     }
-    let tls_servers = parse_keyed_hashes(
-        sections.pop().expect("tls section present"),
-        TACPLUS_SERVER_TLS_TABLE,
-    )?;
-    let servers = parse_keyed_hashes(
-        sections.pop().expect("server section present"),
-        TACPLUS_SERVER_TABLE,
-    )?;
+    let tls_servers =
+        parse_keyed_hashes(sections.pop().expect("tls section present"), TACPLUS_SERVER_TLS_TABLE)?;
+    let servers =
+        parse_keyed_hashes(sections.pop().expect("server section present"), TACPLUS_SERVER_TABLE)?;
     let forwarder = parse_hash(sections.pop().expect("forwarder section present"))?;
     let global = parse_hash(sections.pop().expect("global section present"))?;
     Ok(SonicTacacsTables::with_extended_tables(global, servers, tls_servers, forwarder))
@@ -484,7 +480,12 @@ mod tests {
     }
 
     fn assert_no_sensitive_material(rendered: &str) {
-        for forbidden in [SENTINEL_USER, SENTINEL_PASS, SENTINEL_QUERY, SENTINEL_WATCH_ROOT] {
+        for forbidden in [
+            SENTINEL_USER,
+            SENTINEL_PASS,
+            SENTINEL_QUERY,
+            SENTINEL_WATCH_ROOT,
+        ] {
             assert!(
                 !rendered.contains(forbidden),
                 "sensitive material '{forbidden}' leaked into: {rendered}"
@@ -526,9 +527,8 @@ mod tests {
             .expect_err("a non-redis scheme must fail to open");
         assert_error_is_sanitized(&error);
 
-        let unreachable = connection_with_url(&format!(
-            "redis://{SENTINEL_USER}:{SENTINEL_PASS}@127.0.0.1:9/0"
-        ));
+        let unreachable =
+            connection_with_url(&format!("redis://{SENTINEL_USER}:{SENTINEL_PASS}@127.0.0.1:9/0"));
         let error = unreachable
             .connect()
             .await
@@ -546,9 +546,8 @@ mod tests {
             .expect_err("a non-redis scheme must fail to open");
         assert_error_is_sanitized(&error);
 
-        let unreachable = connection_with_url(&format!(
-            "redis://{SENTINEL_USER}:{SENTINEL_PASS}@127.0.0.1:9/0"
-        ));
+        let unreachable =
+            connection_with_url(&format!("redis://{SENTINEL_USER}:{SENTINEL_PASS}@127.0.0.1:9/0"));
         let error = spawn_change_notifier(unreachable)
             .await
             .expect_err("an unreachable endpoint must fail to subscribe");
@@ -589,7 +588,10 @@ mod tests {
         assert_eq!(tables.forwarder.get("src_ip").map(String::as_str), Some("127.0.0.1"));
         assert!(tables.servers.contains_key("10.0.0.1"));
         assert_eq!(
-            tables.tls_servers.get("10.0.0.2").and_then(|row| row.get("psk_identity")),
+            tables
+                .tls_servers
+                .get("10.0.0.2")
+                .and_then(|row| row.get("psk_identity")),
             Some(&"client".to_owned())
         );
     }

@@ -409,7 +409,9 @@ mod tests {
         };
         let snapshot = ready_publisher().snapshot();
 
-        let retry_pending = integration.publish(&snapshot).expect("auto tolerates failure");
+        let retry_pending = integration
+            .publish(&snapshot)
+            .expect("auto tolerates failure");
         assert!(retry_pending, "a failed one-shot must request a retry");
         assert!(!integration.ready_sent);
 
@@ -427,7 +429,10 @@ mod tests {
             .iter()
             .filter(|call| call.contains(&"--ready".to_owned()))
             .count();
-        assert_eq!(ready_calls, 2, "ready is attempted on the failure and the retry, then never again");
+        assert_eq!(
+            ready_calls, 2,
+            "ready is attempted on the failure and the retry, then never again"
+        );
     }
 
     #[test]
@@ -448,7 +453,9 @@ mod tests {
         health.set_lifecycle(RuntimeLifecycle::Draining);
         let snapshot = health.snapshot();
 
-        let retry_pending = integration.publish(&snapshot).expect("auto tolerates failure");
+        let retry_pending = integration
+            .publish(&snapshot)
+            .expect("auto tolerates failure");
         assert!(retry_pending);
         assert!(!integration.stopping_sent);
 
@@ -501,7 +508,9 @@ mod tests {
         }
 
         cancellation.cancel();
-        task.await.expect("join").expect("auto tolerates the transient failure");
+        task.await
+            .expect("join")
+            .expect("auto tolerates the transient failure");
 
         assert_eq!(ready_calls, 2, "ready was retried after the backoff without any health change");
     }
@@ -528,6 +537,8 @@ mod tests {
         cancellation.cancel();
 
         // A perpetually pending retry must still yield promptly to cancellation.
-        task.await.expect("join").expect("auto tolerates perpetual failure until cancelled");
+        task.await
+            .expect("join")
+            .expect("auto tolerates perpetual failure until cancelled");
     }
 }

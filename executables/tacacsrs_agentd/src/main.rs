@@ -478,7 +478,9 @@ mod supervision_tests {
         RuntimeHealthPublisher::new(EnabledServices::CLIENT_API)
     }
 
-    fn wait_for_cancel(cancellation: CancellationToken) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+    fn wait_for_cancel(
+        cancellation: CancellationToken,
+    ) -> tokio::task::JoinHandle<anyhow::Result<()>> {
         tokio::spawn(async move {
             cancellation.cancelled().await;
             Ok(())
@@ -501,7 +503,10 @@ mod supervision_tests {
         )
         .await;
 
-        assert!(result.unwrap_err().to_string().contains("stopped unexpectedly"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("stopped unexpectedly"));
         assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
     }
 
@@ -522,7 +527,10 @@ mod supervision_tests {
         )
         .await;
 
-        assert!(result.unwrap_err().to_string().contains("Configuration supervisor failed"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Configuration supervisor failed"));
         assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
     }
 
@@ -584,7 +592,10 @@ mod supervision_tests {
         )
         .await;
 
-        assert!(result.unwrap_err().to_string().contains("listener bind failed"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("listener bind failed"));
         assert_ne!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
     }
 
@@ -604,7 +615,10 @@ mod supervision_tests {
         )
         .await;
 
-        assert!(result.unwrap_err().to_string().contains("Host integration failed"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Host integration failed"));
     }
 
     #[test]
@@ -613,7 +627,9 @@ mod supervision_tests {
         assert!(stopped.to_string().contains("stopped unexpectedly"));
 
         let failed = supervisor_exit_to_fatal_error(Ok(Err(anyhow::anyhow!("detail"))));
-        assert!(failed.to_string().contains("Configuration supervisor failed"));
+        assert!(failed
+            .to_string()
+            .contains("Configuration supervisor failed"));
     }
 }
 
