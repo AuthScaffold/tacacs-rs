@@ -16,6 +16,21 @@ local module you are changing.
 - Rust edition is 2021 and the workspace MSRV is `1.88`.
 - All workspace crates are internal and are not published to crates.io.
 
+## Writing Style
+
+- Apply `.github/skills/simple-english/SKILL.md` in pragmatic mode to all prose
+  that you create or revise.
+- This rule applies to responses, documentation, code comments, user-facing
+  messages, commit messages, pull request text, and release notes.
+- Write technical facts and instructions in short, direct, unambiguous
+  sentences. Use consistent terms and remove filler.
+- Do not rewrite source code, identifiers, commands, file paths, protocol
+  values, or quoted errors and logs to satisfy this writing style.
+- Use strict ASD-STE100 mode only when the user requests STE or ASD-STE100
+  compliance.
+- Do not claim full ASD-STE100 compliance without the official Issue 9
+  dictionary.
+
 ## Build, Test, and Lint
 
 Before considering Rust changes complete, run the relevant local checks that
