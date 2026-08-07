@@ -1959,6 +1959,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "log",
+ "rustix",
  "serde_json",
  "tacacsrs-agent-client",
  "tacacsrs-config",
