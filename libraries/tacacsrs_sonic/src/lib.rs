@@ -103,8 +103,11 @@ impl ConfigDatastore for SonicConfigDb {
     async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream> {
         let settings = self.settings.clone();
         let bound_forwarder = self.bound_forwarder;
-        let initial = self.load().await.ok().map(Arc::new);
         let (tx, rx) = mpsc::channel(8);
+
+        // Establish the subscription BEFORE loading the baseline so any ConfigDB
+        // change that lands during or after the reconcile is queued and applied,
+        // closing the load-before-subscribe gap where a change could be lost.
         let mut signal = spawn_change_notifier(settings.clone())
             .await
             .context("subscribe to SONiC ConfigDB keyspace notifications")?;
@@ -118,24 +121,33 @@ impl ConfigDatastore for SonicConfigDb {
         };
 
         tokio::spawn(async move {
-            let mut previous = initial;
+            let mut previous: Option<Arc<TacacsPlus>> = None;
+            // Reconcile and emit the post-subscription baseline immediately, then
+            // reconcile on every subsequent coalesced change signal. Because the
+            // subscription is already active, any change during the first reconcile
+            // is queued and applied on the next pass.
+            let mut reconcile_now = true;
             loop {
-                let next_signal = match credential_signal.as_mut() {
-                    Some(credential_signal) => {
-                        tokio::select! {
-                            signal = signal.recv() => signal,
-                            signal = credential_signal.recv() => signal,
+                if !reconcile_now {
+                    let next_signal = match credential_signal.as_mut() {
+                        Some(credential_signal) => {
+                            tokio::select! {
+                                signal = signal.recv() => signal,
+                                signal = credential_signal.recv() => signal,
+                            }
                         }
+                        None => signal.recv().await,
+                    };
+                    if next_signal.is_none() {
+                        break;
                     }
-                    None => signal.recv().await,
-                };
-                if next_signal.is_none() {
-                    break;
+                    while signal.try_recv().is_ok() {}
+                    if let Some(credential_signal) = credential_signal.as_mut() {
+                        while credential_signal.try_recv().is_ok() {}
+                    }
                 }
-                while signal.try_recv().is_ok() {}
-                if let Some(credential_signal) = credential_signal.as_mut() {
-                    while credential_signal.try_recv().is_ok() {}
-                }
+                reconcile_now = false;
+
                 match reload_with_retry(&settings).await {
                     Ok(candidate) => {
                         let restart_required = match bound_forwarder {
@@ -333,6 +345,17 @@ mod tests {
                 .is_some()
         }));
         let mut events = datastore.subscribe().await.expect("subscribe");
+
+        // subscribe() now establishes the subscription first and emits the
+        // post-subscription baseline before any live change.
+        assert!(matches!(
+            next_event(&mut events, "initial baseline change").await,
+            ConfigChangeEvent::Changed(_)
+        ));
+        assert!(matches!(
+            next_event(&mut events, "initial baseline restart").await,
+            ConfigChangeEvent::RestartRequired { required: false }
+        ));
 
         set_field(&mut connection, "TACPLUS_FORWARDER|global", "local_listen_port", "50").await;
         set_field(&mut connection, "TACPLUS_SERVER|192.0.2.10", "timeout", "6").await;
