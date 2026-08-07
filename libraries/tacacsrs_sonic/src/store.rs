@@ -5,8 +5,9 @@
 //! preceded by a `KEYS` scan) and exposes a Tokio task that subscribes to
 //! Redis keyspace notifications on `__keyspace@<db>__:TACPLUS*`.
 
-use std::time::Duration;
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Context;
 use futures_util::StreamExt;
@@ -36,7 +37,7 @@ pub const TACPLUS_SERVER_TLS_TABLE: &str = "TACPLUS_SERVER_TLS";
 pub const TACPLUS_FORWARDER_TABLE: &str = "TACPLUS_FORWARDER";
 
 /// Connection settings for the SONiC ConfigDB Redis instance.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SonicConnection {
     /// Connection string passed to [`redis::Client::open`].
     pub url: String,
@@ -62,6 +63,21 @@ impl Default for SonicConnection {
     }
 }
 
+// The Redis URL can carry credentials and the watch root is an on-disk secret path; keep both out of Debug.
+impl fmt::Debug for SonicConnection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SonicConnection")
+            .field("url", &"<redacted>")
+            .field("db_index", &self.db_index)
+            .field("debounce", &self.debounce)
+            .field(
+                "credential_watch_root",
+                &self.credential_watch_root.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
 impl SonicConnection {
     /// Open a new multiplexed async connection to ConfigDB.
     ///
@@ -71,11 +87,11 @@ impl SonicConnection {
     /// established.
     pub async fn connect(&self) -> anyhow::Result<MultiplexedConnection> {
         let client = redis::Client::open(self.url.as_str())
-            .with_context(|| format!("Invalid Redis URL '{}'", self.url))?;
+            .context("invalid SONiC ConfigDB Redis connection string")?;
         let mut conn = client
             .get_multiplexed_async_connection()
             .await
-            .with_context(|| format!("Failed to connect to SONiC ConfigDB at '{}'", self.url))?;
+            .context("failed to connect to SONiC ConfigDB")?;
         redis::cmd("SELECT")
             .arg(self.db_index)
             .query_async::<()>(&mut conn)
@@ -197,11 +213,11 @@ pub async fn spawn_change_notifier(
     settings: SonicConnection,
 ) -> anyhow::Result<mpsc::Receiver<()>> {
     let client = redis::Client::open(settings.url.as_str())
-        .with_context(|| format!("Invalid Redis URL '{}'", settings.url))?;
+        .context("invalid SONiC ConfigDB Redis connection string")?;
     let mut pubsub = client
         .get_async_pubsub()
         .await
-        .with_context(|| format!("Failed to open pubsub to ConfigDB at '{}'", settings.url))?;
+        .context("failed to open SONiC ConfigDB keyspace subscription")?;
     let pattern = settings.keyspace_pattern();
     pubsub
         .psubscribe(&pattern)
@@ -368,5 +384,91 @@ mod tests {
         for invalid in ["", "_object", "-object", ".tmp", "a/b", "../a"] {
             assert!(!is_opaque_object_id(invalid));
         }
+    }
+
+    const SENTINEL_USER: &str = "sentineluser";
+    const SENTINEL_PASS: &str = "sentinelpassword";
+    const SENTINEL_QUERY: &str = "sentinelquery";
+    const SENTINEL_WATCH_ROOT: &str = "sentinelwatchroot";
+
+    fn connection_with_url(url: &str) -> SonicConnection {
+        SonicConnection {
+            url: url.to_owned(),
+            db_index: 4,
+            debounce: Duration::from_millis(0),
+            credential_watch_root: Some(PathBuf::from(format!("/var/lib/{SENTINEL_WATCH_ROOT}"))),
+        }
+    }
+
+    fn assert_no_sensitive_material(rendered: &str) {
+        for forbidden in [SENTINEL_USER, SENTINEL_PASS, SENTINEL_QUERY, SENTINEL_WATCH_ROOT] {
+            assert!(
+                !rendered.contains(forbidden),
+                "sensitive material '{forbidden}' leaked into: {rendered}"
+            );
+        }
+    }
+
+    fn assert_error_is_sanitized(error: &anyhow::Error) {
+        for rendered in [
+            format!("{error}"),
+            format!("{error:#}"),
+            format!("{error:?}"),
+            format!("{error:#?}"),
+        ] {
+            assert_no_sensitive_material(&rendered);
+        }
+    }
+
+    #[test]
+    fn debug_redacts_url_and_credential_watch_root() {
+        let connection = connection_with_url(&format!(
+            "redis://{SENTINEL_USER}:{SENTINEL_PASS}@127.0.0.1:6379/0?x={SENTINEL_QUERY}"
+        ));
+        for rendered in [format!("{connection:?}"), format!("{connection:#?}")] {
+            assert_no_sensitive_material(&rendered);
+            assert!(rendered.contains("<redacted>"), "expected redaction marker: {rendered}");
+            assert!(rendered.contains("db_index"), "expected safe field retained: {rendered}");
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_error_is_sanitized_for_malformed_and_unreachable_urls() {
+        let malformed = connection_with_url(&format!(
+            "http://{SENTINEL_USER}:{SENTINEL_PASS}@malformed.invalid/?x={SENTINEL_QUERY}"
+        ));
+        let error = malformed
+            .connect()
+            .await
+            .expect_err("a non-redis scheme must fail to open");
+        assert_error_is_sanitized(&error);
+
+        let unreachable = connection_with_url(&format!(
+            "redis://{SENTINEL_USER}:{SENTINEL_PASS}@127.0.0.1:9/0"
+        ));
+        let error = unreachable
+            .connect()
+            .await
+            .expect_err("an unreachable endpoint must fail to connect");
+        assert_error_is_sanitized(&error);
+    }
+
+    #[tokio::test]
+    async fn change_notifier_error_is_sanitized_for_malformed_and_unreachable_urls() {
+        let malformed = connection_with_url(&format!(
+            "http://{SENTINEL_USER}:{SENTINEL_PASS}@malformed.invalid/?x={SENTINEL_QUERY}"
+        ));
+        let error = spawn_change_notifier(malformed)
+            .await
+            .expect_err("a non-redis scheme must fail to open");
+        assert_error_is_sanitized(&error);
+
+        let unreachable = connection_with_url(&format!(
+            "redis://{SENTINEL_USER}:{SENTINEL_PASS}@127.0.0.1:9/0"
+        ));
+        let error = spawn_change_notifier(unreachable)
+            .await
+            .expect_err("an unreachable endpoint must fail to subscribe");
+        assert_error_is_sanitized(&error);
     }
 }
