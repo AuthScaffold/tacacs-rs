@@ -5,11 +5,12 @@
 //! preceded by a `KEYS` scan) and exposes a Tokio task that subscribes to
 //! Redis keyspace notifications on `__keyspace@<db>__:TACPLUS*`.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use futures_util::StreamExt;
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
@@ -131,65 +132,146 @@ async fn read_forwarder_settings(
     SonicForwarderSettings::from_hash(&fields)
 }
 
-/// Read all TACACS+ tables from ConfigDB into an in-memory snapshot.
+/// Reads the reviewed TACACS+ ConfigDB tables in one atomic, point-in-time
+/// server-side execution.
+///
+/// A single Lua script enumerates only the `TACPLUS*` prefixes and reads every
+/// row so a concurrent ConfigDB mutation cannot produce a torn or hybrid
+/// snapshot the way separate `KEYS` + per-key `HGETALL` calls could.
 ///
 /// # Errors
 ///
-/// Returns an error if the Redis commands fail. Missing tables are not an
-/// error here — the caller can decide whether an empty snapshot should be
-/// rejected (the mapping function rejects it by default).
+/// Returns an error if the script fails or the reply is malformed. Missing
+/// tables are not an error — the caller decides whether an empty snapshot
+/// should be rejected (the mapping function rejects it by default).
 pub async fn read_tacacs_tables(
     conn: &mut MultiplexedConnection,
 ) -> anyhow::Result<SonicTacacsTables> {
-    let global_key = format!("{TACPLUS_GLOBAL_TABLE}|global");
-    let global: SonicHash = conn
-        .hgetall(&global_key)
+    let reply: redis::Value = redis::cmd("EVAL")
+        .arg(TACACS_SNAPSHOT_SCRIPT)
+        .arg(0)
+        .arg(TACPLUS_GLOBAL_TABLE)
+        .arg(TACPLUS_FORWARDER_TABLE)
+        .arg(TACPLUS_SERVER_TABLE)
+        .arg(TACPLUS_SERVER_TLS_TABLE)
+        .query_async(conn)
         .await
-        .with_context(|| format!("HGETALL failed for {global_key}"))?;
+        .context("atomic ConfigDB TACACS+ snapshot failed")?;
+    parse_snapshot(reply)
+}
 
-    let forwarder_key = format!("{TACPLUS_FORWARDER_TABLE}|global");
-    let forwarder: SonicHash = conn
-        .hgetall(&forwarder_key)
-        .await
-        .with_context(|| format!("HGETALL failed for {forwarder_key}"))?;
+/// Reads the four TACACS+ tables in one atomic execution and returns
+/// `[global, forwarder, [key, hash, ...], [key, hash, ...]]`.
+const TACACS_SNAPSHOT_SCRIPT: &str = r"
+local function collect(prefix)
+    local rows = {}
+    local keys = redis.call('KEYS', prefix .. '|*')
+    for i = 1, #keys do
+        rows[#rows + 1] = keys[i]
+        rows[#rows + 1] = redis.call('HGETALL', keys[i])
+    end
+    return rows
+end
+return {
+    redis.call('HGETALL', ARGV[1] .. '|global'),
+    redis.call('HGETALL', ARGV[2] .. '|global'),
+    collect(ARGV[3]),
+    collect(ARGV[4]),
+}
+";
 
-    let server_pattern = format!("{TACPLUS_SERVER_TABLE}|*");
-    let server_keys: Vec<String> = conn
-        .keys(&server_pattern)
-        .await
-        .with_context(|| format!("KEYS failed for {server_pattern}"))?;
-
-    let mut servers = std::collections::BTreeMap::new();
-    for key in server_keys {
-        let Some(addr) = key.strip_prefix(&format!("{TACPLUS_SERVER_TABLE}|")) else {
-            continue;
-        };
-        let fields: SonicHash = conn
-            .hgetall(&key)
-            .await
-            .with_context(|| format!("HGETALL failed for {key}"))?;
-        servers.insert(addr.to_string(), fields);
+/// Parses the atomic snapshot reply into typed tables.
+///
+/// Rows can carry secret material (for example a `passkey`), so errors never
+/// echo any ConfigDB value. Malformed shapes are rejected and a row whose hash
+/// is empty is skipped rather than materialized as a phantom default.
+fn parse_snapshot(reply: redis::Value) -> anyhow::Result<SonicTacacsTables> {
+    let redis::Value::Array(mut sections) = reply else {
+        bail!("ConfigDB snapshot reply was not an array");
+    };
+    if sections.len() != 4 {
+        bail!("ConfigDB snapshot reply had an unexpected number of sections");
     }
-
-    let tls_server_pattern = format!("{TACPLUS_SERVER_TLS_TABLE}|*");
-    let tls_server_keys: Vec<String> = conn
-        .keys(&tls_server_pattern)
-        .await
-        .with_context(|| format!("KEYS failed for {tls_server_pattern}"))?;
-
-    let mut tls_servers = std::collections::BTreeMap::new();
-    for key in tls_server_keys {
-        let Some(address) = key.strip_prefix(&format!("{TACPLUS_SERVER_TLS_TABLE}|")) else {
-            continue;
-        };
-        let fields: SonicHash = conn
-            .hgetall(&key)
-            .await
-            .with_context(|| format!("HGETALL failed for {key}"))?;
-        tls_servers.insert(address.to_string(), fields);
-    }
-
+    let tls_servers = parse_keyed_hashes(
+        sections.pop().expect("tls section present"),
+        TACPLUS_SERVER_TLS_TABLE,
+    )?;
+    let servers = parse_keyed_hashes(
+        sections.pop().expect("server section present"),
+        TACPLUS_SERVER_TABLE,
+    )?;
+    let forwarder = parse_hash(sections.pop().expect("forwarder section present"))?;
+    let global = parse_hash(sections.pop().expect("global section present"))?;
     Ok(SonicTacacsTables::with_extended_tables(global, servers, tls_servers, forwarder))
+}
+
+/// Parses an `HGETALL` reply (`[field, value, ...]`) into a hash.
+fn parse_hash(value: redis::Value) -> anyhow::Result<SonicHash> {
+    let items = match value {
+        redis::Value::Nil => return Ok(SonicHash::new()),
+        redis::Value::Array(items) => items,
+        redis::Value::Map(pairs) => {
+            let mut hash = SonicHash::new();
+            for (field, value) in pairs {
+                hash.insert(redis_string(field)?, redis_string(value)?);
+            }
+            return Ok(hash);
+        }
+        _ => bail!("ConfigDB hash section had an unexpected shape"),
+    };
+    if items.len() % 2 != 0 {
+        bail!("ConfigDB hash section had an odd number of elements");
+    }
+    let mut hash = SonicHash::new();
+    let mut iter = items.into_iter();
+    while let (Some(field), Some(value)) = (iter.next(), iter.next()) {
+        hash.insert(redis_string(field)?, redis_string(value)?);
+    }
+    Ok(hash)
+}
+
+/// Parses a `[key, hash, key, hash, ...]` reply keyed by the address portion of
+/// each row, skipping rows whose hash is empty so a vanished key is never
+/// materialized as a phantom default.
+fn parse_keyed_hashes(
+    value: redis::Value,
+    prefix: &str,
+) -> anyhow::Result<BTreeMap<String, SonicHash>> {
+    let items = match value {
+        redis::Value::Nil => return Ok(BTreeMap::new()),
+        redis::Value::Array(items) => items,
+        _ => bail!("ConfigDB server section had an unexpected shape"),
+    };
+    if items.len() % 2 != 0 {
+        bail!("ConfigDB server section had an odd number of elements");
+    }
+    let key_prefix = format!("{prefix}|");
+    let mut rows = BTreeMap::new();
+    let mut iter = items.into_iter();
+    while let (Some(key), Some(hash)) = (iter.next(), iter.next()) {
+        let key = redis_string(key)?;
+        let Some(address) = key.strip_prefix(&key_prefix) else {
+            continue;
+        };
+        let fields = parse_hash(hash)?;
+        if fields.is_empty() {
+            continue;
+        }
+        rows.insert(address.to_string(), fields);
+    }
+    Ok(rows)
+}
+
+/// Converts a scalar Redis value into an owned string without echoing the value
+/// on error, since a row may carry secret material.
+fn redis_string(value: redis::Value) -> anyhow::Result<String> {
+    match value {
+        redis::Value::BulkString(bytes) => String::from_utf8(bytes)
+            .map_err(|_| anyhow::anyhow!("ConfigDB value was not valid UTF-8")),
+        redis::Value::SimpleString(text) => Ok(text),
+        redis::Value::Int(value) => Ok(value.to_string()),
+        _ => bail!("ConfigDB value had an unexpected type"),
+    }
 }
 
 /// Spawn a background task that subscribes to TACPLUS keyspace notifications
@@ -341,6 +423,7 @@ fn is_opaque_object_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use notify::event::{AccessKind, EventAttributes, ModifyKind};
+    use redis::Value;
 
     use super::*;
 
@@ -470,5 +553,85 @@ mod tests {
             .await
             .expect_err("an unreachable endpoint must fail to subscribe");
         assert_error_is_sanitized(&error);
+    }
+
+    fn bulk(text: &str) -> Value {
+        Value::BulkString(text.as_bytes().to_vec())
+    }
+
+    fn hgetall(pairs: &[(&str, &str)]) -> Value {
+        let mut items = Vec::new();
+        for (field, value) in pairs {
+            items.push(bulk(field));
+            items.push(bulk(value));
+        }
+        Value::Array(items)
+    }
+
+    #[test]
+    fn parse_snapshot_maps_a_complete_generation() {
+        let reply = Value::Array(vec![
+            hgetall(&[("passkey", "global-secret"), ("timeout", "5")]),
+            hgetall(&[("src_ip", "127.0.0.1")]),
+            Value::Array(vec![
+                bulk("TACPLUS_SERVER|10.0.0.1"),
+                hgetall(&[("priority", "1")]),
+            ]),
+            Value::Array(vec![
+                bulk("TACPLUS_SERVER_TLS|10.0.0.2"),
+                hgetall(&[("priority", "2"), ("psk_identity", "client")]),
+            ]),
+        ]);
+
+        let tables = parse_snapshot(reply).expect("well-formed snapshot parses");
+
+        assert_eq!(tables.global.get("timeout").map(String::as_str), Some("5"));
+        assert_eq!(tables.forwarder.get("src_ip").map(String::as_str), Some("127.0.0.1"));
+        assert!(tables.servers.contains_key("10.0.0.1"));
+        assert_eq!(
+            tables.tls_servers.get("10.0.0.2").and_then(|row| row.get("psk_identity")),
+            Some(&"client".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_snapshot_skips_a_row_whose_hash_is_empty() {
+        // A discovered key with an empty hash must never become a phantom default row.
+        let reply = Value::Array(vec![
+            Value::Array(vec![]),
+            Value::Array(vec![]),
+            Value::Array(vec![bulk("TACPLUS_SERVER|10.0.0.9"), Value::Array(vec![])]),
+            Value::Array(vec![]),
+        ]);
+
+        let tables = parse_snapshot(reply).expect("snapshot parses");
+
+        assert!(tables.servers.is_empty(), "an empty-hash row must be skipped");
+        assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn parse_snapshot_treats_nil_sections_as_empty() {
+        let reply = Value::Array(vec![Value::Nil, Value::Nil, Value::Nil, Value::Nil]);
+
+        let tables = parse_snapshot(reply).expect("nil sections parse as empty");
+
+        assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn parse_snapshot_rejects_malformed_replies() {
+        assert!(parse_snapshot(Value::Okay).is_err(), "a non-array reply must be rejected");
+        assert!(
+            parse_snapshot(Value::Array(vec![Value::Nil, Value::Nil])).is_err(),
+            "the wrong number of sections must be rejected"
+        );
+        let odd_hash = Value::Array(vec![
+            Value::Array(vec![bulk("lonely-field")]),
+            Value::Array(vec![]),
+            Value::Array(vec![]),
+            Value::Array(vec![]),
+        ]);
+        assert!(parse_snapshot(odd_hash).is_err(), "an odd-length hash must be rejected");
     }
 }
