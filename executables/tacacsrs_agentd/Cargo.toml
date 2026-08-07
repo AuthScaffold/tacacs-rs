@@ -34,6 +34,7 @@ default = []
 console = ["console-subscriber"]
 
 [dev-dependencies]
+tokio = { version = "1.52.3", features = ["test-util"] }
 tonic = "0.14.6"
 
 [build-dependencies]
