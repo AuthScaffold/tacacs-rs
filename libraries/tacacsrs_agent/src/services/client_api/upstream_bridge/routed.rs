@@ -15,7 +15,7 @@ use crate::upstream::UpstreamConnection;
 #[async_trait]
 pub(super) trait RoutedOperation: Send + Sync + 'static {
     /// Client API request type for the operation.
-    type Request: Send + Sync;
+    type Request: Send;
     /// Client API response type for the operation.
     type Response: Send;
 
@@ -27,7 +27,7 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
     /// Sends the operation through the selected upstream connection.
     async fn send(
         connection: &dyn UpstreamConnection,
-        request: &Self::Request,
+        request: Self::Request,
     ) -> anyhow::Result<Self::Response>;
 }
 
@@ -62,7 +62,7 @@ impl UpstreamBridge {
             bound_server.index,
         );
 
-        match Operation::send(&*bound_server.connection, &request).await {
+        match Operation::send(&*bound_server.connection, request).await {
             Ok(response) => Ok(response),
             Err(error) => {
                 log::warn!(

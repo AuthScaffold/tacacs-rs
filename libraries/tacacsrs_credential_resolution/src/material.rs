@@ -2,32 +2,9 @@
 
 use std::fmt;
 
-use zeroize::Zeroizing;
+use tacacsrs_secrets::SecretBytes;
 
 use crate::CredentialKind;
-
-/// Secret byte ownership that zeroizes its allocation on drop.
-pub struct SecretBytes(Zeroizing<Vec<u8>>);
-
-impl SecretBytes {
-    /// Takes ownership of secret bytes.
-    #[must_use]
-    pub fn new(bytes: Vec<u8>) -> Self {
-        Self(Zeroizing::new(bytes))
-    }
-
-    /// Explicitly borrows the secret value for runtime projection.
-    #[must_use]
-    pub fn expose_secret(&self) -> &[u8] {
-        self.0.as_slice()
-    }
-}
-
-impl fmt::Debug for SecretBytes {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("SecretBytes(<redacted>)")
-    }
-}
 
 /// Public certificate bytes whose debug output reveals length only.
 pub struct PublicBytes(Vec<u8>);

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tacacsrs_agent_client::ipc;
 use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
-use tacacsrs_agent_client::{AccountingOperation, AuthorizationOperation};
+use tacacsrs_agent_client::{AccountingOperation, AuthorizationOperation, PapAuthenticationOperation};
 use tonic::{Request, Response, Status};
 
 use crate::runtime::RequestTracker;
@@ -36,6 +36,38 @@ impl GrpcService {
 
 #[tonic::async_trait]
 impl TacacsAgent for GrpcService {
+    async fn authenticate_pap(
+        &self,
+        request: Request<ipc::PapAuthenticationRequest>,
+    ) -> Result<Response<ipc::PapAuthenticationReply>, Status> {
+        let request =
+            PapAuthenticationOperation::try_from(request.into_inner()).map_err(|error| {
+                log::warn!("Invalid IPC PAP authentication request: {error}");
+                Status::invalid_argument(error.to_string())
+            })?;
+        let _request_guard = self.request_tracker.start_request();
+        log::debug!("Received IPC PAP authentication request for user={}", request.user);
+
+        let result = match self
+            .upstream_bridge
+            .execute_pap_authentication_request(request)
+            .await
+        {
+            Ok(response) => ipc::PapAuthenticationReply {
+                result: Some(ipc::pap_authentication_reply::Result::Response(
+                    response.into_proto(),
+                )),
+            },
+            Err(error) => {
+                log::warn!("IPC PAP authentication request failed: {error:?}");
+                ipc::PapAuthenticationReply {
+                    result: Some(ipc::pap_authentication_reply::Result::Error(error.into_proto())),
+                }
+            }
+        };
+        Ok(Response::new(result))
+    }
+
     /// Handles one unary accounting RPC from a local IPC client.
     ///
     /// Decodes the protobuf request, delegates to the upstream bridge for

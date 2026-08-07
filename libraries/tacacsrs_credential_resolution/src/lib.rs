@@ -12,8 +12,8 @@ pub use error::{ProviderErrorKind, ResolutionError, ResolutionErrorKind};
 pub use fake::FakeCredentialResolver;
 pub use material::{
     CertificateBagMaterial, CertificateWithKeyMaterial, PublicBytes, ResolvedCredential,
-    SecretBytes,
 };
+pub use tacacsrs_secrets::SecretBytes;
 pub use request::{
     CredentialKind, CredentialReference, CredentialRequest, RequestContext, RequestSlot,
     ResolutionPlan,

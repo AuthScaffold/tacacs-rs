@@ -1,23 +1,17 @@
-//! Public client session facade.
+//! Internal client session transport facade.
 
-use async_trait::async_trait;
-
-use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
 use tacacsrs_messages::packet::Packet;
 
-use super::{DedicatedSession, SharedSession};
+use super::{DedicatedSession, SharedFixedSession, SharedSession};
 
-/// A client session returned by [`TacacsClient`](crate::TacacsClient).
-///
-/// This type implements [`ClientSessionFlowIoTrait`] and hides whether the
-/// current operation is running over a dedicated stream or a shared multiplexed
-/// connection.
-pub struct ClientSession {
+/// Hides whether an operation uses a dedicated or shared transport.
+pub(crate) struct ClientSession {
     inner: ClientSessionInner,
 }
 
 enum ClientSessionInner {
     Shared(SharedSession),
+    SharedFixed(SharedFixedSession),
     Dedicated(DedicatedSession),
 }
 
@@ -33,48 +27,58 @@ impl ClientSession {
             inner: ClientSessionInner::Dedicated(session),
         }
     }
-}
 
-#[async_trait]
-impl ClientSessionFlowIoTrait for ClientSession {
-    async fn is_complete(&self) -> bool {
-        match &self.inner {
-            ClientSessionInner::Shared(session) => session.is_complete().await,
-            ClientSessionInner::Dedicated(session) => session.is_complete(),
+    pub(crate) fn shared_fixed(session: SharedFixedSession) -> Self {
+        Self {
+            inner: ClientSessionInner::SharedFixed(session),
         }
     }
 
-    async fn next_sequence_number(&self) -> u8 {
-        match &self.inner {
-            ClientSessionInner::Shared(session) => session.next_sequence_number().await,
-            ClientSessionInner::Dedicated(session) => session.next_sequence_number().await,
-        }
-    }
-
-    fn session_id(&self) -> u32 {
+    pub(crate) fn session_id(&self) -> u32 {
         match &self.inner {
             ClientSessionInner::Shared(session) => session.session_id(),
+            ClientSessionInner::SharedFixed(session) => session.session_id(),
             ClientSessionInner::Dedicated(session) => session.session_id(),
         }
     }
 
-    async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {
+    pub(crate) async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {
         match &self.inner {
             ClientSessionInner::Shared(session) => session.send_packet(packet).await,
+            ClientSessionInner::SharedFixed(_) => {
+                anyhow::bail!("fixed TACACS+ sessions do not expose packet send")
+            }
             ClientSessionInner::Dedicated(session) => session.send_packet(packet).await,
         }
     }
 
-    async fn receive_packet(&self) -> anyhow::Result<Packet> {
+    pub(crate) async fn receive_packet(&self) -> anyhow::Result<Packet> {
         match &self.inner {
             ClientSessionInner::Shared(session) => session.receive_packet().await,
+            ClientSessionInner::SharedFixed(_) => {
+                anyhow::bail!("fixed TACACS+ sessions do not expose packet receive")
+            }
             ClientSessionInner::Dedicated(session) => session.receive_packet().await,
         }
     }
 
-    async fn complete(&self) {
+    pub(crate) async fn fixed_round_trip(&self, packet: Packet) -> anyhow::Result<Packet> {
+        match &self.inner {
+            ClientSessionInner::Shared(_) => {
+                anyhow::bail!("conversation TACACS+ sessions cannot execute fixed exchanges")
+            }
+            ClientSessionInner::SharedFixed(session) => session.round_trip(packet).await,
+            ClientSessionInner::Dedicated(session) => {
+                session.send_packet(packet).await?;
+                session.receive_packet().await
+            }
+        }
+    }
+
+    pub(crate) async fn complete(&self) {
         match &self.inner {
             ClientSessionInner::Shared(session) => session.complete().await,
+            ClientSessionInner::SharedFixed(session) => session.complete().await,
             ClientSessionInner::Dedicated(session) => session.complete().await,
         }
     }

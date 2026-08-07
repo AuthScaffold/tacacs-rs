@@ -6,7 +6,7 @@
 
 `tacacsrs-agentd` can operate as a local TACACS+ compatibility proxy for clients that cannot initiate TACACS+ over TLS themselves, including [`pam_tacplus`](https://github.com/kravietz/pam_tacplus), [`audisp-tacplus`](https://github.com/daveolson53/audisp-tacplus), and other classic TACACS+ TCP integrations.
 
-The proxy accepts ordinary TACACS+ packets on a loopback TCP endpoint, preserves the downstream TACACS+ packet model expected by existing PAM and auditd integrations, and establishes upstream TACACS+ over TLS 1.3 to one or more servers. This lets the local integration boundary stay stable while transport security, ordered failover, connection reuse, and TLS credential handling move into the daemon. Upstream modes include server-authenticated TLS, mTLS, TLS 1.3 PSK-DHE, and explicit TLS 1.3 PSK-only interoperability mode.
+The proxy accepts ordinary TACACS+ packets on a loopback TCP endpoint, multiplexes concurrent downstream session IDs, preserves each conversation's packet order, and establishes upstream TACACS+ over TLS 1.3 to one or more servers. This lets the local integration boundary stay stable while transport security, ordered failover, connection reuse, and TLS credential handling move into the daemon. Upstream modes include server-authenticated TLS, mTLS, TLS 1.3 PSK-DHE, and explicit TLS 1.3 PSK-only interoperability mode.
 
 ```bash
 tacacsrs-agentd \
@@ -41,6 +41,7 @@ See the [Plain TACACS+ to TACACS+ over TLS Transition Guide](docs/tacacs-plus-tl
 ```text
 tacon (CLI)  ──────┬──► tacacsrs-agent-client
                    ├──► tacacsrs-config
+                   ├──► tacacsrs-flows
                    ├──► tacacsrs-messages
                    └──► tacacsrs-networking
 
@@ -49,6 +50,7 @@ tacacsrs-agentd ───┬──► tacacsrs-agent
                    └──► tacacsrs-config
 
 tacacsrs-agent ────┬──► tacacsrs-agent-client
+                   ├──► tacacsrs-flows
                    ├──► tacacsrs-messages
                    └──► tacacsrs-networking
 
@@ -56,6 +58,7 @@ tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
                                   └──► tacacsrs-agent-client
 
 tacacsrs-credential-resolution ──► tacacsrs-config
+                              └──► tacacsrs-secrets
 ```
 
 `tacacsrs-config` is the entry point for RFC 7951 YANG JSON parsing. It owns the generated `ietf-system-tacacs-plus` Rust types, validates YANG-specific constraints, and expands config-local credential bundles while preserving external central references as opaque values. `tacacsrs-credential-resolution` turns those references into typed provider-neutral requests and validates resolved results. Provider-specific retrieval and runtime connection projection are separate integration concerns.
@@ -117,18 +120,27 @@ rewritten. Use `main` for development work.
 ```bash
 # Send an accounting record (direct connection)
 tacon -s tacacs-server:49 --shared-secret shared_secret \
-    --user admin --port tty0 --rem-addr 10.0.0.1 \
-    accounting "show running-config"
+  accounting --user admin --port tty0 --rem-addr 10.0.0.1 \
+  "show running-config"
 
 # Send via the central agent service
 tacon --service-endpoint /run/tacacs/tacacs.sock \
-    --user admin --port tty0 --rem-addr 10.0.0.1 \
-    accounting "show running-config"
+  accounting --user admin --port tty0 --rem-addr 10.0.0.1 \
+  "show running-config"
 
 # Load the direct connection from a YANG JSON config file
 tacon --config ./tacacs.json \
-    --user admin --port tty0 --rem-addr 10.0.0.1 \
-    accounting "show running-config"
+  accounting --user admin --port tty0 --rem-addr 10.0.0.1 \
+  "show running-config"
+
+# PAP authentication using a hidden prompt
+tacon --config ./tacacs.json authentication \
+  --user admin --port tty0 --rem-addr 10.0.0.1
+
+# Retrieve shell-session attributes (`cmd=`) for a PAP-authenticated user
+tacon --config ./tacacs.json authorization \
+  --user admin --port tty0 --rem-addr 10.0.0.1 \
+  --authentication-context pap session
 ```
 
 ### YANG JSON Configuration

@@ -2,9 +2,8 @@
 //!
 //! [`TacacsClient`] owns transport setup and the dedicated-to-shared
 //! single-connection transition. It deliberately stops at
-//! [`ClientSessionFlowIoTrait`](tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait):
-//! callers obtain a session I/O object and then
-//! run request/reply flows from `tacacsrs-flows` on top of it.
+//! callers execute typed request/reply descriptors or open a mutable packet
+//! conversation for transparent proxying.
 
 use std::sync::Arc;
 
@@ -13,17 +12,24 @@ use tokio::sync::{Mutex, RwLock};
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_credential_resolution::RuntimeServer;
-use tacacsrs_flow_abstractions::accounting::{build_accounting_packet, parse_accounting_reply};
+use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
-    TacacsAuthenticationService, TacacsAuthenticationType, TacacsFlags,
+    TacacsAuthenticationService, TacacsAuthenticationType, TacacsFlags, TacacsMajorVersion,
 };
+use tacacsrs_messages::header::Header;
+use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_messages::traits::TacacsBodyTrait;
 
 use crate::establish::{self, ConnectOptions, ConnectPreflight};
+use crate::exchange::FixedExchange;
 use crate::runtime::MultiplexedConnection;
 use crate::single_connect::SingleConnectionState;
-use crate::session::{ClientSession, DedicatedSession, SharedSession, SingleConnectPromotion};
+use crate::session::{
+    ClientConversation, ClientSession, DedicatedSession, ExpectedResponseHeader,
+    SingleConnectPromotion,
+};
 use crate::transport::BoxedTransport;
 
 /// A configured TACACS+ client connection that transparently chooses between
@@ -208,7 +214,21 @@ impl TacacsClient {
     ///
     /// Returns an error if no shared session can be created and a fresh
     /// dedicated transport cannot be opened.
-    pub async fn create_session(&self) -> anyhow::Result<ClientSession> {
+    async fn create_session(&self) -> anyhow::Result<ClientSession> {
+        self.create_session_for(None).await
+    }
+
+    async fn create_fixed_session(
+        &self,
+        expected: ExpectedResponseHeader,
+    ) -> anyhow::Result<ClientSession> {
+        self.create_session_for(Some(expected)).await
+    }
+
+    async fn create_session_for(
+        &self,
+        expected: Option<ExpectedResponseHeader>,
+    ) -> anyhow::Result<ClientSession> {
         if !self.server.config().single_connection {
             return Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?));
         }
@@ -235,11 +255,43 @@ impl TacacsClient {
 
         // Stage 2: hot path. A confirmed, healthy shared connection can create
         // a session without serializing every caller on the recovery mutex.
-        if let Some(session) = self.try_create_shared_session().await {
-            return Ok(ClientSession::shared(session));
+        if let Some(session) = self.try_create_shared_session(expected).await {
+            return Ok(session);
         }
 
-        self.create_session_after_shared_miss().await
+        self.create_session_after_shared_miss(expected).await
+    }
+
+    /// Executes one fixed TACACS+ request/reply exchange.
+    ///
+    /// Networking assigns the session identifier and request sequence number,
+    /// validates the complete reply header, and completes the underlying
+    /// session on every success or error path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when session creation, request serialization, packet
+    /// I/O, response validation, or reply parsing fails.
+    pub async fn execute<Exchange>(&self, exchange: Exchange) -> anyhow::Result<Exchange::Reply>
+    where
+        Exchange: FixedExchange,
+    {
+        let expected =
+            ExpectedResponseHeader::fixed(exchange.packet_type(), exchange.minor_version());
+        let session = self.create_fixed_session(expected).await?;
+        let result = execute_on_session(&session, exchange).await;
+        session.complete().await;
+        result
+    }
+
+    /// Opens a sequential packet conversation for transparent proxying and
+    /// interactive TACACS+ authentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a dedicated or shared session cannot be created.
+    pub async fn open_conversation(&self) -> anyhow::Result<ClientConversation> {
+        self.create_session().await.map(ClientConversation::new)
     }
 
     /// Stops the cached shared connection from accepting new sessions.
@@ -254,7 +306,10 @@ impl TacacsClient {
         }
     }
 
-    async fn create_session_after_shared_miss(&self) -> anyhow::Result<ClientSession> {
+    async fn create_session_after_shared_miss(
+        &self,
+        expected: Option<ExpectedResponseHeader>,
+    ) -> anyhow::Result<ClientSession> {
         // Stage 3: the failed shared attempt may have changed client state. For
         // example, a graceful server shutdown becomes NotSupported, while a hard
         // disconnect returns to Initial so the next connection can negotiate.
@@ -278,8 +333,8 @@ impl TacacsClient {
 
         // Stage 5: another task may have restored the shared cache while this
         // one waited for the recovery lock.
-        if let Some(session) = self.try_create_shared_session().await {
-            return Ok(ClientSession::shared(session));
+        if let Some(session) = self.try_create_shared_session(expected).await {
+            return Ok(session);
         }
 
         // Stage 6: final fallback. This opens at most one fresh dedicated
@@ -403,7 +458,10 @@ impl TacacsClient {
         }
     }
 
-    async fn try_create_shared_session(&self) -> Option<SharedSession> {
+    async fn try_create_shared_session(
+        &self,
+        expected: Option<ExpectedResponseHeader>,
+    ) -> Option<ClientSession> {
         let connection = self.shared_connection.read().await.clone()?;
 
         if !connection.can_create_sessions().await {
@@ -413,7 +471,13 @@ impl TacacsClient {
             return None;
         }
 
-        let session = connection.create_session().await;
+        let session = match expected {
+            Some(expected) => connection
+                .create_fixed_session(expected)
+                .await
+                .map(ClientSession::shared_fixed),
+            None => connection.create_session().await.map(ClientSession::shared),
+        };
 
         match session {
             Ok(session) => Some(session),
@@ -471,28 +535,12 @@ impl TacacsClient {
     }
 
     async fn send_accounting_watchdog_preflight(&self) -> anyhow::Result<()> {
-        let single_connect_promotion = self.begin_single_connection_negotiation().await;
-        let session = self
-            .create_fresh_dedicated_session(single_connect_promotion)
+        let reply = self
+            .execute(AccountingWatchdogExchange(accounting_watchdog_preflight_request()))
             .await?;
-        let request = accounting_watchdog_preflight_request();
-        let sequence_number = session.next_sequence_number().await;
-        let packet = build_accounting_packet(
-            session.session_id(),
-            sequence_number,
-            &request,
-            TacacsFlags::empty(),
-        )?;
-
-        session.send_packet(packet).await?;
-        let response = session.receive_packet().await?;
-        let reply = parse_accounting_reply(&response)?;
 
         match reply.status {
-            TacacsAccountingStatus::TacPlusAcctStatusSuccess => {
-                session.complete().await;
-                Ok(())
-            }
+            TacacsAccountingStatus::TacPlusAcctStatusSuccess => Ok(()),
             status => anyhow::bail!("TACACS+ accounting watchdog preflight failed: {status:?}"),
         }
     }
@@ -503,6 +551,84 @@ impl TacacsClient {
             .await
             .with_context(|| format!("Failed to connect to {address}"))
     }
+}
+
+struct AccountingWatchdogExchange(AccountingRequest);
+
+impl FixedExchange for AccountingWatchdogExchange {
+    type Reply = AccountingReply;
+
+    fn packet_type(&self) -> tacacsrs_messages::enumerations::TacacsType {
+        tacacsrs_messages::enumerations::TacacsType::TacPlusAccounting
+    }
+
+    fn minor_version(&self) -> tacacsrs_messages::enumerations::TacacsMinorVersion {
+        tacacsrs_messages::enumerations::TacacsMinorVersion::TacacsPlusMinorVerDefault
+    }
+
+    fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
+        self.0.to_bytes()
+    }
+
+    fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
+        AccountingReply::from_bytes(body)
+    }
+}
+
+async fn execute_on_session<Exchange>(
+    session: &ClientSession,
+    exchange: Exchange,
+) -> anyhow::Result<Exchange::Reply>
+where
+    Exchange: FixedExchange,
+{
+    const REQUEST_SEQUENCE_NUMBER: u8 = 1;
+    const RESPONSE_SEQUENCE_NUMBER: u8 = 2;
+
+    let session_id = session.session_id();
+    let packet_type = exchange.packet_type();
+    let minor_version = exchange.minor_version();
+    let body = exchange.encode_request()?;
+    let length = u32::try_from(body.len())
+        .context("fixed TACACS+ request body exceeds the protocol length field")?;
+    let request = Packet::new(
+        Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version,
+            tacacs_type: packet_type,
+            seq_no: REQUEST_SEQUENCE_NUMBER,
+            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            session_id,
+            length,
+        },
+        body,
+    )?;
+
+    let response = session.fixed_round_trip(request).await?;
+    let header = response.header();
+
+    if header.session_id != session_id
+        || header.seq_no != RESPONSE_SEQUENCE_NUMBER
+        || header.tacacs_type != packet_type
+        || header.major_version != TacacsMajorVersion::TacacsPlusMajor1
+        || header.minor_version != minor_version
+    {
+        anyhow::bail!(
+            "unexpected fixed TACACS+ response header: session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}; expected session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}",
+            header.session_id,
+            header.seq_no,
+            header.tacacs_type,
+            header.major_version,
+            header.minor_version,
+            session_id,
+            RESPONSE_SEQUENCE_NUMBER,
+            packet_type,
+            TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version,
+        );
+    }
+
+    exchange.decode_reply(response.body())
 }
 
 fn packet_obfuscation_key(server: &TacacsPlusServer) -> Option<Vec<u8>> {
@@ -541,7 +667,6 @@ mod tests {
     use tacacsrs_credential_resolution::RuntimeServer;
     use tacacsrs_messages::accounting::reply::AccountingReply;
     use tacacsrs_messages::accounting::request::AccountingRequest;
-    use tacacsrs_flow_abstractions::client_session_flow_io::ClientSessionFlowIoTrait;
     use tacacsrs_messages::enumerations::{
         TacacsAccountingFlags, TacacsAccountingStatus, TacacsFlags, TacacsMajorVersion,
         TacacsMinorVersion, TacacsType,
@@ -550,10 +675,33 @@ mod tests {
     use tacacsrs_messages::packet::{Packet, PacketTrait};
     use tacacsrs_messages::traits::TacacsBodyTrait;
 
-    use super::{TacacsClient, packet_obfuscation_key};
-    use crate::codec::{PacketReadResult, PacketReader, PacketReaderTrait};
+    use super::{TacacsClient, accounting_watchdog_preflight_request, packet_obfuscation_key};
+    use crate::codec::{PacketReadResult, PacketReader};
     use crate::establish::{ConnectOptions, ConnectPreflight};
+    use crate::exchange::FixedExchange;
     use crate::single_connect::SingleConnectionState;
+
+    struct TestAccountingExchange(AccountingRequest);
+
+    impl FixedExchange for TestAccountingExchange {
+        type Reply = AccountingReply;
+
+        fn packet_type(&self) -> TacacsType {
+            TacacsType::TacPlusAccounting
+        }
+
+        fn minor_version(&self) -> TacacsMinorVersion {
+            TacacsMinorVersion::TacacsPlusMinorVerDefault
+        }
+
+        fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
+            self.0.to_bytes()
+        }
+
+        fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
+            AccountingReply::from_bytes(body)
+        }
+    }
 
     fn server_template() -> TacacsPlusServer {
         TacacsPlusServer {
@@ -713,6 +861,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn executes_fixed_exchange_over_dedicated_transport() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener_address = listener.local_addr().unwrap();
+        let (mut request_receiver, server_task) =
+            spawn_accounting_server(listener, 1, TacacsFlags::empty());
+
+        let mut server = server_template();
+        server.address = listener_address.ip().to_string();
+        server.port = listener_address.port();
+        server.single_connection = false;
+        let client = TacacsClient::connect(server, ConnectOptions::default())
+            .await
+            .unwrap();
+
+        let reply = client
+            .execute(TestAccountingExchange(accounting_watchdog_preflight_request()))
+            .await
+            .unwrap();
+        assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+
+        let request = receive_request(&mut request_receiver).await;
+        assert_eq!(request.header().seq_no, 1);
+        assert_eq!(request.header().tacacs_type, TacacsType::TacPlusAccounting);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn accounting_watchdog_preflight_establishes_shared_connection_when_echoed() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let listener_address = listener.local_addr().unwrap();
@@ -744,11 +919,14 @@ mod tests {
         assert_eq!(client.single_connection_state().await, SingleConnectionState::Supported);
         assert!(client.shared_connection.read().await.is_some());
 
-        let session = client.create_session().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), run_session_exchange(&session))
-            .await
-            .unwrap();
-        session.complete().await;
+        let reply = tokio::time::timeout(
+            Duration::from_secs(1),
+            client.execute(TestAccountingExchange(accounting_watchdog_preflight_request())),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
 
         let real_session_packet = receive_request(&mut request_receiver).await;
         assert!(!real_session_packet

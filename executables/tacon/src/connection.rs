@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_networking::{ClientSession, ConnectOptions, TacacsClient};
+use tacacsrs_networking::{ConnectOptions, FixedExchange, TacacsClient};
 
 /// Represents an active TACACS+ connection (either plain TCP or TLS)
 #[derive(Clone)]
@@ -14,13 +14,16 @@ impl Connection {
         Self { inner }
     }
 
-    /// Creates a new session on this connection
+    /// Executes one fixed TACACS+ request/reply exchange.
     ///
     /// # Errors
     ///
-    /// Returns an error if session creation fails on the underlying connection.
-    pub async fn create_session(&self) -> anyhow::Result<ClientSession> {
-        self.inner.create_session().await
+    /// Returns an error if the underlying exchange fails.
+    pub async fn execute<Exchange>(&self, exchange: Exchange) -> anyhow::Result<Exchange::Reply>
+    where
+        Exchange: FixedExchange,
+    {
+        self.inner.execute(exchange).await
     }
 }
 

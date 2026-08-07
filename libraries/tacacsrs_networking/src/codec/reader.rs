@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use tacacsrs_messages::constants::{TACACS_HEADER_LENGTH, TACACS_MAX_BODY_LENGTH};
 use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_messages::packet::PacketTrait;
@@ -35,33 +34,7 @@ pub enum PacketReadResult {
     },
 }
 
-/// Trait for reading TACACS+ packets from a stream.
-///
-/// This trait abstracts the packet reading logic to allow for dependency injection
-/// and easier testing. Implementations can provide custom behavior for reading,
-/// parsing, and deobfuscating packets.
-#[async_trait]
-pub trait PacketReaderTrait: Send + Sync {
-    /// Reads a single packet from the provided reader.
-    ///
-    /// This method will:
-    /// 1. Read the TACACS+ header (12 bytes)
-    /// 2. Parse the header to determine body length
-    /// 3. Read the body
-    /// 4. Create and optionally deobfuscate the packet
-    ///
-    /// # Arguments
-    /// * `reader` - A mutable reference to an async reader trait object
-    ///
-    /// # Returns
-    /// A `PacketReadResult` indicating success or the type of failure encountered.
-    async fn read_packet(&self, reader: &mut (dyn AsyncRead + Unpin + Send)) -> PacketReadResult;
-}
-
-/// Default implementation of `PacketReaderTrait` for reading TACACS+ packets.
-///
-/// Handles reading packets from any async reader, including optional deobfuscation
-/// using the provided key.
+/// Reads TACACS+ packets, including optional body deobfuscation.
 pub struct PacketReader {
     obfuscation_key: Option<Vec<u8>>,
 }
@@ -78,9 +51,12 @@ impl PacketReader {
     }
 }
 
-#[async_trait]
-impl PacketReaderTrait for PacketReader {
-    async fn read_packet(&self, reader: &mut (dyn AsyncRead + Unpin + Send)) -> PacketReadResult {
+impl PacketReader {
+    /// Reads and decodes one TACACS+ packet from `reader`.
+    pub async fn read_packet<Reader>(&self, reader: &mut Reader) -> PacketReadResult
+    where
+        Reader: AsyncRead + Unpin + ?Sized,
+    {
         // Read header
         let mut header_buffer = [0_u8; TACACS_HEADER_LENGTH];
         if let Err(e) = reader.read_exact(&mut header_buffer).await {
@@ -111,7 +87,7 @@ impl PacketReaderTrait for PacketReader {
             };
         }
 
-        log::info!(
+        log::trace!(
             target: "tacacsrs_networking::codec::reader::read_packet",
             "Received header with session id: {}. Loading body of length {}",
             session_id, header.length
@@ -131,7 +107,7 @@ impl PacketReaderTrait for PacketReader {
             };
         }
 
-        log::info!(
+        log::trace!(
             target: "tacacsrs_networking::codec::reader::read_packet",
             "Received body for session id: {session_id}"
         );
@@ -156,7 +132,7 @@ impl PacketReaderTrait for PacketReader {
         if let Some(key) = &self.obfuscation_key {
             if !is_packet_deobfuscated {
                 packet = packet.to_deobfuscated(key);
-                log::info!(
+                log::trace!(
                     target: "tacacsrs_networking::codec::reader::read_packet",
                     "Deobfuscated packet for session id: {session_id}"
                 );

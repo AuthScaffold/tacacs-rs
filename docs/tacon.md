@@ -12,8 +12,8 @@ Connects directly to a TACACS+ server. You manage encryption, TLS, and connectio
 
 ```bash
 tacon -s tacacs-server:49 -k shared_secret \
-    --user admin --port tty0 --rem-addr 10.0.0.1 \
-    accounting "show version"
+  accounting --user admin --port tty0 --rem-addr 10.0.0.1 \
+  "show version"
 ```
 
 **Best for:** testing, one-off requests, development, scripts.
@@ -24,8 +24,8 @@ Connects to the central [tacacsrs-agentd](tacacsrs-agentd.md) service, which mai
 
 ```bash
 tacon --service-endpoint /run/tacacs/tacacs.sock \
-    --user admin --port tty0 --rem-addr 10.0.0.1 \
-    accounting "show version"
+  accounting --user admin --port tty0 --rem-addr 10.0.0.1 \
+  "show version"
 ```
 
 **Best for:** production deployments where multiple clients share TACACS+ connections with automatic failover.
@@ -75,8 +75,8 @@ Record command execution to a TACACS+ server.
 
 ```bash
 tacon -s server:49 \
-    --user admin --port tty0 --rem-addr 10.0.0.1 \
-    accounting "show running-config" arg1 arg2
+  accounting --user admin --port tty0 --rem-addr 10.0.0.1 \
+  "show running-config" arg1 arg2
 ```
 
 | Argument | Description |
@@ -86,11 +86,43 @@ tacon -s server:49 \
 
 ### `authentication`
 
-Authenticate a user against the TACACS+ server. *(Not yet implemented.)*
+Authenticate a username/password pair using the fixed RFC 8907 PAP exchange.
+The password is never accepted as a command-line argument.
+
+```bash
+# Hidden terminal prompt
+tacon -s server:49 authentication \
+  --user admin --port tty0 --rem-addr 10.0.0.1
+
+# Non-interactive input
+printf '%s\n' "$PAP_PASSWORD" | tacon -s server:49 authentication \
+  --user admin --port tty0 --rem-addr 10.0.0.1 \
+  --password-stdin
+```
+
+PAP follows the configured direct or agent upstream transport. Classic TACACS+
+obfuscation is not encryption; use TACACS+ over TLS 1.3 when password
+confidentiality is required.
 
 ### `authorization`
 
-Check whether a user is authorized to execute a command. *(Not yet implemented.)*
+Authorization requires the authentication context and an explicit shell mode.
+
+```bash
+# Session profile / shell provisioning (`service=shell`, `cmd=`)
+tacon -s server:49 authorization \
+  --user admin --port tty0 --rem-addr 10.0.0.1 \
+  --authentication-context pap session
+
+# Per-command authorization
+tacon -s server:49 authorization \
+  --user admin --port tty0 --rem-addr 10.0.0.1 \
+  --authentication-context pap command show users brief
+```
+
+Authentication contexts are `ascii`, `pap`, and `unauthenticated`. Session
+authorization is the TACACS+ mechanism for retrieving shell profile attributes;
+it does not require ASCII authentication.
 
 ### `batch`
 
@@ -140,6 +172,14 @@ Batch files are JSON documents containing metadata and a list of requests.
       "rem_addr": "10.0.0.1",
       "cmd": "show running-config",
       "cmd_args": ["brief"]
+    },
+    {
+      "type": "authorization",
+      "user": "admin",
+      "port": "tty0",
+      "rem_addr": "10.0.0.1",
+      "authentication_context": "pap",
+      "privilege_level": 15
     }
   ]
 }
@@ -154,6 +194,12 @@ Batch files are JSON documents containing metadata and a list of requests.
 | `load_test` | object | — | Enable load testing mode |
 | `load_test.repetitions` | number | — | Number of times to repeat all requests |
 | `load_test.max_parallel` | number | `10` | Maximum concurrent requests |
+
+Batch authorization is shell-only. Omitting `cmd` performs session-profile
+authorization; providing `cmd` and `cmd_args` performs command authorization.
+PAP authentication is intentionally unavailable in batch files because the
+format has no secret-source abstraction and plaintext JSON passwords are
+rejected.
 
 ### Execution Modes
 
@@ -182,16 +228,16 @@ tacon --service-endpoint /run/tacacs/tacacs.sock batch requests.json
 
 ```bash
 tacon -s tacacs-server:49 -k tac_plus_key \
-    --user admin --port tty0 --rem-addr 10.0.0.1 \
-    accounting "show version"
+  accounting --user admin --port tty0 --rem-addr 10.0.0.1 \
+  "show version"
 ```
 
 ### YANG JSON configuration
 
 ```bash
 tacon --config ./tacacs.json \
-    --user admin --port tty0 --rem-addr 10.0.0.1 \
-    accounting "show version"
+  accounting --user admin --port tty0 --rem-addr 10.0.0.1 \
+  "show version"
 ```
 
 The config file must use RFC 7951 JSON encoding with the root key `ietf-system-tacacs-plus:tacacs-plus`.
@@ -201,8 +247,8 @@ The config file must use RFC 7951 JSON encoding with the root key `ietf-system-t
 ```bash
 tacon -s tacacs-server:449 --use-tls \
     --client-certificate client.crt.der --client-key client.key.der \
-    --user admin --port tty0 --rem-addr 10.0.0.1 \
-    accounting "show version"
+  accounting --user admin --port tty0 --rem-addr 10.0.0.1 \
+  "show version"
 ```
 
 ### TLS 1.3 with Pre-Shared Keys
@@ -212,8 +258,8 @@ tacon -s tacacs-server:449 --use-tls \
 ```bash
 tacon -s tacacs-server:449 --use-tls \
     --psk-identity client1 --psk-key "shared_secret_at_least_16_bytes" \
-    --user admin --port tty0 --rem-addr 10.0.0.1 \
-    accounting "show version"
+  accounting --user admin --port tty0 --rem-addr 10.0.0.1 \
+  "show version"
 ```
 
 ## Exit Codes

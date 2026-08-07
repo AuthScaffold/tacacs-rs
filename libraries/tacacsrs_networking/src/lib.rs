@@ -1,14 +1,13 @@
-//! TACACS+ client-side transport setup and session I/O.
+//! TACACS+ client-side transport setup and exchange execution.
 //!
-//! The public API intentionally stops at [`TacacsClient`] and
-//! [`ClientSession`]. Callers create sessions here, then run protocol
-//! flows from higher-level crates over the returned session I/O object. Raw
-//! packet readers and writers are exposed only for adapter layers that must
-//! bridge TACACS+ packets without interpreting operation bodies.
+//! Fixed operations run through [`TacacsClient::execute`]. Transparent proxy
+//! and interactive use cases open a [`ClientConversation`]. Raw packet codecs
+//! are exposed only for adapter layers that bridge TACACS+ streams.
 
 mod client;
 mod codec;
 mod establish;
+mod exchange;
 mod helpers;
 mod runtime;
 mod session;
@@ -16,9 +15,7 @@ mod single_connect;
 mod transport;
 
 pub use client::TacacsClient;
-pub use codec::{
-    PacketReadResult, PacketReader, PacketReaderTrait, PacketWriteResult, PacketWriter,
-    PacketWriterTrait,
-};
+pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use establish::{ConnectOptions, ConnectPreflight};
-pub use session::ClientSession;
+pub use exchange::FixedExchange;
+pub use session::ClientConversation;

@@ -168,6 +168,27 @@ pub struct RequestArgs {
     pub rem_addr: String,
 }
 
+/// Authentication metadata attached to authorization requests.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum AuthorizationAuthContext {
+    Ascii,
+    Pap,
+    Unauthenticated,
+}
+
+/// Shell authorization operation kind.
+#[derive(Subcommand, Debug, Clone)]
+pub enum AuthorizationMode {
+    /// Request session-level shell attributes using `cmd=`.
+    Session,
+    /// Authorize one shell command and its ordered arguments.
+    Command {
+        command: String,
+        #[arg(value_name = "ARG")]
+        arguments: Vec<String>,
+    },
+}
+
 /// Available TACACS+ operations
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
@@ -198,12 +219,28 @@ pub enum Command {
     Authentication {
         #[command(flatten)]
         args: RequestArgs,
+
+        /// Read the PAP password from standard input instead of a hidden prompt.
+        #[arg(long)]
+        password_stdin: bool,
+
+        #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u8).range(0..=15))]
+        privilege_level: u8,
     },
 
     /// Perform authorization check
     Authorization {
         #[command(flatten)]
         args: RequestArgs,
+
+        #[arg(long, value_enum)]
+        authentication_context: AuthorizationAuthContext,
+
+        #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u8).range(0..=15))]
+        privilege_level: u8,
+
+        #[command(subcommand)]
+        mode: AuthorizationMode,
     },
 }
 
@@ -269,6 +306,76 @@ mod tests {
         ]);
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn authentication_accepts_password_stdin_without_password_argument() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "authentication",
+            "--user",
+            "admin",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.1",
+            "--password-stdin",
+        ]);
+        assert!(result.is_ok());
+
+        let password_argument = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "authentication",
+            "--user",
+            "admin",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.1",
+            "--password",
+            "secret",
+        ]);
+        assert!(password_argument.is_err());
+    }
+
+    #[test]
+    fn authorization_requires_context_and_explicit_mode() {
+        let session = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "authorization",
+            "--user",
+            "admin",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.1",
+            "--authentication-context",
+            "pap",
+            "session",
+        ]);
+        assert!(session.is_ok());
+
+        let missing_mode = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "authorization",
+            "--user",
+            "admin",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.0.2.1",
+            "--authentication-context",
+            "pap",
+        ]);
+        assert!(missing_mode.is_err());
     }
 
     #[test]

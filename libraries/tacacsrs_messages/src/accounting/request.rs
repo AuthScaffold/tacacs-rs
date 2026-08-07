@@ -512,7 +512,7 @@ mod tests {
 
         let accounting_request = AccountingRequest::from_packet(&packet).unwrap();
 
-        assert_eq!(accounting_request.to_bytes().unwrap(), packet.body().clone());
+        assert_eq!(accounting_request.to_bytes().unwrap(), packet.body());
     }
 
     #[test]

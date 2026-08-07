@@ -1,15 +1,19 @@
 use anyhow::Context;
 use tacacsrs_agent_client::{
-    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus, AuthorizationArg,
+    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
+    AuthenticationResponseStatus, AuthorizationArg, AuthorizationAuthenticationContext,
     AuthorizationOperation, AuthorizationOperationResponse, AuthorizationResponseStatus,
+    PapAuthenticationOperationResponse,
 };
 use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
+use tacacsrs_messages::authentication::reply::AuthenticationReply;
 use tacacsrs_messages::authorization::reply::AuthorizationReply;
 use tacacsrs_messages::authorization::request::AuthorizationRequest;
 use tacacsrs_messages::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
-    TacacsAuthenticationService, TacacsAuthenticationType, TacacsAuthorizationStatus,
+    TacacsAuthenticationService, TacacsAuthenticationStatus, TacacsAuthenticationType,
+    TacacsAuthorizationStatus,
 };
 
 /// Converts a domain [`AccountingOperation`] into a TACACS+ accounting request
@@ -47,16 +51,51 @@ pub(super) fn build_authorization_request(
 ) -> anyhow::Result<AuthorizationRequest> {
     let priv_lvl = u8::try_from(request.privilege_level)
         .context("authorization privilege level exceeds TACACS+ u8 field")?;
+    let (authen_method, authen_type, authen_service) = match request.authentication_context {
+        AuthorizationAuthenticationContext::TacacsAscii => (
+            TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus,
+            TacacsAuthenticationType::TacPlusAuthenTypeAscii,
+            TacacsAuthenticationService::TacPlusAuthenSvcLogin,
+        ),
+        AuthorizationAuthenticationContext::TacacsPap => (
+            TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus,
+            TacacsAuthenticationType::TacPlusAuthenTypePap,
+            TacacsAuthenticationService::TacPlusAuthenSvcLogin,
+        ),
+        AuthorizationAuthenticationContext::Unauthenticated => (
+            TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
+            TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
+            TacacsAuthenticationService::TacPlusAuthenSvcNone,
+        ),
+    };
     Ok(AuthorizationRequest {
-        authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus,
+        authen_method,
         priv_lvl,
-        authen_type: TacacsAuthenticationType::TacPlusAuthenTypeAscii,
-        authen_service: TacacsAuthenticationService::TacPlusAuthenSvcLogin,
+        authen_type,
+        authen_service,
         user: request.user.clone(),
         port: request.port.clone(),
         rem_address: request.remote_address.clone(),
         args: request.args.iter().map(format_authorization_arg).collect(),
     })
+}
+
+pub(super) fn to_pap_authentication_response(
+    address: &str,
+    reply: AuthenticationReply,
+) -> PapAuthenticationOperationResponse {
+    let status = match reply.status {
+        TacacsAuthenticationStatus::TacPlusAuthenStatusPass => AuthenticationResponseStatus::Pass,
+        TacacsAuthenticationStatus::TacPlusAuthenStatusFail => AuthenticationResponseStatus::Fail,
+        TacacsAuthenticationStatus::TacPlusAuthenStatusError => AuthenticationResponseStatus::Error,
+        _ => unreachable!("PapAuthenticationExchange accepts only terminal PAP statuses"),
+    };
+    PapAuthenticationOperationResponse {
+        server: address.to_owned(),
+        status,
+        server_message: reply.server_msg,
+        data: reply.data,
+    }
 }
 
 fn format_authorization_arg(arg: &AuthorizationArg) -> String {
@@ -155,14 +194,18 @@ mod tests {
     #[test]
     fn test_build_authorization_request_maps_domain_fields() {
         let request = build_authorization_request(
-            &AuthorizationOperation::builder("admin", 15)
-                .port("pts/1")
-                .remote_address("192.0.2.10")
-                .service("shell")
-                .command("show")
-                .command_arg("users")
-                .build()
-                .unwrap(),
+            &AuthorizationOperation::builder(
+                "admin",
+                15,
+                tacacsrs_agent_client::AuthorizationAuthenticationContext::TacacsAscii,
+            )
+            .port("pts/1")
+            .remote_address("192.0.2.10")
+            .service("shell")
+            .command("show")
+            .command_arg("users")
+            .build()
+            .unwrap(),
         )
         .unwrap();
 
@@ -170,6 +213,31 @@ mod tests {
         assert_eq!(request.port, "pts/1");
         assert_eq!(request.rem_address, "192.0.2.10");
         assert_eq!(request.priv_lvl, 15);
+        assert_eq!(request.authen_type, TacacsAuthenticationType::TacPlusAuthenTypeAscii);
         assert_eq!(request.args, vec!["service=shell", "cmd=show", "cmd-arg=users"]);
+    }
+
+    #[test]
+    fn test_build_authorization_request_maps_pap_context() {
+        let request = build_authorization_request(
+            &AuthorizationOperation::builder(
+                "admin",
+                15,
+                AuthorizationAuthenticationContext::TacacsPap,
+            )
+            .service("shell")
+            .command("")
+            .build()
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.authen_method,
+            TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus
+        );
+        assert_eq!(request.authen_type, TacacsAuthenticationType::TacPlusAuthenTypePap);
+        assert_eq!(request.authen_service, TacacsAuthenticationService::TacPlusAuthenSvcLogin);
+        assert_eq!(request.args, vec!["service=shell", "cmd="]);
     }
 }

@@ -30,8 +30,44 @@
 use std::str::FromStr;
 
 use anyhow::{Context, bail};
+use tacacsrs_secrets::SecretBytes;
 
 use crate::ipc;
+
+/// Client-supplied inputs for one fixed PAP authentication operation.
+#[derive(Debug)]
+pub struct PapAuthenticationOperation {
+    pub user: String,
+    pub password: SecretBytes,
+    pub port: String,
+    pub remote_address: String,
+    pub privilege_level: u32,
+}
+
+/// Successful PAP authentication response from an upstream TACACS+ server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PapAuthenticationOperationResponse {
+    pub server: String,
+    pub status: AuthenticationResponseStatus,
+    pub server_message: String,
+    pub data: Vec<u8>,
+}
+
+/// Terminal statuses valid for an RFC 8907 PAP exchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthenticationResponseStatus {
+    Pass,
+    Fail,
+    Error,
+}
+
+/// Authentication metadata asserted by an authorization operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorizationAuthenticationContext {
+    TacacsAscii,
+    TacacsPap,
+    Unauthenticated,
+}
 
 /// Client-supplied inputs for a TACACS+ accounting operation.
 ///
@@ -121,6 +157,8 @@ pub struct AuthorizationOperation {
     pub remote_address: String,
     /// TACACS+ privilege level for the command context.
     pub privilege_level: u32,
+    /// How the user identity was authenticated before authorization.
+    pub authentication_context: AuthorizationAuthenticationContext,
     /// Ordered TACACS+ authorization arg-val pairs.
     pub args: Vec<AuthorizationArg>,
 }
@@ -128,8 +166,12 @@ pub struct AuthorizationOperation {
 impl AuthorizationOperation {
     /// Creates a builder for an authorization operation.
     #[must_use]
-    pub fn builder(user: impl Into<String>, privilege_level: u32) -> AuthorizationRequestBuilder {
-        AuthorizationRequestBuilder::new(user, privilege_level)
+    pub fn builder(
+        user: impl Into<String>,
+        privilege_level: u32,
+        authentication_context: AuthorizationAuthenticationContext,
+    ) -> AuthorizationRequestBuilder {
+        AuthorizationRequestBuilder::new(user, privilege_level, authentication_context)
     }
 
     /// Returns all values for a well-known authorization key, preserving order.
@@ -387,18 +429,24 @@ pub struct AuthorizationRequestBuilder {
     port: String,
     remote_address: String,
     privilege_level: u32,
+    authentication_context: AuthorizationAuthenticationContext,
     args: Vec<AuthorizationArg>,
 }
 
 impl AuthorizationRequestBuilder {
     /// Creates a new authorization request builder.
     #[must_use]
-    pub fn new(user: impl Into<String>, privilege_level: u32) -> Self {
+    pub fn new(
+        user: impl Into<String>,
+        privilege_level: u32,
+        authentication_context: AuthorizationAuthenticationContext,
+    ) -> Self {
         Self {
             user: user.into(),
             port: String::new(),
             remote_address: String::new(),
             privilege_level,
+            authentication_context,
             args: Vec::new(),
         }
     }
@@ -521,6 +569,7 @@ impl AuthorizationRequestBuilder {
             port: self.port,
             remote_address: self.remote_address,
             privilege_level: self.privilege_level,
+            authentication_context: self.authentication_context,
             args: self.args,
         };
         operation.validate()?;
@@ -680,6 +729,51 @@ impl AccountingResponseStatus {
     }
 }
 
+impl AuthenticationResponseStatus {
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Pass => 0x01,
+            Self::Fail => 0x02,
+            Self::Error => 0x07,
+        }
+    }
+
+    fn into_proto(self) -> i32 {
+        i32::from(self.code())
+    }
+
+    fn from_proto(value: i32) -> anyhow::Result<Self> {
+        match u8::try_from(value).context("IPC authentication status value is out of u8 range")? {
+            0 => bail!("IPC authentication status must not be unspecified"),
+            0x01 => Ok(Self::Pass),
+            0x02 => Ok(Self::Fail),
+            0x07 => Ok(Self::Error),
+            _ => bail!("IPC authentication status value is not recognized"),
+        }
+    }
+}
+
+impl AuthorizationAuthenticationContext {
+    const fn into_proto(self) -> i32 {
+        match self {
+            Self::TacacsAscii => 1,
+            Self::TacacsPap => 2,
+            Self::Unauthenticated => 3,
+        }
+    }
+
+    fn from_proto(value: i32) -> anyhow::Result<Self> {
+        match value {
+            0 => bail!("IPC authorization authentication context must not be unspecified"),
+            1 => Ok(Self::TacacsAscii),
+            2 => Ok(Self::TacacsPap),
+            3 => Ok(Self::Unauthenticated),
+            _ => bail!("IPC authorization authentication context is not recognized"),
+        }
+    }
+}
+
 /// Structured error returned by the local service when a request cannot be
 /// fulfilled.
 ///
@@ -805,6 +899,38 @@ impl TryFrom<ipc::AccountingRequest> for AccountingOperation {
     }
 }
 
+impl From<PapAuthenticationOperation> for ipc::PapAuthenticationRequest {
+    fn from(value: PapAuthenticationOperation) -> Self {
+        Self {
+            user: value.user,
+            password: value.password.into_unprotected_vec(),
+            port: value.port,
+            remote_address: value.remote_address,
+            privilege_level: value.privilege_level,
+        }
+    }
+}
+
+impl TryFrom<ipc::PapAuthenticationRequest> for PapAuthenticationOperation {
+    type Error = anyhow::Error;
+
+    fn try_from(value: ipc::PapAuthenticationRequest) -> Result<Self, Self::Error> {
+        if value.user.is_empty() {
+            bail!("PAP authentication requires a username");
+        }
+        if value.privilege_level > 15 {
+            bail!("PAP authentication privilege level is outside the TACACS+ range 0-15");
+        }
+        Ok(Self {
+            user: value.user,
+            password: SecretBytes::new(value.password),
+            port: value.port,
+            remote_address: value.remote_address,
+            privilege_level: value.privilege_level,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Protobuf ↔ domain conversions for AuthorizationOperation
 // ---------------------------------------------------------------------------
@@ -816,6 +942,7 @@ impl From<AuthorizationOperation> for ipc::AuthorizationRequest {
             port: value.port,
             remote_address: value.remote_address,
             privilege_level: value.privilege_level,
+            authentication_context: value.authentication_context.into_proto(),
             args: value
                 .args
                 .into_iter()
@@ -832,6 +959,7 @@ impl From<&AuthorizationOperation> for ipc::AuthorizationRequest {
             port: value.port.clone(),
             remote_address: value.remote_address.clone(),
             privilege_level: value.privilege_level,
+            authentication_context: value.authentication_context.into_proto(),
             args: value
                 .args
                 .iter()
@@ -851,6 +979,9 @@ impl TryFrom<ipc::AuthorizationRequest> for AuthorizationOperation {
             port: value.port,
             remote_address: value.remote_address,
             privilege_level: value.privilege_level,
+            authentication_context: AuthorizationAuthenticationContext::from_proto(
+                value.authentication_context,
+            )?,
             args: value.args.into_iter().map(AuthorizationArg::from).collect(),
         };
         operation.validate()?;
@@ -884,6 +1015,33 @@ impl AccountingOperationResponse {
         Ok(Self {
             server: proto.server,
             status: AccountingResponseStatus::from_proto(proto.status)?,
+            server_message: proto.server_message,
+            data: proto.data,
+        })
+    }
+}
+
+impl PapAuthenticationOperationResponse {
+    #[must_use]
+    pub fn into_proto(self) -> ipc::PapAuthenticationResponse {
+        ipc::PapAuthenticationResponse {
+            server: self.server,
+            status: self.status.into_proto(),
+            server_message: self.server_message,
+            data: self.data,
+        }
+    }
+
+    /// Decodes a protobuf PAP response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the status is unspecified or not a terminal PAP
+    /// status recognized by the domain contract.
+    pub fn from_proto(proto: ipc::PapAuthenticationResponse) -> anyhow::Result<Self> {
+        Ok(Self {
+            server: proto.server,
+            status: AuthenticationResponseStatus::from_proto(proto.status)?,
             server_message: proto.server_message,
             data: proto.data,
         })
@@ -958,6 +1116,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pap_authentication_proto_round_trip_redacts_password() {
+        let request = PapAuthenticationOperation {
+            user: "admin".to_owned(),
+            password: SecretBytes::new(b"sentinel-secret".to_vec()),
+            port: "tty0".to_owned(),
+            remote_address: "192.0.2.1".to_owned(),
+            privilege_level: 15,
+        };
+        assert!(!format!("{request:?}").contains("sentinel-secret"));
+
+        let proto = ipc::PapAuthenticationRequest::from(request);
+        let decoded = PapAuthenticationOperation::try_from(proto).unwrap();
+        assert_eq!(decoded.user, "admin");
+        assert_eq!(decoded.password.expose_secret(), b"sentinel-secret");
+        assert_eq!(decoded.privilege_level, 15);
+    }
+
+    #[test]
+    fn pap_authentication_response_proto_round_trip() {
+        let response = PapAuthenticationOperationResponse {
+            server: "server:49".to_owned(),
+            status: AuthenticationResponseStatus::Pass,
+            server_message: "ok".to_owned(),
+            data: vec![1, 2],
+        };
+        let decoded =
+            PapAuthenticationOperationResponse::from_proto(response.into_proto()).unwrap();
+        assert_eq!(decoded.status, AuthenticationResponseStatus::Pass);
+        assert_eq!(decoded.data, vec![1, 2]);
+    }
+
+    #[test]
     fn test_accounting_response_status_codes_match_rfc_values() {
         assert_eq!(AccountingResponseStatus::Success.code(), 0x01);
         assert_eq!(AccountingResponseStatus::Error.code(), 0x02);
@@ -990,14 +1180,18 @@ mod tests {
 
     #[test]
     fn test_authorization_operation_proto_round_trip() {
-        let request = AuthorizationOperation::builder("admin", 15)
-            .port("tty0")
-            .remote_address("127.0.0.1")
-            .service("shell")
-            .command("show")
-            .command_args(vec!["users".to_owned()])
-            .build()
-            .unwrap();
+        let request = AuthorizationOperation::builder(
+            "admin",
+            15,
+            AuthorizationAuthenticationContext::TacacsAscii,
+        )
+        .port("tty0")
+        .remote_address("127.0.0.1")
+        .service("shell")
+        .command("show")
+        .command_args(vec!["users".to_owned()])
+        .build()
+        .unwrap();
 
         let encoded: ipc::AuthorizationRequest = (&request).into();
         let decoded = AuthorizationOperation::try_from(encoded).unwrap();
@@ -1009,12 +1203,16 @@ mod tests {
 
     #[test]
     fn test_authorization_builder_adds_command_args_in_order() {
-        let request = AuthorizationOperation::builder("admin", 15)
-            .service("shell")
-            .command("show")
-            .command_args(vec!["interfaces".to_owned(), "status".to_owned()])
-            .build()
-            .unwrap();
+        let request = AuthorizationOperation::builder(
+            "admin",
+            15,
+            AuthorizationAuthenticationContext::TacacsAscii,
+        )
+        .service("shell")
+        .command("show")
+        .command_args(vec!["interfaces".to_owned(), "status".to_owned()])
+        .build()
+        .unwrap();
 
         assert_eq!(request.command_arguments().collect::<Vec<_>>(), vec!["interfaces", "status"]);
     }
@@ -1061,6 +1259,7 @@ mod tests {
             port: "tty0".to_owned(),
             remote_address: "127.0.0.1".to_owned(),
             privilege_level: 15,
+            authentication_context: AuthorizationAuthenticationContext::TacacsAscii.into_proto(),
             args: vec![
                 ipc::AuthorizationArg {
                     name: "service".to_owned(),
@@ -1086,20 +1285,28 @@ mod tests {
 
     #[test]
     fn test_authorization_builder_rejects_privilege_level_above_max() {
-        let error = AuthorizationOperation::builder("admin", 16)
-            .service("shell")
-            .command("show")
-            .build()
-            .unwrap_err();
+        let error = AuthorizationOperation::builder(
+            "admin",
+            16,
+            AuthorizationAuthenticationContext::TacacsAscii,
+        )
+        .service("shell")
+        .command("show")
+        .build()
+        .unwrap_err();
         assert!(error.to_string().contains("range 0-15"));
     }
 
     #[test]
     fn test_authorization_builder_rejects_shell_without_cmd() {
-        let error = AuthorizationOperation::builder("admin", 15)
-            .service("shell")
-            .build()
-            .unwrap_err();
+        let error = AuthorizationOperation::builder(
+            "admin",
+            15,
+            AuthorizationAuthenticationContext::TacacsAscii,
+        )
+        .service("shell")
+        .build()
+        .unwrap_err();
         assert!(error.to_string().contains("requires cmd"));
     }
 

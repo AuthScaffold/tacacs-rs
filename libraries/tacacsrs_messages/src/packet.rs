@@ -1,12 +1,17 @@
+use std::fmt;
+
+use zeroize::Zeroize;
+
+use crate::enumerations::TacacsFlags;
 use crate::{constants::TACACS_HEADER_LENGTH, header::Header};
 use crate::obfuscation::{convert, convert_inplace};
 
 pub trait PacketTrait {
     fn header(&self) -> &Header;
-    fn body(&self) -> &Vec<u8>;
+    fn body(&self) -> &[u8];
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Packet {
     header: Header,
     body: Vec<u8>,
@@ -44,10 +49,18 @@ impl Packet {
         Ok(Self { header, body })
     }
 
-    /// Consumes the packet and returns its header and body.
+    /// Replaces the packet session identifier without copying its body.
     #[must_use]
-    pub fn into_parts(self) -> (Header, Vec<u8>) {
-        (self.header, self.body)
+    pub fn with_session_id(mut self, session_id: u32) -> Self {
+        self.header.session_id = session_id;
+        self
+    }
+
+    /// Replaces packet flags without copying its body.
+    #[must_use]
+    pub fn with_flags(mut self, flags: TacacsFlags) -> Self {
+        self.header.flags = flags;
+        self
     }
 
     /// # Panics
@@ -123,12 +136,80 @@ impl Packet {
     }
 }
 
+impl fmt::Debug for Packet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Packet")
+            .field("header", &self.header)
+            .field("body_length", &self.body.len())
+            .field("body", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for Packet {
+    fn drop(&mut self) {
+        self.body.zeroize();
+    }
+}
+
 impl PacketTrait for Packet {
     fn header(&self) -> &Header {
         &self.header
     }
 
-    fn body(&self) -> &Vec<u8> {
-        &self.body
+    fn body(&self) -> &[u8] {
+        self.body.as_slice()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
+
+    use super::*;
+
+    #[test]
+    fn packet_debug_redacts_body() {
+        let secret = b"not-in-packet-debug";
+        let packet = Packet::new(
+            Header {
+                major_version: TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: TacacsMinorVersion::TacacsPlusMinorVerOne,
+                tacacs_type: TacacsType::TacPlusAuthentication,
+                seq_no: 1,
+                flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                session_id: 1,
+                length: u32::try_from(secret.len()).unwrap(),
+            },
+            secret.to_vec(),
+        )
+        .unwrap();
+
+        let debug = format!("{packet:?}");
+        assert!(!debug.contains("not-in-packet-debug"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("body_length: 19"));
+    }
+
+    #[test]
+    fn with_session_id_preserves_body_without_reconstruction() {
+        let packet = Packet::new(
+            Header {
+                major_version: TacacsMajorVersion::TacacsPlusMajor1,
+                minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                tacacs_type: TacacsType::TacPlusAccounting,
+                seq_no: 2,
+                flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                session_id: 1,
+                length: 4,
+            },
+            b"body".to_vec(),
+        )
+        .unwrap()
+        .with_session_id(2);
+
+        assert_eq!(packet.header().session_id, 2);
+        assert_eq!(packet.body(), b"body");
     }
 }

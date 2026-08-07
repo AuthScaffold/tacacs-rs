@@ -297,12 +297,16 @@ async fn ipc_authorize(
     exec_path: &str,
     exec_args: &[String],
 ) -> Option<AuthDecision> {
-    let builder = AuthorizationOperation::builder(config.user.clone(), config.privilege_level)
-        .port(config.port.clone().unwrap_or_default())
-        .remote_address(config.rem_addr.clone().unwrap_or_default())
-        .service("shell")
-        .command(exec_path.to_owned())
-        .command_args(exec_args.iter().cloned());
+    let builder = AuthorizationOperation::builder(
+        config.user.clone(),
+        config.privilege_level,
+        tacacsrs_agent_client::AuthorizationAuthenticationContext::TacacsAscii,
+    )
+    .port(config.port.clone().unwrap_or_default())
+    .remote_address(config.rem_addr.clone().unwrap_or_default())
+    .service("shell")
+    .command(exec_path.to_owned())
+    .command_args(exec_args.iter().cloned());
     let operation = match builder.build() {
         Ok(operation) => operation,
         Err(err) => {

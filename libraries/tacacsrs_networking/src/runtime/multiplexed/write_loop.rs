@@ -6,12 +6,12 @@ use tokio::sync::mpsc;
 
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 
-use crate::codec::{PacketWriteResult, PacketWriterTrait};
+use crate::codec::{PacketWriteResult, PacketWriter};
 
 use crate::session::SessionManager;
 
 pub(super) async fn run_write_loop(
-    packet_writer: &dyn PacketWriterTrait,
+    packet_writer: &PacketWriter,
     mut receiver: mpsc::Receiver<Packet>,
     writer: &mut (dyn AsyncWrite + Unpin + Send),
     connection: Arc<SessionManager>,
@@ -41,14 +41,14 @@ pub(super) async fn run_write_loop(
 
         let session_id = packet.header().session_id;
 
-        log::info!(
+        log::trace!(
             target: "tacacsrs_networking::runtime::multiplexed::write_loop",
             "Received packet for session id {session_id} to send to network"
         );
 
         match packet_writer.write_packet(writer, packet).await {
             PacketWriteResult::Success => {
-                log::info!(
+                log::trace!(
                     target: "tacacsrs_networking::runtime::multiplexed::write_loop",
                     "Sent packet for session id {session_id} to network"
                 );

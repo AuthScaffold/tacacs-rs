@@ -18,15 +18,6 @@ impl DuplexChannel {
         }
     }
 
-    pub(super) fn sender_closed(&self) -> bool {
-        self.sender.is_closed()
-    }
-
-    pub(super) async fn receiver_closed(&self) -> bool {
-        let reader_lock = self.receiver.read().await;
-        reader_lock.is_closed()
-    }
-
     pub(super) async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {
         self.sender.send(packet).await?;
         Ok(())

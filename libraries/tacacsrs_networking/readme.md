@@ -1,184 +1,106 @@
+# tacacsrs-networking
 
+`tacacsrs-networking` owns TACACS+ transport establishment, adaptive
+single-connection reuse, packet framing, multiplexing, sequencing, response
+routing, and connection recovery.
 
+## Two Client Lanes
 
-## Consumer vs TACACS-RS Networking Perspective
+Most TACACS+ operations are one request followed by one reply. Accounting,
+authorization, and PAP authentication use the fixed exchange lane:
 
-**Clients Perspective**
-
-A Client considers their sessions to be independent and completing at their own pace.
-
-```
-Session 123: Accounting Session
-    Sequence Number: 1 -> AccountingRequest
-    Sequence Number: 2 <- AccountingResponse
-    *DONE*
-
-Session 123465: Accounting Session
-    Sequence Number: 1 -> AccountingRequest
-    Sequence Number: 2 <- AccountingResponse
-    *DONE*
+```rust,ignore
+let reply = client.execute(exchange).await?;
 ```
 
-**Networking Perspective**
+An exchange descriptor serializes its operation body and parses its typed
+reply. Networking owns the random session ID, request/reply sequence numbers
+`1/2`, header validation, transport selection, and cleanup.
 
-The networking perspective is that there is many things in flight and they don't necessarily occur in order.
+Transparent proxying and genuinely interactive authentication use a mutable
+conversation:
 
-```
-/// TCP Side
-Session 123465.1 ->
-Session 123.1 ->
-Session 123465.2 <-
-Session 123.2 <-
-```
-
-
-TCP Stack is broken down with two key components
-
-1. Queued Tasks in a channel
-2. Associated sessions registered on the connection
-
-```
-| Tac Client |                   | Tac Server |
-     |                                |
-  start session   ----------------->  |
-     |                                |
-  session         <----------------   |
-     |                                |   \
- send request     -----(1)--------->  | loops until done
-     |                                |   |
- process response <------(2)----------|   /
-     |
-  session complete
+```rust,ignore
+let mut conversation = client.open_conversation().await?;
+let reply = conversation.round_trip(request).await?;
 ```
 
-```
-| Tac Client |                   | Tac Server |
-     |                                |
-  start session   ----------------->  |
-     |                                |
-  session         <----------------   |
-     |                                |
- send Tac Packet -------------------->|
-     |                   (3)          x - network issues/server gone
-     |
- what does a session do?
+`round_trip` enforces one outstanding packet, one session ID and packet type,
+and odd/even sequence progression. RFC 8907 sequence numbers never wrap; a
+conversation must restart with a new session ID after exhaustion.
 
-```
+ASCII authentication is intentionally absent from the typed fixed API. The raw
+conversation and agent proxy retain wire-compatible GETUSER, GETPASS, GETDATA,
+RESTART, and terminal reply handling.
 
-```
-(1)
+## Shared Connection Runtime
 
-| Connection Manager |      | TCP Socket |
-       |                        |
-   message queued  ----------> send
-       |
-    store session
-       reference
-```
+One reader task and one writer task own each confirmed single-connect stream.
+The writer consumes a bounded outbound queue because bytes on one TCP/TLS stream
+must be serialized. The reader can receive server replies in any cross-session
+order and routes each packet by its TACACS+ session ID.
 
-```
-(2)
-| Connection Manager |      | TCP Socket |
-       |                         |
-   find session <----------     read
-       |
-   run callback
+Fixed exchanges register a direct one-shot route:
+
+```text
+execute(exchange)
+  -> reserve random nonzero session ID
+  -> registry[session ID] = expected header + one-shot sender
+  -> bounded outbound queue
+  -> server reply arrives in any session order
+  -> reader validates type/version/sequence
+  -> one-shot receiver wakes the matching operation
+  -> completion removes the route and releases the ID
 ```
 
+Conversations register a bounded per-session inbox instead. Only interactive
+and proxy traffic pays that channel cost.
 
-```
-(3)
-| Connection Manager |      | TCP Socket |
-       |                         |
-   find all sessions <-----   closed
-       |
-   for all sessions
-      close
-```
+Unknown or late replies are ignored after cancellation. A metadata mismatch on
+an active route is a protocol violation and closes the shared connection.
+Reader or writer failure stops admission and closes all routes so every waiter
+observes connection failure. Shared connection recovery is serialized to avoid
+simultaneous reconnect probes.
 
+Cancellation after outbound enqueue has an indeterminate distributed outcome:
+the server may already have processed the request. Networking does not replay
+an in-flight accounting, authorization, or authentication operation
+automatically.
 
-## Async Connections
+## Dedicated Fallback
 
+When single-connect is disabled, denied by the server, or being negotiated by
+another request, a fixed exchange uses a dedicated TCP/TLS stream. The same
+exchange descriptor and response validation apply. A successful capability
+probe can promote its completed dedicated stream into the shared runtime.
 
-### Non-Single Connection Mode
+## Packet Ownership
 
-```
-| tcp connection |
-        |
-    Run Authentication Transaction [several packets, single_connection_mode_client=true, single_connection_mode_server=false]
-        |
-        x [server closes connection (NetAAA will close connection), client should close connection]
-```
+Packet bodies are exposed as byte slices, formatted as redacted metadata, and
+zeroized on drop. Obfuscation and deobfuscation mutate owned bodies in place.
+The writer emits the 12-byte header and body separately rather than allocating
+a second combined packet buffer.
 
-```
-| tcp connection |
-        |
-    Run Authentication Transaction [several packets, single_connection_mode_client=false, single_connection_mode_server=true]
-        |    
-        x [client should close connection, server closes connection (NetAAA will close connection)]
-```
+TACACS+ shared-secret obfuscation is not confidentiality. PAP is allowed over
+the operator-configured transport for interoperability, but production
+deployments should use TACACS+ over TLS 1.3.
 
-### Single Connection Mode Blocking
+## Baseline
 
-```
-| tcp connection |
-        |
-    Run Authentication Transaction [several packets, single_connection_mode_client=true, single_connection_mode_server=true]
-        |    
-    Run Accounting Transaction [2 packets, single_connection_mode=true]
-```
+The ignored `routing_burst_baseline` tests compare registry mechanics without
+network latency. On the Windows debug build used during this redesign, 512
+reverse-order exchanges measured approximately:
 
-### Single Connection Mode Non-Blocking
+| Route | Exchanges/s |
+|---|---:|
+| Conversation channel | 56,173 |
+| Direct fixed one-shot | 89,899 |
 
-```
-| tcp connection |
-        |
-    Start Authentication Transaction [several packets, single_connection_mode_client=true, single_connection_mode_server=true]
-     |  Start Accounting Transaction [2 packets, single_connection_mode=true]
-     |              |
-    Send         finished    Start Authorization Session [2 packets]
-  password                                |
-     |                                  send
-     |                                    |
-  finished                             finished
-```
+This is about a 60% routing-throughput increase in that non-CI diagnostic run.
+The values are informational rather than stable performance thresholds.
 
-## Consumers
+Run both baselines with:
 
-### Login (Authentication)
-
-Roughly an authentication session looks like
-
-- Create a session against a specific connection
-  - generates channels,
-  - a session id,
-  - registers link between session id and channels
-- Run the necessary steps, inspecting the output of the function calls
-- Complete or drop the session
-
-```rust
-// This is not valid code, it's only to illustrate
-create_tacacs_connection_manager() -> ConnectionManager
-create_authentication_session(ConnectionManager) -> Session
-
-let result = send_authentication_start(Session) -> AuthenticationContinue
-if (result.is_ok == false)
-{
-    fail?? or something else
-}
-
-bool is_password_ok = false;
-while (!is_password_ok)
-{
-    let password : Vec::<u8>() = get_password_from_user();
-    let result = send_authentication_send_password(Session, password) -> NotOk
-    if (result.is_ok == false)
-    {
-        fail?? or something else
-    }
-
-    is_password_ok result.password_is_ok();
-}
-
-send_authentication_finish(Session) -> AuthenticationComplete
+```bash
+cargo test -p tacacsrs-networking routing_burst_baseline --lib -- --ignored --nocapture
 ```
