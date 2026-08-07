@@ -14,6 +14,16 @@ impl SecretBytes {
         Self(Zeroizing::new(bytes))
     }
 
+    /// Adopts an already-zeroizing allocation without copying the secret.
+    ///
+    /// Use this when the secret was read into a [`Zeroizing<Vec<u8>>`] so the
+    /// bytes stay protected on every path from the initial read through
+    /// ownership by [`SecretBytes`], with no intervening unprotected buffer.
+    #[must_use]
+    pub fn from_zeroizing(bytes: Zeroizing<Vec<u8>>) -> Self {
+        Self(bytes)
+    }
+
     /// Explicitly borrows the secret value.
     #[must_use]
     pub fn expose_secret(&self) -> &[u8] {
@@ -61,5 +71,16 @@ mod tests {
 
         assert_eq!(bytes, b"handoff-secret");
         assert_eq!(bytes.as_ptr(), original_allocation);
+    }
+
+    #[test]
+    fn zeroizing_handoff_reuses_the_secret_allocation() {
+        let protected = zeroize::Zeroizing::new(b"zeroizing-handoff-secret".to_vec());
+        let original_allocation = protected.as_ptr();
+
+        let secret = SecretBytes::from_zeroizing(protected);
+
+        assert_eq!(secret.expose_secret(), b"zeroizing-handoff-secret");
+        assert_eq!(secret.expose_secret().as_ptr(), original_allocation);
     }
 }

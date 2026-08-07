@@ -2193,6 +2193,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "zeroize",
 ]
 
 [[package]]
