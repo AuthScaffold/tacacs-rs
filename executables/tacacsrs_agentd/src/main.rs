@@ -8,8 +8,8 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::Parser;
 use tacacsrs_agent::{
-    EnabledServices, ProxyDownstreamObfuscation, RuntimeHealthPublisher, ServiceConfig,
-    TacacsClientService,
+    EnabledServices, ProxyDownstreamObfuscation, RuntimeHealthPublisher, RuntimeLifecycle,
+    ServiceConfig, TacacsClientService,
 };
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_cli_datastore::{
@@ -276,7 +276,7 @@ async fn run_supervised_service(
         supervisor.load_initial(&cancellation).await?;
     }
 
-    let mut host_task = {
+    let host_task = {
         let cancellation = cancellation.clone();
         tokio::spawn(host_integration.run(health.subscribe(), cancellation))
     };
@@ -293,9 +293,28 @@ async fn run_supervised_service(
         })
     };
 
+    supervise_tasks(service.serve(), host_task, supervisor_task, cancellation, health).await
+}
+
+/// Coordinates the service, host integration, and configuration supervisor as
+/// peers so that an unexpected exit of any one of them is observed immediately.
+///
+/// The configuration supervisor is critical: if it returns, errors, or panics
+/// while the service is still serving, the runtime would otherwise keep serving
+/// stale configuration, so this is fatal.
+async fn supervise_tasks(
+    service_future: impl std::future::Future<Output = anyhow::Result<()>>,
+    mut host_task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    mut supervisor_task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    cancellation: CancellationToken,
+    health: RuntimeHealthPublisher,
+) -> anyhow::Result<()> {
+    let service_future = std::pin::pin!(service_future);
+
     let mut host_task_completed = false;
+    let mut supervisor_task_completed = false;
     let service_result = tokio::select! {
-        result = service.serve() => result,
+        result = service_future => result,
         result = &mut host_task => {
             host_task_completed = true;
             match result.context("Host integration task failed")? {
@@ -303,16 +322,38 @@ async fn run_supervised_service(
                 Err(error) => Err(error.context("Host integration failed")),
             }
         }
+        result = &mut supervisor_task => {
+            supervisor_task_completed = true;
+            // Publish a typed failure without embedding the underlying config or credential error.
+            health.set_lifecycle(RuntimeLifecycle::Failed);
+            Err(supervisor_exit_to_fatal_error(result))
+        }
     };
+
     cancellation.cancel();
-    supervisor_task
-        .await
-        .context("Configuration supervisor task failed")??;
+    if !supervisor_task_completed {
+        supervisor_task
+            .await
+            .context("Configuration supervisor task failed")??;
+    }
     if !host_task_completed {
         host_task.await.context("Host integration task failed")??;
     }
 
     service_result
+}
+
+/// Classifies an unexpected configuration-supervisor task outcome as a fatal error.
+fn supervisor_exit_to_fatal_error(
+    result: Result<anyhow::Result<()>, tokio::task::JoinError>,
+) -> anyhow::Error {
+    match result {
+        Ok(Ok(())) => anyhow::anyhow!("Configuration supervisor stopped unexpectedly"),
+        Ok(Err(error)) => error.context("Configuration supervisor failed"),
+        Err(join_error) => {
+            anyhow::Error::new(join_error).context("Configuration supervisor task panicked")
+        }
+    }
 }
 
 /// Starts the central TACACS+ client service process.
@@ -422,6 +463,158 @@ async fn main() -> anyhow::Result<()> {
         host_integration,
     )
     .await
+}
+
+#[cfg(test)]
+mod supervision_tests {
+    use std::future;
+
+    use tacacsrs_agent::{EnabledServices, RuntimeHealthPublisher, RuntimeLifecycle};
+    use tokio_util::sync::CancellationToken;
+
+    use super::{supervise_tasks, supervisor_exit_to_fatal_error};
+
+    fn health() -> RuntimeHealthPublisher {
+        RuntimeHealthPublisher::new(EnabledServices::CLIENT_API)
+    }
+
+    fn wait_for_cancel(cancellation: CancellationToken) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+        tokio::spawn(async move {
+            cancellation.cancelled().await;
+            Ok(())
+        })
+    }
+
+    #[tokio::test]
+    async fn supervisor_early_return_is_fatal_and_marks_failed() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = wait_for_cancel(cancellation.clone());
+        let supervisor_task = tokio::spawn(async { Ok(()) });
+
+        let result = supervise_tasks(
+            future::pending::<anyhow::Result<()>>(),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result.unwrap_err().to_string().contains("stopped unexpectedly"));
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test]
+    async fn supervisor_error_is_fatal_and_marks_failed() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = wait_for_cancel(cancellation.clone());
+        let supervisor_task =
+            tokio::spawn(async { Err(anyhow::anyhow!("supervisor failure detail")) });
+
+        let result = supervise_tasks(
+            future::pending::<anyhow::Result<()>>(),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result.unwrap_err().to_string().contains("Configuration supervisor failed"));
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test]
+    async fn supervisor_panic_is_fatal_and_marks_failed() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = wait_for_cancel(cancellation.clone());
+        let supervisor_task = tokio::spawn(async {
+            panic!("supervisor panic");
+        });
+
+        let result = supervise_tasks(
+            future::pending::<anyhow::Result<()>>(),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result.unwrap_err().to_string().contains("panicked"));
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test]
+    async fn normal_service_exit_joins_without_false_failure() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = wait_for_cancel(cancellation.clone());
+        let supervisor_task = wait_for_cancel(cancellation.clone());
+
+        let result = supervise_tasks(
+            future::ready(Ok(())),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_ne!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test]
+    async fn listener_error_propagates_without_marking_failed() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = wait_for_cancel(cancellation.clone());
+        let supervisor_task = wait_for_cancel(cancellation.clone());
+
+        let result = supervise_tasks(
+            future::ready(Err(anyhow::anyhow!("listener bind failed"))),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result.unwrap_err().to_string().contains("listener bind failed"));
+        assert_ne!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test]
+    async fn host_integration_error_propagates() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = tokio::spawn(async { Err(anyhow::anyhow!("host integration failure")) });
+        let supervisor_task = wait_for_cancel(cancellation.clone());
+
+        let result = supervise_tasks(
+            future::pending::<anyhow::Result<()>>(),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result.unwrap_err().to_string().contains("Host integration failed"));
+    }
+
+    #[test]
+    fn fatal_error_classification_distinguishes_clean_and_errored_exits() {
+        let stopped = supervisor_exit_to_fatal_error(Ok(Ok(())));
+        assert!(stopped.to_string().contains("stopped unexpectedly"));
+
+        let failed = supervisor_exit_to_fatal_error(Ok(Err(anyhow::anyhow!("detail"))));
+        assert!(failed.to_string().contains("Configuration supervisor failed"));
+    }
 }
 
 #[cfg(test)]
