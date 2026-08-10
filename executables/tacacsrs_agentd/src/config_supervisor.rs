@@ -20,13 +20,16 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use tacacsrs_agent::{DatastoreState, DegradationReason, RuntimeHealthPublisher, TacacsClientService};
 use tacacsrs_config::TacacsPlus;
-use tacacsrs_credential_resolution::CredentialResolver;
+use tacacsrs_credential_resolution::{
+    CredentialChangeEvent, CredentialChangeScope, CredentialChangeSource, CredentialResolver,
+};
 use tacacsrs_datastore::{
     ChangeNotificationMode, ConfigChangeEvent, ConfigDatastore, InitialLoadPolicy,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::config_filter::TacacsPlusFilter;
+use crate::materialization_coordinator::{MaterializationCoordinator, PublicationOutcome};
 
 /// Supplies retry delays without owning asynchronous sleeping.
 pub(crate) trait RetryBackoff: Send + Sync {
@@ -75,7 +78,8 @@ pub(crate) struct ConfigSupervisor {
     health: RuntimeHealthPublisher,
     config_filter: Arc<dyn TacacsPlusFilter>,
     backoff: Arc<dyn RetryBackoff>,
-    credential_resolver: Option<Arc<dyn CredentialResolver>>,
+    materialization_coordinator: Option<Arc<MaterializationCoordinator>>,
+    credential_change_source: Option<Arc<dyn CredentialChangeSource>>,
 }
 
 impl ConfigSupervisor {
@@ -115,6 +119,27 @@ impl ConfigSupervisor {
         )
     }
 
+    /// Creates a supervisor that owns separate credential resolution and change subscriptions.
+    #[must_use]
+    pub(crate) fn new_with_credential_provider(
+        datastore: Arc<dyn ConfigDatastore>,
+        service: Arc<TacacsClientService>,
+        health: RuntimeHealthPublisher,
+        config_filter: Arc<dyn TacacsPlusFilter>,
+        credential_resolver: Arc<dyn CredentialResolver>,
+        credential_change_source: Arc<dyn CredentialChangeSource>,
+    ) -> Self {
+        Self::with_backoff_and_provider(
+            datastore,
+            service,
+            health,
+            config_filter,
+            Arc::new(ExponentialBackoff::production()),
+            Some(credential_resolver),
+            Some(credential_change_source),
+        )
+    }
+
     fn with_backoff(
         datastore: Arc<dyn ConfigDatastore>,
         service: Arc<TacacsClientService>,
@@ -122,7 +147,15 @@ impl ConfigSupervisor {
         config_filter: Arc<dyn TacacsPlusFilter>,
         backoff: Arc<dyn RetryBackoff>,
     ) -> Self {
-        Self::with_backoff_and_resolver(datastore, service, health, config_filter, backoff, None)
+        Self::with_backoff_and_provider(
+            datastore,
+            service,
+            health,
+            config_filter,
+            backoff,
+            None,
+            None,
+        )
     }
 
     fn with_backoff_and_resolver(
@@ -133,13 +166,37 @@ impl ConfigSupervisor {
         backoff: Arc<dyn RetryBackoff>,
         credential_resolver: Option<Arc<dyn CredentialResolver>>,
     ) -> Self {
-        Self {
+        Self::with_backoff_and_provider(
             datastore,
             service,
             health,
             config_filter,
             backoff,
             credential_resolver,
+            None,
+        )
+    }
+
+    fn with_backoff_and_provider(
+        datastore: Arc<dyn ConfigDatastore>,
+        service: Arc<TacacsClientService>,
+        health: RuntimeHealthPublisher,
+        config_filter: Arc<dyn TacacsPlusFilter>,
+        backoff: Arc<dyn RetryBackoff>,
+        credential_resolver: Option<Arc<dyn CredentialResolver>>,
+        credential_change_source: Option<Arc<dyn CredentialChangeSource>>,
+    ) -> Self {
+        let materialization_coordinator = credential_resolver.map(|resolver| {
+            Arc::new(MaterializationCoordinator::new(resolver, datastore.validation_options()))
+        });
+        Self {
+            datastore,
+            service,
+            health,
+            config_filter,
+            backoff,
+            materialization_coordinator,
+            credential_change_source,
         }
     }
 
@@ -164,10 +221,11 @@ impl ConfigSupervisor {
             };
 
             match result {
-                Ok(()) => {
+                Ok(PublicationOutcome::Published) => {
                     self.mark_current();
                     return Ok(());
                 }
+                Ok(PublicationOutcome::Superseded) => {}
                 Err(()) if policy == InitialLoadPolicy::FailFast => {
                     self.mark_source_problem();
                     anyhow::bail!(
@@ -200,7 +258,10 @@ impl ConfigSupervisor {
         if cancellation.is_cancelled() {
             return Ok(());
         }
-        self.run_notifications(cancellation).await;
+        tokio::join!(
+            self.run_notifications(cancellation),
+            self.run_credential_notifications(cancellation),
+        );
         Ok(())
     }
 
@@ -215,8 +276,10 @@ impl ConfigSupervisor {
         let mut refresh_before_subscribe = false;
         loop {
             if refresh_before_subscribe {
-                if self.load_and_apply().await.is_ok() {
-                    self.mark_current();
+                if let Ok(outcome) = self.load_and_apply().await {
+                    if outcome == PublicationOutcome::Published {
+                        self.mark_current();
+                    }
                     attempt = 0;
                 } else {
                     self.mark_source_problem();
@@ -257,8 +320,10 @@ impl ConfigSupervisor {
                 };
                 match event {
                     Some(ConfigChangeEvent::Changed(change)) => {
-                        if self.apply_candidate((*change.config).clone()).await.is_ok() {
-                            self.mark_current();
+                        if let Ok(outcome) = self.apply_candidate((*change.config).clone()).await {
+                            if outcome == PublicationOutcome::Published {
+                                self.mark_current();
+                            }
                         } else {
                             self.mark_candidate_rejected();
                         }
@@ -288,42 +353,46 @@ impl ConfigSupervisor {
         }
     }
 
-    async fn load_and_apply(&self) -> Result<(), ()> {
+    async fn load_and_apply(&self) -> Result<PublicationOutcome, ()> {
         let candidate = self.datastore.load().await.map_err(|_| {
             log::warn!("Datastore '{}' configuration load failed", self.datastore.label());
         })?;
         self.apply_candidate(candidate).await
     }
 
-    async fn apply_candidate(&self, candidate: TacacsPlus) -> Result<(), ()> {
+    async fn apply_candidate(&self, candidate: TacacsPlus) -> Result<PublicationOutcome, ()> {
+        let desired_source = candidate.clone();
         let filtered = self.config_filter.filter(candidate).await.map_err(|_| {
             log::warn!(
                 "Datastore '{}' configuration candidate was rejected by runtime filtering",
                 self.datastore.label(),
             );
         })?;
-        let apply = match self.credential_resolver.as_deref() {
-            Some(resolver) => {
-                let result = self
-                    .service
-                    .resolve_and_reload_tacacs_plus_with_proxy_downstream_obfuscation(
+        let apply = match self.materialization_coordinator.as_deref() {
+            Some(coordinator) => {
+                let attempt = coordinator
+                    .accept_source(
+                        desired_source,
                         filtered.tacacs_plus,
                         filtered.proxy_downstream_obfuscation,
-                        resolver,
                     )
                     .await;
+                let result = match coordinator.materialize(attempt).await {
+                    Ok(prepared) => coordinator.publish(prepared, &self.service).await,
+                    Err(_) => Err(anyhow::anyhow!("credential materialization failed")),
+                };
                 self.health
                     .set_degraded(DegradationReason::CredentialResolutionFailed, result.is_err());
                 result
             }
-            None => {
-                self.service
-                    .reload_tacacs_plus_with_proxy_downstream_obfuscation(
-                        filtered.tacacs_plus,
-                        filtered.proxy_downstream_obfuscation,
-                    )
-                    .await
-            }
+            None => self
+                .service
+                .reload_tacacs_plus_with_proxy_downstream_obfuscation(
+                    filtered.tacacs_plus,
+                    filtered.proxy_downstream_obfuscation,
+                )
+                .await
+                .map(|()| PublicationOutcome::Published),
         };
         apply.map_err(|_| {
             log::warn!(
@@ -331,6 +400,77 @@ impl ConfigSupervisor {
                 self.datastore.label(),
             );
         })
+    }
+
+    async fn run_credential_notifications(&self, cancellation: &CancellationToken) {
+        let Some(source) = self.credential_change_source.as_deref() else {
+            cancellation.cancelled().await;
+            return;
+        };
+        let mut attempt = 0u32;
+        loop {
+            let subscription = tokio::select! {
+                () = cancellation.cancelled() => return,
+                result = source.subscribe() => result,
+            };
+            let Ok(mut stream) = subscription else {
+                self.mark_credential_notifications_unavailable();
+                attempt = attempt.saturating_add(1);
+                if !self.wait_for_retry(attempt, cancellation).await {
+                    return;
+                }
+                continue;
+            };
+
+            self.health
+                .set_degraded(DegradationReason::CredentialNotificationsUnavailable, false);
+            attempt = 0;
+            loop {
+                let event = tokio::select! {
+                    () = cancellation.cancelled() => return,
+                    event = stream.next() => event,
+                };
+                match event {
+                    Some(CredentialChangeEvent::Changed(scope)) => {
+                        self.apply_credential_change(&scope).await;
+                    }
+                    Some(CredentialChangeEvent::Recovered) => {
+                        self.health.set_degraded(
+                            DegradationReason::CredentialNotificationsUnavailable,
+                            false,
+                        );
+                    }
+                    Some(CredentialChangeEvent::Unavailable) | None => {
+                        self.mark_credential_notifications_unavailable();
+                        attempt = attempt.saturating_add(1);
+                        if !self.wait_for_retry(attempt, cancellation).await {
+                            return;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn apply_credential_change(&self, scope: &CredentialChangeScope) {
+        let Some(coordinator) = self.materialization_coordinator.as_deref() else {
+            return;
+        };
+        let Some(attempt) = coordinator.credential_change(scope).await else {
+            return;
+        };
+        let result = match coordinator.materialize(attempt).await {
+            Ok(prepared) => coordinator.publish(prepared, &self.service).await,
+            Err(_) => Err(anyhow::anyhow!("credential rematerialization failed")),
+        };
+        self.health
+            .set_degraded(DegradationReason::CredentialResolutionFailed, result.is_err());
+        match result {
+            Ok(PublicationOutcome::Published) => self.mark_current(),
+            Ok(PublicationOutcome::Superseded) => {}
+            Err(_) => self.mark_source_problem(),
+        }
     }
 
     async fn wait_for_retry(&self, attempt: u32, cancellation: &CancellationToken) -> bool {
@@ -371,6 +511,11 @@ impl ConfigSupervisor {
         self.mark_source_problem();
     }
 
+    fn mark_credential_notifications_unavailable(&self) {
+        self.health
+            .set_degraded(DegradationReason::CredentialNotificationsUnavailable, true);
+    }
+
     fn mark_candidate_rejected(&self) {
         self.health
             .set_degraded(DegradationReason::CandidateConfigurationRejected, true);
@@ -390,6 +535,8 @@ mod tests {
     use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
     use tacacsrs_config::{EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity};
     use tacacsrs_credential_resolution::{
+        CredentialChangeError, CredentialChangeEvent, CredentialChangeScope,
+        CredentialChangeSource, CredentialChangeStream, CredentialKind, CredentialReference,
         CredentialRequest, ProviderErrorKind, ResolutionError, ResolvedCredential, SecretBytes,
     };
     use tacacsrs_datastore::{ConfigChangeStream, DatastoreRuntimePolicy};
@@ -504,6 +651,37 @@ mod tests {
         failures_remaining: AtomicUsize,
     }
 
+    struct CountingResolver {
+        resolved_servers: Mutex<Vec<String>>,
+    }
+
+    enum CredentialSubscriptionStep {
+        Error,
+        Events(Vec<CredentialChangeEvent>),
+    }
+
+    struct ScriptedCredentialChangeSource {
+        subscriptions: Mutex<VecDeque<CredentialSubscriptionStep>>,
+    }
+
+    #[async_trait]
+    impl CredentialChangeSource for ScriptedCredentialChangeSource {
+        async fn subscribe(&self) -> Result<CredentialChangeStream, CredentialChangeError> {
+            let step = self
+                .subscriptions
+                .lock()
+                .expect("credential subscriptions lock")
+                .pop_front()
+                .unwrap_or(CredentialSubscriptionStep::Events(Vec::new()));
+            match step {
+                CredentialSubscriptionStep::Error => Err(CredentialChangeError),
+                CredentialSubscriptionStep::Events(events) => {
+                    Ok(Box::pin(tokio_stream::iter(events).chain(tokio_stream::pending())))
+                }
+            }
+        }
+    }
+
     #[async_trait]
     impl CredentialResolver for InitiallyUnavailableResolver {
         async fn resolve(
@@ -551,6 +729,25 @@ mod tests {
                 tacacsrs_credential_resolution::SymmetricKeyMaterial {
                     key_format: None,
                     key: SecretBytes::new(b"resolved-supervisor-secret".to_vec()),
+                },
+            ))
+        }
+    }
+
+    #[async_trait]
+    impl CredentialResolver for CountingResolver {
+        async fn resolve(
+            &self,
+            request: &CredentialRequest,
+        ) -> Result<ResolvedCredential, ResolutionError> {
+            self.resolved_servers
+                .lock()
+                .expect("resolved servers lock")
+                .push(request.context().server_name().to_owned());
+            Ok(ResolvedCredential::SymmetricKey(
+                tacacsrs_credential_resolution::SymmetricKeyMaterial {
+                    key_format: None,
+                    key: SecretBytes::new(b"resolved-counting-secret".to_vec()),
                 },
             ))
         }
@@ -727,6 +924,130 @@ mod tests {
         assert_eq!(service.server_count(), 1);
         assert!(health.snapshot().has_applied_configuration());
         assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
+    }
+
+    #[tokio::test]
+    async fn known_credential_event_rematerializes_only_affected_server() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [LoadStep::CentralConfig(2)],
+            [],
+        ));
+        let (_, health, service) = supervisor(Arc::clone(&datastore), Duration::ZERO);
+        let resolver = Arc::new(CountingResolver {
+            resolved_servers: Mutex::new(Vec::new()),
+        });
+        let change_source = Arc::new(ScriptedCredentialChangeSource {
+            subscriptions: Mutex::new(VecDeque::from([CredentialSubscriptionStep::Events(vec![
+                CredentialChangeEvent::Recovered,
+                CredentialChangeEvent::Changed(CredentialChangeScope::Known {
+                    kind: CredentialKind::SymmetricKey,
+                    reference: CredentialReference::SymmetricKey("object-0".to_owned()),
+                }),
+            ])])),
+        });
+        let supervisor = Arc::new(ConfigSupervisor::with_backoff_and_provider(
+            datastore,
+            Arc::clone(&service),
+            health,
+            Arc::new(NoopTacacsPlusFilter::default()),
+            Arc::new(FixedBackoff(Duration::ZERO)),
+            Some(Arc::clone(&resolver) as Arc<dyn CredentialResolver>),
+            Some(change_source),
+        ));
+        let cancellation = CancellationToken::new();
+        let task = {
+            let supervisor = Arc::clone(&supervisor);
+            let cancellation = cancellation.clone();
+            tokio::spawn(async move { supervisor.run(&cancellation).await })
+        };
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if resolver
+                    .resolved_servers
+                    .lock()
+                    .expect("resolved servers lock")
+                    .len()
+                    >= 3
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("credential event rematerialization");
+        cancellation.cancel();
+        task.await
+            .expect("supervisor task")
+            .expect("supervisor result");
+
+        assert_eq!(
+            *resolver
+                .resolved_servers
+                .lock()
+                .expect("resolved servers lock"),
+            ["server-0", "server-1", "server-0"],
+        );
+        assert_eq!(service.server_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn credential_subscription_failure_sets_distinct_health_reason() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [LoadStep::CentralConfig(1)],
+            [],
+        ));
+        let (_, health, service) = supervisor(Arc::clone(&datastore), Duration::ZERO);
+        let resolver = Arc::new(CountingResolver {
+            resolved_servers: Mutex::new(Vec::new()),
+        });
+        let change_source = Arc::new(ScriptedCredentialChangeSource {
+            subscriptions: Mutex::new(VecDeque::from([
+                CredentialSubscriptionStep::Error,
+                CredentialSubscriptionStep::Events(Vec::new()),
+            ])),
+        });
+        let supervisor = Arc::new(ConfigSupervisor::with_backoff_and_provider(
+            datastore,
+            service,
+            health.clone(),
+            Arc::new(NoopTacacsPlusFilter::default()),
+            Arc::new(FixedBackoff(Duration::from_millis(25))),
+            Some(resolver),
+            Some(change_source),
+        ));
+        let cancellation = CancellationToken::new();
+        let task = {
+            let supervisor = Arc::clone(&supervisor);
+            let cancellation = cancellation.clone();
+            tokio::spawn(async move { supervisor.run(&cancellation).await })
+        };
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if health
+                    .snapshot()
+                    .degradation_reasons()
+                    .contains(&DegradationReason::CredentialNotificationsUnavailable)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("credential notification degradation");
+        cancellation.cancel();
+        task.await
+            .expect("supervisor task")
+            .expect("supervisor result");
+        assert!(!health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&DegradationReason::ChangeNotificationsUnavailable));
     }
 
     #[tokio::test]

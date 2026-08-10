@@ -11,11 +11,18 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use async_trait::async_trait;
 use futures_util::StreamExt;
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+
+use tacacsrs_credential_resolution::{
+    CredentialChangeError, CredentialChangeEvent, CredentialChangeScope, CredentialChangeSource,
+    CredentialChangeStream, CredentialKind, CredentialReference,
+};
 
 use crate::mapping::{SonicForwarderSettings, SonicHash, SonicTacacsTables};
 
@@ -36,6 +43,33 @@ pub const TACPLUS_SERVER_TLS_TABLE: &str = "TACPLUS_SERVER_TLS";
 
 /// CONFIG_DB key for central-agent bind-time settings.
 pub const TACPLUS_FORWARDER_TABLE: &str = "TACPLUS_FORWARDER";
+
+/// SONiC EPSK filesystem change source kept separate from credential resolution.
+#[derive(Debug, Clone)]
+pub struct SonicCredentialChangeSource {
+    root: PathBuf,
+    debounce: Duration,
+}
+
+impl SonicCredentialChangeSource {
+    /// Creates a change source for one protected EPSK object root.
+    #[must_use]
+    pub fn new(root: PathBuf, debounce: Duration) -> Self {
+        Self { root, debounce }
+    }
+}
+
+#[async_trait]
+impl CredentialChangeSource for SonicCredentialChangeSource {
+    async fn subscribe(&self) -> Result<CredentialChangeStream, CredentialChangeError> {
+        let receiver = spawn_credential_change_notifier(self.root.clone(), self.debounce)
+            .await
+            .map_err(|_| CredentialChangeError)?;
+        let stream = tokio_stream::once(CredentialChangeEvent::Recovered)
+            .chain(ReceiverStream::new(receiver));
+        Ok(Box::pin(stream))
+    }
+}
 
 /// Connection settings for the SONiC ConfigDB Redis instance.
 #[derive(Clone)]
@@ -347,7 +381,7 @@ pub async fn spawn_change_notifier(
 pub async fn spawn_credential_change_notifier(
     root: PathBuf,
     debounce: Duration,
-) -> anyhow::Result<mpsc::Receiver<()>> {
+) -> anyhow::Result<mpsc::Receiver<CredentialChangeEvent>> {
     let (event_tx, mut event_rx) = mpsc::channel(32);
     let mut watcher = RecommendedWatcher::new(
         move |event| {
@@ -371,18 +405,22 @@ pub async fn spawn_credential_change_notifier(
     tokio::spawn(async move {
         let _watcher = watcher;
         while let Some(event) = event_rx.recv().await {
-            let relevant = match event {
-                Ok(event) => event_touches_credential_object(&event, &root),
-                Err(_) => true,
-            };
-            if !relevant {
+            let Some(mut scope) = credential_change_scope(event, &root) else {
                 continue;
-            }
+            };
             if debounce > Duration::ZERO {
                 tokio::time::sleep(debounce).await;
             }
-            while event_rx.try_recv().is_ok() {}
-            if signal_tx.send(()).await.is_err() {
+            while let Ok(event) = event_rx.try_recv() {
+                if let Some(next_scope) = credential_change_scope(event, &root) {
+                    scope = merge_credential_change_scopes(scope, &next_scope);
+                }
+            }
+            if signal_tx
+                .send(CredentialChangeEvent::Changed(scope))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -390,20 +428,52 @@ pub async fn spawn_credential_change_notifier(
     Ok(signal_rx)
 }
 
-fn event_touches_credential_object(event: &Event, root: &Path) -> bool {
+fn credential_change_scope(
+    event: notify::Result<Event>,
+    root: &Path,
+) -> Option<CredentialChangeScope> {
+    let Ok(event) = event else {
+        return Some(CredentialChangeScope::Unknown);
+    };
     if matches!(event.kind, EventKind::Access(_)) {
-        return false;
+        return None;
     }
-    event.paths.iter().any(|path| {
+    let mut references = std::collections::BTreeSet::new();
+    for path in &event.paths {
         if path == root {
-            return true;
+            return Some(CredentialChangeScope::Unknown);
         }
-        path.parent() == Some(root)
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(is_opaque_object_id)
-    })
+        if path.parent() != Some(root) {
+            continue;
+        }
+        let Some(reference) = path.file_name().and_then(|name| name.to_str()) else {
+            return Some(CredentialChangeScope::Unknown);
+        };
+        if is_opaque_object_id(reference) {
+            references.insert(reference.to_owned());
+        }
+    }
+    match references.len() {
+        0 => None,
+        1 => Some(CredentialChangeScope::Known {
+            kind: CredentialKind::SymmetricKey,
+            reference: CredentialReference::SymmetricKey(
+                references.into_iter().next().expect("one reference"),
+            ),
+        }),
+        _ => Some(CredentialChangeScope::Unknown),
+    }
+}
+
+fn merge_credential_change_scopes(
+    current: CredentialChangeScope,
+    next: &CredentialChangeScope,
+) -> CredentialChangeScope {
+    if &current == next {
+        current
+    } else {
+        CredentialChangeScope::Unknown
+    }
 }
 
 fn is_opaque_object_id(value: &str) -> bool {
@@ -432,27 +502,60 @@ mod tests {
     }
 
     #[test]
-    fn credential_event_filter_accepts_objects_and_root_but_ignores_temporary_and_access() {
+    fn credential_event_scope_identifies_objects_and_widens_root_replacement() {
         let root = Path::new("/credentials/epsk");
-        assert!(event_touches_credential_object(
-            &event(
+        let known = credential_change_scope(
+            Ok(event(
                 EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Any)),
-                "/credentials/epsk/object-1"
+                "/credentials/epsk/object-1",
+            )),
+            root,
+        );
+        assert_eq!(
+            known,
+            Some(CredentialChangeScope::Known {
+                kind: CredentialKind::SymmetricKey,
+                reference: CredentialReference::SymmetricKey("object-1".to_owned()),
+            }),
+        );
+        assert_eq!(
+            credential_change_scope(
+                Ok(event(EventKind::Modify(ModifyKind::Any), "/credentials/epsk")),
+                root,
             ),
-            root,
-        ));
-        assert!(event_touches_credential_object(
-            &event(EventKind::Modify(ModifyKind::Any), "/credentials/epsk"),
-            root,
-        ));
-        assert!(!event_touches_credential_object(
-            &event(EventKind::Modify(ModifyKind::Any), "/credentials/epsk/.object-1.tmp"),
-            root,
-        ));
-        assert!(!event_touches_credential_object(
-            &event(EventKind::Access(AccessKind::Any), "/credentials/epsk/object-1"),
-            root,
-        ));
+            Some(CredentialChangeScope::Unknown),
+        );
+        assert_eq!(
+            credential_change_scope(
+                Ok(event(EventKind::Modify(ModifyKind::Any), "/credentials/epsk/.object-1.tmp",)),
+                root,
+            ),
+            None,
+        );
+        assert_eq!(
+            credential_change_scope(
+                Ok(event(EventKind::Access(AccessKind::Any), "/credentials/epsk/object-1",)),
+                root,
+            ),
+            None,
+        );
+        assert_eq!(
+            credential_change_scope(Err(notify::Error::generic("watch failure")), root),
+            Some(CredentialChangeScope::Unknown),
+        );
+        assert_eq!(
+            merge_credential_change_scopes(
+                CredentialChangeScope::Known {
+                    kind: CredentialKind::SymmetricKey,
+                    reference: CredentialReference::SymmetricKey("object-1".to_owned()),
+                },
+                &CredentialChangeScope::Known {
+                    kind: CredentialKind::SymmetricKey,
+                    reference: CredentialReference::SymmetricKey("object-2".to_owned()),
+                },
+            ),
+            CredentialChangeScope::Unknown,
+        );
     }
 
     #[test]

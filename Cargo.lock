@@ -2109,6 +2109,7 @@ name = "tacacsrs-credential-resolution"
 version = "0.0.0-dev"
 dependencies = [
  "async-trait",
+ "futures-core",
  "serde",
  "serde_json",
  "static_assertions",

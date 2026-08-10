@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tacacsrs_config::TacacsPlus;
+use tacacsrs_config::{TacacsPlus, ValidationOptions, ValidationRelaxation};
 use tacacsrs_datastore::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigChangeStream, ConfigDatastore,
     ConfigDelta, DatastoreRuntimePolicy, InitialLoadPolicy,
@@ -28,8 +28,8 @@ pub use provider::{
 };
 pub use store::{
     DEFAULT_REDIS_URL, SonicConnection, TACPLUS_FORWARDER_TABLE, TACPLUS_GLOBAL_TABLE,
-    TACPLUS_SERVER_TABLE, TACPLUS_SERVER_TLS_TABLE, read_tacacs_tables, spawn_change_notifier,
-    spawn_credential_change_notifier,
+    SonicCredentialChangeSource, TACPLUS_SERVER_TABLE, TACPLUS_SERVER_TLS_TABLE,
+    read_tacacs_tables, spawn_change_notifier, spawn_credential_change_notifier,
 };
 
 /// SONiC ConfigDB-backed [`ConfigDatastore`] implementation.
@@ -87,6 +87,11 @@ impl ConfigDatastore for SonicConfigDb {
         )
     }
 
+    fn validation_options(&self) -> ValidationOptions {
+        ValidationOptions::new()
+            .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret)
+    }
+
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         let mut conn = self
             .settings
@@ -111,15 +116,6 @@ impl ConfigDatastore for SonicConfigDb {
         let mut signal = spawn_change_notifier(settings.clone())
             .await
             .context("subscribe to SONiC ConfigDB keyspace notifications")?;
-        let mut credential_signal = match settings.credential_watch_root.clone() {
-            Some(root) => Some(
-                spawn_credential_change_notifier(root, settings.debounce)
-                    .await
-                    .context("subscribe to SONiC credential changes")?,
-            ),
-            None => None,
-        };
-
         tokio::spawn(async move {
             let mut previous: Option<Arc<TacacsPlus>> = None;
             // Reconcile and emit the post-subscription baseline immediately, then
@@ -129,22 +125,11 @@ impl ConfigDatastore for SonicConfigDb {
             let mut reconcile_now = true;
             loop {
                 if !reconcile_now {
-                    let next_signal = match credential_signal.as_mut() {
-                        Some(credential_signal) => {
-                            tokio::select! {
-                                signal = signal.recv() => signal,
-                                signal = credential_signal.recv() => signal,
-                            }
-                        }
-                        None => signal.recv().await,
-                    };
+                    let next_signal = signal.recv().await;
                     if next_signal.is_none() {
                         break;
                     }
                     while signal.try_recv().is_ok() {}
-                    if let Some(credential_signal) = credential_signal.as_mut() {
-                        while credential_signal.try_recv().is_ok() {}
-                    }
                 }
                 reconcile_now = false;
 

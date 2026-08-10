@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod error;
+mod change;
 mod fake;
 mod material;
 mod materialization;
@@ -10,6 +11,10 @@ mod result_set;
 mod runtime_server;
 
 pub use error::{ProviderErrorKind, ResolutionError, ResolutionErrorKind};
+pub use change::{
+    CredentialChangeError, CredentialChangeEvent, CredentialChangeScope, CredentialChangeSource,
+    CredentialChangeStream,
+};
 pub use fake::FakeCredentialResolver;
 pub use material::{
     CertificateBagMaterial, CertificateWithKeyMaterial, NamedCertificateMaterial, PublicBytes,

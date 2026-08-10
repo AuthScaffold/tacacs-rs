@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 async-trait = "0.1"
+futures-core = "0.3"
 tacacsrs-config = { path = "../tacacsrs_config" }
 tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 

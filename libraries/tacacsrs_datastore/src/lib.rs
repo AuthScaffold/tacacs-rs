@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_core::Stream;
-use tacacsrs_config::TacacsPlus;
+use tacacsrs_config::{TacacsPlus, ValidationOptions};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::StreamExt;
@@ -189,6 +189,14 @@ pub trait ConfigDatastore: Send + Sync + 'static {
     /// be immutable when no referenced paths exist and continuously watched
     /// when its effective configuration depends on files.
     fn runtime_policy(&self) -> DatastoreRuntimePolicy;
+
+    /// Returns the validation policy already used to accept source snapshots.
+    ///
+    /// The default is strict. Backends with an explicit compatibility contract
+    /// override this so final materialized validation uses the same policy.
+    fn validation_options(&self) -> ValidationOptions {
+        ValidationOptions::default()
+    }
 
     /// Load the current configuration snapshot.
     ///

@@ -94,6 +94,8 @@ pub enum DegradationReason {
     DatastoreStale,
     /// Continuous datastore notifications are disconnected.
     ChangeNotificationsUnavailable,
+    /// Continuous credential provider notifications are disconnected.
+    CredentialNotificationsUnavailable,
     /// A candidate configuration was rejected while an older snapshot remained active.
     CandidateConfigurationRejected,
     /// Credential resolution failed for a candidate configuration.

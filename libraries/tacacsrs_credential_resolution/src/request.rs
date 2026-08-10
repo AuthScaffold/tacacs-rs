@@ -70,7 +70,7 @@ impl RequestContext {
 }
 
 /// Owned opaque reference passed to a provider only through explicit access.
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CredentialReference {
     /// Structured central certificate-with-key reference.
     CertificateWithKey {

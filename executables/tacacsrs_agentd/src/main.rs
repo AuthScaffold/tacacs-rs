@@ -18,10 +18,10 @@ use tacacsrs_cli_datastore::{
 };
 use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
 use tacacsrs_datastore::{ConfigDatastore, InitialLoadPolicy};
-use tacacsrs_credential_resolution::CredentialResolver;
+use tacacsrs_credential_resolution::{CredentialChangeSource, CredentialResolver};
 use tacacsrs_sonic::{
-    SonicConfigDb, SonicConnection, SonicCredentialPolicy, SonicCredentialResolver,
-    SonicCredentialRoots,
+    SonicConfigDb, SonicConnection, SonicCredentialChangeSource, SonicCredentialPolicy,
+    SonicCredentialResolver, SonicCredentialRoots,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -29,6 +29,7 @@ mod cli;
 mod config_filter;
 mod config_supervisor;
 mod host_integration;
+mod materialization_coordinator;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
@@ -248,28 +249,33 @@ async fn run_supervised_service(
     health: RuntimeHealthPublisher,
     config_filter: Arc<dyn TacacsPlusFilter>,
     credential_resolver: Option<Arc<dyn CredentialResolver>>,
+    credential_change_source: Option<Arc<dyn CredentialChangeSource>>,
     host_integration: HostIntegration,
 ) -> anyhow::Result<()> {
     let datastore_policy = datastore.runtime_policy();
-    let supervisor = credential_resolver.map_or_else(
-        || {
-            ConfigSupervisor::new(
-                Arc::clone(&datastore),
-                Arc::clone(&service),
-                health.clone(),
-                Arc::clone(&config_filter),
-            )
-        },
-        |resolver| {
-            ConfigSupervisor::new_with_credential_resolver(
-                Arc::clone(&datastore),
-                Arc::clone(&service),
-                health.clone(),
-                Arc::clone(&config_filter),
-                resolver,
-            )
-        },
-    );
+    let supervisor = match (credential_resolver, credential_change_source) {
+        (Some(resolver), Some(change_source)) => ConfigSupervisor::new_with_credential_provider(
+            Arc::clone(&datastore),
+            Arc::clone(&service),
+            health.clone(),
+            Arc::clone(&config_filter),
+            resolver,
+            change_source,
+        ),
+        (Some(resolver), None) => ConfigSupervisor::new_with_credential_resolver(
+            Arc::clone(&datastore),
+            Arc::clone(&service),
+            health.clone(),
+            Arc::clone(&config_filter),
+            resolver,
+        ),
+        (None, _) => ConfigSupervisor::new(
+            Arc::clone(&datastore),
+            Arc::clone(&service),
+            health.clone(),
+            Arc::clone(&config_filter),
+        ),
+    };
     let cancellation = CancellationToken::new();
 
     if datastore_policy.initial_load == InitialLoadPolicy::FailFast {
@@ -354,6 +360,25 @@ fn supervisor_exit_to_fatal_error(
             anyhow::Error::new(join_error).context("Configuration supervisor task panicked")
         }
     }
+}
+
+type CredentialProvider =
+    (Option<Arc<dyn CredentialResolver>>, Option<Arc<dyn CredentialChangeSource>>);
+
+fn build_credential_provider(cli: &Cli) -> CredentialProvider {
+    if !cli.sonic {
+        return (None, None);
+    }
+    let resolver = Arc::new(SonicCredentialResolver::reloadable(
+        SonicCredentialRoots::default(),
+        SonicCredentialPolicy::production_from_root_group(),
+    )) as Arc<dyn CredentialResolver>;
+    let settings = sonic_connection_from_cli(cli);
+    let change_source = settings.credential_watch_root.map(|root| {
+        Arc::new(SonicCredentialChangeSource::new(root, settings.debounce))
+            as Arc<dyn CredentialChangeSource>
+    });
+    (Some(resolver), change_source)
 }
 
 /// Starts the central TACACS+ client service process.
@@ -448,18 +473,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .context("Failed to build TACACS+ client service configuration")?,
     );
-    let credential_resolver = cli.sonic.then(|| {
-        Arc::new(SonicCredentialResolver::reloadable(
-            SonicCredentialRoots::default(),
-            SonicCredentialPolicy::production_from_root_group(),
-        )) as Arc<dyn CredentialResolver>
-    });
+    let (credential_resolver, credential_change_source) = build_credential_provider(&cli);
     run_supervised_service(
         datastore,
         service,
         health,
         config_filter,
         credential_resolver,
+        credential_change_source,
         host_integration,
     )
     .await

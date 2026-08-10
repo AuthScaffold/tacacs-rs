@@ -63,6 +63,12 @@ impl MaterializationError {
         }
     }
 
+    /// Creates a sanitized config-local enumeration failure.
+    #[must_use]
+    pub fn enumeration() -> Self {
+        Self::new(MaterializationErrorKind::Enumeration, None, None)
+    }
+
     /// Returns the stable failure category.
     #[must_use]
     pub const fn kind(&self) -> MaterializationErrorKind {
@@ -153,9 +159,7 @@ pub async fn enumerate_materialized_servers(
     resolver: &dyn CredentialResolver,
     validation_options: &ValidationOptions,
 ) -> Result<Vec<TacacsPlusServer>, MaterializationError> {
-    let servers = enumerate_servers(config).map_err(|_| {
-        MaterializationError::new(MaterializationErrorKind::Enumeration, None, None)
-    })?;
+    let servers = enumerate_servers(config).map_err(|_| MaterializationError::enumeration())?;
     materialize_servers(servers, resolver, validation_options).await
 }
 
