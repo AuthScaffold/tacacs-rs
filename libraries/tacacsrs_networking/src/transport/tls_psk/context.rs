@@ -121,6 +121,7 @@ mod tests {
     use super::*;
     use tacacsrs_config::generated::tacacs_plus::{EpskSupportedHash, Tls13Epsk};
     use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
+    use tacacsrs_credential_resolution::SecretBytes;
 
     fn epsk_with_hash(hash: EpskSupportedHash) -> Tls13Epsk {
         Tls13Epsk {
@@ -132,7 +133,9 @@ mod tests {
             psk_dhe_ke_groups: vec![],
             inline_definition: Some(SymmetricKeyInlineDefinition {
                 key_format: None,
-                cleartext_symmetric_key: Some(b"resolved-psk-bytes-with-enough-length".to_vec()),
+                cleartext_symmetric_key: Some(SecretBytes::new(
+                    b"resolved-psk-bytes-with-enough-length".to_vec(),
+                )),
             }),
             central_keystore_reference: None,
         }

@@ -169,7 +169,9 @@ fn downstream_obfuscation_key(
 ) -> Option<Vec<u8>> {
     match downstream_obfuscation {
         ProxyDownstreamObfuscation::Unobfuscated => None,
-        ProxyDownstreamObfuscation::SharedSecret(shared_secret) => Some(shared_secret.as_str()),
+        ProxyDownstreamObfuscation::SharedSecret(shared_secret) => {
+            Some(shared_secret.expose_secret())
+        }
     }
     .map(|secret| secret.as_bytes().to_vec())
 }
@@ -637,7 +639,7 @@ mod tests {
     fn downstream_obfuscation_uses_configured_proxy_secret() {
         assert_eq!(
             downstream_obfuscation_key(&ProxyDownstreamObfuscation::SharedSecret(
-                "local-proxy-secret".to_owned(),
+                tacacsrs_secrets::SecretString::new("local-proxy-secret".to_owned()),
             ),)
             .as_deref(),
             Some(b"local-proxy-secret".as_slice())

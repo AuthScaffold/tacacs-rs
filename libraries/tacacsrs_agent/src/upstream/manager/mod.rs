@@ -523,10 +523,7 @@ fn runtime_servers_reusable(left: &RuntimeServer, right: &RuntimeServer) -> bool
     if left.has_resolved_credentials() || right.has_resolved_credentials() {
         return false;
     }
-    match (serde_json::to_value(left.config()), serde_json::to_value(right.config())) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
+    left.config() == right.config()
 }
 
 #[cfg(test)]
@@ -626,6 +623,22 @@ mod tests {
                 .expect("replacement secret")
                 .expose_secret()
         );
+    }
+
+    #[test]
+    fn inline_shared_secret_change_prevents_runtime_server_reuse() {
+        let mut first = test_server("192.0.2.70:49");
+        first.shared_secret = Some(tacacsrs_secrets::SecretString::new("first-secret".to_owned()));
+        let same = RuntimeServer::inline(first.clone()).expect("inline server");
+        let first = RuntimeServer::inline(first).expect("inline server");
+
+        let mut replacement = test_server("192.0.2.70:49");
+        replacement.shared_secret =
+            Some(tacacsrs_secrets::SecretString::new("replacement-secret".to_owned()));
+        let replacement = RuntimeServer::inline(replacement).expect("inline server");
+
+        assert!(runtime_servers_reusable(&first, &same));
+        assert!(!runtime_servers_reusable(&first, &replacement));
     }
 
     #[tokio::test]

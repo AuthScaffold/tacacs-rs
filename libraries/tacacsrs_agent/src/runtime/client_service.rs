@@ -445,7 +445,7 @@ mod tests {
             server_type: REQUIRED_SERVER_TYPES,
             address: host,
             port,
-            shared_secret: Some("test-secret".to_owned()),
+            shared_secret: Some(tacacsrs_secrets::SecretString::new("test-secret".to_owned())),
             timeout: 5,
             single_connection: false,
             domain_name: None,

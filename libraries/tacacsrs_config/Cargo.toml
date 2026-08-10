@@ -13,6 +13,7 @@ bitflags = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_ignored = "0.1"
 serde_json = "1"
+tacacsrs-secrets = { path = "../tacacsrs_secrets", features = ["rfc7951"] }
 
 [lints]
 workspace = true

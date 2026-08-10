@@ -27,7 +27,8 @@ pub(crate) fn symmetric_key(runtime: &RuntimeServer) -> Result<&[u8]> {
     config(runtime)?
         .inline_definition
         .as_ref()
-        .and_then(|definition| definition.cleartext_symmetric_key.as_deref())
+        .and_then(|definition| definition.cleartext_symmetric_key.as_ref())
+        .map(tacacsrs_credential_resolution::SecretBytes::expose_secret)
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "TLS 1.3 EPSK inline-definition.cleartext-symmetric-key must be configured"

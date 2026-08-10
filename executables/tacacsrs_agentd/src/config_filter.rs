@@ -8,6 +8,7 @@ use futures_util::future::{BoxFuture, FutureExt};
 use tacacsrs_agent::{EnabledServices, ProxyDownstreamObfuscation};
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::{TacacsPlus, TacacsPlusServer};
+use tacacsrs_secrets::SecretString;
 
 /// Filtered daemon configuration plus local proxy-only metadata derived from it.
 pub(crate) struct FilteredTacacsPlus {
@@ -167,6 +168,7 @@ pub(crate) fn config_filter_from_runtime_options(
     proxy_shared_secret: Option<String>,
 ) -> Arc<dyn TacacsPlusFilter> {
     let proxy_downstream_obfuscation = proxy_shared_secret
+        .map(SecretString::new)
         .map_or(ProxyDownstreamObfuscation::Unobfuscated, ProxyDownstreamObfuscation::SharedSecret);
 
     if !enabled_services.tacacs_proxy() {
@@ -182,7 +184,7 @@ pub(crate) fn config_filter_from_runtime_options(
 }
 
 fn proxy_downstream_obfuscation_from_secret(
-    shared_secret: Option<String>,
+    shared_secret: Option<SecretString>,
 ) -> ProxyDownstreamObfuscation {
     shared_secret
         .map_or(ProxyDownstreamObfuscation::Unobfuscated, ProxyDownstreamObfuscation::SharedSecret)
@@ -227,6 +229,7 @@ mod tests {
         TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, ValidationOptions,
         ValidationRelaxation,
     };
+    use tacacsrs_secrets::SecretString;
 
     fn test_config_from_host_ports(addresses: &[(&str, u16)]) -> TacacsPlus {
         test_config_from_host_ports_and_secrets(
@@ -268,7 +271,7 @@ mod tests {
 
     fn proxy_obfuscation(secret: Option<&str>) -> ProxyDownstreamObfuscation {
         secret.map_or(ProxyDownstreamObfuscation::Unobfuscated, |secret| {
-            ProxyDownstreamObfuscation::SharedSecret(secret.to_owned())
+            ProxyDownstreamObfuscation::SharedSecret(SecretString::new(secret.to_owned()))
         })
     }
 

@@ -86,6 +86,7 @@ mod tests {
         EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity,
     };
     use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
+    use tacacsrs_credential_resolution::SecretBytes;
 
     fn server_template() -> TacacsPlusServer {
         TacacsPlusServer {
@@ -120,7 +121,7 @@ mod tests {
                 psk_dhe_ke_groups: vec![],
                 inline_definition: Some(SymmetricKeyInlineDefinition {
                     key_format: None,
-                    cleartext_symmetric_key: Some(key.to_vec()),
+                    cleartext_symmetric_key: Some(SecretBytes::new(key.to_vec())),
                 }),
                 central_keystore_reference: None,
             }),

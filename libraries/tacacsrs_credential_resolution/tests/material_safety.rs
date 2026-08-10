@@ -8,7 +8,7 @@ use tacacsrs_credential_resolution::{
 };
 use tacacsrs_config::parse_yang_json;
 
-assert_not_impl_any!(SecretBytes: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);
+assert_not_impl_any!(SecretBytes: Display, Hash);
 assert_not_impl_any!(CertificateWithKeyMaterial: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);
 assert_not_impl_any!(ResolvedCredential: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);
 assert_not_impl_any!(ResolvedResponse: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);

@@ -11,7 +11,8 @@
   },
   "artifacts": {
     "feature-flags.ini": "b26b330ef0da9d2de3ca4194ada15d5ed200f5774a4123c230d389ec8193f320",
+    "secret-fields.toml": "532f3b67f036c5686de3d47764c644f57eecf509eb1012c7d991e2be5a7be6a8",
     "expanded-tree.txt": "720d1e975551b31c9c1acefd5602995d35b6e022b5194894355760c8c4cb86f0",
-    "../src/generated.rs": "b08ec4522d028cfb22fe7bbee0baf89e6943c2b5f29a0558a12d48130f0f4607"
+    "../src/generated.rs": "cd60ba240f21cf71d2b3a388a86b3da691dcdb0c3b7d6cab10c618a18521d880"
   }
 }

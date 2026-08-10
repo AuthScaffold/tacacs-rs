@@ -145,7 +145,7 @@ fn extract_client_auth(
     let certs = parse_certificate_data(cert_data)
         .inspect_err(|e| log::warn!("Failed to parse TLS certificate for {address}: {e:#}"))
         .context("Failed to parse TLS certificate")?;
-    let key = parse_private_key_data(key_data, inline.private_key_format.as_ref())
+    let key = parse_private_key_data(key_data.expose_secret(), inline.private_key_format.as_ref())
         .inspect_err(|e| log::warn!("Failed to parse TLS private key for {address}: {e:#}"))
         .context("Failed to parse TLS private key")?;
 

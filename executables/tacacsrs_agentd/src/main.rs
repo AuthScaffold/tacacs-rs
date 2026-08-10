@@ -701,7 +701,13 @@ mod tests {
         assert_eq!(root.server.len(), 2);
         assert_eq!(root.server[0].name, "primary");
         assert_eq!(root.server[1].name, "secondary");
-        assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
+        assert_eq!(
+            root.server[0]
+                .shared_secret
+                .as_ref()
+                .map(tacacsrs_secrets::SecretString::expose_secret),
+            Some("secret1"),
+        );
     }
 
     #[test]
@@ -716,7 +722,13 @@ mod tests {
 
         let root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
             .expect("plain-text shared secret should load");
-        assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
+        assert_eq!(
+            root.server[0]
+                .shared_secret
+                .as_ref()
+                .map(tacacsrs_secrets::SecretString::expose_secret),
+            Some("secret1"),
+        );
     }
 
     #[test]
@@ -879,7 +891,13 @@ mod tests {
             .expect("inline certificate definition should be present");
 
         assert_eq!(inline.cert_data.as_deref(), Some(expected_cert_der.as_slice()));
-        assert_eq!(inline.cleartext_private_key.as_deref(), Some(expected_key_der.as_slice()));
+        assert_eq!(
+            inline
+                .cleartext_private_key
+                .as_ref()
+                .map(tacacsrs_secrets::SecretBytes::expose_secret),
+            Some(expected_key_der.as_slice()),
+        );
         assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat));
     }
 
