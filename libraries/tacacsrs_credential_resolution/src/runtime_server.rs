@@ -72,7 +72,7 @@ impl RuntimeServer {
             .credentials
             .credential_for_field("client-identity/tls13-epsk")
         {
-            Some(ResolvedCredential::SymmetricKey(secret)) => Some(secret),
+            Some(ResolvedCredential::SymmetricKey(material)) => Some(&material.key),
             Some(
                 ResolvedCredential::CertificateWithKey(_)
                 | ResolvedCredential::CaCertificateBag(_)

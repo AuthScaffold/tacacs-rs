@@ -104,6 +104,7 @@ mod tests {
     use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
     use tacacsrs_credential_resolution::{
         FakeCredentialResolver, ResolutionPlan, ResolvedCredential, SecretBytes,
+        SymmetricKeyMaterial,
     };
 
     fn epsk_with_key(key: &[u8]) -> Tls13Epsk {
@@ -162,7 +163,10 @@ mod tests {
         let plan = ResolutionPlan::from_server(&server).expect("plan");
         let resolver = FakeCredentialResolver::new().with_response(
             plan.requests()[0].slot(),
-            ResolvedCredential::SymmetricKey(SecretBytes::new(b"central-runtime-secret".to_vec())),
+            ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+                key_format: None,
+                key: SecretBytes::new(b"central-runtime-secret".to_vec()),
+            }),
         );
         let runtime = RuntimeServer::resolve(server, &resolver)
             .await

@@ -592,7 +592,12 @@ mod tests {
         let plan = ResolutionPlan::from_server(&server).expect("plan");
         let resolver = FakeCredentialResolver::new().with_response(
             plan.requests()[0].slot(),
-            ResolvedCredential::SymmetricKey(SecretBytes::new(secret.to_vec())),
+            ResolvedCredential::SymmetricKey(
+                tacacsrs_credential_resolution::SymmetricKeyMaterial {
+                    key_format: None,
+                    key: SecretBytes::new(secret.to_vec()),
+                },
+            ),
         );
         RuntimeServer::resolve(server, &resolver)
             .await

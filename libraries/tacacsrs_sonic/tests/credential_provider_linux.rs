@@ -5,6 +5,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 
+use tacacsrs_config::crypto_types::SymmetricKeyFormat;
 use tacacsrs_config::parse_yang_json;
 use tacacsrs_credential_resolution::{
     CredentialResolver, ResolutionErrorKind, ResolutionPlan, ResolvedCredential,
@@ -106,10 +107,11 @@ async fn safe_regular_epsk_resolves_to_zeroizing_secret_bytes() {
         .resolve(&plan.requests()[0])
         .await
         .expect("resolve EPSK");
-    let ResolvedCredential::SymmetricKey(secret) = material else {
+    let ResolvedCredential::SymmetricKey(material) = material else {
         panic!("expected symmetric key");
     };
-    assert_eq!(secret.expose_secret(), expected);
+    assert_eq!(material.key_format, Some(SymmetricKeyFormat::OctetStringKeyFormat));
+    assert_eq!(material.key.expose_secret(), expected);
 }
 
 #[tokio::test]
@@ -247,14 +249,14 @@ async fn opaque_id_boundaries_resolve_only_from_the_epsk_root() {
         (&maximum_id, &[0x82; 32][..]),
     ] {
         let plan = epsk_plan(id);
-        let ResolvedCredential::SymmetricKey(secret) = provider
+        let ResolvedCredential::SymmetricKey(material) = provider
             .resolve(&plan.requests()[0])
             .await
             .expect("boundary ID resolves")
         else {
             panic!("expected symmetric key");
         };
-        assert_eq!(secret.expose_secret(), expected);
+        assert_eq!(material.key.expose_secret(), expected);
     }
 
     let plan = epsk_plan("acms-only");
@@ -305,10 +307,10 @@ async fn reloadable_provider_recovers_when_protected_root_appears() {
         .resolve(&plan.requests()[0])
         .await
         .expect("reloadable provider recovers");
-    let ResolvedCredential::SymmetricKey(secret) = material else {
+    let ResolvedCredential::SymmetricKey(material) = material else {
         panic!("expected symmetric key");
     };
-    assert_eq!(secret.expose_secret(), &[0x88; 32]);
+    assert_eq!(material.key.expose_secret(), &[0x88; 32]);
 }
 
 #[test]

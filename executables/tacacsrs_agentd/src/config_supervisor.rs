@@ -520,7 +520,12 @@ mod tests {
                     request.context(),
                 ));
             }
-            Ok(ResolvedCredential::SymmetricKey(SecretBytes::new(b"resolved-after-retry".to_vec())))
+            Ok(ResolvedCredential::SymmetricKey(
+                tacacsrs_credential_resolution::SymmetricKeyMaterial {
+                    key_format: None,
+                    key: SecretBytes::new(b"resolved-after-retry".to_vec()),
+                },
+            ))
         }
     }
 
@@ -542,9 +547,12 @@ mod tests {
                     request.context(),
                 ));
             }
-            Ok(ResolvedCredential::SymmetricKey(SecretBytes::new(
-                b"resolved-supervisor-secret".to_vec(),
-            )))
+            Ok(ResolvedCredential::SymmetricKey(
+                tacacsrs_credential_resolution::SymmetricKeyMaterial {
+                    key_format: None,
+                    key: SecretBytes::new(b"resolved-supervisor-secret".to_vec()),
+                },
+            ))
         }
     }
 

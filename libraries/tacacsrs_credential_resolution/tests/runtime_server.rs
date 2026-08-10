@@ -1,6 +1,7 @@
 use tacacsrs_config::parse_yang_json;
 use tacacsrs_credential_resolution::{
     FakeCredentialResolver, ResolutionErrorKind, ResolvedCredential, RuntimeServer, SecretBytes,
+    SymmetricKeyMaterial,
 };
 
 fn central_server() -> tacacsrs_config::TacacsPlusServer {
@@ -34,7 +35,10 @@ async fn resolved_runtime_keeps_reference_and_secret_in_separate_surfaces() {
         .expect("resolution plan");
     let resolver = FakeCredentialResolver::new().with_response(
         plan.requests()[0].slot(),
-        ResolvedCredential::SymmetricKey(SecretBytes::new(b"runtime-secret-value".to_vec())),
+        ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+            key_format: None,
+            key: SecretBytes::new(b"runtime-secret-value".to_vec()),
+        }),
     );
 
     let runtime = RuntimeServer::resolve(server, &resolver)

@@ -6,12 +6,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+#[cfg(target_os = "linux")]
+use tacacsrs_config::crypto_types::SymmetricKeyFormat;
 use tacacsrs_credential_resolution::{
     CredentialKind, CredentialRequest, CredentialResolver, ProviderErrorKind, ResolutionError,
     ResolvedCredential,
 };
 #[cfg(target_os = "linux")]
-use tacacsrs_credential_resolution::SecretBytes;
+use tacacsrs_credential_resolution::{SecretBytes, SymmetricKeyMaterial};
 
 /// Production credential roots used by the SONiC central agent.
 #[derive(Clone)]
@@ -249,7 +251,10 @@ impl CredentialResolver for SonicCredentialResolver {
                 ResolutionError::provider(ProviderErrorKind::Unavailable, request.context())
             })?
             .map_err(|kind| ResolutionError::provider(kind, request.context()))?;
-            Ok(ResolvedCredential::SymmetricKey(SecretBytes::from_zeroizing(bytes)))
+            Ok(ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+                key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
+                key: SecretBytes::from_zeroizing(bytes),
+            }))
         }
         #[cfg(not(target_os = "linux"))]
         {

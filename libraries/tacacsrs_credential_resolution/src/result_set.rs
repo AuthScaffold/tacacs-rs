@@ -132,6 +132,16 @@ impl ResolvedCredentialSet {
         self.entries.get(&slot).map(|entry| &entry.context)
     }
 
+    /// Consumes the closed result set into slot-associated credentials.
+    #[must_use]
+    pub fn into_credentials(
+        self,
+    ) -> impl ExactSizeIterator<Item = (RequestSlot, RequestContext, ResolvedCredential)> {
+        self.entries
+            .into_iter()
+            .map(|(slot, entry)| (slot, entry.context, entry.credential))
+    }
+
     pub(crate) fn matches_plan(&self, plan: &ResolutionPlan) -> bool {
         Arc::ptr_eq(&self.plan_identity, plan.identity())
     }
@@ -163,7 +173,10 @@ mod tests {
     use tacacsrs_config::parse_yang_json;
 
     use super::*;
-    use crate::{CertificateBagMaterial, CertificateWithKeyMaterial, PublicBytes, SecretBytes};
+    use crate::{
+        CertificateBagMaterial, CertificateWithKeyMaterial, NamedCertificateMaterial, PublicBytes,
+        SecretBytes,
+    };
 
     #[test]
     fn lookup_uses_request_slot_when_plan_iteration_order_changes() {
@@ -199,18 +212,28 @@ mod tests {
             let credential = match request.kind() {
                 CredentialKind::CertificateWithKey => {
                     ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+                        public_key_format: None,
+                        public_key: None,
+                        private_key_format:
+                            tacacsrs_config::crypto_types::PrivateKeyFormat::OneAsymmetricKeyFormat,
                         certificate: PublicBytes::new(b"certificate".to_vec()),
                         private_key: SecretBytes::new(b"private-key".to_vec()),
                     })
                 }
                 CredentialKind::CaCertificateBag => {
                     ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
-                        certificates: vec![PublicBytes::new(b"ca".to_vec())],
+                        certificates: vec![NamedCertificateMaterial {
+                            name: "ca".to_owned(),
+                            certificate: PublicBytes::new(b"ca".to_vec()),
+                        }],
                     })
                 }
                 CredentialKind::EeCertificateBag => {
                     ResolvedCredential::EeCertificateBag(CertificateBagMaterial {
-                        certificates: vec![PublicBytes::new(b"ee".to_vec())],
+                        certificates: vec![NamedCertificateMaterial {
+                            name: "ee".to_owned(),
+                            certificate: PublicBytes::new(b"ee".to_vec()),
+                        }],
                     })
                 }
                 CredentialKind::SymmetricKey => unreachable!("test plan has no symmetric key"),
