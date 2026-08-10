@@ -228,7 +228,7 @@ impl TacacsClientService {
         Ok(())
     }
 
-    /// Atomically applies a complete set of resolved runtime servers plus proxy policy.
+    /// Atomically applies a complete set of materialized generated servers plus proxy policy.
     ///
     /// New requests observe the complete replacement only after every server
     /// has already been validated and resolved by the caller. Existing bound
@@ -236,7 +236,7 @@ impl TacacsClientService {
     ///
     /// # Errors
     ///
-    /// Returns an error if the runtime server set cannot be applied. The
+    /// Returns an error if the materialized server set cannot be applied. The
     /// previous runtime state remains active on error.
     pub async fn reload_materialized_servers_with_proxy_downstream_obfuscation(
         &self,

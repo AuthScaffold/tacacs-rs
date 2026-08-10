@@ -195,7 +195,7 @@ Validation checks include:
 - Credential references have matching definitions in the same config
 - Config-local credential references have matching definitions
 
-To resolve central credentials, create a `ResolutionPlan` after enumeration and execute it through a `CredentialResolver`. Runtime projection remains outside both generic crates.
+To resolve central credentials, create a `ResolutionPlan` after enumeration, execute it through a `CredentialResolver`, and materialize the results into generated inline fields. Provider I/O remains outside both generic crates.
 
 This design separates parsing/validation from credential retrieval and enables round-trip safety.
 

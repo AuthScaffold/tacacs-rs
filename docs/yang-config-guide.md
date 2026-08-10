@@ -14,7 +14,7 @@ Use this guide when you need to author, validate, or consume TACACS+ server conf
 - A `TacacsPlusServerBuilder` for constructing valid server definitions in Rust.
 - A project-owned TACACS+/TLS augmentation for TLS 1.3 PSK-DHE key exchange group selection.
 
-Central references remain opaque in this crate. Parse and enumerate configuration first, then use `tacacsrs-credential-resolution` to build provider-neutral requests and validate resolved results. Provider-specific retrieval and runtime projection remain separate integration concerns.
+Central references remain opaque in this crate. Parse and enumerate configuration first, then use `tacacsrs-credential-resolution` to build provider-neutral requests, validate resolved results, and materialize generated inline fields. Provider-specific retrieval remains a separate integration concern.
 
 ## Basic JSON shape
 
@@ -41,7 +41,7 @@ Use `--config <file>` with `tacon` or `tacacsrs-agentd` to load the configuratio
 
 ## Parsing API
 
-For simple application code, parse the JSON and enumerate runtime server entries:
+For simple application code, parse the JSON and enumerate per-server entries:
 
 ```rust
 use tacacsrs_config::{enumerate_servers, parse_yang_json};

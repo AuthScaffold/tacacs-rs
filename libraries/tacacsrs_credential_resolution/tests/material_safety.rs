@@ -4,7 +4,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use static_assertions::assert_not_impl_any;
 use tacacsrs_credential_resolution::{
     CertificateWithKeyMaterial, CredentialKind, PublicBytes, ResolvedCredential,
-    ResolvedCredentialSet, ResolvedResponse, RuntimeServer, SecretBytes, SymmetricKeyMaterial,
+    ResolvedCredentialSet, ResolvedResponse, SecretBytes, SymmetricKeyMaterial,
 };
 use tacacsrs_config::parse_yang_json;
 
@@ -13,7 +13,6 @@ assert_not_impl_any!(CertificateWithKeyMaterial: Clone, Serialize, DeserializeOw
 assert_not_impl_any!(ResolvedCredential: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);
 assert_not_impl_any!(ResolvedResponse: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);
 assert_not_impl_any!(ResolvedCredentialSet: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);
-assert_not_impl_any!(RuntimeServer: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);
 
 #[test]
 fn secret_bytes_require_explicit_borrow_and_redact_debug() {

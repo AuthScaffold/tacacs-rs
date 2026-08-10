@@ -92,7 +92,7 @@ pub mod pipeline {
     }
 }
 
-/// Runtime projection API used by networking/client code.
+/// Per-server enumeration API used before credential materialization.
 pub mod runtime {
     pub use crate::central_references::{
         CentralCredentialReference, CentralCredentialSlot, CentralCredentialUsage,

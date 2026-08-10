@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::fmt;
-use std::sync::Arc;
 
 use crate::{
     CredentialKind, ResolutionError, ResolutionPlan, ResolvedCredential, RequestContext,
@@ -42,7 +41,6 @@ struct ResolvedEntry {
 /// Complete validated result set for one resolution plan.
 pub struct ResolvedCredentialSet {
     entries: BTreeMap<RequestSlot, ResolvedEntry>,
-    plan_identity: Arc<()>,
 }
 
 impl ResolvedCredentialSet {
@@ -102,10 +100,7 @@ impl ResolvedCredentialSet {
                 },
             );
         }
-        Ok(Self {
-            entries,
-            plan_identity: Arc::clone(plan.identity()),
-        })
+        Ok(Self { entries })
     }
 
     /// Returns the number of resolved entries.
@@ -140,17 +135,6 @@ impl ResolvedCredentialSet {
         self.entries
             .into_iter()
             .map(|(slot, entry)| (slot, entry.context, entry.credential))
-    }
-
-    pub(crate) fn matches_plan(&self, plan: &ResolutionPlan) -> bool {
-        Arc::ptr_eq(&self.plan_identity, plan.identity())
-    }
-
-    pub(crate) fn credential_for_field(&self, field_path: &str) -> Option<&ResolvedCredential> {
-        self.entries
-            .values()
-            .find(|entry| entry.context.field_path() == field_path)
-            .map(|entry| &entry.credential)
     }
 }
 
