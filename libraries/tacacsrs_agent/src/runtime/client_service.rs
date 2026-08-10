@@ -23,7 +23,6 @@ use std::sync::Arc;
 
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
-use tacacsrs_credential_resolution::{CredentialResolver, RuntimeServer};
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 
@@ -239,46 +238,19 @@ impl TacacsClientService {
     ///
     /// Returns an error if the runtime server set cannot be applied. The
     /// previous runtime state remains active on error.
-    pub async fn reload_runtime_servers_with_proxy_downstream_obfuscation(
+    pub async fn reload_materialized_servers_with_proxy_downstream_obfuscation(
         &self,
-        servers: Vec<Arc<RuntimeServer>>,
+        servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
     ) -> anyhow::Result<()> {
         let eligible_server_count = servers.len();
-        self.state.reload_runtime_servers(servers).await?;
+        self.state.reload_shared_servers(servers).await?;
         *self.proxy_downstream_obfuscation.write().await = proxy_downstream_obfuscation;
         self.health.set_eligible_server_count(eligible_server_count);
         self.health.set_applied_configuration(true);
         self.health
             .set_upstream_availability(UpstreamAvailability::Unknown);
         Ok(())
-    }
-
-    /// Resolves and atomically applies one complete TACACS+ candidate.
-    ///
-    /// All config-local bundles are enumerated and every eligible central
-    /// credential is resolved before the current runtime server set changes.
-    /// A failure leaves the prior server set and proxy policy untouched.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when enumeration or any credential resolution fails.
-    pub async fn resolve_and_reload_tacacs_plus_with_proxy_downstream_obfuscation(
-        &self,
-        tacacs_plus: TacacsPlus,
-        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
-        resolver: &dyn CredentialResolver,
-    ) -> anyhow::Result<()> {
-        let servers = enumerate_supported_servers(&tacacs_plus)?;
-        let mut runtime_servers = Vec::with_capacity(servers.len());
-        for server in servers {
-            runtime_servers.push(Arc::new(RuntimeServer::resolve(server, resolver).await?));
-        }
-        self.reload_runtime_servers_with_proxy_downstream_obfuscation(
-            runtime_servers,
-            proxy_downstream_obfuscation,
-        )
-        .await
     }
 
     /// Returns the current number of accounting-capable upstream servers.

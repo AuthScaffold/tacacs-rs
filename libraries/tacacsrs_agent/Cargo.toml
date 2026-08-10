@@ -13,7 +13,6 @@ async-trait = "0.1.89"
 log = "0.4.30"
 tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
 tacacsrs-config = { path = "../tacacsrs_config" }
-tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
 tacacsrs-flows = { path = "../tacacsrs_flows" }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
 tacacsrs-networking = { path = "../tacacsrs_networking" }

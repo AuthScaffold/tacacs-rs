@@ -14,8 +14,7 @@ use openssl_sys::{
     OPENSSL_sk_num, OPENSSL_sk_value, SSL, SSL_CIPHER, SSL_CIPHER_standard_name, SSL_CTX,
     SSL_CTX_set_options, SSL_SESSION, SSL_SESSION_free, SSL_get_SSL_CTX, TLS1_3_VERSION,
 };
-use tacacsrs_config::EpskSupportedHash;
-use tacacsrs_credential_resolution::RuntimeServer;
+use tacacsrs_config::{EpskSupportedHash, TacacsPlusServer};
 
 use super::{tls13_epsk, EpskSupportedHashExt};
 
@@ -28,7 +27,7 @@ type PskUseSessionCallback = unsafe extern "C" fn(
 ) -> c_int;
 
 struct OpenSslPskCallbackState {
-    runtime: Arc<RuntimeServer>,
+    server: Arc<TacacsPlusServer>,
 }
 
 const SSL_OP_ALLOW_NO_DHE_KEX_BIT: u32 = 10;
@@ -64,10 +63,10 @@ extern "C" {
 /// EPSK hash bound to the synthetic `SSL_SESSION`.
 pub(crate) fn set_tls13_psk_use_session_callback(
     builder: &mut SslContextBuilder,
-    runtime: Arc<RuntimeServer>,
+    server: Arc<TacacsPlusServer>,
 ) -> Result<()> {
     let index = psk_config_index().context("failed to allocate OpenSSL PSK ex-data index")?;
-    let state = OpenSslPskCallbackState { runtime };
+    let state = OpenSslPskCallbackState { server };
 
     builder.set_ex_data(index, state);
 
@@ -126,7 +125,7 @@ unsafe extern "C" fn psk_use_session_callback(
         return 0;
     };
 
-    let Ok(epsk) = tls13_epsk::config(&state.runtime) else {
+    let Ok(epsk) = tls13_epsk::config(&state.server) else {
         log::error!(target: module_path!(), "TLS 1.3 PSK callback has no configuration");
         return 0;
     };
@@ -155,7 +154,7 @@ unsafe fn build_callback_session(
     digest: *const EVP_MD,
     state: &OpenSslPskCallbackState,
 ) -> Option<*mut SSL_SESSION> {
-    let handshake_hash = match tls13_epsk::config(&state.runtime) {
+    let handshake_hash = match tls13_epsk::config(&state.server) {
         Ok(epsk) => epsk.hash,
         Err(error) => {
             log::error!(target: module_path!(), "TLS 1.3 EPSK callback configuration failed: {error}");
@@ -211,7 +210,7 @@ unsafe fn create_session(
     state: &OpenSslPskCallbackState,
     cipher: *const SSL_CIPHER,
 ) -> Option<*mut SSL_SESSION> {
-    let key = match tls13_epsk::symmetric_key(&state.runtime) {
+    let key = match tls13_epsk::symmetric_key(&state.server) {
         Ok(key) => key,
         Err(error) => {
             log::error!(target: module_path!(), "TLS 1.3 EPSK callback has no symmetric key: {error}");

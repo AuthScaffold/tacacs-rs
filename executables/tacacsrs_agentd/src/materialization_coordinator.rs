@@ -215,8 +215,8 @@ impl MaterializationCoordinator {
         };
         ensure_publishable(&published, &self.validation_options)?;
         service
-            .reload_tacacs_plus_with_proxy_downstream_obfuscation(
-                published,
+            .reload_materialized_servers_with_proxy_downstream_obfuscation(
+                next_active.clone(),
                 prepared.attempt.proxy_policy,
             )
             .await?;

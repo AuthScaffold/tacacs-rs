@@ -11,7 +11,6 @@ use anyhow::Context;
 use tokio::sync::{Mutex, RwLock};
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_credential_resolution::RuntimeServer;
 use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::enumerations::{
@@ -43,7 +42,7 @@ use crate::transport::BoxedTransport;
 /// unsupported by the server, future operations continue to use dedicated
 /// streams.
 pub struct TacacsClient {
-    server: Arc<RuntimeServer>,
+    server: Arc<TacacsPlusServer>,
     options: ConnectOptions,
     shared_connection: Arc<RwLock<Option<Arc<MultiplexedConnection>>>>,
     single_connection_state: Arc<RwLock<SingleConnectionState>>,
@@ -58,8 +57,8 @@ pub struct TacacsClient {
 impl TacacsClient {
     /// Creates a client connection without opening the network transport yet.
     #[must_use]
-    fn new(server: Arc<RuntimeServer>, options: ConnectOptions) -> Self {
-        let single_connection_enabled = server.config().single_connection;
+    fn new(server: Arc<TacacsPlusServer>, options: ConnectOptions) -> Self {
+        let single_connection_enabled = server.single_connection;
         Self {
             server,
             options,
@@ -87,19 +86,17 @@ impl TacacsClient {
         server: TacacsPlusServer,
         options: ConnectOptions,
     ) -> anyhow::Result<Self> {
-        let runtime = RuntimeServer::inline(server)
-            .context("inline networking configuration requires no central references")?;
-        Self::connect_runtime(Arc::new(runtime), options).await
+        Self::connect_shared(Arc::new(server), options).await
     }
 
-    /// Creates a client from a closed runtime server and optionally performs preflight.
+    /// Creates a client from a shared materialized server and optionally performs preflight.
     ///
     /// # Errors
     ///
     /// Returns an error if TCP connection, TLS negotiation, PSK setup, or
     /// configured preflight fails.
-    pub async fn connect_runtime(
-        server: Arc<RuntimeServer>,
+    pub async fn connect_shared(
+        server: Arc<TacacsPlusServer>,
         options: ConnectOptions,
     ) -> anyhow::Result<Self> {
         let connection = Self::new(server, options);
@@ -229,7 +226,7 @@ impl TacacsClient {
         &self,
         expected: Option<ExpectedResponseHeader>,
     ) -> anyhow::Result<ClientSession> {
-        if !self.server.config().single_connection {
+        if !self.server.single_connection {
             return Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?));
         }
 
@@ -484,7 +481,7 @@ impl TacacsClient {
             Err(error) => {
                 log::debug!(
                     "Cached TACACS+ connection to {} could not create a session: {error:#}",
-                    self.server.config().socket_address(),
+                    self.server.socket_address(),
                 );
                 self.update_state_after_shared_connection_rejection(&connection)
                     .await;
@@ -523,7 +520,7 @@ impl TacacsClient {
         transport: BoxedTransport,
         single_connect_promotion: Option<SingleConnectPromotion>,
     ) -> DedicatedSession {
-        let obfuscation_key = packet_obfuscation_key(self.server.config());
+        let obfuscation_key = packet_obfuscation_key(&self.server);
         DedicatedSession::new(transport, obfuscation_key.as_deref(), single_connect_promotion)
     }
 
@@ -546,7 +543,7 @@ impl TacacsClient {
     }
 
     async fn establish_stream(&self) -> anyhow::Result<BoxedTransport> {
-        let address = self.server.config().socket_address();
+        let address = self.server.socket_address();
         establish::establish_stream(Arc::clone(&self.server), &self.options)
             .await
             .with_context(|| format!("Failed to connect to {address}"))
@@ -664,7 +661,6 @@ mod tests {
     use tokio::sync::mpsc;
 
     use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerType};
-    use tacacsrs_credential_resolution::RuntimeServer;
     use tacacsrs_messages::accounting::reply::AccountingReply;
     use tacacsrs_messages::accounting::request::AccountingRequest;
     use tacacsrs_messages::enumerations::{
@@ -722,8 +718,8 @@ mod tests {
         }
     }
 
-    fn runtime(server: TacacsPlusServer) -> Arc<RuntimeServer> {
-        Arc::new(RuntimeServer::inline(server).expect("inline runtime server"))
+    fn runtime(server: TacacsPlusServer) -> Arc<TacacsPlusServer> {
+        Arc::new(server)
     }
 
     fn test_packet(session_id: u32, seq_no: u8, flags: TacacsFlags) -> Packet {

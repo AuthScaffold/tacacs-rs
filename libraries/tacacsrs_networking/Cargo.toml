@@ -8,7 +8,6 @@ description = "TACACS+ transport layer with TCP, TLS, and PSK support"
 
 [dependencies]
 tacacsrs-config = { path = "../tacacsrs_config" }
-tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 tokio = { version = "1.52.3", features = ["full"] }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
@@ -25,6 +24,7 @@ console-subscriber = "0.5.0"
 env_logger = "0.11.10"
 futures = "0.3"
 tacacsrs-flows = { path = "../tacacsrs_flows" }
+tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 
 [lints]
 workspace = true

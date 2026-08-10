@@ -6,7 +6,6 @@ use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, Tls13Epsk};
-use tacacsrs_credential_resolution::RuntimeServer;
 
 use super::PskClientConfig;
 
@@ -35,20 +34,19 @@ pub(crate) fn server_has_psk(server: &TacacsPlusServer) -> bool {
 /// function — if no PSK is configured, an error is returned because there is
 /// no key material to negotiate with.
 pub(crate) async fn establish_from_server(
-    runtime: std::sync::Arc<RuntimeServer>,
+    server: std::sync::Arc<TacacsPlusServer>,
     address: &str,
     tcp_stream: TcpStream,
 ) -> Result<SslStream<TcpStream>> {
-    let server = runtime.config();
-    tls13_epsk(server)?;
-    let server_name = derive_sni_name(server)?.map(str::to_owned);
+    tls13_epsk(&server)?;
+    let server_name = derive_sni_name(&server)?.map(str::to_owned);
 
     log::debug!(
         "Negotiating TLS-PSK handshake with {address} (SNI: {})",
         server_name.as_deref().unwrap_or("disabled")
     );
 
-    let tls_stream = PskClientConfig::prepare(runtime)
+    let tls_stream = PskClientConfig::prepare(server)
         .context("Invalid TLS PSK OpenSSL configuration")?
         .connect(address, server_name.as_deref(), tcp_stream)
         .await
@@ -86,7 +84,7 @@ mod tests {
         EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity,
     };
     use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
-    use tacacsrs_credential_resolution::SecretBytes;
+    use tacacsrs_secrets::SecretBytes;
 
     fn server_template() -> TacacsPlusServer {
         TacacsPlusServer {
@@ -149,11 +147,10 @@ mod tests {
     fn tls13_epsk_extracts_config_model() {
         let key = b"resolved-psk-bytes-with-enough-length";
         let server = server_with_psk("my-client", key);
-        let runtime = RuntimeServer::inline(server).expect("inline runtime");
-        let epsk = epsk(runtime.config());
+        let epsk = epsk(&server);
 
         assert_eq!(epsk.external_identity, "my-client");
-        assert_eq!(super::super::tls13_epsk::symmetric_key(&runtime).expect("symmetric key"), key);
+        assert_eq!(super::super::tls13_epsk::symmetric_key(&server).expect("symmetric key"), key);
     }
 
     #[test]

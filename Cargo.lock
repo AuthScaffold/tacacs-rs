@@ -1968,7 +1968,6 @@ dependencies = [
  "rustix",
  "tacacsrs-agent-client",
  "tacacsrs-config",
- "tacacsrs-credential-resolution",
  "tacacsrs-flows",
  "tacacsrs-messages",
  "tacacsrs-networking",
@@ -2168,9 +2167,9 @@ dependencies = [
  "parking_lot",
  "rand",
  "tacacsrs-config",
- "tacacsrs-credential-resolution",
  "tacacsrs-flows",
  "tacacsrs-messages",
+ "tacacsrs-secrets",
  "tokio",
  "tokio-openssl",
 ]
