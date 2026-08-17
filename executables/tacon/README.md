@@ -284,11 +284,11 @@ See the [examples](examples/) directory for sample batch files.
 
 ## Exit Codes
 
-| Code | Description                                      |
-| ---- | ------------------------------------------------ |
-| 0    | Success                                          |
-| 1    | Runtime error or rejected TACACS+ request         |
-| 2    | Command-line usage or argument error              |
+| Code | Description |
+| ---- | ----------- |
+| 0    | Command completed, including a terminal TACACS+ rejection status |
+| 1    | Runtime, configuration, connection, or request execution error |
+| 2    | Command-line usage or argument parsing error |
 
 ## Related
 

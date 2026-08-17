@@ -134,9 +134,11 @@ mapping and Redis notification details, see
 
 If Redis or the forwarder row is unavailable, the process retries with capped
 backoff before it binds either listener. After listener startup, the
-configuration supervisor continues to retry invalid or unavailable server
-snapshots. A valid snapshot and at least one eligible server make the same
-process ready without a restart. Upstream reachability does not gate readiness.
+initial server load and subscription recovery retry unavailable snapshots. A
+later reload gets three attempts. If the candidate is still invalid, the daemon
+retains the active configuration and waits for another ConfigDB notification.
+A valid snapshot and at least one eligible server make the same process ready
+without a restart. Upstream reachability does not gate readiness.
 
 Use the standard exec probe in the image:
 
@@ -150,7 +152,7 @@ tacacsrs-agent-health \
 The startup log includes lines like these:
 
 ```text
-Configured SONiC ConfigDB datastore: url='unix:///var/run/redis/redis.sock?db=4', db=4
+SONiC ConfigDB datastore uses database index 4
 TACACS+ proxy endpoint: Tcp(127.0.0.1:49)
 ```
 

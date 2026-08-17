@@ -287,11 +287,14 @@ snapshot and connection handles.
 When a TACPLUS-prefixed key changes in CONFIG_DB, the runtime:
 
 1. Coalesces additional changes that arrive within a short debounce window.
-2. Re-reads all four supported TACACS+ tables.
-3. Validates the new snapshot against the YANG schema.
-4. Emits a typed changed or rejected event.
-5. Filters proxy self-loops and validates the complete candidate.
-6. Atomically replaces the server set for new sessions while preserving unchanged cached connections.
+2. Tries to read and validate all four supported tables up to three times.
+3. If validation fails, emits `CandidateRejected` and keeps the active server set.
+4. If the server configuration changed, emits `Changed`.
+5. Filters proxy self-loops and atomically applies a valid changed server set.
+6. Emits `RestartRequired` when the forwarder row differs from the bound listener.
+
+A forwarder-only change does not replace the server set. After a rejected
+reload, the datastore waits for the next ConfigDB notification.
 
 Before listener creation, the daemon waits for Redis and a valid
 `TACPLUS_FORWARDER|global` row. It retries with capped backoff and does not bind
