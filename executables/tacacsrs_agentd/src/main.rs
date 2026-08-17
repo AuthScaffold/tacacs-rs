@@ -8,8 +8,8 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::Parser;
 use tacacsrs_agent::{
-    EnabledServices, ProxyDownstreamObfuscation, RuntimeHealthPublisher, ServiceConfig,
-    TacacsClientService,
+    EnabledServices, ProxyDownstreamObfuscation, RuntimeHealthPublisher, RuntimeLifecycle,
+    ServiceConfig, TacacsClientService,
 };
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_cli_datastore::{
@@ -18,13 +18,18 @@ use tacacsrs_cli_datastore::{
 };
 use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
 use tacacsrs_datastore::{ConfigDatastore, InitialLoadPolicy};
-use tacacsrs_sonic::{SonicConfigDb, SonicConnection, DEFAULT_REDIS_URL};
+use tacacsrs_credential_resolution::{CredentialChangeSource, CredentialResolver};
+use tacacsrs_sonic::{
+    SonicConfigDb, SonicConnection, SonicCredentialChangeSource, SonicCredentialPolicy,
+    SonicCredentialResolver, SonicCredentialRoots,
+};
 use tokio_util::sync::CancellationToken;
 
 mod cli;
 mod config_filter;
 mod config_supervisor;
 mod host_integration;
+mod materialization_coordinator;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
@@ -67,6 +72,9 @@ fn init_logger(verbose: u8) {
 }
 
 fn enabled_services_from_cli(cli: &Cli) -> EnabledServices {
+    if cli.sonic {
+        return EnabledServices::BOTH;
+    }
     match cli.service_mode.unwrap_or_else(|| {
         if cli.proxy_endpoint.is_some() {
             ServiceMode::Both
@@ -78,6 +86,79 @@ fn enabled_services_from_cli(cli: &Cli) -> EnabledServices {
         ServiceMode::TacacsProxy => EnabledServices::TACACS_PROXY,
         ServiceMode::Both => EnabledServices::BOTH,
     }
+}
+
+fn sonic_connection_from_cli(cli: &Cli) -> SonicConnection {
+    let mut settings = SonicConnection::default();
+    if let Some(url) = cli.sonic_redis_url.clone() {
+        settings.url = url;
+    }
+    if let Some(db) = cli.sonic_redis_db {
+        settings.db_index = db;
+    }
+    settings
+}
+
+async fn wait_for_sonic_forwarder(
+    settings: &SonicConnection,
+) -> anyhow::Result<tacacsrs_sonic::SonicForwarderSettings> {
+    let mut delay = Duration::from_millis(250);
+    loop {
+        let load = tokio::select! {
+            load = settings.load_forwarder_settings() => load,
+            signal = bootstrap_shutdown_signal() => {
+                signal?;
+                anyhow::bail!("shutdown requested during SONiC forwarder bootstrap");
+            }
+        };
+        if let Ok(forwarder) = load {
+            return Ok(forwarder);
+        }
+        log::warn!("SONiC forwarder settings are unavailable; retrying before bind");
+        tokio::select! {
+            () = tokio::time::sleep(delay) => {}
+            signal = bootstrap_shutdown_signal() => {
+                signal?;
+                anyhow::bail!("shutdown requested during SONiC forwarder bootstrap");
+            }
+        }
+        delay = delay.saturating_mul(2).min(Duration::from_secs(30));
+    }
+}
+
+async fn bootstrap_shutdown_signal() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate()).context("register SIGTERM handler")?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result.context("register Ctrl-C handler"),
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("register Ctrl-C handler")
+    }
+}
+
+async fn sonic_forwarder_from_cli(
+    cli: &Cli,
+) -> anyhow::Result<Option<tacacsrs_sonic::SonicForwarderSettings>> {
+    if !cli.sonic {
+        return Ok(None);
+    }
+    if cli
+        .service_mode
+        .is_some_and(|mode| mode != ServiceMode::Both)
+    {
+        anyhow::bail!("SONiC central-agent mode requires --service-mode both");
+    }
+    Ok(Some(wait_for_sonic_forwarder(&sonic_connection_from_cli(cli)).await?))
 }
 
 fn cli_datastore_input_from_cli(cli: &Cli) -> CliDatastoreInput {
@@ -136,23 +217,17 @@ fn cli_psk_inputs(cli: &Cli) -> Option<CliPskInputs> {
 /// Construction is infallible: every datastore validates its configuration
 /// lazily in [`ConfigDatastore::load`], so configuration errors surface when
 /// the daemon performs its initial load rather than here.
-fn build_datastore(cli: &Cli) -> Arc<dyn ConfigDatastore> {
+fn build_datastore(
+    cli: &Cli,
+    sonic_forwarder: Option<tacacsrs_sonic::SonicForwarderSettings>,
+) -> Arc<dyn ConfigDatastore> {
     if cli.sonic {
-        let mut settings = SonicConnection::default();
-        if let Some(url) = cli.sonic_redis_url.clone() {
-            settings.url = url;
-        } else {
-            settings.url = DEFAULT_REDIS_URL.to_string();
-        }
-        if let Some(db) = cli.sonic_redis_db {
-            settings.db_index = db;
-        }
-        log::info!(
-            "Configured SONiC ConfigDB datastore: url='{}', db={}",
-            settings.url,
-            settings.db_index,
-        );
-        return Arc::new(SonicConfigDb::new(settings));
+        let settings = sonic_connection_from_cli(cli);
+        log::info!("Configured SONiC ConfigDB datastore (database index {})", settings.db_index);
+        return Arc::new(match sonic_forwarder {
+            Some(forwarder) => SonicConfigDb::with_bound_forwarder(settings, forwarder),
+            None => SonicConfigDb::new(settings),
+        });
     }
 
     if let Some(ref config_path) = cli.config {
@@ -173,22 +248,41 @@ async fn run_supervised_service(
     service: Arc<TacacsClientService>,
     health: RuntimeHealthPublisher,
     config_filter: Arc<dyn TacacsPlusFilter>,
+    credential_resolver: Option<Arc<dyn CredentialResolver>>,
+    credential_change_source: Option<Arc<dyn CredentialChangeSource>>,
     host_integration: HostIntegration,
 ) -> anyhow::Result<()> {
     let datastore_policy = datastore.runtime_policy();
-    let supervisor = ConfigSupervisor::new(
-        Arc::clone(&datastore),
-        Arc::clone(&service),
-        health.clone(),
-        config_filter,
-    );
+    let supervisor = match (credential_resolver, credential_change_source) {
+        (Some(resolver), Some(change_source)) => ConfigSupervisor::new_with_credential_provider(
+            Arc::clone(&datastore),
+            Arc::clone(&service),
+            health.clone(),
+            Arc::clone(&config_filter),
+            resolver,
+            change_source,
+        ),
+        (Some(resolver), None) => ConfigSupervisor::new_with_credential_resolver(
+            Arc::clone(&datastore),
+            Arc::clone(&service),
+            health.clone(),
+            Arc::clone(&config_filter),
+            resolver,
+        ),
+        (None, _) => ConfigSupervisor::new(
+            Arc::clone(&datastore),
+            Arc::clone(&service),
+            health.clone(),
+            Arc::clone(&config_filter),
+        ),
+    };
     let cancellation = CancellationToken::new();
 
     if datastore_policy.initial_load == InitialLoadPolicy::FailFast {
         supervisor.load_initial(&cancellation).await?;
     }
 
-    let mut host_task = {
+    let host_task = {
         let cancellation = cancellation.clone();
         tokio::spawn(host_integration.run(health.subscribe(), cancellation))
     };
@@ -205,9 +299,28 @@ async fn run_supervised_service(
         })
     };
 
+    supervise_tasks(service.serve(), host_task, supervisor_task, cancellation, health).await
+}
+
+/// Coordinates the service, host integration, and configuration supervisor as
+/// peers so that an unexpected exit of any one of them is observed immediately.
+///
+/// The configuration supervisor is critical: if it returns, errors, or panics
+/// while the service is still serving, the runtime would otherwise keep serving
+/// stale configuration, so this is fatal.
+async fn supervise_tasks(
+    service_future: impl std::future::Future<Output = anyhow::Result<()>>,
+    mut host_task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    mut supervisor_task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    cancellation: CancellationToken,
+    health: RuntimeHealthPublisher,
+) -> anyhow::Result<()> {
+    let service_future = std::pin::pin!(service_future);
+
     let mut host_task_completed = false;
+    let mut supervisor_task_completed = false;
     let service_result = tokio::select! {
-        result = service.serve() => result,
+        result = service_future => result,
         result = &mut host_task => {
             host_task_completed = true;
             match result.context("Host integration task failed")? {
@@ -215,16 +328,57 @@ async fn run_supervised_service(
                 Err(error) => Err(error.context("Host integration failed")),
             }
         }
+        result = &mut supervisor_task => {
+            supervisor_task_completed = true;
+            // Publish a typed failure without embedding the underlying config or credential error.
+            health.set_lifecycle(RuntimeLifecycle::Failed);
+            Err(supervisor_exit_to_fatal_error(result))
+        }
     };
+
     cancellation.cancel();
-    supervisor_task
-        .await
-        .context("Configuration supervisor task failed")??;
+    if !supervisor_task_completed {
+        supervisor_task
+            .await
+            .context("Configuration supervisor task failed")??;
+    }
     if !host_task_completed {
         host_task.await.context("Host integration task failed")??;
     }
 
     service_result
+}
+
+/// Classifies an unexpected configuration-supervisor task outcome as a fatal error.
+fn supervisor_exit_to_fatal_error(
+    result: Result<anyhow::Result<()>, tokio::task::JoinError>,
+) -> anyhow::Error {
+    match result {
+        Ok(Ok(())) => anyhow::anyhow!("Configuration supervisor stopped unexpectedly"),
+        Ok(Err(error)) => error.context("Configuration supervisor failed"),
+        Err(join_error) => {
+            anyhow::Error::new(join_error).context("Configuration supervisor task panicked")
+        }
+    }
+}
+
+type CredentialProvider =
+    (Option<Arc<dyn CredentialResolver>>, Option<Arc<dyn CredentialChangeSource>>);
+
+fn build_credential_provider(cli: &Cli) -> CredentialProvider {
+    if !cli.sonic {
+        return (None, None);
+    }
+    let resolver = Arc::new(SonicCredentialResolver::reloadable(
+        SonicCredentialRoots::default(),
+        SonicCredentialPolicy::production_from_root_group(),
+    )) as Arc<dyn CredentialResolver>;
+    let settings = sonic_connection_from_cli(cli);
+    let change_source = settings.credential_watch_root.map(|root| {
+        Arc::new(SonicCredentialChangeSource::new(root, settings.debounce))
+            as Arc<dyn CredentialChangeSource>
+    });
+    (Some(resolver), change_source)
 }
 
 /// Starts the central TACACS+ client service process.
@@ -237,6 +391,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_logger(cli.verbose);
     let host_integration = HostIntegration::from_environment(cli.host_integration)?;
+    let sonic_forwarder = sonic_forwarder_from_cli(&cli).await?;
     let enabled_services = enabled_services_from_cli(&cli);
 
     let endpoint = cli
@@ -257,11 +412,24 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Linux deployments must use a Unix domain socket endpoint");
     }
 
-    let proxy_endpoint = cli
+    let configured_proxy_endpoint = cli
         .proxy_endpoint
         .as_deref()
         .map(IpcEndpoint::from_str)
         .transpose()?;
+    let proxy_endpoint = match sonic_forwarder {
+        Some(forwarder) => {
+            let endpoint = IpcEndpoint::Tcp(forwarder.socket_address());
+            if configured_proxy_endpoint
+                .as_ref()
+                .is_some_and(|configured| configured != &endpoint)
+            {
+                anyhow::bail!("CLI proxy endpoint conflicts with TACPLUS_FORWARDER|global");
+            }
+            Some(endpoint)
+        }
+        None => configured_proxy_endpoint,
+    };
 
     if let Some(proxy_endpoint) = &proxy_endpoint {
         if enabled_services.client_api() && proxy_endpoint == &endpoint {
@@ -285,7 +453,7 @@ async fn main() -> anyhow::Result<()> {
         cli.proxy_shared_secret.clone(),
     );
 
-    let datastore = build_datastore(&cli);
+    let datastore = build_datastore(&cli, sonic_forwarder);
     let health = RuntimeHealthPublisher::new(enabled_services);
     let empty_tacacs_plus = tacacsrs_config::TacacsPlus::empty();
     let service = Arc::new(
@@ -305,7 +473,185 @@ async fn main() -> anyhow::Result<()> {
         )
         .context("Failed to build TACACS+ client service configuration")?,
     );
-    run_supervised_service(datastore, service, health, config_filter, host_integration).await
+    let (credential_resolver, credential_change_source) = build_credential_provider(&cli);
+    run_supervised_service(
+        datastore,
+        service,
+        health,
+        config_filter,
+        credential_resolver,
+        credential_change_source,
+        host_integration,
+    )
+    .await
+}
+
+#[cfg(test)]
+mod supervision_tests {
+    use std::future;
+
+    use tacacsrs_agent::{EnabledServices, RuntimeHealthPublisher, RuntimeLifecycle};
+    use tokio_util::sync::CancellationToken;
+
+    use super::{supervise_tasks, supervisor_exit_to_fatal_error};
+
+    fn health() -> RuntimeHealthPublisher {
+        RuntimeHealthPublisher::new(EnabledServices::CLIENT_API)
+    }
+
+    fn wait_for_cancel(
+        cancellation: CancellationToken,
+    ) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+        tokio::spawn(async move {
+            cancellation.cancelled().await;
+            Ok(())
+        })
+    }
+
+    #[tokio::test]
+    async fn supervisor_early_return_is_fatal_and_marks_failed() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = wait_for_cancel(cancellation.clone());
+        let supervisor_task = tokio::spawn(async { Ok(()) });
+
+        let result = supervise_tasks(
+            future::pending::<anyhow::Result<()>>(),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("stopped unexpectedly"));
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test]
+    async fn supervisor_error_is_fatal_and_marks_failed() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = wait_for_cancel(cancellation.clone());
+        let supervisor_task =
+            tokio::spawn(async { Err(anyhow::anyhow!("supervisor failure detail")) });
+
+        let result = supervise_tasks(
+            future::pending::<anyhow::Result<()>>(),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Configuration supervisor failed"));
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test]
+    async fn supervisor_panic_is_fatal_and_marks_failed() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = wait_for_cancel(cancellation.clone());
+        let supervisor_task = tokio::spawn(async {
+            panic!("supervisor panic");
+        });
+
+        let result = supervise_tasks(
+            future::pending::<anyhow::Result<()>>(),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result.unwrap_err().to_string().contains("panicked"));
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test]
+    async fn normal_service_exit_joins_without_false_failure() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = wait_for_cancel(cancellation.clone());
+        let supervisor_task = wait_for_cancel(cancellation.clone());
+
+        let result = supervise_tasks(
+            future::ready(Ok(())),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_ne!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test]
+    async fn listener_error_propagates_without_marking_failed() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = wait_for_cancel(cancellation.clone());
+        let supervisor_task = wait_for_cancel(cancellation.clone());
+
+        let result = supervise_tasks(
+            future::ready(Err(anyhow::anyhow!("listener bind failed"))),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("listener bind failed"));
+        assert_ne!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test]
+    async fn host_integration_error_propagates() {
+        let health = health();
+        let cancellation = CancellationToken::new();
+        let host_task = tokio::spawn(async { Err(anyhow::anyhow!("host integration failure")) });
+        let supervisor_task = wait_for_cancel(cancellation.clone());
+
+        let result = supervise_tasks(
+            future::pending::<anyhow::Result<()>>(),
+            host_task,
+            supervisor_task,
+            cancellation,
+            health.clone(),
+        )
+        .await;
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Host integration failed"));
+    }
+
+    #[test]
+    fn fatal_error_classification_distinguishes_clean_and_errored_exits() {
+        let stopped = supervisor_exit_to_fatal_error(Ok(Ok(())));
+        assert!(stopped.to_string().contains("stopped unexpectedly"));
+
+        let failed = supervisor_exit_to_fatal_error(Ok(Err(anyhow::anyhow!("detail"))));
+        assert!(failed
+            .to_string()
+            .contains("Configuration supervisor failed"));
+    }
 }
 
 #[cfg(test)]
@@ -376,7 +722,13 @@ mod tests {
         assert_eq!(root.server.len(), 2);
         assert_eq!(root.server[0].name, "primary");
         assert_eq!(root.server[1].name, "secondary");
-        assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
+        assert_eq!(
+            root.server[0]
+                .shared_secret
+                .as_ref()
+                .map(tacacsrs_secrets::SecretString::expose_secret),
+            Some("secret1"),
+        );
     }
 
     #[test]
@@ -391,7 +743,13 @@ mod tests {
 
         let root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
             .expect("plain-text shared secret should load");
-        assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
+        assert_eq!(
+            root.server[0]
+                .shared_secret
+                .as_ref()
+                .map(tacacsrs_secrets::SecretString::expose_secret),
+            Some("secret1"),
+        );
     }
 
     #[test]
@@ -491,6 +849,13 @@ mod tests {
     }
 
     #[test]
+    fn sonic_mode_always_enables_client_api_and_proxy() {
+        let cli = Cli::parse_from(["tacacsrs-agentd", "--sonic"]);
+
+        assert_eq!(enabled_services_from_cli(&cli), EnabledServices::BOTH);
+    }
+
+    #[test]
     fn proxy_shared_secret_requires_proxy_endpoint() {
         let result = Cli::try_parse_from([
             "tacacsrs-agentd",
@@ -547,7 +912,13 @@ mod tests {
             .expect("inline certificate definition should be present");
 
         assert_eq!(inline.cert_data.as_deref(), Some(expected_cert_der.as_slice()));
-        assert_eq!(inline.cleartext_private_key.as_deref(), Some(expected_key_der.as_slice()));
+        assert_eq!(
+            inline
+                .cleartext_private_key
+                .as_ref()
+                .map(tacacsrs_secrets::SecretBytes::expose_secret),
+            Some(expected_key_der.as_slice()),
+        );
         assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat));
     }
 

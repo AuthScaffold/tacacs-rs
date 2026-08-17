@@ -71,4 +71,4 @@ pub(crate) async fn serve(
 }
 
 #[cfg(unix)]
-pub(crate) use unix::{UnixSocketCleanupGuard, prepare_unix_listener};
+pub(crate) use unix::prepare_unix_listener;

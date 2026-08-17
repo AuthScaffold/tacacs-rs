@@ -140,7 +140,7 @@ impl FakeConnector {
 impl UpstreamConnector for FakeConnector {
     async fn connect(
         &self,
-        server: &TacacsPlusServer,
+        server: Arc<TacacsPlusServer>,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         let address = server.socket_address();
         {

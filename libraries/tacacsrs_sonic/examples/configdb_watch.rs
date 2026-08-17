@@ -39,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
         url: cli.redis_url,
         db_index: cli.redis_db,
         debounce: Duration::from_millis(cli.debounce_ms),
+        credential_watch_root: None,
     };
     let datastore = SonicConfigDb::new(settings);
 
@@ -78,6 +79,9 @@ async fn main() -> anyhow::Result<()> {
             }
             tacacsrs_datastore::ConfigChangeEvent::CandidateRejected => {
                 println!("  result: candidate_rejected");
+            }
+            tacacsrs_datastore::ConfigChangeEvent::RestartRequired { required } => {
+                println!("  restart_required: {required}");
             }
         }
 

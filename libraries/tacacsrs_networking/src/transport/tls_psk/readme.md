@@ -101,6 +101,14 @@ are translated into OpenSSL supported-group names and used to send TLS 1.3
 `psk_dhe_ke` key shares. When the leaf-list is empty, the transport leaves the
 OpenSSL group list unchanged and preserves the existing PSK-only behaviour.
 
+At runtime, networking owns an `Arc<TacacsPlusServer>` that has already passed
+credential materialization and final validation. Networking reads only
+`inline-definition.cleartext-symmetric-key`; central references never cross
+the agent boundary. The OpenSSL context stores another clone of the server
+`Arc` in ex-data and borrows the zeroizing generated secret during the PSK
+callback. The callback state therefore remains valid for the full `SSL_CTX`
+lifetime without copying the key into separate runtime state.
+
 ### `server-authentication/tls13-epsks` — Model Placeholder
 
 ```

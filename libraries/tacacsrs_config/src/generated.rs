@@ -152,7 +152,7 @@ pub mod tacacs_plus {
     }
 
     /// Specifies the client identity using a certificate.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct ClientIdentityCertificate {
         /// A container to hold the local key definition.
@@ -183,7 +183,7 @@ pub mod tacacs_plus {
     fn default_tls13_epsk_hash() -> EpskSupportedHash { EpskSupportedHash::Sha256 }
 
     /// An EPSK is established or provisioned out of band.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct Tls13Epsk {
         /// A container to hold the local key definition.
@@ -247,7 +247,7 @@ pub mod tacacs_plus {
     /// when establishing a connection to a TLS server.
     /// A list of client credentials that can be referenced
     /// when configuring server instances.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct ClientCredentials {
         /// An identifier that uniquely identifies a client
@@ -280,7 +280,7 @@ pub mod tacacs_plus {
     /// authenticate TLS server certificates.
     /// A server certificate is authenticated if it has a valid
     /// chain of trust to a configured CA certificate.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct ServerAuthenticationCaCerts {
         /// A container for locally configured trust anchor
@@ -311,7 +311,7 @@ pub mod tacacs_plus {
 
     /// Identity credentials that a TLS client may use
     /// to authenticate a TLS server.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct ServerCredentials {
         /// An identifier that uniquely identifies server
@@ -344,7 +344,7 @@ pub mod tacacs_plus {
 
     /// Identity credentials that a TLS client may present when
     /// establishing a connection to a TLS server.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct TlsClientClientIdentity {
         /// Specifies the client credentials reference.
@@ -376,7 +376,7 @@ pub mod tacacs_plus {
     }
 
     /// Specifies how a TLS client can authenticate TLS servers.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct TlsClientServerAuthentication {
         /// Specifies the server credentials reference.
@@ -424,7 +424,7 @@ pub mod tacacs_plus {
     fn default_tacacs_plus_server_timeout() -> u16 { 5 }
 
     /// List of TACACS+ servers used by the device.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct TacacsPlusServer {
         /// A name that is used to uniquely identify a TACACS+
@@ -485,7 +485,7 @@ pub mod tacacs_plus {
         #[serde(rename = "shared-secret")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub shared_secret: Option<String>,
+        pub shared_secret: Option<tacacsrs_secrets::SecretString>,
         /// Specifies the source IP address for TACACS+ outbound
         /// packets.
         #[serde(rename = "source-ip")]
@@ -541,7 +541,7 @@ pub mod tacacs_plus {
     }
 
     /// Container for TACACS+ configurations and operations.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct TacacsPlus {
         /// Identity credentials that a TLS client may present
@@ -572,7 +572,7 @@ pub mod keystore {
     use super::crypto_types;
 
     /// A container to hold the local key definition.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct EndEntityCertWithKeyInlineDefinition {
         /// Identifies the public key's format.  Implementations SHOULD
@@ -603,10 +603,9 @@ pub mod keystore {
         /// The value of the binary key.  The key's value is
         /// interpreted by the 'private-key-format' field.
         #[serde(rename = "cleartext-private-key")]
-        #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub cleartext_private_key: Option<Vec<u8>>,
+        pub cleartext_private_key: Option<tacacsrs_secrets::SecretBytes>,
         /// The binary certificate data for this certificate.
         #[serde(rename = "cert-data")]
         #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]
@@ -628,7 +627,7 @@ pub mod keystore {
 
     /// A reference to a specific certificate associated with
     /// an asymmetric key stored in the central keystore.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct EndEntityCertWithKeyCentralKeystoreReference {
         /// A reference to an asymmetric key in the keystore.
@@ -644,7 +643,7 @@ pub mod keystore {
     }
 
     /// A container to hold the local key definition.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct SymmetricKeyInlineDefinition {
         /// Identifies the symmetric key's format.  Implementations
@@ -661,10 +660,9 @@ pub mod keystore {
         /// The binary value of the key.  The interpretation of
         /// the value is defined by the 'key-format' field.
         #[serde(rename = "cleartext-symmetric-key")]
-        #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub cleartext_symmetric_key: Option<Vec<u8>>,
+        pub cleartext_symmetric_key: Option<tacacsrs_secrets::SecretBytes>,
     }
 
     /// Choice constraints for [`SymmetricKeyInlineDefinition`].
@@ -1052,7 +1050,7 @@ pub mod truststore {
     use serde::{Deserialize, Serialize};
 
     /// A trust anchor certificate or chain of certificates.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct CertsCertificate {
         /// An arbitrary name for this certificate.
@@ -1065,7 +1063,7 @@ pub mod truststore {
 
     /// A container for locally configured trust anchor
     /// certificates.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct CertsInlineDefinition {
         /// A trust anchor certificate or chain of certificates.
@@ -1079,7 +1077,7 @@ pub mod truststore {
 /// Root wrapper for RFC 7951 JSON encoding.
 ///
 /// The JSON document root key is `ietf-system-tacacs-plus:tacacs-plus`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct YangConfigRoot {
     #[serde(rename = "ietf-system-tacacs-plus:tacacs-plus")]
     pub tacacs_plus: tacacs_plus::TacacsPlus,

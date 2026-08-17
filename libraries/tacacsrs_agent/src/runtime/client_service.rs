@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 use super::{
@@ -65,8 +65,8 @@ pub struct TacacsClientService {
     config: ServiceConfig,
     /// Shared failover state used by all IPC client handlers.
     state: Arc<UpstreamManager>,
-    /// Shared downstream obfuscation policy for newly accepted raw proxy clients.
-    proxy_downstream_obfuscation: Arc<RwLock<ProxyDownstreamObfuscation>>,
+    /// Serializes complete runtime-generation publication by reload writers.
+    reload_lock: Mutex<()>,
     /// Shared request lifecycle tracker used for graceful shutdown draining.
     request_tracker: Arc<RequestTracker>,
     /// Common protocol-neutral runtime health publisher.
@@ -122,20 +122,19 @@ impl TacacsClientService {
                 "Runtime health and service configuration must enable the same local services"
             );
         }
-        let servers = enumerate_supported_servers(&config)?;
+        let servers = enumerate_supported_servers(&config.tacacs_plus)?;
         let eligible_server_count = servers.len();
 
         let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector {
             disable_certificate_verification: config.disable_certificate_verification,
         });
-        let state = Arc::new(UpstreamManager::new(
-            servers,
+        let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+            servers.into_iter().map(Arc::new).collect(),
+            config.proxy_downstream_obfuscation.clone(),
             connector,
             config.preferred_probe_interval,
             health.clone(),
         ));
-        let proxy_downstream_obfuscation =
-            Arc::new(RwLock::new(config.proxy_downstream_obfuscation.clone()));
         let request_tracker = Arc::new(RequestTracker::default());
         health.set_eligible_server_count(eligible_server_count);
         health.set_applied_configuration(configuration_applied);
@@ -143,7 +142,7 @@ impl TacacsClientService {
         Ok(Self {
             config,
             state,
-            proxy_downstream_obfuscation,
+            reload_lock: Mutex::new(()),
             request_tracker,
             health,
         })
@@ -164,17 +163,16 @@ impl TacacsClientService {
                 "Runtime health and service configuration must enable the same local services"
             );
         }
-        let servers = enumerate_supported_servers(&config)?;
+        let servers = enumerate_supported_servers(&config.tacacs_plus)?;
         let eligible_server_count = servers.len();
 
-        let state = Arc::new(UpstreamManager::new(
-            servers,
+        let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+            servers.into_iter().map(Arc::new).collect(),
+            config.proxy_downstream_obfuscation.clone(),
             connector,
             config.preferred_probe_interval,
             health.clone(),
         ));
-        let proxy_downstream_obfuscation =
-            Arc::new(RwLock::new(config.proxy_downstream_obfuscation.clone()));
         let request_tracker = Arc::new(RequestTracker::default());
         health.set_eligible_server_count(eligible_server_count);
         health.set_applied_configuration(true);
@@ -182,7 +180,7 @@ impl TacacsClientService {
         Ok(Self {
             config,
             state,
-            proxy_downstream_obfuscation,
+            reload_lock: Mutex::new(()),
             request_tracker,
             health,
         })
@@ -195,12 +193,10 @@ impl TacacsClientService {
     /// Returns an error if credential-reference resolution fails. The existing
     /// runtime state is left unchanged on error.
     pub async fn reload_tacacs_plus(&self, tacacs_plus: TacacsPlus) -> anyhow::Result<()> {
-        let proxy_downstream_obfuscation = self.proxy_downstream_obfuscation.read().await.clone();
-        self.reload_tacacs_plus_with_proxy_downstream_obfuscation(
-            tacacs_plus,
-            proxy_downstream_obfuscation,
-        )
-        .await
+        let _reload_guard = self.reload_lock.lock().await;
+        let proxy_downstream_obfuscation = self.state.proxy_downstream_obfuscation();
+        self.reload_tacacs_plus_inner(tacacs_plus, proxy_downstream_obfuscation)
+            .await
     }
 
     /// Applies a TACACS+ snapshot plus raw proxy downstream obfuscation policy to the running service.
@@ -214,13 +210,57 @@ impl TacacsClientService {
         tacacs_plus: TacacsPlus,
         proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
     ) -> anyhow::Result<()> {
+        let _reload_guard = self.reload_lock.lock().await;
+        self.reload_tacacs_plus_inner(tacacs_plus, proxy_downstream_obfuscation)
+            .await
+    }
+
+    async fn reload_tacacs_plus_inner(
+        &self,
+        tacacs_plus: TacacsPlus,
+        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+    ) -> anyhow::Result<()> {
         let mut reload_config = self.config.clone();
         reload_config.tacacs_plus = tacacs_plus;
         reload_config.proxy_downstream_obfuscation = proxy_downstream_obfuscation.clone();
-        let servers = enumerate_supported_servers(&reload_config)?;
+        let servers = enumerate_supported_servers(&reload_config.tacacs_plus)?;
         let eligible_server_count = servers.len();
-        self.state.reload_servers(servers).await?;
-        *self.proxy_downstream_obfuscation.write().await = proxy_downstream_obfuscation;
+        self.state
+            .reload_shared_servers_with_proxy_downstream_obfuscation(
+                servers.into_iter().map(Arc::new).collect(),
+                proxy_downstream_obfuscation,
+            )
+            .await?;
+        self.health.set_eligible_server_count(eligible_server_count);
+        self.health.set_applied_configuration(true);
+        self.health
+            .set_upstream_availability(UpstreamAvailability::Unknown);
+        Ok(())
+    }
+
+    /// Atomically applies a complete set of materialized generated servers plus proxy policy.
+    ///
+    /// New requests observe the complete replacement only after every server
+    /// has already been validated and resolved by the caller. Existing bound
+    /// requests continue against the prior immutable server set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the materialized server set cannot be applied. The
+    /// previous runtime state remains active on error.
+    pub async fn reload_materialized_servers_with_proxy_downstream_obfuscation(
+        &self,
+        servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
+        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+    ) -> anyhow::Result<()> {
+        let _reload_guard = self.reload_lock.lock().await;
+        let eligible_server_count = servers.len();
+        self.state
+            .reload_shared_servers_with_proxy_downstream_obfuscation(
+                servers,
+                proxy_downstream_obfuscation,
+            )
+            .await?;
         self.health.set_eligible_server_count(eligible_server_count);
         self.health.set_applied_configuration(true);
         self.health
@@ -294,11 +334,8 @@ impl TacacsClientService {
         }
 
         if self.config.enabled_services.tacacs_proxy() {
-            let service = TacacsProxyService::new(
-                Arc::clone(&self.state),
-                Arc::clone(&self.proxy_downstream_obfuscation),
-                Arc::clone(&self.request_tracker),
-            );
+            let service =
+                TacacsProxyService::new(Arc::clone(&self.state), Arc::clone(&self.request_tracker));
             let endpoint = proxy_endpoint(&self.config)?.clone();
             let shutdown = shutdown.subscribe();
             let health = self.health.clone();
@@ -392,7 +429,7 @@ mod tests {
             server_type: REQUIRED_SERVER_TYPES,
             address: host,
             port,
-            shared_secret: Some("test-secret".to_owned()),
+            shared_secret: Some(tacacsrs_secrets::SecretString::new("test-secret".to_owned())),
             timeout: 5,
             single_connection: false,
             domain_name: None,

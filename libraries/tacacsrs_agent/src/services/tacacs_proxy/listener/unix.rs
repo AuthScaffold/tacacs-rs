@@ -16,8 +16,8 @@ pub(super) async fn serve(
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
 ) -> anyhow::Result<()> {
-    let listener = client_api_listener::prepare_unix_listener(path, socket_mode).await?;
-    let socket_guard = client_api_listener::UnixSocketCleanupGuard::new(path);
+    let (listener, socket_guard) =
+        client_api_listener::prepare_unix_listener(path, socket_mode).await?;
     registration.mark_bound();
 
     log::info!("Listening for TACACS+ proxy clients on Unix socket {}", path.display());

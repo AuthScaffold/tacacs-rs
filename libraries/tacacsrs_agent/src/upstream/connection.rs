@@ -79,6 +79,6 @@ pub(crate) trait UpstreamConnector: Send + Sync {
     /// connection setup fails.
     async fn connect(
         &self,
-        server: &TacacsPlusServer,
+        server: Arc<TacacsPlusServer>,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
 }

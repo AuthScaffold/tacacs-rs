@@ -69,7 +69,7 @@ impl RequestContext {
 }
 
 /// Owned opaque reference passed to a provider only through explicit access.
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CredentialReference {
     /// Structured central certificate-with-key reference.
     CertificateWithKey {
@@ -235,7 +235,7 @@ impl fmt::Debug for ResolutionPlan {
         formatter
             .debug_struct("ResolutionPlan")
             .field("requests", &self.requests)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

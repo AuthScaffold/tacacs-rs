@@ -65,7 +65,13 @@ fn enumerate_servers_inlines_credential_bundles() {
         .as_ref()
         .expect("certificate inline definition should exist");
     assert_eq!(inline_certificate.cert_data.as_deref(), Some(b"test-cert".as_slice()),);
-    assert_eq!(inline_certificate.cleartext_private_key.as_deref(), Some(b"test-key".as_slice()),);
+    assert_eq!(
+        inline_certificate
+            .cleartext_private_key
+            .as_ref()
+            .map(tacacsrs_secrets::SecretBytes::expose_secret),
+        Some(b"test-key".as_slice()),
+    );
 
     let server_authentication = server
         .server_authentication

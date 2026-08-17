@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 use tacacsrs_networking::{ClientConversation, PacketWriter};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use self::error::ProxyConnectionError;
@@ -86,19 +86,12 @@ impl ProxyConversation for ClientConversation {
 #[derive(Clone)]
 pub(super) struct UpstreamBridge {
     upstream_manager: Arc<UpstreamManager>,
-    downstream_obfuscation: Arc<RwLock<ProxyDownstreamObfuscation>>,
 }
 
 impl UpstreamBridge {
     /// Creates a raw proxy upstream bridge over the shared upstream manager.
-    pub(super) fn new(
-        upstream_manager: Arc<UpstreamManager>,
-        downstream_obfuscation: Arc<RwLock<ProxyDownstreamObfuscation>>,
-    ) -> Self {
-        Self {
-            upstream_manager,
-            downstream_obfuscation,
-        }
+    pub(super) fn new(upstream_manager: Arc<UpstreamManager>) -> Self {
+        Self { upstream_manager }
     }
 
     pub(super) async fn handle_connection<Stream>(
@@ -110,8 +103,12 @@ impl UpstreamBridge {
     where
         Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let bound_server = match self.upstream_manager.bind_server_for_new_session().await {
-            Ok(bound_server) => bound_server,
+        let (bound_server, downstream_obfuscation) = match self
+            .upstream_manager
+            .bind_proxy_server_for_new_session()
+            .await
+        {
+            Ok(binding) => binding,
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!(
@@ -127,7 +124,6 @@ impl UpstreamBridge {
             bound_server.index,
         );
 
-        let downstream_obfuscation = self.downstream_obfuscation.read().await.clone();
         let result = proxy_bound_connection(stream, &bound_server, downstream_obfuscation).await;
 
         match result {
@@ -169,7 +165,9 @@ fn downstream_obfuscation_key(
 ) -> Option<Vec<u8>> {
     match downstream_obfuscation {
         ProxyDownstreamObfuscation::Unobfuscated => None,
-        ProxyDownstreamObfuscation::SharedSecret(shared_secret) => Some(shared_secret.as_str()),
+        ProxyDownstreamObfuscation::SharedSecret(shared_secret) => {
+            Some(shared_secret.expose_secret())
+        }
     }
     .map(|secret| secret.as_bytes().to_vec())
 }
@@ -637,7 +635,7 @@ mod tests {
     fn downstream_obfuscation_uses_configured_proxy_secret() {
         assert_eq!(
             downstream_obfuscation_key(&ProxyDownstreamObfuscation::SharedSecret(
-                "local-proxy-secret".to_owned(),
+                tacacsrs_secrets::SecretString::new("local-proxy-secret".to_owned()),
             ),)
             .as_deref(),
             Some(b"local-proxy-secret".as_slice())

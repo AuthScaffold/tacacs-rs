@@ -282,7 +282,7 @@ fn server_type_serialize_single_flag() {
                 timeout: 5,
                 source_ip: None,
                 source_interface: None,
-                shared_secret: Some("key".to_owned()),
+                shared_secret: Some(tacacsrs_secrets::SecretString::new("key".to_owned())),
                 client_identity: None,
                 server_authentication: None,
                 vrf_instance: None,
@@ -312,7 +312,7 @@ fn server_type_serialize_two_flags() {
                 timeout: 5,
                 source_ip: None,
                 source_interface: None,
-                shared_secret: Some("key".to_owned()),
+                shared_secret: Some(tacacsrs_secrets::SecretString::new("key".to_owned())),
                 client_identity: None,
                 server_authentication: None,
                 vrf_instance: None,
@@ -481,4 +481,103 @@ fn psk_dhe_groups_deserializes_rfc7951_augmented_leaf_list() {
         .psk_dhe_ke_groups;
     assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::X25519)));
     assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Ffdhe3072)));
+}
+
+#[test]
+fn generated_parent_debug_and_serialization_redact_all_secret_fields() {
+    let config = protected_config();
+
+    let debug = format!("{config:?}");
+    let serialized = serde_json::to_string(&config).expect("protected config should serialize");
+
+    for raw_secret in ["shared-secret-sentinel", "private-secret", "epsk-secret"] {
+        assert!(!debug.contains(raw_secret));
+        assert!(!serialized.contains(raw_secret));
+    }
+    for encoded_secret in ["cHJpdmF0ZS1zZWNyZXQ=", "ZXBzay1zZWNyZXQ="] {
+        assert!(!serialized.contains(encoded_secret));
+    }
+    assert_eq!(debug.matches("<redacted>").count(), 3);
+    assert_eq!(serialized.matches("<redacted>").count(), 3);
+}
+
+#[test]
+fn generated_parent_equality_compares_actual_secret_values() {
+    let config = protected_config();
+
+    let mut changed_shared_secret = config.clone();
+    changed_shared_secret.server[0].shared_secret =
+        Some(tacacsrs_secrets::SecretString::new("replacement-shared-secret".to_owned()));
+    assert_ne!(config, changed_shared_secret);
+
+    let mut changed_epsk = config.clone();
+    changed_epsk.server[1]
+        .client_identity
+        .as_mut()
+        .unwrap()
+        .tls13_epsk
+        .as_mut()
+        .unwrap()
+        .inline_definition
+        .as_mut()
+        .unwrap()
+        .cleartext_symmetric_key =
+        Some(tacacsrs_secrets::SecretBytes::new(b"replacement-epsk-secret".to_vec()));
+    assert_ne!(config, changed_epsk);
+
+    let mut changed_private_key = config.clone();
+    changed_private_key.client_credentials[0]
+        .certificate
+        .as_mut()
+        .unwrap()
+        .inline_definition
+        .as_mut()
+        .unwrap()
+        .cleartext_private_key =
+        Some(tacacsrs_secrets::SecretBytes::new(b"replacement-private-secret".to_vec()));
+    assert_ne!(config, changed_private_key);
+}
+
+fn protected_config() -> tacacsrs_config::TacacsPlus {
+    parse_yang_json(
+        r#"{
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "client-credentials": [
+                    {
+                        "id": "client-certificate",
+                        "certificate": {
+                            "inline-definition": {
+                                "cert-data": "Y2VydGlmaWNhdGU=",
+                                "cleartext-private-key": "cHJpdmF0ZS1zZWNyZXQ="
+                            }
+                        }
+                    }
+                ],
+                "server": [
+                    {
+                        "name": "shared-secret",
+                        "server-type": "authentication",
+                        "address": "192.0.2.1",
+                        "port": 49,
+                        "shared-secret": "shared-secret-sentinel"
+                    },
+                    {
+                        "name": "epsk",
+                        "server-type": "accounting",
+                        "address": "192.0.2.2",
+                        "port": 49,
+                        "client-identity": {
+                            "tls13-epsk": {
+                                "inline-definition": {
+                                    "cleartext-symmetric-key": "ZXBzay1zZWNyZXQ="
+                                },
+                                "external-identity": "client@example.test"
+                            }
+                        }
+                    }
+                ]
+            }
+        }"#,
+    )
+    .expect("protected config should parse")
 }

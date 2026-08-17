@@ -25,8 +25,9 @@ use anyhow::bail;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 
 use self::availability::AvailabilityTracker;
-use self::server_set::{ServerSet, servers_equivalent};
+use self::server_set::{RuntimeRoutingSnapshot, ServerSet};
 use self::server_slot::ServerSlot;
+use crate::config::ProxyDownstreamObfuscation;
 use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
 use crate::upstream::{UpstreamConnection, UpstreamConnector};
 
@@ -53,8 +54,8 @@ mod availability;
 /// today; if per-operation routing is introduced later, this type is the seam
 /// where separate catalogs should be added.
 pub(crate) struct UpstreamManager {
-    /// Current immutable server-set snapshot used by new IPC requests.
-    server_set: StdRwLock<Arc<ServerSet>>,
+    /// Current immutable routing generation used by new requests.
+    runtime: StdRwLock<Arc<RuntimeRoutingSnapshot>>,
     /// Factory for creating new upstream connections.
     connector: Arc<dyn UpstreamConnector>,
     /// Interval between preferred-server recovery probes.
@@ -69,8 +70,42 @@ impl UpstreamManager {
     /// The runtime may start with zero configured accounting-capable upstream
     /// servers while it waits for external configuration. In that state, IPC
     /// requests fail fast with a retriable waiting-for-config error.
+    #[cfg(test)]
     pub(crate) fn new(
         servers: Vec<TacacsPlusServer>,
+        connector: Arc<dyn UpstreamConnector>,
+        preferred_probe_interval: std::time::Duration,
+        health: RuntimeHealthPublisher,
+    ) -> Self {
+        let servers = servers.into_iter().map(Arc::new).collect();
+        Self::new_shared_with_proxy_downstream_obfuscation(
+            servers,
+            ProxyDownstreamObfuscation::default(),
+            connector,
+            preferred_probe_interval,
+            health,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_shared(
+        servers: Vec<Arc<TacacsPlusServer>>,
+        connector: Arc<dyn UpstreamConnector>,
+        preferred_probe_interval: std::time::Duration,
+        health: RuntimeHealthPublisher,
+    ) -> Self {
+        Self::new_shared_with_proxy_downstream_obfuscation(
+            servers,
+            ProxyDownstreamObfuscation::default(),
+            connector,
+            preferred_probe_interval,
+            health,
+        )
+    }
+
+    pub(crate) fn new_shared_with_proxy_downstream_obfuscation(
+        servers: Vec<Arc<TacacsPlusServer>>,
+        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
         connector: Arc<dyn UpstreamConnector>,
         preferred_probe_interval: std::time::Duration,
         health: RuntimeHealthPublisher,
@@ -86,21 +121,33 @@ impl UpstreamManager {
             .map(ServerSlot::new)
             .map(Arc::new)
             .collect();
+        let server_set = Arc::new(ServerSet::new(servers, 0));
         Self {
-            server_set: StdRwLock::new(Arc::new(ServerSet::new(servers, 0))),
+            runtime: StdRwLock::new(Arc::new(RuntimeRoutingSnapshot {
+                server_set,
+                proxy_downstream_obfuscation,
+            })),
             connector,
             preferred_probe_interval,
             availability: AvailabilityTracker::new(health),
         }
     }
 
-    fn current_server_set(&self) -> Arc<ServerSet> {
+    fn current_runtime(&self) -> Arc<RuntimeRoutingSnapshot> {
         Arc::clone(
             &self
-                .server_set
+                .runtime
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
+    }
+
+    fn current_server_set(&self) -> Arc<ServerSet> {
+        Arc::clone(&self.current_runtime().server_set)
+    }
+
+    pub(crate) fn proxy_downstream_obfuscation(&self) -> ProxyDownstreamObfuscation {
+        self.current_runtime().proxy_downstream_obfuscation.clone()
     }
 
     /// Attempts to establish or refresh the first responsive cached connection
@@ -140,7 +187,7 @@ impl UpstreamManager {
                 Err(error) => {
                     log::warn!(
                         "Initial connection attempt to {} failed: {error}",
-                        server_set.servers[index].server.socket_address()
+                        server_set.servers[index].socket_address()
                     );
                 }
             }
@@ -165,9 +212,32 @@ impl UpstreamManager {
     /// servers are preserved, while removed or modified server connections are
     /// marked as not accepting new sessions and then dropped from the active
     /// runtime state.
+    #[cfg(test)]
     pub(crate) async fn reload_servers(
         &self,
         servers: Vec<TacacsPlusServer>,
+    ) -> anyhow::Result<()> {
+        self.reload_shared_servers(servers.into_iter().map(Arc::new).collect())
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn reload_shared_servers(
+        &self,
+        servers: Vec<Arc<TacacsPlusServer>>,
+    ) -> anyhow::Result<()> {
+        let proxy_downstream_obfuscation = self.proxy_downstream_obfuscation();
+        self.reload_shared_servers_with_proxy_downstream_obfuscation(
+            servers,
+            proxy_downstream_obfuscation,
+        )
+        .await
+    }
+
+    pub(crate) async fn reload_shared_servers_with_proxy_downstream_obfuscation(
+        &self,
+        servers: Vec<Arc<TacacsPlusServer>>,
+        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
     ) -> anyhow::Result<()> {
         let previous = self.current_server_set();
         let materially_changed = previous.server_count() != servers.len()
@@ -175,12 +245,12 @@ impl UpstreamManager {
                 .servers
                 .iter()
                 .zip(&servers)
-                .any(|(old, new)| !servers_equivalent(&old.server, new));
+                .any(|(old, new)| old.server.as_ref() != new.as_ref());
         let previous_active_name = if previous.server_count() == 0 {
             None
         } else {
             let active_index = *previous.active_index.read().await;
-            Some(previous.servers[active_index].server.name.clone())
+            Some(previous.servers[active_index].name().to_owned())
         };
 
         let mut new_server_slots = Vec::with_capacity(servers.len());
@@ -188,9 +258,7 @@ impl UpstreamManager {
             let reusable = previous
                 .servers
                 .iter()
-                .find(|state| {
-                    state.server.name == server.name && servers_equivalent(&state.server, &server)
-                })
+                .find(|state| state.server.as_ref() == server.as_ref())
                 .cloned();
             new_server_slots.push(reusable.unwrap_or_else(|| Arc::new(ServerSlot::new(server))));
         }
@@ -200,17 +268,20 @@ impl UpstreamManager {
             .and_then(|active_name| {
                 new_server_slots
                     .iter()
-                    .position(|state| state.server.name == active_name)
+                    .position(|state| state.name() == active_name)
             })
             .unwrap_or(0);
         let new_set = Arc::new(ServerSet::new(new_server_slots, new_active_index));
 
         {
             let mut current = self
-                .server_set
+                .runtime
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *current = Arc::clone(&new_set);
+            *current = Arc::new(RuntimeRoutingSnapshot {
+                server_set: Arc::clone(&new_set),
+                proxy_downstream_obfuscation,
+            });
         }
         if materially_changed {
             self.availability.reset();
@@ -225,7 +296,7 @@ impl UpstreamManager {
                 "Reloaded TACACS+ upstream server set: {} server(s), active index {} ({})",
                 new_set.server_count(),
                 new_active_index,
-                new_set.servers[new_active_index].server.socket_address(),
+                new_set.servers[new_active_index].socket_address(),
             );
         }
 
@@ -261,15 +332,15 @@ impl UpstreamManager {
                 if active_index == 0 {
                     log::trace!(
                         "Preferred server probe: already using preferred server {}",
-                        server_set.servers[0].server.socket_address(),
+                        server_set.servers[0].socket_address(),
                     );
                     continue;
                 }
 
                 log::debug!(
                     "Probing preferred server {} (currently failed over to {})",
-                    server_set.servers[0].server.socket_address(),
-                    server_set.servers[active_index].server.socket_address(),
+                    server_set.servers[0].socket_address(),
+                    server_set.servers[active_index].socket_address(),
                 );
 
                 let availability_attempt = state.availability.begin_attempt();
@@ -285,7 +356,7 @@ impl UpstreamManager {
                     Err(error) => {
                         log::debug!(
                             "Preferred TACACS+ server {} probe failed: {error:#}",
-                            server_set.servers[0].server.socket_address(),
+                            server_set.servers[0].socket_address(),
                         );
                     }
                 }
@@ -318,6 +389,23 @@ impl UpstreamManager {
     /// request.
     pub(crate) async fn bind_server_for_new_session(&self) -> anyhow::Result<BoundServer> {
         let server_set = self.current_server_set();
+        self.bind_server_from_set(server_set).await
+    }
+
+    pub(crate) async fn bind_proxy_server_for_new_session(
+        &self,
+    ) -> anyhow::Result<(BoundServer, ProxyDownstreamObfuscation)> {
+        let runtime = self.current_runtime();
+        let bound_server = self
+            .bind_server_from_set(Arc::clone(&runtime.server_set))
+            .await?;
+        Ok((bound_server, runtime.proxy_downstream_obfuscation.clone()))
+    }
+
+    async fn bind_server_from_set(
+        &self,
+        server_set: Arc<ServerSet>,
+    ) -> anyhow::Result<BoundServer> {
         if server_set.server_count() == 0 {
             bail!(
                 "No TACACS+ servers are configured yet that support authentication, authorization, and accounting; waiting for initial configuration"
@@ -341,7 +429,7 @@ impl UpstreamManager {
                 Err(error) => {
                     log::warn!(
                         "TACACS+ server {} is non-responsive: {error}",
-                        server_set.servers[index].server.socket_address()
+                        server_set.servers[index].socket_address()
                     );
                     self.note_failure(&server_set, index).await;
                 }
@@ -388,7 +476,7 @@ impl UpstreamManager {
         if let Some(existing) = existing_conn {
             log::debug!(
                 "Reusing cached upstream connection manager for {}",
-                server_slot.server.socket_address()
+                server_slot.socket_address()
             );
             return Ok(existing);
         }
@@ -402,7 +490,7 @@ impl UpstreamManager {
         if let Some(existing) = existing_conn {
             log::debug!(
                 "Reusing cached upstream connection manager for {} after waiting on another reconnect",
-                server_slot.server.socket_address()
+                server_slot.socket_address()
             );
             return Ok(existing);
         }
@@ -414,20 +502,24 @@ impl UpstreamManager {
         {
             log::debug!(
                 "Skipping duplicate reconnect to {}; another attempt already completed",
-                server_slot.server.socket_address(),
+                server_slot.socket_address(),
             );
             bail!(
                 "Another reconnect attempt for TACACS+ server {} already completed for this request wave",
-                server_slot.server.socket_address()
+                server_slot.socket_address()
             );
         }
 
-        log::debug!("Opening upstream connection to {}", server_slot.server.socket_address());
-        match self.connector.connect(&server_slot.server).await {
+        log::debug!("Opening upstream connection to {}", server_slot.socket_address());
+        match self
+            .connector
+            .connect(Arc::clone(&server_slot.server))
+            .await
+        {
             Ok(connection) => {
                 log::info!(
                     "Upstream connection to {} established successfully",
-                    server_slot.server.socket_address(),
+                    server_slot.socket_address(),
                 );
                 *server_slot.connection.write().await = Some(Arc::clone(&connection));
                 server_slot
@@ -438,7 +530,7 @@ impl UpstreamManager {
             Err(error) => {
                 log::warn!(
                     "Failed to connect to upstream TACACS+ server {}: {error:#}",
-                    server_slot.server.socket_address(),
+                    server_slot.socket_address(),
                 );
                 *server_slot.connection.write().await = None;
                 server_slot
@@ -470,8 +562,8 @@ impl UpstreamManager {
             let next_index = (index + 1) % server_set.server_count();
             log::info!(
                 "Failing over new IPC sessions from {} to {}",
-                server_set.servers[index].server.socket_address(),
-                server_set.servers[next_index].server.socket_address()
+                server_set.servers[index].socket_address(),
+                server_set.servers[next_index].socket_address()
             );
             *active_index = next_index;
         }
@@ -491,12 +583,35 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    use tacacsrs_config::TacacsPlusServer;
-    use super::UpstreamManager;
+    use async_trait::async_trait;
+    use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
+    use tacacsrs_config::{EpskSupportedHash, TacacsPlusServer, Tls13Epsk, TlsClientClientIdentity};
+    use tokio::sync::Notify;
+
+    use super::{BoundServer, UpstreamManager};
+    use crate::config::ProxyDownstreamObfuscation;
     use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
     use crate::EnabledServices;
     use crate::test_support::{FakeConnection, FakeConnector};
     use crate::upstream::UpstreamConnector;
+
+    struct BlockingConnector {
+        connection: Arc<FakeConnection>,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl UpstreamConnector for BlockingConnector {
+        async fn connect(
+            &self,
+            _server: Arc<TacacsPlusServer>,
+        ) -> anyhow::Result<Arc<dyn crate::upstream::UpstreamConnection>> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(Arc::clone(&self.connection) as Arc<dyn crate::upstream::UpstreamConnection>)
+        }
+    }
 
     fn test_server(address: &str) -> TacacsPlusServer {
         let (host, port) = match address.rsplit_once(':') {
@@ -519,6 +634,160 @@ mod tests {
             source_interface: None,
             vrf_instance: None,
         }
+    }
+
+    fn materialized_server(secret: &[u8]) -> TacacsPlusServer {
+        let mut server = test_server("192.0.2.70:449");
+        server.name = "rotation-test".to_owned();
+        server.client_identity = Some(TlsClientClientIdentity {
+            credentials_reference: None,
+            certificate: None,
+            tls13_epsk: Some(Tls13Epsk {
+                inline_definition: Some(SymmetricKeyInlineDefinition {
+                    key_format: None,
+                    cleartext_symmetric_key: Some(tacacsrs_secrets::SecretBytes::new(
+                        secret.to_vec(),
+                    )),
+                }),
+                central_keystore_reference: None,
+                external_identity: "client".to_owned(),
+                hash: EpskSupportedHash::Sha256,
+                context: None,
+                target_protocol: None,
+                target_kdf: None,
+                psk_dhe_ke_groups: Vec::new(),
+            }),
+        });
+        server
+    }
+
+    fn bound_secret(bound: &BoundServer) -> &[u8] {
+        bound
+            .server()
+            .client_identity
+            .as_ref()
+            .and_then(|identity| identity.tls13_epsk.as_ref())
+            .and_then(|epsk| epsk.inline_definition.as_ref())
+            .and_then(|inline| inline.cleartext_symmetric_key.as_ref())
+            .expect("resolved secret")
+            .expose_secret()
+    }
+
+    #[test]
+    fn materialized_secret_changes_generated_server_equality() {
+        let first = materialized_server(b"first-secret-material");
+        let replacement = materialized_server(b"replacement-secret");
+        assert_ne!(first, replacement);
+    }
+
+    #[test]
+    fn inline_shared_secret_change_prevents_runtime_server_reuse() {
+        let mut first = test_server("192.0.2.70:49");
+        first.shared_secret = Some(tacacsrs_secrets::SecretString::new("first-secret".to_owned()));
+        let same = first.clone();
+
+        let mut replacement = test_server("192.0.2.70:49");
+        replacement.shared_secret =
+            Some(tacacsrs_secrets::SecretString::new("replacement-secret".to_owned()));
+        assert_eq!(first, same);
+        assert_ne!(first, replacement);
+    }
+
+    #[tokio::test]
+    async fn resolved_rotation_replaces_new_bindings_and_preserves_existing_snapshots() {
+        let first = Arc::new(materialized_server(b"first-secret-material"));
+        let second = Arc::new(materialized_server(b"second-secret-material"));
+        let rollback = Arc::new(materialized_server(b"first-secret-material"));
+        let connection = Arc::new(FakeConnection {
+            address: "192.0.2.70:449".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            connection.address.clone(),
+            Arc::clone(&connection),
+        )])));
+        let state = UpstreamManager::new_shared(
+            vec![Arc::clone(&first)],
+            connector,
+            Duration::from_secs(1),
+            test_health(),
+        );
+
+        let first_binding = state.bind_server_for_new_session().await.expect("bind A");
+        state
+            .reload_shared_servers(vec![second])
+            .await
+            .expect("apply B");
+        connection.usable.store(true, Ordering::Relaxed);
+        let second_binding = state.bind_server_for_new_session().await.expect("bind B");
+        state
+            .reload_shared_servers(vec![rollback])
+            .await
+            .expect("roll back to A");
+        connection.usable.store(true, Ordering::Relaxed);
+        let rollback_binding = state
+            .bind_server_for_new_session()
+            .await
+            .expect("bind rollback A");
+
+        assert_eq!(bound_secret(&first_binding), b"first-secret-material");
+        assert_eq!(bound_secret(&second_binding), b"second-secret-material");
+        assert_eq!(bound_secret(&rollback_binding), b"first-secret-material");
+        assert_eq!(bound_secret(&first_binding), b"first-secret-material");
+    }
+
+    #[tokio::test]
+    async fn proxy_binding_uses_server_and_obfuscation_from_one_runtime_generation() {
+        let first = Arc::new(test_server("192.0.2.70:49"));
+        let second = Arc::new(test_server("192.0.2.71:49"));
+        let connection = Arc::new(FakeConnection {
+            address: "192.0.2.70:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let connector = Arc::new(BlockingConnector {
+            connection,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        });
+        let first_policy = ProxyDownstreamObfuscation::SharedSecret(
+            tacacsrs_secrets::SecretString::new("first-proxy-secret".to_owned()),
+        );
+        let second_policy = ProxyDownstreamObfuscation::SharedSecret(
+            tacacsrs_secrets::SecretString::new("second-proxy-secret".to_owned()),
+        );
+        let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+            vec![first],
+            first_policy.clone(),
+            connector,
+            Duration::from_secs(1),
+            test_health(),
+        ));
+
+        let binding = {
+            let state = Arc::clone(&state);
+            tokio::spawn(async move { state.bind_proxy_server_for_new_session().await })
+        };
+        started.notified().await;
+        state
+            .reload_shared_servers_with_proxy_downstream_obfuscation(
+                vec![second],
+                second_policy.clone(),
+            )
+            .await
+            .expect("publish replacement runtime generation");
+        release.notify_one();
+
+        let (bound_server, bound_policy) = binding
+            .await
+            .expect("binding task")
+            .expect("bind proxy server");
+        assert_eq!(bound_server.server().address, "192.0.2.70");
+        assert_eq!(bound_policy, first_policy);
+        assert_eq!(state.proxy_downstream_obfuscation(), second_policy);
     }
 
     fn test_health() -> RuntimeHealthPublisher {

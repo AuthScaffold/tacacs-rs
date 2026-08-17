@@ -7,7 +7,14 @@ use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tokio::sync::RwLock;
 
 use super::server_slot::ServerSlot;
+use crate::config::ProxyDownstreamObfuscation;
 use crate::upstream::UpstreamConnection;
+
+/// Immutable routing inputs published as one generation.
+pub(super) struct RuntimeRoutingSnapshot {
+    pub(super) server_set: Arc<ServerSet>,
+    pub(super) proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+}
 
 /// Immutable configured server snapshot plus its mutable failover cursor.
 pub(super) struct ServerSet {
@@ -52,12 +59,5 @@ impl ServerSet {
 
     pub(super) fn server_count(&self) -> usize {
         self.servers.len()
-    }
-}
-
-pub(super) fn servers_equivalent(left: &TacacsPlusServer, right: &TacacsPlusServer) -> bool {
-    match (serde_json::to_value(left), serde_json::to_value(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
     }
 }

@@ -42,7 +42,7 @@ use crate::transport::BoxedTransport;
 /// unsupported by the server, future operations continue to use dedicated
 /// streams.
 pub struct TacacsClient {
-    server: TacacsPlusServer,
+    server: Arc<TacacsPlusServer>,
     options: ConnectOptions,
     shared_connection: Arc<RwLock<Option<Arc<MultiplexedConnection>>>>,
     single_connection_state: Arc<RwLock<SingleConnectionState>>,
@@ -57,7 +57,7 @@ pub struct TacacsClient {
 impl TacacsClient {
     /// Creates a client connection without opening the network transport yet.
     #[must_use]
-    fn new(server: TacacsPlusServer, options: ConnectOptions) -> Self {
+    fn new(server: Arc<TacacsPlusServer>, options: ConnectOptions) -> Self {
         let single_connection_enabled = server.single_connection;
         Self {
             server,
@@ -84,6 +84,19 @@ impl TacacsClient {
     /// Returns an error if TCP connection, TLS negotiation, or PSK setup fails.
     pub async fn connect(
         server: TacacsPlusServer,
+        options: ConnectOptions,
+    ) -> anyhow::Result<Self> {
+        Self::connect_shared(Arc::new(server), options).await
+    }
+
+    /// Creates a client from a shared materialized server and optionally performs preflight.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if TCP connection, TLS negotiation, PSK setup, or
+    /// configured preflight fails.
+    pub async fn connect_shared(
+        server: Arc<TacacsPlusServer>,
         options: ConnectOptions,
     ) -> anyhow::Result<Self> {
         let connection = Self::new(server, options);
@@ -531,7 +544,7 @@ impl TacacsClient {
 
     async fn establish_stream(&self) -> anyhow::Result<BoxedTransport> {
         let address = self.server.socket_address();
-        establish::establish_stream(&self.server, &self.options)
+        establish::establish_stream(Arc::clone(&self.server), &self.options)
             .await
             .with_context(|| format!("Failed to connect to {address}"))
     }
@@ -640,6 +653,7 @@ fn accounting_watchdog_preflight_request() -> AccountingRequest {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use tokio::io::AsyncWriteExt;
@@ -702,6 +716,10 @@ mod tests {
             source_interface: None,
             vrf_instance: None,
         }
+    }
+
+    fn runtime(server: TacacsPlusServer) -> Arc<TacacsPlusServer> {
+        Arc::new(server)
     }
 
     fn test_packet(session_id: u32, seq_no: u8, flags: TacacsFlags) -> Packet {
@@ -969,7 +987,7 @@ mod tests {
         let mut server = server_template();
         server.address = listener_address.ip().to_string();
         server.port = listener_address.port();
-        let client = TacacsClient::new(server, ConnectOptions::default());
+        let client = TacacsClient::new(runtime(server), ConnectOptions::default());
 
         let first_session = client.create_session().await.unwrap();
         run_session_exchange(&first_session).await;
@@ -1005,7 +1023,7 @@ mod tests {
         let mut server = server_template();
         server.address = listener_address.ip().to_string();
         server.port = listener_address.port();
-        let client = TacacsClient::new(server, ConnectOptions::default());
+        let client = TacacsClient::new(runtime(server), ConnectOptions::default());
 
         client
             .update_single_connection_state(SingleConnectionState::NotSupported)
@@ -1036,7 +1054,7 @@ mod tests {
         let mut server = server_template();
         server.address = listener_address.ip().to_string();
         server.port = listener_address.port();
-        let client = TacacsClient::new(server, ConnectOptions::default());
+        let client = TacacsClient::new(runtime(server), ConnectOptions::default());
 
         let first_session = client.create_session().await.unwrap();
         assert_eq!(client.single_connection_state().await, SingleConnectionState::Negotiating);

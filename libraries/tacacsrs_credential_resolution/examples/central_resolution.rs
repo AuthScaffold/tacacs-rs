@@ -1,7 +1,9 @@
+use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat};
 use tacacsrs_config::{enumerate_server, parse_yang_json};
 use tacacsrs_credential_resolution::{
     CertificateBagMaterial, CertificateWithKeyMaterial, CredentialKind, FakeCredentialResolver,
-    PublicBytes, ResolutionPlan, ResolvedCredential, SecretBytes, resolve_plan,
+    NamedCertificateMaterial, PublicBytes, ResolutionPlan, ResolvedCredential, SecretBytes,
+    resolve_plan,
 };
 
 #[tokio::main(flavor = "current_thread")]
@@ -44,6 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_response(
             plan.requests()[0].slot(),
             ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+                public_key_format: Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),
+                public_key: Some(PublicBytes::new(b"example public key bytes".to_vec())),
+                private_key_format: PrivateKeyFormat::OneAsymmetricKeyFormat,
                 certificate: PublicBytes::new(b"example certificate bytes".to_vec()),
                 private_key: SecretBytes::new(b"example private key bytes".to_vec()),
             }),
@@ -51,7 +56,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_response(
             plan.requests()[1].slot(),
             ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
-                certificates: vec![PublicBytes::new(b"example CA certificate bytes".to_vec())],
+                certificates: vec![NamedCertificateMaterial {
+                    name: "example-ca".to_owned(),
+                    certificate: PublicBytes::new(b"example CA certificate bytes".to_vec()),
+                }],
             }),
         );
     let result_set = resolve_plan(&plan, &resolver).await?;

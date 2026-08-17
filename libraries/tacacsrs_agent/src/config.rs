@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
+use tacacsrs_secrets::SecretString;
 
 /// Runtime services hosted by the TACACS+ client service process.
 ///
@@ -79,7 +80,7 @@ pub enum ProxyDownstreamObfuscation {
 
     /// Expect downstream proxy clients to use this shared secret for TACACS+
     /// message obfuscation.
-    SharedSecret(String),
+    SharedSecret(SecretString),
 }
 
 /// Configuration for the long-lived TACACS+ client service process.

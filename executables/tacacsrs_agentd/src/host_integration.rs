@@ -2,6 +2,7 @@
 
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tacacsrs_agent::{RuntimeHealthSnapshot, RuntimeLifecycle};
 use tokio::sync::watch;
@@ -72,6 +73,7 @@ impl HostIntegration {
                 strict: false,
                 ready_sent: false,
                 stopping_sent: false,
+                retry_backoff: SYSTEMD_RETRY_BACKOFF,
             })),
             HostIntegrationMode::Systemd => {
                 if !notify_socket_present {
@@ -89,6 +91,7 @@ impl HostIntegration {
                     strict: true,
                     ready_sent: false,
                     stopping_sent: false,
+                    retry_backoff: SYSTEMD_RETRY_BACKOFF,
                 }))
             }
         }
@@ -106,17 +109,35 @@ impl HostIntegration {
                 Ok(())
             }
             Self::Systemd(integration) => {
-                integration.publish(&health.borrow().clone())?;
+                let mut retry_pending = integration.publish(&health.borrow().clone())?;
                 loop {
+                    let backoff = integration.retry_backoff;
+                    // When a one-shot notification failed transiently, retry after a
+                    // bounded backoff even if health never changes again.
+                    let retry = async move {
+                        if retry_pending {
+                            tokio::time::sleep(backoff).await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    };
+                    tokio::pin!(retry);
+
                     tokio::select! {
                         biased;
+                        () = cancellation.cancelled() => {
+                            integration.publish(&health.borrow().clone())?;
+                            return Ok(());
+                        }
+                        () = &mut retry => {
+                            retry_pending = integration.publish(&health.borrow().clone())?;
+                        }
                         result = health.changed() => {
                             if result.is_err() {
                                 return Ok(());
                             }
-                            integration.publish(&health.borrow().clone())?;
+                            retry_pending = integration.publish(&health.borrow().clone())?;
                         }
-                        () = cancellation.cancelled() => return Ok(()),
                     }
                 }
             }
@@ -124,34 +145,59 @@ impl HostIntegration {
     }
 }
 
+/// Backoff between retries of a systemd one-shot notification (`--ready` /
+/// `--stopping`) that failed transiently in auto mode. Each wait is bounded and
+/// the retry loop stays cancellation-aware, so a missed notification is re-sent
+/// without an unrelated health change and cancellation never waits a full period.
+const SYSTEMD_RETRY_BACKOFF: Duration = Duration::from_secs(1);
+
 pub(crate) struct SystemdIntegration {
     command: Arc<dyn SystemdCommand>,
     strict: bool,
     ready_sent: bool,
     stopping_sent: bool,
+    retry_backoff: Duration,
 }
 
 impl SystemdIntegration {
-    fn publish(&mut self, snapshot: &RuntimeHealthSnapshot) -> anyhow::Result<()> {
+    /// Publishes one systemd notification for `snapshot`.
+    ///
+    /// The one-shot `--ready` / `--stopping` flags are marked delivered only
+    /// after the command succeeds. Returns `true` when a one-shot notification
+    /// is still owed after a transient auto-mode failure and must be retried.
+    fn publish(&mut self, snapshot: &RuntimeHealthSnapshot) -> anyhow::Result<bool> {
         let mut arguments = vec!["--pid=parent".to_owned()];
         arguments.push(format!("--status={}", status_text(snapshot)));
 
-        if snapshot.is_readiness_serving() && !self.ready_sent {
+        let want_ready = snapshot.is_readiness_serving() && !self.ready_sent;
+        let want_stopping =
+            matches!(snapshot.lifecycle(), RuntimeLifecycle::Draining | RuntimeLifecycle::Stopped)
+                && !self.stopping_sent;
+        if want_ready {
             arguments.push("--ready".to_owned());
-            self.ready_sent = true;
         }
-        if snapshot.lifecycle() == RuntimeLifecycle::Draining && !self.stopping_sent {
+        if want_stopping {
             arguments.push("--stopping".to_owned());
-            self.stopping_sent = true;
         }
 
-        if let Err(error) = self.command.execute(&arguments) {
-            if self.strict {
-                return Err(error);
+        match self.command.execute(&arguments) {
+            Ok(()) => {
+                if want_ready {
+                    self.ready_sent = true;
+                }
+                if want_stopping {
+                    self.stopping_sent = true;
+                }
+                Ok(false)
             }
-            log::warn!("Failed to publish automatic systemd notification");
+            Err(error) => {
+                if self.strict {
+                    return Err(error);
+                }
+                log::warn!("Failed to publish automatic systemd notification");
+                Ok(want_ready || want_stopping)
+            }
         }
-        Ok(())
     }
 }
 
@@ -188,6 +234,7 @@ mod tests {
     struct CapturingCommand {
         available: bool,
         fail: bool,
+        fail_first: Mutex<usize>,
         calls: Mutex<Vec<Vec<String>>>,
     }
 
@@ -201,6 +248,11 @@ mod tests {
                 .lock()
                 .expect("calls lock")
                 .push(arguments.to_vec());
+            let mut remaining = self.fail_first.lock().expect("fail_first lock");
+            if *remaining > 0 {
+                *remaining -= 1;
+                anyhow::bail!("injected transient notification failure");
+            }
             if self.fail {
                 anyhow::bail!("injected notification failure");
             }
@@ -343,5 +395,226 @@ mod tests {
             .run(health.subscribe(), CancellationToken::new())
             .await
             .is_err());
+    }
+
+    #[test]
+    fn publish_marks_ready_sent_only_after_the_command_succeeds() {
+        let command = Arc::new(CapturingCommand {
+            available: true,
+            fail_first: Mutex::new(1),
+            ..Default::default()
+        });
+        let mut integration = SystemdIntegration {
+            command: Arc::clone(&command) as Arc<dyn SystemdCommand>,
+            strict: false,
+            ready_sent: false,
+            stopping_sent: false,
+            retry_backoff: Duration::from_millis(1),
+        };
+        let snapshot = ready_publisher().snapshot();
+
+        let retry_pending = integration
+            .publish(&snapshot)
+            .expect("auto tolerates failure");
+        assert!(retry_pending, "a failed one-shot must request a retry");
+        assert!(!integration.ready_sent);
+
+        let retry_pending = integration.publish(&snapshot).expect("auto succeeds");
+        assert!(!retry_pending);
+        assert!(integration.ready_sent);
+
+        let retry_pending = integration.publish(&snapshot).expect("auto succeeds");
+        assert!(!retry_pending, "a delivered one-shot must not request another retry");
+
+        let ready_calls = command
+            .calls
+            .lock()
+            .expect("calls lock")
+            .iter()
+            .filter(|call| call.contains(&"--ready".to_owned()))
+            .count();
+        assert_eq!(
+            ready_calls, 2,
+            "ready is attempted on the failure and the retry, then never again"
+        );
+    }
+
+    #[test]
+    fn publish_marks_stopping_sent_only_after_the_command_succeeds() {
+        let command = Arc::new(CapturingCommand {
+            available: true,
+            fail_first: Mutex::new(1),
+            ..Default::default()
+        });
+        let mut integration = SystemdIntegration {
+            command: Arc::clone(&command) as Arc<dyn SystemdCommand>,
+            strict: false,
+            ready_sent: true,
+            stopping_sent: false,
+            retry_backoff: Duration::from_millis(1),
+        };
+        let health = ready_publisher();
+        health.set_lifecycle(RuntimeLifecycle::Draining);
+        let snapshot = health.snapshot();
+
+        let retry_pending = integration
+            .publish(&snapshot)
+            .expect("auto tolerates failure");
+        assert!(retry_pending);
+        assert!(!integration.stopping_sent);
+
+        let retry_pending = integration.publish(&snapshot).expect("auto succeeds");
+        assert!(!retry_pending);
+        assert!(integration.stopping_sent);
+
+        let stopping_calls = command
+            .calls
+            .lock()
+            .expect("calls lock")
+            .iter()
+            .filter(|call| call.contains(&"--stopping".to_owned()))
+            .count();
+        assert_eq!(stopping_calls, 2);
+    }
+
+    #[test]
+    fn publish_retries_stopping_after_lifecycle_advances_to_stopped() {
+        let command = Arc::new(CapturingCommand {
+            available: true,
+            fail_first: Mutex::new(1),
+            ..Default::default()
+        });
+        let mut integration = SystemdIntegration {
+            command: Arc::clone(&command) as Arc<dyn SystemdCommand>,
+            strict: false,
+            ready_sent: true,
+            stopping_sent: false,
+            retry_backoff: Duration::from_millis(1),
+        };
+        let health = ready_publisher();
+        health.set_lifecycle(RuntimeLifecycle::Draining);
+
+        assert!(integration
+            .publish(&health.snapshot())
+            .expect("auto tolerates failure"));
+        health.set_lifecycle(RuntimeLifecycle::Stopped);
+        assert!(!integration
+            .publish(&health.snapshot())
+            .expect("stopping retry succeeds"));
+        assert!(integration.stopping_sent);
+
+        let calls = command.calls.lock().expect("calls lock");
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.contains(&"--stopping".to_owned()))
+                .count(),
+            2,
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn auto_run_retries_a_failed_ready_without_a_health_change() {
+        let command = Arc::new(CapturingCommand {
+            available: true,
+            fail_first: Mutex::new(1),
+            ..Default::default()
+        });
+        let health = ready_publisher();
+        let integration = HostIntegration::Systemd(SystemdIntegration {
+            command: Arc::clone(&command) as Arc<dyn SystemdCommand>,
+            strict: false,
+            ready_sent: false,
+            stopping_sent: false,
+            retry_backoff: Duration::from_secs(1),
+        });
+        let cancellation = CancellationToken::new();
+        let task = tokio::spawn(integration.run(health.subscribe(), cancellation.clone()));
+
+        let mut ready_calls = 0;
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+            ready_calls = command
+                .calls
+                .lock()
+                .expect("calls lock")
+                .iter()
+                .filter(|call| call.contains(&"--ready".to_owned()))
+                .count();
+            if ready_calls >= 2 {
+                break;
+            }
+            tokio::time::advance(Duration::from_secs(1)).await;
+        }
+
+        cancellation.cancel();
+        task.await
+            .expect("join")
+            .expect("auto tolerates the transient failure");
+
+        assert_eq!(ready_calls, 2, "ready was retried after the backoff without any health change");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn auto_run_cancellation_is_bounded_while_a_retry_is_pending() {
+        let command = Arc::new(CapturingCommand {
+            available: true,
+            fail: true,
+            ..Default::default()
+        });
+        let health = ready_publisher();
+        let integration = HostIntegration::Systemd(SystemdIntegration {
+            command: Arc::clone(&command) as Arc<dyn SystemdCommand>,
+            strict: false,
+            ready_sent: false,
+            stopping_sent: false,
+            retry_backoff: Duration::from_secs(1),
+        });
+        let cancellation = CancellationToken::new();
+        let task = tokio::spawn(integration.run(health.subscribe(), cancellation.clone()));
+
+        tokio::task::yield_now().await;
+        cancellation.cancel();
+
+        // A perpetually pending retry must still yield promptly to cancellation.
+        task.await
+            .expect("join")
+            .expect("auto tolerates perpetual failure until cancelled");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn auto_run_retries_stopping_when_stopped_and_cancelled_arrive_together() {
+        let command = Arc::new(CapturingCommand {
+            available: true,
+            fail_first: Mutex::new(1),
+            ..Default::default()
+        });
+        let health = ready_publisher();
+        health.set_lifecycle(RuntimeLifecycle::Draining);
+        let integration = HostIntegration::Systemd(SystemdIntegration {
+            command: Arc::clone(&command) as Arc<dyn SystemdCommand>,
+            strict: false,
+            ready_sent: true,
+            stopping_sent: false,
+            retry_backoff: Duration::from_secs(1),
+        });
+        let cancellation = CancellationToken::new();
+        let task = tokio::spawn(integration.run(health.subscribe(), cancellation.clone()));
+
+        tokio::task::yield_now().await;
+        health.set_lifecycle(RuntimeLifecycle::Stopped);
+        cancellation.cancel();
+        task.await
+            .expect("join")
+            .expect("final stopping retry succeeds");
+
+        let calls = command.calls.lock().expect("calls lock");
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.contains(&"--stopping".to_owned()))
+                .count(),
+            2,
+        );
     }
 }

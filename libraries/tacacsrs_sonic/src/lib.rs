@@ -2,6 +2,7 @@
 #![allow(clippy::doc_markdown, clippy::ignored_unit_patterns)]
 
 pub mod mapping;
+mod provider;
 pub mod store;
 
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tacacsrs_config::TacacsPlus;
+use tacacsrs_config::{TacacsPlus, ValidationOptions, ValidationRelaxation};
 use tacacsrs_datastore::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigChangeStream, ConfigDatastore,
     ConfigDelta, DatastoreRuntimePolicy, InitialLoadPolicy,
@@ -17,15 +18,24 @@ use tacacsrs_datastore::{
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-pub use mapping::{map_sonic_tables_to_tacacs_plus, sonic_server_name, SonicHash, SonicTacacsTables};
+pub use mapping::{
+    SonicForwarderSettings, SonicHash, SonicTacacsTables, map_sonic_tables_to_tacacs_plus,
+    sonic_server_name,
+};
+pub use provider::{
+    SonicCredentialInitializationError, SonicCredentialPolicy, SonicCredentialResolver,
+    SonicCredentialRoots,
+};
 pub use store::{
-    read_tacacs_tables, spawn_change_notifier, SonicConnection, DEFAULT_REDIS_URL,
-    TACPLUS_GLOBAL_TABLE, TACPLUS_SERVER_TABLE,
+    DEFAULT_REDIS_URL, SonicConnection, TACPLUS_FORWARDER_TABLE, TACPLUS_GLOBAL_TABLE,
+    SonicCredentialChangeSource, TACPLUS_SERVER_TABLE, TACPLUS_SERVER_TLS_TABLE,
+    read_tacacs_tables, spawn_change_notifier, spawn_credential_change_notifier,
 };
 
 /// SONiC ConfigDB-backed [`ConfigDatastore`] implementation.
 ///
-/// Reads `TACPLUS|global` and `TACPLUS_SERVER|*` from CONFIG_DB and emits a
+/// Reads the compatibility, TLS upstream, and forwarder TACACS+ tables from
+/// CONFIG_DB and emits a
 /// [`tacacsrs_datastore::ConfigChange`] every time a TACPLUS-prefixed key
 /// changes (subject to the configured debounce window).
 ///
@@ -35,13 +45,30 @@ pub use store::{
 /// daemon can survive a restart of the SONiC `database.service`.
 pub struct SonicConfigDb {
     settings: SonicConnection,
+    bound_forwarder: Option<SonicForwarderSettings>,
 }
 
 impl SonicConfigDb {
     /// Create a new datastore with the supplied connection settings.
     #[must_use]
     pub fn new(settings: SonicConnection) -> Self {
-        Self { settings }
+        Self {
+            settings,
+            bound_forwarder: None,
+        }
+    }
+
+    /// Creates a datastore that compares later forwarder snapshots with the
+    /// settings already used to bind service listeners.
+    #[must_use]
+    pub fn with_bound_forwarder(
+        settings: SonicConnection,
+        bound_forwarder: SonicForwarderSettings,
+    ) -> Self {
+        Self {
+            settings,
+            bound_forwarder: Some(bound_forwarder),
+        }
     }
 
     /// Connection settings used to open Redis connections.
@@ -60,6 +87,11 @@ impl ConfigDatastore for SonicConfigDb {
         )
     }
 
+    fn validation_options(&self) -> ValidationOptions {
+        ValidationOptions::new()
+            .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret)
+    }
+
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         let mut conn = self
             .settings
@@ -68,32 +100,61 @@ impl ConfigDatastore for SonicConfigDb {
             .context("connect to SONiC ConfigDB for initial load")?;
         let snapshot = read_tacacs_tables(&mut conn)
             .await
-            .context("read TACPLUS / TACPLUS_SERVER tables from ConfigDB")?;
+            .context("read complete TACACS+ tables from ConfigDB")?;
         map_sonic_tables_to_tacacs_plus(&snapshot)
             .context("map SONiC ConfigDB tables to YANG TACACS+ configuration")
     }
 
     async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream> {
         let settings = self.settings.clone();
-        let initial = self.load().await.ok().map(Arc::new);
+        let bound_forwarder = self.bound_forwarder;
         let (tx, rx) = mpsc::channel(8);
+
+        // Establish the subscription BEFORE loading the baseline so any ConfigDB
+        // change that lands during or after the reconcile is queued and applied,
+        // closing the load-before-subscribe gap where a change could be lost.
         let mut signal = spawn_change_notifier(settings.clone())
             .await
             .context("subscribe to SONiC ConfigDB keyspace notifications")?;
-
         tokio::spawn(async move {
-            let mut previous = initial;
-            while signal.recv().await.is_some() {
+            let mut previous: Option<Arc<TacacsPlus>> = None;
+            // Reconcile and emit the post-subscription baseline immediately, then
+            // reconcile on every subsequent coalesced change signal. Because the
+            // subscription is already active, any change during the first reconcile
+            // is queued and applied on the next pass.
+            let mut reconcile_now = true;
+            loop {
+                if !reconcile_now {
+                    let next_signal = signal.recv().await;
+                    if next_signal.is_none() {
+                        break;
+                    }
+                    while signal.try_recv().is_ok() {}
+                }
+                reconcile_now = false;
+
                 match reload_with_retry(&settings).await {
-                    Ok(snapshot) => {
-                        let snapshot = Arc::new(snapshot);
-                        let change = ConfigChange {
-                            delta: ConfigDelta::diff(previous.as_deref(), &snapshot),
-                            config: Arc::clone(&snapshot),
+                    Ok(candidate) => {
+                        let restart_required = match bound_forwarder {
+                            Some(bound) => candidate.forwarder != Some(bound),
+                            None => false,
                         };
+                        let snapshot = Arc::new(candidate.config);
+                        let change = config_change(previous.as_deref(), Arc::clone(&snapshot));
                         previous = Some(snapshot);
-                        if tx.send(ConfigChangeEvent::Changed(change)).await.is_err() {
-                            log::debug!("SONiC datastore subscriber dropped; exiting");
+                        if let Some(change) = change {
+                            if tx.send(ConfigChangeEvent::Changed(change)).await.is_err() {
+                                log::debug!("SONiC datastore subscriber dropped; exiting");
+                                break;
+                            }
+                        }
+                        if tx
+                            .send(ConfigChangeEvent::RestartRequired {
+                                required: restart_required,
+                            })
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -117,12 +178,26 @@ impl ConfigDatastore for SonicConfigDb {
     }
 }
 
+fn config_change(previous: Option<&TacacsPlus>, snapshot: Arc<TacacsPlus>) -> Option<ConfigChange> {
+    let is_baseline = previous.is_none();
+    let delta = ConfigDelta::diff(previous, &snapshot);
+    (is_baseline || !delta.is_empty()).then_some(ConfigChange {
+        config: snapshot,
+        delta,
+    })
+}
+
 /// Reconnect-and-reload helper used by the change subscriber.
 ///
 /// SONiC's `database.service` may be restarted independently of
 /// `tacacsrs-agentd`. To survive these blips we attempt a small number of
 /// reconnect retries before giving up on a particular notification.
-async fn reload_with_retry(settings: &SonicConnection) -> anyhow::Result<TacacsPlus> {
+struct ReloadedCandidate {
+    config: TacacsPlus,
+    forwarder: Option<SonicForwarderSettings>,
+}
+
+async fn reload_with_retry(settings: &SonicConnection) -> anyhow::Result<ReloadedCandidate> {
     const MAX_ATTEMPTS: usize = 3;
     let mut last_err: Option<anyhow::Error> = None;
     for attempt in 1..=MAX_ATTEMPTS {
@@ -142,15 +217,92 @@ async fn reload_with_retry(settings: &SonicConnection) -> anyhow::Result<TacacsP
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("SONiC ConfigDB reload exhausted retries")))
 }
 
-async fn try_reload(settings: &SonicConnection) -> anyhow::Result<TacacsPlus> {
+async fn try_reload(settings: &SonicConnection) -> anyhow::Result<ReloadedCandidate> {
     let mut conn = settings.connect().await?;
     let snapshot = read_tacacs_tables(&mut conn).await?;
-    map_sonic_tables_to_tacacs_plus(&snapshot)
+    let forwarder = SonicForwarderSettings::from_hash(&snapshot.forwarder)?;
+    let config = map_sonic_tables_to_tacacs_plus(&snapshot)?;
+    Ok(ReloadedCandidate { config, forwarder })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use futures_util::StreamExt;
+    use redis::AsyncCommands;
+    use tokio::time::timeout;
+
     use super::*;
+
+    #[test]
+    fn config_change_emits_baseline_and_suppresses_unchanged_snapshot() {
+        let snapshot = Arc::new(TacacsPlus::empty());
+
+        assert!(config_change(None, Arc::clone(&snapshot)).is_some());
+        assert!(config_change(Some(&snapshot), Arc::clone(&snapshot)).is_none());
+    }
+
+    async fn next_event(events: &mut ConfigChangeStream, context: &str) -> ConfigChangeEvent {
+        timeout(Duration::from_secs(5), events.next())
+            .await
+            .unwrap_or_else(|_| panic!("{context} timeout"))
+            .unwrap_or_else(|| panic!("{context} missing"))
+    }
+
+    async fn seed_redis(connection: &mut redis::aio::MultiplexedConnection) {
+        redis::cmd("FLUSHDB")
+            .query_async::<()>(connection)
+            .await
+            .expect("flush test database");
+        redis::cmd("CONFIG")
+            .arg("SET")
+            .arg("notify-keyspace-events")
+            .arg("Kgh")
+            .query_async::<()>(connection)
+            .await
+            .expect("enable keyspace notifications");
+        connection
+            .hset_multiple::<_, _, _, ()>(
+                "TACPLUS_FORWARDER|global",
+                &[
+                    ("local_listen_address", "127.0.0.1"),
+                    ("local_listen_port", "49"),
+                ],
+            )
+            .await
+            .expect("seed forwarder");
+        connection
+            .hset_multiple::<_, _, _, ()>(
+                "TACPLUS_SERVER|192.0.2.10",
+                &[("priority", "1"), ("passkey", "x")],
+            )
+            .await
+            .expect("seed server");
+        connection
+            .hset_multiple::<_, _, _, ()>(
+                "TACPLUS_SERVER_TLS|192.0.2.20",
+                &[
+                    ("priority", "3"),
+                    ("psk_identity", "client"),
+                    ("psk_secret_ref", "epsk-object"),
+                ],
+            )
+            .await
+            .expect("seed TLS server");
+    }
+
+    async fn set_field(
+        connection: &mut redis::aio::MultiplexedConnection,
+        key: &str,
+        field: &str,
+        value: &str,
+    ) {
+        connection
+            .hset::<_, _, _, ()>(key, field, value)
+            .await
+            .expect("set Redis field");
+    }
 
     #[test]
     fn runtime_policy_retries_and_maintains_continuous_notifications() {
@@ -163,5 +315,102 @@ mod tests {
                 ChangeNotificationMode::Continuous,
             )
         );
+    }
+
+    #[tokio::test]
+    async fn redis_forwarder_changes_report_restart_without_blocking_server_reload() {
+        let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
+            return;
+        };
+        let settings = SonicConnection {
+            url,
+            db_index: 15,
+            debounce: Duration::from_millis(20),
+            credential_watch_root: None,
+        };
+        let mut connection = settings.connect().await.expect("connect test Redis");
+        seed_redis(&mut connection).await;
+
+        let bound = settings
+            .load_forwarder_settings()
+            .await
+            .expect("load bound forwarder");
+        let datastore = SonicConfigDb::with_bound_forwarder(settings, bound);
+        let initial = datastore.load().await.expect("initial complete snapshot");
+        assert_eq!(initial.server.len(), 2);
+        assert!(initial.server.iter().any(|server| {
+            server
+                .client_identity
+                .as_ref()
+                .and_then(|identity| identity.tls13_epsk.as_ref())
+                .is_some()
+        }));
+        let mut events = datastore.subscribe().await.expect("subscribe");
+
+        // subscribe() now establishes the subscription first and emits the
+        // post-subscription baseline before any live change.
+        assert!(matches!(
+            next_event(&mut events, "initial baseline change").await,
+            ConfigChangeEvent::Changed(_)
+        ));
+        assert!(matches!(
+            next_event(&mut events, "initial baseline restart").await,
+            ConfigChangeEvent::RestartRequired { required: false }
+        ));
+
+        set_field(&mut connection, "TACPLUS_FORWARDER|global", "local_listen_port", "50").await;
+        set_field(&mut connection, "TACPLUS_SERVER|192.0.2.10", "timeout", "6").await;
+        set_field(&mut connection, "TACPLUS_SERVER_TLS|192.0.2.20", "timeout", "7").await;
+        let changed = next_event(&mut events, "changed event").await;
+        let ConfigChangeEvent::Changed(changed) = changed else {
+            panic!("expected changed event");
+        };
+        assert_eq!(changed.config.server.len(), 2);
+        assert_eq!(changed.config.server[0].address, "192.0.2.20");
+        assert_eq!(changed.config.server[0].timeout, 7);
+        assert_eq!(changed.config.server[1].name, sonic_server_name("192.0.2.10"));
+        assert_eq!(changed.config.server[1].timeout, 6);
+        assert!(changed
+            .delta
+            .modified_servers
+            .contains(&sonic_server_name("192.0.2.10")));
+        assert!(changed
+            .delta
+            .modified_servers
+            .contains(&sonic_server_name("192.0.2.20")));
+        assert!(matches!(
+            next_event(&mut events, "restart event").await,
+            ConfigChangeEvent::RestartRequired { required: true }
+        ));
+
+        connection
+            .del::<_, ()>("TACPLUS_FORWARDER|global")
+            .await
+            .expect("delete forwarder");
+        assert!(matches!(
+            next_event(&mut events, "deletion restart").await,
+            ConfigChangeEvent::RestartRequired { required: true }
+        ));
+
+        connection
+            .hset_multiple::<_, _, _, ()>(
+                "TACPLUS_FORWARDER|global",
+                &[
+                    ("local_listen_address", "127.0.0.1"),
+                    ("local_listen_port", "49"),
+                ],
+            )
+            .await
+            .expect("restore forwarder");
+        assert!(matches!(
+            next_event(&mut events, "clear restart").await,
+            ConfigChangeEvent::RestartRequired { required: false }
+        ));
+
+        set_field(&mut connection, "TACPLUS_FORWARDER|global", "local_listen_port", "0").await;
+        assert!(matches!(
+            next_event(&mut events, "rejected candidate").await,
+            ConfigChangeEvent::CandidateRejected
+        ));
     }
 }

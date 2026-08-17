@@ -43,6 +43,12 @@ impl CliDatastoreInput {
         self
     }
 
+    /// Validation policy applied to every rebuilt snapshot.
+    #[must_use]
+    pub fn validation_options(&self) -> ValidationOptions {
+        self.validation_options.clone()
+    }
+
     #[must_use]
     pub fn watched_paths(&self) -> Vec<PathBuf> {
         let mut paths = Vec::new();

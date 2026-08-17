@@ -8,6 +8,8 @@ The crate owns:
 - an asynchronous resolver trait;
 - typed certificate, private-key, symmetric-key, and trust-bag material;
 - a closed result set that validates request/response slots and variants;
+- materialization APIs that consume results into generated inline fields;
+- provider-neutral credential change events and subscriptions;
 - sanitized typed failures;
 - a deterministic fake resolver for tests.
 
@@ -22,7 +24,12 @@ ResolutionPlan -> CredentialResolver -> ResolvedCredentialSet
        +-- stable server/field context         +-- validated slots and variants
 ```
 
-P3 supplies the `SONiC` provider and projects the closed result set into runtime networking inputs.
+`materialize_server` and `materialize_servers` consume complete closed result
+sets into cloned generated `TacacsPlusServer` values. Matching central
+references are cleared only after their protected inline fields are populated,
+and final validation runs before a candidate is returned. The original
+`TacacsPlus` source remains unchanged. Networking receives only validated
+materialized generated servers.
 
 ## Workflow
 
@@ -30,7 +37,8 @@ P3 supplies the `SONiC` provider and projects the closed result set into runtime
 2. Enumerate config-local client and server credential bundles.
 3. Build a `ResolutionPlan` for each enumerated server.
 4. Execute the plan with a `CredentialResolver`.
-5. Consume the validated `ResolvedCredentialSet` by request slot.
+5. Consume the validated results into generated inline fields and clear references.
+6. Validate and publish the complete materialized server transaction.
 
 Planning emits deterministic requests for certificate-with-key, TLS 1.3 symmetric key, CA certificate bag, and end-entity certificate bag usages. It rejects unexpanded local bundle references and structurally incomplete central certificate requests. Result-set construction rejects missing, duplicate, unexpected, and wrong-variant responses.
 
@@ -38,7 +46,7 @@ Central reference strings stay opaque. The generic API does not impose a provide
 
 ## Secret Material
 
-`SecretBytes` directly owns a `zeroize::Zeroizing<Vec<u8>>` and exposes a value only through the explicitly named borrowed `expose_secret` method. It does not implement `Clone`, serde, `Display`, equality, or hashing. Secret-bearing credentials, responses, and result sets preserve those restrictions. Custom `Debug` implementations redact private keys, symmetric keys, opaque references, and provider details; public certificate bytes report length only.
+`SecretBytes` directly owns a `zeroize::Zeroizing<Vec<u8>>` and exposes a value only through the explicitly named borrowed `expose_secret` method. Clones own independent zeroizing allocations, equality compares the real value, and `Display` and hashing remain unavailable. Secret-bearing credentials, responses, generated fields, and result sets preserve redacted formatting. Public certificate bytes report length only.
 
 The P2 test suite enforces these properties with compile-time negative trait assertions and public-behavior redaction tests. It does not inspect freed memory or use unsafe code.
 
@@ -50,4 +58,4 @@ The runnable example uses `FakeCredentialResolver` to demonstrate the generic ha
 cargo run -p tacacsrs-credential-resolution --example central_resolution
 ```
 
-A production resolver implements `CredentialResolver`, reads references only through explicit request accessors, and returns the material variant requested by each slot. P3 supplies the platform provider and the projection from `ResolvedCredentialSet` to networking connection inputs.
+A production resolver implements `CredentialResolver`, reads references only through explicit request accessors, and returns the material variant requested by each slot. The higher-order coordinator owns provider notifications, invokes materialization, and publishes generated servers to networking.

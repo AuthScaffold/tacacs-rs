@@ -4,11 +4,11 @@ use serde::{Serialize, de::DeserializeOwned};
 use static_assertions::assert_not_impl_any;
 use tacacsrs_credential_resolution::{
     CertificateWithKeyMaterial, CredentialKind, PublicBytes, ResolvedCredential,
-    ResolvedCredentialSet, ResolvedResponse, SecretBytes,
+    ResolvedCredentialSet, ResolvedResponse, SecretBytes, SymmetricKeyMaterial,
 };
 use tacacsrs_config::parse_yang_json;
 
-assert_not_impl_any!(SecretBytes: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);
+assert_not_impl_any!(SecretBytes: Display, Hash);
 assert_not_impl_any!(CertificateWithKeyMaterial: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);
 assert_not_impl_any!(ResolvedCredential: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);
 assert_not_impl_any!(ResolvedResponse: Clone, Serialize, DeserializeOwned, Display, PartialEq, Eq, Hash);
@@ -26,6 +26,9 @@ fn secret_bytes_require_explicit_borrow_and_redact_debug() {
 #[test]
 fn secret_bearing_aggregate_debug_redacts_all_material() {
     let credential = ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+        public_key_format: None,
+        public_key: None,
+        private_key_format: tacacsrs_config::crypto_types::PrivateKeyFormat::OneAsymmetricKeyFormat,
         certificate: PublicBytes::new(b"public-certificate-value".to_vec()),
         private_key: SecretBytes::new(b"private-key-value".to_vec()),
     });
@@ -63,7 +66,10 @@ fn closed_result_debug_omits_secret_and_reference_values() {
         .expect("resolution plan");
     let response = ResolvedResponse::new(
         plan.requests()[0].slot(),
-        ResolvedCredential::SymmetricKey(SecretBytes::new(b"resolved-symmetric-secret".to_vec())),
+        ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+            key_format: None,
+            key: SecretBytes::new(b"resolved-symmetric-secret".to_vec()),
+        }),
     );
     let response_debug = format!("{response:?}");
     assert!(response_debug.contains("SymmetricKey"));

@@ -34,21 +34,21 @@ pub(crate) fn server_has_psk(server: &TacacsPlusServer) -> bool {
 /// function — if no PSK is configured, an error is returned because there is
 /// no key material to negotiate with.
 pub(crate) async fn establish_from_server(
-    server: &TacacsPlusServer,
+    server: std::sync::Arc<TacacsPlusServer>,
     address: &str,
     tcp_stream: TcpStream,
 ) -> Result<SslStream<TcpStream>> {
-    let epsk = tls13_epsk(server)?;
-    let server_name = derive_sni_name(server)?;
+    tls13_epsk(&server)?;
+    let server_name = derive_sni_name(&server)?.map(str::to_owned);
 
     log::debug!(
         "Negotiating TLS-PSK handshake with {address} (SNI: {})",
-        server_name.unwrap_or("disabled")
+        server_name.as_deref().unwrap_or("disabled")
     );
 
-    let tls_stream = PskClientConfig::prepare(epsk)
+    let tls_stream = PskClientConfig::prepare(server)
         .context("Invalid TLS PSK OpenSSL configuration")?
-        .connect(address, server_name, tcp_stream)
+        .connect(address, server_name.as_deref(), tcp_stream)
         .await
         .inspect_err(|e| log::warn!("TLS-PSK handshake with {address} failed: {e:#}"))
         .context("Failed to establish TLS PSK connection")?;
@@ -84,6 +84,7 @@ mod tests {
         EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity,
     };
     use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
+    use tacacsrs_secrets::SecretBytes;
 
     fn server_template() -> TacacsPlusServer {
         TacacsPlusServer {
@@ -118,7 +119,7 @@ mod tests {
                 psk_dhe_ke_groups: vec![],
                 inline_definition: Some(SymmetricKeyInlineDefinition {
                     key_format: None,
-                    cleartext_symmetric_key: Some(key.to_vec()),
+                    cleartext_symmetric_key: Some(SecretBytes::new(key.to_vec())),
                 }),
                 central_keystore_reference: None,
             }),
@@ -149,7 +150,7 @@ mod tests {
         let epsk = epsk(&server);
 
         assert_eq!(epsk.external_identity, "my-client");
-        assert_eq!(super::super::tls13_epsk::symmetric_key(epsk).expect("symmetric key"), key);
+        assert_eq!(super::super::tls13_epsk::symmetric_key(&server).expect("symmetric key"), key);
     }
 
     #[test]
