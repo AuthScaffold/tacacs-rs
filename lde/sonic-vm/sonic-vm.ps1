@@ -128,7 +128,7 @@ function Invoke-PasswordSsh {
             & plink -ssh -P $SshPort -pw $Password -batch -o "StrictHostKeyChecking=no" "$target"
         }
         if ($LASTEXITCODE -eq 0) { return }
-        Write-Warning "plink password SSH returned exit code $LASTEXITCODE. Try native ssh."
+        Write-Warning "plink password SSH returned exit code $LASTEXITCODE. The script will try native ssh."
     } else {
         Test-Tool ssh
     }

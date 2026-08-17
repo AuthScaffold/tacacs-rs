@@ -145,9 +145,8 @@ enum AccountingStatus {
   // the accounting operation or had a processing error.
   ACCOUNTING_STATUS_ERROR = 2;
 
-  // TAC_PLUS_ACCT_STATUS_FOLLOW (0x21 = 33 decimal) tells the client to
-  // continue with an action that the server deployment defines. RFC 8907 §7.2
-  // gives more information.
+  // TAC_PLUS_ACCT_STATUS_FOLLOW (0x21 = 33 decimal) is deprecated. RFC 8907
+  // recommends treating it as an authentication failure.
   ACCOUNTING_STATUS_FOLLOW = 33;
 }
 

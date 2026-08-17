@@ -83,8 +83,8 @@ owned bodies in place. The writer emits the 12-byte header and body
 separately rather than allocating a second combined packet buffer.
 
 TACACS+ shared-secret obfuscation is not confidentiality. PAP is allowed over
-the operator-configured transport for interoperability, but production
-deployments must use TACACS+ over TLS 1.3.
+the operator-configured transport for interoperability. Prefer TACACS+ over TLS
+1.3 for production deployments.
 
 ## Baseline
 

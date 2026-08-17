@@ -285,10 +285,10 @@ stop just because the initial shell PID exits.
 ### IPC trust boundary
 
 The wrapper only authenticates the IPC endpoint via filesystem permissions
-on the Unix domain socket (or network ACLs for TCP endpoints). The
-`tacacsrs-agentd` socket must be mode `0660` and owned by a group that
-includes the wrapper's UID. Do not point `--service-endpoint` at a
-user-writable path.
+on the Unix domain socket (or network ACLs for TCP endpoints). The socket
+permissions must prevent untrusted users from connecting. Mode `0660` is
+suitable when the owning group includes the wrapper's UID. Do not point
+`--service-endpoint` at a user-writable path.
 
 ## Troubleshooting
 

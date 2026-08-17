@@ -53,7 +53,7 @@ When the upstream TACACS+ server requires the daemon to present a TLS client ide
 
 - Provide both flags together.
 - Both files can be PEM or DER. The daemon detects PEM input and converts it to DER before it builds the runtime connection configuration.
-- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. These flags do not accept that container format. Provide PEM or DER certificate or key material instead.
+- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. These flags do not accept that container format. Provide PEM or DER certificate and private-key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If upstream TLS material comes from `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 
 ## TLS 1.3 PSK

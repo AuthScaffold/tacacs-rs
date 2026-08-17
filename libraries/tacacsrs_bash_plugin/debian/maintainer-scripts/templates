@@ -6,5 +6,6 @@ Description: Add tacacsrs-bash-plugin to /etc/bash_plugins.conf?
  /usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so to
  /etc/bash_plugins.conf.
  .
- A false value leaves this configuration file unchanged. You can run
- dpkg-reconfigure tacacsrs-bash-plugin later to change the value.
+ A false value removes only the package-managed block. Other content in the
+ configuration file remains unchanged. You can run dpkg-reconfigure
+ tacacsrs-bash-plugin later to change the value.

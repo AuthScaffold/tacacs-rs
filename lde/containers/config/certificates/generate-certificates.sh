@@ -73,7 +73,7 @@ openssl x509 -req \
 	-extfile "$client_ext" \
 	-extensions client_cert
 
-# Export DER variants for CLI inputs that require binary certificate data.
+# Export DER variants for tests and CLI examples.
 openssl x509 -in client.crt -outform der -out client.crt.der
 openssl rsa -in client.key -outform der -out client.key.der
 

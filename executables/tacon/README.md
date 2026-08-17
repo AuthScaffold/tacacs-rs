@@ -57,7 +57,7 @@ When `--use-tls` is set, `--client-certificate` and `--client-key` let `tacon` p
 - Provide both flags together. The certificate flag requires the key flag. The key flag requires the certificate flag.
 - Both files can be PEM or DER. The client detects PEM input and converts it to DER before it builds the runtime connection configuration.
 - If you connect to a TLS server by IP address, or by any socket address that does not match the certificate DNS name, use `--tls-server-name`. `tacon` uses the supplied value for both SNI and certificate name verification in direct mode.
-- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. These flags do not accept that container format. Provide PEM or DER certificate or key material instead.
+- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. These flags do not accept that container format. Provide PEM or DER certificate and private-key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If you load TLS material through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 
 ### TLS 1.3 PSK
@@ -95,7 +95,7 @@ tacon -s 192.168.1.1:49 -k "secret" accounting \
 
 #### Authentication
 
-Authenticate a user (not yet implemented):
+Authenticate a user with PAP:
 
 ```bash
 tacon -s 192.168.1.1:49 -k "secret" authentication \
@@ -106,13 +106,24 @@ tacon -s 192.168.1.1:49 -k "secret" authentication \
 
 #### Authorization
 
-Make sure that a command is authorized (not yet implemented):
+Request shell-session attributes:
 
 ```bash
 tacon -s 192.168.1.1:49 -k "secret" authorization \
     --user admin \
     --port tty0 \
-    --rem-addr 10.0.0.100
+    --rem-addr 10.0.0.100 \
+    --authentication-context pap session
+```
+
+Authorize one command:
+
+```bash
+tacon -s 192.168.1.1:49 -k "secret" authorization \
+    --user admin \
+    --port tty0 \
+    --rem-addr 10.0.0.100 \
+    --authentication-context pap command show users brief
 ```
 
 #### Batch Mode
@@ -131,11 +142,12 @@ tacon -s 192.168.1.1:49 -k "secret" batch requests.json
 tacon \
     --server-addr tacacsserver.local:49 \
     --shared-secret "tac_plus_key" \
+    -vvv \
+    accounting \
     --user testuser \
     --port tty1 \
     --rem-addr 192.168.1.100 \
-    -vvv \
-    accounting "show version"
+    "show version"
 ```
 
 #### Loading a YANG JSON configuration
@@ -143,10 +155,11 @@ tacon \
 ```bash
 tacon \
     --config ./tacacs.json \
+    accounting \
     --user testuser \
     --port tty1 \
     --rem-addr 192.168.1.100 \
-    accounting "show version"
+    "show version"
 ```
 
 #### Using TACACS+ over TLS 1.3
@@ -157,10 +170,11 @@ tacon \
     --use-tls \
     --client-certificate /path/to/client.crt.pem \
     --client-key /path/to/client.key.pem \
+    accounting \
     --user testuser \
     --port tty1 \
     --rem-addr 192.168.1.100 \
-    accounting "show interfaces"
+    "show interfaces"
 ```
 
 DER input works the same way:
@@ -171,10 +185,11 @@ tacon \
     --use-tls \
     --client-certificate /path/to/client.crt.der \
     --client-key /path/to/client.key.der \
+    accounting \
     --user testuser \
     --port tty1 \
     --rem-addr 192.168.1.100 \
-    accounting "show interfaces"
+    "show interfaces"
 ```
 
 #### Using TLS 1.3 PSK-DHE
@@ -186,10 +201,11 @@ tacon \
     --psk-identity client@example.com \
     --psk-key "$TACACS_TLS_PSK" \
     --psk-key-exchange-groups secp384r1,secp256r1 \
+    accounting \
     --user testuser \
     --port tty1 \
     --rem-addr 192.168.1.100 \
-    accounting "show interfaces"
+    "show interfaces"
 ```
 
 For PSK-only interoperability mode:
@@ -201,10 +217,11 @@ tacon \
     --psk-identity client@example.com \
     --psk-key "$TACACS_TLS_PSK" \
     --psk-key-exchange psk-only \
+    accounting \
     --user testuser \
     --port tty1 \
     --rem-addr 192.168.1.100 \
-    accounting "show interfaces"
+    "show interfaces"
 ```
 
 ## Batch File Format
@@ -245,13 +262,23 @@ Batch files use JSON format to define multiple TACACS+ requests:
 
 ### Request Fields
 
-| Field      | Description                                                      |
-| ---------- | ---------------------------------------------------------------- |
-| `type`     | Request type: `accounting`, `authentication`, or `authorization` |
-| `user`     | Username for the request                                         |
-| `port`     | Port identifier                                                  |
-| `rem_addr` | Remote address of the client                                     |
-| `cmd`      | Command to run (for accounting)                                  |
+All supported requests use these fields:
+
+| Field      | Description                              |
+| ---------- | ---------------------------------------- |
+| `type`     | `accounting` or `authorization`          |
+| `user`     | Username for the request                 |
+| `port`     | Port identifier                          |
+| `rem_addr` | Remote address of the client             |
+
+Accounting requests require `cmd`. They can include `cmd_args`.
+
+Authorization requests require `authentication_context`. Valid values are
+`ascii`, `pap`, and `unauthenticated`. They can include `privilege_level`,
+`cmd`, and `cmd_args`.
+
+Batch files parse the `authentication` type, but both executors reject it.
+Use the interactive `authentication` command instead.
 
 See the [examples](examples/) directory for sample batch files.
 

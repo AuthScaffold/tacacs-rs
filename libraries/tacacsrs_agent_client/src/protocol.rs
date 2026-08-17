@@ -612,8 +612,8 @@ pub enum AccountingResponseStatus {
     /// `TAC_PLUS_ACCT_STATUS_ERROR` (`0x02`) — the server rejected the
     /// accounting operation or found an error while it processed the operation.
     Error,
-    /// `TAC_PLUS_ACCT_STATUS_FOLLOW` (`0x21`) — the client must run the
-    /// follow-up action that the server deployment defines.
+    /// `TAC_PLUS_ACCT_STATUS_FOLLOW` (`0x21`) — RFC 8907 recommends treating
+    /// this deprecated status as an authentication failure.
     Follow,
 }
 
@@ -635,7 +635,8 @@ pub enum AuthorizationResponseStatus {
     /// `TAC_PLUS_AUTHOR_STATUS_ERROR` (`0x11`) — authorization could not be
     /// completed due to an error.
     Error,
-    /// `TAC_PLUS_AUTHOR_STATUS_FOLLOW` (`0x21`) — follow-up handling is needed.
+    /// `TAC_PLUS_AUTHOR_STATUS_FOLLOW` (`0x21`) — RFC 8907 recommends treating
+    /// this deprecated status as an authentication failure.
     Follow,
 }
 

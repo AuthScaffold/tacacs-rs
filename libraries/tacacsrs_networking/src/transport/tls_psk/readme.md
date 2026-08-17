@@ -58,9 +58,8 @@ Key points:
    **(EC)DHE + PSK** mode, adding forward secrecy. Without it, the PSK alone
    determines all traffic keys (PSK-only mode, no forward secrecy).
 
-5. For external PSKs, `obfuscated_ticket_age` is always 0. The client must
-   explicitly specify the hash algorithm (default SHA-256 per RFC 8446
-   §4.2.11).
+5. For external PSKs, `obfuscated_ticket_age` is always 0. Each EPSK has an
+   associated hash algorithm. The YANG model defaults this value to SHA-256.
 
 ### Server Authentication via PSK
 

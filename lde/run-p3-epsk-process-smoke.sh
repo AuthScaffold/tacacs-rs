@@ -48,7 +48,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
     exit 40
 fi
 if [[ -e "$epsk_root" ]]; then
-    echo "The test did not replace the existing EPSK root: $epsk_root" >&2
+    echo "The test refuses to replace the existing EPSK root: $epsk_root" >&2
     exit 41
 fi
 command -v redis-server >/dev/null

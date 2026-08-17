@@ -90,7 +90,7 @@ Proxy mode preserves TACACS+ packet bodies while managing session routing:
 - Packet bodies are forwarded unchanged. The proxy rewrites only session IDs and the locally advertised single-connect flag.
 - The proxy advertises single-connect support based on its own downstream multiplexer, not the selected upstream server's flag.
 - Accounting and authorization conversations close after one reply. Authentication conversations continue across challenge replies and close when the reply status is terminal.
-- `FOLLOW` replies are forwarded to the downstream client, and then the connection closes. Per RFC 8907, authorization and accounting `FOLLOW` use the authentication `FOLLOW` behavior. Authentication `FOLLOW` is treated like `FAIL`.
+- `FOLLOW` replies are forwarded to the downstream client and complete that session. Per RFC 8907, authorization and accounting `FOLLOW` use the authentication `FOLLOW` behavior. Authentication `FOLLOW` is treated like `FAIL`.
 - Authentication `RESTART` replies are forwarded and complete that session. A restarted sequence uses a new session ID and sequence number 1, as required by RFC 8907. The downstream TCP connection can remain open.
 
 Proxy TCP endpoints must be loopback addresses. Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. When `client-api` and `tacacs-proxy` run together, the proxy endpoint must be different from `--listen-endpoint`.
@@ -121,7 +121,7 @@ When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemo
 
 - Provide both flags together.
 - Both files can be PEM or DER. The daemon detects PEM input and converts it to DER before it builds the runtime connection configuration.
-- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags. Provide PEM or DER certificate or key material instead.
+- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags. Provide PEM or DER certificate and private-key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If upstream TLS material is loaded through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 
 ### Timeouts and Failover

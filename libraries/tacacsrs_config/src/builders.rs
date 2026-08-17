@@ -34,9 +34,10 @@ impl TacacsPlus {
 /// [`TacacsPlusServerBuilder`] values into the root configuration consumed by
 /// the agent service.
 ///
-/// This builder leaves shared `client-credentials` and `server-credentials`
-/// bundles empty. Code must put security material directly in each server
-/// instead of using YANG references.
+/// This builder leaves local `client-credentials` and `server-credentials`
+/// bundles empty. A server can contain inline security material or a central
+/// credential reference. It cannot refer to a local bundle that this root does
+/// not define.
 #[derive(Debug, Clone)]
 pub struct TacacsPlusBuilder {
     root: TacacsPlus,

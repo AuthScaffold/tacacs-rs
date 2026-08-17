@@ -231,16 +231,16 @@ injects them during builds through `.github/steps/compute-versions` and
 
 ## Async and Concurrency
 
-- Prefer `Send` public futures and primary async entry points. Document each
-  exception.
+- Public futures and primary async entry points must be `Send` unless a
+  documented reason prevents it.
 - Do not hold `Rc`, `RefCell`, non-Send guards, or long-held locks across
   `.await` points.
 - When sharing is cheaper and clearer than recomputation, use `Arc`, `Mutex`,
   and `RwLock`. Keep lock scopes small.
 - Do not hot-spin. Await readiness, sleep through configured intervals, or use
   channels and notifications.
-- For long CPU-bound work in async code, prefer `spawn_blocking` or cooperative
-  yield points. These options prevent runtime starvation.
+- Long CPU-bound work in async code must use `spawn_blocking` or cooperative
+  yield points so it does not starve the runtime.
 - Preserve the service failover model: per-server reconnects are serialized, new
   sessions use the active server index, and the preferred-server probe only does
   extra work while failed over.
@@ -258,8 +258,8 @@ injects them during builds through `.github/steps/compute-versions` and
   substitute for recoverable errors.
 - Avoid `unwrap()` and `expect()` in production library code. If an invariant
   truly justifies one, make the message specific.
-- Do not catch panics as control flow. Prefer panic-safe code even when a panic
-  normally aborts the process.
+- Do not catch panics as control flow. Code must remain panic-safe even when a
+  panic normally aborts the process.
 
 ## Documentation
 

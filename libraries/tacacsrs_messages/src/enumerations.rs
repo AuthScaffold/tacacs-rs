@@ -317,7 +317,8 @@ pub enum TacacsAuthorizationStatus {
     ///
     /// The server failed to process the request, or a protocol error occurred.
     TacPlusError = 0x11,
-    /// `TAC_PLUS_AUTHOR_STATUS_FOLLOW` (`0x21`) requires deployment-specific handling.
+    /// RFC 8907 recommends treating deprecated
+    /// `TAC_PLUS_AUTHOR_STATUS_FOLLOW` (`0x21`) as an authentication failure.
     TacPlusFollow = 0x21,
 }
 

@@ -64,38 +64,50 @@ numbers are preferred and therefore appear earlier in the daemon's failover
 order. The synthesized YANG `name` for each server is
 `sonic-server-<address>`.
 
-### Forward-compatible extension keys
+### Compatibility extension keys
 
-Operators and SONiC schema maintainers can experiment with TLS-aware fields
-ahead of upstream ConfigDB schema work by adding the following keys to
-`TACPLUS_SERVER|<addr>`:
+Compatibility rows accept these project extension keys:
 
-| Key                 | YANG field                    | Notes                                                                                              |
-|---------------------|-------------------------------|----------------------------------------------------------------------------------------------------|
-| `use_tls`           | `server-authentication: {}`   | Accepts the same boolean forms as `sni_enabled`. Also supported on the global TACPLUS row          |
-| `domain_name`       | `domain-name`                 | Used as SNI hostname                                                                               |
-| `sni_enabled`       | `sni-enabled`                 | `true`/`false`/`yes`/`no`/`1`/`0`                                                                  |
-| `single_connection` | `single-connection`           | Boolean                                                                                            |
-| `vrf_name`          | `vrf-instance`                | VRF name for outbound traffic                                                                      |
-| `src_ip`            | `source-ip`                   | Mutually exclusive with `src_intf`                                                                 |
-| `src_intf`          | `source-interface`            | Falls back to the global TACPLUS row                                                               |
-| `server_type`       | `server-type`                 | Defaults to `all`. Tokens accept `authentication`, `authorization`, `accounting`, or `all`         |
+| Key                 | YANG field         | Notes |
+|---------------------|--------------------|-------|
+| `single_connection` | `single-connection`| Boolean |
+| `vrf_name`          | `vrf-instance`     | VRF name for outbound traffic |
+| `src_ip`            | `source-ip`        | Mutually exclusive with `src_intf` |
+| `src_intf`          | `source-interface` | Falls back to the global `TACPLUS` row |
+| `server_type`       | `server-type`      | Defaults to `all` |
 
-Unknown fields are logged at `warn` level and ignored, so legacy operator
-annotations on TACPLUS rows do not break the agent.
+The bridge tolerates unknown compatibility fields and logs their names. It
+does not log their values. Compatibility rows reject `use_tls`, `domain_name`,
+and `sni_enabled`. Put TLS configuration in `TACPLUS_SERVER_TLS`.
 
-### Capability gap (TLS)
+### Version-1 TLS and forwarder tables
 
-SONiC's upstream TACACS+ ConfigDB schema does not yet expose certificate
-material, trust anchors, TLS 1.3 ePSKs, or other TLS-only fields from the
-YANG model. Until SONiC adopts a richer schema, the bridge supports the
-shared-secret and obfuscation path (`passkey`). It also supports a
-forward-compatible `use_tls` extension that selects the empty
-`server-authentication` container. `tacon --use-tls` uses this container
-when no explicit certificate material is configured.
-The mapping is structured so that promoting richer TLS support upstream will
-only require new ConfigDB fields and a corresponding update to
-`tacacsrs_sonic::mapping`. No daemon-level plumbing changes will be required.
+Each `TACPLUS_SERVER_TLS|<addr>` row defines one TLS 1.3 external PSK (EPSK)
+server:
+
+| Key | Requirement |
+|-----|-------------|
+| `psk_identity` | Required external identity |
+| `psk_secret_ref` | Required opaque EPSK object ID |
+| `priority` | Optional value from `1` through `64`; default `1` |
+| `tcp_port` | Optional TLS port; default `449` |
+| `timeout` | Optional timeout from `1` through `60` seconds; default `5` |
+| `domain_name` | Optional SNI name |
+| `sni_enabled` | Optional boolean; requires `domain_name` when true |
+| `single_connection` | Optional boolean; default false |
+| `psk_hash` | `sha-256` or `sha-384`; default `sha-256` |
+| `psk_key_exchange` | `psk-dhe` or `psk-only`; default `psk-dhe` |
+| `psk_key_exchange_groups` | Optional colon-separated groups for `psk-dhe` |
+
+The production resolver reads `psk_secret_ref` from
+`/etc/sonic/tacacs/credentials/epsk/<id>`. The credential file must satisfy
+the ownership, permission, link-count, and size checks in
+[`tacacsrs-sonic`](../libraries/tacacsrs_sonic/README.md).
+
+`TACPLUS_FORWARDER|global` controls the local raw TACACS+ proxy listener. Its
+`local_listen_address` field is required and must be loopback.
+`local_listen_port` is optional and defaults to `49`. The TLS and forwarder
+tables reject unknown fields.
 
 ## Running on SONiC
 
@@ -112,7 +124,17 @@ redis-cli -n 4 CONFIG SET notify-keyspace-events KEA
 `KEA` enables `K`eyspace events, `E`vent expiration, and `A`ll command
 classes. The bridge subscribes to `__keyspace@4__:TACPLUS*`.
 
-### 2. Install the systemd unit
+### 2. Configure the local forwarder
+
+The daemon reads its proxy listener from `TACPLUS_FORWARDER|global` before it
+binds any service listener:
+
+```bash
+redis-cli -n 4 HSET 'TACPLUS_FORWARDER|global' \
+    local_listen_address 127.0.0.1 local_listen_port 49
+```
+
+### 3. Install the systemd unit
 
 The repository ships an example unit file at
 [`executables/tacacsrs_agentd/sonic/tacacsrs-agentd.service`](../executables/tacacsrs_agentd/sonic/tacacsrs-agentd.service).
@@ -128,7 +150,7 @@ sudo systemctl enable --now tacacsrs-agentd.service
 The unit ordering pulls in `database.service` so the daemon starts only
 after CONFIG_DB is available.
 
-### 3. Register in the SONiC `FEATURE` table
+### 4. Register in the SONiC `FEATURE` table
 
 `executables/tacacsrs_agentd/sonic/feature_table.json` is a sample row that
 exposes the agent through SONiC's standard `config feature` CLI:
@@ -139,7 +161,7 @@ config save -y
 config feature state tacacsrs-agentd enabled
 ```
 
-### 4. Start the daemon manually (for development)
+### 5. Start the daemon manually (for development)
 
 ```bash
 sudo /usr/local/bin/tacacsrs-agentd \
@@ -202,11 +224,13 @@ for key in $(redis-cli -n 4 --raw KEYS 'TACPLUS_SERVER|*'); do
     redis-cli -n 4 DEL "$key"
 done
 
+redis-cli -n 4 HSET 'TACPLUS_FORWARDER|global' \
+    local_listen_address 127.0.0.1 local_listen_port 49
 redis-cli -n 4 HSET 'TACPLUS|global' \
     timeout 5 passkey shared-secret auth_type pap src_intf Management0
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' \
     priority 64 tcp_port 49 timeout 10 passkey server-secret \
-    domain_name tacacs-a.example.test sni_enabled true single_connection true
+    single_connection true
 ```
 
 Run the `tacacsrs-sonic` watcher example to validate the datastore contract
