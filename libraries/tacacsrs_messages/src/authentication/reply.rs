@@ -46,7 +46,7 @@ impl AuthenticationReply {
     /// Returns an error if the packet body is too short or contains invalid fields.
     pub fn from_packet(packet: &Packet) -> anyhow::Result<Self> {
         let expected_length = Self::size_from_bytes(packet.body())
-            .context("unable to determine expected length of authentication reply packet")?;
+            .context("failed to determine the expected authentication reply length")?;
         if packet.body().len() < expected_length {
             anyhow::bail!(
                 "invalid authentication reply body length: expected {expected_length}, actual {}",
@@ -60,7 +60,7 @@ impl AuthenticationReply {
     fn size_from_bytes(data: &[u8]) -> anyhow::Result<usize> {
         if data.len() < AUTHENTICATION_REPLY_MIN_LENGTH {
             anyhow::bail!(
-                "body too short for authentication reply fixed fields: expected at least {}, actual {}",
+                "authentication reply body is too short for fixed fields: expected at least {}, actual {}",
                 AUTHENTICATION_REPLY_MIN_LENGTH,
                 data.len()
             );
@@ -78,7 +78,7 @@ impl AuthenticationReply {
         let expected_length = Self::size_from_bytes(data)?;
         if data.len() < expected_length {
             anyhow::bail!(
-                "data too short for authentication reply: expected {expected_length}, actual {}",
+                "authentication reply data is too short: expected {expected_length}, actual {}",
                 data.len()
             );
         }
@@ -87,21 +87,21 @@ impl AuthenticationReply {
         let status = TacacsAuthenticationStatus::try_from_primitive(
             cursor
                 .read_u8()
-                .context("unable to read authentication status")?,
+                .context("failed to read authentication status")?,
         )
         .context("invalid authentication status")?;
         let flags = TacacsAuthenticationReplyFlags::from_bits(
             cursor
                 .read_u8()
-                .context("unable to read authentication reply flags")?,
+                .context("failed to read authentication reply flags")?,
         )
         .context("invalid authentication reply flags")?;
         let msg_len = cursor
             .read_u16::<BigEndian>()
-            .context("unable to read msg_len")?;
+            .context("failed to read msg_len")?;
         let data_len = cursor
             .read_u16::<BigEndian>()
-            .context("unable to read data_len")?;
+            .context("failed to read data_len")?;
 
         let server_msg = read_string(&mut cursor, usize::from(msg_len))?;
         let data = read_bytes(&mut cursor, usize::from(data_len))?;
@@ -202,7 +202,7 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("invalid authentication reply body length"),
-            "Error actual: {err}"
+            "Actual error: {err}"
         );
     }
 
@@ -248,6 +248,6 @@ mod tests {
 
         let err = AuthenticationReply::from_bytes(&body).unwrap_err();
 
-        assert!(err.to_string().contains("invalid authentication status"), "Error actual: {err}");
+        assert!(err.to_string().contains("invalid authentication status"), "Actual error: {err}");
     }
 }

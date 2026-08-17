@@ -1,8 +1,7 @@
-//! Local gRPC client helpers for talking to the central TACACS+ service.
+//! Local gRPC client helpers for communication with the central TACACS+ service.
 //!
-//! The client is intentionally lightweight: callers point it at a local IPC
-//! endpoint and each request is carried through the protobuf/gRPC contract
-//! without exposing TACACS+ wire details to the caller.
+//! Callers give the client a local IPC endpoint. The client sends each request
+//! through the protobuf/gRPC contract. It does not expose TACACS+ wire details.
 //!
 //! # Platform behavior
 //!
@@ -12,10 +11,9 @@
 //! | Windows / other | Loopback TCP | Default: `127.0.0.1:9049` |
 //!
 //! [`ServiceClient`] holds a persistent gRPC [`tonic::transport::Channel`] that
-//! is established once at construction time and reused for all subsequent
-//! requests. gRPC over HTTP/2 natively multiplexes concurrent RPCs on a single
-//! connection, so callers may issue many requests in parallel without per-request
-//! connection overhead.
+//! is established during construction and reused for all requests. gRPC over
+//! HTTP/2 multiplexes concurrent RPCs on one connection. Thus, callers can send
+//! requests in parallel without a new connection for each request.
 
 use anyhow::{Context, anyhow};
 use tonic::transport::Channel;
@@ -33,9 +31,9 @@ use crate::IpcEndpoint;
 /// Convenience wrapper for making local IPC calls to the central service.
 ///
 /// `ServiceClient` holds a persistent gRPC [`Channel`] that is established once
-/// at construction time and reused for all subsequent requests. gRPC over HTTP/2
-/// natively multiplexes concurrent RPCs on a single connection, so callers may
-/// issue many requests in parallel without per-request connection overhead.
+/// during construction and reuses it for all requests. gRPC over HTTP/2
+/// multiplexes concurrent RPCs on one connection. Thus, callers can send
+/// requests in parallel without a new connection for each request.
 ///
 /// The type is [`Clone`] and [`Send`]; cloning is cheap because [`Channel`] is
 /// reference-counted internally.
@@ -88,8 +86,9 @@ pub struct ServiceClient {
 }
 
 impl ServiceClient {
-    /// Establishes a gRPC channel to the given local IPC endpoint and returns
-    /// a [`ServiceClient`] that reuses it for all subsequent requests.
+    /// Establishes a gRPC channel to the local IPC endpoint.
+    ///
+    /// The returned [`ServiceClient`] reuses the channel for all requests.
     ///
     /// On Unix, this connects over a Unix domain socket using `tonic`'s
     /// `connect_with_connector` to bridge `tokio::net::UnixStream` into the
@@ -97,8 +96,7 @@ impl ServiceClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the IPC connection cannot be established (socket
-    /// missing, service not running, etc.).
+    /// Returns an error if the client cannot establish the IPC connection.
     pub async fn connect(endpoint: IpcEndpoint) -> anyhow::Result<Self> {
         let channel = connect_channel(&endpoint).await?;
         Ok(Self { channel })
@@ -106,10 +104,10 @@ impl ServiceClient {
 
     /// Sends a single accounting request to the local TACACS+ client service.
     ///
-    /// Converts the domain [`AccountingOperation`] into a protobuf request,
-    /// issues the unary RPC over the persistent channel, and converts the reply
-    /// back into the domain response type. Concurrent calls are multiplexed on
-    /// the same underlying HTTP/2 connection.
+    /// Converts the domain [`AccountingOperation`] into a protobuf request. It
+    /// sends the unary RPC over the persistent channel and converts the reply
+    /// into the domain response type. Concurrent calls use the same HTTP/2
+    /// connection.
     ///
     /// # Errors
     ///
@@ -117,7 +115,7 @@ impl ServiceClient {
     /// - The gRPC exchange fails at the transport level.
     /// - The service returns a structured [`ServiceError`] (e.g. all upstream
     ///   TACACS+ servers are unavailable). The error message includes the
-    ///   server name (if known) and whether the caller should retry.
+    ///   server name, if known, and whether the caller can retry.
     pub async fn send_accounting(
         &self,
         request: AccountingOperation,
@@ -127,7 +125,7 @@ impl ServiceClient {
         let reply = client
             .accounting(rpc_request)
             .await
-            .context("Failed to execute accounting RPC")?
+            .context("Failed to run the accounting RPC")?
             .into_inner();
 
         match reply.result.context("Accounting RPC returned no result")? {
@@ -140,7 +138,7 @@ impl ServiceClient {
         }
     }
 
-    /// Authenticates one username/password pair using PAP.
+    /// Authenticates one user name and password with PAP.
     ///
     /// # Errors
     ///
@@ -154,7 +152,7 @@ impl ServiceClient {
         let reply = client
             .authenticate_pap(ipc::PapAuthenticationRequest::from(request))
             .await
-            .context("Failed to execute PAP authentication RPC")?
+            .context("Failed to run the PAP authentication RPC")?
             .into_inner();
 
         match reply
@@ -172,9 +170,9 @@ impl ServiceClient {
 
     /// Sends a single authorization request to the local TACACS+ client service.
     ///
-    /// Converts the domain [`AuthorizationOperation`] into a protobuf request,
-    /// issues the unary RPC over the persistent channel, and converts the reply
-    /// back into the domain response type.
+    /// Converts the domain [`AuthorizationOperation`] into a protobuf request.
+    /// It sends the unary RPC over the persistent channel and converts the reply
+    /// into the domain response type.
     ///
     /// # Errors
     ///
@@ -190,7 +188,7 @@ impl ServiceClient {
         let reply = client
             .authorization(rpc_request)
             .await
-            .context("Failed to execute authorization RPC")?
+            .context("Failed to run the authorization RPC")?
             .into_inner();
 
         match reply

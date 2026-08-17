@@ -1,16 +1,15 @@
 /// Runtime statistics counters for a TACACS+ server.
 ///
-/// Maps to the YANG `grouping statistics` container.
-/// All counters are `config false` (read-only) in the YANG model.
-/// These are not deserialized from configuration — they are populated
-/// at runtime as connections are established and packets are exchanged.
+/// This type maps to the YANG `grouping statistics` container. All counters are
+/// `config false` (read-only) in the YANG model. Runtime events populate these
+/// counters when connections open and packets move.
 #[derive(Debug, Clone, Default)]
 pub struct ServerStatistics {
-    /// Number of new connection requests sent (socket opens).
+    /// Number of requests to open a connection.
     pub connection_opens: u64,
     /// Number of graceful connection closes.
     pub connection_closes: u64,
-    /// Number of aborted connections (non-graceful).
+    /// Number of connections that closed without a graceful shutdown.
     pub connection_aborts: u64,
     /// Number of connection failures.
     pub connection_failures: u64,

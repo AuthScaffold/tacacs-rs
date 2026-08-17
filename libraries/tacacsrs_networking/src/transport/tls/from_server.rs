@@ -1,10 +1,9 @@
-//! Build certificate-based TLS connections directly from a
+//! Builds certificate-based TLS connections directly from
 //! [`TacacsPlusServer`] configuration.
 //!
-//! This module owns the translation from the YANG-derived configuration model
-//! to the lower-level TLS primitives (OpenSSL trust stores, DER certificate
-//! chains, private keys, SNI server names). It exists so the establishment
-//! dispatcher does not need to understand certificate or key encoding details.
+//! This module translates the YANG-derived configuration model into OpenSSL
+//! trust stores, DER certificate chains, private keys, and SNI server names.
+//! The establishment dispatcher does not process certificate or key encodings.
 
 use anyhow::{Context, Result};
 use openssl::ec::EcKey;
@@ -21,7 +20,7 @@ use super::TlsConfigurationBuilder;
 use super::connect_tls;
 use crate::helpers::{data_contains_pem_header, tls_server_name};
 
-/// Establishes a certificate-based TLS connection over an existing TCP stream
+/// Establishes a certificate-based TLS connection over an existing TCP connection
 /// using the security parameters carried in `server`.
 ///
 /// The TLS root store is populated from `server-authentication.ca-certs` and
@@ -42,7 +41,7 @@ pub(crate) async fn establish_from_server(
     disable_certificate_verification: bool,
 ) -> Result<SslStream<TcpStream>> {
     let sni_name = derive_sni_name(server, address);
-    log::debug!("Negotiating TLS handshake with {address} (SNI: {sni_name})");
+    log::debug!("Starting TLS handshake with {address} (SNI: {sni_name})");
 
     let mut builder = TlsConfigurationBuilder::new();
 
@@ -60,7 +59,7 @@ pub(crate) async fn establish_from_server(
 
     let tls_config = builder
         .build()
-        .inspect_err(|e| log::warn!("Failed to build TLS config for {address}: {e:#}"))
+        .inspect_err(|e| log::warn!("Failed to build TLS configuration for {address}: {e:#}"))
         .context("Failed to build TLS configuration")?;
 
     let tls_stream = connect_tls(&tls_config, tcp_stream, sni_name)
@@ -73,9 +72,10 @@ pub(crate) async fn establish_from_server(
 }
 
 /// Derives the TLS server name (for SNI and verification) from the server
-/// configuration. When `sni-enabled` is true and `domain-name` is set, the
-/// domain name is used; otherwise falls back to extracting the host from the
-/// socket address.
+/// configuration.
+///
+/// If `sni-enabled` is true and `domain-name` is set, this function uses the
+/// domain name. Otherwise, it extracts the host from the socket address.
 fn derive_sni_name<'a>(server: &'a TacacsPlusServer, address: &'a str) -> &'a str {
     if server.sni_enabled() {
         if let Some(ref domain) = server.domain_name {
@@ -87,7 +87,7 @@ fn derive_sni_name<'a>(server: &'a TacacsPlusServer, address: &'a str) -> &'a st
 
 /// Builds custom OpenSSL trust anchors from the server's `ca-certs` and
 /// `ee-certs` inline definitions. Returns `Ok(None)` if no custom CA material
-/// is configured (in which case the default web PKI roots will be used).
+/// is configured. In that case, OpenSSL uses the default web PKI roots.
 fn build_root_cert_store(server: &TacacsPlusServer) -> Result<Option<Vec<X509>>> {
     let Some(ref sa) = server.server_authentication else {
         return Ok(None);
@@ -260,11 +260,11 @@ mod tests {
                 .join("samples")
                 .join("client.crt"),
         )
-        .expect("sample cert exists");
+        .expect("sample certificate must exist");
         let der = X509::from_pem(&cert_pem)
-            .expect("sample cert PEM should parse")
+            .expect("sample certificate PEM must parse")
             .to_der()
-            .expect("sample cert should serialize as DER");
+            .expect("sample certificate must serialize as DER");
 
         let result = parse_certificate_data(&der);
         assert!(result.is_ok());
@@ -318,14 +318,16 @@ mod tests {
     #[test]
     fn build_root_cert_store_returns_none_without_server_authentication() {
         let server = server_template();
-        let store = build_root_cert_store(&server).expect("no server-auth should be ok");
+        let store =
+            build_root_cert_store(&server).expect("missing server authentication must be valid");
         assert!(store.is_none());
     }
 
     #[test]
     fn extract_client_auth_returns_none_without_client_identity() {
         let server = server_template();
-        let auth = extract_client_auth(&server, "10.0.0.1:49").expect("no client-identity");
+        let auth =
+            extract_client_auth(&server, "10.0.0.1:49").expect("missing client identity is valid");
         assert!(auth.is_none());
     }
 }

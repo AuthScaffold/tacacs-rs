@@ -31,7 +31,7 @@ fn certificate_and_trust_server() -> tacacsrs_config::TacacsPlusServer {
             }
         }"#,
     )
-    .expect("certificate config should parse")
+    .expect("certificate configuration must parse")
     .server
     .remove(0)
 }
@@ -55,7 +55,7 @@ fn epsk_server() -> tacacsrs_config::TacacsPlusServer {
             }
         }"#,
     )
-    .expect("EPSK config should parse")
+    .expect("EPSK configuration must parse")
     .server
     .remove(0)
 }
@@ -90,8 +90,8 @@ fn ee_material() -> ResolvedCredential {
 
 #[tokio::test]
 async fn fake_resolver_completes_all_request_variants() {
-    let certificate_plan =
-        ResolutionPlan::from_server(&certificate_and_trust_server()).expect("certificate plan");
+    let certificate_plan = ResolutionPlan::from_server(&certificate_and_trust_server())
+        .expect("certificate plan must build");
     assert_eq!(
         certificate_plan
             .requests()
@@ -110,17 +110,17 @@ async fn fake_resolver_completes_all_request_variants() {
         .with_response(certificate_plan.requests()[2].slot(), ee_material());
     let certificate_set = resolve_plan(&certificate_plan, &certificate_resolver)
         .await
-        .expect("certificate plan should resolve");
+        .expect("certificate plan must resolve");
     assert_eq!(certificate_set.len(), 3);
     assert_eq!(
         certificate_set
             .credential(certificate_plan.requests()[0].slot())
-            .expect("certificate material")
+            .expect("certificate credential must exist")
             .kind(),
         CredentialKind::CertificateWithKey,
     );
 
-    let epsk_plan = ResolutionPlan::from_server(&epsk_server()).expect("EPSK plan");
+    let epsk_plan = ResolutionPlan::from_server(&epsk_server()).expect("EPSK plan must build");
     let epsk_resolver = FakeCredentialResolver::new().with_response(
         epsk_plan.requests()[0].slot(),
         ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
@@ -130,11 +130,11 @@ async fn fake_resolver_completes_all_request_variants() {
     );
     let epsk_set = resolve_plan(&epsk_plan, &epsk_resolver)
         .await
-        .expect("EPSK plan should resolve");
+        .expect("EPSK plan must resolve");
     assert_eq!(
         epsk_set
             .credential(epsk_plan.requests()[0].slot())
-            .expect("EPSK material")
+            .expect("EPSK credential must exist")
             .kind(),
         CredentialKind::SymmetricKey,
     );
@@ -142,7 +142,8 @@ async fn fake_resolver_completes_all_request_variants() {
 
 #[test]
 fn request_plan_is_deterministic_explicit_and_redacted() {
-    let plan = ResolutionPlan::from_server(&certificate_and_trust_server()).expect("plan");
+    let plan =
+        ResolutionPlan::from_server(&certificate_and_trust_server()).expect("plan must build");
     let first = &plan.requests()[0];
     assert_eq!(first.context().server_name(), "certificate-server");
     assert_eq!(first.context().field_path(), "client-identity/certificate");
@@ -184,15 +185,15 @@ fn planning_requires_enumeration_and_rejects_incomplete_request() {
             }
         }"#,
     )
-    .expect("raw bundle config");
+    .expect("raw bundle configuration must parse");
     let error = ResolutionPlan::from_server(&raw.tacacs_plus.server[0])
-        .expect_err("raw local reference should fail");
+        .expect_err("raw local reference must fail");
     assert_eq!(error.kind(), ResolutionErrorKind::EnumerationRequired);
     assert!(error.to_string().contains("credentials-reference"));
     assert!(!error.to_string().contains("local-secret-id"));
 
-    let enumerated = enumerate_servers(&raw.tacacs_plus).expect("enumerate bundle");
-    ResolutionPlan::from_server(&enumerated[0]).expect("enumerated plan");
+    let enumerated = enumerate_servers(&raw.tacacs_plus).expect("bundle enumeration must succeed");
+    ResolutionPlan::from_server(&enumerated[0]).expect("enumerated plan must build");
 
     let incomplete = parse_yang_json(
         r#"{
@@ -211,7 +212,7 @@ fn planning_requires_enumeration_and_rejects_incomplete_request() {
     )
     .expect("generated central container is structurally valid");
     let error = ResolutionPlan::from_server(&incomplete.server[0])
-        .expect_err("incomplete central request should fail planning");
+        .expect_err("incomplete central request must fail planning");
     assert_eq!(error.kind(), ResolutionErrorKind::IncompleteRequest);
     assert_eq!(error.expected(), Some(CredentialKind::CertificateWithKey));
 }
@@ -264,10 +265,11 @@ fn resolution_plan_covers_all_variants_after_bundle_enumeration() {
             }
         }"#,
     )
-    .expect("bundle config should parse");
-    let servers = enumerate_servers(&config).expect("bundles should enumerate");
-    let certificate_plan = ResolutionPlan::from_server(&servers[0]).expect("certificate plan");
-    let epsk_plan = ResolutionPlan::from_server(&servers[1]).expect("EPSK plan");
+    .expect("bundle configuration must parse");
+    let servers = enumerate_servers(&config).expect("bundles must enumerate");
+    let certificate_plan =
+        ResolutionPlan::from_server(&servers[0]).expect("certificate plan must build");
+    let epsk_plan = ResolutionPlan::from_server(&servers[1]).expect("EPSK plan must build");
 
     assert_eq!(
         certificate_plan
@@ -305,7 +307,8 @@ fn resolution_plan_covers_all_variants_after_bundle_enumeration() {
 
 #[test]
 fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
-    let plan = ResolutionPlan::from_server(&certificate_and_trust_server()).expect("plan");
+    let plan =
+        ResolutionPlan::from_server(&certificate_and_trust_server()).expect("plan must build");
     let slots = plan.requests();
 
     let missing = ResolvedCredentialSet::from_responses(
@@ -315,7 +318,7 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
             ResolvedResponse::new(slots[1].slot(), ca_material()),
         ],
     )
-    .expect_err("missing response should fail");
+    .expect_err("missing response must fail");
     assert_eq!(missing.kind(), ResolutionErrorKind::MissingResponse);
     assert_eq!(missing.slot(), Some(slots[2].slot()));
 
@@ -326,7 +329,7 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
             ResolvedResponse::new(slots[0].slot(), certificate_material()),
         ],
     )
-    .expect_err("duplicate response should fail");
+    .expect_err("duplicate response must fail");
     assert_eq!(duplicate.kind(), ResolutionErrorKind::DuplicateResponse);
 
     let unexpected = ResolvedCredentialSet::from_responses(
@@ -336,7 +339,7 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
             certificate_material(),
         )],
     )
-    .expect_err("unexpected slot should fail");
+    .expect_err("unexpected slot must fail");
     assert_eq!(unexpected.kind(), ResolutionErrorKind::UnexpectedResponse);
 
     let mismatch = ResolvedCredentialSet::from_responses(
@@ -353,7 +356,7 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
             ResolvedResponse::new(slots[2].slot(), ee_material()),
         ],
     )
-    .expect_err("wrong variant should fail");
+    .expect_err("wrong variant must fail");
     assert_eq!(mismatch.kind(), ResolutionErrorKind::ResponseMismatch);
     assert_eq!(mismatch.expected(), Some(CredentialKind::CertificateWithKey));
     assert_eq!(mismatch.actual(), Some(CredentialKind::SymmetricKey));
@@ -361,13 +364,13 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
 
 #[tokio::test]
 async fn provider_failures_are_typed_and_sanitized() {
-    let plan = ResolutionPlan::from_server(&epsk_server()).expect("EPSK plan");
+    let plan = ResolutionPlan::from_server(&epsk_server()).expect("EPSK plan must build");
     let resolver = FakeCredentialResolver::new()
         .with_error(plan.requests()[0].slot(), ProviderErrorKind::AccessDenied);
 
     let error = resolve_plan(&plan, &resolver)
         .await
-        .expect_err("provider error should propagate");
+        .expect_err("provider error must propagate");
     assert_eq!(error.kind(), ResolutionErrorKind::AccessDenied);
     assert!(error.to_string().contains("client-identity/tls13-epsk"));
     assert!(!error.to_string().contains("secret-reference-epsk"));

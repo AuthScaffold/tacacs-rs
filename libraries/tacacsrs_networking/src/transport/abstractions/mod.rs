@@ -5,12 +5,11 @@
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
-/// A trait representing a bidirectional transport that can be split into
+/// A bidirectional transport that can be split into
 /// separate read and write halves.
 ///
-/// This abstraction allows connection handling code to be generic over
-/// different transport types (TCP, TLS, etc.) while still being able to
-/// perform concurrent read and write operations.
+/// Connection code uses this trait for TCP, TLS, and other transports. The code
+/// can read and write concurrently.
 pub(crate) trait Transport: Send + 'static {
     /// The read half type after splitting the transport.
     type ReadHalf: AsyncRead + Unpin + Send + 'static;
@@ -30,7 +29,7 @@ mod tests {
     use tokio::net::TcpStream;
     use tokio_openssl::SslStream;
 
-    // Compile-time check that TcpStream implements Transport
+    // Make sure that TcpStream implements Transport.
     #[allow(dead_code)]
     fn assert_transport(_: impl Transport) {}
 
@@ -39,13 +38,13 @@ mod tests {
         assert_transport(s);
     }
 
-    // Compile-time check that TlsStream implements Transport
+    // Make sure that SslStream implements Transport.
     #[allow(dead_code)]
     fn check_tls(s: SslStream<TcpStream>) {
         assert_transport(s);
     }
 
-    // Compile-time check that MockTransport implements Transport
+    // Make sure that MockTransport implements Transport.
     #[allow(dead_code)]
     fn check_mock(s: crate::transport::mock::MockTransport) {
         assert_transport(s);

@@ -8,10 +8,9 @@ use crate::upstream::UpstreamConnection;
 
 /// Operation-specific hooks used by the client API upstream bridge.
 ///
-/// Accounting and authorization differ in request/response types and upstream
-/// send methods, but they share the same active-server selection, failure
-/// recording, and failover behavior. Implementing this trait keeps those
-/// specializations small while preserving typed request and response values.
+/// Accounting and authorization have different request, reply, and send types.
+/// They use the same server selection, failure recording, and failover behavior.
+/// This trait keeps the operation-specific implementations small and typed.
 #[async_trait]
 pub(super) trait RoutedOperation: Send + Sync + 'static {
     /// Client API request type for the operation.
@@ -21,10 +20,10 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
 
     /// Lowercase operation name for log messages.
     const NAME: &'static str;
-    /// Display operation name for log messages.
+    /// Operation name with display capitalization for log messages.
     const DISPLAY_NAME: &'static str;
 
-    /// Sends the operation through the selected upstream connection.
+    /// Sends the operation through the selected server connection.
     async fn send(
         connection: &dyn UpstreamConnection,
         request: Self::Request,
@@ -32,13 +31,11 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
 }
 
 impl UpstreamBridge {
-    /// Executes one client API operation against the currently selected
-    /// upstream TACACS+ server.
+    /// Runs one client API operation against the selected TACACS+ server.
     ///
-    /// The networking layer owns dedicated versus single-connection behavior.
-    /// `UpstreamBridge` asks the upstream manager to select a configured
-    /// server, records failures, and advances failover state for subsequent
-    /// local client API requests.
+    /// The networking layer selects dedicated or single-connection behavior.
+    /// `UpstreamBridge` asks the upstream manager to select a server. It records
+    /// failures and updates failover state for later client API requests.
     pub(super) async fn execute_operation<Operation>(
         &self,
         request: Operation::Request,
@@ -51,12 +48,12 @@ impl UpstreamBridge {
             .bind_server_for_new_session()
             .await
             .map_err(|error| {
-                log::warn!("Failed to bind client API request to an upstream server: {error:#}");
+                log::warn!("Failed to bind a client API request to a TACACS+ server: {error:#}");
                 ServiceError::new(error.to_string()).retriable(true)
             })?;
 
         log::debug!(
-            "Executing {} request via {} (server index {})",
+            "Sending an {} request to {} (server index {})",
             Operation::NAME,
             bound_server.connection.server_address(),
             bound_server.index,

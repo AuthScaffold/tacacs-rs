@@ -32,7 +32,7 @@ fn generated_central_certificate_shape_and_choice_metadata() {
             ("central-keystore", &["central-keystore-reference"][..]),
         ],
     );
-    let serialized = serde_json::to_value(bundle).expect("central certificate should serialize");
+    let serialized = serde_json::to_value(bundle).expect("central certificate must serialize");
     assert_eq!(
         serialized["certificate"]["central-keystore-reference"]["asymmetric-key"],
         "opaque-asymmetric-key",
@@ -68,7 +68,7 @@ fn generated_central_epsk_shape_preserves_protocol_metadata() {
             ("central-keystore", &["central-keystore-reference"][..]),
         ],
     );
-    let serialized = serde_json::to_value(bundle).expect("central EPSK should serialize");
+    let serialized = serde_json::to_value(bundle).expect("central EPSK must serialize");
     let epsk = &serialized["tls13-epsk"];
     assert_eq!(epsk["central-keystore-reference"], "opaque-symmetric-key");
     assert_eq!(epsk["external-identity"], "client@example.test");
@@ -99,7 +99,7 @@ fn generated_central_trust_shape_is_shared_by_direct_and_bundle_ca_ee_fields() {
             ("central-truststore", &["central-truststore-reference"][..]),
         ],
     );
-    let serialized = serde_json::to_value(bundle).expect("central trust should serialize");
+    let serialized = serde_json::to_value(bundle).expect("central trust must serialize");
     assert_eq!(serialized["ca-certs"]["central-truststore-reference"], "opaque-certificate-bag",);
     assert_eq!(serialized["ee-certs"]["central-truststore-reference"], "opaque-certificate-bag",);
 }
@@ -290,7 +290,7 @@ fn server_type_serialize_single_flag() {
         },
     };
 
-    let serialized = serde_json::to_string(&root).expect("should serialize");
+    let serialized = serde_json::to_string(&root).expect("root must serialize");
     assert!(serialized.contains("\"server-type\":\"authorization\""));
 }
 
@@ -320,7 +320,7 @@ fn server_type_serialize_two_flags() {
         },
     };
 
-    let serialized = serde_json::to_string(&root).expect("should serialize");
+    let serialized = serde_json::to_string(&root).expect("root must serialize");
     assert!(serialized.contains("\"server-type\":\"authentication accounting\""));
 }
 
@@ -339,23 +339,23 @@ fn serialization_omits_absent_optionals_and_empty_lists() {
                 .build(),
             )
             .build()
-            .expect("builder root should validate"),
+            .expect("builder root must be valid"),
     };
 
-    let serialized = serde_json::to_string(&root).expect("should serialize");
+    let serialized = serde_json::to_string(&root).expect("root must serialize");
 
-    assert!(!serialized.contains(":null"), "serialized JSON should omit null fields: {serialized}");
+    assert!(!serialized.contains(":null"), "serialized JSON must omit null fields: {serialized}");
     assert!(
         !serialized.contains("\"client-credentials\":[]"),
-        "serialized JSON should omit empty client-credentials list: {serialized}"
+        "serialized JSON must omit the empty client-credentials list: {serialized}"
     );
     assert!(
         !serialized.contains("\"server-credentials\":[]"),
-        "serialized JSON should omit empty server-credentials list: {serialized}"
+        "serialized JSON must omit the empty server-credentials list: {serialized}"
     );
     assert!(
         serialized.contains("\"server-authentication\":{}"),
-        "serialized JSON should preserve the empty TLS choice container: {serialized}"
+        "serialized JSON must preserve the empty TLS choice container: {serialized}"
     );
 }
 
@@ -410,7 +410,7 @@ fn epsk_hash_sha384_explicit() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("sha-384 should be accepted");
+    let config = parse_yang_json(json).expect("sha-384 must be accepted");
     let epsk = config.server[0]
         .client_identity
         .as_ref()
@@ -439,7 +439,7 @@ fn psk_dhe_group_from_str_uses_rfc7951_values() {
 fn psk_dhe_group_from_str_rejects_unknown_values() {
     let error = "secp224r1"
         .parse::<PskDheKeSupportedGroup>()
-        .expect_err("unknown group should fail");
+        .expect_err("unknown group must fail");
 
     assert!(error.contains("secp224r1"));
     assert!(error.contains("secp384r1"));
@@ -472,12 +472,12 @@ fn psk_dhe_groups_deserializes_rfc7951_augmented_leaf_list() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("PSK DHE groups should deserialize");
+    let config = parse_yang_json(json).expect("PSK-DHE groups must deserialize");
     let groups = &config.server[0]
         .client_identity
         .as_ref()
         .and_then(|identity| identity.tls13_epsk.as_ref())
-        .expect("tls13-epsk should be present")
+        .expect("tls13-epsk must be present")
         .psk_dhe_ke_groups;
     assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::X25519)));
     assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Ffdhe3072)));
@@ -488,7 +488,8 @@ fn generated_parent_debug_and_serialization_redact_all_secret_fields() {
     let config = protected_config();
 
     let debug = format!("{config:?}");
-    let serialized = serde_json::to_string(&config).expect("protected config should serialize");
+    let serialized =
+        serde_json::to_string(&config).expect("protected configuration must serialize");
 
     for raw_secret in ["shared-secret-sentinel", "private-secret", "epsk-secret"] {
         assert!(!debug.contains(raw_secret));
@@ -579,5 +580,5 @@ fn protected_config() -> tacacsrs_config::TacacsPlus {
             }
         }"#,
     )
-    .expect("protected config should parse")
+    .expect("protected configuration must parse")
 }

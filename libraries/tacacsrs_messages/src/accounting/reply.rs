@@ -42,18 +42,16 @@ impl AccountingReply {
     /// Returns an error if the packet body is too short or contains invalid fields.
     pub fn from_packet(packet: &Packet) -> Result<Self, anyhow::Error> {
         let expected_length = Self::size_from_bytes(packet.body())
-            .with_context(|| "Unable to determine expected length of packet")?;
+            .with_context(|| "failed to determine the expected accounting reply length")?;
         if packet.body().len() < expected_length {
             return Err(anyhow::Error::msg(format!(
-                "Packet body length does not match expected length. Expected: {}, Actual: {}",
+                "invalid accounting reply body length: expected {}, actual {}",
                 expected_length,
                 packet.body().len()
             )));
         }
 
-        match Self::from_bytes(packet.body())
-            .with_context(|| "Unable to convert packet body to Reply")
-        {
+        match Self::from_bytes(packet.body()).with_context(|| "invalid TACACS+ accounting reply") {
             Ok(reply) => Ok(reply),
             Err(err) => Err(err),
         }
@@ -65,14 +63,14 @@ impl AccountingReply {
         let server_msg_len = {
             let len = cursor
                 .read_u16::<BigEndian>()
-                .with_context(|| "Unable to read server_msg_len")?;
+                .with_context(|| "failed to read server_msg_len")?;
             len as usize
         };
 
         let data_len = {
             let len = cursor
                 .read_u16::<BigEndian>()
-                .with_context(|| "Unable to read data_len")?;
+                .with_context(|| "failed to read data_len")?;
             len as usize
         };
 
@@ -87,27 +85,27 @@ impl AccountingReply {
         let server_msg_len = {
             let len = cursor
                 .read_u16::<BigEndian>()
-                .with_context(|| "Unable to read server_msg_len")?;
+                .with_context(|| "failed to read server_msg_len")?;
             len as usize
         };
 
         let data_len = {
             let len = cursor
                 .read_u16::<BigEndian>()
-                .with_context(|| "Unable to read data_len")?;
+                .with_context(|| "failed to read data_len")?;
             len as usize
         };
 
         let status = {
-            let status = cursor.read_u8().with_context(|| "Unable to read status")?;
+            let status = cursor.read_u8().with_context(|| "failed to read status")?;
             TacacsAccountingStatus::try_from_primitive(status)
-                .with_context(|| "Unable to convert status to TacacsAccountingStatus")?
+                .with_context(|| "invalid accounting status")?
         };
 
         let server_msg = read_string(&mut cursor, server_msg_len)
-            .with_context(|| "Unable to read server_msg")?;
+            .with_context(|| "failed to read server_msg")?;
 
-        let data = read_string(&mut cursor, data_len).with_context(|| "Unable to read data")?;
+        let data = read_string(&mut cursor, data_len).with_context(|| "failed to read data")?;
 
         Ok(Self {
             status,
@@ -145,7 +143,7 @@ pub mod tests {
 
     use super::*;
 
-    #[allow(clippy::cast_possible_truncation)] // test data is small
+    #[allow(clippy::cast_possible_truncation)] // The test data is small.
     fn generate_accounting_reply_data() -> Vec<u8> {
         let server_message_string = "server_msg";
         let data_string = "data";
@@ -183,19 +181,14 @@ pub mod tests {
     #[test]
     fn test_read_bytes_incorrect_status() {
         let mut data = generate_accounting_reply_data();
-        data[4] = 0xff; // status is set to 0xff
+        data[4] = 0xff; // Set status to 0xff.
 
         let reply = AccountingReply::from_bytes(&data);
 
         assert!(reply.is_err());
 
         let error = reply.unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("Unable to convert status to TacacsAccountingStatus"),
-            "Actual Error: {error}"
-        );
+        assert!(error.to_string().contains("invalid accounting status"), "Actual error: {error}");
     }
 
     #[test]
@@ -206,7 +199,7 @@ pub mod tests {
         assert!(reply.is_err());
 
         let error = reply.unwrap_err();
-        assert!(error.to_string().contains("Unable to read data"), "Actual Error: {error}");
+        assert!(error.to_string().contains("failed to read data"), "Actual error: {error}");
     }
 
     #[test]
@@ -228,7 +221,7 @@ pub mod tests {
     #[test]
     fn test_reply_from_packet() {
         let data = generate_accounting_reply_data();
-        #[allow(clippy::cast_possible_truncation)] // test data is small
+        #[allow(clippy::cast_possible_truncation)] // The test data is small.
         let header = Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
             minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
@@ -254,9 +247,9 @@ pub mod tests {
     #[test]
     fn test_reply_from_packet_invalid_length() {
         let mut data = generate_accounting_reply_data();
-        data[0] = 0xff; // first byte of server_msg_len is set to 0xff
+        data[0] = 0xff; // Set the first server_msg_len octet to 0xff.
 
-        #[allow(clippy::cast_possible_truncation)] // test data is small
+        #[allow(clippy::cast_possible_truncation)] // The test data is small.
         let header = Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
             minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
@@ -274,6 +267,6 @@ pub mod tests {
         assert!(reply
             .unwrap_err()
             .to_string()
-            .contains("Packet body length does not match expected length"));
+            .contains("invalid accounting reply body length"));
     }
 }

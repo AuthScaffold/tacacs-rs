@@ -45,26 +45,26 @@ fn main() -> anyhow::Result<()> {
         }
     }"#;
 
-    // Parse raw config without destructively resolving references
+    // Parse the configuration without changing credential references.
     let config = parse_yang_json(json)?;
-    println!("📄 Parsed config with reusable client/server credential bundles");
+    println!("📄 Parsed configuration with reusable client and server credential bundles");
 
-    // Enumerate a specific server — shared bundle references are materialized inline
+    // Enumerate one server. This operation inlines shared bundle references.
     let resolved = enumerate_server(&config, "primary")?;
     println!("✅ Bundle references enumerated inline\n");
 
     let client_identity = resolved
         .client_identity
         .as_ref()
-        .expect("resolved server should have client identity");
+        .expect("resolved server must have a client identity");
     let cert = client_identity
         .certificate
         .as_ref()
-        .expect("certificate should be materialized from bundle");
+        .expect("bundle must provide a certificate");
     let inline = cert
         .inline_definition
         .as_ref()
-        .expect("certificate inline definition should be present");
+        .expect("inline certificate definition must be present");
 
     assert_eq!(inline.cert_data.as_deref(), Some(b"test-cert".as_slice()));
     assert_eq!(

@@ -1,4 +1,4 @@
-//! Sanitized typed resolution failures.
+//! Sanitized typed resolution errors.
 
 use std::fmt;
 
@@ -6,20 +6,20 @@ use tacacsrs_config::EnumerationRequiredError;
 
 use crate::{CredentialKind, RequestContext, RequestSlot};
 
-/// Stable resolution failure category.
+/// Stable resolution error category.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ResolutionErrorKind {
-    /// Config-local credential bundle expansion is required first.
+    /// Configuration-local credential bundle expansion is required first.
     EnumerationRequired,
     /// A generated central container cannot form a usable request.
     IncompleteRequest,
-    /// Provider could not find requested material.
+    /// The provider did not find the requested credential.
     NotFound,
-    /// Provider denied access to requested material.
+    /// The provider denied access to the requested credential.
     AccessDenied,
-    /// Provider returned malformed or invalid material.
+    /// The provider returned a malformed or invalid credential.
     InvalidMaterial,
-    /// Provider is temporarily unavailable.
+    /// The provider is temporarily unavailable.
     Unavailable,
     /// A response slot is not part of the plan.
     UnexpectedResponse,
@@ -27,20 +27,20 @@ pub enum ResolutionErrorKind {
     DuplicateResponse,
     /// No response was returned for a required slot.
     MissingResponse,
-    /// Resolved material variant does not match the request.
+    /// The resolved credential variant does not match the request.
     ResponseMismatch,
 }
 
-/// Failure category that a provider may report for one request.
+/// Error category that a provider can report for one request.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ProviderErrorKind {
-    /// Provider could not find requested material.
+    /// The provider did not find the requested credential.
     NotFound,
-    /// Provider denied access to requested material.
+    /// The provider denied access to the requested credential.
     AccessDenied,
-    /// Provider returned malformed or invalid material.
+    /// The provider returned a malformed or invalid credential.
     InvalidMaterial,
-    /// Provider is temporarily unavailable.
+    /// The provider is temporarily unavailable.
     Unavailable,
 }
 
@@ -77,7 +77,7 @@ impl ResolutionError {
         }
     }
 
-    /// Creates a sanitized provider failure for one request.
+    /// Creates a sanitized provider error for one request.
     #[must_use]
     pub fn provider(kind: ProviderErrorKind, context: &RequestContext) -> Self {
         Self {
@@ -141,7 +141,7 @@ impl ResolutionError {
         }
     }
 
-    /// Returns the stable failure category.
+    /// Returns the stable error category.
     #[must_use]
     pub const fn kind(&self) -> ResolutionErrorKind {
         self.kind
@@ -194,7 +194,7 @@ impl From<EnumerationRequiredError> for ResolutionError {
 
 impl fmt::Display for ResolutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "credential resolution {:?}", self.kind)?;
+        write!(formatter, "credential resolution failed: {:?}", self.kind)?;
         if let Some(context) = &self.context {
             write!(
                 formatter,

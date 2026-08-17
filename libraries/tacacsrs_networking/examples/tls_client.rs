@@ -1,5 +1,5 @@
-//! Demonstrates establishing a certificate-based TLS connection through the
-//! public client session API.
+//! Shows how to establish a certificate-based TLS connection through the
+//! public client API.
 
 use env_logger::Env;
 use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerType};
@@ -25,8 +25,8 @@ async fn main() -> anyhow::Result<()> {
         .unwrap()
         .parent()
     else {
-        println!("Failed to get parent folder of binary path.");
-        return Err(anyhow::Error::msg("Failed to get parent folder of binary path."));
+        println!("The binary path has no parent directory.");
+        return Err(anyhow::Error::msg("The binary path has no parent directory"));
     };
 
     let examples_folder = parent_folder
@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
             client_certificate_path.display(),
             client_key_path.display()
         );
-        return Err(anyhow::Error::msg("Client certificate or key does not exist."));
+        return Err(anyhow::Error::msg("Client certificate or key does not exist"));
     }
 
     let cert_data = tokio::fs::read(&client_certificate_path).await?;
@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
         }))
         .await?;
 
-    println!("Received accounting response: {response:#?}");
+    println!("Accounting response: {response:#?}");
 
     Ok(())
 }

@@ -7,11 +7,10 @@ use tacacsrs_messages::traits::TacacsBodyTrait;
 fuzz_target!(|data: &[u8]| {
     // AccountingReply::from_bytes must never panic on arbitrary input.
     if let Ok(reply) = AccountingReply::from_bytes(data) {
-        // Round-trip invariant: serialising and re-parsing must succeed and
-        // produce bit-identical output.
+        // Serializing and re-parsing must succeed and produce identical bytes.
         let serialised = reply.to_bytes();
         let reparsed = AccountingReply::from_bytes(&serialised)
-            .expect("re-parse of serialised accounting reply failed");
+            .expect("failed to re-parse the serialized accounting reply");
         assert_eq!(
             serialised,
             reparsed.to_bytes(),

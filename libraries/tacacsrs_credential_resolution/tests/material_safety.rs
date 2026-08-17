@@ -61,9 +61,9 @@ fn closed_result_debug_omits_secret_and_reference_values() {
             }
         }"#,
     )
-    .expect("central EPSK config");
+    .expect("central EPSK configuration must parse");
     let plan = tacacsrs_credential_resolution::ResolutionPlan::from_server(&parsed.server[0])
-        .expect("resolution plan");
+        .expect("resolution plan must build");
     let response = ResolvedResponse::new(
         plan.requests()[0].slot(),
         ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
@@ -76,11 +76,11 @@ fn closed_result_debug_omits_secret_and_reference_values() {
     assert!(!response_debug.contains("resolved-symmetric-secret"));
 
     let result = ResolvedCredentialSet::from_responses(&plan, [response])
-        .expect("closed result set should match the plan");
+        .expect("closed result set must match the plan");
     assert_eq!(
         result
             .credential(plan.requests()[0].slot())
-            .expect("resolved credential")
+            .expect("resolved credential must exist")
             .kind(),
         CredentialKind::SymmetricKey,
     );

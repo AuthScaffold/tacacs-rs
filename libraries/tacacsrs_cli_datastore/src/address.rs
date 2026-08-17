@@ -1,5 +1,6 @@
-/// Parse a TACACS+ host/port string, returning `default_port` when no valid
-/// explicit port is present.
+/// Parses a TACACS+ host and port string.
+///
+/// The function returns `default_port` when the string has no valid port.
 #[must_use]
 pub fn parse_host_port(addr: &str, default_port: u16) -> (String, u16) {
     if let Some(rest) = addr.strip_prefix('[') {

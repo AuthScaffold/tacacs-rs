@@ -1,10 +1,10 @@
-//! Race-safe aggregate upstream availability observations.
+//! Race-safe aggregate observations of server availability.
 
 use std::sync::Mutex;
 
 use crate::runtime::{DegradationReason, RuntimeHealthPublisher, UpstreamAvailability};
 
-/// Identity of one aggregate connection attempt within a server-set generation.
+/// Identity of one connection attempt in a server-set generation.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AvailabilityAttempt {
     generation: u64,
@@ -18,8 +18,9 @@ struct ObservationState {
     last_observed_sequence: u64,
 }
 
-/// Publishes only observations that still belong to the current server set and
-/// are newer than the last completed authoritative attempt.
+/// Publishes observations only for the current server set.
+///
+/// An observation must also be newer than the last authoritative attempt.
 pub(super) struct AvailabilityTracker {
     health: RuntimeHealthPublisher,
     state: Mutex<ObservationState>,

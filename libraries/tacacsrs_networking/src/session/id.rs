@@ -13,16 +13,16 @@ struct SessionIdAllocatorState {
 /// Generated session IDs are unique while active and remain random on each
 /// reservation attempt.
 ///
-/// A synchronous mutex is intentional here: allocation only touches a small
-/// in-memory `HashSet`, does not perform I/O, and never awaits while holding
-/// the lock. Even under bursty session creation, this keeps the critical
-/// section short without forcing async lock plumbing through the allocator API.
+/// A synchronous mutex is intentional. Allocation only accesses a small
+/// in-memory `HashSet`. It does not perform I/O or await while it holds the
+/// lock. This design keeps the critical section short during concurrent session
+/// creation and does not add async locks to the allocator API.
 #[derive(Debug)]
 pub(crate) struct SessionIdAllocator {
     state: Mutex<SessionIdAllocatorState>,
 }
 
-/// RAII lease for a session ID allocated by [`SessionIdAllocator`].
+/// RAII lease for a session ID from [`SessionIdAllocator`].
 ///
 /// When the lease is dropped, the session ID is released back to the owning
 /// allocator so it is no longer considered active.

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::{CredentialRequest, ProviderErrorKind, ResolutionError, ResolvedCredential, RequestSlot};
 
-/// In-memory slot-indexed resolver that consumes configured responses once.
+/// In-memory resolver that consumes each configured slot response once.
 #[derive(Default)]
 pub struct FakeCredentialResolver {
     responses: Mutex<BTreeMap<RequestSlot, Result<ResolvedCredential, ProviderErrorKind>>>,
@@ -20,7 +20,7 @@ impl FakeCredentialResolver {
         Self::default()
     }
 
-    /// Configures resolved material for one request slot.
+    /// Configures a resolved credential for one request slot.
     #[must_use]
     pub fn with_response(self, slot: RequestSlot, credential: ResolvedCredential) -> Self {
         self.responses
@@ -30,7 +30,7 @@ impl FakeCredentialResolver {
         self
     }
 
-    /// Configures a sanitized provider failure for one request slot.
+    /// Configures a sanitized provider error for one request slot.
     #[must_use]
     pub fn with_error(self, slot: RequestSlot, kind: ProviderErrorKind) -> Self {
         self.responses

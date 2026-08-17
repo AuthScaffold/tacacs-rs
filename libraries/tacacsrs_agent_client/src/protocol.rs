@@ -1,15 +1,15 @@
 //! Domain-level request and response types for the local TACACS+ client API.
 //!
-//! The local IPC transport is defined in protobuf and served over gRPC, but the
-//! rest of the crate works with these operation-centric Rust types so callers do
-//! not have to depend on generated transport code directly.
+//! Protobuf defines the local IPC transport, which gRPC serves. The rest of the
+//! crate uses operation-specific Rust types. Thus, callers do not depend
+//! directly on generated transport code.
 //!
 //! # Design rationale
 //!
-//! These types intentionally mirror the **logical operation** rather than the
+//! These types represent the **logical operation**, not the
 //! TACACS+ packet layout. The service owns header flags, session identifiers,
-//! and server selection on behalf of the caller. This keeps the client-facing
-//! API stable even if the underlying TACACS+ encoding changes.
+//! and server selection for the caller. The client API does not change when the
+//! underlying TACACS+ encoding changes.
 //!
 //! # Protobuf conversions
 //!
@@ -71,9 +71,9 @@ pub enum AuthorizationAuthenticationContext {
 
 /// Client-supplied inputs for a TACACS+ accounting operation.
 ///
-/// These fields intentionally stay at the RPC level instead of mirroring the
+/// These fields stay at the RPC level and do not represent the
 /// TACACS+ packet header. The service owns header flags, session identifiers,
-/// and server selection on behalf of the caller.
+/// and server selection for the caller.
 ///
 /// # Protocol type relationships
 ///
@@ -107,7 +107,7 @@ pub enum AuthorizationAuthenticationContext {
 /// The `service=shell` argument is always included automatically.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountingOperation {
-    /// TACACS+ username associated with the command being accounted for.
+    /// TACACS+ user name associated with the command.
     pub user: String,
     /// NAS or tty/port identifier reported to the TACACS+ server.
     pub port: String,
@@ -143,13 +143,13 @@ pub struct AccountingOperationResponse {
 
 /// Client-supplied inputs for a TACACS+ authorization operation.
 ///
-/// This is the IPC-level contract used by local command mediation code. The
-/// fixed fields mirror the TACACS+ Authorization REQUEST header context, while
-/// [`args`](Self::args) carries the ordered RFC 8907 §8.2 authorization
-/// argument-value pairs such as `service`, `cmd`, `cmd-arg`, and `priv-lvl`.
+/// Local command mediation code uses this IPC contract. The fixed fields
+/// represent the TACACS+ Authorization REQUEST header context. [`args`](Self::args)
+/// contains the ordered RFC 8907 §8.2 authorization argument-value pairs. These
+/// pairs include `service`, `cmd`, `cmd-arg`, and `priv-lvl`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationOperation {
-    /// TACACS+ username associated with the command being authorized.
+    /// TACACS+ user name associated with the command.
     pub user: String,
     /// NAS or tty/port identifier reported to the TACACS+ server.
     pub port: String,
@@ -159,7 +159,7 @@ pub struct AuthorizationOperation {
     pub privilege_level: u32,
     /// How the user identity was authenticated before authorization.
     pub authentication_context: AuthorizationAuthenticationContext,
-    /// Ordered TACACS+ authorization arg-val pairs.
+    /// Ordered TACACS+ authorization argument-value pairs.
     pub args: Vec<AuthorizationArg>,
 }
 
@@ -205,7 +205,7 @@ impl AuthorizationOperation {
         self.values(AuthorizationKey::CmdArg)
     }
 
-    /// Validates RFC-required authorization arguments for the current request.
+    /// Makes sure that the request has the RFC-required authorization arguments.
     ///
     /// # Errors
     ///
@@ -231,7 +231,7 @@ impl AuthorizationOperation {
     }
 }
 
-/// A single TACACS+ authorization argument-value pair from the server.
+/// One TACACS+ authorization argument-value pair from the server.
 ///
 /// RFC 8907 §6.1 encodes authorization arguments as strings of the form
 /// `name=value` (mandatory) or `name*value` (optional). This struct decodes
@@ -296,25 +296,25 @@ impl AuthorizationArg {
         AuthorizationKey::from_str(&self.name).ok()
     }
 
-    /// Validates this arg-val pair before it is accepted across the IPC boundary.
+    /// Makes sure that this argument-value pair is valid for the IPC boundary.
     ///
     /// # Errors
     ///
     /// Returns an error if the name is empty or contains TACACS+ separators.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.name.is_empty() {
-            anyhow::bail!("authorization arg has an empty name");
+            anyhow::bail!("authorization argument has an empty name");
         }
         if self.name.contains('=') || self.name.contains('*') {
             anyhow::bail!(
-                "authorization arg name {:?} contains a separator ('=' or '*')",
+                "authorization argument name {:?} contains a separator ('=' or '*')",
                 self.name
             );
         }
         Ok(())
     }
 
-    /// Parses a raw TACACS+ arg-val string into an [`AuthorizationArg`].
+    /// Parses a raw TACACS+ argument-value string into an [`AuthorizationArg`].
     ///
     /// The separator is the first `=` or `*` found in the string. If both are
     /// present, whichever appears first determines the separator. The name is
@@ -337,7 +337,7 @@ impl AuthorizationArg {
             (Some(e), None) => (e, true),
             (None, Some(a)) => (a, false),
             (None, None) => {
-                anyhow::bail!("authorization arg {raw:?} has no separator ('=' or '*')")
+                anyhow::bail!("authorization argument {raw:?} has no separator ('=' or '*')")
             }
         };
         let arg = Self {
@@ -422,7 +422,7 @@ impl FromStr for AuthorizationKey {
     }
 }
 
-/// Builder for creating an [`AuthorizationOperation`] from RFC arg-val pairs.
+/// Builder for an [`AuthorizationOperation`] that uses RFC argument-value pairs.
 #[derive(Debug, Clone)]
 pub struct AuthorizationRequestBuilder {
     user: String,
@@ -465,14 +465,14 @@ impl AuthorizationRequestBuilder {
         self
     }
 
-    /// Adds one prebuilt authorization arg-val pair.
+    /// Adds one authorization argument-value pair.
     #[must_use]
     pub fn arg(mut self, arg: AuthorizationArg) -> Self {
         self.args.push(arg);
         self
     }
 
-    /// Adds one authorization arg-val pair using a typed key.
+    /// Adds one authorization argument-value pair with a typed key.
     #[must_use]
     pub fn key_value(
         self,
@@ -520,7 +520,7 @@ impl AuthorizationRequestBuilder {
         self.key_value(AuthorizationKey::Protocol, false, value)
     }
 
-    /// Adds a mandatory `priv-lvl` arg-val pair.
+    /// Adds a mandatory `priv-lvl` argument-value pair.
     #[must_use]
     pub fn assigned_privilege_level(self, value: u8) -> Self {
         self.key_value(AuthorizationKey::PrivLvl, true, value.to_string())
@@ -556,13 +556,12 @@ impl AuthorizationRequestBuilder {
         self.key_value(AuthorizationKey::NoHangup, true, value.to_string())
     }
 
-    /// Builds a typed authorization operation from the provided arg-val pairs.
+    /// Builds a typed authorization operation from the argument-value pairs.
     ///
     /// # Errors
     ///
-    /// Returns an error when:
-    /// - no `service` arg is provided
-    /// - `service` is `shell` but no `cmd` arg is provided
+    /// Returns an error if there is no `service` argument. It also returns an
+    /// error if `service` is `shell` and there is no `cmd` argument.
     pub fn build(self) -> anyhow::Result<AuthorizationOperation> {
         let operation = AuthorizationOperation {
             user: self.user,
@@ -580,10 +579,10 @@ impl AuthorizationRequestBuilder {
 /// RFC-aware service response for a TACACS+ authorization operation.
 ///
 /// Returned by [`ServiceClient::send_authorization`](crate::ServiceClient::send_authorization)
-/// on success. For `PASS_ADD`, [`args`](Self::args) contains the server-supplied
-/// arguments that must be merged per RFC 8907 §6.2. For `PASS_REPL`, they
-/// replace the request arguments entirely. Empty when the server returned
-/// `arg_cnt = 0` (approved with no modifications).
+/// on success. For `PASS_ADD`, [`args`](Self::args) contains the server
+/// arguments to merge as RFC 8907 §6.2 specifies. For `PASS_REPL`, these
+/// arguments replace all request arguments. The field is empty if the server
+/// returned `arg_cnt = 0`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationOperationResponse {
     /// Upstream TACACS+ server that handled the request, or a local stub marker.
@@ -592,8 +591,9 @@ pub struct AuthorizationOperationResponse {
     pub status: AuthorizationResponseStatus,
     /// Human-readable message returned by the TACACS+ server or local service.
     pub server_message: String,
-    /// Server-supplied arg-val pairs for `PASS_ADD` (merge) and `PASS_REPL` (replace).
-    /// Empty when the server returned `arg_cnt = 0` (approved with no modifications).
+    /// Server argument-value pairs for `PASS_ADD` and `PASS_REPL`.
+    ///
+    /// The field is empty if the server returned `arg_cnt = 0`.
     pub args: Vec<AuthorizationArg>,
     /// Client-specific display or log data returned by the TACACS+ server.
     pub data: String,
@@ -606,14 +606,14 @@ pub struct AuthorizationOperationResponse {
 /// `TAC_PLUS_ACCT` reply body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountingResponseStatus {
-    /// `TAC_PLUS_ACCT_STATUS_SUCCESS` (`0x01`) — the accounting record was
-    /// accepted successfully by the TACACS+ server.
+    /// `TAC_PLUS_ACCT_STATUS_SUCCESS` (`0x01`) — the TACACS+ server accepted
+    /// the accounting record.
     Success,
     /// `TAC_PLUS_ACCT_STATUS_ERROR` (`0x02`) — the server rejected the
-    /// accounting operation or encountered an error processing it.
+    /// accounting operation or found an error while it processed the operation.
     Error,
-    /// `TAC_PLUS_ACCT_STATUS_FOLLOW` (`0x21`) — the client should continue
-    /// with a follow-up action defined by the server deployment.
+    /// `TAC_PLUS_ACCT_STATUS_FOLLOW` (`0x21`) — the client must run the
+    /// follow-up action that the server deployment defines.
     Follow,
 }
 
@@ -624,8 +624,8 @@ pub enum AccountingResponseStatus {
 /// `TAC_PLUS_AUTHOR` reply body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthorizationResponseStatus {
-    /// `TAC_PLUS_AUTHOR_STATUS_PASS_ADD` (`0x01`) — request is accepted and
-    /// returned arguments should be appended.
+    /// `TAC_PLUS_AUTHOR_STATUS_PASS_ADD` (`0x01`) — the request is accepted.
+    /// The client must append the returned arguments.
     PassAdd,
     /// `TAC_PLUS_AUTHOR_STATUS_PASS_REPL` (`0x02`) — request is accepted and
     /// returned arguments replace the submitted arguments.
@@ -672,8 +672,8 @@ impl AuthorizationResponseStatus {
     ///
     /// # Errors
     ///
-    /// Returns an error if the value is out of `u8` range, is the
-    /// `UNSPECIFIED` sentinel (`0`), or does not match a known status code.
+    /// Returns an error if the value is outside the `u8` range. It also returns
+    /// an error for the `UNSPECIFIED` sentinel (`0`) or an unknown status code.
     fn from_proto(value: i32) -> anyhow::Result<Self> {
         match u8::try_from(value).context("IPC authorization status value is out of u8 range")? {
             0 => bail!("IPC authorization status must not be unspecified"),
@@ -716,8 +716,8 @@ impl AccountingResponseStatus {
     ///
     /// # Errors
     ///
-    /// Returns an error if the value is out of `u8` range, is the
-    /// `UNSPECIFIED` sentinel (`0`), or does not match a known status code.
+    /// Returns an error if the value is outside the `u8` range. It also returns
+    /// an error for the `UNSPECIFIED` sentinel (`0`) or an unknown status code.
     fn from_proto(value: i32) -> anyhow::Result<Self> {
         match u8::try_from(value).context("IPC accounting status value is out of u8 range")? {
             0 => bail!("IPC accounting status must not be unspecified"),
@@ -777,10 +777,9 @@ impl AuthorizationAuthenticationContext {
 /// Structured error returned by the local service when a request cannot be
 /// fulfilled.
 ///
-/// This type is used on the service side to build error responses and on the
-/// client side to interpret them. The [`retriable`](ServiceError::retriable)
-/// flag tells callers whether repeating the same request may succeed after the
-/// service performs failover or recovery.
+/// The service uses this type to build error responses. The client uses it to
+/// interpret those responses. The [`retriable`](ServiceError::retriable) flag
+/// shows if the request can succeed after service failover or recovery.
 ///
 /// # Builder pattern
 ///
@@ -798,7 +797,7 @@ impl AuthorizationAuthenticationContext {
 pub struct ServiceError {
     /// Error text suitable for logs and operator-facing diagnostics.
     pub message: String,
-    /// Upstream server associated with the error, if one had already been chosen.
+    /// Upstream server associated with the error, if the service selected one.
     pub server: Option<String>,
     /// Whether retrying against the service may succeed after failover or recovery.
     pub retriable: bool,
@@ -825,7 +824,7 @@ impl ServiceError {
         self
     }
 
-    /// Sets whether the caller should consider retrying the request.
+    /// Sets whether the caller can retry the request.
     #[must_use]
     pub const fn retriable(mut self, retriable: bool) -> Self {
         self.retriable = retriable;
@@ -844,9 +843,8 @@ impl ServiceError {
 
     /// Converts a protobuf service error into the typed domain error.
     ///
-    /// An empty `server` string in the protobuf message is interpreted as
-    /// `None` in the domain type (no server was selected when the error
-    /// occurred).
+    /// An empty protobuf `server` string becomes `None` in the domain type. This
+    /// value means that the service did not select a server.
     #[must_use]
     pub fn from_proto(proto: ipc::ServiceError) -> Self {
         Self {
@@ -916,7 +914,7 @@ impl TryFrom<ipc::PapAuthenticationRequest> for PapAuthenticationOperation {
 
     fn try_from(value: ipc::PapAuthenticationRequest) -> Result<Self, Self::Error> {
         if value.user.is_empty() {
-            bail!("PAP authentication requires a username");
+            bail!("PAP authentication requires a user name");
         }
         if value.privilege_level > 15 {
             bail!("PAP authentication privilege level is outside the TACACS+ range 0-15");
@@ -1009,8 +1007,9 @@ impl AccountingOperationResponse {
     ///
     /// # Errors
     ///
-    /// Returns an error if the protobuf status code is missing, out of range, or
-    /// not one of the supported TACACS+ accounting reply status values.
+    /// Returns an error if the protobuf status code is missing or outside its
+    /// range. It also returns an error for an unsupported TACACS+ accounting
+    /// reply status.
     pub fn from_proto(proto: ipc::AccountingResponse) -> anyhow::Result<Self> {
         Ok(Self {
             server: proto.server,
@@ -1073,9 +1072,9 @@ impl AuthorizationOperationResponse {
     ///
     /// # Errors
     ///
-    /// Returns an error if the protobuf status code is missing, out of range,
-    /// not one of the supported TACACS+ authorization reply status values, or
-    /// any returned arg-val pair is malformed.
+    /// Returns an error if the protobuf status code is missing or outside its
+    /// range. It also returns an error for an unsupported TACACS+ authorization
+    /// reply status or a malformed argument-value pair.
     pub fn from_proto(proto: ipc::AuthorizationResponse) -> anyhow::Result<Self> {
         let response = Self {
             server: proto.server,

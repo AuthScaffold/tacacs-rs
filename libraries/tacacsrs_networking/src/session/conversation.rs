@@ -37,8 +37,8 @@ impl ClientConversation {
 
     /// Sends one request and receives its matching reply.
     ///
-    /// The conversation is completed automatically when packet I/O or response
-    /// validation fails. A caller may explicitly complete a successful
+    /// The client automatically completes the conversation when packet I/O or
+    /// response validation fails. A caller can explicitly complete a successful
     /// conversation after receiving a terminal protocol reply.
     ///
     /// # Errors

@@ -70,7 +70,7 @@ impl FixedExchange for PapAuthenticationExchange {
             TacacsAuthenticationStatus::TacPlusAuthenStatusPass
             | TacacsAuthenticationStatus::TacPlusAuthenStatusFail
             | TacacsAuthenticationStatus::TacPlusAuthenStatusError => Ok(reply),
-            status => anyhow::bail!("PAP authentication returned non-terminal status {status:?}"),
+            status => anyhow::bail!("PAP authentication returned nonterminal status {status:?}"),
         }
     }
 }

@@ -35,17 +35,14 @@ pub(crate) fn authorize_command(
     };
 
     if let Err(error) = request.validate() {
-        debug_log(
-            flags,
-            &format!("authorization request validation failed for user {user}: {error}"),
-        );
+        debug_log(flags, &format!("authorization request is invalid for user {user}: {error}"));
         return AuthorizationDecision::Deny;
     }
 
     let runtime = match RUNTIME.as_ref() {
         Ok(runtime) => runtime,
         Err(error) => {
-            debug_log(flags, &format!("authorization runtime unavailable: {error}"));
+            debug_log(flags, &format!("authorization runtime is unavailable: {error}"));
             return AuthorizationDecision::Unavailable;
         }
     };
@@ -53,7 +50,7 @@ pub(crate) fn authorize_command(
     let endpoint = match ipc_endpoint() {
         Ok(endpoint) => endpoint,
         Err(error) => {
-            debug_log(flags, &format!("failed to resolve IPC endpoint: {error}"));
+            debug_log(flags, &format!("failed to resolve the IPC endpoint: {error}"));
             return AuthorizationDecision::Unavailable;
         }
     };
@@ -61,7 +58,7 @@ pub(crate) fn authorize_command(
     debug_log(
         flags,
         &format!(
-            "sending authorization request for user {user} on tty {port} from {remote_address} via {}",
+            "sending an authorization request for user {user} on tty {port} from {remote_address} through {}",
             format_endpoint(&endpoint)
         ),
     );
@@ -73,7 +70,7 @@ pub(crate) fn authorize_command(
 
     match response {
         Ok(response) => {
-            debug_log(flags, &format!("authorization response status: {:?}", response.status));
+            debug_log(flags, &format!("authorization response status is {:?}", response.status));
             match response.status {
                 AuthorizationResponseStatus::PassAdd | AuthorizationResponseStatus::PassRepl => {
                     AuthorizationDecision::Allow
@@ -84,7 +81,7 @@ pub(crate) fn authorize_command(
             }
         }
         Err(error) => {
-            debug_log(flags, &format!("authorization request failed: {error}"));
+            debug_log(flags, &format!("authorization request returned an error: {error}"));
             AuthorizationDecision::Unavailable
         }
     }
@@ -92,7 +89,7 @@ pub(crate) fn authorize_command(
 
 async fn connect_client(flags: c_int, endpoint: IpcEndpoint) -> anyhow::Result<ServiceClient> {
     let client = ServiceClient::connect(endpoint).await?;
-    debug_log(flags, "IPC connection to tacacsrs-agentd established");
+    debug_log(flags, "connected to tacacsrs-agentd through IPC");
     Ok(client)
 }
 

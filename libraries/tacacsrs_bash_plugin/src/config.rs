@@ -52,7 +52,7 @@ pub(crate) fn reload_config(force: bool) -> c_int {
     debug_log(
         parsed_config.flags,
         &format!(
-            "loaded plugin config from {path}; flags={}; ipc_endpoint={}",
+            "loaded plugin configuration file {path}; flags={}; ipc_endpoint={}",
             format_flags(parsed_config.flags),
             parsed_config.ipc_endpoint.as_deref().unwrap_or("<none>")
         ),
@@ -69,7 +69,10 @@ pub(crate) fn ipc_endpoint() -> anyhow::Result<IpcEndpoint> {
         .ok()
         .and_then(|config| config.ipc_endpoint.clone())
     {
-        debug_log(current_flags(), &format!("using IPC endpoint from plugin config: {endpoint}"));
+        debug_log(
+            current_flags(),
+            &format!("using IPC endpoint from plugin configuration: {endpoint}"),
+        );
         return endpoint.parse();
     }
 
@@ -78,7 +81,9 @@ pub(crate) fn ipc_endpoint() -> anyhow::Result<IpcEndpoint> {
             let endpoint = value.trim();
             debug_log(
                 current_flags(),
-                &format!("using IPC endpoint from {IPC_ENDPOINT_ENV}: {endpoint}"),
+                &format!(
+                    "using IPC endpoint from environment variable {IPC_ENDPOINT_ENV}: {endpoint}"
+                ),
             );
             endpoint.parse()
         }
@@ -86,7 +91,10 @@ pub(crate) fn ipc_endpoint() -> anyhow::Result<IpcEndpoint> {
             if let Some(endpoint) = agentd_config_ipc_endpoint() {
                 debug_log(
                     current_flags(),
-                    &format!("using IPC endpoint from {DEFAULT_AGENTD_CONFIG_FILE}: {endpoint}"),
+                    &format!(
+                        "using IPC endpoint from configuration file {DEFAULT_AGENTD_CONFIG_FILE}: \
+                         {endpoint}"
+                    ),
                 );
                 return endpoint.parse();
             }
@@ -94,7 +102,7 @@ pub(crate) fn ipc_endpoint() -> anyhow::Result<IpcEndpoint> {
             let endpoint = IpcEndpoint::default_local();
             debug_log(
                 current_flags(),
-                &format!("using built-in default IPC endpoint: {}", format_endpoint(&endpoint)),
+                &format!("using the built-in default IPC endpoint: {}", format_endpoint(&endpoint)),
             );
             Ok(endpoint)
         }
@@ -212,7 +220,7 @@ pub(crate) fn format_endpoint(endpoint: &IpcEndpoint) -> String {
     match endpoint {
         IpcEndpoint::Tcp(address) => address.to_string(),
         #[cfg(unix)]
-        IpcEndpoint::Unix(_) => unreachable!("unix endpoint handled above"),
+        IpcEndpoint::Unix(_) => unreachable!("the Unix domain socket endpoint was handled above"),
     }
 }
 
@@ -226,12 +234,15 @@ mod tests {
     fn parse_config_file_reads_ipc_endpoint_token() {
         let path = test_file_path("plugin-config.txt");
         fs::write(&path, "debug=on\nlocal_authorization\nipc_endpoint=/run/tacacs/custom.sock\n")
-            .expect("plugin config should be written");
+            .expect("plugin configuration file must be written");
 
-        let config = parse_config_file(path.to_str().expect("temp path should be valid UTF-8"));
+        let config = parse_config_file(
+            path.to_str()
+                .expect("temporary path must contain valid UTF-8"),
+        );
         assert_eq!(config.ipc_endpoint.as_deref(), Some("/run/tacacs/custom.sock"));
 
-        fs::remove_file(path).expect("temp plugin config should be removed");
+        fs::remove_file(path).expect("temporary plugin configuration file must be removed");
     }
 
     #[test]
@@ -241,27 +252,29 @@ mod tests {
             &path,
             "# package defaults\nconfig_source=unset\nipc_endpoint=/run/tacacs/custom.sock\n",
         )
-        .expect("agentd config should be written");
+        .expect("agentd configuration file must be written");
 
         let endpoint = parse_agentd_config_ipc_endpoint(
-            path.to_str().expect("temp path should be valid UTF-8"),
+            path.to_str()
+                .expect("temporary path must contain valid UTF-8"),
         );
         assert_eq!(endpoint.as_deref(), Some("/run/tacacs/custom.sock"));
 
-        fs::remove_file(path).expect("temp agentd config should be removed");
+        fs::remove_file(path).expect("temporary agentd configuration file must be removed");
     }
 
     #[test]
     fn parse_agentd_config_ipc_endpoint_ignores_empty_values() {
         let path = test_file_path("agentd-config-empty.ini");
-        fs::write(&path, "ipc_endpoint=\n").expect("agentd config should be written");
+        fs::write(&path, "ipc_endpoint=\n").expect("agentd configuration file must be written");
 
         let endpoint = parse_agentd_config_ipc_endpoint(
-            path.to_str().expect("temp path should be valid UTF-8"),
+            path.to_str()
+                .expect("temporary path must contain valid UTF-8"),
         );
         assert_eq!(endpoint, None);
 
-        fs::remove_file(path).expect("temp agentd config should be removed");
+        fs::remove_file(path).expect("temporary agentd configuration file must be removed");
     }
 
     fn test_file_path(name: &str) -> std::path::PathBuf {

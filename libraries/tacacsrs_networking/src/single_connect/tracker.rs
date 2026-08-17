@@ -1,8 +1,7 @@
-//! Single connection state tracking for TACACS+ connections.
+//! Single-connection state tracking for TACACS+ connections.
 //!
-//! This module provides a local state machine for efficiently tracking the single connection
-//! mode flag across packets. Instead of checking with the session manager on every packet,
-//! we track state locally and only notify the session manager on state transitions.
+//! This module tracks the single-connect flag locally across packets. It
+//! notifies the session manager only when the state changes.
 
 use std::sync::Arc;
 
@@ -14,14 +13,14 @@ use crate::session::SessionManager;
 /// Represents whether the `TAC_PLUS_SINGLE_CONNECT_FLAG` is set in a packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SingleConnectFlag {
-    /// The `TAC_PLUS_SINGLE_CONNECT_FLAG` is set
+    /// The `TAC_PLUS_SINGLE_CONNECT_FLAG` is set.
     Set,
-    /// The `TAC_PLUS_SINGLE_CONNECT_FLAG` is not set
+    /// The `TAC_PLUS_SINGLE_CONNECT_FLAG` is not set.
     NotSet,
 }
 
 impl SingleConnectFlag {
-    /// Extract the single connect flag state from a packet.
+    /// Returns the single-connect flag state from a packet.
     pub(crate) fn from_packet(packet: &impl PacketTrait) -> Self {
         if packet
             .header()
@@ -35,26 +34,27 @@ impl SingleConnectFlag {
     }
 }
 
-/// Local state machine for tracking single connection mode.
+/// Local state machine for single-connection mode.
 ///
-/// This mirrors the session manager state but is tracked locally to minimize async calls.
-/// The state machine handles:
-/// - Initial negotiation on first packet
-/// - Detecting graceful shutdown when server removes the flag
-/// - Terminal state when single connection is not supported
+/// This state mirrors the session manager state and reduces async calls. It:
+/// - starts negotiation on the first packet,
+/// - detects graceful shutdown when the server removes the flag, and
+/// - enters a terminal state if the server does not support single-connection mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum LocalSingleConnectState {
-    /// Haven't received any packets yet - need to notify on first packet
+    /// No packet has arrived. Notify the session manager when the first packet arrives.
     #[default]
     AwaitingFirstPacket,
-    /// Server supports single connection - watch for flag removal (graceful shutdown)
+    /// The server supports single-connection mode. Monitor the flag for removal.
     Supported,
-    /// Server doesn't support single connection - terminal state, no more checks needed
+    /// The server does not support single-connection mode. This state is terminal.
     NotSupported,
 }
 
 impl LocalSingleConnectState {
-    /// Process a packet and return the new state, notifying the session manager if needed.
+    /// Processes a packet and returns the new state.
+    ///
+    /// This function notifies the session manager when necessary.
     ///
     /// # State Transitions
     ///
@@ -89,12 +89,12 @@ impl LocalSingleConnectState {
             }
             (Self::Supported, SingleConnectFlag::Set) => Self::Supported,
             (Self::Supported, SingleConnectFlag::NotSet) => {
-                // Server removed flag - graceful shutdown signal
+                // The server removed the flag to start a graceful shutdown.
                 connection.set_single_connection_state(false).await;
                 Self::NotSupported
             }
             (Self::NotSupported, _) => {
-                // Terminal state - no further transitions
+                // This state is terminal.
                 Self::NotSupported
             }
         }
@@ -132,12 +132,12 @@ mod tests {
     #[tokio::test]
     async fn test_supported_remains_supported_when_flag_set() {
         let connection = Arc::new(SessionManager::new());
-        // First get to Supported state
+        // First, change to the Supported state.
         let state = LocalSingleConnectState::AwaitingFirstPacket
             .process_packet(SingleConnectFlag::Set, &connection)
             .await;
 
-        // Now check that it remains Supported
+        // Make sure that the state remains Supported.
         let new_state = state
             .process_packet(SingleConnectFlag::Set, &connection)
             .await;
@@ -148,12 +148,12 @@ mod tests {
     #[tokio::test]
     async fn test_supported_transitions_to_not_supported_on_graceful_shutdown() {
         let connection = Arc::new(SessionManager::new());
-        // First get to Supported state
+        // First, change to the Supported state.
         let state = LocalSingleConnectState::AwaitingFirstPacket
             .process_packet(SingleConnectFlag::Set, &connection)
             .await;
 
-        // Server removes flag (graceful shutdown)
+        // Simulate flag removal by the server.
         let new_state = state
             .process_packet(SingleConnectFlag::NotSet, &connection)
             .await;
@@ -164,12 +164,12 @@ mod tests {
     #[tokio::test]
     async fn test_not_supported_is_terminal_state() {
         let connection = Arc::new(SessionManager::new());
-        // First get to NotSupported state
+        // First, change to the NotSupported state.
         let state = LocalSingleConnectState::AwaitingFirstPacket
             .process_packet(SingleConnectFlag::NotSet, &connection)
             .await;
 
-        // Even if server now sends flag, state doesn't change
+        // The state does not change if the server later sends the flag.
         let new_state = state
             .process_packet(SingleConnectFlag::Set, &connection)
             .await;

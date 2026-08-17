@@ -1,8 +1,8 @@
 //! Typed runtime health state and publication.
 //!
-//! The health model describes the agent without embedding a hosting protocol.
-//! It contains no free-form messages or configuration values, so every
-//! subscriber receives the same secret-free state.
+//! The health model does not depend on a hosting protocol. It contains no
+//! free-form messages or configuration values. Each subscriber receives the
+//! same state without secret values.
 //!
 //! ```text
 //! datastore ─┐
@@ -11,10 +11,10 @@
 //!                                                          └─> operator logs
 //! ```
 //!
-//! Runtime owners publish synchronous state transitions. Consumers subscribe
-//! through [`tokio::sync::watch`] and translate immutable snapshots into their
-//! platform-specific representation. No lock is exposed or held across an
-//! await point.
+//! Runtime owners publish synchronous state changes. Consumers use
+//! [`tokio::sync::watch`] to receive immutable snapshots. They convert each
+//! snapshot to a platform-specific representation. No task holds a lock across
+//! an await point.
 
 use std::collections::BTreeSet;
 
@@ -27,13 +27,13 @@ use crate::EnabledServices;
 pub enum RuntimeLifecycle {
     /// Runtime components are being initialized.
     Starting,
-    /// All startup conditions have completed and listeners are serving.
+    /// All startup conditions are complete and listeners accept work.
     Serving,
-    /// Readiness has been withdrawn and listeners are draining active work.
+    /// Readiness is withdrawn and listeners drain active work.
     Draining,
     /// All runtime work has stopped.
     Stopped,
-    /// An unrecoverable internal failure requires process termination.
+    /// An unrecoverable internal error requires process termination.
     Failed,
 }
 
@@ -46,7 +46,7 @@ pub enum DatastoreState {
     Current,
     /// A previous valid snapshot remains applied after a reload problem.
     Stale,
-    /// The source is unavailable and no current snapshot can be obtained.
+    /// The source is unavailable and cannot provide a current snapshot.
     Unavailable,
 }
 
@@ -64,7 +64,7 @@ pub enum RuntimeService {
 pub enum ListenerState {
     /// The listener is not enabled for this process.
     Disabled,
-    /// The listener is enabled but binding has not started.
+    /// The listener is enabled, but binding has not started.
     Pending,
     /// The listener is creating and configuring its local endpoint.
     Binding,
@@ -74,35 +74,35 @@ pub enum ListenerState {
     Stopped,
 }
 
-/// Aggregate result of observed upstream connection attempts.
+/// Aggregate result of observed server connection attempts.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum UpstreamAvailability {
-    /// No conclusive connection attempt has been observed for this server set.
+    /// No conclusive connection attempt exists for this server set.
     Unknown,
-    /// At least one eligible upstream accepted the latest authoritative attempt.
+    /// At least one eligible server accepted the latest authoritative attempt.
     Available,
-    /// An authoritative attempt exhausted every eligible upstream.
+    /// The authoritative attempt failed for each eligible server.
     Unavailable,
 }
 
-/// Typed reason why a live process is operating in a degraded state.
+/// Typed reason for a live process to operate in a degraded state.
 #[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 pub enum DegradationReason {
-    /// The datastore cannot currently be reached.
+    /// The runtime cannot reach the datastore.
     DatastoreUnavailable,
     /// The runtime retained an older known-good datastore snapshot.
     DatastoreStale,
-    /// Continuous datastore notifications are disconnected.
+    /// Continuous datastore notifications are not connected.
     ChangeNotificationsUnavailable,
-    /// Continuous credential provider notifications are disconnected.
+    /// Continuous credential-provider notifications are not connected.
     CredentialNotificationsUnavailable,
     /// A candidate configuration was rejected while an older snapshot remained active.
     CandidateConfigurationRejected,
-    /// Credential resolution failed for a candidate configuration.
+    /// Credential resolution failed for candidate configuration.
     CredentialResolutionFailed,
-    /// Validated listener or host-binding settings require process restart.
+    /// Validated listener or host-binding settings require a process restart.
     RestartRequired,
-    /// Every eligible upstream failed an authoritative connection attempt.
+    /// Each eligible server failed an authoritative connection attempt.
     UpstreamsUnavailable,
     /// A runtime invariant or internal component failed.
     InternalFailure,
@@ -130,7 +130,7 @@ impl RuntimeHealthSnapshot {
         self.lifecycle
     }
 
-    /// Returns whether at least one complete validated configuration was applied.
+    /// Returns whether the runtime applied complete and valid configuration.
     #[must_use]
     pub const fn has_applied_configuration(&self) -> bool {
         self.applied_configuration
@@ -142,7 +142,7 @@ impl RuntimeHealthSnapshot {
         self.datastore
     }
 
-    /// Returns whether a continuous change-notification subscription is connected.
+    /// Returns whether the continuous change-notification subscription is connected.
     #[must_use]
     pub const fn continuous_notifications_connected(&self) -> bool {
         self.continuous_notifications_connected
@@ -175,7 +175,7 @@ impl RuntimeHealthSnapshot {
         self.upstream_availability
     }
 
-    /// Returns the typed degradation reasons currently present.
+    /// Returns the active typed degradation reasons.
     #[must_use]
     pub const fn degradation_reasons(&self) -> &BTreeSet<DegradationReason> {
         &self.degradation_reasons
@@ -183,8 +183,8 @@ impl RuntimeHealthSnapshot {
 
     /// Returns whether the initial configuration and listener startup completed.
     ///
-    /// Zero eligible servers does not prevent startup from completing. It does
-    /// prevent readiness through [`is_readiness_serving`](Self::is_readiness_serving).
+    /// Zero eligible servers does not prevent startup. However, it prevents
+    /// readiness through [`is_readiness_serving`](Self::is_readiness_serving).
     #[must_use]
     pub fn is_startup_serving(&self) -> bool {
         self.accepts_health_requests()
@@ -192,18 +192,18 @@ impl RuntimeHealthSnapshot {
             && self.all_enabled_listeners_bound()
     }
 
-    /// Returns whether the process and local health event loop are live.
+    /// Returns whether the process and local health event loop are running.
     ///
-    /// Datastore, credential, and upstream outages do not affect liveness.
+    /// Datastore, credential-provider, and server outages do not affect liveness.
     #[must_use]
     pub fn is_liveness_serving(&self) -> bool {
         self.accepts_health_requests()
     }
 
-    /// Returns whether business requests may be sent to the agent.
+    /// Returns whether clients can send operation requests to the agent.
     ///
-    /// Readiness requires completed startup and at least one eligible configured
-    /// server. Current upstream reachability is deliberately ignored.
+    /// Readiness requires completed startup and at least one eligible server.
+    /// Current server availability does not affect readiness.
     #[must_use]
     pub fn is_readiness_serving(&self) -> bool {
         self.is_startup_serving() && self.eligible_server_count > 0
@@ -222,9 +222,8 @@ impl RuntimeHealthSnapshot {
 
 /// Single writer for runtime health transitions.
 ///
-/// Clones share the same watch channel. Mutation methods publish only when the
-/// resulting snapshot differs, which keeps health watches free from duplicate
-/// transitions.
+/// Clones share one watch channel. Mutation methods publish only a changed
+/// snapshot. This prevents duplicate health transitions.
 #[derive(Debug, Clone)]
 pub struct RuntimeHealthPublisher {
     sender: watch::Sender<RuntimeHealthSnapshot>,
@@ -259,7 +258,7 @@ impl RuntimeHealthPublisher {
         self.sender.subscribe()
     }
 
-    /// Returns a clone of the current snapshot without subscribing.
+    /// Returns a copy of the current snapshot without a subscription.
     #[must_use]
     pub fn snapshot(&self) -> RuntimeHealthSnapshot {
         self.sender.borrow().clone()
@@ -287,9 +286,9 @@ impl RuntimeHealthPublisher {
 
     /// Publishes a local listener transition.
     ///
-    /// Returns `false` without changing the snapshot when the selected listener
-    /// is disabled. This allows shared lifecycle code to remain race-safe while
-    /// still surfacing an invalid ownership assumption to its caller.
+    /// If the selected listener is disabled, this method returns `false` and
+    /// does not change the snapshot. The return value reports an invalid
+    /// ownership assumption to the caller.
     #[must_use]
     pub fn set_listener(&self, service: RuntimeService, state: ListenerState) -> bool {
         if !self.service_enabled(service) {
@@ -308,7 +307,7 @@ impl RuntimeHealthPublisher {
         self.update(|snapshot| snapshot.eligible_server_count = count);
     }
 
-    /// Publishes aggregate observed upstream availability.
+    /// Publishes aggregate observed server availability.
     pub fn set_upstream_availability(&self, availability: UpstreamAvailability) {
         self.update(|snapshot| snapshot.upstream_availability = availability);
     }
@@ -336,7 +335,7 @@ impl RuntimeHealthPublisher {
         let mut mutation = Some(mutation);
         self.sender.send_if_modified(move |snapshot| {
             let previous = snapshot.clone();
-            mutation.take().expect("health mutation is invoked once")(snapshot);
+            mutation.take().expect("the health mutation must run once")(snapshot);
             if snapshot.lifecycle == RuntimeLifecycle::Starting
                 && snapshot.applied_configuration
                 && snapshot.all_enabled_listeners_bound()
@@ -399,8 +398,12 @@ mod tests {
         };
 
         barrier.wait();
-        lifecycle_task.join().expect("lifecycle publisher");
-        degradation_task.join().expect("degradation publisher");
+        lifecycle_task
+            .join()
+            .expect("the lifecycle publisher must stop");
+        degradation_task
+            .join()
+            .expect("the degradation publisher must stop");
 
         let snapshot = publisher.snapshot();
         assert_eq!(snapshot.lifecycle(), RuntimeLifecycle::Draining);
@@ -517,7 +520,7 @@ mod tests {
         receiver
             .changed()
             .await
-            .expect("publisher should remain alive");
+            .expect("the publisher must remain active");
         assert_eq!(receiver.borrow().datastore(), DatastoreState::Current);
     }
 
@@ -545,7 +548,7 @@ mod tests {
             "credential-reference",
             "test-secret",
         ] {
-            assert!(!output.contains(forbidden), "snapshot exposed {forbidden}");
+            assert!(!output.contains(forbidden), "snapshot contains {forbidden}");
         }
     }
 }

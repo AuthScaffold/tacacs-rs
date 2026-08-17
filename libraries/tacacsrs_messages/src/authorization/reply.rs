@@ -56,7 +56,7 @@ impl AuthorizationReply {
     fn size_from_bytes(data: &[u8]) -> anyhow::Result<usize> {
         if data.len() < AUTHORIZATION_REPLY_MIN_LENGTH {
             anyhow::bail!(
-                "body too short for authorization reply fixed fields: expected at least {}, actual {}",
+                "authorization reply body is too short for fixed fields: expected at least {}, actual {}",
                 AUTHORIZATION_REPLY_MIN_LENGTH,
                 data.len()
             );
@@ -66,7 +66,7 @@ impl AuthorizationReply {
         let arg_sizes_end = AUTHORIZATION_REPLY_ARG_SIZE_OFFSET + arg_cnt;
         if data.len() < arg_sizes_end {
             anyhow::bail!(
-                "body too short for authorization reply argument size fields: expected at least {arg_sizes_end}, actual {}",
+                "authorization reply body is too short for argument length fields: expected at least {arg_sizes_end}, actual {}",
                 data.len()
             );
         }
@@ -87,7 +87,7 @@ impl AuthorizationReply {
         let expected_length = Self::size_from_bytes(data)?;
         if data.len() < expected_length {
             anyhow::bail!(
-                "data too short for authorization reply: expected {expected_length}, actual {}",
+                "authorization reply data is too short: expected {expected_length}, actual {}",
                 data.len()
             );
         }
@@ -96,20 +96,20 @@ impl AuthorizationReply {
         let status = TacacsAuthorizationStatus::try_from_primitive(
             cursor
                 .read_u8()
-                .context("unable to read authorization status")?,
+                .context("failed to read authorization status")?,
         )
         .context("invalid authorization status")?;
-        let arg_cnt = cursor.read_u8().context("unable to read arg_cnt")?;
+        let arg_cnt = cursor.read_u8().context("failed to read arg_cnt")?;
         let msg_len = cursor
             .read_u16::<BigEndian>()
-            .context("unable to read msg_len")?;
+            .context("failed to read msg_len")?;
         let data_len = cursor
             .read_u16::<BigEndian>()
-            .context("unable to read data_len")?;
+            .context("failed to read data_len")?;
 
         let mut arg_sizes = Vec::with_capacity(usize::from(arg_cnt));
         for _ in 0..arg_cnt {
-            arg_sizes.push(cursor.read_u8().context("unable to read arg size")?);
+            arg_sizes.push(cursor.read_u8().context("failed to read argument length")?);
         }
 
         let server_msg = read_string(&mut cursor, usize::from(msg_len))?;

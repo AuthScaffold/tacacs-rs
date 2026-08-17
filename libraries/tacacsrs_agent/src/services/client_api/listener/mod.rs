@@ -15,7 +15,7 @@ mod tcp;
 mod unix;
 
 #[cfg(unix)]
-/// Serves the configured local client API endpoint until process shutdown is signalled.
+/// Runs the client API listener until the process receives a shutdown signal.
 pub(crate) async fn serve(
     endpoint: &IpcEndpoint,
     service: ClientApiService,
@@ -54,7 +54,7 @@ pub(crate) fn validate_endpoint(endpoint: &IpcEndpoint) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
-/// Serves the configured local client API endpoint until process shutdown is signalled.
+/// Runs the client API listener until the process receives a shutdown signal.
 pub(crate) async fn serve(
     endpoint: &IpcEndpoint,
     service: ClientApiService,

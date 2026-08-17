@@ -1,4 +1,4 @@
-//! Closed request/result association and variant validation.
+//! Closed request-result association and credential variant validation.
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::fmt;
@@ -44,11 +44,12 @@ pub struct ResolvedCredentialSet {
 }
 
 impl ResolvedCredentialSet {
-    /// Validates provider responses against a closed request plan.
+    /// Makes sure that provider responses match a closed request plan.
     ///
     /// # Errors
     ///
-    /// Returns typed errors for missing, duplicate, unexpected, or wrong-variant responses.
+    /// Returns a typed error for a missing, duplicate, unexpected, or
+    /// wrong-variant response.
     pub fn from_responses(
         plan: &ResolutionPlan,
         responses: impl IntoIterator<Item = ResolvedResponse>,
@@ -109,13 +110,13 @@ impl ResolvedCredentialSet {
         self.entries.len()
     }
 
-    /// Returns whether no credentials were required.
+    /// Returns `true` if the plan required no credentials.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Returns resolved material by request slot.
+    /// Returns a resolved credential by request slot.
     #[must_use]
     pub fn credential(&self, slot: RequestSlot) -> Option<&ResolvedCredential> {
         self.entries.get(&slot).map(|entry| &entry.credential)
@@ -188,8 +189,9 @@ mod tests {
                 }
             }"#,
         )
-        .expect("central credential config");
-        let mut plan = ResolutionPlan::from_server(&config.server[0]).expect("resolution plan");
+        .expect("central credential configuration must parse");
+        let mut plan =
+            ResolutionPlan::from_server(&config.server[0]).expect("resolution plan must build");
         plan.reverse_requests_for_test();
 
         let responses = plan.requests().iter().map(|request| {
@@ -220,39 +222,41 @@ mod tests {
                         }],
                     })
                 }
-                CredentialKind::SymmetricKey => unreachable!("test plan has no symmetric key"),
+                CredentialKind::SymmetricKey => {
+                    unreachable!("the test plan must not contain a symmetric key")
+                }
             };
             ResolvedResponse::new(request.slot(), credential)
         });
 
         let result = ResolvedCredentialSet::from_responses(&plan, responses)
-            .expect("responses should match reordered plan");
+            .expect("responses must match the reordered plan");
 
         assert_eq!(
             result
                 .credential(RequestSlot::from_index(0))
-                .expect("slot 0")
+                .expect("slot 0 credential must exist")
                 .kind(),
             CredentialKind::CertificateWithKey,
         );
         assert_eq!(
             result
                 .credential(RequestSlot::from_index(1))
-                .expect("slot 1")
+                .expect("slot 1 credential must exist")
                 .kind(),
             CredentialKind::CaCertificateBag,
         );
         assert_eq!(
             result
                 .credential(RequestSlot::from_index(2))
-                .expect("slot 2")
+                .expect("slot 2 credential must exist")
                 .kind(),
             CredentialKind::EeCertificateBag,
         );
         assert_eq!(
             result
                 .context(RequestSlot::from_index(0))
-                .expect("slot 0 context")
+                .expect("slot 0 context must exist")
                 .field_path(),
             "client-identity/certificate",
         );

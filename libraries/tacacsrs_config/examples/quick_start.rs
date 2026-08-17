@@ -16,13 +16,13 @@ fn main() -> anyhow::Result<()> {
         }
     }"#;
 
-    // Parse YANG config
+    // Parse the YANG configuration.
     let config = parse_yang_json(json)?;
     println!("📄 Parsed one TACACS+ server from YANG JSON");
 
-    // Enumerate servers (bundle references are materialized inline when present)
+    // Enumerate servers. This operation inlines each bundle reference.
     let servers = enumerate_servers(&config)?;
-    println!("✅ Enumerated per-server config entries\n");
+    println!("✅ Enumerated per-server configuration entries\n");
 
     for server in &servers {
         println!("  ┌─ server: '{}'", server.name);

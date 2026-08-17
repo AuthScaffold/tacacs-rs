@@ -2,14 +2,13 @@ use openssl::pkey::{PKey, Private};
 use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
 use openssl::x509::X509;
 
-/// Internal builder used by [`super::establish_from_server`] to assemble a
-/// [`SslContext`] from configuration material that has already been extracted
+/// Internal builder that [`super::establish_from_server`] uses to create an
+/// [`SslContext`] from configuration data extracted
 /// from a [`tacacsrs_config::TacacsPlusServer`].
 ///
-/// This type is intentionally **not** part of the public API: all callers must
-/// drive TLS connection construction through
-/// [`crate::establish::establish_stream`], which guarantees that the YANG
-/// configuration model is the single source of truth for transport parameters.
+/// This type is not part of the public API. Callers must create TLS connections
+/// through [`crate::establish::establish_stream`]. This makes the YANG
+/// configuration model the single source for transport parameters.
 pub(crate) struct TlsConfigurationBuilder {
     root_certificates: Vec<X509>,
     certificate_chain: Option<Vec<X509>>,
@@ -18,7 +17,7 @@ pub(crate) struct TlsConfigurationBuilder {
 }
 
 impl TlsConfigurationBuilder {
-    /// Creates a new builder seeded with OpenSSL's default trust paths and no
+    /// Creates a builder with OpenSSL's default trust paths and no
     /// client authentication.
     pub(crate) fn new() -> Self {
         Self {
@@ -47,8 +46,10 @@ impl TlsConfigurationBuilder {
         self
     }
 
-    /// Disables certificate verification. Dangerous; only intended for the
-    /// CLI's `--insecure` style flags and tightly controlled test setups.
+    /// Disables certificate verification.
+    ///
+    /// This option is dangerous. Use it only for CLI `--insecure` options and
+    /// controlled tests.
     pub(crate) const fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
         self.disable_certificate_verification = disabled;
         self
@@ -82,10 +83,10 @@ impl TlsConfigurationBuilder {
 
         if let Some(mut cert_chain) = self.certificate_chain {
             let Some(key) = self.private_key else {
-                anyhow::bail!("Private key not provided");
+                anyhow::bail!("Client private key was not provided");
             };
             if cert_chain.is_empty() {
-                anyhow::bail!("Client certificate chain not provided");
+                anyhow::bail!("Client certificate chain was not provided");
             }
 
             let leaf = cert_chain.remove(0);
@@ -119,13 +120,14 @@ mod tests {
     }
 
     fn sample_client_auth_der() -> (Vec<X509>, PKey<Private>) {
-        let cert_pem = fs::read_to_string(sample_path("client.crt")).expect("sample cert exists");
-        let key_pem = fs::read_to_string(sample_path("client.key")).expect("sample key exists");
+        let cert_pem =
+            fs::read_to_string(sample_path("client.crt")).expect("sample certificate must exist");
+        let key_pem = fs::read_to_string(sample_path("client.key")).expect("sample key must exist");
 
         let cert_chain =
-            X509::stack_from_pem(cert_pem.as_bytes()).expect("sample cert PEM should parse");
+            X509::stack_from_pem(cert_pem.as_bytes()).expect("sample certificate PEM must parse");
         let key_der =
-            PKey::private_key_from_pem(key_pem.as_bytes()).expect("sample key PEM should parse");
+            PKey::private_key_from_pem(key_pem.as_bytes()).expect("sample key PEM must parse");
 
         (cert_chain, key_der)
     }

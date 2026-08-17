@@ -1,8 +1,9 @@
 //! TACACS+ client-side transport setup and exchange execution.
 //!
-//! Fixed operations run through [`TacacsClient::execute`]. Transparent proxy
-//! and interactive use cases open a [`ClientConversation`]. Raw packet codecs
-//! are exposed only for adapter layers that bridge TACACS+ streams.
+//! Run fixed operations through [`TacacsClient::execute`]. Open a
+//! [`ClientConversation`] for transparent proxy and interactive use cases. Raw
+//! packet codecs are available only to adapter layers that bridge TACACS+
+//! connections.
 
 mod client;
 mod codec;

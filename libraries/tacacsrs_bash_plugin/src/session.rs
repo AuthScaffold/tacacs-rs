@@ -19,6 +19,8 @@ pub(crate) fn get_user_name(user: *mut c_char) -> String {
 
     #[cfg(unix)]
     {
+        // SAFETY: `getuid` and `geteuid` take no pointers and have no caller
+        // safety requirements.
         user_name_from_uid(unsafe { libc::getuid() })
             .or_else(|| user_name_from_uid(unsafe { libc::geteuid() }))
             .unwrap_or_else(|| "UNKNOWN".to_owned())
@@ -57,8 +59,12 @@ pub(crate) fn tty_name() -> String {
     #[cfg(unix)]
     {
         for fd in 0..3 {
+            // SAFETY: File descriptors 0 through 2 are integer values that
+            // `isatty` accepts. The function does not take ownership of them.
             if unsafe { libc::isatty(fd) } != 0 {
                 let mut buffer = [0_i8; 64];
+                // SAFETY: `buffer` is writable for `buffer.len()` bytes. On
+                // success, `ttyname_r` writes a NUL-terminated string.
                 if unsafe { libc::ttyname_r(fd, buffer.as_mut_ptr(), buffer.len()) } == 0 {
                     return c_string(buffer.as_ptr());
                 }
@@ -71,6 +77,8 @@ pub(crate) fn tty_name() -> String {
 pub(crate) fn task_id() -> u16 {
     #[cfg(unix)]
     {
+        // SAFETY: `getpid` takes no pointers and has no caller safety
+        // requirements.
         u16::try_from(unsafe { libc::getpid() }).unwrap_or(u16::MAX)
     }
 
@@ -88,10 +96,13 @@ fn first_env_token(name: &str) -> Option<String> {
 
 #[cfg(unix)]
 fn user_name_from_uid(uid: libc::uid_t) -> Option<String> {
+    // SAFETY: `getpwuid` accepts any `uid_t`. A non-null result points to libc
+    // storage that remains valid until the next password database call.
     let passwd = unsafe { libc::getpwuid(uid) };
     if passwd.is_null() {
         return None;
     }
+    // SAFETY: The null check above makes `passwd` valid to dereference.
     let name = unsafe { (*passwd).pw_name };
     if name.is_null() {
         None
@@ -102,6 +113,10 @@ fn user_name_from_uid(uid: libc::uid_t) -> Option<String> {
 
 #[cfg(all(unix, not(target_env = "musl")))]
 fn unix_is_remote_user(user: &str) -> bool {
+    // SAFETY: The password database functions are used as one sequence on this
+    // thread. `passwd` and `result` point to live storage for each call.
+    // `buffer` is writable for its full length. Returned string pointers remain
+    // valid until the next database call and are copied before that call.
     unsafe {
         libc::setpwent();
         let mut passwd: libc::passwd = std::mem::zeroed();
@@ -134,6 +149,9 @@ fn unix_is_remote_user(user: &str) -> bool {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut is_remote = false;
 
+    // SAFETY: `PASSWD_ITERATION_LOCK` serializes the non-reentrant password
+    // database iterator in this process. Each non-null result remains valid
+    // until the next iterator call, and this code copies its strings first.
     unsafe {
         libc::setpwent();
         loop {

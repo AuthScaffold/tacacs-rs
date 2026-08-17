@@ -21,7 +21,7 @@ async fn watcher_ignores_temporary_files_and_coalesces_atomic_object_events() {
         tokio::time::timeout(debounce.saturating_mul(3), signals.recv())
             .await
             .is_err(),
-        "temporary file should not trigger reload"
+        "temporary file must not trigger a reload"
     );
 
     fs::rename(&temporary, root.join("object-1")).expect("atomic object rename");
@@ -34,7 +34,7 @@ async fn watcher_ignores_temporary_files_and_coalesces_atomic_object_events() {
         tokio::time::timeout(debounce.saturating_mul(3), signals.recv())
             .await
             .is_err(),
-        "burst should coalesce to one signal"
+        "burst must produce one signal"
     );
 }
 
@@ -111,7 +111,7 @@ async fn watcher_coalesces_delete_recreate_and_root_replacement_races() {
         tokio::time::timeout(debounce.saturating_mul(3), signals.recv())
             .await
             .is_err(),
-        "race burst should coalesce to one signal"
+        "race burst must produce one signal"
     );
     assert_eq!(
         fs::read(root.join("object-1")).expect("read final object"),

@@ -11,10 +11,10 @@ use crate::runtime::RequestTracker;
 use crate::services::client_api::upstream_bridge::UpstreamBridge;
 use crate::upstream::manager::UpstreamManager;
 
-/// Thin gRPC service adapter that delegates every RPC into the client API upstream bridge.
+/// Delegates each gRPC request to the client API upstream bridge.
 ///
-/// Each [`tonic`] handler registers itself as an active client and forwards the
-/// decoded request into the upstream bridge.
+/// Each [`tonic`] handler registers an active request. It then sends the decoded
+/// request to the upstream bridge.
 #[derive(Clone)]
 pub(crate) struct GrpcService {
     upstream_bridge: UpstreamBridge,
@@ -22,7 +22,7 @@ pub(crate) struct GrpcService {
 }
 
 impl GrpcService {
-    /// Creates a gRPC adapter over the shared upstream manager.
+    /// Creates a gRPC adapter for the shared upstream manager.
     pub(crate) fn new(
         upstream_manager: Arc<UpstreamManager>,
         request_tracker: Arc<RequestTracker>,
@@ -46,7 +46,7 @@ impl TacacsAgent for GrpcService {
                 Status::invalid_argument(error.to_string())
             })?;
         let _request_guard = self.request_tracker.start_request();
-        log::debug!("Received IPC PAP authentication request for user={}", request.user);
+        log::debug!("Received an IPC PAP authentication request for user={}", request.user);
 
         let result = match self
             .upstream_bridge
@@ -68,13 +68,12 @@ impl TacacsAgent for GrpcService {
         Ok(Response::new(result))
     }
 
-    /// Handles one unary accounting RPC from a local IPC client.
+    /// Handles one accounting RPC from a local IPC client.
     ///
-    /// Decodes the protobuf request, delegates to the upstream bridge for
-    /// upstream execution, and encodes the result into the oneof
-    /// `AccountingReply` envelope. Transport-level gRPC errors are returned as
-    /// [`Status`]; application-level errors are returned inside the
-    /// `ServiceError` variant of the reply.
+    /// This method decodes the protobuf request and sends it to the upstream
+    /// bridge. It puts the result in the `AccountingReply` oneof envelope. It
+    /// returns gRPC transport errors as [`Status`]. It puts operation errors in
+    /// the `ServiceError` reply variant.
     async fn accounting(
         &self,
         request: Request<ipc::AccountingRequest>,
@@ -85,7 +84,7 @@ impl TacacsAgent for GrpcService {
         })?;
         let _request_guard = self.request_tracker.start_request();
         log::debug!(
-            "Received IPC accounting request: user={}, cmd={}",
+            "Received an IPC accounting request: user={}, cmd={}",
             request.user,
             request.command,
         );
@@ -96,7 +95,7 @@ impl TacacsAgent for GrpcService {
         {
             Ok(response) => {
                 log::debug!(
-                    "IPC accounting request completed: server={}, status={:?}",
+                    "IPC accounting request is complete: server={}, status={:?}",
                     response.server,
                     response.status,
                 );
@@ -114,11 +113,10 @@ impl TacacsAgent for GrpcService {
         Ok(Response::new(result))
     }
 
-    /// Handles one unary authorization RPC from a local IPC client.
+    /// Handles one authorization RPC from a local IPC client.
     ///
-    /// Decodes the protobuf request, delegates to the upstream bridge for
-    /// upstream execution, and encodes the result into the oneof
-    /// `AuthorizationReply` envelope.
+    /// This method decodes the protobuf request and sends it to the upstream
+    /// bridge. It puts the result in the `AuthorizationReply` oneof envelope.
     async fn authorization(
         &self,
         request: Request<ipc::AuthorizationRequest>,
@@ -129,7 +127,7 @@ impl TacacsAgent for GrpcService {
         })?;
         let _request_guard = self.request_tracker.start_request();
         log::debug!(
-            "Received IPC authorization request: user={}, service={}, cmd={}",
+            "Received an IPC authorization request: user={}, service={}, cmd={}",
             request.user,
             request.service().unwrap_or("<missing>"),
             request.command().unwrap_or("<missing>"),
@@ -142,7 +140,7 @@ impl TacacsAgent for GrpcService {
         {
             Ok(response) => {
                 log::debug!(
-                    "IPC authorization request completed: server={}, status={:?}",
+                    "IPC authorization request is complete: server={}, status={:?}",
                     response.server,
                     response.status,
                 );

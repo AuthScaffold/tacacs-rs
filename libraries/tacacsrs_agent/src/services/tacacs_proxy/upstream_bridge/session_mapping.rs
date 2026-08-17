@@ -1,4 +1,4 @@
-//! TACACS+ session-id mapping helpers for the raw proxy.
+//! TACACS+ session ID mapping for the raw proxy.
 
 use tacacsrs_messages::packet::Packet;
 

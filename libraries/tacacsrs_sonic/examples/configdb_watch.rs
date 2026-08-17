@@ -13,13 +13,13 @@ const DEFAULT_DEBOUNCE_MS: u64 = 250;
 
 #[derive(Debug, Parser)]
 #[command(name = "configdb-watch")]
-#[command(about = "Watch SONiC ConfigDB TACACS+ rows through tacacsrs-sonic")]
+#[command(about = "Watch TACACS+ rows in SONiC ConfigDB")]
 struct Cli {
     /// Redis connection URL. Use `<redis://127.0.0.1:6379>` for local Docker/WSL Redis.
     #[arg(long, default_value = LOCAL_REDIS_URL)]
     redis_url: String,
 
-    /// Redis database index that stores `SONiC` `CONFIG_DB`.
+    /// Redis database index for `SONiC` `CONFIG_DB`.
     #[arg(long, default_value_t = DEFAULT_CONFIG_DB)]
     redis_db: i64,
 
@@ -27,7 +27,7 @@ struct Cli {
     #[arg(long, default_value_t = DEFAULT_DEBOUNCE_MS)]
     debounce_ms: u64,
 
-    /// Stop after this many change events. Omit to watch until interrupted.
+    /// Stop after this number of change events. Omit to watch until interrupted.
     #[arg(long)]
     max_events: Option<usize>,
 }
@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
     let mut changes = datastore
         .subscribe()
         .await
-        .context("subscribe to SONiC ConfigDB changes")?;
+        .context("subscribe to SONiC ConfigDB change notifications")?;
 
     let mut observed = 0usize;
     while let Some(event) = changes.next().await {

@@ -1,7 +1,7 @@
 //! OpenSSL TLS 1.3 PSK context construction.
 //!
-//! This module owns projections from YANG EPSK configuration into OpenSSL
-//! ciphersuite and group names, then applies them to a validated `SslContext`.
+//! This module maps YANG EPSK configuration to OpenSSL cipher suite and group
+//! names. It then applies the names to a validated `SslContext`.
 
 use anyhow::Context;
 use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
@@ -38,7 +38,7 @@ impl PskDheKeGroups {
 
     pub(crate) fn unsupported_error(&self, error: &openssl::error::ErrorStack) -> anyhow::Error {
         anyhow::anyhow!(
-            "unsupported TLS PSK DHE group list `{}`; ensure the configured psk-dhe-ke-groups are supported by the linked OpenSSL library: {error}",
+            "unsupported TLS PSK DHE group list `{}`; make sure that the linked OpenSSL library supports the configured psk-dhe-ke-groups: {error}",
             self.openssl_list
         )
     }
@@ -152,7 +152,7 @@ mod tests {
             PskDheKeSupportedGroup::Secp256r1,
             PskDheKeSupportedGroup::Ffdhe3072,
         ])
-        .expect("groups should be configured");
+        .expect("groups must be configured");
 
         assert_eq!(groups.as_openssl_list(), "X25519:P-256:ffdhe3072");
     }
@@ -181,7 +181,7 @@ mod tests {
         .expect("configured groups");
 
         create_psk_ssl_context(tls13_epsk::test_server(epsk), Some(&groups))
-            .expect("OpenSSL should accept supported TLS 1.3 groups");
+            .expect("OpenSSL must accept supported TLS 1.3 groups");
     }
 
     #[test]
@@ -189,7 +189,7 @@ mod tests {
         let epsk = epsk_with_hash(EpskSupportedHash::Sha384);
 
         create_psk_ssl_context(tls13_epsk::test_server(epsk), None)
-            .expect("OpenSSL should accept TLS 1.3 SHA-384 PSK sessions");
+            .expect("OpenSSL must accept TLS 1.3 SHA-384 PSK sessions");
     }
 
     #[test]
@@ -200,7 +200,7 @@ mod tests {
 
             create_psk_ssl_context(tls13_epsk::test_server(epsk), None).unwrap_or_else(|error| {
                 panic!(
-                    "OpenSSL should accept TLS 1.3 PSK hash {} using ciphersuite {}: {error:#}",
+                    "OpenSSL must accept TLS 1.3 PSK hash {} with cipher suite {}: {error:#}",
                     handshake_hash.as_rfc7951_str(),
                     handshake_hash.tls13_ciphersuites()
                 )
@@ -217,7 +217,7 @@ mod tests {
         create_psk_ssl_context(tls13_epsk::test_server(epsk), Some(&groups)).unwrap_or_else(
             |error| {
                 panic!(
-                    "OpenSSL should accept every configured TLS 1.3 PSK-DHE group ({}): {error:#}",
+                    "OpenSSL must accept every configured TLS 1.3 PSK-DHE group ({}): {error:#}",
                     groups.as_openssl_list()
                 )
             },
@@ -232,7 +232,7 @@ mod tests {
         };
 
         let error = create_psk_ssl_context(tls13_epsk::test_server(epsk), Some(&groups))
-            .expect_err("unsupported OpenSSL group should be rejected");
+            .expect_err("an unsupported OpenSSL group must fail");
         let message = error.to_string();
 
         assert!(message.contains("unsupported TLS PSK DHE group list"));

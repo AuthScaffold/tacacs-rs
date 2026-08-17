@@ -1,7 +1,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    // SAFETY: build scripts run in a single process context for this crate and
-    // only need to point prost/tonic code generation at the vendored protoc.
+    // SAFETY: This build script sets PROTOC before it starts code generation.
+    // No other thread in this process reads or writes the environment.
     std::env::set_var("PROTOC", protoc);
 
     tonic_prost_build::configure()

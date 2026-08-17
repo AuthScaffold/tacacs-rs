@@ -16,9 +16,10 @@ use tacacsrs_messages::enumerations::{
     TacacsAuthorizationStatus,
 };
 
-/// Converts a domain [`AccountingOperation`] into a TACACS+ accounting request
-/// message with the standard service-level defaults (WATCHDOG flags, no
-/// privilege level, shell service type).
+/// Converts an [`AccountingOperation`] to a TACACS+ accounting request.
+///
+/// The request uses the standard service defaults: WATCHDOG flags, no privilege
+/// level, and the shell service type.
 pub(super) fn build_accounting_request(request: &AccountingOperation) -> AccountingRequest {
     AccountingRequest {
         flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
@@ -35,22 +36,22 @@ pub(super) fn build_accounting_request(request: &AccountingOperation) -> Account
 
 /// Builds the TACACS+ argument list for an accounting request.
 ///
-/// The resulting list always starts with `service=shell` and `cmd=<command>`,
-/// followed by one `cmd-arg=<arg>` entry for each element of
-/// `command_arguments`.
+/// The list starts with `service=shell` and `cmd=<command>`. It then contains
+/// one `cmd-arg=<arg>` entry for each element in `command_arguments`.
 fn build_accounting_args(command: &str, command_arguments: &[String]) -> Vec<String> {
     let base_args = ["service=shell".to_owned(), format!("cmd={command}")];
     let extra_args = command_arguments.iter().map(|arg| format!("cmd-arg={arg}"));
     base_args.into_iter().chain(extra_args).collect()
 }
 
-/// Converts a domain [`AuthorizationOperation`] into a TACACS+ authorization
-/// request message with service-level authentication context defaults.
+/// Converts an [`AuthorizationOperation`] to a TACACS+ authorization request.
+///
+/// The request uses the default authentication context for the service.
 pub(super) fn build_authorization_request(
     request: &AuthorizationOperation,
 ) -> anyhow::Result<AuthorizationRequest> {
     let priv_lvl = u8::try_from(request.privilege_level)
-        .context("authorization privilege level exceeds TACACS+ u8 field")?;
+        .context("Authorization privilege level exceeds the TACACS+ u8 field")?;
     let (authen_method, authen_type, authen_service) = match request.authentication_context {
         AuthorizationAuthenticationContext::TacacsAscii => (
             TacacsAuthenticationMethod::TacPlusAuthenMethodTacacsplus,
@@ -88,7 +89,7 @@ pub(super) fn to_pap_authentication_response(
         TacacsAuthenticationStatus::TacPlusAuthenStatusPass => AuthenticationResponseStatus::Pass,
         TacacsAuthenticationStatus::TacPlusAuthenStatusFail => AuthenticationResponseStatus::Fail,
         TacacsAuthenticationStatus::TacPlusAuthenStatusError => AuthenticationResponseStatus::Error,
-        _ => unreachable!("PapAuthenticationExchange accepts only terminal PAP statuses"),
+        _ => unreachable!("PapAuthenticationExchange must return a terminal PAP status"),
     };
     PapAuthenticationOperationResponse {
         server: address.to_owned(),

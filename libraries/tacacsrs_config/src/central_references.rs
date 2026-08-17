@@ -1,22 +1,22 @@
 //! Provider-neutral inspection of unresolved central credential references.
 //!
-//! This module borrows generated model values and emits deterministic slots.
-//! It performs no provider I/O and does not interpret opaque reference values.
+//! This module borrows generated model values and creates deterministic slots.
+//! It does not access a provider or interpret opaque reference values.
 
 use std::fmt;
 
 use crate::TacacsPlusServer;
 
-/// RFC credential usage represented by one central reference slot.
+/// RFC credential usage for one central reference slot.
 #[derive(Debug, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CentralCredentialUsage {
     /// TLS client certificate and its private key.
     ClientCertificateWithKey,
     /// TLS 1.3 external pre-shared key.
     ClientTls13Epsk,
-    /// CA certificate bag used to authenticate a server chain.
+    /// CA certificate bag that authenticates a server chain.
     ServerCaCertificateBag,
-    /// End-entity certificate bag used for exact server authentication.
+    /// End-entity certificate bag for exact server authentication.
     ServerEeCertificateBag,
 }
 
@@ -33,14 +33,14 @@ impl CentralCredentialUsage {
     }
 }
 
-/// Borrowed generated central reference for one credential usage.
+/// Borrowed central reference for one credential usage.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum CentralCredentialReference<'a> {
     /// Central certificate-with-key reference from RFC 9642.
     CertificateWithKey {
-        /// Opaque asymmetric-key reference, when present in the generated model.
+        /// Opaque asymmetric-key reference from the generated model.
         asymmetric_key: Option<&'a str>,
-        /// Opaque certificate reference, when present in the generated model.
+        /// Opaque certificate reference from the generated model.
         certificate: Option<&'a str>,
     },
     /// Opaque central symmetric-key reference used by TLS 1.3 EPSK.
@@ -68,7 +68,7 @@ impl fmt::Debug for CentralCredentialReference<'_> {
     }
 }
 
-/// Deterministic central credential slot borrowed from an enumerated server.
+/// Deterministic central credential slot from an enumerated server.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct CentralCredentialSlot<'a> {
     server_name: &'a str,
@@ -77,7 +77,7 @@ pub struct CentralCredentialSlot<'a> {
 }
 
 impl CentralCredentialSlot<'_> {
-    /// Returns the configured server name used as stable request context.
+    /// Returns the server name that provides stable request context.
     #[must_use]
     pub const fn server_name(&self) -> &str {
         self.server_name
@@ -89,7 +89,7 @@ impl CentralCredentialSlot<'_> {
         self.usage
     }
 
-    /// Explicitly exposes the borrowed opaque reference for resolver planning.
+    /// Returns the borrowed opaque reference for resolver planning.
     #[must_use]
     pub const fn reference(&self) -> CentralCredentialReference<'_> {
         self.reference
@@ -107,7 +107,7 @@ impl fmt::Debug for CentralCredentialSlot<'_> {
     }
 }
 
-/// Config-local credential field that must be enumerated before inspection.
+/// Local credential field that requires enumeration before inspection.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum UnexpandedCredentialField {
     /// `client-identity/credentials-reference` remains present.
@@ -125,7 +125,7 @@ impl UnexpandedCredentialField {
     }
 }
 
-/// Error returned when central inspection receives a server with a local bundle reference.
+/// Error for a local bundle reference that requires server enumeration.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct EnumerationRequiredError {
     server_name: String,
@@ -159,18 +159,17 @@ impl fmt::Display for EnumerationRequiredError {
 
 impl std::error::Error for EnumerationRequiredError {}
 
-/// Inspects central references on one direct or enumerated server.
+/// Inspect central references on one direct or enumerated server.
 ///
-/// Slots are returned in stable field order: client certificate, client EPSK,
+/// The function returns slots in stable field order: client certificate, client EPSK,
 /// server CA bag, then server end-entity bag. Inline fields produce no slot.
-/// Structurally incomplete generated central containers are preserved as slots;
-/// the resolution planning layer decides whether it can form a usable request.
+/// The function preserves incomplete central containers as slots. The
+/// resolution planning layer decides if it can create a usable request.
 ///
 /// # Errors
 ///
-/// Returns [`EnumerationRequiredError`] when a config-local client or server
-/// credential bundle reference remains. The error deliberately omits the raw
-/// reference value.
+/// Returns [`EnumerationRequiredError`] when a local client or server
+/// credential bundle reference remains. The error omits the raw reference.
 pub fn inspect_central_references(
     server: &TacacsPlusServer,
 ) -> Result<Vec<CentralCredentialSlot<'_>>, EnumerationRequiredError> {

@@ -12,36 +12,36 @@ use crate::model::{
     CliServerInput, PskKeyExchangeMode, PskKeyMaterial,
 };
 
-/// Loads a [`TacacsPlus`] root from a YANG JSON string with the supplied validation options.
+/// Loads a [`TacacsPlus`] root from YANG JSON with the supplied validation options.
 ///
 /// # Errors
 ///
-/// Returns an error if the config cannot be parsed or validated.
+/// Returns an error if the configuration cannot be parsed or validated.
 pub fn tacacs_plus_from_str(
     contents: &str,
     options: &ValidationOptions,
 ) -> anyhow::Result<TacacsPlus> {
     tacacsrs_config::parse_yang_json_with_options(contents, options)
-        .context("Failed to load config from provided YANG JSON")
+        .context("failed to load configuration from the supplied YANG JSON")
 }
 
-/// Loads a [`TacacsPlus`] root from a YANG JSON config file with the supplied validation options.
+/// Loads a [`TacacsPlus`] root from a YANG JSON configuration file.
 ///
 /// # Errors
 ///
-/// Returns an error if the config file cannot be read, parsed, or validated.
+/// Returns an error if the configuration file cannot be read, parsed, or validated.
 pub fn tacacs_plus_from_file(
     path: &Path,
     options: &ValidationOptions,
 ) -> anyhow::Result<TacacsPlus> {
     let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read config from {}", path.display()))?;
+        .with_context(|| format!("failed to read configuration file {}", path.display()))?;
 
     tacacs_plus_from_str(&contents, options)
-        .with_context(|| format!("Failed to load config from {}", path.display()))
+        .with_context(|| format!("failed to load configuration file {}", path.display()))
 }
 
-/// Build a validated [`TacacsPlus`] root from parsed CLI/file inputs.
+/// Builds a validated [`TacacsPlus`] root from parsed CLI and file inputs.
 ///
 /// # Errors
 ///
@@ -155,7 +155,7 @@ fn psk_builder(
 ) -> anyhow::Result<TacacsPlusServerBuilder> {
     if exchange == PskKeyExchangeMode::PskOnly && !groups.is_empty() {
         anyhow::bail!(
-            "--psk-key-exchange psk-only cannot be combined with --psk-key-exchange-groups; remove the groups or use --psk-key-exchange psk-dhe"
+            "--psk-key-exchange psk-only cannot be combined with --psk-key-exchange-groups. Remove the groups or use --psk-key-exchange psk-dhe"
         );
     }
 

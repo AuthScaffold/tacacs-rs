@@ -3,9 +3,8 @@
 //! Connections are constructed exclusively through
 //! [`establish_from_server`], which interprets a [`TacacsPlusServer`]
 //! configuration and performs the TLS handshake. The internal
-//! `TlsConfigurationBuilder` and `connect_tls` helpers are no longer part
-//! of the public API; callers should drive the dispatcher in
-//! [`crate::establish`] instead.
+//! `TlsConfigurationBuilder` and `connect_tls` helpers are internal. Callers
+//! must use the dispatcher in [`crate::establish`].
 //!
 //! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 
@@ -23,20 +22,20 @@ use openssl::ssl::SslContext;
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
-/// Establishes a TLS connection over an existing TCP stream.
+/// Establishes a TLS connection over an existing TCP connection.
 ///
 /// # Arguments
 ///
-/// * `config` - The TLS client configuration
-/// * `stream` - The underlying TCP stream
-/// * `server_name` - The server name for SNI - can be a domain name (e.g., "server.example.com")
-///   or an IP address (e.g., "192.168.1.1")
+/// * `config` - The TLS client configuration.
+/// * `stream` - The underlying TCP connection.
+/// * `server_name` - The domain name or IP address for SNI, such as
+///   `server.example.com` or `192.168.1.1`.
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - The server name is neither a valid domain name nor IP address
-/// - The TLS handshake fails
+/// - the server name is not a valid domain name or IP address, or
+/// - the TLS handshake fails.
 pub(crate) async fn connect_tls(
     context: &SslContext,
     stream: TcpStream,
@@ -47,7 +46,7 @@ pub(crate) async fn connect_tls(
         .with_context(|| format!("OpenSSL failed to set TLS SNI for {server_name}"))?;
 
     let mut stream = SslStream::new(ssl, stream)
-        .context("OpenSSL failed to attach TLS SSL object to TCP stream")?;
+        .context("OpenSSL failed to attach the TLS SSL object to the TCP connection")?;
 
     SslStream::connect(std::pin::Pin::new(&mut stream))
         .await

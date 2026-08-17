@@ -30,11 +30,10 @@ impl RoutedOperation for AuthorizationRoute {
 }
 
 impl UpstreamBridge {
-    /// Executes one IPC authorization RPC against the currently selected
-    /// upstream TACACS+ server.
+    /// Runs one IPC authorization request against the selected TACACS+ server.
     ///
-    /// Authorization follows the same server-selection and failover model as
-    /// accounting; connection reuse is handled by the networking layer.
+    /// Authorization and accounting use the same server selection and failover
+    /// model. The networking layer controls connection reuse.
     pub(in crate::services::client_api) async fn execute_authorization_request(
         &self,
         request: AuthorizationOperation,

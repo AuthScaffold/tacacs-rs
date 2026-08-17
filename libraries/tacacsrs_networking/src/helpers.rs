@@ -1,16 +1,17 @@
 //! Helper functions for TACACS+ networking.
 //!
-//! This module provides utilities for TCP connection handling and address resolution.
+//! This module resolves server addresses and opens TCP connections.
 
 use std::net::{SocketAddr, ToSocketAddrs};
 
-/// Resolves a hostname (with optional port) to a list of socket addresses.
+/// Resolves a host name and optional port to a list of socket addresses.
 ///
 /// If no port is specified, the default TACACS+ port (49) is used.
 ///
 /// # Arguments
 ///
-/// * `hostname` - The hostname, optionally with port (e.g., "server.example.com" or "server.example.com:49")
+/// * `hostname` - The host name and optional port, such as
+///   `server.example.com` or `server.example.com:49`.
 ///
 /// # Errors
 ///
@@ -32,36 +33,36 @@ pub(crate) fn get_server_addresses(hostname: &str) -> anyhow::Result<Vec<SocketA
 ///
 /// # Arguments
 ///
-/// * `hostname` - The server hostname, optionally with port
+/// * `hostname` - The server host name and optional port.
 ///
 /// # Errors
 ///
-/// Returns an error if connection fails to all resolved addresses.
+/// Returns an error if all connection attempts fail.
 pub(crate) async fn connect_tcp(hostname: &str) -> anyhow::Result<tokio::net::TcpStream> {
     for server_address in get_server_addresses(hostname)? {
         match tokio::net::TcpStream::connect(server_address).await {
             Ok(stream) => {
                 log::info!(
                     target: "tacacsrs_networking::helpers::connect_tcp",
-                    "Connected to server: {server_address}");
+                    "Connected to TACACS+ server {server_address}");
                 return Ok(stream);
             }
             Err(e) => {
                 log::error!(
                     target: "tacacsrs_networking::helpers::connect_tcp",
-                    "Failed to connect to server {server_address}: {e}");
+                    "Failed to connect to TACACS+ server {server_address}: {e}");
             }
         }
     }
 
-    Err(anyhow::Error::msg("Failed to connect to any server"))
+    Err(anyhow::Error::msg("Failed to connect to any TACACS+ server address"))
 }
 
 /// Extracts the TLS server name from a configured `host[:port]` address string.
 ///
-/// This accepts plain hostnames, IPv4 `host:port`, and bracketed IPv6
-/// `[addr]:port` formats and returns just the host portion that should be used
-/// for SNI and certificate name checks.
+/// This function accepts plain host names, IPv4 `host:port`, and bracketed IPv6
+/// `[addr]:port` formats. It returns the host portion for SNI and certificate
+/// name checks.
 #[must_use]
 pub(crate) fn tls_server_name(server_addr: &str) -> &str {
     if let Some(stripped) = server_addr
@@ -71,9 +72,9 @@ pub(crate) fn tls_server_name(server_addr: &str) -> &str {
         return stripped;
     }
 
-    // Only attempt host:port splitting when exactly one colon is present.
-    // Any valid IPv6 literal contains ≥2 colons, so this guard ensures
-    // unbracketed IPv6 addresses are never misinterpreted as host:port.
+    // Split host:port only when the value contains exactly one colon.
+    // A valid IPv6 literal contains at least two colons. This check prevents
+    // the function from interpreting an unbracketed IPv6 address as host:port.
     if server_addr.matches(':').count() == 1 {
         if let Some((host, port)) = server_addr.rsplit_once(':') {
             if port.parse::<u16>().is_ok() {

@@ -11,7 +11,7 @@ fn data_contains_pem_header(data: &[u8]) -> bool {
         .any(|window| window == PEM_HEADER)
 }
 
-/// Normalize PEM or DER certificate data into DER bytes.
+/// Normalizes PEM or DER certificate data into DER bytes.
 ///
 /// # Errors
 ///
@@ -28,7 +28,7 @@ pub fn normalize_cli_certificate_data(data: &[u8]) -> anyhow::Result<Vec<u8>> {
 
     let certificates = CertificateDer::pem_slice_iter(data)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| anyhow::anyhow!("failed to parse PEM client certificate: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("cannot parse PEM client certificate: {err}"))?;
 
     if certificates.len() != 1 {
         anyhow::bail!("client certificate file must contain exactly one PEM certificate");
@@ -37,7 +37,7 @@ pub fn normalize_cli_certificate_data(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(certificates[0].as_ref().to_vec())
 }
 
-/// Normalize PEM or DER private key data into DER bytes and its YANG key format.
+/// Normalizes PEM or DER private key data into DER bytes and a YANG key format.
 ///
 /// # Errors
 ///
@@ -50,7 +50,7 @@ pub fn normalize_cli_private_key_data(data: &[u8]) -> anyhow::Result<(Vec<u8>, P
 
     let private_key = if data_contains_pem_header(data) {
         PrivateKeyDer::from_pem_slice(data)
-            .map_err(|err| anyhow::anyhow!("failed to parse PEM client private key: {err}"))?
+            .map_err(|err| anyhow::anyhow!("cannot parse PEM client private key: {err}"))?
     } else {
         PrivateKeyDer::try_from(data).map_err(|_| {
             anyhow::anyhow!(
@@ -69,28 +69,28 @@ pub fn normalize_cli_private_key_data(data: &[u8]) -> anyhow::Result<(Vec<u8>, P
     Ok((private_key.secret_der().to_vec(), private_key_format))
 }
 
-/// Read and normalize a client certificate file.
+/// Reads and normalizes a client certificate file.
 ///
 /// # Errors
 ///
 /// Returns an error if the file cannot be read or parsed.
 pub fn load_client_certificate(path: &Path) -> anyhow::Result<Vec<u8>> {
     let cert_data = std::fs::read(path)
-        .with_context(|| format!("Failed to read client certificate: {}", path.display()))?;
+        .with_context(|| format!("cannot read client certificate {}", path.display()))?;
     normalize_cli_certificate_data(&cert_data)
-        .with_context(|| format!("Failed to parse client certificate: {}", path.display()))
+        .with_context(|| format!("cannot parse client certificate {}", path.display()))
 }
 
-/// Read and normalize a client private key file.
+/// Reads and normalizes a client private key file.
 ///
 /// # Errors
 ///
 /// Returns an error if the file cannot be read or parsed.
 pub fn load_client_private_key(path: &Path) -> anyhow::Result<(Vec<u8>, PrivateKeyFormat)> {
     let key_data = std::fs::read(path)
-        .with_context(|| format!("Failed to read client key: {}", path.display()))?;
+        .with_context(|| format!("cannot read client key {}", path.display()))?;
     normalize_cli_private_key_data(&key_data)
-        .with_context(|| format!("Failed to parse client key: {}", path.display()))
+        .with_context(|| format!("cannot parse client key {}", path.display()))
 }
 
 #[cfg(test)]
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn empty_certificate_rejected() {
-        let err = normalize_cli_certificate_data(&[]).expect_err("empty cert should fail");
+        let err = normalize_cli_certificate_data(&[]).expect_err("empty certificate must fail");
         assert!(err.to_string().contains("empty"));
     }
 

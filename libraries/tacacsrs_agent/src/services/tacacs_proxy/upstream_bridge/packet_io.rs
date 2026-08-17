@@ -1,4 +1,4 @@
-//! TACACS+ packet IO helpers for the raw proxy.
+//! TACACS+ packet I/O helpers for the raw proxy.
 
 use std::time::Duration;
 
@@ -35,7 +35,7 @@ where
         .await
         .map_err(|_| {
             ProxyConnectionError::Downstream(anyhow::anyhow!(
-                "Timed out waiting for downstream TACACS+ packet after {timeout:?}"
+                "No downstream TACACS+ packet arrived within {timeout:?}"
             ))
         })?
         .map_err(ProxyConnectionError::Downstream)
@@ -60,7 +60,7 @@ where
     match result {
         PacketWriteResult::Success => Ok(()),
         PacketWriteResult::WriteError(error) => Err(ProxyConnectionError::Downstream(
-            anyhow::Error::new(error).context("Failed to write TACACS+ proxy reply downstream"),
+            anyhow::Error::new(error).context("Failed to write a TACACS+ proxy reply downstream"),
         )),
     }
 }
@@ -83,7 +83,7 @@ where
     let session_id = header.session_id;
     if header.length > TACACS_MAX_BODY_LENGTH {
         bail!(
-            "TACACS+ proxy packet for session {session_id:#x} declared body length {}, exceeding maximum {}",
+            "TACACS+ proxy packet for session {session_id:#x} declares body length {}, which exceeds the maximum of {}",
             header.length,
             TACACS_MAX_BODY_LENGTH,
         );
@@ -108,7 +108,7 @@ where
     })?;
 
     log::debug!(
-        "Read TACACS+ proxy downstream packet: session_id={:#x}, seq_no={}, type={}, flags={:?}, body_length={}, obfuscated={}",
+        "Read a downstream TACACS+ proxy packet: session_id={:#x}, seq_no={}, type={}, flags={:?}, body_length={}, obfuscated={}",
         packet.header().session_id,
         packet.header().seq_no,
         packet.header().tacacs_type,
@@ -120,7 +120,7 @@ where
     if reply_obfuscation == DownstreamObfuscation::Obfuscated {
         if let Some(key) = obfuscation_key {
             log::debug!(
-                "Deobfuscating TACACS+ proxy downstream packet body for session {:#x}",
+                "Deobfuscating a downstream TACACS+ proxy packet body for session {:#x}",
                 packet.header().session_id,
             );
             packet = packet.to_deobfuscated(key);

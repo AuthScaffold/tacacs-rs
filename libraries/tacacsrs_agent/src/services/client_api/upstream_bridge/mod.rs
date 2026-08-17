@@ -1,10 +1,9 @@
 //! Local client API bridge to managed upstream TACACS+ connections.
 //!
-//! Accounting and authorization share the same routing and failover machinery,
-//! but each operation has its own request/response types and upstream send
-//! method. This module keeps the local client API request model contained in
-//! the client API service while sending only TACACS+ protocol messages through
-//! the upstream boundary.
+//! Accounting and authorization use the same routing and failover mechanisms.
+//! Each operation has separate request and reply types. This module keeps the
+//! local request model in the client API service. Only TACACS+ messages cross
+//! the server boundary.
 
 use std::sync::Arc;
 
@@ -16,14 +15,14 @@ mod authorization;
 mod mapping;
 mod routed;
 
-/// Bridges local client API operations onto selected upstream connections.
+/// Sends local client API operations through selected server connections.
 #[derive(Clone)]
 pub(super) struct UpstreamBridge {
     upstream_manager: Arc<UpstreamManager>,
 }
 
 impl UpstreamBridge {
-    /// Creates a client API upstream bridge over the shared upstream manager.
+    /// Creates a client API bridge for the shared upstream manager.
     pub(super) fn new(upstream_manager: Arc<UpstreamManager>) -> Self {
         Self { upstream_manager }
     }
@@ -72,7 +71,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
     async fn test_authorization_request_uses_configured_upstream_server() {
         let connection = Arc::new(FakeConnection {
             address: "server:49".to_owned(),
@@ -136,7 +135,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
     async fn test_authorization_failure_returns_service_error_and_fails_over() {
         let primary = Arc::new(FakeConnection {
             address: "primary:49".to_owned(),

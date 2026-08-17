@@ -26,7 +26,7 @@ fn plain_server(name: &str, address: &str) -> Value {
 }
 
 fn assert_validation_error(value: &Value, expected_path: &str, expected_rule: &str) {
-    let error = parse_yang_json(&value.to_string()).expect_err("configuration should be rejected");
+    let error = parse_yang_json(&value.to_string()).expect_err("configuration must be rejected");
     let message = error.to_string();
     assert!(message.contains(expected_path), "missing path {expected_path}: {message}");
     assert!(message.contains(expected_rule), "missing rule {expected_rule}: {message}");
@@ -136,7 +136,7 @@ fn central_only_choices_validate_for_direct_and_bundle_usages() {
         })],
     );
 
-    parse_yang_json(&config.to_string()).expect("all central-only usages should validate");
+    parse_yang_json(&config.to_string()).expect("all central-only usages must be valid");
 }
 
 #[test]

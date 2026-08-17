@@ -1,11 +1,10 @@
-//! TLS 1.3 Pre-Shared Key (PSK) transport for TACACS+ connections.
+//! TLS 1.3 pre-shared key (PSK) transport for TACACS+ connections.
 //!
 //! Connections are constructed exclusively through
 //! [`establish_from_server`], which interprets a [`TacacsPlusServer`]
 //! configuration (specifically, the `client-identity.tls13-epsk` container)
-//! and performs the TLS-PSK handshake. Internal helpers are not part of the
-//! public API; callers should drive the dispatcher in [`crate::establish`]
-//! instead.
+//! and performs the TLS-PSK handshake. The helper functions are internal.
+//! Callers must use the dispatcher in [`crate::establish`].
 //!
 //! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 

@@ -47,7 +47,7 @@ fn inspection_emits_deterministic_typed_slots_without_interpreting_references() 
             }
         }"#,
     )
-    .expect("central references should parse");
+    .expect("central references must parse");
 
     let first =
         inspect_central_references(&config.server[0]).expect("direct server is inspectable");
@@ -110,7 +110,7 @@ fn inspection_requires_config_local_bundles_to_be_enumerated_first() {
             }
         }"#,
     )
-    .expect("raw config should parse");
+    .expect("raw configuration must parse");
 
     let error = inspect_central_references(&root.tacacs_plus.server[0])
         .expect_err("raw local bundle reference must require enumeration");
@@ -119,7 +119,7 @@ fn inspection_requires_config_local_bundles_to_be_enumerated_first() {
     assert!(error.to_string().contains("enumerate_server"));
     assert!(!error.to_string().contains("do-not-disclose-this-local-id"));
 
-    let enumerated = enumerate_servers(&root.tacacs_plus).expect("bundle should enumerate");
+    let enumerated = enumerate_servers(&root.tacacs_plus).expect("bundle must enumerate");
     let slots =
         inspect_central_references(&enumerated[0]).expect("enumerated server is inspectable");
     assert_eq!(slots.len(), 1);
@@ -177,7 +177,7 @@ fn slot_debug_output_redacts_all_opaque_reference_values() {
             }
         }"#,
     )
-    .expect("central EPSK should parse");
+    .expect("central EPSK must parse");
 
     let slots = inspect_central_references(&config.server[0]).expect("server is inspectable");
     let debug = format!("{:?} {:?}", slots[0], slots[0].reference());

@@ -5,12 +5,13 @@
 //!
 //! # Architecture
 //!
-//! The connection handler separates concerns:
-//! - **Transport**: The underlying stream (TCP, TLS, etc.) - see [`transport`](crate::transport)
-//! - **Session Management**: Creating and tracking sessions inside this module
-//! - **Packet I/O**: Reading and writing packets - see [`PacketReader`] and [`PacketWriter`]
+//! The connection handler separates these functions:
+//! - **Transport**: The underlying TCP or TLS connection. See
+//!   [`transport`](crate::transport).
+//! - **Session management**: This module creates and tracks sessions.
+//! - **Packet I/O**: [`PacketReader`] and [`PacketWriter`] read and write packets.
 //!
-//! This module is crate-private. External callers should create
+//! This module is crate-private. External callers must create
 //! [`TacacsClient`](crate::TacacsClient) and run higher-level
 //! flows over the returned session object.
 
@@ -33,15 +34,15 @@ use self::write_loop::run_write_loop;
 
 /// A multiplexed TACACS+ connection runtime.
 ///
-/// `MultiplexedConnection` manages the lifecycle of many TACACS+ sessions over
-/// one transport. It handles:
+/// `MultiplexedConnection` manages many TACACS+ sessions over one connection.
+/// It handles:
 ///
 /// - Concurrent packet reading and writing
 /// - Session creation and management
 /// - Single-connect mode negotiation
 /// - Graceful shutdown coordination
 ///
-/// The connection is designed to be wrapped in an `Arc` and shared across tasks.
+/// Wrap the connection in an `Arc` to share it across tasks.
 pub(crate) struct MultiplexedConnection {
     session_manager: Arc<SessionManager>,
     packet_reader: PacketReader,
@@ -62,7 +63,7 @@ impl MultiplexedConnection {
 
     /// Creates a connection whose single-connect support has already been confirmed.
     ///
-    /// Use this when taking over a stream from a dedicated probe exchange that
+    /// Use this when taking over a connection from a dedicated probe exchange that
     /// received `TAC_PLUS_SINGLE_CONNECT_FLAG` from the server.
     #[must_use]
     pub(crate) fn new_single_connect_confirmed(obfuscation_key: Option<&[u8]>) -> Self {
@@ -128,7 +129,7 @@ impl MultiplexedConnection {
                 Err(error) => {
                     log::error!(
                         target: "tacacsrs_networking::runtime::multiplexed::handle_connection",
-                        "Write task failed with error: {error}"
+                        "Write task failed: {error}"
                     );
                     Err(error)
                 }
@@ -141,7 +142,7 @@ impl MultiplexedConnection {
                 Err(error) => {
                     log::error!(
                         target: "tacacsrs_networking::runtime::multiplexed::handle_connection",
-                        "Read task failed with error: {error}"
+                        "Read task failed: {error}"
                     );
 
                     Err(error)
@@ -160,8 +161,9 @@ impl MultiplexedConnection {
 
     /// Internal read handler loop.
     ///
-    /// Continuously reads packets from the transport and dispatches them to
-    /// the appropriate session. Also handles single-connect mode negotiation.
+    /// Reads packets from the connection and sends them to the correct session.
+    ///
+    /// This loop also handles single-connect mode negotiation.
     ///
     /// ```text
     /// confirmed shared connection starts as Supported
@@ -174,7 +176,7 @@ impl MultiplexedConnection {
     ///     +-- flag absent --> mark NotSupported
     ///                         stop new sessions
     ///                         drain active sessions
-    ///                         close shared stream
+    ///                         close shared connection
     ///
     /// transport EOF or read error
     ///     |
@@ -196,7 +198,7 @@ impl MultiplexedConnection {
                 () = self.session_manager.wait_for_close() => {
                     log::info!(
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
-                        "Received close signal. Server does not support single connection mode and all sessions complete."
+                        "Received close signal. The server does not support single-connection mode, and all sessions are complete."
                     );
                     return Ok(());
                 }
@@ -209,14 +211,14 @@ impl MultiplexedConnection {
                 PacketReadResult::HeaderReadError(error) => {
                     log::error!(
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
-                        "Failed to read header from network due to error: {error}"
+                        "Failed to read TACACS+ packet header: {error}"
                     );
                     return Err(error).context("failed to read TACACS+ packet header");
                 }
                 PacketReadResult::HeaderParseError(error) => {
                     log::error!(
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
-                        "Failed to parse header due to error: {error}"
+                        "Failed to parse TACACS+ packet header: {error}"
                     );
                     return Err(error).context("failed to parse TACACS+ packet header");
                 }
@@ -227,23 +229,23 @@ impl MultiplexedConnection {
                 } => {
                     log::error!(
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
-                        "Rejecting packet for session id {session_id} with excessive body length {body_length} (max allowed: {max_length}). Closing connection to prevent stream desynchronization."
+                        "Rejected packet for session ID {session_id}: body length {body_length} exceeds maximum {max_length}. Closing the connection to prevent packet framing errors."
                     );
                     return Err(anyhow::Error::msg(format!(
-                        "Packet body length {body_length} exceeds maximum allowed {max_length}"
+                        "Packet body length {body_length} exceeds maximum {max_length}"
                     )));
                 }
                 PacketReadResult::BodyReadError { session_id, error } => {
                     log::error!(
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
-                        "Failed to read body for session id {session_id} due to error: {error}"
+                        "Failed to read packet body for session ID {session_id}: {error}"
                     );
                     return Err(error).context("failed to read TACACS+ packet body");
                 }
                 PacketReadResult::PacketCreateError { session_id, error } => {
                     log::error!(
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
-                        "Could not load packet for session id {session_id}. Failed with error: {error}"
+                        "Failed to create packet for session ID {session_id}: {error}"
                     );
                     continue;
                 }

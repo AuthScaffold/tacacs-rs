@@ -31,7 +31,7 @@ impl ClientApiService {
         }
     }
 
-    /// Serves the configured local client API endpoint until process shutdown is signalled.
+    /// Runs the client API listener until the process receives a shutdown signal.
     pub(crate) async fn serve(
         &self,
         endpoint: &IpcEndpoint,

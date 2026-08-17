@@ -22,9 +22,9 @@ use crate::state::EmulatorState;
 
 /// OPA/Rego-driven emulator for the local TACACS+ agent IPC service.
 ///
-/// Call [`shutdown()`](Self::shutdown) for clean teardown. Dropping the
-/// emulator without shutting down detaches the server task, which will
-/// continue running until the Tokio runtime exits.
+/// Call [`shutdown()`](Self::shutdown) to stop the emulator. If code drops the
+/// emulator without shutdown, the server task detaches. The task continues
+/// until the Tokio runtime exits.
 pub struct IpcEmulator {
     state: Arc<Mutex<EmulatorState>>,
     shutdown_sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
@@ -32,7 +32,7 @@ pub struct IpcEmulator {
 }
 
 impl IpcEmulator {
-    /// Loads a Rego policy file and binds on an ephemeral loopback TCP port.
+    /// Loads a Rego policy file and binds a temporary loopback TCP port.
     ///
     /// # Errors
     ///
@@ -55,7 +55,7 @@ impl IpcEmulator {
         Self::from_policy_at_endpoint(EmulatorPolicy::from_file_async(path).await?, endpoint).await
     }
 
-    /// Starts an emulator from a policy on an ephemeral loopback TCP port.
+    /// Starts an emulator from a policy on a temporary loopback TCP port.
     ///
     /// # Errors
     ///
@@ -73,8 +73,8 @@ impl IpcEmulator {
     ///
     /// # Errors
     ///
-    /// Returns an error if the policy cannot be compiled, the endpoint cannot be
-    /// bound, or it is not a supported local IPC endpoint.
+    /// Returns an error if the policy cannot be compiled or the endpoint cannot
+    /// be bound. It also returns an error for an unsupported local IPC endpoint.
     pub async fn from_policy_at_endpoint(
         policy: EmulatorPolicy,
         endpoint: IpcEndpoint,
@@ -118,14 +118,14 @@ impl IpcEmulator {
         address: SocketAddr,
     ) -> anyhow::Result<(Self, IpcEndpoint)> {
         if !address.ip().is_loopback() {
-            bail!("TCP IPC emulator endpoint must be loopback-only: {address}");
+            bail!("TCP IPC emulator endpoint must use a loopback address: {address}");
         }
         let listener = tokio::net::TcpListener::bind(address)
             .await
             .with_context(|| format!("Failed to bind TCP IPC emulator endpoint {address}"))?;
         let local_addr = listener
             .local_addr()
-            .context("Failed to inspect bound TCP endpoint")?;
+            .context("Failed to inspect the bound TCP IPC endpoint")?;
         let incoming = TcpListenerStream::new(listener);
         let (mut emulator, shutdown_rx) = Self::new_with_shutdown(policy)?;
         let agent = AgentService {
@@ -153,25 +153,27 @@ impl IpcEmulator {
     ) -> anyhow::Result<(Self, IpcEndpoint)> {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!("Failed to create IPC emulator socket directory {}", parent.display())
+                format!(
+                    "Failed to create the emulator Unix domain socket directory {}",
+                    parent.display()
+                )
             })?;
         }
-        if tokio::fs::try_exists(&path)
-            .await
-            .with_context(|| format!("Failed to inspect IPC emulator socket {}", path.display()))?
-        {
+        if tokio::fs::try_exists(&path).await.with_context(|| {
+            format!("Failed to inspect emulator Unix domain socket {}", path.display())
+        })? {
             tokio::fs::remove_file(&path).await.with_context(|| {
-                format!("Failed to remove stale IPC emulator socket {}", path.display())
+                format!("Failed to remove stale emulator Unix domain socket {}", path.display())
             })?;
         }
         let listener = tokio::net::UnixListener::bind(&path).with_context(|| {
-            format!("Failed to bind Unix IPC emulator socket {}", path.display())
+            format!("Failed to bind emulator Unix domain socket {}", path.display())
         })?;
         tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .await
             .with_context(|| {
                 format!(
-                    "Failed to restrict Unix IPC emulator socket permissions for {}",
+                    "Failed to restrict emulator Unix domain socket permissions for {}",
                     path.display()
                 )
             })?;
@@ -191,7 +193,7 @@ impl IpcEmulator {
                 .add_service(TacacsAgentMockControllerServer::new(controller))
                 .serve_with_incoming_shutdown(incoming, shutdown_signal(shutdown_rx))
                 .await
-                .context("Unix IPC emulator server failed");
+                .context("Unix domain socket IPC emulator server failed");
             remove_unix_socket(&cleanup_path).await?;
             result
         }));
@@ -218,7 +220,8 @@ async fn remove_unix_socket(path: &Path) -> anyhow::Result<()> {
     match tokio::fs::remove_file(path).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error)
-            .with_context(|| format!("Failed to remove IPC emulator socket {}", path.display())),
+        Err(error) => Err(error).with_context(|| {
+            format!("Failed to remove emulator Unix domain socket {}", path.display())
+        }),
     }
 }

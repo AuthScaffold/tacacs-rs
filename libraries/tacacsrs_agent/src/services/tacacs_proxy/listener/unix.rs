@@ -20,10 +20,16 @@ pub(super) async fn serve(
         client_api_listener::prepare_unix_listener(path, socket_mode).await?;
     registration.mark_bound();
 
-    log::info!("Listening for TACACS+ proxy clients on Unix socket {}", path.display());
+    log::info!(
+        "The TACACS+ proxy listener accepts clients on Unix domain socket {}",
+        path.display()
+    );
     let result =
-        accept_loop(listener, service, format!("Unix socket {}", path.display()), shutdown).await;
-    socket_guard.cleanup("TACACS+ proxy Unix socket").await?;
+        accept_loop(listener, service, format!("Unix domain socket {}", path.display()), shutdown)
+            .await;
+    socket_guard
+        .cleanup("TACACS+ proxy Unix domain socket")
+        .await?;
     result
 }
 
@@ -33,7 +39,7 @@ impl ProxyListener<tokio::net::UnixStream> for tokio::net::UnixListener {
         let (stream, address) = self
             .accept()
             .await
-            .context("Failed to accept Unix TACACS+ proxy connection")?;
+            .context("Failed to accept a TACACS+ proxy connection on a Unix domain socket")?;
         let peer_label = address
             .as_pathname()
             .map_or_else(|| "anonymous-unix-peer".to_owned(), |path| path.display().to_string());

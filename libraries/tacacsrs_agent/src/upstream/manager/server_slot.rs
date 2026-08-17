@@ -1,4 +1,4 @@
-//! Per-server upstream connection cache and reconnect serialization.
+//! Per-server connection cache and reconnect serialization.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -10,19 +10,19 @@ use crate::upstream::UpstreamConnection;
 
 /// Per-server cached connection state.
 ///
-/// Each configured TACACS+ server gets its own `ServerSlot` so reconnect
-/// serialization and connection caching are independent.
+/// Each configured TACACS+ server has one `ServerSlot`. Each slot has an
+/// independent connection cache and reconnect lock.
 pub(super) struct ServerSlot {
-    /// The per-server connection configuration.
+    /// Connection configuration for this server.
     pub(super) server: Arc<TacacsPlusServer>,
-    /// Cached upstream connection, if any. `None` means the server needs a
-    /// fresh connection on the next request.
+    /// Cached server connection. `None` means that the next request must open a
+    /// connection.
     pub(super) connection: RwLock<Option<Arc<dyn UpstreamConnection>>>,
     /// Lock that serializes reconnect attempts for this server.
     pub(super) connect_lock: Mutex<()>,
-    /// Monotonically increasing counter of completed connect attempts.
-    /// Used to detect when another task has already reconnected while this task
-    /// was waiting for the lock.
+    /// Increasing count of completed connection attempts.
+    /// A task uses this count to detect a reconnect that completed while it
+    /// waited for the lock.
     pub(super) completed_connect_attempts: AtomicU64,
 }
 
@@ -52,7 +52,7 @@ impl ServerSlot {
         let connection = self.connection.write().await.take();
         if let Some(connection) = connection {
             log::debug!(
-                "Draining cached upstream connection for {} during configuration reload",
+                "Draining cached server connection for {} during configuration reload",
                 self.server.socket_address(),
             );
             connection.stop_accepting_new_sessions().await;

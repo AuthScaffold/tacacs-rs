@@ -16,24 +16,23 @@ pub(super) struct RuntimeRoutingSnapshot {
     pub(super) proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
 }
 
-/// Immutable configured server snapshot plus its mutable failover cursor.
+/// Immutable server set and its mutable failover cursor.
 pub(super) struct ServerSet {
     /// Per-server state including cached connections and reconnect locks.
     pub(super) servers: Vec<Arc<ServerSlot>>,
-    /// Index into `servers` of the currently preferred server for new sessions.
+    /// Index in `servers` of the preferred server for new sessions.
     pub(super) active_index: RwLock<usize>,
 }
 
-/// The result of binding an IPC request to an upstream server.
+/// Result of binding an IPC request to a TACACS+ server.
 ///
-/// Contains both the server index for recording failover and the connection
-/// handle used to execute the request.
+/// Contains the server index for failover records and the request connection.
 pub(crate) struct BoundServer {
     /// The server snapshot this request was bound against.
     pub(super) server_set: Arc<ServerSet>,
-    /// Index into the service's server list.
+    /// Index in the service server list.
     pub(crate) index: usize,
-    /// The upstream connection to use for this request.
+    /// Server connection for this request.
     pub(crate) connection: Arc<dyn UpstreamConnection>,
 }
 

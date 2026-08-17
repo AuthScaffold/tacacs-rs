@@ -26,7 +26,7 @@ impl RoutedOperation for PapAuthenticationRoute {
         request: Self::Request,
     ) -> anyhow::Result<Self::Response> {
         let privilege_level = u8::try_from(request.privilege_level)
-            .map_err(|_| anyhow::anyhow!("PAP privilege level exceeds TACACS+ u8 field"))?;
+            .map_err(|_| anyhow::anyhow!("PAP privilege level exceeds the TACACS+ u8 field"))?;
         let exchange = PapAuthenticationExchange::new(
             request.user,
             request.password,

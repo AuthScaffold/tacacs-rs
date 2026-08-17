@@ -1,4 +1,4 @@
-//! Runtime extraction of configured TACACS+ upstream servers.
+//! Runtime extraction of configured TACACS+ servers.
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
 

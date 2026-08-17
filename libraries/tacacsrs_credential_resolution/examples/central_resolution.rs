@@ -66,9 +66,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ResolvedCredential::CertificateWithKey(client_identity) = result_set
         .credential(plan.requests()[0].slot())
-        .expect("client identity result")
+        .expect("client identity credential must exist")
     else {
-        unreachable!("the closed result set already checked the response variant");
+        unreachable!("the closed result set already validated the credential variant");
     };
     assert!(!client_identity.private_key.expose_secret().is_empty());
     println!("resolved {} credential slots", result_set.len());

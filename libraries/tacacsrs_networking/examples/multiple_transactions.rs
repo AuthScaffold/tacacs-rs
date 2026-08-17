@@ -86,7 +86,7 @@ impl log::Log for SimpleLogger {
 }
 
 /// # Errors
-/// Returns an error if the logger has already been set.
+/// Returns an error if a logger is already configured.
 pub fn init_logging() -> Result<(), SetLoggerError> {
     log::set_logger(&LOGGER).map(|()| log::set_max_level(LevelFilter::Info))
 }

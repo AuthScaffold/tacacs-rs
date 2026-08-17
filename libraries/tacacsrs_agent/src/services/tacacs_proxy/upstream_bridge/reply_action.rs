@@ -1,4 +1,4 @@
-//! TACACS+ reply status classification for proxy session lifetime decisions.
+//! TACACS+ reply status classes for proxy session lifetime decisions.
 
 use tacacsrs_messages::accounting::reply::AccountingReply;
 use tacacsrs_messages::authentication::reply::AuthenticationReply;

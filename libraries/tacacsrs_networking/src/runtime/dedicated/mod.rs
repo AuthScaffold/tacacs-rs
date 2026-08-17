@@ -1,6 +1,6 @@
-//! Minimal one-shot TACACS+ packet connection.
+//! One-shot TACACS+ packet connection.
 //!
-//! [`DedicatedConnection`] writes packets and reads responses over one raw
+//! [`DedicatedConnection`] writes packets and reads responses over one
 //! transport without spawning background tasks or managing multiplexed sessions.
 //! Request/reply body construction belongs to fixed exchange descriptors or
 //! mutable client conversations layered above this runtime.
@@ -17,12 +17,12 @@ use crate::transport::Transport;
 
 use super::MultiplexedConnection;
 
-/// A minimal TACACS+ connection that carries packet exchanges over a single
+/// A TACACS+ connection that carries packet exchanges over one
 /// transport.
 ///
-/// Unlike [`MultiplexedConnection`], this type does not spawn background tasks and
-/// does not multiplex sessions. Higher-level code can wrap it in a
-/// internal facade when it needs to run an exchange over a one-shot stream.
+/// Unlike [`MultiplexedConnection`], this type does not spawn background tasks
+/// or multiplex sessions. Higher-level code can wrap it in an internal facade
+/// to run an exchange over a one-shot connection.
 pub(crate) struct DedicatedConnection<R, W> {
     reader_half: R,
     writer_half: W,
@@ -35,7 +35,7 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    /// Creates a new dedicated connection by splitting a [`Transport`] into
+    /// Creates a dedicated connection by splitting a [`Transport`] into
     /// its read and write halves.
     ///
     /// If `obfuscation_key` is provided, outgoing packets are obfuscated and
@@ -119,7 +119,7 @@ where
     ///     |
     ///     | run_with_halves(reader_half, writer_half)
     ///     v
-    /// background shared read/write loops own the stream halves
+    /// background shared read/write loops own the connection halves
     /// ```
     #[must_use]
     pub(crate) fn upgrade(self) -> Arc<MultiplexedConnection>
