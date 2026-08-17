@@ -26,17 +26,18 @@ same trait.
                                             |
                        +--------------------+----------------------+
                        |                                           |
-              +----------------+                     +-----------------------+
-              | StaticDatastore|                     | SonicConfigDb         |
-              |  (file / CLI)  |                     |  (Redis CONFIG_DB)    |
-              +----------------+                     +-----------------------+
+              +------------------+                   +-----------------------+
+              | CliFileDatastore |                   | SonicConfigDb         |
+              |  (file / CLI)    |                   |  (Redis CONFIG_DB)    |
+              +------------------+                   +-----------------------+
 ```
 
-`StaticDatastore` is used for file-based and CLI-based configuration. It
-returns a single snapshot and never emits change events. `SonicConfigDb`
-reads `TACPLUS|global` and `TACPLUS_SERVER|*` rows from Redis and emits
-change events whenever a TACPLUS-prefixed key changes (subject to the
-configured debounce window).
+`CliFileDatastore` handles file-based and CLI-based configuration. CLI-only
+input returns one snapshot. Watched YANG, certificate, and key files emit
+change events. `SonicConfigDb` reads `TACPLUS|global`,
+`TACPLUS_SERVER|*`, `TACPLUS_SERVER_TLS|*`, and
+`TACPLUS_FORWARDER|global`. It emits change events when a
+TACPLUS-prefixed key changes, subject to the configured debounce window.
 
 ## ConfigDB schema mapping
 
@@ -286,13 +287,21 @@ snapshot and connection handles.
 When a TACPLUS-prefixed key changes in CONFIG_DB, the runtime:
 
 1. Coalesces additional changes that arrive within a short debounce window.
-2. Re-reads the full TACPLUS / TACPLUS_SERVER tables.
+2. Re-reads all four supported TACACS+ tables.
 3. Validates the new snapshot against the YANG schema.
 4. Emits a typed changed or rejected event.
 5. Filters proxy self-loops and validates the complete candidate.
 6. Atomically replaces the server set for new sessions while preserving unchanged cached connections.
 
-Invalid candidates leave the previous known-good configuration active and mark runtime health stale/degraded. If Redis is unavailable at process startup, enabled listeners still bind and liveness serves while startup/readiness remain not serving. The daemon retries with capped jittered backoff. Subscription setup failures and ended streams mark the snapshot stale, trigger a fresh load to cover missed changes, and resubscribe without exiting.
+Before listener creation, the daemon waits for Redis and a valid
+`TACPLUS_FORWARDER|global` row. It retries with capped backoff and does not bind
+either listener during this bootstrap phase.
+
+After listener startup, invalid server candidates leave the previous known-good
+configuration active and mark runtime health stale or degraded. A valid
+snapshot satisfies the configuration part of startup. Readiness also requires
+at least one eligible server. Subscription setup errors and ended streams mark
+the snapshot stale, trigger a fresh load, and resubscribe without exiting.
 
 ## Operational commands
 

@@ -135,8 +135,8 @@ mapping and Redis notification details, see
 If Redis or the forwarder row is unavailable, the process retries with capped
 backoff before it binds either listener. After listener startup, the
 configuration supervisor continues to retry invalid or unavailable server
-snapshots. A valid snapshot makes the same process ready without a restart.
-Upstream reachability does not gate readiness.
+snapshots. A valid snapshot and at least one eligible server make the same
+process ready without a restart. Upstream reachability does not gate readiness.
 
 Use the standard exec probe in the image:
 
