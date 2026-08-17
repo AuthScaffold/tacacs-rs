@@ -9,5 +9,6 @@ services:
     ports:
       - '4949:4949'
       - '4449:4449'
+      - '4450:4450'
     volumes:
       - ./config:/usr/local/etc/

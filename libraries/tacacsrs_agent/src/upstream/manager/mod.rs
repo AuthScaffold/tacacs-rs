@@ -21,9 +21,8 @@
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::sync::atomic::Ordering;
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_credential_resolution::RuntimeServer;
 
 use self::availability::AvailabilityTracker;
 use self::server_set::ServerSet;
@@ -76,19 +75,12 @@ impl UpstreamManager {
         preferred_probe_interval: std::time::Duration,
         health: RuntimeHealthPublisher,
     ) -> Self {
-        let servers = servers
-            .into_iter()
-            .map(|server| {
-                RuntimeServer::inline(server)
-                    .map(Arc::new)
-                    .expect("initial service configuration must contain inline credentials only")
-            })
-            .collect();
-        Self::new_runtime(servers, connector, preferred_probe_interval, health)
+        let servers = servers.into_iter().map(Arc::new).collect();
+        Self::new_shared(servers, connector, preferred_probe_interval, health)
     }
 
-    pub(crate) fn new_runtime(
-        servers: Vec<Arc<RuntimeServer>>,
+    pub(crate) fn new_shared(
+        servers: Vec<Arc<TacacsPlusServer>>,
         connector: Arc<dyn UpstreamConnector>,
         preferred_probe_interval: std::time::Duration,
         health: RuntimeHealthPublisher,
@@ -96,7 +88,7 @@ impl UpstreamManager {
         debug_assert!(
             servers
                 .iter()
-                .all(|server| server.config().supports_server_type(REQUIRED_SERVER_TYPES)),
+                .all(|server| server.supports_server_type(REQUIRED_SERVER_TYPES)),
             "UpstreamManager expects servers to support the full current TACACS+ operation set"
         );
         let servers = servers
@@ -187,20 +179,13 @@ impl UpstreamManager {
         &self,
         servers: Vec<TacacsPlusServer>,
     ) -> anyhow::Result<()> {
-        let servers = servers
-            .into_iter()
-            .map(|server| {
-                RuntimeServer::inline(server)
-                    .map(Arc::new)
-                    .context("runtime reload requires central credentials to be resolved first")
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        self.reload_runtime_servers(servers).await
+        self.reload_shared_servers(servers.into_iter().map(Arc::new).collect())
+            .await
     }
 
-    pub(crate) async fn reload_runtime_servers(
+    pub(crate) async fn reload_shared_servers(
         &self,
-        servers: Vec<Arc<RuntimeServer>>,
+        servers: Vec<Arc<TacacsPlusServer>>,
     ) -> anyhow::Result<()> {
         let previous = self.current_server_set();
         let materially_changed = previous.server_count() != servers.len()
@@ -208,7 +193,7 @@ impl UpstreamManager {
                 .servers
                 .iter()
                 .zip(&servers)
-                .any(|(old, new)| !runtime_servers_reusable(&old.server, new));
+                .any(|(old, new)| old.server.as_ref() != new.as_ref());
         let previous_active_name = if previous.server_count() == 0 {
             None
         } else {
@@ -221,7 +206,7 @@ impl UpstreamManager {
             let reusable = previous
                 .servers
                 .iter()
-                .find(|state| runtime_servers_reusable(&state.server, &server))
+                .find(|state| state.server.as_ref() == server.as_ref())
                 .cloned();
             new_server_slots.push(reusable.unwrap_or_else(|| Arc::new(ServerSlot::new(server))));
         }
@@ -519,28 +504,16 @@ impl UpstreamManager {
     }
 }
 
-fn runtime_servers_reusable(left: &RuntimeServer, right: &RuntimeServer) -> bool {
-    if left.has_resolved_credentials() || right.has_resolved_credentials() {
-        return false;
-    }
-    match (serde_json::to_value(left.config()), serde_json::to_value(right.config())) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use tacacsrs_credential_resolution::{
-        FakeCredentialResolver, ResolutionPlan, ResolvedCredential, RuntimeServer, SecretBytes,
-    };
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    use tacacsrs_config::TacacsPlusServer;
-    use super::{BoundServer, UpstreamManager, runtime_servers_reusable};
+    use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
+    use tacacsrs_config::{EpskSupportedHash, TacacsPlusServer, Tls13Epsk, TlsClientClientIdentity};
+    use super::{BoundServer, UpstreamManager};
     use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
     use crate::EnabledServices;
     use crate::test_support::{FakeConnection, FakeConnector};
@@ -569,70 +542,68 @@ mod tests {
         }
     }
 
-    async fn resolved_runtime(reference: &str, secret: &[u8]) -> RuntimeServer {
-        let json = format!(
-            r#"{{
-                "ietf-system-tacacs-plus:tacacs-plus": {{
-                    "server": [{{
-                        "name": "rotation-test",
-                        "server-type": "authentication authorization accounting",
-                        "address": "192.0.2.70",
-                        "port": 449,
-                        "client-identity": {{
-                            "tls13-epsk": {{
-                                "central-keystore-reference": "{reference}",
-                                "external-identity": "client"
-                            }}
-                        }}
-                    }}]
-                }}
-            }}"#,
-        );
-        let server = tacacsrs_config::parse_yang_json(&json)
-            .expect("central config")
-            .server
-            .remove(0);
-        let plan = ResolutionPlan::from_server(&server).expect("plan");
-        let resolver = FakeCredentialResolver::new().with_response(
-            plan.requests()[0].slot(),
-            ResolvedCredential::SymmetricKey(SecretBytes::new(secret.to_vec())),
-        );
-        RuntimeServer::resolve(server, &resolver)
-            .await
-            .expect("resolved runtime")
+    fn materialized_server(secret: &[u8]) -> TacacsPlusServer {
+        let mut server = test_server("192.0.2.70:449");
+        server.name = "rotation-test".to_owned();
+        server.client_identity = Some(TlsClientClientIdentity {
+            credentials_reference: None,
+            certificate: None,
+            tls13_epsk: Some(Tls13Epsk {
+                inline_definition: Some(SymmetricKeyInlineDefinition {
+                    key_format: None,
+                    cleartext_symmetric_key: Some(tacacsrs_secrets::SecretBytes::new(
+                        secret.to_vec(),
+                    )),
+                }),
+                central_keystore_reference: None,
+                external_identity: "client".to_owned(),
+                hash: EpskSupportedHash::Sha256,
+                context: None,
+                target_protocol: None,
+                target_kdf: None,
+                psk_dhe_ke_groups: Vec::new(),
+            }),
+        });
+        server
     }
 
     fn bound_secret(bound: &BoundServer) -> &[u8] {
         bound
-            .runtime_server()
-            .tls13_epsk_secret()
+            .server()
+            .client_identity
+            .as_ref()
+            .and_then(|identity| identity.tls13_epsk.as_ref())
+            .and_then(|epsk| epsk.inline_definition.as_ref())
+            .and_then(|inline| inline.cleartext_symmetric_key.as_ref())
             .expect("resolved secret")
             .expose_secret()
     }
 
-    #[tokio::test]
-    async fn centrally_resolved_servers_are_never_reused_by_reference_equivalence() {
-        let first = resolved_runtime("same-object-id", b"first-secret-material").await;
-        let replacement = resolved_runtime("same-object-id", b"replacement-secret").await;
+    #[test]
+    fn materialized_secret_changes_generated_server_equality() {
+        let first = materialized_server(b"first-secret-material");
+        let replacement = materialized_server(b"replacement-secret");
+        assert_ne!(first, replacement);
+    }
 
-        assert!(!runtime_servers_reusable(&first, &replacement));
-        assert_ne!(
-            first
-                .tls13_epsk_secret()
-                .expect("first secret")
-                .expose_secret(),
-            replacement
-                .tls13_epsk_secret()
-                .expect("replacement secret")
-                .expose_secret()
-        );
+    #[test]
+    fn inline_shared_secret_change_prevents_runtime_server_reuse() {
+        let mut first = test_server("192.0.2.70:49");
+        first.shared_secret = Some(tacacsrs_secrets::SecretString::new("first-secret".to_owned()));
+        let same = first.clone();
+
+        let mut replacement = test_server("192.0.2.70:49");
+        replacement.shared_secret =
+            Some(tacacsrs_secrets::SecretString::new("replacement-secret".to_owned()));
+        assert_eq!(first, same);
+        assert_ne!(first, replacement);
     }
 
     #[tokio::test]
     async fn resolved_rotation_replaces_new_bindings_and_preserves_existing_snapshots() {
-        let first = Arc::new(resolved_runtime("object-a", b"first-secret-material").await);
-        let second = Arc::new(resolved_runtime("object-b", b"second-secret-material").await);
-        let rollback = Arc::new(resolved_runtime("object-a", b"first-secret-material").await);
+        let first = Arc::new(materialized_server(b"first-secret-material"));
+        let second = Arc::new(materialized_server(b"second-secret-material"));
+        let rollback = Arc::new(materialized_server(b"first-secret-material"));
         let connection = Arc::new(FakeConnection {
             address: "192.0.2.70:449".to_owned(),
             usable: AtomicBool::new(true),
@@ -642,7 +613,7 @@ mod tests {
             connection.address.clone(),
             Arc::clone(&connection),
         )])));
-        let state = UpstreamManager::new_runtime(
+        let state = UpstreamManager::new_shared(
             vec![Arc::clone(&first)],
             connector,
             Duration::from_secs(1),
@@ -651,13 +622,13 @@ mod tests {
 
         let first_binding = state.bind_server_for_new_session().await.expect("bind A");
         state
-            .reload_runtime_servers(vec![second])
+            .reload_shared_servers(vec![second])
             .await
             .expect("apply B");
         connection.usable.store(true, Ordering::Relaxed);
         let second_binding = state.bind_server_for_new_session().await.expect("bind B");
         state
-            .reload_runtime_servers(vec![rollback])
+            .reload_shared_servers(vec![rollback])
             .await
             .expect("roll back to A");
         connection.usable.store(true, Ordering::Relaxed);

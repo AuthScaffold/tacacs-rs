@@ -498,7 +498,10 @@ fn validate_client_identity_key_formats(
             let path = format!("{context}/client-identity/certificate");
             validate_inline_asymmetric_key_material(
                 inline.public_key.as_deref(),
-                inline.cleartext_private_key.as_deref(),
+                inline
+                    .cleartext_private_key
+                    .as_ref()
+                    .map(tacacsrs_secrets::SecretBytes::expose_secret),
                 inline.cert_data.as_deref(),
                 &path,
             )?;
@@ -508,7 +511,7 @@ fn validate_client_identity_key_formats(
         if let Some(ref inline) = epsk.inline_definition {
             let path = format!("{context}/client-identity/tls13-epsk");
             if let Some(ref key) = inline.cleartext_symmetric_key {
-                validate_binary_data(key, &path, "cleartext-symmetric-key")?;
+                validate_binary_data(key.expose_secret(), &path, "cleartext-symmetric-key")?;
             }
         }
     }
@@ -554,7 +557,10 @@ fn validate_client_credential_key_formats(
             let path = format!("{context}/certificate");
             validate_inline_asymmetric_key_material(
                 inline.public_key.as_deref(),
-                inline.cleartext_private_key.as_deref(),
+                inline
+                    .cleartext_private_key
+                    .as_ref()
+                    .map(tacacsrs_secrets::SecretBytes::expose_secret),
                 inline.cert_data.as_deref(),
                 &path,
             )?;
@@ -564,7 +570,7 @@ fn validate_client_credential_key_formats(
         if let Some(ref inline) = epsk.inline_definition {
             let path = format!("{context}/tls13-epsk");
             if let Some(ref key) = inline.cleartext_symmetric_key {
-                validate_binary_data(key, &path, "cleartext-symmetric-key")?;
+                validate_binary_data(key.expose_secret(), &path, "cleartext-symmetric-key")?;
             }
         }
     }

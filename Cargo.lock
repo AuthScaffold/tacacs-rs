@@ -1914,6 +1914,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1959,10 +1965,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "log",
- "serde_json",
+ "rustix",
  "tacacsrs-agent-client",
  "tacacsrs-config",
- "tacacsrs-credential-resolution",
  "tacacsrs-flows",
  "tacacsrs-messages",
  "tacacsrs-networking",
@@ -2048,6 +2053,7 @@ dependencies = [
  "tacacsrs-credential-resolution",
  "tacacsrs-datastore",
  "tacacsrs-networking",
+ "tacacsrs-secrets",
  "tacacsrs-sonic",
  "tokio",
  "tokio-stream",
@@ -2094,6 +2100,7 @@ dependencies = [
  "serde",
  "serde_ignored",
  "serde_json",
+ "tacacsrs-secrets",
 ]
 
 [[package]]
@@ -2101,6 +2108,7 @@ name = "tacacsrs-credential-resolution"
 version = "0.0.0-dev"
 dependencies = [
  "async-trait",
+ "futures-core",
  "serde",
  "serde_json",
  "static_assertions",
@@ -2116,9 +2124,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures-core",
- "serde",
- "serde_json",
  "tacacsrs-config",
+ "tacacsrs-secrets",
  "tokio",
  "tokio-stream",
 ]
@@ -2160,9 +2167,9 @@ dependencies = [
  "parking_lot",
  "rand",
  "tacacsrs-config",
- "tacacsrs-credential-resolution",
  "tacacsrs-flows",
  "tacacsrs-messages",
+ "tacacsrs-secrets",
  "tokio",
  "tokio-openssl",
 ]
@@ -2171,6 +2178,10 @@ dependencies = [
 name = "tacacsrs-secrets"
 version = "0.0.0-dev"
 dependencies = [
+ "base64 0.23.1",
+ "serde",
+ "serde_json",
+ "subtle",
  "zeroize",
 ]
 
@@ -2193,6 +2204,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "zeroize",
 ]
 
 [[package]]

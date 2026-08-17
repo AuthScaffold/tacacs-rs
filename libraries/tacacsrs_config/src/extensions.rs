@@ -59,7 +59,7 @@ impl TacacsPlusServerExt for TacacsPlusServer {
     fn obfuscation_key(&self) -> Option<Vec<u8>> {
         self.shared_secret
             .as_ref()
-            .map(|value| value.as_bytes().to_vec())
+            .map(|value| value.expose_secret().as_bytes().to_vec())
     }
 
     fn is_tls(&self) -> bool {
@@ -123,7 +123,7 @@ mod tests {
         assert!(!server.is_obfuscation());
         assert_eq!(server.obfuscation_key(), None);
 
-        server.shared_secret = Some("secret".to_owned());
+        server.shared_secret = Some(tacacsrs_secrets::SecretString::new("secret".to_owned()));
         assert!(!server.is_tls());
         assert!(server.is_obfuscation());
         assert_eq!(server.obfuscation_key(), Some(b"secret".to_vec()));

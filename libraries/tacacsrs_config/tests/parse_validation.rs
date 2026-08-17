@@ -57,7 +57,12 @@ fn parse_minimal_obfuscation_config() {
     assert_eq!(s.port, 49);
     assert_eq!(s.timeout, 10);
     assert!(!s.single_connection);
-    assert_eq!(s.shared_secret.as_deref(), Some("QaEfThUkO198010075460923+h3TbE8n"));
+    assert_eq!(
+        s.shared_secret
+            .as_ref()
+            .map(tacacsrs_secrets::SecretString::expose_secret),
+        Some("QaEfThUkO198010075460923+h3TbE8n"),
+    );
     assert!(s.client_identity.is_none());
     assert!(s.server_authentication.is_none());
 }
@@ -2770,7 +2775,14 @@ fn with_shared_secret_alongside_tls_does_not_clear_tls_fields() {
             .build();
 
     assert!(server.server_authentication.is_some(), "TLS fields should be preserved");
-    assert_eq!(server.shared_secret.as_deref(), Some("secret"), "shared secret should be set");
+    assert_eq!(
+        server
+            .shared_secret
+            .as_ref()
+            .map(tacacsrs_secrets::SecretString::expose_secret),
+        Some("secret"),
+        "shared secret should be set",
+    );
 }
 
 #[test]

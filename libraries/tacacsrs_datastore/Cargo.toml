@@ -10,13 +10,12 @@ repository.workspace = true
 anyhow = "1"
 async-trait = "0.1"
 futures-core = "0.3"
-serde = "1"
-serde_json = "1"
 tacacsrs-config = { path = "../tacacsrs_config" }
 tokio = { version = "1.52.3", features = ["sync", "macros", "rt"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 
 [dev-dependencies]
+tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 tokio = { version = "1.52.3", features = ["full"] }
 
 [lints]

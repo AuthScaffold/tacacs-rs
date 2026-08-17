@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_credential_resolution::RuntimeServer;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::upstream::UpstreamConnection;
@@ -15,7 +14,7 @@ use crate::upstream::UpstreamConnection;
 /// serialization and connection caching are independent.
 pub(super) struct ServerSlot {
     /// The per-server connection configuration.
-    pub(super) server: Arc<RuntimeServer>,
+    pub(super) server: Arc<TacacsPlusServer>,
     /// Cached upstream connection, if any. `None` means the server needs a
     /// fresh connection on the next request.
     pub(super) connection: RwLock<Option<Arc<dyn UpstreamConnection>>>,
@@ -28,7 +27,7 @@ pub(super) struct ServerSlot {
 }
 
 impl ServerSlot {
-    pub(super) fn new(server: Arc<RuntimeServer>) -> Self {
+    pub(super) fn new(server: Arc<TacacsPlusServer>) -> Self {
         Self {
             server,
             connection: RwLock::new(None),
@@ -38,7 +37,7 @@ impl ServerSlot {
     }
 
     pub(super) fn config(&self) -> &TacacsPlusServer {
-        self.server.config()
+        &self.server
     }
 
     pub(super) fn name(&self) -> &str {
@@ -54,7 +53,7 @@ impl ServerSlot {
         if let Some(connection) = connection {
             log::debug!(
                 "Draining cached upstream connection for {} during configuration reload",
-                self.server.config().socket_address(),
+                self.server.socket_address(),
             );
             connection.stop_accepting_new_sessions().await;
         }

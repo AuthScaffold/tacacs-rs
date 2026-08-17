@@ -1,8 +1,9 @@
 use tacacsrs_config::{enumerate_servers, parse_yang_json, pipeline};
 use tacacsrs_credential_resolution::{
     CertificateBagMaterial, CertificateWithKeyMaterial, CredentialKind, CredentialReference,
-    FakeCredentialResolver, ProviderErrorKind, PublicBytes, ResolutionErrorKind, ResolutionPlan,
-    ResolvedCredential, ResolvedCredentialSet, ResolvedResponse, SecretBytes, resolve_plan,
+    FakeCredentialResolver, NamedCertificateMaterial, ProviderErrorKind, PublicBytes,
+    ResolutionErrorKind, ResolutionPlan, ResolvedCredential, ResolvedCredentialSet,
+    ResolvedResponse, SecretBytes, SymmetricKeyMaterial, resolve_plan,
 };
 
 fn certificate_and_trust_server() -> tacacsrs_config::TacacsPlusServer {
@@ -61,6 +62,9 @@ fn epsk_server() -> tacacsrs_config::TacacsPlusServer {
 
 fn certificate_material() -> ResolvedCredential {
     ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+        public_key_format: None,
+        public_key: None,
+        private_key_format: tacacsrs_config::crypto_types::PrivateKeyFormat::OneAsymmetricKeyFormat,
         certificate: PublicBytes::new(b"certificate".to_vec()),
         private_key: SecretBytes::new(b"private-key".to_vec()),
     })
@@ -68,13 +72,19 @@ fn certificate_material() -> ResolvedCredential {
 
 fn ca_material() -> ResolvedCredential {
     ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
-        certificates: vec![PublicBytes::new(b"ca".to_vec())],
+        certificates: vec![NamedCertificateMaterial {
+            name: "ca".to_owned(),
+            certificate: PublicBytes::new(b"ca".to_vec()),
+        }],
     })
 }
 
 fn ee_material() -> ResolvedCredential {
     ResolvedCredential::EeCertificateBag(CertificateBagMaterial {
-        certificates: vec![PublicBytes::new(b"ee".to_vec())],
+        certificates: vec![NamedCertificateMaterial {
+            name: "ee".to_owned(),
+            certificate: PublicBytes::new(b"ee".to_vec()),
+        }],
     })
 }
 
@@ -113,7 +123,10 @@ async fn fake_resolver_completes_all_request_variants() {
     let epsk_plan = ResolutionPlan::from_server(&epsk_server()).expect("EPSK plan");
     let epsk_resolver = FakeCredentialResolver::new().with_response(
         epsk_plan.requests()[0].slot(),
-        ResolvedCredential::SymmetricKey(SecretBytes::new(b"epsk".to_vec())),
+        ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+            key_format: None,
+            key: SecretBytes::new(b"epsk".to_vec()),
+        }),
     );
     let epsk_set = resolve_plan(&epsk_plan, &epsk_resolver)
         .await
@@ -331,7 +344,10 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
         [
             ResolvedResponse::new(
                 slots[0].slot(),
-                ResolvedCredential::SymmetricKey(SecretBytes::new(b"wrong-kind".to_vec())),
+                ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+                    key_format: None,
+                    key: SecretBytes::new(b"wrong-kind".to_vec()),
+                }),
             ),
             ResolvedResponse::new(slots[1].slot(), ca_material()),
             ResolvedResponse::new(slots[2].slot(), ee_material()),

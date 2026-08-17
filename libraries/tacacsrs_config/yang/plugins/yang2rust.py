@@ -12,7 +12,9 @@ Usage:
 from __future__ import annotations
 
 from collections import OrderedDict
+from pathlib import Path
 from typing import TextIO
+import tomllib
 
 from pyang import plugin
 
@@ -93,6 +95,86 @@ _SKIP_MODULES = frozenset({
     "ietf-inet-types", "ietf-yang-types", "ietf-system",
     "ietf-interfaces", "ietf-network-instance",
 })
+
+SECRET_FIELDS_PATH = Path(__file__).resolve().parent.parent / "secret-fields.toml"
+
+
+class SecretFieldRule:
+    __slots__ = ("module", "leaf", "kind", "expected_matches", "actual_matches")
+
+    def __init__(self, module: str, leaf: str, kind: str, expected_matches: int):
+        self.module = module
+        self.leaf = leaf
+        self.kind = kind
+        self.expected_matches = expected_matches
+        self.actual_matches = 0
+
+
+class SecretFieldManifest:
+    """Fail-closed annotations for YANG leaves containing secret values."""
+
+    def __init__(self, rules: dict[tuple[str, str], SecretFieldRule]):
+        self._rules = rules
+
+    @classmethod
+    def load(cls, path: Path) -> "SecretFieldManifest":
+        try:
+            document = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise RuntimeError(f"failed to load secret field manifest {path}") from error
+
+        entries = document.get("secret", [])
+        if not isinstance(entries, list):
+            raise RuntimeError("secret field manifest 'secret' must be an array of tables")
+
+        rules: dict[tuple[str, str], SecretFieldRule] = {}
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise RuntimeError(f"secret field annotation {index} must be a table")
+            module = entry.get("module")
+            leaf = entry.get("leaf")
+            kind = entry.get("kind")
+            expected_matches = entry.get("expected_matches")
+            if not isinstance(module, str) or not module:
+                raise RuntimeError(f"secret field annotation {index} requires module")
+            if not isinstance(leaf, str) or not leaf:
+                raise RuntimeError(f"secret field annotation {index} requires leaf")
+            if kind not in ("string", "binary"):
+                raise RuntimeError(
+                    f"secret field annotation {module}:{leaf} has unsupported kind {kind!r}"
+                )
+            if not isinstance(expected_matches, int) or expected_matches < 1:
+                raise RuntimeError(
+                    f"secret field annotation {module}:{leaf} requires positive expected_matches"
+                )
+            identity = (module, leaf)
+            if identity in rules:
+                raise RuntimeError(
+                    f"duplicate secret field annotation for {module}:{leaf}"
+                )
+            rules[identity] = SecretFieldRule(module, leaf, kind, expected_matches)
+        return cls(rules)
+
+    def match(self, module: str, leaf: str, rust_type: str) -> str | None:
+        rule = self._rules.get((module, leaf))
+        if rule is None:
+            return None
+        expected_type = "String" if rule.kind == "string" else "Vec<u8>"
+        if rust_type != expected_type:
+            raise RuntimeError(
+                f"secret field annotation {module}:{leaf} of kind {rule.kind} "
+                f"requires Rust type {expected_type}, got {rust_type}"
+            )
+        rule.actual_matches += 1
+        return rule.kind
+
+    def verify_complete(self) -> None:
+        for rule in self._rules.values():
+            if rule.actual_matches != rule.expected_matches:
+                raise RuntimeError(
+                    f"secret field annotation {rule.module}:{rule.leaf} matched "
+                    f"{rule.actual_matches} field(s); expected {rule.expected_matches}"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -391,10 +473,11 @@ def _resolve_default(yang_default: str, rust_type: str) -> str | None:
 
 class Field:
     __slots__ = ("yang_name", "rust_name", "rust_type", "optional",
-                 "is_vec", "doc", "default_value", "serde_name")
+                 "is_vec", "doc", "default_value", "serde_name", "secret_kind")
 
     def __init__(self, yang_name, rust_type, *, optional=False,
-                 is_vec=False, doc=None, default_value=None, serde_name=None):
+                 is_vec=False, doc=None, default_value=None, serde_name=None,
+                 secret_kind=None):
         self.yang_name = yang_name
         self.rust_name = _yang_to_snake(yang_name)
         self.rust_type = rust_type
@@ -404,6 +487,7 @@ class Field:
         # (yang_default_str, rust_expr) or None
         self.default_value: tuple[str, str] | None = default_value
         self.serde_name = serde_name or yang_name
+        self.secret_kind = secret_kind
 
     def type_string(self) -> str:
         t = self.rust_type
@@ -585,11 +669,12 @@ def _resolve_identityref_base(type_stmt):
 # ---------------------------------------------------------------------------
 
 class Collector:
-    def __init__(self, ctx=None):
+    def __init__(self, ctx=None, secret_fields: SecretFieldManifest | None = None):
         self.modules: OrderedDict[str, ModuleTypes] = OrderedDict()
         # Fingerprint -> (module_name, struct_name) for deduplication
         self._fingerprints: dict[str, tuple[str, str]] = {}
         self._ctx = ctx
+        self._secret_fields = secret_fields
 
     def _get_mod(self, yang_mod_name: str) -> ModuleTypes:
         if yang_mod_name not in self.modules:
@@ -627,6 +712,10 @@ class Collector:
         for augment in module.search("augment"):
             for child in _get_children(augment):
                 self._process_node(child, parent_prefix="")
+
+    def verify_secret_fields(self) -> None:
+        if self._secret_fields is not None:
+            self._secret_fields.verify_complete()
 
     def _collect_enum_typedef(self, td, mod: ModuleTypes):
         td_type = td.search_one("type")
@@ -820,6 +909,14 @@ class Collector:
                 rust_type = "String"
 
         optional = _leaf_is_optional(stmt)
+        source_module = _source_module(stmt) or field_mod.yang_name
+        secret_kind = None
+        if self._secret_fields is not None:
+            secret_kind = self._secret_fields.match(source_module, stmt.arg, rust_type)
+            if secret_kind == "string":
+                rust_type = "tacacsrs_secrets::SecretString"
+            elif secret_kind == "binary":
+                rust_type = "tacacsrs_secrets::SecretBytes"
 
         # Extract YANG default value
         default_value = None
@@ -842,6 +939,7 @@ class Collector:
             doc=_get_desc(stmt),
             default_value=default_value,
             serde_name=self._serde_name(stmt, field_mod),
+            secret_kind=secret_kind,
         )
 
     def _process_leaf_list(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field:
@@ -1046,7 +1144,7 @@ class RustEmitter:
         w(f"/// Root wrapper for RFC 7951 JSON encoding.\n")
         w(f"///\n")
         w(f"/// The JSON document root key is `{json_key}`.\n")
-        w(f"#[derive(Debug, Clone, Serialize, Deserialize)]\n")
+        w(f"#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n")
         w(f"pub struct YangConfigRoot {{\n")
         w(f'    #[serde(rename = "{json_key}")]\n')
         w(f"    pub tacacs_plus: {rust_mod}::{struct_name},\n")
@@ -1070,7 +1168,7 @@ class RustEmitter:
             for f in st.fields:
                 if "::" in f.rust_type:
                     foreign_mod = f.rust_type.split("::")[0]
-                    if foreign_mod != mod.rust_name:
+                    if foreign_mod != mod.rust_name and foreign_mod != "tacacsrs_secrets":
                         imports.add(foreign_mod)
         for imp in sorted(imports):
             w(f"    use super::{imp};\n")
@@ -1339,7 +1437,7 @@ class RustEmitter:
             w("\n")
 
         self._doc(st.doc, "    ")
-        w("    #[derive(Debug, Clone, Serialize, Deserialize)]\n")
+        w("    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n")
         w('    #[serde(rename_all = "kebab-case")]\n')
         w(f"    pub struct {st.name} {{\n")
         for f in st.fields:
@@ -1357,7 +1455,7 @@ class RustEmitter:
         if f.serde_name != f.rust_name or _needs_rename(f.serde_name):
             w(f'        #[serde(rename = "{f.serde_name}")]\n')
 
-        if f.rust_type == "Vec<u8>":
+        if f.rust_type == "Vec<u8>" and f.secret_kind is None:
             if f.is_vec:
                 w('        #[serde(with = "crate::serde_helpers::base64_binary::vec_bytes")]\n')
             elif f.optional:
@@ -1428,7 +1526,9 @@ class YangToRustPlugin(plugin.PyangPlugin):
         ctx.implicit_errors = False
 
     def emit(self, ctx, modules, fd):
-        collector = Collector(ctx)
+        secret_fields = SecretFieldManifest.load(SECRET_FIELDS_PATH)
+        collector = Collector(ctx, secret_fields)
         for module in modules:
             collector.collect_module(module)
+        collector.verify_secret_fields()
         RustEmitter(fd, collector).emit()

@@ -19,7 +19,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_credential_resolution::RuntimeServer;
 
 use crate::helpers::connect_tcp;
 use crate::transport::BoxedTransport;
@@ -103,13 +102,12 @@ impl ConnectOptions {
 /// - the selected backend rejects the configured material or fails to
 ///   complete its handshake
 pub(crate) async fn establish_stream(
-    runtime: std::sync::Arc<RuntimeServer>,
+    server: std::sync::Arc<TacacsPlusServer>,
     options: &ConnectOptions,
 ) -> Result<BoxedTransport> {
-    let server = runtime.config();
     let address = server.socket_address();
 
-    let security_label = security_label(server);
+    let security_label = security_label(&server);
     log::debug!(
         "Connecting to TACACS+ server {address} (security: {security_label}, timeout: {:?})",
         options.timeout,
@@ -129,15 +127,15 @@ pub(crate) async fn establish_stream(
 
     // TLS-PSK must be checked before general TLS because `is_tls()` also
     // returns true when only PSK material is configured.
-    if crate::transport::tls_psk::server_has_psk(server) {
+    if crate::transport::tls_psk::server_has_psk(&server) {
         let stream =
-            crate::transport::tls_psk::establish_from_server(runtime, &address, tcp_stream).await?;
+            crate::transport::tls_psk::establish_from_server(server, &address, tcp_stream).await?;
         return Ok(BoxedTransport::new(stream));
     }
 
     if server.is_tls() {
         let stream = crate::transport::tls::establish_from_server(
-            server,
+            &server,
             &address,
             tcp_stream,
             options.disable_certificate_verification,

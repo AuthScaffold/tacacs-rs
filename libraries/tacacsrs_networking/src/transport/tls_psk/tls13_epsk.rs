@@ -2,7 +2,7 @@
 
 use anyhow::{Result, bail};
 use tacacsrs_config::generated::tacacs_plus::Tls13Epsk;
-use tacacsrs_credential_resolution::RuntimeServer;
+use tacacsrs_config::TacacsPlusServer;
 
 /// The minimum required TLS 1.3 EPSK key length in bytes.
 ///
@@ -10,9 +10,8 @@ use tacacsrs_credential_resolution::RuntimeServer;
 pub(crate) const MIN_PSK_KEY_LENGTH: usize = 16;
 
 /// Returns the inline symmetric key configured for a TLS 1.3 EPSK.
-pub(crate) fn config(runtime: &RuntimeServer) -> Result<&Tls13Epsk> {
-    runtime
-        .config()
+pub(crate) fn config(server: &TacacsPlusServer) -> Result<&Tls13Epsk> {
+    server
         .client_identity
         .as_ref()
         .and_then(|identity| identity.tls13_epsk.as_ref())
@@ -20,24 +19,22 @@ pub(crate) fn config(runtime: &RuntimeServer) -> Result<&Tls13Epsk> {
 }
 
 /// Returns resolved central or inline symmetric key bytes.
-pub(crate) fn symmetric_key(runtime: &RuntimeServer) -> Result<&[u8]> {
-    if let Some(secret) = runtime.tls13_epsk_secret() {
-        return Ok(secret.expose_secret());
-    }
-    config(runtime)?
+pub(crate) fn symmetric_key(server: &TacacsPlusServer) -> Result<&[u8]> {
+    let secret = config(server)?
         .inline_definition
         .as_ref()
-        .and_then(|definition| definition.cleartext_symmetric_key.as_deref())
+        .and_then(|definition| definition.cleartext_symmetric_key.as_ref())
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "TLS 1.3 EPSK inline-definition.cleartext-symmetric-key must be configured"
             )
-        })
+        })?;
+    Ok(secret.expose_secret())
 }
 
 /// Validates the TLS 1.3 EPSK fields required by the OpenSSL PSK callback.
-pub(crate) fn validate(runtime: &RuntimeServer) -> Result<()> {
-    let epsk = config(runtime)?;
+pub(crate) fn validate(server: &TacacsPlusServer) -> Result<()> {
+    let epsk = config(server)?;
     if epsk.external_identity.is_empty() {
         bail!("PSK identity must not be empty");
     }
@@ -48,7 +45,7 @@ pub(crate) fn validate(runtime: &RuntimeServer) -> Result<()> {
         );
     }
 
-    let key = symmetric_key(runtime)?;
+    let key = symmetric_key(server)?;
     if key.len() < MIN_PSK_KEY_LENGTH {
         bail!(
             "PSK key must be at least {} bytes (128 bits), per RFC 9257 section 6; got {} bytes",
@@ -61,7 +58,7 @@ pub(crate) fn validate(runtime: &RuntimeServer) -> Result<()> {
 }
 
 #[cfg(test)]
-pub(crate) fn test_runtime(epsk: Tls13Epsk) -> std::sync::Arc<RuntimeServer> {
+pub(crate) fn test_server(epsk: Tls13Epsk) -> std::sync::Arc<TacacsPlusServer> {
     use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType, TlsClientClientIdentity};
 
     let server = TacacsPlusServer {
@@ -84,5 +81,5 @@ pub(crate) fn test_runtime(epsk: Tls13Epsk) -> std::sync::Arc<RuntimeServer> {
         source_interface: None,
         vrf_instance: None,
     };
-    std::sync::Arc::new(RuntimeServer::inline(server).expect("inline runtime server"))
+    std::sync::Arc::new(server)
 }

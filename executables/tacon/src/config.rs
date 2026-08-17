@@ -263,7 +263,13 @@ mod tests {
         assert_eq!(root.server[0].name, "primary");
         assert_eq!(root.server[0].address, "192.0.2.10");
         assert_eq!(root.server[0].port, 49);
-        assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret1"));
+        assert_eq!(
+            root.server[0]
+                .shared_secret
+                .as_ref()
+                .map(tacacsrs_secrets::SecretString::expose_secret),
+            Some("secret1"),
+        );
     }
 
     #[test]
@@ -344,7 +350,13 @@ mod tests {
         ]);
 
         let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
-        assert_eq!(root.server[0].shared_secret.as_deref(), Some("secret123"));
+        assert_eq!(
+            root.server[0]
+                .shared_secret
+                .as_ref()
+                .map(tacacsrs_secrets::SecretString::expose_secret),
+            Some("secret123"),
+        );
     }
 
     #[test]
@@ -432,7 +444,13 @@ mod tests {
             .expect("inline certificate definition should be present");
 
         assert_eq!(inline.cert_data.as_deref(), Some(expected_cert_der.as_slice()));
-        assert_eq!(inline.cleartext_private_key.as_deref(), Some(expected_key_der.as_slice()));
+        assert_eq!(
+            inline
+                .cleartext_private_key
+                .as_ref()
+                .map(tacacsrs_secrets::SecretBytes::expose_secret),
+            Some(expected_key_der.as_slice()),
+        );
         assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat));
     }
 
@@ -525,7 +543,10 @@ mod tests {
 
         assert!(root.server[0].server_authentication.is_some(), "TLS should be set");
         assert_eq!(
-            root.server[0].shared_secret.as_deref(),
+            root.server[0]
+                .shared_secret
+                .as_ref()
+                .map(tacacsrs_secrets::SecretString::expose_secret),
             Some("migration-secret"),
             "shared secret should be set alongside TLS",
         );
@@ -573,7 +594,7 @@ mod tests {
             .psk_dhe_ke_groups
     }
 
-    fn tls13_epsk_key(cli: &Cli) -> Vec<u8> {
+    fn tls13_epsk_key(cli: &Cli) -> tacacsrs_secrets::SecretBytes {
         let mut root = tacacs_plus_from_cli(cli).expect("PSK config should build");
         root.server
             .remove(0)
@@ -635,7 +656,7 @@ mod tests {
             "show",
         ]);
 
-        assert_eq!(tls13_epsk_key(&cli), b"secret");
+        assert_eq!(tls13_epsk_key(&cli).expose_secret(), b"secret");
     }
 
     #[test]

@@ -865,11 +865,25 @@ mod tests {
         assert_eq!(cfg.server[0].address, "192.0.2.20");
         assert_eq!(cfg.server[0].port, 49);
         assert_eq!(cfg.server[0].timeout, 7);
-        assert_eq!(cfg.server[0].shared_secret.as_deref(), Some("per-server-secret"));
+        assert_eq!(
+            cfg.server[0]
+                .shared_secret
+                .as_ref()
+                .unwrap()
+                .expose_secret(),
+            "per-server-secret",
+        );
 
         // Per-server passkey absent -> falls back to global.
         assert_eq!(cfg.server[1].address, "192.0.2.10");
-        assert_eq!(cfg.server[1].shared_secret.as_deref(), Some("default-secret"));
+        assert_eq!(
+            cfg.server[1]
+                .shared_secret
+                .as_ref()
+                .unwrap()
+                .expose_secret(),
+            "default-secret",
+        );
         // Per-server tcp_port absent -> default 49.
         assert_eq!(cfg.server[1].port, DEFAULT_TACACS_TCP_PORT);
         // Per-server timeout absent -> falls back to global.

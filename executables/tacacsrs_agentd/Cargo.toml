@@ -23,6 +23,7 @@ tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
 tacacsrs-credential-resolution = { path = "../../libraries/tacacsrs_credential_resolution" }
 tacacsrs-datastore = { path = "../../libraries/tacacsrs_datastore" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
+tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
 tacacsrs-sonic = { path = "../../libraries/tacacsrs_sonic" }
 tokio = { version = "1.52.3", features = ["full"] }
 tokio-stream = "0.1.18"
@@ -34,6 +35,7 @@ default = []
 console = ["console-subscriber"]
 
 [dev-dependencies]
+tokio = { version = "1.52.3", features = ["test-util"] }
 tonic = "0.14.6"
 
 [build-dependencies]

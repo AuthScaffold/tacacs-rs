@@ -158,7 +158,7 @@ impl TacacsPlusServerBuilder {
     /// instead.
     #[must_use]
     pub fn with_shared_secret(mut self, shared_secret: impl Into<String>) -> Self {
-        self.server.shared_secret = Some(shared_secret.into());
+        self.server.shared_secret = Some(tacacsrs_secrets::SecretString::new(shared_secret.into()));
         self.server.client_identity = None;
         self.server.server_authentication = None;
         self
@@ -174,7 +174,7 @@ impl TacacsPlusServerBuilder {
     /// is active.
     #[must_use]
     pub fn with_shared_secret_alongside_tls(mut self, shared_secret: impl Into<String>) -> Self {
-        self.server.shared_secret = Some(shared_secret.into());
+        self.server.shared_secret = Some(tacacsrs_secrets::SecretString::new(shared_secret.into()));
         self
     }
 
@@ -204,7 +204,8 @@ impl TacacsPlusServerBuilder {
                     public_key_format: None,
                     public_key: None,
                     private_key_format,
-                    cleartext_private_key,
+                    cleartext_private_key: cleartext_private_key
+                        .map(tacacsrs_secrets::SecretBytes::new),
                     cert_data,
                 }),
                 central_keystore_reference: None,
@@ -258,7 +259,9 @@ impl TacacsPlusServerBuilder {
             tls13_epsk: Some(Tls13Epsk {
                 inline_definition: Some(keystore::SymmetricKeyInlineDefinition {
                     key_format: None,
-                    cleartext_symmetric_key: Some(cleartext_symmetric_key),
+                    cleartext_symmetric_key: Some(tacacsrs_secrets::SecretBytes::new(
+                        cleartext_symmetric_key,
+                    )),
                 }),
                 central_keystore_reference: None,
                 external_identity: external_identity.into(),
@@ -417,7 +420,13 @@ mod tests {
         let enumerated = enumerate_servers(&root).expect("enumeration should succeed");
         assert_eq!(enumerated.len(), 1);
         assert_eq!(enumerated[0].name, "primary");
-        assert_eq!(enumerated[0].shared_secret.as_deref(), Some("secret"));
+        assert_eq!(
+            enumerated[0]
+                .shared_secret
+                .as_ref()
+                .map(tacacsrs_secrets::SecretString::expose_secret),
+            Some("secret"),
+        );
     }
 
     #[test]

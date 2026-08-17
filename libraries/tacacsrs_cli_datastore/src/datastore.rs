@@ -53,6 +53,10 @@ impl ConfigDatastore for CliFileDatastore {
         DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, change_notifications)
     }
 
+    fn validation_options(&self) -> tacacsrs_config::ValidationOptions {
+        self.input.validation_options()
+    }
+
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         tacacs_plus_from_cli_input(&self.input)
     }

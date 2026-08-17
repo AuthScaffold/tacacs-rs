@@ -6,12 +6,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+#[cfg(target_os = "linux")]
+use tacacsrs_config::crypto_types::SymmetricKeyFormat;
 use tacacsrs_credential_resolution::{
     CredentialKind, CredentialRequest, CredentialResolver, ProviderErrorKind, ResolutionError,
     ResolvedCredential,
 };
 #[cfg(target_os = "linux")]
-use tacacsrs_credential_resolution::SecretBytes;
+use tacacsrs_credential_resolution::{SecretBytes, SymmetricKeyMaterial};
 
 /// Production credential roots used by the SONiC central agent.
 #[derive(Clone)]
@@ -249,7 +251,10 @@ impl CredentialResolver for SonicCredentialResolver {
                 ResolutionError::provider(ProviderErrorKind::Unavailable, request.context())
             })?
             .map_err(|kind| ResolutionError::provider(kind, request.context()))?;
-            Ok(ResolvedCredential::SymmetricKey(SecretBytes::new(bytes)))
+            Ok(ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+                key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
+                key: SecretBytes::from_zeroizing(bytes),
+            }))
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -279,6 +284,7 @@ mod linux {
 
     use rustix::fd::OwnedFd;
     use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
+    use zeroize::Zeroizing;
 
     use super::{SonicCredentialInitializationError, SonicCredentialPolicy};
     use tacacsrs_credential_resolution::ProviderErrorKind;
@@ -310,7 +316,7 @@ mod linux {
         root: &OwnedFd,
         reference: &str,
         policy: SonicCredentialPolicy,
-    ) -> Result<Vec<u8>, ProviderErrorKind> {
+    ) -> Result<Zeroizing<Vec<u8>>, ProviderErrorKind> {
         read_epsk_with_hook(root, reference, policy, || {})
     }
 
@@ -319,7 +325,7 @@ mod linux {
         reference: &str,
         policy: SonicCredentialPolicy,
         after_initial_metadata: impl FnOnce(),
-    ) -> Result<Vec<u8>, ProviderErrorKind> {
+    ) -> Result<Zeroizing<Vec<u8>>, ProviderErrorKind> {
         validate_object_id(reference)?;
         let fd = openat(
             root,
@@ -333,7 +339,7 @@ mod linux {
         after_initial_metadata();
 
         let mut file = File::from(fd);
-        let mut bytes = Vec::new();
+        let mut bytes = Zeroizing::new(Vec::new());
         file.by_ref()
             .take((policy.max_epsk_bytes + 1) as u64)
             .read_to_end(&mut bytes)
@@ -425,12 +431,33 @@ mod linux {
             let policy = SonicCredentialPolicy::new(metadata.uid(), metadata.gid());
             let (root, _) = open_root(&root_path, policy).expect("open root");
 
-            let error = read_epsk_with_hook(&root, "race-object", policy, || {
+            let outcome = read_epsk_with_hook(&root, "race-object", policy, || {
                 fs::write(&object_path, [0x42; 48]).expect("replace open inode contents");
-            })
-            .expect_err("concurrent metadata change must fail");
+            });
 
-            assert_eq!(error, ProviderErrorKind::Unavailable);
+            // Map away the secret owner before asserting so a regression cannot print the bytes.
+            assert_eq!(outcome.map(|_| ()).err(), Some(ProviderErrorKind::Unavailable));
+        }
+
+        #[test]
+        fn successful_read_returns_a_zeroizing_owner() {
+            let temp = tempfile::tempdir().expect("temporary root");
+            let root_path = temp.path().join("epsk");
+            fs::create_dir(&root_path).expect("create root");
+            fs::set_permissions(&root_path, fs::Permissions::from_mode(0o750))
+                .expect("set root mode");
+            let object_path = root_path.join("good-object");
+            fs::write(&object_path, [0x41; 32]).expect("write object");
+            fs::set_permissions(&object_path, fs::Permissions::from_mode(0o640))
+                .expect("set object mode");
+            let metadata = fs::metadata(&root_path).expect("root metadata");
+            let policy = SonicCredentialPolicy::new(metadata.uid(), metadata.gid());
+            let (root, _) = open_root(&root_path, policy).expect("open root");
+
+            // The explicit type is compile-time evidence the read path never yields a plain Vec<u8>.
+            let secret: Zeroizing<Vec<u8>> =
+                read_epsk_with_hook(&root, "good-object", policy, || {}).expect("read object");
+            assert_eq!(secret.as_slice(), vec![0x41u8; 32]);
         }
     }
 }
