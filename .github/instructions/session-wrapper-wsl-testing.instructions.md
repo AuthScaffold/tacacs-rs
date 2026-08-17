@@ -4,9 +4,11 @@ applyTo: "executables/session_wrapper/**,docs/session-wrapper-testing.md"
 ---
 # Session Wrapper WSL Testing
 
-- When making or validating changes to `session-wrapper` from Windows, prefer WSL for tests that exercise Linux-only behavior such as seccomp, process supervision, signals, shell scripts, or demo execution.
+- When you make or validate changes to `session-wrapper` from Windows, prefer
+  WSL for tests. WSL testing covers Linux-only behavior such as seccomp,
+  process supervision, signals, shell scripts, and demo execution.
 - The repository is typically available in WSL under `/mnt/<drive>/<path>`. For example, `x:/code/tacacs-rs` maps to `/mnt/x/code/tacacs-rs`.
-- Use the current workspace path to derive the WSL path. For this repo, `x:/tacacs-rs-2` maps to `/mnt/x/tacacs-rs-2`.
+- Use the current workspace path to derive the WSL path. For this repository, `x:/tacacs-rs-2` maps to `/mnt/x/tacacs-rs-2`.
 - From PowerShell, run WSL commands with an explicit working directory, for example:
 
 ```powershell

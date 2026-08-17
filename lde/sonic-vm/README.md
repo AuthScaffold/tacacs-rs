@@ -15,19 +15,19 @@ Use the VM manager only for lifecycle tasks:
 
 `Up` installs the first available Windows OpenSSH public key from
 `%USERPROFILE%\.ssh\id_ed25519.pub`, `id_rsa.pub`, or `id_ecdsa.pub` before it
-mounts `/data`. Pass `-PublicKeyPath` to use a different key. The copied key is
-normalized before appending to `authorized_keys`, so Windows CRLF line endings do
-not leave a trailing `^M` in the guest.
+mounts `/data`. Pass `-PublicKeyPath` to use a different key. The script
+normalizes the copied key before it appends the key to `authorized_keys`. This
+way, Windows CRLF line endings do not leave a trailing `^M` in the guest.
 
 By default, `sonic-vm.ps1` keeps VM assets next to the script:
-`sonic-vs.img`, `sonic-vs.img.gz`, `overlay.qcow2`, and `data.qcow2`. Relative
-path parameters are resolved against the script folder, so the helper works the
-same whether it is run from `lde\sonic-vm` or from the repository root. If
-`sonic-vs.img` is missing, `Start` and `Up` download `sonic-vs.img.gz` and
-extract it before launching QEMU. `-ImageUrl` can be the `format=zip` artifact
-URL copied from the ADO pipeline; the script rewrites it to `format=file` with
-`-ImageArtifactSubPath /target/sonic-vs.img.gz` when starting the download. The
-download can take a while.
+`sonic-vs.img`, `sonic-vs.img.gz`, `overlay.qcow2`, and `data.qcow2`. The script
+resolves relative path parameters against the script folder. As a result, the
+helper works the same whether you run it from `lde\sonic-vm` or from the
+repository root. If `sonic-vs.img` is missing, `Start` and `Up` download
+`sonic-vs.img.gz` and extract it before launching QEMU. `-ImageUrl` can be the
+`format=zip` artifact URL copied from the ADO pipeline. When it starts the
+download, the script rewrites the URL to `format=file` with
+`-ImageArtifactSubPath /target/sonic-vs.img.gz`. The download can take a while.
 
 For day-to-day testing, prefer the helpers below.
 
@@ -62,7 +62,7 @@ Copy guest output back to the repo:
 ## Build Linux Artifacts Under WSL
 
 Windows `cargo build` produces Windows binaries. SONiC needs Linux ELF
-artifacts, so build through WSL and then copy the Linux artifact.
+artifacts. Build through WSL, then copy the Linux artifact.
 
 Publish an example binary:
 
@@ -79,25 +79,25 @@ Publish a standard Cargo binary such as `tacon`:
   -Package tacon
 ```
 
-By default, the binary name is the package name. Use `-Bin` only when a package
-produces a differently named binary. The default remote destination is
+By default, the binary name is the package name. When a package produces a
+differently named binary, use `-Bin`. The default remote destination is
 `/data/<example-or-binary-name>`.
 
 ## Run The ConfigDB Watcher Scenario
 
-This drives the add, delete, delete-final-server flow in the running VM and
-verifies that `configdb_watch` can cold-start with no TACACS servers:
+This drives the add, delete, delete-final-server flow in the running VM. It
+makes sure that `configdb_watch` can cold-start with no TACACS+ servers:
 
 ```powershell
 .\lde\sonic-vm\Test-ConfigDbWatch.ps1 -Publish
 ```
 
-Omit `-Publish` when `/data/configdb_watch` is already the binary you want to
-test.
+If `/data/configdb_watch` is already the binary you want to
+test, omit `-Publish`.
 
 ## Notes For Copilot
 
-- Do not use password-oriented SSH options for VM testing. The VM is expected to
+- Do not use password-oriented SSH options for VM testing. The VM must
   have key authentication configured.
 - Keep watcher runs bounded with `--max-events` so terminals do not stay open.
 - Use `/data` for copied artifacts and captured logs because it is persistent.

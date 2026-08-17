@@ -5,15 +5,16 @@ intended for integration tests that need to exercise `ServiceClient`, `tacon`,
 `session-wrapper`, or other IPC clients without running `tacacsrs-agentd` and a
 real TACACS+ server.
 
-Policies are written in [Rego](https://www.openpolicyagent.org/docs/latest/policy-language/)
-and evaluated with [regorus](https://github.com/microsoft/regorus). The Rego
-source and its fixed data document are compiled once at startup; each captured
-TACACS+ request is supplied as Rego `input` at evaluation time.
+You write policies in [Rego](https://www.openpolicyagent.org/docs/latest/policy-language/),
+and the emulator evaluates them with [regorus](https://github.com/microsoft/regorus).
+The emulator compiles the Rego source and its fixed data document once at
+startup. It supplies each captured TACACS+ request as Rego `input` at
+evaluation time.
 
 ## Policy format
 
-For every request the emulator evaluates `data.tacacs.emulator.decision`. The
-request is provided as `input`:
+For every request the emulator evaluates `data.tacacs.emulator.decision` and
+provides the request as `input`:
 
 - `input.rpc` is `"Accounting"` or `"Authorization"`.
 - Accounting requests expose `user`, `port`, `remote_address`, `command`, and
@@ -26,15 +27,16 @@ request is provided as `input`:
 
 - `type: "response"` — a successful IPC reply with `server`, `status`,
   `server_message`, `data`, and optional `args`. Accounting statuses are
-  `Success`, `Error`, and `Follow`; authorization statuses are `PassAdd`,
+  `Success`, `Error`, and `Follow`. Authorization statuses are `PassAdd`,
   `PassRepl`, `Fail`, `Error`, and `Follow`.
 - `type: "error"` — a structured service error with `message`, `server`, and
   `retriable`.
 
-Either object may also carry `delay_ms` to delay the reply.
+Either object can also carry `delay_ms` to delay the reply.
 
-When `decision` is left undefined the emulator returns a gRPC `NotFound` for
-Accounting requests and a `Fail` response for Authorization requests.
+When a policy does not define `decision`, the emulator returns a gRPC
+`NotFound` for Accounting requests and a `Fail` response for Authorization
+requests.
 
 ```rego
 package tacacs.emulator
@@ -100,9 +102,10 @@ The process prints the bound endpoint to stdout. Use the mock-controller client
 or protobuf service to load/replace the policy, reset captured state, fetch
 captured requests, and trigger graceful shutdown.
 
-Diagnostics are written to stderr in a compact timestamped format while stdout
-stays reserved for the endpoint. By default the process logs emulator lifecycle,
-incoming Accounting/Authorization requests, policy decisions, configured delays,
-responses, undefined decisions, and controller operations. Use `-vv` for full
-request-field JSON and controller inspection calls, `-vvv` for trace-level
-emulator details, or `--quiet` when a test harness needs endpoint-only output.
+The process writes diagnostics to stderr in a compact timestamped format and
+reserves stdout for the endpoint. By default the process logs emulator
+lifecycle, incoming Accounting/Authorization requests, policy decisions,
+configured delays, responses, undefined decisions, and controller operations.
+Use `-vv` for full request-field JSON and controller inspection calls, `-vvv`
+for trace-level emulator details, or `--quiet` when a test harness needs
+endpoint-only output.

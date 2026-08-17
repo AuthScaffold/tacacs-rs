@@ -1,6 +1,11 @@
 # Session Wrapper Smoke and Integration Testing
 
-This document describes local checks that verify the Linux `session-wrapper` path is operating as expected. The real process mediation backend is Linux x86_64 only. Other platforms build the portable CLI, allowlist, deny-message, and authorization decision logic over a mock PAL backend that returns an explicit unsupported-platform error instead of executing or mediating commands.
+This document describes local tests that make sure that the Linux
+`session-wrapper` path works as expected. The real process mediation backend
+is Linux x86_64 only. Other platforms build the portable CLI, allowlist,
+deny-message, and authorization decision logic over a mock PAL backend. This
+backend returns an explicit unsupported-platform error instead of executing
+or mediating commands.
 
 For architecture, CLI shape, and current implementation scope, see the [session-wrapper README](../executables/session_wrapper/README.md).
 
@@ -8,11 +13,12 @@ For architecture, CLI shape, and current implementation scope, see the [session-
 
 These checks focus on process lifecycle, seccomp user notification wiring, and
 child/descendant supervision. The smoke tests below use fail-open behavior or
-the allow-all demo scripts so they can validate the Linux mediation path without
-a running `tacacsrs-agentd` service or TACACS+ server. They do not prove an
-end-to-end TACACS+ authorization policy.
+the allow-all demo scripts. This lets them validate the Linux mediation path
+without a running `tacacsrs-agentd` service or TACACS+ server. They do not
+prove an end-to-end TACACS+ authorization policy.
 
-The trailing `COMMAND [ARGS]...` is the process that is executed under supervision. Smoke tests use small temporary scripts as the wrapped command.
+The trailing `COMMAND [ARGS]...` is the process that the wrapper runs under
+supervision. Smoke tests use small temporary scripts as the wrapped command.
 
 ## Demo scripts
 
@@ -20,7 +26,7 @@ Runnable allow-all demos live in `executables/session_wrapper/demo/`:
 
 | Script | Purpose |
 | ------ | ------- |
-| `allow-all-basic.sh` | Builds `session-wrapper`, runs a short wrapped script, and verifies the wrapped process wrote a marker file |
+| `allow-all-basic.sh` | Builds `session-wrapper`, runs a short wrapped script, and makes sure that the wrapped process wrote a marker file |
 | `allow-all-descendants.sh` | Runs a wrapped script that exits while a descendant continues |
 | `allow-all-interactive-bash.sh` | Starts an interactive Bash session under the current allow-all supervisor for manual exploration |
 
@@ -42,7 +48,7 @@ sudo apt-get install -y build-essential gperf libseccomp-dev linux-libc-dev musl
 rustup target add x86_64-unknown-linux-musl
 ```
 
-GNU builds can use the distribution `libseccomp-dev`. Musl builds require a musl-targeted static libseccomp. In CI this is built and cached by the shared Rust setup action. Locally, point Cargo at a musl libseccomp install before running musl checks:
+GNU builds can use the distribution `libseccomp-dev`. Musl builds require a musl-targeted static libseccomp. The shared Rust setup action builds and caches this in CI. Locally, point Cargo at a musl libseccomp install before running musl checks:
 
 ```bash
 export LIBSECCOMP_LIB_PATH=/path/to/libseccomp-musl/lib
@@ -73,18 +79,23 @@ cargo clippy -p session-wrapper --all-targets -- -D warnings
 cargo test -p session-wrapper
 ```
 
-Run these when validating the static musl path:
+When you validate the static musl path, run:
 
 ```bash
 cargo clippy -p session-wrapper --target x86_64-unknown-linux-musl --all-targets -- -D warnings
 cargo test -p session-wrapper --target x86_64-unknown-linux-musl
 ```
 
-These tests validate CLI parsing, seccomp policy generation, file descriptor passing, child setup status reporting, and socket close handling. They do not prove that a real child process can execute under the wrapper, so run the smoke tests below as well.
+These tests cover CLI parsing, seccomp policy generation, file descriptor passing, child setup status reporting, and socket close handling.
+
+They do not prove that the wrapper can run a real child process. Thus, also run the smoke tests that follow.
 
 ## Smoke test: child starts and exits
 
-This verifies the parent receives the notification fd, starts the temporary allow-all supervisor, releases the child, handles the child's initial `execve`, and exits when the child exits.
+This test makes sure that the parent completes the full startup path. It
+receives the notification fd, starts the temporary allow-all supervisor,
+releases the child, handles the child's initial `execve`, and exits when the
+child exits.
 
 ```bash
 cargo build -p session-wrapper
@@ -113,7 +124,7 @@ Expected result: the command exits successfully and the marker contains `ok`. A 
 
 ## Smoke test: child setup failures are reported
 
-This verifies the child reports setup errors back to the parent instead of hanging or silently exiting.
+This test makes sure that the child reports setup errors back to the parent instead of hanging or silently exiting.
 
 ```bash
 cargo build -p session-wrapper
@@ -138,7 +149,7 @@ Expected result: the command fails quickly and stderr includes the child setup o
 
 ## Smoke test: descendant execution remains supervised
 
-This verifies seccomp inheritance and subreaper lifecycle tracking. The initial child starts a background descendant and exits; the wrapper should stay alive until the descendant has run its own exec path and exited.
+This test makes sure that seccomp inheritance and subreaper lifecycle tracking work. The initial child starts a background descendant and exits. The wrapper must stay alive until the descendant has run its own exec path and exited.
 
 ```bash
 cargo build -p session-wrapper
@@ -171,7 +182,7 @@ Expected result: the marker contains `descendant-ok`. A missing marker or timeou
 
 ## Optional smoke test: privileged identity drop
 
-Run this when you need to verify the root-to-user path used by login integrations. It requires `sudo`.
+When you need to make sure that the root-to-user path used by login integrations works, run this test. It requires `sudo`.
 
 ```bash
 cargo build -p session-wrapper
@@ -208,10 +219,10 @@ These smoke tests are good candidates for a Linux-only integration test job once
 
 | Check | Requires root | Purpose |
 | ----- | ------------- | ------- |
-| Compile-time integration checks | No | Validate Rust code, seccomp policy construction, fd passing, and musl compatibility |
+| Compile-time integration checks | No | Covers Rust code, seccomp policy construction, fd passing, and musl compatibility |
 | Child starts and exits | No | Validate notification fd handoff, ready synchronization, and child exec |
 | Missing shell failure | No | Validate child-to-parent setup error reporting |
 | Descendant execution | No | Validate inherited seccomp coverage and subreaper lifecycle handling |
 | Privileged identity drop | Yes | Validate login-style root-to-user execution |
 
-When real IPC authorization is wired in, keep these smoke tests but replace the allow-all assumption with a test IPC service that records each authorization request and responds with the desired decision.
+When real IPC authorization is wired in, keep these smoke tests. Replace the allow-all assumption with a test IPC service that records each authorization request and responds with the desired decision.

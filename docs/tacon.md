@@ -8,7 +8,7 @@
 
 ### Direct Mode (`--server-addr`)
 
-Connects directly to a TACACS+ server. You manage encryption, TLS, and connection settings yourself.
+Connects directly to a TACACS+ server. You manage encryption, TLS, and connection configuration.
 
 ```bash
 tacon -s tacacs-server:49 -k shared_secret \
@@ -20,7 +20,7 @@ tacon -s tacacs-server:49 -k shared_secret \
 
 ### Service Mode (`--service-endpoint`)
 
-Connects to the central [tacacsrs-agentd](tacacsrs-agentd.md) service, which maintains persistent upstream connections with automatic failover.
+Connects to the central [tacacsrs-agentd](tacacsrs-agentd.md) service. The service maintains upstream connections and manages automatic failover.
 
 ```bash
 tacon --service-endpoint /run/tacacs/tacacs.sock \
@@ -36,9 +36,9 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 
 | Flag | Description |
 | --- | --- |
-| `-s, --server-addr <ADDR>` | Direct connection to a TACACS+ server (e.g. `192.168.1.1:49`) |
-| `--config <FILE>` | Load the direct connection from a YANG JSON config file |
-| `--service-endpoint <PATH>` | Connect via the agent service (Unix socket or TCP address) |
+| `-s, --server-addr <ADDR>` | Direct connection to a TACACS+ server, for example `192.168.1.1:49` |
+| `--config <FILE>` | Load the direct connection from a YANG JSON configuration file |
+| `--service-endpoint <PATH>` | Connect through the agent service (Unix domain socket or TCP address) |
 
 ### Encryption (direct mode only)
 
@@ -52,7 +52,7 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | `--psk-identity <ID>` | TLS 1.3 pre-shared key identity *(requires `psk` feature)* |
 | `--psk-key <KEY>` | TLS 1.3 pre-shared key *(requires `psk` feature)* |
 
-### Connection Behaviour (direct mode only)
+### Connection Behavior (direct mode only)
 
 | Flag | Description |
 | --- | --- |
@@ -100,9 +100,9 @@ printf '%s\n' "$PAP_PASSWORD" | tacon -s server:49 authentication \
   --password-stdin
 ```
 
-PAP follows the configured direct or agent upstream transport. Classic TACACS+
-obfuscation is not encryption; use TACACS+ over TLS 1.3 when password
-confidentiality is required.
+PAP follows the configured direct or agent upstream connection. Classic TACACS+
+obfuscation is not encryption. If you need password confidentiality, use
+TACACS+ over TLS 1.3.
 
 ### `authorization`
 
@@ -121,12 +121,12 @@ tacon -s server:49 authorization \
 ```
 
 Authentication contexts are `ascii`, `pap`, and `unauthenticated`. Session
-authorization is the TACACS+ mechanism for retrieving shell profile attributes;
-it does not require ASCII authentication.
+authorization is the TACACS+ mechanism for retrieving shell profile attributes.
+It does not require ASCII authentication.
 
 ### `batch`
 
-Execute multiple requests from a JSON file.
+Run multiple requests from a JSON file.
 
 ```bash
 tacon -s server:49 -k secret batch requests.json
@@ -190,23 +190,23 @@ Batch files are JSON documents containing metadata and a list of requests.
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `description` | string | — | Optional description |
-| `parallel` | bool | `false` | Execute all requests concurrently |
+| `parallel` | bool | `false` | Run all requests concurrently |
 | `load_test` | object | — | Enable load testing mode |
 | `load_test.repetitions` | number | — | Number of times to repeat all requests |
 | `load_test.max_parallel` | number | `10` | Maximum concurrent requests |
 
 Batch authorization is shell-only. Omitting `cmd` performs session-profile
-authorization; providing `cmd` and `cmd_args` performs command authorization.
+authorization. Providing `cmd` and `cmd_args` performs command authorization.
 PAP authentication is intentionally unavailable in batch files because the
-format has no secret-source abstraction and plaintext JSON passwords are
-rejected.
+format has no credential-source abstraction, and plaintext JSON passwords
+are rejected.
 
-### Execution Modes
+### Run Modes
 
-| `parallel` | `load_test` | Behaviour |
+| `parallel` | `load_test` | Behavior |
 | --- | --- | --- |
-| `false` | absent | Requests execute sequentially |
-| `true` | absent | All requests execute concurrently |
+| `false` | absent | Run requests sequentially |
+| `true` | absent | Run all requests concurrently |
 | any | present | All requests repeat N times with bounded parallelism |
 
 ### Batch with Different Connection Modes
@@ -240,7 +240,7 @@ tacon --config ./tacacs.json \
   "show version"
 ```
 
-The config file must use RFC 7951 JSON encoding with the root key `ietf-system-tacacs-plus:tacacs-plus`.
+The configuration file must use RFC 7951 JSON encoding with the root key `ietf-system-tacacs-plus:tacacs-plus`.
 
 ### TLS 1.3 with Certificates
 

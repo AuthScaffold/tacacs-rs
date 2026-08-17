@@ -101,9 +101,9 @@ provide ergonomic, type-safe wrappers:
 | `AccountingStatus`    | `AccountingResponseStatus`      | Service → Client |
 | `AuthorizationStatus` | `AuthorizationResponseStatus`   | Service → Client |
 
-Conversions between protobuf and domain types are implemented via `From`,
-`TryFrom`, and explicit `into_proto` / `from_proto` methods. Round-trip
-fidelity is covered by unit tests.
+The crate implements conversions between protobuf and domain types with
+`From`, `TryFrom`, and explicit `into_proto` / `from_proto` methods. Unit tests
+cover round-trip fidelity.
 
 ## Usage example
 

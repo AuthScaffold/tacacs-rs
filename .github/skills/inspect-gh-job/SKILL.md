@@ -1,6 +1,6 @@
 ---
 name: inspect-gh-job
-description: 'Inspect GitHub Actions job logs using gh CLI. Use when: debugging CI failures, checking job output, diagnosing workflow errors, viewing action logs, investigating flaky tests, understanding why a job failed or is stuck.'
+description: 'Inspect GitHub Actions job logs using gh CLI. Use when: debugging CI failures, inspecting job output, diagnosing workflow errors, viewing action logs, investigating flaky tests, understanding why a job failed or is stuck.'
 argument-hint: 'Paste the GitHub Actions job URL'
 ---
 
@@ -11,7 +11,7 @@ Retrieve and analyze GitHub Actions job logs using the `gh` CLI, handling both i
 ## When to Use
 
 - A CI job failed and you need to see why
-- A job is still running but you want to check progress
+- A job is still running, and you need its current status
 - You need to diagnose flaky tests, token errors, or infrastructure issues
 
 ## Input
@@ -25,14 +25,14 @@ Extract `owner`, `repo`, `run_id`, and `job_id` from the URL.
 
 ## Procedure
 
-### 1. Check Run Status
+### 1. Inspect the Run Status
 
 ```bash
 gh api repos/{owner}/{repo}/actions/runs/{run_id} --jq '{status: .status, conclusion: .conclusion, name: .name}'
 ```
 
 - If `status` is `completed`, you can use `gh run view --log` directly.
-- If `status` is `in_progress` or `queued`, `gh run view --log` will fail — use the API instead.
+- If `status` is `in_progress` or `queued`, `gh run view --log` will fail. Use the API instead.
 
 ### 2a. Completed Run — Fetch Logs Directly
 
@@ -44,13 +44,13 @@ If the output is large, pipe through `Select-Object -Last 150` (PowerShell) or `
 
 ### 2b. In-Progress or Queued Run — Use API
 
-First check the specific job's status:
+First, get the status of the specified job:
 
 ```bash
 gh api repos/{owner}/{repo}/actions/jobs/{job_id} --jq '{name: .name, status: .status, conclusion: .conclusion, started_at: .started_at, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}'
 ```
 
-If the job itself is completed (even while the overall run is still going), fetch its logs:
+If the job itself is completed (even while the overall run is still running), fetch its logs:
 
 ```bash
 gh api repos/{owner}/{repo}/actions/jobs/{job_id}/logs
@@ -74,7 +74,7 @@ Summarize:
 
 ## Notes
 
-- `gh` must be authenticated (`gh auth status` to verify)
-- For private repos, ensure the token has `actions:read` scope
+- `gh` must be authenticated. Run `gh auth status` to make sure that it is authenticated.
+- For private repositories, make sure that the token has the `actions:read` scope.
 - Job logs via API return raw text (timestamps + log lines)
 - If no `job_id` is provided, list jobs first: `gh api repos/{owner}/{repo}/actions/runs/{run_id}/jobs --jq '.jobs[] | {id: .id, name: .name, conclusion: .conclusion}'`

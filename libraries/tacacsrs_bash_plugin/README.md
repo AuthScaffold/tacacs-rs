@@ -25,26 +25,24 @@ bash authorization policy flags:
   unavailable.
 - `debug` enables stderr diagnostics from the plugin.
 
-Set `TACACSRS_BASH_PLUGIN_CONFIG` to point at a different config file. The local
-IPC endpoint defaults to `/run/tacacs/tacacs.sock` on Unix, and can be set with
-`ipc_endpoint=<endpoint>` in the config file. If the plugin config omits that
-setting, `TACACSRS_AGENT_ENDPOINT` remains available as an explicit override,
-then `/etc/tacacsrs-agentd/config.ini` is consulted for `ipc_endpoint`, before
-falling back to the built-in Unix default.
+Set `TACACSRS_BASH_PLUGIN_CONFIG` to use a different configuration file. On Unix, the IPC endpoint defaults to `/run/tacacs/tacacs.sock`.
 
-## Config File
+Use `ipc_endpoint=<endpoint>` in the configuration file to change the endpoint. If this value is absent, the plugin reads `TACACSRS_AGENT_ENDPOINT`.
 
-The default config file is `/etc/tacplus_nss.conf`. This matches SONiC's
-existing TACACS config path so the plugin can coexist with the legacy
+Next, the plugin reads `ipc_endpoint` from `/etc/tacacsrs-agentd/config.ini`. If no value exists, it uses the built-in Unix default.
+
+## Configuration File
+
+The default configuration file is `/etc/tacplus_nss.conf`. This matches SONiC's
+existing TACACS configuration path so the plugin can coexist with the legacy
 `bash_tacplus` integration. Set `TACACSRS_BASH_PLUGIN_CONFIG` to read a
 different file.
 
-The parser is intentionally small. It reads the file as whitespace- or
-comma-separated tokens, ignores blank lines, and ignores lines whose first
-non-space character is `#`. Supported settings can be written either as bare
-tokens or as `name=on`, `name=yes`, `name=true`, or `name=1`. Unknown tokens are
-ignored so the same file can still contain PAM, NSS, accounting, server, secret,
-timeout, VRF, and source-IP settings used by other SONiC TACACS components.
+The parser reads the file as tokens that whitespace or commas separate. It ignores blank lines and lines that start with `#`.
+
+Write supported configuration values as bare tokens. You can also use `name=on`, `name=yes`, `name=true`, or `name=1`.
+
+The parser ignores unknown tokens. Thus, the file can contain configuration for other SONiC TACACS components.
 
 Supported tokens:
 
@@ -53,7 +51,7 @@ Token | Effect
 `tacacs_authorization` or `tacacs_authorization=on` | Enables per-command authorization through `tacacsrs-agentd`. Without this token, commands are allowed locally and no IPC authorization request is sent.
 `local_authorization` or `local_authorization=on` | Allows local fallback when the IPC/TACACS path is unavailable. Without this token, an unavailable authorization path blocks the command.
 `debug` or `debug=on` | Emits plugin diagnostics to stderr and syslog.
-`ipc_endpoint=/run/tacacs/tacacs.sock` | Sets the local `tacacsrs-agentd` IPC endpoint. Use a Unix socket path on SONiC, or a loopback `host:port` value for developer testing. If omitted here, the plugin next checks `TACACSRS_AGENT_ENDPOINT`, then `/etc/tacacsrs-agentd/config.ini`.
+`ipc_endpoint=/run/tacacs/tacacs.sock` | Sets the local `tacacsrs-agentd` IPC endpoint. Use a Unix domain socket path on SONiC, or a loopback `host:port` value for developer tests. If omitted, the plugin reads `TACACSRS_AGENT_ENDPOINT`, then `/etc/tacacsrs-agentd/config.ini`.
 
 Example:
 
@@ -75,12 +73,12 @@ debug=on
 ipc_endpoint=/run/tacacs/tacacs.sock
 ```
 
-The plugin reloads the config when the file modification time changes. A missing
-or unreadable config file behaves as if no tokens were configured, which means
+The plugin reloads the configuration file when its modification time changes. A missing
+or unreadable configuration file behaves as if it defines no tokens, so
 per-command TACACS authorization is disabled.
 
 SONiC's bash TACACS behavior skips local users. If you test with the built-in
-`admin` account, the plugin should log that the user is local and then allow the
+`admin` account, the plugin logs that the user is local, then allows the
 command without sending an IPC authorization request. To exercise TACACS command
 authorization, use an NSS-created remote user whose GECOS field starts with
 `remote_user`, matching SONiC's legacy `bash_tacplus` policy.
@@ -91,7 +89,7 @@ For VM smoke testing, create a local account with the same GECOS marker:
 .\lde\sonic-vm\Set-SonicTacacsRemoteTestUser.ps1 -EnableLocalFallback
 ```
 
-`-EnableLocalFallback` appends `local_authorization=on` to the guest config so
+`-EnableLocalFallback` appends `local_authorization=on` to the guest configuration file so
 the smoke command can complete even when `tacacsrs-agentd` is not ready yet.
 
 Build:

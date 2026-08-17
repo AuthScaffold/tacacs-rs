@@ -35,7 +35,7 @@ The flags mean:
 | Flag | Purpose |
 |------|---------|
 | `--network host` | Share the SONiC host network namespace. Outbound TACACS+ connections use the host route table instead of Docker bridge NAT. |
-| `-v /var/run/redis/redis.sock:/var/run/redis/redis.sock` | Let the agent read SONiC CONFIG_DB through the Redis Unix socket. |
+| `-v /var/run/redis/redis.sock:/var/run/redis/redis.sock` | Let the agent read SONiC CONFIG_DB through the Redis Unix domain socket. |
 | `-p 127.0.0.1:49:49` | Harmless with host networking, but ignored by Docker because there is no separate container network namespace to publish from. |
 | `--sonic` | Load TACACS+ server configuration from SONiC CONFIG_DB, database `4`. |
 | `--service-mode both` | Run both the local client API and the raw TACACS+ proxy service. |
@@ -73,7 +73,7 @@ The proxy endpoint in the example is loopback-only:
 
 That means the proxy is reachable from local processes on the SONiC host, but
 not from remote hosts through the management or front-panel interfaces. You can
-confirm the bind after startup:
+make sure that the bind succeeded after startup:
 
 ```bash
 sudo netstat -tlpn | grep ':49'
@@ -109,9 +109,9 @@ sudo tcpdump -ni any 'host <tacacs-server-ip> and tcp port 49'
 ```
 
 If `tcpdump` shows traffic leaving an external interface with a Docker bridge
-source address, for example `240.127.1.2`, then the bridge path needs NAT or an
-explicit return route. Use host networking for the agent unless the deployment
-has a SONiC-supported bridge NAT and firewall design.
+source address, for example `240.127.1.2`, the bridge path needs a fix. Add
+NAT or an explicit return route. Use host networking for the agent unless the
+deployment has a SONiC-supported bridge NAT and firewall design.
 
 ## CONFIG_DB requirements
 
@@ -131,7 +131,7 @@ tacacsrs-agent-health \
     --timeout-seconds 2
 ```
 
-The startup log should include lines similar to:
+The startup log includes lines like these:
 
 ```text
 Configured SONiC ConfigDB datastore: url='unix:///var/run/redis/redis.sock?db=4', db=4

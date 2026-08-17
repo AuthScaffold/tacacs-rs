@@ -1,8 +1,8 @@
 # SONiC ConfigDB integration
 
-`tacacsrs-agentd` can run as a native SONiC service, sourcing its TACACS+
+`tacacsrs-agentd` can run as a native SONiC service. It sources its TACACS+
 configuration from SONiC's Redis-backed Configuration Database (CONFIG_DB,
-database index `4`) and reacting to ConfigDB changes via Redis keyspace
+database index `4`) and reacts to ConfigDB changes through Redis keyspace
 notifications.
 
 This document covers the runtime side (how the daemon talks to ConfigDB).
@@ -12,10 +12,10 @@ host is covered in [Running tacacsrs-agentd as a SONiC Docker container](sonic-a
 
 ## Architecture
 
-The agent does not depend directly on Redis. Instead, configuration sources
-are abstracted behind the `tacacsrs-datastore::ConfigDatastore` trait, and
-the SONiC bridge (`tacacsrs-sonic::SonicConfigDb`) is one concrete backend.
-Any future vendor datastore (for example a different NOS, a YAML config
+The agent does not depend directly on Redis. The `tacacsrs-datastore::ConfigDatastore`
+trait abstracts configuration sources, and the SONiC bridge
+(`tacacsrs-sonic::SonicConfigDb`) is one concrete backend.
+Any future vendor datastore (for example a different NOS, a YAML configuration
 service, or a remote management plane) can be plugged in by implementing the
 same trait.
 
@@ -32,7 +32,7 @@ same trait.
               +----------------+                     +-----------------------+
 ```
 
-`StaticDatastore` is used for file-based and CLI-based configuration; it
+`StaticDatastore` is used for file-based and CLI-based configuration. It
 returns a single snapshot and never emits change events. `SonicConfigDb`
 reads `TACPLUS|global` and `TACPLUS_SERVER|*` rows from Redis and emits
 change events whenever a TACPLUS-prefixed key changes (subject to the
@@ -59,7 +59,7 @@ TACPLUS_SERVER|192.0.2.10
 
 Each `TACPLUS_SERVER` row becomes one `TacacsPlusServer` in the YANG
 configuration. Per-server fields fall back to the matching `TACPLUS|global`
-field when absent. SONiC `priority` values are in the range `1..64`; higher
+field when absent. SONiC `priority` values are in the range `1..64`. Higher
 numbers are preferred and therefore appear earlier in the daemon's failover
 order. The synthesized YANG `name` for each server is
 `sonic-server-<address>`.
@@ -72,14 +72,14 @@ ahead of upstream ConfigDB schema work by adding the following keys to
 
 | Key                 | YANG field                    | Notes                                                                                              |
 |---------------------|-------------------------------|----------------------------------------------------------------------------------------------------|
-| `use_tls`           | `server-authentication: {}`   | Accepts the same boolean forms as `sni_enabled`; also supported on the global TACPLUS row          |
+| `use_tls`           | `server-authentication: {}`   | Accepts the same boolean forms as `sni_enabled`. Also supported on the global TACPLUS row          |
 | `domain_name`       | `domain-name`                 | Used as SNI hostname                                                                               |
 | `sni_enabled`       | `sni-enabled`                 | `true`/`false`/`yes`/`no`/`1`/`0`                                                                  |
 | `single_connection` | `single-connection`           | Boolean                                                                                            |
 | `vrf_name`          | `vrf-instance`                | VRF name for outbound traffic                                                                      |
 | `src_ip`            | `source-ip`                   | Mutually exclusive with `src_intf`                                                                 |
 | `src_intf`          | `source-interface`            | Falls back to the global TACPLUS row                                                               |
-| `server_type`       | `server-type`                 | Defaults to `all`; tokens accept `authentication`, `authorization`, `accounting`, or `all`         |
+| `server_type`       | `server-type`                 | Defaults to `all`. Tokens accept `authentication`, `authorization`, `accounting`, or `all`         |
 
 Unknown fields are logged at `warn` level and ignored, so legacy operator
 annotations on TACPLUS rows do not break the agent.
@@ -89,12 +89,13 @@ annotations on TACPLUS rows do not break the agent.
 SONiC's upstream TACACS+ ConfigDB schema does not yet expose certificate
 material, trust anchors, TLS 1.3 ePSKs, or other TLS-only fields from the
 YANG model. Until SONiC adopts a richer schema, the bridge supports the
-shared-secret / obfuscation path (`passkey`) plus a forward-compatible
-`use_tls` extension that selects the empty `server-authentication` container
-used by `tacon --use-tls` when no explicit certificate material is configured.
+shared-secret and obfuscation path (`passkey`). It also supports a
+forward-compatible `use_tls` extension that selects the empty
+`server-authentication` container. `tacon --use-tls` uses this container
+when no explicit certificate material is configured.
 The mapping is structured so that promoting richer TLS support upstream will
 only require new ConfigDB fields and a corresponding update to
-`tacacsrs_sonic::mapping`; no daemon-level plumbing changes will be required.
+`tacacsrs_sonic::mapping`. No daemon-level plumbing changes will be required.
 
 ## Running on SONiC
 
@@ -170,14 +171,14 @@ mutations, and output assertions:
 .\lde\run-sonic-configdb-smoke.ps1
 ```
 
-From WSL, make sure Cargo is on the PowerShell process path:
+From WSL, make sure that Cargo is on the PowerShell process path:
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
 pwsh -NoLogo -NoProfile -File ./lde/run-sonic-configdb-smoke.ps1
 ```
 
-To validate the SONiC-style Unix-domain socket path instead of TCP, run the
+To validate the SONiC-style Unix domain socket path instead of TCP, run the
 same helper from WSL with `-RedisTransport UnixSocket`:
 
 ```bash
@@ -217,8 +218,8 @@ cargo run -p tacacsrs-sonic --example configdb_watch -- \
     --redis-db 4
 ```
 
-Then mutate ConfigDB rows and confirm the example emits a `ConfigChange` with
-the expected delta:
+Then mutate ConfigDB rows. Make sure that the example emits a `ConfigChange`
+with the expected delta:
 
 ```bash
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.20' \
@@ -235,8 +236,8 @@ Expected results:
 2. Adding `TACPLUS_SERVER|192.0.2.20` reports an added server.
 3. Changing `TACPLUS_SERVER|192.0.2.10.timeout` reports a modified server.
 4. Deleting `TACPLUS_SERVER|192.0.2.20` reports a removed server.
-5. Updating `TACPLUS|global` emits a change event after the debounce window;
-   the exact delta depends on whether the global value changes the effective
+5. Updating `TACPLUS|global` emits a change event after the debounce window.
+   The exact delta depends on whether the global value changes the effective
    validated YANG snapshot.
 
 To validate the daemon path, start `tacacsrs-agentd` against the same Redis
@@ -251,12 +252,12 @@ cargo run -p tacacsrs-agentd -- \
     -vv
 ```
 
-Mutating the Redis rows should produce the documented configuration-change log
+Mutating the Redis rows produces the documented configuration-change log
 message. The daemon atomically applies each valid filtered snapshot to new
 sessions without restarting. In-flight sessions keep their existing server-set
 snapshot and connection handles.
 
-## Hot reload behaviour
+## Hot reload behavior
 
 When a TACPLUS-prefixed key changes in CONFIG_DB, the runtime:
 
@@ -286,8 +287,8 @@ journalctl -u tacacsrs-agentd.service -f
 ## Secret handling
 
 The bridge currently reads `passkey` directly from CONFIG_DB. The
-`ConfigDatastore` trait does not constrain how secrets are fetched, so a
-future implementation can compose a secret-resolution backend (HashiCorp
-Vault, Azure Key Vault, encrypted ConfigDB fields, etc.) by wrapping
-`SonicConfigDb` and rewriting the per-server `shared-secret` before
+`ConfigDatastore` trait does not constrain how secrets are fetched. A future
+implementation can compose a secret-resolution backend, for example HashiCorp
+Vault, Azure Key Vault, or encrypted ConfigDB fields. It can wrap
+`SonicConfigDb` and rewrite the per-server `shared-secret` before
 returning the snapshot from `load`.

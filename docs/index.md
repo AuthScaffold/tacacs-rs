@@ -20,7 +20,7 @@ This site collects the project guides into a browsable static documentation set.
 - [tacon CLI](tacon.md) covers client invocation, connection modes, batch files, and exit behavior.
 - [tacacsrs-agentd Daemon](tacacsrs-agentd.md) covers daemon runtime behavior: local IPC, proxy mode, upstream encryption, connection reuse, and failover.
 - [YANG Configuration](yang-config-guide.md) covers the RFC 7951 configuration model, parsing APIs, credential bundles, and generated-type workflow.
-- [Plain TACACS+ to TACACS+ over TLS](tacacs-plus-tls-transition.md) covers operational migration for existing clients such as `pam_tacplus` and `audisp-tacplus`; it links back to the daemon guide for proxy reference details.
+- [Plain TACACS+ to TACACS+ over TLS](tacacs-plus-tls-transition.md) covers operational migration for existing clients such as `pam_tacplus` and `audisp-tacplus`. It links back to the daemon guide for proxy reference details.
 
 ## SONiC integration
 

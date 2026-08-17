@@ -7,13 +7,13 @@
 - Generated Rust types in `src/generated.rs` that mirror the expanded YANG tree
 - Generated enums for YANG enumerations and `identityref` leaves (key format types)
 - Validation logic for YANG-specific constraints and semantic checks on inline key material
-- Config-local credential bundle validation
+- Configuration-local credential bundle validation
 - Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
 - Secret-free inspection of central keystore and truststore references on enumerated servers
 - A reusable `TacacsPlusServerBuilder` for constructing `TacacsPlusServer` values in code
 - A project-owned YANG augmentation for TLS 1.3 PSK DHE key exchange group selection
 
-External secret resolution is defined by `tacacsrs-credential-resolution`. Provider implementations and runtime materialization remain outside `tacacsrs-config`.
+`tacacsrs-credential-resolution` defines external secret resolution. Provider implementations and runtime materialization remain outside `tacacsrs-config`.
 
 ## Parsing API
 
@@ -29,16 +29,16 @@ The primary entry points are:
 
 - `parse_yang_json(&str)` — parse and structurally validate a JSON string without mutating credential references
 - `parse_yang_json_file(&Path)` — file-based wrapper around `parse_yang_json`
-- `validate_credential_references(&TacacsPlus)` — validate config-local `credentials-reference` links into shared bundles
+- `validate_credential_references(&TacacsPlus)` — validate configuration-local `credentials-reference` links into shared bundles
 - `enumerate_servers(&TacacsPlus)` — inline shared credential bundles onto each `TacacsPlusServer`
 - `enumerate_server(&TacacsPlus, &str)` — inline shared credential bundles for one named server
 - `inspect_central_references(&TacacsPlusServer)` — inspect opaque central references without retrieving secret material
 
-Enumerate servers before passing them to `tacacsrs-credential-resolution`. Planning rejects unresolved config-local bundle references with an enumerate-first error.
+Enumerate servers before passing them to `tacacsrs-credential-resolution`. Planning rejects unresolved configuration-local bundle references with an enumerate-first error.
 
 ## Multi-layer design
 
-This crate implements a three-layer design to support both round-tripping (for config reporting) and safe credential access:
+This crate implements a three-layer design to support both round-tripping (for configuration reporting) and safe credential access:
 
 ### 1) Raw YANG (non-destructive)
 
@@ -50,14 +50,14 @@ let raw_config = pipeline::parse_root_json(json_str)?;
 // Safe for round-tripping, logging, and reporting
 ```
 
-Use this when you need the root YANG model exactly as submitted for round-tripping, reporting, or further custom processing.
+If you need the submitted root YANG model, use this API for round trips, reports, or custom processing.
 
-### 2) Config-local bundle enumeration
+### 2) Configuration-local bundle enumeration
 
-Credential references in YANG can point to shared bundles inside the same config:
-- **Bundles** (`client-credentials`, `server-credentials`) in the same config
+Credential references in YANG can point to shared bundles inside the same configuration:
+- **Bundles** (`client-credentials`, `server-credentials`) in the same configuration
 
-Use the config crate to validate and inline only those local references:
+Use this crate to validate and inline only those local references:
 
 ```rust
 use tacacsrs_config::{enumerate_server, parse_yang_json, validate_credential_references};
@@ -72,9 +72,13 @@ let server = enumerate_server(&config, "primary")?;
 
 Pass each enumerated server to `tacacsrs_credential_resolution::ResolutionPlan::from_server`. The resolution crate extracts deterministic typed requests for central certificate-with-key, TLS 1.3 symmetric key, CA bag, and end-entity bag references. A `CredentialResolver` returns typed material, and `resolve_plan` validates the complete slot/variant-matched result set.
 
-Central references are opaque in both generic crates. They may contain spaces, slashes, traversal-like text, or provider-defined syntax. `tacacsrs-config` enforces generated YANG structure and inline-versus-central choices, but it does not apply SONiC identifier grammar, map references to paths, test existence or permissions, watch files, or retrieve secrets.
+Central references are opaque in both generic crates. They can contain spaces, slashes, traversal-like text, or provider-defined syntax.
 
-P3 provides the SONiC-specific resolver and projects the closed result set into networking inputs.
+`tacacsrs-config` enforces the generated YANG structure and inline-versus-central choices. It does not apply SONiC identifier grammar or map references to paths.
+
+It does not inspect path existence, inspect permissions, watch files, or retrieve secrets.
+
+The SONiC integration layer provides the resolver. It projects the closed result set into networking inputs.
 
 ### Module-oriented API (recommended for most users)
 
@@ -87,7 +91,7 @@ This crate also exposes grouped modules so callers can choose APIs by intent:
 - `runtime` — bundle enumeration (`enumerate_server`, `enumerate_servers`)
 - `stats` — runtime stats types
 
-For simple end-to-end usage with in-config credential bundles:
+For simple end-to-end usage with credential bundles defined directly in the configuration:
 
 ```rust
 use tacacsrs_config::{parse_yang_json, runtime};
@@ -102,7 +106,7 @@ The existing flat root exports remain available for compatibility.
 
 When callers need to construct TACACS+ server definitions in Rust instead of parsing RFC 7951 JSON, use `TacacsPlusServerBuilder`.
 
-The builder centralizes the same defaulting and security-shape choices that were previously duplicated in CLI callers:
+CLI callers previously duplicated these defaulting and security-shape choices. The builder now centralizes them:
 
 - `TacacsPlusServerBuilder::new(...)` — create a server with standard defaults
 - `with_timeout(...)` — override the default timeout
@@ -131,7 +135,7 @@ assert!(server.is_obfuscation());
 # anyhow::Ok::<(), anyhow::Error>(())
 ```
 
-The builder is intentionally small. It is meant for runtime construction of valid server shapes, not as a replacement for schema validation or full YANG parsing.
+The builder is intentionally small. Use it for runtime construction of valid server shapes. It does not replace schema validation or full YANG parsing.
 
 ### Central crypto integration boundary
 
@@ -142,7 +146,7 @@ The intended long-term split is:
 - `tacacsrs-credential-resolution` consumes enumerated `TacacsPlusServer` values and returns a closed provider-neutral result set with concrete material.
 - Provider implementations and projection into connection-ready networking types remain integration-layer responsibilities.
 
-That keeps the generated config model optimized for round-tripping and reporting, while runtime code gets a provider-agnostic handoff with only the normalized fields needed to connect.
+This separation keeps the generated configuration model suitable for round trips and reports. Runtime code receives only the normalized fields that it needs for connections.
 
 ## Examples
 
@@ -181,21 +185,25 @@ These are the recommended entry points for application code:
 - `enumerate_servers(&TacacsPlus) -> anyhow::Result<Vec<TacacsPlusServer>>`
 - `enumerate_server(&TacacsPlus, &str) -> anyhow::Result<TacacsPlusServer>`
 
-`parse_yang_json()` performs deserialization and validation of YANG-derived JSON constraints (server presence, unique addresses, SNI requirements, choice constraints, key format identities, inline key material encoding, etc.). The config is returned **without mutations**—credential references remain intact for round-tripping.
+`parse_yang_json()` deserializes the JSON and validates YANG constraints. These constraints include server presence, unique addresses, SNI requirements, and key formats.
+
+The function returns the configuration **without mutations**. Credential references remain intact for round trips.
 
 Validation checks include:
 
-- At least one server is configured
+- At least one server is present
 - Server addresses and ports are unique
 - SNI-enabled servers have domain names
-- Security choice constraints (TLS vs obfuscation, not both; strict mode also requires one of them)
+- Security choice constraint: choose TLS or obfuscation, not both. Strict mode requires one of them.
 - YANG choice constraints across all credential subtrees
 - Key format identity values (`private-key-format`, `public-key-format`, `key-format`) are valid RFC 7951 identityref strings
-- Inline key material (`cleartext-private-key`, `public-key`, `cert-data`, `cleartext-symmetric-key`) is valid base64-encoded binary data; certificates and private keys are carried internally as DER bytes
-- Credential references have matching definitions in the same config
-- Config-local credential references have matching definitions
+- Inline key material (`cleartext-private-key`, `public-key`, `cert-data`, `cleartext-symmetric-key`) is valid base64-encoded binary data. The crate carries certificates and private keys internally as DER bytes.
+- Credential references have matching definitions in the same configuration
+- Configuration-local credential references have matching definitions
 
-To resolve central credentials, create a `ResolutionPlan` after enumeration, execute it through a `CredentialResolver`, and materialize the results into generated inline fields. Provider I/O remains outside both generic crates.
+To resolve central credentials, create a `ResolutionPlan` after enumeration. Submit the plan to a `CredentialResolver`.
+
+Then materialize the results into generated inline fields. Provider I/O remains outside both generic crates.
 
 This design separates parsing/validation from credential retrieval and enables round-trip safety.
 
@@ -215,7 +223,7 @@ For code paths that do not start from RFC 7951 JSON, use:
 
 This is the supported way to create `TacacsPlusServer` values in application code without manually repeating the crate's default field setup.
 `with_tls13_epsk(...)` uses PSK-DHE by default with preferred groups
-`secp384r1,secp256r1`; use `with_tls13_epsk_psk_only(...)` only for
+`secp384r1,secp256r1`. Use `with_tls13_epsk_psk_only(...)` only for
 interoperability with peers that cannot negotiate PSK-DHE.
 
 ### 2) Advanced: Generated YANG model and pipeline API
@@ -228,7 +236,7 @@ For advanced use cases, these lower-level functions are available:
 
 ### 3) Runtime types
 
-Secret-bearing result types live in `tacacsrs-credential-resolution`; connection-ready server types remain outside `tacacsrs-config`.
+Secret-bearing result types live in `tacacsrs-credential-resolution`. Connection-ready server types remain outside `tacacsrs-config`.
 Shared derived helpers for the generated server model live in `TacacsPlusServerExt`.
 Programmatic construction helpers for the generated server model live in `TacacsPlusServerBuilder`.
 
@@ -267,7 +275,7 @@ Generated YANG enumeration and `identityref` enums provide:
 - `ALLOWED_VALUES` — RFC 7951 JSON string values
 - `as_rfc7951_str()` — convert enum to the canonical JSON string
 - `from_rfc7951_str(&str)` — parse an RFC 7951 string into the enum
-- `is_valid(&str)` — check if a string is a valid value
+- `is_valid(&str)` — report whether a string is valid
 
 Available identity sets:
 
@@ -275,7 +283,9 @@ Available identity sets:
 - `crypto_types::PublicKeyFormat` — `ssh-public-key-format`, `subject-public-key-info-format`
 - `crypto_types::SymmetricKeyFormat` — `octet-string-key-format`, `one-symmetric-key-format`
 
-These are generated automatically from the YANG identity hierarchy by `plugins/yang2rust.py`. Fixed-set `identityref` fields now use these enums directly in the generated struct graph, so unknown RFC 7951 strings fail during deserialization instead of being validated later as plain strings.
+`plugins/yang2rust.py` generates these values from the YANG identity hierarchy. Fixed-set `identityref` fields use these enums in the generated structure.
+
+Unknown RFC 7951 strings fail during deserialization instead of later validation.
 
 ## Inline key format identities
 
@@ -353,15 +363,15 @@ Used in `SymmetricKeyInlineDefinition` (the inline definition for TLS 1.3 extern
 ## Project TACACS+/TLS augmentation
 
 The repository includes a local YANG module, `tacacsrs`, that augments
-the TACACS+ TLS 1.3 EPSK configuration with `psk-dhe-ke-groups`. The augmentation
-is controlled by the `psk-dhe-ke-hello-params` YANG feature in
-`yang/feature-flags.ini`; set that entry to `false` before regenerating if the
-extension should be excluded from generated artifacts.
+the TACACS+ TLS 1.3 EPSK configuration with `psk-dhe-ke-groups`. The
+`psk-dhe-ke-hello-params` YANG feature in
+`yang/feature-flags.ini` controls the augmentation. To exclude the
+extension from generated artifacts, set that entry to `false` before regenerating.
 
-Because this leaf-list is added by a different YANG module than its parent, RFC 7951
+This leaf-list belongs to a different YANG module than its parent, so RFC 7951
 JSON uses the module-qualified key
-`tacacsrs:psk-dhe-ke-groups`. The value is an ordered array; earlier
-entries are preferred when the TLS client builds its ClientHello key shares:
+`tacacsrs:psk-dhe-ke-groups`. The value is an ordered array. The TLS client
+prefers earlier entries when it builds its ClientHello key shares:
 
 ```json
 {
@@ -395,7 +405,7 @@ Supported group values are `x25519`, `secp256r1`, `secp384r1`, `secp521r1`,
 `ffdhe2048`, `ffdhe3072`, `ffdhe4096`, `ffdhe6144`, and `ffdhe8192`. Unknown
 values fail during JSON deserialization.
 
-## Example config
+## Example configuration
 
 ```json
 {
@@ -423,7 +433,11 @@ The generated Rust types come from the checked-in YANG tooling under `yang/`:
 - `yang/modules/` — project-owned YANG modules passed to `pyang` alongside the upstream TACACS+ model
 - `yang/generated_types.rs` — generator output, produced on demand and copied into `src/generated.rs`
 
-The generator emits Rust enums with `ALL`, `ALLOWED_VALUES`, `as_rfc7951_str()`, `from_rfc7951_str()`, and `is_valid()` helpers for YANG enumerations. It also resolves `identityref` base identities and walks loaded modules to collect derived identities with the same helper shape. Fixed-set `identityref` fields use these enums directly, while YANG `binary` leaves deserialize from RFC 7951 base64 into in-memory `Vec<u8>` values and serialize back to base64 when writing JSON.
+The generator emits Rust enums with `ALL`, `ALLOWED_VALUES`, `as_rfc7951_str()`, `from_rfc7951_str()`, and `is_valid()` helpers. It also resolves `identityref` base identities.
+
+The generator collects derived identities from the loaded modules. Fixed-set `identityref` fields use these enums directly.
+
+YANG `binary` leaves deserialize from RFC 7951 base64 into in-memory `Vec<u8>` values. When the crate writes JSON, it serializes these values to base64.
 
 The higher-level validation logic in `src/validation.rs` is still maintained manually, but enum membership and base64 decoding now happen during deserialization. The handwritten validation layer is therefore focused on semantic checks such as choice rules, non-empty inline material, and TLS-specific policy.
 

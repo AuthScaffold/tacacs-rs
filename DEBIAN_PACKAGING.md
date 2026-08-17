@@ -1,13 +1,12 @@
 # Debian Packaging
 
-This document describes the Debian packages produced for TACACS-rs from a clean
-repository checkout.
+This document describes the Debian packages for TACACS-rs. The packaging process uses a clean repository checkout.
 
 ## Overview
 
 Official Linux packaging targets `x86_64-unknown-linux-gnu`.
 
-The shared CI and release pipeline produces these Debian packages:
+The shared CI and release pipeline produces these packages:
 
 | Package | Source crate | Install path | Notes |
 | --- | --- | --- | --- |
@@ -15,11 +14,11 @@ The shared CI and release pipeline produces these Debian packages:
 | `tacacsrs-agentd` | `executables/tacacsrs_agentd` | `/usr/sbin/tacacsrs-agentd` | Includes OpenSSL-backed TLS and TLS 1.3 PSK support. |
 | `tacacsrs-bash-plugin` | `libraries/tacacsrs_bash_plugin` | `/usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so` | SONiC bash execve plugin shared library package. |
 
-Windows archives are produced separately and include the required OpenSSL runtime DLLs.
+The pipeline produces Windows archives separately. These archives include the required OpenSSL runtime DLLs.
 
 ## Prerequisites
 
-Install the Debian packaging tools in the Linux environment used for packaging:
+Install the Debian packaging tools in the Linux packaging environment:
 
 ```bash
 sudo apt-get update
@@ -28,12 +27,11 @@ cargo install cargo-deb --locked
 cargo install cargo-cyclonedx --locked
 ```
 
-If you are working from Windows, run the Linux build and packaging commands from
-WSL or another Linux environment so the outputs are GNU/Linux artifacts.
+If you use Windows, run the build and packaging commands in WSL or another Linux environment. This process produces GNU/Linux artifacts.
 
 ## Build commands
 
-Build the Linux release artifacts before invoking `cargo deb --no-build`:
+Build the Linux release artifacts before you run `cargo deb --no-build`:
 
 ```bash
 cargo build --release --target x86_64-unknown-linux-gnu -p tacon
@@ -41,7 +39,7 @@ cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-agentd
 cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-bash-plugin
 ```
 
-These commands produce the staged artifacts used by Debian packaging:
+These commands produce the staged artifacts for Debian packaging:
 
 ```text
 target/x86_64-unknown-linux-gnu/release/tacon
@@ -51,20 +49,21 @@ target/x86_64-unknown-linux-gnu/release/libtacacsrs_bash_plugin.so
 
 ## Local helper script
 
-For the full local packaging flow, including generated changelog setup, man-page
-staging, SBOM generation, `cargo deb --no-build --dbgsym`, and `lintian`, use:
+The complete process generates the changelog and stages man pages for `tacon` and `tacacsrs-agentd`. It also generates the SBOM files.
+
+The process runs `cargo deb --no-build --dbgsym` and `lintian`. To start it, run:
 
 ```bash
 pwsh -File ./lde/run-debian-packages.ps1
 ```
 
-To run only a single package:
+To build one package, run:
 
 ```bash
 pwsh -File ./lde/run-debian-packages.ps1 -Package tacacsrs-agentd
 ```
 
-The Linux GNU pre-test helper also exposes this as:
+You can also run this process through the Linux GNU pretest helper:
 
 ```bash
 pwsh -File ./lde/run-pre-tests.ps1 -Matrix LinuxGnu -Task DebianPackages
@@ -72,45 +71,39 @@ pwsh -File ./lde/run-pre-tests.ps1 -Matrix LinuxGnu -Task DebianPackages
 
 ## Package reconfiguration
 
-`tacacsrs-agentd` and `tacacsrs-bash-plugin` include `debconf` prompts so the
-package can be installed first and configured later with `dpkg-reconfigure`.
+`tacacsrs-agentd` and `tacacsrs-bash-plugin` include `debconf` prompts. You can install each package before you configure it with `dpkg-reconfigure`.
 
-Re-run the package configuration dialogs with:
+To open the package configuration dialogs again, run:
 
 ```bash
 sudo dpkg-reconfigure tacacsrs-agentd
 sudo dpkg-reconfigure tacacsrs-bash-plugin
 ```
 
-Current package-managed options:
+The packages manage these options:
 
-- `tacacsrs-agentd` can enable or disable the SONiC-oriented
-	`tacacsrs-agentd.service` unit and records the selected package profile in
-	`/etc/tacacsrs-agentd/config.ini` for future runtime integration.
-- `tacacsrs-bash-plugin` can add or remove a package-managed `plugin=` entry in
-	`/etc/bash_plugins.conf` without taking ownership of the rest of that file.
+- `tacacsrs-agentd` can enable or disable the SONiC `tacacsrs-agentd.service` unit. It records the package profile in `/etc/tacacsrs-agentd/config.ini`.
+- `tacacsrs-bash-plugin` can add or remove its `plugin=` entry in `/etc/bash_plugins.conf`. It does not manage other file content.
 
 ## Generated packaging assets
 
-The package metadata lives with the owning crate manifests:
+The package metadata is in the manifest for each crate:
 
 - `executables/tacon/Cargo.toml`
 - `executables/tacacsrs_agentd/Cargo.toml`
 - `libraries/tacacsrs_bash_plugin/Cargo.toml`
 
-Before `cargo deb --no-build` runs, the packaging flow generates crate-local
-assets under each package's `debian/` directory:
+Before `cargo deb --no-build` runs, the packaging process generates assets in each local `debian/` directory:
 
 - `changelog.gz`
 - staged `sbom.json` and `sbom.xml`
 - generated man pages for `tacon` and `tacacsrs-agentd`
 
-These are build artifacts generated by CI or the local packaging flow. They are
-not source artifacts that should be committed.
+CI or the local packaging process generates these build artifacts. Do not commit them as source files.
 
 ## Verification
 
-Validate the resulting packages with standard Debian tooling:
+Run the standard Debian tools on the packages:
 
 ```bash
 dpkg --info target/debian/*.deb
@@ -118,7 +111,7 @@ dpkg --contents target/debian/tacacsrs-bash-plugin_*.deb
 lintian target/debian/*.deb
 ```
 
-The bash plugin package should contain:
+Make sure that the Bash plugin package contains:
 
 ```text
 /usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so
@@ -128,17 +121,14 @@ The bash plugin package should contain:
 
 ### Missing OpenSSL headers while building Linux executable packages
 
-Install `pkg-config` and `libssl-dev`, then rebuild `tacon` and
-`tacacsrs-agentd`.
+Install `pkg-config` and `libssl-dev`. Then rebuild `tacon` and `tacacsrs-agentd`.
 
 ### Missing generated man page during packaging
 
-Rebuild the owning package in release mode for the Linux target. The man pages
-for `tacon` and `tacacsrs-agentd` are generated during the Cargo build step via
-`clap_mangen`.
+Rebuild the applicable package in release mode for the Linux target. `clap_mangen` generates the man pages during the Cargo build.
 
 ### Missing plugin shared object during packaging
 
-Verify that `cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-bash-plugin`
-produced `target/x86_64-unknown-linux-gnu/release/libtacacsrs_bash_plugin.so`
-before invoking `cargo deb`.
+Before you run `cargo deb`, run `cargo build --release --target x86_64-unknown-linux-gnu -p tacacsrs-bash-plugin`. Make sure that the build produced this shared object:
+
+`target/x86_64-unknown-linux-gnu/release/libtacacsrs_bash_plugin.so`

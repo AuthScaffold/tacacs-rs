@@ -9,16 +9,16 @@ transport backend used by the default build.
 
 Standard TLS authenticates peers using X.509 certificates (or raw public keys).
 **Pre-Shared Key (PSK)** mode is an alternative where both client and server
-already share a secret key, provisioned out-of-band. During the TLS handshake
-the client proves it holds the key, and the server proves it holds the same key
-— no certificate authority or PKI is needed.
+already share a secret key, provisioned out-of-band. During the TLS handshake,
+the client proves it holds the key, and the server proves it holds the same
+key. No certificate authority or PKI is needed.
 
 TLS 1.3 (RFC 8446) defines two flavours of PSK:
 
 | Flavour | Source | Use case |
 |---------|--------|----------|
 | **Resumption PSK** | Derived from a previous TLS session via `NewSessionTicket` | Session resumption / 0-RTT |
-| **External PSK (EPSK)** | Provisioned out-of-band (manual config, key management system, etc.) | Lightweight mutual auth without PKI |
+| **External PSK (EPSK)** | Provisioned out-of-band, for example through manual configuration or a key management system | Lightweight mutual auth without PKI |
 
 This module implements **External PSK only** — the key material comes from the
 YANG configuration model, not from a prior TLS session.
@@ -54,12 +54,12 @@ Key points:
 
 3. The server selects the PSK (by index) in its `pre_shared_key` extension.
 
-4. Optionally, `key_share` can be included alongside the PSK for **(EC)DHE +
-   PSK** mode, adding forward secrecy. Without it, the PSK alone determines
-   all traffic keys (PSK-only mode, no forward secrecy).
+4. Optionally, the client can include `key_share` alongside the PSK for
+   **(EC)DHE + PSK** mode, adding forward secrecy. Without it, the PSK alone
+   determines all traffic keys (PSK-only mode, no forward secrecy).
 
-5. For external PSKs, `obfuscated_ticket_age` is always 0 and the hash
-   algorithm must be explicitly specified (defaults to SHA-256 per RFC 8446
+5. For external PSKs, `obfuscated_ticket_age` is always 0. The client must
+   explicitly specify the hash algorithm (default SHA-256 per RFC 8446
    §4.2.11).
 
 ### Server Authentication via PSK
@@ -94,16 +94,17 @@ container tls13-epsk {
 
 This configures the actual EPSK tuple `(Base Key, External Identity, Hash)` that
 the client offers in the TLS handshake. The `external-identity` is the label
-sent in the `pre_shared_key` ClientHello extension; the base key is the shared
+sent in the `pre_shared_key` ClientHello extension. The base key is the shared
 secret. The repository's `tacacsrs` augmentation adds
-`tacacsrs:psk-dhe-ke-groups`; when this leaf-list is present, the ordered values
-are translated into OpenSSL supported-group names and used to send TLS 1.3
-`psk_dhe_ke` key shares. When the leaf-list is empty, the transport leaves the
-OpenSSL group list unchanged and preserves the existing PSK-only behaviour.
+`tacacsrs:psk-dhe-ke-groups`. When this leaf-list is present, the transport
+translates the ordered values into OpenSSL supported-group names and uses
+them to send TLS 1.3 `psk_dhe_ke` key shares. When the leaf-list is empty, the
+transport leaves the OpenSSL group list unchanged and preserves the existing
+PSK-only behaviour.
 
-At runtime, networking owns an `Arc<TacacsPlusServer>` that has already passed
+At runtime, networking owns an `Arc<TacacsPlusServer>` that already passed
 credential materialization and final validation. Networking reads only
-`inline-definition.cleartext-symmetric-key`; central references never cross
+`inline-definition.cleartext-symmetric-key`. Central references never cross
 the agent boundary. The OpenSSL context stores another clone of the server
 `Arc` in ex-data and borrows the zeroizing generated secret during the PSK
 callback. The callback state therefore remains valid for the full `SSL_CTX`
@@ -119,17 +120,18 @@ leaf tls13-epsks {
 ```
 
 This leaf exists in the TLS client YANG model, but this transport does not
-require or consume it. TACACS+ PSK selection is driven by
-`client-identity/tls13-epsk`; if that EPSK is configured and accepted by the
-server, the TLS 1.3 handshake authenticates the server through the PSK Finished
-MAC. The generated TACACS+ YANG input is not expected to supply this leaf.
+require or consume it. `client-identity/tls13-epsk` drives TACACS+ PSK
+selection. If that EPSK is configured and accepted by the server, the TLS 1.3
+handshake authenticates the server through the PSK Finished MAC. The
+generated TACACS+ YANG input is not expected to supply this leaf.
 
 ### Why Both Nodes Exist
 
 The YANG model separates `client-identity` and `server-authentication` into
 independent containers because other auth types (certificate, raw-public-key)
-genuinely support asymmetric combinations (e.g., client authenticates with a
-certificate while verifying the server via CA trust chain).
+genuinely support asymmetric combinations. For example, a client can
+authenticate with a certificate while it verifies the server through a CA
+trust chain.
 
 For the PSK case specifically, this separation is structural only for this
 transport — it does not enable mixed PSK + certificate authentication. RFC 8446
@@ -141,10 +143,10 @@ transport — it does not enable mixed PSK + certificate authentication. RFC 844
 > **but not both**. Future documents may define how to use them together."
 
 When the server accepts a PSK, it MUST NOT send Certificate or CertificateVerify
-messages (RFC 8446 §2.2). The only scenario where configuring `ca-certs`
-alongside a PSK client-identity would activate is if the server *rejects* the
-offered PSK and falls back to a full (EC)DHE + certificate handshake — at which
-point the client is no longer authenticating via PSK either.
+messages (RFC 8446 §2.2). Configuring `ca-certs` alongside a PSK client-identity
+activates only if the server *rejects* the offered PSK and falls back to a
+full (EC)DHE + certificate handshake. At that point, the client no longer
+authenticates via PSK either.
 
 ### PSK with (EC)DHE vs PSK-only
 
@@ -163,12 +165,12 @@ This is about **key derivation**, not authentication. The two PSK sub-modes are:
 
 In both cases the server authenticates via the PSK — no certificate is sent.
 Adding `key_share` alongside `pre_shared_key` means traffic keys incorporate an
-ephemeral Diffie-Hellman exchange, so if the PSK later leaks, past sessions with
-unique DH keys remain protected. But the authentication mechanism is unchanged.
+ephemeral Diffie-Hellman exchange. If the PSK later leaks, past sessions with
+unique DH keys remain protected. The authentication mechanism stays unchanged.
 
 By default, the implementation preserves PSK-only mode for existing
 configurations. To request forward secrecy, configure one or more
-`tacacsrs:psk-dhe-ke-groups` values under `client-identity/tls13-epsk`; the
+`tacacsrs:psk-dhe-ke-groups` values under `client-identity/tls13-epsk`. The
 client passes those groups to OpenSSL in the same order. Supported mappings are:
 
 | YANG value | OpenSSL group name |
@@ -189,10 +191,10 @@ with an error that includes the OpenSSL group list and points at
 
 ### Practical Guidance
 
-In practice, when configuring EPSK for TACACS+, the `tls13-epsks` leaf in
-`server-authentication` should always be present: it declares that PSK-based
-server auth is acceptable, which is the only kind possible when the PSK is
-accepted.
+In practice, when you configure EPSK for TACACS+, the `tls13-epsks` leaf in
+`server-authentication` must always be present. It declares that PSK-based
+server authentication is acceptable, the only kind possible when the server
+accepts the PSK.
 
 ## Implementation Architecture
 
@@ -244,7 +246,6 @@ When OpenSSL asks for the client PSK session, the callback:
 
 1. Verifies the requested digest matches the configured EPSK hash.
 2. Looks up the configured TLS 1.3 ciphersuite using OpenSSL standard names.
-2. Looks up the configured TLS 1.3 ciphersuite using OpenSSL standard names.
 3. Builds a synthetic `SSL_SESSION` with TLS 1.3, the selected cipher, and the
   PSK bytes copied as the session master key.
 4. Returns the PSK identity bytes and transfers the new `SSL_SESSION` to OpenSSL.
@@ -266,12 +267,12 @@ because `SslStream` does not support owned splitting.
 | Concern | Mitigation |
 |---------|-----------|
 | Key length | EPSK validation rejects keys shorter than 16 bytes (128 bits) per RFC 9257 §6 |
-| Identity injection | NUL bytes in identity are rejected before OpenSSL callback registration |
+| Identity injection | The transport rejects NUL bytes in the identity before OpenSSL callback registration |
 | Forward secrecy | An empty `tacacsrs:psk-dhe-ke-groups` list configures OpenSSL to allow and prefer PSK-only key exchange. Configure one or more groups to negotiate `psk_dhe_ke` and add ephemeral (EC)DHE key material. |
-| Unsupported groups | OpenSSL group-list setup errors are surfaced before the handshake with the configured group list in the message. |
+| Unsupported groups | The transport surfaces OpenSSL group-list setup errors before the handshake, with the configured group list in the message. |
 | Certificate verification | Explicitly set to `SslVerifyMode::NONE` — intentional for PSK, where authentication comes from the shared secret, not certificates |
 | Key logging | The PSK transport does not log key material. The generated `Tls13Epsk` model contains inline key bytes, so do not debug-log the full model. |
-| Ciphersuites | Restricted to the configured EPSK hash: SHA-256 uses `TLS_AES_128_GCM_SHA256`; SHA-384 uses `TLS_AES_256_GCM_SHA384` |
+| Ciphersuites | Restricted to the configured EPSK hash. SHA-256 uses `TLS_AES_128_GCM_SHA256`, and SHA-384 uses `TLS_AES_256_GCM_SHA384`. |
 
 ## Feature Flag
 

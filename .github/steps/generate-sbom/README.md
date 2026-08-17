@@ -4,7 +4,7 @@ This composite action generates Software Bill of Materials (SBOM) files for the 
 
 ## Purpose
 
-Generates SBOM files to comply with supply chain security requirements, including:
+This action generates SBOM files to comply with supply chain security requirements, including:
 - Executive Order on Improving the Nation's Cybersecurity
 - Software supply chain transparency and security best practices
 
@@ -41,20 +41,20 @@ Generates SBOM files to comply with supply chain security requirements, includin
 
 ## Output
 
-Generates SBOM files in the workspace directories.
+This action generates SBOM files in the workspace directories.
 
-For binary-targeted runs this includes files such as:
+For binary-targeted runs, this action includes files such as:
 - `executables/tacon/tacon_bin_x86_64-unknown-linux-gnu.cdx.<format>`
 - `executables/tacon/tacon_bin_x86_64-pc-windows-msvc.cdx.<format>`
 
-When `manifest-path` and `describe: binaries` are not set, cargo-cyclonedx uses its default crate/workspace behavior and may emit files such as:
+When `manifest-path` and `describe: binaries` are not set, cargo-cyclonedx uses its default crate/workspace behavior. It can emit files such as:
 - `executables/tacon/tacon.cdx.<format>`
 - `libraries/tacacsrs_messages/tacacsrs-messages.cdx.<format>`
 - `libraries/tacacsrs_networking/tacacsrs-networking.cdx.<format>`
 
 ## Tool
 
-Uses [cargo-cyclonedx](https://github.com/CycloneDX/cyclonedx-rust-cargo) to generate SBOMs.
+This action uses [cargo-cyclonedx](https://github.com/CycloneDX/cyclonedx-rust-cargo) to generate SBOMs.
 
 ## CycloneDX Standard
 

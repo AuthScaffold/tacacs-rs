@@ -4,15 +4,15 @@ A command-line TACACS+ client for authentication, authorization, and accounting 
 
 ## Overview
 
-`tacon` is a CLI tool that enables interaction with TACACS+ servers. It supports both traditional TACACS+ with obfuscation and modern TACACS+ over TLS 1.3, making it suitable for both legacy and next-generation network infrastructure.
+`tacon` is a CLI tool for interaction with TACACS+ servers. It supports both traditional TACACS+ with obfuscation and modern TACACS+ over TLS 1.3. It works with legacy and next-generation network infrastructure.
 
 ## Features
 
-- **Authentication** - Verify user credentials against a TACACS+ server
-- **Authorization** - Check if a user is permitted to execute specific commands
+- **Authentication** - Make sure that user credentials are valid for a TACACS+ server
+- **Authorization** - Make sure that a user can run specific commands
 - **Accounting** - Record user activity and command execution
 - **TLS Support** - Secure connections using TLS 1.3 with optional client certificate and key files
-- **Batch Mode** - Execute multiple requests from a JSON file (sequential or parallel)
+- **Batch Mode** - Run multiple requests from a JSON file (sequential or parallel)
 - **Configurable Verbosity** - Multiple logging levels for debugging
 
 ## Installation
@@ -37,8 +37,8 @@ tacon --server-addr <HOST:PORT> [OPTIONS] <COMMAND>
 
 | Option | Description |
 | --- | --- |
-| `-s, --server-addr <ADDR>` | TACACS+ server address and port (e.g., `192.168.1.1:49`) |
-| `--config <FILE>` | Load direct connection settings from a YANG JSON config file |
+| `-s, --server-addr <ADDR>` | TACACS+ server address and port (for example, `192.168.1.1:49`) |
+| `--config <FILE>` | Load direct connection configuration from a YANG JSON configuration file |
 | `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
 | `--use-tls` | Enable TLS 1.3 for the connection |
 | `--tls-server-name <NAME>` | Override the TLS server name used for SNI and certificate verification |
@@ -54,10 +54,10 @@ tacon --server-addr <HOST:PORT> [OPTIONS] <COMMAND>
 
 When `--use-tls` is set, `--client-certificate` and `--client-key` let `tacon` present a TLS client identity to the upstream TACACS+ server.
 
-- Provide both flags together; the certificate flag requires the key flag, and the key flag requires the certificate flag.
-- Both files may be PEM or DER. PEM input is detected at runtime and normalized to DER internally before `tacon` builds its runtime connection settings.
-- Use `--tls-server-name` when you connect to a TLS server by IP address or any socket address that does not match the certificate DNS name. The supplied value is used for both SNI and certificate name verification in direct mode.
-- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags; provide PEM or DER certificate/key material instead.
+- Provide both flags together. The certificate flag requires the key flag. The key flag requires the certificate flag.
+- Both files can be PEM or DER. The client detects PEM input and converts it to DER before it builds the runtime connection configuration.
+- If you connect to a TLS server by IP address, or by any socket address that does not match the certificate DNS name, use `--tls-server-name`. `tacon` uses the supplied value for both SNI and certificate name verification in direct mode.
+- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. These flags do not accept that container format. Provide PEM or DER certificate or key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If you load TLS material through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 
 ### TLS 1.3 PSK
@@ -67,10 +67,9 @@ When built with the `psk` feature, `--psk-identity` and `--psk-key` select TLS
 preferred group order `secp384r1,secp256r1`.
 
 Use `--psk-key-exchange-groups` to constrain the PSK-DHE groups offered in
-ClientHello. Supplying groups implies PSK-DHE mode. Use
-`--psk-key-exchange psk-only` only when an interoperability peer cannot
-negotiate PSK-DHE; PSK-only mode cannot be combined with
-`--psk-key-exchange-groups`.
+ClientHello. Supplying groups implies PSK-DHE mode. If an interoperability peer
+cannot negotiate PSK-DHE, use `--psk-key-exchange psk-only`. PSK-only mode
+cannot be combined with `--psk-key-exchange-groups`.
 
 ### Commands
 
@@ -91,7 +90,7 @@ tacon -s 192.168.1.1:49 -k "secret" accounting \
 | Option | Description |
 | --- | --- |
 | `-u, --user <USER>` | Username for the request |
-| `-p, --port <PORT>` | Port identifier (e.g., `tty0`, `console`) |
+| `-p, --port <PORT>` | Port identifier (for example, `tty0`, `console`) |
 | `-r, --rem-addr <ADDR>` | Remote address of the client |
 
 #### Authentication
@@ -107,7 +106,7 @@ tacon -s 192.168.1.1:49 -k "secret" authentication \
 
 #### Authorization
 
-Check command authorization (not yet implemented):
+Make sure that a command is authorized (not yet implemented):
 
 ```bash
 tacon -s 192.168.1.1:49 -k "secret" authorization \
@@ -118,7 +117,7 @@ tacon -s 192.168.1.1:49 -k "secret" authorization \
 
 #### Batch Mode
 
-Execute multiple requests from a JSON file:
+Run multiple requests from a JSON file:
 
 ```bash
 tacon -s 192.168.1.1:49 -k "secret" batch requests.json
@@ -139,7 +138,7 @@ tacon \
     accounting "show version"
 ```
 
-#### Loading a YANG JSON config
+#### Loading a YANG JSON configuration
 
 ```bash
 tacon \
@@ -242,7 +241,7 @@ Batch files use JSON format to define multiple TACACS+ requests:
 | Field | Description |
 | --- | --- |
 | `description` | Optional description of the batch |
-| `parallel` | Execute requests in parallel (`true`) or sequentially (`false`) |
+| `parallel` | Run requests in parallel (`true`) or sequentially (`false`) |
 
 ### Request Fields
 
@@ -252,7 +251,7 @@ Batch files use JSON format to define multiple TACACS+ requests:
 | `user`     | Username for the request                                         |
 | `port`     | Port identifier                                                  |
 | `rem_addr` | Remote address of the client                                     |
-| `cmd`      | Command being executed (for accounting)                          |
+| `cmd`      | Command to run (for accounting)                                  |
 
 See the [examples](examples/) directory for sample batch files.
 
