@@ -30,15 +30,15 @@ impl SystemdCommand for ProcessSystemdCommand {
         let status = Command::new("systemd-notify")
             .args(arguments)
             .status()
-            .map_err(|error| anyhow::anyhow!("failed to execute systemd-notify: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("Failed to run systemd-notify: {error}"))?;
         if !status.success() {
-            anyhow::bail!("systemd-notify returned unsuccessful status: {status}");
+            anyhow::bail!("systemd-notify exited with an unsuccessful status: {status}");
         }
         Ok(())
     }
 }
 
-/// Selected host adapter consuming common runtime health snapshots.
+/// Selected host adapter that consumes common runtime health snapshots.
 pub(crate) enum HostIntegration {
     None,
     Systemd(SystemdIntegration),
@@ -49,9 +49,9 @@ impl HostIntegration {
     ///
     /// # Errors
     ///
-    /// Explicit systemd mode fails when `NOTIFY_SOCKET` or the helper is
-    /// unavailable. Auto mode selects none without a notification socket and
-    /// preserves warn-and-continue helper behavior after systemd selection.
+    /// When `NOTIFY_SOCKET` or the helper is unavailable, explicit systemd mode
+    /// fails. Auto mode selects no host integration when there is no notification
+    /// socket. It keeps the warn-and-continue helper behavior after it selects systemd.
     pub(crate) fn from_environment(mode: HostIntegrationMode) -> anyhow::Result<Self> {
         Self::select(
             mode,
@@ -146,9 +146,9 @@ impl HostIntegration {
 }
 
 /// Backoff between retries of a systemd one-shot notification (`--ready` /
-/// `--stopping`) that failed transiently in auto mode. Each wait is bounded and
-/// the retry loop stays cancellation-aware, so a missed notification is re-sent
-/// without an unrelated health change and cancellation never waits a full period.
+/// `--stopping`) that failed transiently in auto mode. Each wait is bounded.
+/// The retry loop stays aware of cancellation. It resends a missed notification
+/// without an unrelated health change. Cancellation never waits for a full retry period.
 const SYSTEMD_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
 pub(crate) struct SystemdIntegration {
@@ -162,9 +162,10 @@ pub(crate) struct SystemdIntegration {
 impl SystemdIntegration {
     /// Publishes one systemd notification for `snapshot`.
     ///
-    /// The one-shot `--ready` / `--stopping` flags are marked delivered only
-    /// after the command succeeds. Returns `true` when a one-shot notification
-    /// is still owed after a transient auto-mode failure and must be retried.
+    /// This method marks the one-shot `--ready` / `--stopping` flags as delivered
+    /// only after the command succeeds. When a one-shot notification is still
+    /// owed after a transient auto-mode failure, this method returns `true`.
+    /// The caller must retry the notification.
     fn publish(&mut self, snapshot: &RuntimeHealthSnapshot) -> anyhow::Result<bool> {
         let mut arguments = vec!["--pid=parent".to_owned()];
         arguments.push(format!("--status={}", status_text(snapshot)));
@@ -334,8 +335,8 @@ mod tests {
         tokio::task::yield_now().await;
         cancellation.cancel();
         task.await
-            .expect("task should join")
-            .expect("notifications should succeed");
+            .expect("task must join")
+            .expect("notifications must succeed");
 
         let calls = command.calls.lock().expect("calls lock");
         assert_eq!(
@@ -379,7 +380,7 @@ mod tests {
         cancellation.cancel();
         auto.run(health.subscribe(), cancellation)
             .await
-            .expect("auto should tolerate failure");
+            .expect("auto mode must tolerate the failure");
 
         let strict = HostIntegration::select(
             HostIntegrationMode::Systemd,
@@ -579,7 +580,7 @@ mod tests {
         // A perpetually pending retry must still yield promptly to cancellation.
         task.await
             .expect("join")
-            .expect("auto tolerates perpetual failure until cancelled");
+            .expect("auto tolerates perpetual failure until canceled");
     }
 
     #[tokio::test(start_paused = true)]

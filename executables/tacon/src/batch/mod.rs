@@ -1,12 +1,12 @@
 //! Batch mode processing for TACACS+ requests
 //!
-//! This module handles reading and executing multiple TACACS+ requests
-//! from a JSON batch file, with support for parallel execution and load testing.
+//! This module reads and runs multiple TACACS+ requests from a JSON batch file.
+//! It supports parallel runs and load tests.
 //!
 //! # Module Structure
 //!
 //! - [`types`]: Data structures for batch files, requests, and results
-//! - [`executor`]: Execution strategies (sequential, parallel, load test)
+//! - [`executor`]: Run strategies (sequential, parallel, load test)
 //! - [`progress`]: Progress display and result summaries
 
 mod executor;
@@ -21,7 +21,7 @@ use std::path::Path;
 #[allow(unused_imports)]
 pub use types::{BatchFile, RequestResult};
 
-// Re-export execution functions
+// Re-export the run functions.
 pub use executor::{execute_batch, execute_batch_via_service};
 
 // Re-export display functions

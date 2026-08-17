@@ -37,9 +37,9 @@ fn init_logger(verbose: u8) {
     }
 }
 
-/// Executes the requested TACACS+ command
+/// Runs the requested TACACS+ command.
 async fn execute_command(command: &Command, connection: &Connection) -> anyhow::Result<()> {
-    log::info!("Executing command: {command:?}");
+    log::info!("Running command: {command:?}");
 
     match command {
         Command::Accounting {
@@ -150,7 +150,7 @@ async fn execute_command_via_service(endpoint: &str, command: &Command) -> anyho
     Ok(())
 }
 
-/// Runs the CLI in batch mode, executing requests from a JSON file
+/// Runs the CLI in batch mode with requests from a JSON file.
 ///
 /// # Errors
 ///
@@ -194,7 +194,7 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
 /// Returns an error if:
 /// - Connection to the TACACS+ server fails
 /// - TLS configuration is invalid
-/// - Command execution fails
+/// - A command run fails
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     init_logger(cli.verbose);
 
@@ -220,8 +220,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let connect_options = ConnectOptions::default()
         .with_certificate_verification_disabled(cli.insecure_disable_certificate_verification);
 
-    // Dedicated connection mode: minimal one-shot connection (TCP or TLS) per
-    // request, no background tasks, no session multiplexing.
+    // Dedicated connection mode uses a minimal TCP or TLS connection for each
+    // request. It has no background tasks or session multiplexing.
     if cli.dedicated {
         return execute_command_dedicated(&server_config, &connect_options, &cli.command).await;
     }
@@ -230,7 +230,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     execute_command(&cli.command, &connection).await
 }
 
-/// Executes the command using a dedicated connection — a minimal one-shot
+/// Runs the command with a dedicated connection. This is a minimal one-shot
 /// TCP connection with no background tasks or session multiplexing.
 async fn execute_command_dedicated(
     server: &TacacsPlusServer,

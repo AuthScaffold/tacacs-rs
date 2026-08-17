@@ -10,16 +10,16 @@ use tacacsrs_config::TacacsPlusServerType;
 /// Batch file structure containing metadata and requests
 #[derive(Debug, Deserialize)]
 pub struct BatchFile {
-    /// Metadata controlling batch execution behavior
+    /// Metadata that controls the batch run
     #[serde(default)]
     pub metadata: BatchMetadata,
 
-    /// List of requests to execute
+    /// List of requests to run
     pub requests: Vec<BatchRequest>,
 }
 
 impl BatchFile {
-    /// Returns the combined TACACS+ server type required to execute all requests.
+    /// Returns the combined TACACS+ server type required to run all requests.
     #[must_use]
     pub fn required_server_type(&self) -> Option<TacacsPlusServerType> {
         let required_type = self
@@ -31,10 +31,10 @@ impl BatchFile {
     }
 }
 
-/// Metadata controlling how the batch is executed
+/// Metadata that controls how the batch runs
 #[derive(Debug, Deserialize, Default)]
 pub struct BatchMetadata {
-    /// If true, all requests are sent in parallel; otherwise sequential
+    /// If true, the batch sends all requests in parallel. If false, it sends them one at a time.
     #[serde(default)]
     pub parallel: bool,
 
@@ -86,7 +86,7 @@ impl BatchRequest {
         }
     }
 
-    /// Returns the TACACS+ server type required to execute this request.
+    /// Returns the TACACS+ server type required to run this request.
     pub const fn server_type(&self) -> TacacsPlusServerType {
         match self {
             Self::Accounting(_) => TacacsPlusServerType::ACCOUNTING,
@@ -100,16 +100,16 @@ impl BatchRequest {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccountingRequest {
-    /// Username executing the command
+    /// Username that runs the command
     pub user: String,
 
-    /// Port identifier (e.g., "tty0")
+    /// Port identifier (for example, "tty0")
     pub port: String,
 
     /// Remote address of the client
     pub rem_addr: String,
 
-    /// Command being executed
+    /// Command that the user runs
     pub cmd: String,
 
     /// Optional command arguments
@@ -172,29 +172,29 @@ const fn default_privilege_level() -> u8 {
     15
 }
 
-/// Result of executing a single batch request
+/// Result of a single batch request
 #[derive(Debug)]
 pub struct RequestResult {
     /// Index of the request in the batch
     pub index: usize,
 
-    /// Type of request that was executed
+    /// Type of request that ran
     pub request_type: &'static str,
 
     /// Result of the request (Ok or error message)
     pub result: Result<String, String>,
 }
 
-/// Result of executing a load test
+/// Result of a load test
 #[derive(Debug)]
 pub struct LoadTestResult {
-    /// Total number of requests executed
+    /// Total number of requests that ran
     pub total_requests: usize,
 
     /// Number of successful requests
     pub successful_requests: usize,
 
-    /// Number of failed requests (will be 0 or 1 since we stop on first failure)
+    /// Number of failed requests. The value is 0 or 1 because the batch stops after the first failure.
     pub failed_requests: usize,
 
     /// Total duration of the load test
@@ -306,7 +306,7 @@ mod tests {
 
         let batch: BatchFile = serde_json::from_str(json).unwrap();
 
-        // Defaults should be applied
+        // The parser applies the default values.
         assert!(!batch.metadata.parallel);
         assert!(batch.metadata.description.is_none());
 

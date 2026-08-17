@@ -1,6 +1,6 @@
 //! Command line contract for `session-wrapper`.
 //!
-//! The options model the eventual login-wrapper integration: caller-supplied
+//! The options define the login-wrapper integration: caller-supplied
 //! user identity, TACACS+ context, fail policy, and the command vector to run
 //! under supervision.
 
@@ -18,10 +18,10 @@ pub enum FailPolicy {
     Open,
 }
 
-/// TACACS+ controlled login session wrapper.
+/// TACACS+-controlled session wrapper.
 #[derive(Debug, Clone, Parser)]
 #[command(name = "session-wrapper", version, author)]
-#[command(about = "TACACS+ controlled login session wrapper", long_about = None)]
+#[command(about = "TACACS+-controlled session wrapper", long_about = None)]
 pub struct Cli {
     /// Target username for the wrapped session.
     #[arg(long)]
@@ -35,7 +35,7 @@ pub struct Cli {
     #[arg(long)]
     pub user_gid: libc::gid_t,
 
-    /// IPC endpoint for the central TACACS+ client service.
+    /// IPC endpoint for the TACACS+ agent.
     #[arg(long, default_value = "/run/tacacs/tacacs.sock", value_name = "PATH_OR_ADDR")]
     pub service_endpoint: String,
 
@@ -63,11 +63,11 @@ pub struct Cli {
     #[arg(long)]
     pub rem_addr: Option<String>,
 
-    /// Increase verbosity level (-v, -vv, -vvv, -vvvv).
+    /// Increase the log level. Repeat up to four times: -v, -vv, -vvv, or -vvvv.
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Terminal command and arguments to execute under the wrapped session.
+    /// Terminal command and arguments to run under the wrapped session.
     #[arg(
         required = true,
         num_args = 1..,
@@ -168,7 +168,7 @@ mod tests {
             "--",
             "/bin/bash",
         ])
-        .expect_err("missing user should fail");
+        .expect_err("the parser accepted a missing user");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
@@ -184,7 +184,7 @@ mod tests {
             "--user-gid",
             "1000",
         ])
-        .expect_err("missing command should fail");
+        .expect_err("the parser accepted a missing command");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }

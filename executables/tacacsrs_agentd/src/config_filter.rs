@@ -12,7 +12,7 @@ use tacacsrs_secrets::SecretString;
 
 /// Filtered daemon configuration plus local proxy-only metadata derived from it.
 pub(crate) struct FilteredTacacsPlus {
-    /// TACACS+ configuration that should be applied to upstream runtime state.
+    /// TACACS+ configuration to apply to the upstream runtime state.
     pub(crate) tacacs_plus: TacacsPlus,
     /// Obfuscation policy expected on downstream raw TACACS+ proxy traffic.
     pub(crate) proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
@@ -20,7 +20,7 @@ pub(crate) struct FilteredTacacsPlus {
 
 /// Filters a validated TACACS+ configuration before it is applied to runtime state.
 pub(crate) trait TacacsPlusFilter: Send + Sync {
-    /// Return the configuration snapshot that should be applied to the daemon.
+    /// Returns the configuration snapshot to apply to the daemon.
     fn filter(&self, tacacs_plus: TacacsPlus) -> BoxFuture<'_, anyhow::Result<FilteredTacacsPlus>>;
 }
 
@@ -89,7 +89,7 @@ impl ProxySelfLoopFilter {
         for server in &enumerated_servers {
             if upstream_server_targets_proxy_endpoint(server, self.proxy_endpoint).await {
                 log::warn!(
-                    "Ignoring upstream TACACS+ server '{}' at {}:{} because it resolves to the local TACACS+ proxy endpoint {}; keeping it would proxy client traffic back into this daemon",
+                    "The daemon ignores upstream TACACS+ server '{}' at {}:{} because it resolves to the local TACACS+ proxy endpoint {}. If retained, this server sends client traffic back into the daemon.",
                     server.name,
                     server.address,
                     server.port,
@@ -99,7 +99,7 @@ impl ProxySelfLoopFilter {
                 if let Some(selected) = selected_proxy_server.as_ref() {
                     if selected.shared_secret != server.shared_secret {
                         log::warn!(
-                            "Multiple upstream TACACS+ server rows resolve to local proxy endpoint {}; using the highest-priority row '{}' for downstream proxy obfuscation settings",
+                            "Multiple upstream TACACS+ server rows resolve to local proxy endpoint {}. The daemon uses the highest-priority row '{}' for downstream proxy obfuscation configuration.",
                             self.proxy_endpoint,
                             selected.name,
                         );
@@ -129,7 +129,7 @@ impl ProxySelfLoopFilter {
         }
         if original_server_count > 0 && tacacs_plus.server.is_empty() {
             log::warn!(
-                "All configured upstream TACACS+ servers target the local proxy endpoint {}; waiting for a non-looping upstream configuration",
+                "All configured upstream TACACS+ servers target the local proxy endpoint {}. The daemon waits for a non-looping upstream configuration.",
                 self.proxy_endpoint,
             );
         }
@@ -141,7 +141,7 @@ impl ProxySelfLoopFilter {
                 );
             } else {
                 log::info!(
-                    "Highest-priority filtered local proxy endpoint row '{}' has no shared secret; expecting unobfuscated downstream TACACS+ proxy traffic",
+                    "The highest-priority filtered local proxy endpoint row '{}' has no shared secret. The daemon expects unobfuscated downstream TACACS+ proxy traffic.",
                     server.name,
                 );
             }
@@ -160,7 +160,7 @@ impl TacacsPlusFilter for ProxySelfLoopFilter {
     }
 }
 
-/// Compose the runtime config filter for the selected daemon services.
+/// Composes the runtime configuration filter for the selected daemon services.
 #[must_use]
 pub(crate) fn config_filter_from_runtime_options(
     enabled_services: EnabledServices,
@@ -206,7 +206,7 @@ async fn upstream_server_targets_proxy_endpoint(
         Ok(mut addresses) => addresses.any(|address| address == proxy_endpoint),
         Err(error) => {
             log::warn!(
-                "Failed to resolve upstream TACACS+ server '{}' at {}:{} while checking for a local proxy self-loop: {error}; keeping the server",
+                "The daemon failed to resolve upstream TACACS+ server '{}' at {}:{} during local proxy self-loop detection: {error}. The daemon keeps the server.",
                 server.name,
                 server.address,
                 server.port,
@@ -266,7 +266,7 @@ mod tests {
                 &ValidationOptions::new()
                     .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret),
             )
-            .expect("test config should be valid")
+            .expect("test configuration must be valid")
     }
 
     fn proxy_obfuscation(secret: Option<&str>) -> ProxyDownstreamObfuscation {
@@ -280,7 +280,7 @@ mod tests {
         let endpoint = Some(
             "127.0.0.1:9050"
                 .parse::<IpcEndpoint>()
-                .expect("TCP endpoint should parse"),
+                .expect("TCP endpoint must parse"),
         );
         let config = test_config_from_host_ports(&[("127.0.0.1", 9050), ("192.0.2.20", 49)]);
         let filter = config_filter_from_runtime_options(
@@ -289,7 +289,7 @@ mod tests {
             None,
         );
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
@@ -301,7 +301,7 @@ mod tests {
         let endpoint = Some(
             "127.0.0.1:9050"
                 .parse::<IpcEndpoint>()
-                .expect("TCP endpoint should parse"),
+                .expect("TCP endpoint must parse"),
         );
         let config = test_config_from_host_ports(&[("127.0.0.1", 9050)]);
         let filter = config_filter_from_runtime_options(
@@ -310,7 +310,7 @@ mod tests {
             None,
         );
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "127.0.0.1");
@@ -323,7 +323,7 @@ mod tests {
         let endpoint = Some(
             "/run/tacacs/proxy.sock"
                 .parse::<IpcEndpoint>()
-                .expect("Unix endpoint should parse"),
+                .expect("Unix endpoint must parse"),
         );
         let config = test_config_from_host_ports(&[("127.0.0.1", 9050)]);
         let filter = config_filter_from_runtime_options(
@@ -332,7 +332,7 @@ mod tests {
             None,
         );
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "127.0.0.1");
@@ -346,7 +346,7 @@ mod tests {
         let filtered = NoopTacacsPlusFilter::default()
             .filter(config)
             .await
-            .expect("filter should succeed");
+            .expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "127.0.0.1");
@@ -356,10 +356,9 @@ mod tests {
     #[tokio::test]
     async fn proxy_filter_removes_matching_ipv4_endpoint() {
         let config = test_config_from_host_ports(&[("127.0.0.1", 9050), ("192.0.2.20", 49)]);
-        let filter =
-            ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket should parse"));
+        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
@@ -369,9 +368,9 @@ mod tests {
     #[tokio::test]
     async fn proxy_filter_removes_matching_ipv6_endpoint() {
         let config = test_config_from_host_ports(&[("::1", 9050), ("192.0.2.20", 49)]);
-        let filter = ProxySelfLoopFilter::new("[::1]:9050".parse().expect("socket should parse"));
+        let filter = ProxySelfLoopFilter::new("[::1]:9050".parse().expect("socket must parse"));
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
@@ -382,13 +381,13 @@ mod tests {
     async fn proxy_filter_resolves_localhost_hostname() {
         let proxy_endpoint = tokio::net::lookup_host(("localhost", 9050))
             .await
-            .expect("localhost should resolve")
+            .expect("localhost must resolve")
             .next()
-            .expect("localhost should have at least one address");
+            .expect("localhost must have at least one address");
         let config = test_config_from_host_ports(&[("localhost", 9050), ("192.0.2.20", 49)]);
         let filter = ProxySelfLoopFilter::new(proxy_endpoint);
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
@@ -398,10 +397,9 @@ mod tests {
     #[tokio::test]
     async fn proxy_filter_preserves_different_loopback_port() {
         let config = test_config_from_host_ports(&[("127.0.0.1", 9051), ("192.0.2.20", 49)]);
-        let filter =
-            ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket should parse"));
+        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 2);
         assert_eq!(filtered.proxy_downstream_obfuscation, ProxyDownstreamObfuscation::Unobfuscated);
@@ -410,10 +408,9 @@ mod tests {
     #[tokio::test]
     async fn proxy_filter_preserves_non_loopback_same_port() {
         let config = test_config_from_host_ports(&[("192.0.2.20", 9050)]);
-        let filter =
-            ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket should parse"));
+        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
@@ -425,7 +422,7 @@ mod tests {
         let endpoint = Some(
             "127.0.0.1:9050"
                 .parse::<IpcEndpoint>()
-                .expect("TCP endpoint should parse"),
+                .expect("TCP endpoint must parse"),
         );
         let config = test_config_from_host_ports(&[("192.0.2.20", 49)]);
         let filter = config_filter_from_runtime_options(
@@ -434,7 +431,7 @@ mod tests {
             Some("cli-proxy-secret".to_owned()),
         );
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(
@@ -450,11 +447,11 @@ mod tests {
             ("192.0.2.20", 49, Some("upstream-secret")),
         ]);
         let filter = ProxySelfLoopFilter::new_with_fallback(
-            "127.0.0.1:9050".parse().expect("socket should parse"),
+            "127.0.0.1:9050".parse().expect("socket must parse"),
             proxy_obfuscation(Some("cli-proxy-secret")),
         );
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(
@@ -470,10 +467,9 @@ mod tests {
             ("localhost", 9050, Some("lower-priority-secret")),
             ("192.0.2.20", 49, Some("upstream-secret")),
         ]);
-        let filter =
-            ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket should parse"));
+        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
@@ -490,10 +486,9 @@ mod tests {
             ("localhost", 9050, Some("lower-priority-secret")),
             ("192.0.2.20", 49, Some("upstream-secret")),
         ]);
-        let filter =
-            ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket should parse"));
+        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
 
-        let filtered = filter.filter(config).await.expect("filter should succeed");
+        let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");

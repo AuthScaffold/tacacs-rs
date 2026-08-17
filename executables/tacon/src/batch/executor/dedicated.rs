@@ -11,7 +11,7 @@ use crate::connection::{
 use super::common::{execute_single_request, load_test_iterations, run_load_test};
 use super::super::types::{BatchRequest, LoadTestConfig, RequestResult};
 
-/// Executes a single batch request using a dedicated connection (no background
+/// Runs a single batch request using a dedicated connection (no background
 /// tasks, no session multiplexing).
 async fn execute_single_request_dedicated(
     connection: &Connection,
@@ -70,7 +70,7 @@ pub(super) async fn execute_requests_dedicated(
     } else {
         let mut results = Vec::with_capacity(requests.len());
         for (index, request) in requests.iter().enumerate() {
-            log::info!("Executing request {}/{}", index + 1, requests.len());
+            log::info!("Running request {}/{}", index + 1, requests.len());
             results.push(RequestResult {
                 index,
                 request_type: request.type_name(),

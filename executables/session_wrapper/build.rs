@@ -22,8 +22,8 @@ fn main() {
             libseccomp_static_link_is_available(),
             "session-wrapper cannot link dynamic libseccomp while using musl's static CRT. \
              Install a musl-targeted static libseccomp and build with \
-             LIBSECCOMP_LINK_TYPE=static LIBSECCOMP_LIB_PATH=/path/to/lib, or use \
-             RUSTFLAGS='-C target-feature=-crt-static' for a dynamically linked Alpine \
+             LIBSECCOMP_LINK_TYPE=static LIBSECCOMP_LIB_PATH=/path/to/lib. As an alternative, \
+             use RUSTFLAGS='-C target-feature=-crt-static' for a dynamically-linked Alpine \
              development build. See executables/session_wrapper/README.alpine.md."
         );
     }

@@ -33,7 +33,7 @@ use crate::materialization_coordinator::{MaterializationCoordinator, Publication
 
 /// Supplies retry delays without owning asynchronous sleeping.
 pub(crate) trait RetryBackoff: Send + Sync {
-    /// Returns the delay after a consecutive failure, starting at attempt one.
+    /// Returns the delay after a consecutive failure. Attempt numbering starts at one.
     fn delay(&self, attempt: u32) -> Duration;
 }
 
@@ -229,7 +229,7 @@ impl ConfigSupervisor {
                 Err(()) if policy == InitialLoadPolicy::FailFast => {
                     self.mark_source_problem();
                     anyhow::bail!(
-                        "Datastore '{}' could not supply a valid initial configuration",
+                        "Datastore '{}' did not supply a valid initial configuration",
                         self.datastore.label(),
                     );
                 }
@@ -237,7 +237,7 @@ impl ConfigSupervisor {
                     self.mark_source_problem();
                     attempt = attempt.saturating_add(1);
                     log::warn!(
-                        "Datastore '{}' initial configuration is unavailable; retrying",
+                        "Datastore '{}' initial configuration is unavailable. The daemon retries.",
                         self.datastore.label(),
                     );
                     if !self.wait_for_retry(attempt, cancellation).await {
@@ -248,7 +248,7 @@ impl ConfigSupervisor {
         }
     }
 
-    /// Runs initial loading and then maintains notifications until cancelled.
+    /// Runs the initial load and then maintains notifications until canceled.
     ///
     /// # Errors
     ///
@@ -337,7 +337,7 @@ impl ConfigSupervisor {
                     }
                     None => {
                         log::warn!(
-                            "Datastore '{}' continuous change stream ended; reconnecting",
+                            "Datastore '{}' continuous change stream ended. The daemon reconnects.",
                             self.datastore.label(),
                         );
                         self.mark_subscription_unavailable();
@@ -400,7 +400,7 @@ impl ConfigSupervisor {
         };
         apply.map_err(|_| {
             log::warn!(
-                "Datastore '{}' configuration candidate could not be prepared or published",
+                "The daemon failed to prepare or publish the configuration candidate from datastore '{}'",
                 self.datastore.label(),
             );
         })
@@ -815,7 +815,7 @@ mod tests {
                 )
             })
             .build()
-            .expect("test config")
+            .expect("test configuration")
     }
 
     fn central_test_config(server_count: usize) -> TacacsPlus {
@@ -1141,7 +1141,7 @@ mod tests {
 
         assert!(result.is_err());
         let public_error = result
-            .expect_err("fail-fast should return an error")
+            .expect_err("fail-fast must return an error")
             .to_string();
         assert!(!public_error.contains("scripted load failure"));
         assert!(!public_error.contains("test-secret"));
@@ -1164,7 +1164,7 @@ mod tests {
         supervisor
             .load_initial(&CancellationToken::new())
             .await
-            .expect("retry should recover");
+            .expect("retry must recover");
 
         assert_eq!(datastore.load_count.load(Ordering::Relaxed), 3);
         assert_eq!(service.server_count(), 1);
@@ -1192,8 +1192,8 @@ mod tests {
 
         timeout(Duration::from_secs(1), task)
             .await
-            .expect("supervisor should stop promptly")
-            .expect("task should join")
+            .expect("supervisor must stop promptly")
+            .expect("task must join")
             .expect("cancellation is successful");
         assert_eq!(datastore.load_count.load(Ordering::Relaxed), 1);
     }
@@ -1212,7 +1212,7 @@ mod tests {
         supervisor
             .run(&cancellation)
             .await
-            .expect("static supervisor should stop");
+            .expect("static supervisor must stop");
 
         assert_eq!(datastore.subscribe_count.load(Ordering::Relaxed), 0);
     }
@@ -1238,11 +1238,11 @@ mod tests {
             }
         })
         .await
-        .expect("supervisor should resubscribe");
+        .expect("supervisor must resubscribe");
         cancellation.cancel();
         task.await
-            .expect("task should join")
-            .expect("supervisor should stop");
+            .expect("task must join")
+            .expect("supervisor must stop");
 
         assert_eq!(service.server_count(), 2);
         assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
@@ -1277,9 +1277,9 @@ mod tests {
             }
         })
         .await
-        .expect("rejection should be published");
+        .expect("rejection must be published");
         cancellation.cancel();
-        task.await.expect("task should join");
+        task.await.expect("task must join");
 
         assert_eq!(service.server_count(), 1);
         assert_eq!(health.snapshot().datastore(), DatastoreState::Stale);
@@ -1318,9 +1318,9 @@ mod tests {
             }
         })
         .await
-        .expect("restart requirement should be published");
+        .expect("restart requirement must be published");
         cancellation.cancel();
-        task.await.expect("task should join");
+        task.await.expect("task must join");
 
         assert_eq!(service.server_count(), 1);
         assert!(health.snapshot().is_readiness_serving());
@@ -1348,11 +1348,11 @@ mod tests {
             }
         })
         .await
-        .expect("supervisor should retry subscription");
+        .expect("supervisor must retry subscription");
         cancellation.cancel();
         task.await
-            .expect("task should join")
-            .expect("supervisor should stop");
+            .expect("task must join")
+            .expect("supervisor must stop");
 
         assert_eq!(service.server_count(), 2);
     }
@@ -1378,11 +1378,11 @@ mod tests {
             }
         })
         .await
-        .expect("supervisor should recover and resubscribe");
+        .expect("supervisor must recover and resubscribe");
         cancellation.cancel();
         task.await
-            .expect("task should join")
-            .expect("supervisor should stop");
+            .expect("task must join")
+            .expect("supervisor must stop");
 
         assert_eq!(datastore.load_count.load(Ordering::Relaxed), 3);
         assert_eq!(datastore.subscribe_count.load(Ordering::Relaxed), 2);

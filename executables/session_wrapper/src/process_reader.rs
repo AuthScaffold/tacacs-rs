@@ -5,8 +5,8 @@
 //! When the kernel intercepts a syscall via a seccomp user notification filter,
 //! the target process is **frozen** at the syscall boundary. Its virtual memory
 //! is stable and readable by the supervisor process through the
-//! `/proc/[pid]/mem` pseudo-file, without needing `ptrace` attach (which would
-//! interfere with the existing seccomp relationship).
+//! `/proc/[pid]/mem` pseudo-file, without a `ptrace` attach. A `ptrace` attach
+//! interferes with the existing seccomp relationship.
 //!
 //! This module uses [`pread(2)`] rather than [`read(2)`] on that pseudo-file
 //! so each read is positioned by virtual address without having to `lseek`. The
@@ -16,12 +16,12 @@
 //!
 //! # TOCTOU mitigation
 //!
-//! Between receiving a notification and reading memory, the target process
-//! could in theory be killed or have its syscall cancelled by a signal. The
+//! Between receiving a notification and reading memory, a signal can kill the
+//! target process or cancel its syscall. The
 //! supervisor calls `check_notification_valid` before and
 //! during each read to detect this condition early. If the notification becomes
-//! invalid, reading stops and the supervisor can skip sending a response
-//! (the kernel has already cleaned up the frozen syscall).
+//! invalid, the supervisor stops reading and skips the response. The kernel
+//! already cleaned up the frozen syscall.
 //!
 //! [`pread(2)`]: https://man7.org/linux/man-pages/man2/pread.2.html
 //! [`read(2)`]: https://man7.org/linux/man-pages/man2/read.2.html
@@ -39,7 +39,7 @@ use super::supervisor::check_notification_valid;
 /// Maximum length of a single NUL-terminated string read from process memory.
 ///
 /// Linux limits executable pathnames to `PATH_MAX` (4 096 bytes). Individual
-/// argv entries can be larger but we apply the same cap for safety. Strings
+/// argv entries can be larger, but this cap applies for safety. Strings
 /// longer than this limit are treated as an error.
 const MAX_STRING_LEN: usize = 4096;
 
@@ -54,17 +54,17 @@ const MAX_ARGV_ENTRIES: usize = 256;
 /// Reads up to `buf.len()` bytes from file descriptor `fd` starting at
 /// absolute byte offset `offset`, without moving the fd's file position.
 ///
-/// This is a direct wrapper around the `pread(2)` system call. We use it
+/// This is a direct wrapper around the `pread(2)` system call. This function uses it
 /// instead of `seek + read` because each call is atomic with respect to the
 /// file offset, and because `/proc/[pid]/mem` requires this approach — the
 /// kernel maps the target's virtual address space into the file's offset space.
 ///
-/// Returns the number of bytes actually read (may be less than requested).
+/// Returns the number of bytes actually read (can be less than requested).
 fn pread(fd: RawFd, buf: &mut [u8], offset: u64) -> io::Result<usize> {
     // SAFETY: `buf` is a valid mutable slice for the duration of the call.
-    // `fd` is a valid file descriptor owned by the caller. The offset is cast
-    // to `off_t`; on x86_64 Linux, `off_t` is i64.  We return an error if the
-    // address overflows i64 so we never read from an unintended location.
+    // The caller owns the valid file descriptor `fd`. The offset is cast to
+    // `off_t`. On x86_64 Linux, `off_t` is i64. If the address overflows i64,
+    // the conversion returns an error before the system call.
     let offset_i64 = i64::try_from(offset).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -86,8 +86,8 @@ fn pread(fd: RawFd, buf: &mut [u8], offset: u64) -> io::Result<usize> {
 
 /// Opens `/proc/[pid]/mem` for reading and returns the file handle.
 ///
-/// The caller should open the file once per notification and pass the raw fd
-/// to the reading functions to avoid repeated open/close overhead.
+/// The caller must open the file once per notification and pass the raw fd to
+/// the reading functions. This avoids repeated open and close operations.
 fn open_proc_mem(pid: u32) -> Result<File> {
     let path = format!("/proc/{pid}/mem");
     File::open(&path).with_context(|| format!("failed to open {path}"))
@@ -114,9 +114,8 @@ fn open_proc_mem(pid: u32) -> Result<File> {
 /// - EOF reached before a NUL terminator (the string is not NUL-terminated,
 ///   which is structurally invalid for a C string argument to execve).
 /// - Strings longer than [`MAX_STRING_LEN`].
-/// - Bytes that are not valid UTF-8 (exec paths should always be valid UTF-8
-///   on modern Linux; we reject anything else to keep the rest of the code
-///   clean).
+/// - Bytes that are not valid UTF-8. Exec paths are almost always valid UTF-8 on
+///   modern Linux. The function rejects any other byte sequence.
 pub(crate) fn read_string_from_process(pid: u32, addr: u64) -> Result<String> {
     let file = open_proc_mem(pid)?;
     let fd = file.as_raw_fd();
@@ -130,10 +129,10 @@ pub(crate) fn read_string_from_process(pid: u32, addr: u64) -> Result<String> {
             .with_context(|| format!("pread /proc/{pid}/mem at {offset:#x}"))?;
 
         if n == 0 {
-            // EOF before finding a NUL terminator.  This is a structural error:
-            // a C string argument to execve must be NUL-terminated.  Treating
-            // the truncated bytes as the path would risk misidentifying the
-            // executable (e.g. an allowlisted prefix of a longer path).
+            // EOF before a NUL terminator is a structural error. A C string
+            // argument to execve must be NUL-terminated. Treating the truncated
+            // bytes as the path risks misidentifying the executable. For example,
+            // the truncated string can match an allowlisted prefix of a longer path.
             bail!(
                 "pread /proc/{pid}/mem at {offset:#x}: EOF before NUL terminator \
                  (string starting at {addr:#x} is not NUL-terminated)"
@@ -171,8 +170,8 @@ pub(crate) fn read_string_from_process(pid: u32, addr: u64) -> Result<String> {
 /// # TOCTOU bracketing
 ///
 /// The notification is validated with [`check_notification_valid`] between each
-/// pointer read so that if the target process is killed mid-way, we detect it
-/// quickly rather than reading stale or remapped memory.
+/// pointer read. If the target process is killed partway through, the supervisor
+/// detects it quickly instead of reading stale or remapped memory.
 ///
 /// # Arguments
 ///
@@ -191,8 +190,8 @@ fn read_argv(
     let fd = file.as_raw_fd();
 
     let mut args = Vec::new();
-    // Each entry in argv is one pointer (8 bytes on x86_64). We walk the array
-    // by incrementing the offset by pointer size (8) on each iteration.
+    // Each entry in argv is one pointer (8 bytes on x86_64). This function walks
+    // the array by incrementing the offset by pointer size (8) on each iteration.
     let pointer_size: u64 = 8;
     let mut ptr_offset = argv_addr;
 
@@ -207,14 +206,14 @@ fn read_argv(
             break;
         }
 
-        // x86_64 is little-endian; interpret the 8 bytes as a virtual address.
+        // x86_64 is little-endian. Interpret the 8 bytes as a virtual address.
         let arg_ptr = u64::from_le_bytes(ptr_bytes);
         if arg_ptr == 0 {
             // NULL pointer marks the end of the argv array.
             break;
         }
 
-        // Check that the notification is still valid before dereferencing the
+        // Make sure that the notification is still valid before dereferencing the
         // pointer. If the process was killed between reading the argv array
         // header and dereferencing an entry, this detects it.
         check_notification_valid(notif_fd, notification_id)
@@ -254,16 +253,16 @@ fn read_argv(
 /// # Return value
 ///
 /// Returns `(executable_path, argv, filename_addr)` where `argv` is the full
-/// argument vector including `argv[0]` (which may differ from the executable
+/// argument vector including `argv[0]` (which can differ from the executable
 /// path).
 ///
 /// # TOCTOU mitigation
 ///
 /// The notification validity is checked before the filename read, between the
 /// filename and argv reads, and between each argv entry. If the notification
-/// becomes invalid at any of those points, the error propagates to the caller,
-/// which should skip sending a response for this notification (the kernel has
-/// already cleaned up the frozen syscall).
+/// becomes invalid at any of those points, the error propagates to the caller.
+/// The caller must not send a response for this notification because the kernel
+/// already cleaned up the frozen syscall.
 ///
 /// # Errors
 ///
@@ -272,7 +271,7 @@ fn read_argv(
 ///
 /// On success, returns `(exec_path, argv, filename_addr)`. The caller can
 /// use `filename_addr` with [`verify_exec_path_unchanged`] to re-read the
-/// path just before sending `CONTINUE`, shrinking the TOCTOU window.
+/// path just before it sends `CONTINUE`. This shrinks the TOCTOU window.
 pub(crate) fn read_exec_args(
     notif_fd: ScmpFd,
     pid: u32,
@@ -299,8 +298,8 @@ pub(crate) fn read_exec_args(
     };
 
     // Bracket the filename read between two validity checks. If the target
-    // process dies between receiving the notification and reading memory, we
-    // detect it here rather than reading garbage.
+    // process dies between receiving the notification and reading memory, the
+    // supervisor detects it here instead of reading unrelated memory.
     check_notification_valid(notif_fd, req.id)
         .context("notification became invalid before reading executable path")?;
 
@@ -320,10 +319,9 @@ pub(crate) fn read_exec_args(
 ///
 /// This is the primary TOCTOU mitigation for `SECCOMP_USER_NOTIF_FLAG_CONTINUE`.
 /// The supervisor calls this **immediately before** sending the `CONTINUE`
-/// response, after the authorization decision has been made. If the path has
-/// changed between the original read (used for authorization) and this re-read,
-/// a racing thread in the child process has swapped the filename buffer and the
-/// exec must be denied.
+/// response, after the authorization decision. If the path changed between the
+/// original read and this re-read, a racing thread in the child process swapped
+/// the filename buffer. The supervisor must deny the exec.
 ///
 /// This does not eliminate the TOCTOU window entirely — there is still a small
 /// gap between this re-read and the kernel's resume of the syscall — but it
@@ -357,11 +355,11 @@ pub(crate) fn verify_exec_path_unchanged(
 mod tests {
     // Tests for `pread` and string reading require an actual process, which is
     // impractical in a pure unit-test context without spawning children and
-    // installing seccomp filters.  The integration behaviour is covered by the
+    // installing seccomp filters. The integration behavior is covered by the
     // supervisor loop tests and by manual end-to-end testing described in
     // README.md.
     //
-    // We do test the pure-logic helpers that do not require live process memory.
+    // These tests cover the pure-logic helpers that do not require live process memory.
 
     use super::MAX_ARGV_ENTRIES;
     use super::MAX_STRING_LEN;

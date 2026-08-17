@@ -29,7 +29,7 @@ pub(crate) enum PskKeyExchange {
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, ValueEnum)]
 pub(crate) enum HostIntegrationMode {
-    /// Detect systemd from `NOTIFY_SOCKET`; otherwise use no host integration.
+    /// Detect systemd from `NOTIFY_SOCKET`. If it is absent, use no host integration.
     #[default]
     Auto,
 
@@ -78,7 +78,7 @@ pub(crate) struct Cli {
     #[arg(long = "server-addr", conflicts_with_all = ["sonic", "sonic_redis_url", "sonic_redis_db"])]
     pub(crate) server_addresses: Vec<String>,
 
-    /// Source TACACS+ and local forwarder configuration from `SONiC` `ConfigDB`.
+    /// Get TACACS+ and local forwarder configuration from `SONiC` `ConfigDB`.
     #[arg(long)]
     pub(crate) sonic: bool,
 
@@ -92,7 +92,7 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "INDEX", requires = "sonic")]
     pub(crate) sonic_redis_db: Option<i64>,
 
-    /// Local IPC endpoint. Use a Unix socket path on Linux (default: /run/tacacs/tacacs.sock).
+    /// Local IPC endpoint. Use a Unix domain socket path on Linux (default: /run/tacacs/tacacs.sock).
     #[arg(long)]
     pub(crate) listen_endpoint: Option<String>,
 
@@ -108,7 +108,7 @@ pub(crate) struct Cli {
     #[arg(long, value_enum)]
     pub(crate) service_mode: Option<ServiceMode>,
 
-    /// File mode applied to the Unix domain socket path (octal string, e.g. 660).
+    /// File mode applied to the Unix domain socket path (octal string, for example 660).
     #[cfg(unix)]
     #[arg(long, default_value = "660")]
     pub(crate) socket_mode: String,
@@ -129,7 +129,8 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "FILE", requires = "client_certificate")]
     pub(crate) client_key: Option<String>,
 
-    /// Dangerously disable upstream TLS certificate verification.
+    /// CAUTION: Disable upstream TLS certificate verification.
+    /// This option permits server impersonation.
     #[arg(long, requires = "use_tls")]
     pub(crate) insecure_disable_certificate_verification: bool,
 
@@ -141,11 +142,11 @@ pub(crate) struct Cli {
     #[arg(long, requires = "server_addresses", conflicts_with = "sonic")]
     pub(crate) dedicated: bool,
 
-    /// Probe interval, in seconds, used when checking whether the preferred server has recovered.
+    /// Probe interval, in seconds, between checks of whether the preferred server recovered.
     #[arg(long, default_value_t = 30)]
     pub(crate) preferred_probe_interval_seconds: u64,
 
-    /// Increase verbosity level (-v, -vv, -vvv, -vvvv)
+    /// Increase the log level. Repeat up to four times: -v, -vv, -vvv, or -vvvv.
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub(crate) verbose: u8,
 

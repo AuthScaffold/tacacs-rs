@@ -9,20 +9,20 @@ use crate::connection::{establish_connection, Connection};
 use super::common::{execute_single_request, load_test_iterations, run_load_test};
 use super::super::types::{BatchRequest, LoadTestConfig, LoadTestResult, RequestResult};
 
-/// Executes requests sequentially on a multiplexed connection
+/// Runs requests sequentially on a multiplexed connection.
 ///
-/// The first request may perform single-connection negotiation. Once the
+/// The first request can perform single-connection negotiation. Once the
 /// server confirms support, later requests reuse the upgraded shared transport.
 pub(super) async fn execute_sequential_multiplexed(
     connection: Connection,
     requests: &[BatchRequest],
 ) -> anyhow::Result<Vec<RequestResult>> {
-    log::info!("Executing {} requests sequentially on multiplexed connection", requests.len());
+    log::info!("Running {} requests sequentially on a multiplexed connection", requests.len());
 
     let mut results = Vec::with_capacity(requests.len());
 
     for (index, request) in requests.iter().enumerate() {
-        log::info!("Executing request {}/{}", index + 1, requests.len());
+        log::info!("Running request {}/{}", index + 1, requests.len());
 
         let result = execute_single_request(&connection, request).await;
         results.push(RequestResult {
@@ -35,12 +35,12 @@ pub(super) async fn execute_sequential_multiplexed(
     Ok(results)
 }
 
-/// Executes requests in parallel on a multiplexed connection
+/// Runs requests in parallel on a multiplexed connection.
 pub(super) async fn execute_parallel_multiplexed(
     connection: Connection,
     requests: &[BatchRequest],
 ) -> anyhow::Result<Vec<RequestResult>> {
-    log::info!("Executing {} requests in parallel on multiplexed connection", requests.len());
+    log::info!("Running {} requests in parallel on a multiplexed connection", requests.len());
 
     let futures: Vec<_> = requests
         .iter()
@@ -62,12 +62,12 @@ pub(super) async fn execute_parallel_multiplexed(
     Ok(join_all(futures).await)
 }
 
-/// Executes a load test using multiplexed connections with controlled concurrency
+/// Runs a load test over multiplexed connections with controlled concurrency.
 ///
 /// The load test uses one adaptive connection for the whole run. The first
-/// request may negotiate single-connection support; subsequent requests create
+/// request can negotiate single-connection support. Later requests create
 /// sessions from the same client and reuse the upgraded shared transport when
-/// the server supports it. The test stops immediately on the first failure.
+/// the server supports it. The test stops immediately after the first failure.
 pub(super) async fn execute_load_test_multiplexed(
     server: &TacacsPlusServer,
     requests: &[BatchRequest],
@@ -94,7 +94,7 @@ pub(super) async fn execute_load_test_multiplexed(
     .await)
 }
 
-/// Executes a single load test iteration on the shared multiplexed connection.
+/// Runs one load test iteration on the shared multiplexed connection.
 async fn execute_load_test_single(
     connection: &Connection,
     request: &BatchRequest,

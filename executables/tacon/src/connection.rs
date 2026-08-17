@@ -27,7 +27,7 @@ impl Connection {
     }
 }
 
-/// Establishes a multiplexed TACACS+ connection using the given server config.
+/// Establishes a multiplexed TACACS+ connection using the given server configuration.
 ///
 /// # Errors
 ///
@@ -47,7 +47,7 @@ pub async fn establish_connection(
 /// the effective server configuration.
 ///
 /// Networking follows [`TacacsPlusServer::single_connection`] exactly, so the
-/// CLI forces dedicated behavior by modifying a cloned server config before
+/// CLI forces dedicated behavior by modifying a cloned server configuration before
 /// handing it to [`TacacsClient`].
 ///
 /// # Errors

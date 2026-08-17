@@ -4,7 +4,7 @@ use tacacsrs_config::PskDheKeSupportedGroup;
 
 /// Validation relaxation that loosens a specific YANG constraint.
 ///
-/// Relaxations are opt-in; default (strict) validation never applies them.
+/// Relaxations are opt-in. Default (strict) validation never applies them.
 #[derive(Debug, Clone, ValueEnum)]
 pub enum ValidationRelaxation {
     /// Allow TLS and `shared-secret` to coexist on the same server.
@@ -42,8 +42,8 @@ fn psk_dhe_ke_supported_group_parser(
 
 /// TACACS+ Client CLI
 ///
-/// A command-line tool for interacting with TACACS+ servers,
-/// supporting authentication, authorization, and accounting operations.
+/// This command-line tool interacts with TACACS+ servers. It supports
+/// authentication, authorization, and accounting operations.
 #[derive(Parser, Clone)]
 #[command(name = "tacon", version, author)]
 #[command(about = "TACACS+ client CLI", long_about = None)]
@@ -57,7 +57,7 @@ fn psk_dhe_ke_supported_group_parser(
         .args(["use_tls", "config"])
 ))]
 pub struct Cli {
-    /// IP address and port of the TACACS+ server (e.g., "192.168.1.1:49")
+    /// IP address and port of the TACACS+ server (for example, "192.168.1.1:49")
     #[arg(short, long)]
     pub server_addr: Option<String>,
 
@@ -97,7 +97,8 @@ pub struct Cli {
     )]
     pub client_key: Option<String>,
 
-    /// Dangerously disable TLS certificate verification for direct server connections.
+    /// CAUTION: Disable TLS certificate verification for direct server connections.
+    /// This option permits man-in-the-middle attacks.
     #[arg(long, requires = "certificate_verification_target", conflicts_with = "service_endpoint")]
     pub insecure_disable_certificate_verification: bool,
 
@@ -125,13 +126,13 @@ pub struct Cli {
     )]
     pub psk_key_exchange_groups: Vec<PskDheKeSupportedGroup>,
 
-    /// Increase verbosity level (-v, -vv, -vvv, -vvvv)
+    /// Increase the log level. Repeat up to four times: -v, -vv, -vvv, or -vvvv.
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
     /// Apply a validation relaxation when loading or constructing configuration.
     ///
-    /// May be repeated to enable multiple relaxations.
+    /// You can repeat this option to enable multiple relaxations.
     /// Valid values: allow-tls-with-shared-secret, allow-plain-tcp-without-shared-secret
     #[arg(
         long,
@@ -143,8 +144,8 @@ pub struct Cli {
 
     /// Use a minimal dedicated connection for each request. Each request
     /// opens and closes its own direct TCP or TLS connection to the server,
-    /// instead of using a reused or multiplexed connection. Useful for
-    /// testing or simple one-off requests.
+    /// instead of using a reused or multiplexed connection. This flag is
+    /// useful for tests or for a single request.
     #[arg(long, conflicts_with = "service_endpoint")]
     pub dedicated: bool,
 
@@ -159,11 +160,11 @@ pub struct RequestArgs {
     #[arg(short, long)]
     pub user: String,
 
-    /// Port identifier for the TACACS+ request (e.g., "tty0")
+    /// Port identifier for the TACACS+ request (for example, "tty0")
     #[arg(short, long)]
     pub port: String,
 
-    /// Remote address of the client (e.g., "192.168.1.100")
+    /// Remote address of the client (for example, "192.168.1.100")
     #[arg(short, long)]
     pub rem_addr: String,
 }
@@ -207,7 +208,7 @@ pub enum Command {
         #[command(flatten)]
         args: RequestArgs,
 
-        /// Command being executed (e.g., "show running-config")
+        /// Command that the user runs (for example, "show running-config")
         cmd: String,
 
         /// Additional arguments for the command
@@ -228,7 +229,7 @@ pub enum Command {
         privilege_level: u8,
     },
 
-    /// Perform authorization check
+    /// Authorize a shell session or command.
     Authorization {
         #[command(flatten)]
         args: RequestArgs,

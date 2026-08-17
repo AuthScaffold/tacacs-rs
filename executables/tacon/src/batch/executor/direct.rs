@@ -13,7 +13,7 @@ enum ExecutionMode {
     Dedicated,
 }
 
-/// Determines the execution mode for the batch.
+/// Determines the run mode for the batch.
 ///
 /// When `dedicated` is `true`, dedicated mode is used unconditionally.
 /// Otherwise the server configuration decides whether the batch can use the
@@ -31,7 +31,7 @@ fn determine_execution_mode(dedicated: bool, single_connection_enabled: bool) ->
     }
 }
 
-/// Entry point for executing a batch file over a direct server connection.
+/// Runs a batch file over a direct server connection.
 ///
 /// Unless `dedicated` is `true`, the server configuration decides whether
 /// batch requests use the adaptive single-connection path or dedicated streams.
@@ -42,7 +42,7 @@ pub async fn execute_batch(
     options: &ConnectOptions,
 ) -> anyhow::Result<Vec<RequestResult>> {
     if let Some(description) = &batch.metadata.description {
-        log::info!("Executing batch: {description}");
+        log::info!("Running batch: {description}");
         println!("Batch: {description}");
     }
 
@@ -70,7 +70,7 @@ pub async fn execute_batch(
         }
         ExecutionMode::Dedicated => {
             log::info!(
-                "Executing {request_count} requests with dedicated connections (parallel: {})",
+                "Running {request_count} requests with dedicated connections (parallel: {})",
                 batch.metadata.parallel,
             );
             execute_requests_dedicated(server, &batch.requests, batch.metadata.parallel, options)
@@ -81,9 +81,9 @@ pub async fn execute_batch(
     Ok(results)
 }
 
-/// Handles load test execution from a batch file
+/// Runs a load test from a batch file.
 ///
-/// The execution mode has already been determined by `determine_execution_mode`.
+/// The run mode is already set by `determine_execution_mode`.
 async fn execute_batch_load_test(
     server: &TacacsPlusServer,
     batch: &BatchFile,

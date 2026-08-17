@@ -39,18 +39,18 @@ struct SyscallRule {
 /// Builds the list of syscall rules for the wrapper policy.
 ///
 /// Exec-family notifications are always installed because they are the command
-/// authorization boundary. Fork-like syscalls are not notified because they do
-/// not carry command material; descendants inherit this filter and are mediated
-/// when they later call `execve` or `execveat`.
+/// authorization boundary. Fork-like syscalls are not notified because they
+/// carry no command material. Descendants inherit this filter. The filter
+/// mediates each descendant again when it later calls `execve` or `execveat`.
 fn syscall_rules() -> Vec<SyscallRule> {
     vec![
         SyscallRule {
             name: "ptrace",
             action: RuleAction::Errno(libc::EPERM),
         },
-        // Cross-process memory access (ptrace equivalents): deterministic
-        // TOCTOU exploitation via a cooperating process overwriting the
-        // frozen process's execve filename after the supervisor reads it.
+        // Cross-process memory access (the `ptrace` equivalents) lets a
+        // cooperating process overwrite the frozen process's execve filename.
+        // This creates a deterministic TOCTOU exploit.
         SyscallRule {
             name: "process_vm_writev",
             action: RuleAction::Errno(libc::EPERM),
@@ -59,8 +59,8 @@ fn syscall_rules() -> Vec<SyscallRule> {
             name: "process_vm_readv",
             action: RuleAction::Errno(libc::EPERM),
         },
-        // pidfd_getfd can steal the seccomp notification fd from the
-        // supervisor, subverting the entire authorization model.
+        // `pidfd_getfd` can steal the seccomp notification fd from the
+        // supervisor. This subverts the entire authorization model.
         SyscallRule {
             name: "pidfd_getfd",
             action: RuleAction::Errno(libc::EPERM),
@@ -72,9 +72,8 @@ fn syscall_rules() -> Vec<SyscallRule> {
             name: "userfaultfd",
             action: RuleAction::Errno(libc::EPERM),
         },
-        // Namespace creation: user + mount namespaces allow bind-mounting
-        // a malicious binary over an allowlisted path, making path-based
-        // checks meaningless.
+        // User and mount namespaces permit a malicious binary to be bind-mounted
+        // over an allowlisted path. This makes path-based authorization ineffective.
         SyscallRule {
             name: "unshare",
             action: RuleAction::Errno(libc::EPERM),
@@ -150,7 +149,7 @@ fn build_filter() -> Result<ScmpFilterContext> {
 /// Verifies that the runtime `libseccomp` API can create user notifications.
 ///
 /// User notification support requires both a recent enough library and API
-/// level. Checking this up front gives a clear error before the child is forked.
+/// level. This function queries support before the child process calls `fork`.
 fn ensure_user_notify_supported() -> Result<()> {
     let supported = check_api(6, ScmpVersion::from((2, 5, 0)))
         .context("failed to determine libseccomp API/version support")?;
@@ -167,13 +166,13 @@ fn ensure_user_notify_supported() -> Result<()> {
 /// The caller must transfer ownership of this fd to the parent supervisor before
 /// allowing the child to execute any syscall that can be notified.
 pub(crate) fn install_filter() -> Result<RawFd> {
-    // A process can only have one useful listener for this filter. Reinstalling
-    // would make ownership and notification routing ambiguous, so fail fast.
+    // A process can only have one useful listener for this filter. If this code
+    // reinstalls the filter, ownership and notification routing become ambiguous.
     if FILTER_INSTALLED
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_err()
     {
-        bail!("seccomp filter has already been installed in this process");
+        bail!("This process already has a seccomp filter");
     }
 
     ensure_user_notify_supported()?;
@@ -247,20 +246,22 @@ mod tests {
 
     #[test]
     fn generated_bpf_program_is_not_empty() {
-        let filter = build_filter().expect("filter should build");
+        let filter = build_filter().expect("failed to build the filter");
 
-        let mut filter_file = tempfile::tempfile().expect("tempfile should be created");
+        let mut filter_file = tempfile::tempfile().expect("failed to create the temporary file");
         filter
             .export_bpf(&filter_file)
-            .expect("filter should export BPF");
-        filter_file.flush().expect("flush should succeed");
+            .expect("failed to export the filter BPF");
+        filter_file
+            .flush()
+            .expect("failed to flush the filter file");
         filter_file
             .seek(SeekFrom::Start(0))
-            .expect("seek should succeed");
+            .expect("failed to seek in the filter file");
         let mut bpf = Vec::new();
         filter_file
             .read_to_end(&mut bpf)
-            .expect("read should succeed");
+            .expect("failed to read the filter file");
 
         assert!(!bpf.is_empty());
     }

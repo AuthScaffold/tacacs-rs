@@ -9,25 +9,25 @@ use tacacsrs_agent_ipc_emulator::{EmulatorPolicy, IpcEmulator};
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agent-ipc-emulatord", version, author)]
-#[command(about = "OPA/Rego-driven TACACS+ agent IPC emulator for integration tests")]
+#[command(about = "TACACS+ agent IPC emulator that uses OPA/Rego for integration tests")]
 struct Cli {
     /// Path to the Rego policy file evaluated for every IPC request.
     #[arg(long, value_name = "FILE")]
     policy: PathBuf,
 
-    /// Optional JSON policy data document fixed at startup.
+    /// Optional JSON data file for the policy. The emulator loads it at startup.
     #[arg(long, value_name = "FILE")]
     data: Option<PathBuf>,
 
-    /// IPC endpoint to listen on. TCP port 0 chooses an ephemeral loopback port.
+    /// IPC endpoint for the listener. TCP port 0 selects an available loopback port.
     #[arg(long, default_value = "127.0.0.1:0")]
     listen_endpoint: String,
 
-    /// Increase verbosity level (-v, -vv, -vvv, -vvvv).
+    /// Increase the log level. Repeat up to four times: -v, -vv, -vvv, or -vvvv.
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 
-    /// Suppress emulator diagnostics and print only the bound endpoint.
+    /// Disable emulator logs. The emulator still prints the listener endpoint.
     #[arg(long)]
     quiet: bool,
 }
@@ -81,9 +81,9 @@ async fn main() -> anyhow::Result<()> {
     init_logger(cli.verbose, cli.quiet);
 
     let endpoint = IpcEndpoint::from_str(&cli.listen_endpoint)
-        .with_context(|| format!("Invalid listen endpoint {}", cli.listen_endpoint))?;
+        .with_context(|| format!("Listen endpoint is invalid: {}", cli.listen_endpoint))?;
     log::info!(
-        "starting IPC emulator policy={} data={} listen_endpoint={}",
+        "Starting IPC emulator: policy={} data={} listen_endpoint={}",
         cli.policy.display(),
         cli.data
             .as_ref()
@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("{}", endpoint_string(&bound_endpoint));
     log::info!(
-        "IPC emulator ready endpoint={} policy={}",
+        "IPC emulator is ready: endpoint={} policy={}",
         endpoint_string(&bound_endpoint),
         cli.policy.display()
     );
