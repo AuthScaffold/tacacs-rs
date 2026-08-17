@@ -1,7 +1,7 @@
 [package]
 name = "tacacsrs-cli-datastore"
 description = "A datastore for TACACS+ configuration from a CLI or configuration file."
-version = "0.0.0-dev"
+version = "0.1.5"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

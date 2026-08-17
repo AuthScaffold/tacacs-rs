@@ -1,6 +1,6 @@
 [package]
 name = "tacacsrs-agent-ipc-emulator"
-version = "0.0.0-dev"
+version = "0.1.10"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

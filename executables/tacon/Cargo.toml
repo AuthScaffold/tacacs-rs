@@ -1,6 +1,6 @@
 [package]
 name = "tacon"
-version = "0.0.0-dev"
+version = "2026.817.1"
 edition.workspace = true
 description = "TACACS+ client CLI for authentication, authorization, and accounting"
 readme = "README.md"
