@@ -61,7 +61,7 @@ function ConvertTo-SonicWslPath {
 
     $resolved = (Resolve-Path $Path).Path
     if ($resolved -notmatch '^([A-Za-z]):\\(.*)$') {
-        throw "Cannot convert path to WSL form: $resolved"
+        throw "The script did not convert this path to WSL form: $resolved"
     }
 
     $drive = $Matches[1].ToLowerInvariant()

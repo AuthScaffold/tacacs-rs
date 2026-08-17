@@ -1,13 +1,13 @@
 name: Protobuf Compatibility
-description: Check protobuf backward compatibility against a git ref
+description: Make sure that protobuf changes are backward-compatible with a Git ref
 
 inputs:
   against-ref:
-    description: 'Git ref to check backward compatibility against'
+    description: 'Git ref for backward-compatibility validation'
     required: false
     default: 'main'
   github-token:
-    description: 'GitHub token for buf setup'
+    description: 'GitHub token for the buf installation'
     required: true
 
 runs:
@@ -17,7 +17,7 @@ runs:
       with:
         github_token: ${{ inputs.github-token }}
 
-    - name: Ensure comparison ref exists locally
+    - name: Make sure that the comparison ref exists locally
       shell: bash
       run: |
         if git rev-parse --verify "${{ inputs.against-ref }}" >/dev/null 2>&1; then
@@ -30,8 +30,8 @@ runs:
           exit 1
         fi
 
-    - name: Check protobuf backward compatibility
+    - name: Make sure that protobuf changes are backward-compatible
       shell: bash
       run: |
         buf breaking --against '.git#branch=${{ inputs.against-ref }}' || \
-          echo "::warning::Protobuf compatibility check reported issues; continuing because this check is advisory"
+          echo "::warning::Protobuf validation found errors. This validation is advisory, so the workflow continues."

@@ -4,7 +4,7 @@ version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "TACACS+ transport layer with TCP, TLS, and PSK support"
+description = "TACACS+ TCP and TLS connections with certificate and PSK support."
 
 [dependencies]
 tacacsrs-config = { path = "../tacacsrs_config" }

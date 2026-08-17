@@ -1,32 +1,32 @@
-# Keep the Docker build context small and reproducible. This file applies to
-# builds whose context is the workspace root (see containers/*/Dockerfile).
+# This file keeps the Docker build context small and reproducible.
+# It applies when the workspace root is the build context (see containers/*/Dockerfile).
 #
-# The default is deny-all: only Cargo workspace metadata and crate build inputs
-# needed by the source build are sent to the Docker daemon. This prevents local
-# generated files, release artifacts, notes, docs, and unrelated worktree state
-# from accidentally becoming part of the container build context.
+# By default, this file denies all paths. It sends only the necessary Cargo
+# workspace metadata and crate build inputs to the Docker daemon.
+# This rule excludes local generated files, release artifacts, notes,
+# documentation, and unrelated worktree data from the container build context.
 
 **
 
-# Workspace-level build metadata.
+# Include the workspace build metadata.
 !Cargo.toml
 !Cargo.lock
 !.cargo/
 !.cargo/config.toml
 
-# Workspace crate directories. Parent directories must be unignored before their
-# selected children can be included.
+# Include the workspace crate directories.
+# Include each parent directory before you include its selected child directories.
 !libraries/
 !executables/
 !libraries/*/
 !executables/*/
 
-# Re-ignore crate contents after opening the parent directories. The specific
-# build inputs below opt back in.
+# After you include the parent directories, ignore the crate contents again.
+# The rules below include the necessary build inputs.
 libraries/*/**
 executables/*/**
 
-# Cargo package metadata and build scripts.
+# Include the Cargo package metadata and build scripts.
 !libraries/*/Cargo.toml
 !executables/*/Cargo.toml
 !libraries/*/build.rs
@@ -36,7 +36,7 @@ executables/*/**
 !libraries/*/readme.md
 !executables/*/readme.md
 
-# Rust sources and build-time generated-code inputs.
+# Include the Rust sources and generated-code inputs for the build.
 !libraries/*/src/
 !libraries/*/src/**
 !executables/*/src/
@@ -46,11 +46,11 @@ executables/*/**
 !executables/*/proto/
 !executables/*/proto/**
 
-# YANG/config generation inputs used by tacacsrs-config.
+# Include the inputs that tacacsrs-config uses to generate YANG and configuration files.
 !libraries/tacacsrs_config/yang/
 !libraries/tacacsrs_config/yang/**
 
-# TLS fixture files used by tacacsrs-agentd unit tests.
+# Include the TLS fixtures for tacacsrs-agentd tests.
 !libraries/tacacsrs_networking/examples/
 !libraries/tacacsrs_networking/examples/samples/
 !libraries/tacacsrs_networking/examples/samples/**

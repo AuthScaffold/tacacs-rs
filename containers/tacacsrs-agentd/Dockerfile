@@ -2,19 +2,17 @@
 #
 # Container image for the central TACACS+ client agent (`tacacsrs-agentd`).
 #
-# This is a multi-stage build:
+# This build has these stages:
 #   base    -> Rust toolchain plus the build dependencies for the `psk` feature
-#   test    -> runs the agent daemon's test suite (used by `make test`)
-#   build   -> compiles the `tacacsrs-agentd` binary with BuildKit caches
-#   runtime -> minimal image that ships only the binary and its runtime deps
+#   test    -> agent daemon test suite (used by `make test`)
+#   build   -> `tacacsrs-agentd` binary compiled with BuildKit caches
+#   runtime -> image with only the binary and its runtime dependencies
 #
-# The build context MUST be the workspace root so the whole Cargo workspace
-# (manifests plus every crate under `libraries/` and `executables/`) is visible.
-# The container Makefile in this directory sets the context accordingly.
+# The build context must be the workspace root. Cargo requires all manifests and
+# crates under `libraries/` and `executables/`. The local Makefile sets this context.
 #
-# The base images are overridable build arguments so downstream builders can
-# swap in their own toolchain or hardened runtime base without editing this
-# file, for example:
+# You can override the base images with build arguments. Thus, you can use a
+# different toolchain or a hardened runtime image without a file change:
 #
 #   docker buildx build \
 #       --build-arg BUILDER_IMAGE=<registry>/rust:1.90 \
@@ -29,10 +27,9 @@ ARG RUNTIME_IMAGE=docker.io/library/debian:bookworm-slim
 # -----------------------------------------------------------------------------
 FROM ${BUILDER_IMAGE} AS base
 
-# `pkg-config` and `libssl-dev` are required because `tacacsrs-networking`
-# links against the system OpenSSL for TLS and PSK support. `protoc` is
-# provided by the vendored `protoc-bin-vendored` crate, so it does not need
-# to be installed here.
+# `tacacsrs-networking` links to the system OpenSSL for TLS and PSK support.
+# Thus, the build requires `pkg-config` and `libssl-dev`.
+# The vendored `protoc-bin-vendored` crate supplies `protoc`.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         pkg-config \
@@ -41,16 +38,16 @@ RUN apt-get update \
 
 WORKDIR /build
 
-# Copy the Cargo workspace. All workspace members must be present for cargo to
-# resolve the virtual workspace, even when building a single package.
+# Copy the Cargo workspace. Cargo requires all workspace members to resolve the
+# virtual workspace, including builds of one package.
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo ./.cargo
 COPY libraries ./libraries
 COPY executables ./executables
 
-# The networking crate sample certificate files are symlinks in the worktree.
-# Materialize the files in the Linux build image so tests can follow the paths
-# reliably even when the host checkout was created on Windows.
+# The sample certificate files for the networking crate are worktree symlinks.
+# Copy the target files into the image. This copy supports Windows checkouts
+# that do not preserve symlinks.
 RUN rm -f libraries/tacacsrs_networking/examples/samples/client.*
 COPY lde/containers/config/certificates/client.* ./libraries/tacacsrs_networking/examples/samples/
 
@@ -59,8 +56,8 @@ COPY lde/containers/config/certificates/client.* ./libraries/tacacsrs_networking
 # -----------------------------------------------------------------------------
 FROM base AS test
 ARG FEATURES=
-# CACHEBUST lets `make test` force a fresh test run even when the source layers
-# are cached (pass --build-arg CACHEBUST=$(date +%s)).
+# Set `CACHEBUST` to force `make test` to run again with cached source layers.
+# For example, pass `--build-arg CACHEBUST=$(date +%s)`.
 ARG CACHEBUST=0
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
@@ -73,9 +70,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM base AS build
 ARG PROFILE=release
 ARG FEATURES=
-# The cache mount speeds up rebuilds but is not part of the image layer, so the
-# freshly built binary is copied out of the cached target dir within the same
-# RUN before the mount is unmounted.
+# The cache mount decreases rebuild time but is not part of the image layer.
+# Copy the new binary from the cached target directory in the same `RUN`.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
@@ -87,12 +83,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp "target/${PROFILE}/tacacsrs-agentd" /build/tacacsrs-agentd
 
 # -----------------------------------------------------------------------------
-# runtime: minimal image with just the binary and its runtime dependencies
+# runtime: image with only the binary and its runtime dependencies
 # -----------------------------------------------------------------------------
 FROM ${RUNTIME_IMAGE} AS runtime
 
-# `libssl3` satisfies the OpenSSL runtime dependency for TLS and PSK support,
-# and `ca-certificates` provides the trust store for certificate-based TLS.
+# `libssl3` supplies the OpenSSL runtime dependency for TLS and PSK support.
+# `ca-certificates` supplies the trust store for certificate-based TLS.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libssl3 \
@@ -102,8 +98,8 @@ RUN apt-get update \
 
 COPY --from=build /build/tacacsrs-agentd /usr/sbin/tacacsrs-agentd
 
-# The agent runs as a foreground process. The default CMD mirrors the SONiC
-# systemd unit and can be overridden at `docker run` time for other environments
-# (for example, dropping `--sonic` when not reading SONiC ConfigDB).
+# The agent runs as a foreground process. The default `CMD` matches the SONiC
+# systemd unit. Override it for other environments.
+# If the agent does not read the SONiC ConfigDB, remove `--sonic`.
 ENTRYPOINT ["/usr/sbin/tacacsrs-agentd"]
 CMD ["--sonic", "--listen-endpoint", "/run/tacacs/tacacs.sock", "--socket-mode", "666", "-vv"]

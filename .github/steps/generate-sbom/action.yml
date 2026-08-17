@@ -51,7 +51,7 @@ runs:
         ALL_FEATURES="${{ inputs.all-features }}"
 
         if [ -n "$FEATURES" ] && [ "$ALL_FEATURES" = "true" ]; then
-          echo "Error: inputs 'features' and 'all-features' are mutually exclusive"
+          echo "Error: Use the 'features' input or the 'all-features' input, not both."
           exit 1
         fi
 
@@ -81,18 +81,18 @@ runs:
           CMD+=(--all-features)
         fi
 
-        echo "Generating SBOM with command: ${CMD[*]}"
+        echo "Generate the SBOM with this command: ${CMD[*]}"
         "${CMD[@]}"
 
-        # Find all generated SBOM files
+        # Find all generated SBOM files.
         SBOM_FILES=$(find . -name "*.cdx.$OUTPUT_FORMAT" -type f)
 
         if [ -z "$SBOM_FILES" ]; then
-          echo "Error: No SBOM files generated"
+          echo "Error: The command did not generate SBOM files."
           exit 1
         fi
 
-        echo "Generated SBOM files:"
+        echo "SBOM files:"
         for file in $SBOM_FILES; do
           echo "  - $file ($(stat -c%s "$file" 2>/dev/null || stat -f%z "$file") bytes)"
         done

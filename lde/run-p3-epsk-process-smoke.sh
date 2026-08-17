@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# P3 EPSK process smoke.
+# P3 EPSK process smoke test.
 #
-# Drives a REAL TLS 1.3 EPSK TACACS+ exchange through tacacsrs-agentd against a
-# tac_plus-ng upstream started on loopback from lde/containers/compose.yml,
-# exercising EPSK bootstrap, immutable-ID and same-ID rotation, rejected-
-# candidate fallback, readiness, redaction, and bounded shutdown.
+# This test sends four TLS 1.3 EPSK TACACS+ sessions through tacacsrs-agentd.
+# The TACACS+ server is tac_plus-ng on the loopback interface. The Compose
+# configuration file is `lde/containers/compose.yml`.
+# The test covers EPSK startup and key rotation.
+# It also covers candidate rejection, readiness, redaction, and bounded shutdown.
 #
-# Must run as root in a disposable Linux environment with redis-server,
-# redis-cli, podman (with the compose plugin), and xxd available.
+# Run this test as root in a disposable Linux environment.
+# The environment must contain redis-server, redis-cli, podman with Compose, and xxd.
 #
-# Assumptions to confirm when first run in a new environment:
-#   * tac_plus-ng interprets `tls psk key` as HEX, so the EPSK object holds the
-#     16 raw bytes decoded from the container key. If it uses the key as literal
-#     ASCII, run with PSK_RAW=1 to store the key string verbatim instead.
-#   * The proxy downstream defaults to unobfuscated, so tacon connects without a
-#     shared secret using the plain-tcp validation relaxation.
+# When you first run this test in a new environment, make sure that:
+#   * tac_plus-ng interprets `tls psk key` as hexadecimal data. The EPSK
+#     credential object contains the 16 raw bytes from the container key.
+#   * If tac_plus-ng interprets the key as ASCII, run with `PSK_RAW=1`.
+#   * The proxy listener uses no obfuscation by default. Thus, tacon connects
+#     without a shared secret and uses the plain-TCP validation relaxation.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -43,11 +44,11 @@ agent_pid=""
 container_started=0
 
 if [[ "$(id -u)" -ne 0 ]]; then
-    echo "P3 EPSK process smoke must run as root in a disposable Linux environment" >&2
+    echo "Run the P3 EPSK process smoke test as root in a disposable Linux environment." >&2
     exit 40
 fi
 if [[ -e "$epsk_root" ]]; then
-    echo "refusing to replace existing EPSK root: $epsk_root" >&2
+    echo "The test did not replace the existing EPSK root: $epsk_root" >&2
     exit 41
 fi
 command -v redis-server >/dev/null
@@ -71,8 +72,8 @@ cleanup() {
     fi
     redis-cli -p "$redis_port" shutdown nosave >/dev/null 2>&1 || true
     rm -f "$socket_path" "$redis_pidfile" "$redis_log" "$agent_log" "$tacon_log"
-    # Remove only what this test created. rmdir refuses to delete a non-empty
-    # directory, so a populated shared parent is never destroyed.
+    # Remove only the files and directories that this test created.
+    # `rmdir` keeps a nonempty shared parent directory.
     rm -f "$epsk_root"/object-* "$epsk_root"/.object-* 2>/dev/null || true
     rmdir "$epsk_root" 2>/dev/null || true
     rmdir "/etc/sonic/tacacs/credentials" 2>/dev/null || true
@@ -92,7 +93,7 @@ ensure_upstream() {
     if upstream_reachable; then
         return 0
     fi
-    echo "starting tac_plus-ng upstream via podman compose"
+    echo "Start the tac_plus-ng TACACS+ server with Podman Compose."
     timeout 300 podman compose -f "$compose_file" up -d
     container_started=1
     for _ in $(seq 1 100); do
@@ -101,7 +102,7 @@ ensure_upstream() {
         fi
         sleep 0.3
     done
-    echo "tac_plus-ng did not become reachable on ${upstream_host}:${upstream_port}" >&2
+    echo "The tac_plus-ng TACACS+ server did not respond at ${upstream_host}:${upstream_port}." >&2
     exit 47
 }
 
@@ -114,7 +115,7 @@ wait_for_log_count() {
         fi
         sleep 0.1
     done
-    echo "timed out waiting for log count $expected: $pattern" >&2
+    echo "The log did not reach count $expected before the timeout: $pattern" >&2
     return 1
 }
 
@@ -127,11 +128,11 @@ wait_for_readiness() {
         fi
         sleep 0.1
     done
-    echo "timed out waiting for agent readiness" >&2
+    echo "The agent was not ready before the timeout." >&2
     return 1
 }
 
-# Store an EPSK object as the raw key bytes the upstream expects.
+# Store the EPSK object as the raw key bytes that the server requires.
 write_object() {
     local name="$1"
     if [[ "${PSK_RAW:-0}" -eq 1 ]]; then
@@ -142,7 +143,7 @@ write_object() {
     chmod 0640 "$epsk_root/$name"
 }
 
-# Drive a real accounting exchange through the agent proxy to the EPSK upstream.
+# Send an accounting session through the agent proxy to the EPSK server.
 tacacs_exchange() {
     local label="$1"
     if ! timeout 20 "$tacon" \
@@ -150,7 +151,7 @@ tacacs_exchange() {
         --validation-relaxation allow-plain-tcp-without-shared-secret \
         accounting --user testuser --port tty0 --rem-addr 127.0.0.1 "show version" \
         >>"$tacon_log" 2>&1; then
-        echo "TACACS+ accounting exchange failed at: $label" >&2
+        echo "The TACACS+ accounting session returned an error at: $label" >&2
         exit 45
     fi
 }
@@ -202,8 +203,8 @@ wait_for_readiness
 wait_for_log_count 1 'Reloaded TACACS+ upstream server set: 1 server'
 tacacs_exchange "initial EPSK generation"
 
-# Immutable-ID rotation: point at a new reference object holding the same key
-# material so the EPSK handshake continues to succeed.
+# For immutable-ID rotation, select a new credential object with the same key.
+# The EPSK handshake continues to succeed.
 write_object object-b
 redis-cli -p "$redis_port" -n "$redis_db" HSET \
     "TACPLUS_SERVER_TLS|${upstream_host}" psk_secret_ref object-b >/dev/null
@@ -211,7 +212,7 @@ wait_for_log_count 2 'Reloaded TACACS+ upstream server set: 1 server'
 wait_for_readiness
 tacacs_exchange "immutable-ID rotation"
 
-# Same-ID atomic replacement of the object contents.
+# Atomically replace the key in the object without an ID change.
 temporary="$epsk_root/.object-b.tmp"
 if [[ "${PSK_RAW:-0}" -eq 1 ]]; then
     printf '%s' "$psk_hex" >"$temporary"
@@ -224,17 +225,16 @@ wait_for_log_count 3 'Reloaded TACACS+ upstream server set: 1 server'
 wait_for_readiness
 tacacs_exchange "same-ID atomic replacement"
 
-# ConfigDB references the object, never the raw key material.
+# ConfigDB contains the credential reference, not the raw key.
 redis_cli_snapshot="$(redis-cli -p "$redis_port" -n "$redis_db" HGETALL \
     "TACPLUS_SERVER_TLS|${upstream_host}")"
 grep -q 'object-b' <<<"$redis_cli_snapshot"
 if grep -Fq "$psk_hex" <<<"$redis_cli_snapshot"; then
-    echo "ConfigDB exposed raw EPSK material" >&2
+    echo "ConfigDB exposed the raw EPSK key." >&2
     exit 42
 fi
 
-# Invalid replacement: the candidate is rejected and the prior known-good
-# material still completes a new exchange.
+# Reject an invalid replacement. The agent completes a new session with the previous valid key.
 redis-cli -p "$redis_port" -n "$redis_db" HSET \
     "TACPLUS_SERVER_TLS|${upstream_host}" psk_secret_ref missing-object >/dev/null
 wait_for_log_count 1 'configuration candidate was rejected by runtime validation'
@@ -246,7 +246,7 @@ for forbidden in \
     "$psk_hex" \
     'object-a' 'object-b' 'missing-object' "$epsk_root"; do
     if grep -Fq "$forbidden" "$agent_log"; then
-        echo "agent log exposed protected credential data" >&2
+        echo "The agent log exposed protected credential data." >&2
         exit 43
     fi
 done
@@ -259,7 +259,7 @@ for _ in $(seq 1 300); do
     sleep 0.1
 done
 if kill -0 "$agent_pid" 2>/dev/null; then
-    echo "agent did not exit within the shutdown bound" >&2
+    echo "The agent did not stop before the shutdown timeout." >&2
     kill -KILL "$agent_pid" 2>/dev/null || true
     exit 48
 fi
@@ -267,8 +267,8 @@ wait "$agent_pid" 2>/dev/null || true
 agent_pid=""
 [[ ! -e "$socket_path" ]]
 if timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/${proxy_port}" 2>/dev/null; then
-    echo "proxy port remained bound after SIGTERM" >&2
+    echo "The proxy listener remained bound after SIGTERM." >&2
     exit 44
 fi
 
-echo "PASS: real EPSK TACACS+ exchange across bootstrap, immutable and same-ID rotation, rejected fallback, readiness, redaction, and bounded shutdown."
+echo "PASS: The EPSK process smoke test passed. It covered startup, key rotation, rejected fallback, readiness, redaction, and bounded shutdown."

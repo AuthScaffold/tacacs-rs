@@ -1,6 +1,6 @@
 [package]
 name = "tacacsrs-credential-resolution"
-description = "Provider-neutral central credential request and resolution contracts for TACACS+ configuration."
+description = "Provider-neutral contracts for central TACACS+ credential requests and resolution."
 version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true

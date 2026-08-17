@@ -1,52 +1,52 @@
 <#
 .SYNOPSIS
-    Runs tests with code coverage for a specific crate or the entire workspace.
+    Runs code-coverage tests for one crate or the workspace.
 
 .DESCRIPTION
-    Wraps cargo-llvm-cov to produce a coverage percentage summary and optional
-    HTML/LCOV profile output. Requires cargo-llvm-cov to be installed
-    (cargo install cargo-llvm-cov).
+    Uses cargo-llvm-cov to show a coverage summary. The script can also create
+    HTML and LCOV reports. Before you run this script, install cargo-llvm-cov.
 
 .PARAMETER Package
-    The crate name to test (e.g. tacacsrs-messages, tacacsrs-networking).
-    If omitted, runs coverage for the entire workspace.
+    The crate name, for example, tacacsrs-messages or tacacsrs-networking.
+    If you omit this parameter, the script covers the workspace.
 
 .PARAMETER Html
-    Generate an HTML coverage report and open it in the default browser.
+    Creates an HTML coverage report and opens it in the default browser.
 
 .PARAMETER Lcov
-    Export an LCOV profile to the specified path (default: target/llvm-cov/lcov.info).
+    Exports an LCOV profile to the specified path.
+    The default path is target/llvm-cov/lcov.info.
 
 .PARAMETER FailUnderLines
-    Exit with failure if total line coverage is below this percentage.
+    If total line coverage is less than this percentage, returns exit code 1.
 
 .PARAMETER AllFeatures
-    Activate all available features.
+    Activates all available features.
 
 .PARAMETER Branch
-    Enable branch coverage instrumentation. Adds a Branch % column to the
-    per-file table and includes branch/MC/DC totals in the summary line.
-    When combined with -Lcov, automatically prints every source location
-    with an uncovered branch (reads BRDA:line,block,branch,0 records).
+    Activates branch-coverage instrumentation. Adds a Branch % column to the
+    file table. The summary includes branch and MC/DC totals.
+    If you also set -Lcov, the script shows each uncovered source location.
+    The script reads BRDA:line,block,branch,0 records.
 
 .EXAMPLE
-    # Workspace-wide coverage summary
+    # Show the workspace coverage summary.
     .\lde\run-coverage.ps1
 
 .EXAMPLE
-    # Single crate with HTML report
+    # Create an HTML report for one crate.
     .\lde\run-coverage.ps1 -Package tacacsrs-messages -Html
 
 .EXAMPLE
-    # Single crate with LCOV export and minimum threshold
+    # Export LCOV for one crate and require the minimum coverage.
     .\lde\run-coverage.ps1 -Package tacacsrs-networking -Lcov -FailUnderLines 80
 
 .EXAMPLE
-    # All features enabled
+    # Activate all features.
     .\lde\run-coverage.ps1 -Package tacacsrs-config -AllFeatures -Html
 
 .EXAMPLE
-    # Branch coverage with automatic missed-branch analysis
+    # Find missed branches during branch-coverage analysis.
     .\lde\run-coverage.ps1 -Package tacacsrs-config -AllFeatures -Branch -Lcov
 #>
 [CmdletBinding()]
@@ -74,7 +74,7 @@ $repoRoot = Resolve-Path (Join-Path $scriptDir '..')
 Push-Location $repoRoot
 
 try {
-    # --- prerequisite checks ---
+    # --- prerequisites ---
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         throw 'cargo was not found in PATH. Install Rust via rustup before running this script.'
     }
@@ -82,11 +82,11 @@ try {
     $llvmCovVersion = $null
     try { $llvmCovVersion = cargo llvm-cov --version 2>&1 } catch { }
     if (-not $llvmCovVersion) {
-        throw 'cargo-llvm-cov is not installed. Run: cargo install cargo-llvm-cov'
+        throw 'cargo-llvm-cov was not found. Run: cargo install cargo-llvm-cov'
     }
     Write-Host "Using $llvmCovVersion" -ForegroundColor DarkGray
 
-    # --- validate package name if provided ---
+    # --- make sure that the specified package name is valid ---
     if ($Package) {
         $members = cargo metadata --no-deps --format-version 1 2>&1 |
             ConvertFrom-Json |
@@ -103,47 +103,46 @@ try {
 
     if ($Package) {
         $scopeArgs += '--package', $Package
-        Write-Host "Running coverage for package: $Package" -ForegroundColor Cyan
+        Write-Host "Run coverage for package: $Package" -ForegroundColor Cyan
     }
     else {
         $scopeArgs += '--workspace'
-        Write-Host 'Running coverage for the entire workspace' -ForegroundColor Cyan
+        Write-Host 'Run coverage for the workspace' -ForegroundColor Cyan
     }
 
-    # Feature flags are valid for test/instrumentation runs, but not for
-    # the `cargo llvm-cov report` subcommand.
+    # Feature flags apply to instrumented test runs.
+    # They do not apply to the `cargo llvm-cov report` subcommand.
     $testOnlyArgs = @()
     if ($AllFeatures) {
         $testOnlyArgs += '--all-features'
     }
 
-    # Branch instrumentation applies to both the test run and all report
-    # subcommands — the report subcommand must also receive --branch to emit
-    # the branch columns from the collected profdata.
+    # Branch instrumentation applies to the test run and each report subcommand.
+    # Pass `--branch` to the report subcommand to show the collected branch data.
     $branchArgs = @()
     if ($Branch) {
         $branchArgs += '--branch'
-        Write-Host 'Branch coverage enabled' -ForegroundColor DarkGray
+        Write-Host 'Branch coverage is active.' -ForegroundColor DarkGray
     }
 
-    # --- phase 1: run tests and collect coverage (no report yet) ---
-    Write-Host "`nBuilding and running tests with instrumentation..." -ForegroundColor Yellow
+    # --- phase 1: run tests and collect coverage ---
+    Write-Host "`nBuild the test binaries. Then run the instrumented tests." -ForegroundColor Yellow
     $testArgs = @('llvm-cov', '--no-report') + $scopeArgs + $testOnlyArgs + $branchArgs
     & cargo @testArgs
-    if ($LASTEXITCODE -ne 0) { throw 'Test execution failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'The test command returned an error.' }
 
-    # --- phase 2: JSON summary parsed into a PowerShell table ---
+    # --- phase 2: parse the JSON summary into a PowerShell table ---
     Write-Host "`n--- Coverage Summary ---" -ForegroundColor Green
     $jsonArgs = @('llvm-cov', 'report', '--json') + $scopeArgs + $branchArgs
     $rawJson = & cargo @jsonArgs 2>$null
-    if ($LASTEXITCODE -ne 0) { throw 'Coverage report generation failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'The coverage report command returned an error.' }
 
     $report = $rawJson | ConvertFrom-Json
     $data = $report.data[0]
 
     $rows = foreach ($file in $data.files) {
         $rel = $file.filename
-        # Make the path relative to the repo root for readability.
+        # Show the path relative to the repository root.
         if ($rel.StartsWith($repoRoot.Path, [System.StringComparison]::OrdinalIgnoreCase)) {
             $rel = $rel.Substring($repoRoot.Path.Length).TrimStart('\', '/')
         }
@@ -163,7 +162,7 @@ try {
 
     $rows | Sort-Object 'Lines %' | Format-Table -AutoSize | Out-String | Write-Host
 
-    # Totals — branch and MC/DC are shown when present in the report data.
+    # If the report contains branch and MC/DC totals, show them.
     $t = $data.totals
     $branchSummary = if ($t.branches.count -gt 0) { '  Branches: {0:N1}% ({1}/{2})' -f $t.branches.percent, $t.branches.covered, $t.branches.count } else { '' }
     $mcdcSummary   = if ($t.mcdc.count   -gt 0) { '  MC/DC: {0:N1}% ({1}/{2})'      -f $t.mcdc.percent,   $t.mcdc.covered,   $t.mcdc.count   } else { '' }
@@ -181,10 +180,10 @@ try {
 
     # --- phase 3: optional HTML report ---
     if ($Html) {
-        Write-Host "`nGenerating HTML coverage report..." -ForegroundColor Yellow
+        Write-Host "`nCreate the HTML coverage report." -ForegroundColor Yellow
         $htmlArgs = @('llvm-cov', 'report', '--html', '--open') + $scopeArgs + $branchArgs
         & cargo @htmlArgs
-        if ($LASTEXITCODE -ne 0) { Write-Warning 'HTML report generation failed.' }
+        if ($LASTEXITCODE -ne 0) { Write-Warning 'The HTML report command returned an error.' }
     }
 
     # --- phase 4: optional LCOV export ---
@@ -193,17 +192,17 @@ try {
         if (-not (Test-Path $lcovDir)) { New-Item -ItemType Directory -Path $lcovDir -Force | Out-Null }
         $lcovPath = Join-Path $lcovDir 'lcov.info'
 
-        Write-Host "`nExporting LCOV profile to $lcovPath ..." -ForegroundColor Yellow
+        Write-Host "`nExport the LCOV profile to $lcovPath." -ForegroundColor Yellow
         $lcovArgs = @('llvm-cov', 'report', '--lcov', '--output-path', $lcovPath) + $scopeArgs + $branchArgs
         & cargo @lcovArgs
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning 'LCOV export failed.'
+            Write-Warning 'The LCOV export command returned an error.'
         }
         else {
             Write-Host "LCOV profile written to $lcovPath" -ForegroundColor Green
 
-            # When -Branch is active, parse BRDA records and surface every
-            # uncovered branch (hit count 0) alongside its source file and line.
+            # If `-Branch` is active, parse BRDA records for each uncovered branch.
+            # Show the source file and line for each branch with a zero hit count.
             # LCOV format: BRDA:line,block,branch,hit_count
             if ($Branch) {
                 $currentSF = ''
@@ -224,7 +223,7 @@ try {
                     $missed | Select-Object -Unique | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
                 }
                 else {
-                    Write-Host "`nAll branches covered." -ForegroundColor Green
+                    Write-Host "`nAll branches have coverage." -ForegroundColor Green
                 }
             }
         }
@@ -235,7 +234,7 @@ try {
         throw "Coverage is below the required threshold ($FailUnderLines% lines)."
     }
 
-    Write-Host "`nDone." -ForegroundColor Green
+    Write-Host "`nCoverage run completed." -ForegroundColor Green
 }
 finally {
     Pop-Location

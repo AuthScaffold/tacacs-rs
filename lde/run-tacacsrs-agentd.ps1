@@ -1,25 +1,23 @@
 <#
 .SYNOPSIS
-    Runs tacacsrs-agentd with optional profiling support.
+    Runs tacacsrs-agentd with optional profiling.
 .DESCRIPTION
-    Builds and runs the TACACS+ agent daemon in release mode (with full
-    debug symbols).  Supports Visual Studio Performance Profiler and
-    tokio-console for async runtime profiling.
+    Builds and runs the TACACS+ agent daemon in release mode with full debug
+    symbols. The script supports Visual Studio Performance Profiler and
+    tokio-console.
 .PARAMETER RunProfile
     Profiling mode:
-      none           - Normal run with verbose logging (default)
-      vs             - Build and launch; prints instructions to attach the
-                       VS Performance Profiler (CPU Usage / Memory)
-      tokio-console  - Build with console-subscriber and launch alongside
-                       the tokio-console async runtime profiler
+      none           - Runs with verbose logging (default)
+      vs             - Builds and runs the agent for the VS Performance Profiler
+      tokio-console  - Builds with console-subscriber and runs tokio-console
 .PARAMETER Verbosity
     Logging verbosity level (0-4). Default is 3 (debug).
     0=off, 1=warn, 2=info, 3=debug, 4=trace
 .PARAMETER TacacsObfuscationKey
-    Optional obfuscation key to use for TACACS+ packets.  If not provided,
-    obfuscation will not be used.
+    The optional shared secret for TACACS+ body obfuscation.
+    If you omit the shared secret, the packets use no obfuscation.
 .PARAMETER ServerAddress
-    Address and port for the agent to listen on (default: 127.0.0.1:49).
+    The TACACS+ server address and port. The default is 127.0.0.1:49.
 .EXAMPLE
     .\run-tacacsrs-agentd.ps1
     .\run-tacacsrs-agentd.ps1 -RunProfile vs
@@ -48,7 +46,7 @@ Push-Location $repoRoot
 
 try {
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-        throw 'cargo not found in PATH. Install Rust via https://rustup.rs'
+        throw 'cargo was not found in PATH. Install Rust from https://rustup.rs.'
     }
 
     $verboseFlag = if ($Verbosity -gt 0) { '-' + ('v' * $Verbosity) } else { $null }
@@ -67,9 +65,9 @@ try {
         'vs' {
             Write-Host '=== Visual Studio Profiling ===' -ForegroundColor Cyan
             Write-Host ''
-            Write-Host 'Building release binary with full debug symbols...'
+            Write-Host 'Build the release binary with full debug symbols.'
             cargo build --bin tacacsrs-agentd --release
-            if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
+            if ($LASTEXITCODE -ne 0) { throw 'The cargo build returned an error.' }
 
             $exe = Resolve-Path '.\target\release\tacacsrs-agentd.exe'
             Write-Host ''
@@ -79,17 +77,18 @@ try {
             Write-Host 'To profile with Visual Studio:' -ForegroundColor Yellow
             Write-Host '  1. Open Visual Studio'
             Write-Host '  2. Debug > Performance Profiler  (Alt+F2)'
-            Write-Host '  3. Change analysis target to "Running Process"'
-            Write-Host '  4. Enable "CPU Usage" (and optionally "Memory Usage")'
-            Write-Host '  5. Attach to PID printed below'
-            Write-Host '  6. Send requests to the agent, then stop collection in VS'
+            Write-Host '  3. Set the analysis target to "Running Process".'
+            Write-Host '  4. Select "CPU Usage" and, if necessary, "Memory Usage".'
+            Write-Host '  5. Attach to the PID shown below.'
+            Write-Host '  6. Send requests to the agent.'
+            Write-Host '  7. Stop data collection in Visual Studio.'
             Write-Host ''
 
-            # Start the agent so VS can attach
+            # Start the agent. Then Visual Studio can attach to it.
             $process = Start-Process -FilePath $exe -ArgumentList $agentArgs `
                 -PassThru -NoNewWindow
-            Write-Host "tacacsrs-agentd started — PID: $($process.Id)" -ForegroundColor Green
-            Write-Host 'Attach VS now.  Press Ctrl+C to stop the agent.'
+            Write-Host "tacacsrs-agentd started. PID: $($process.Id)" -ForegroundColor Green
+            Write-Host 'Attach Visual Studio now. Press Ctrl+C to stop the agent.'
             Write-Host ''
 
             try {
@@ -108,39 +107,39 @@ try {
         'tokio-console' {
             Write-Host '=== Tokio Console Async Profiling ===' -ForegroundColor Cyan
             Write-Host ''
-            Write-Host 'Note: log macros are replaced by the tracing subscriber' `
-                'in this mode.' -ForegroundColor Yellow
+            Write-Host 'Note: The tracing subscriber replaces log macros in this mode.' `
+                -ForegroundColor Yellow
             Write-Host ''
 
-            # tokio-console requires the tokio_unstable cfg flag at build time
+            # The tokio-console build requires the tokio_unstable cfg flag.
             $savedRustflags = $env:RUSTFLAGS
             try {
                 $parts = @($savedRustflags, '--cfg tokio_unstable') | Where-Object { $_ }
                 $env:RUSTFLAGS = $parts -join ' '
 
-                Write-Host "Building with RUSTFLAGS='$($env:RUSTFLAGS)' --features console ..."
+                Write-Host "Build with RUSTFLAGS='$($env:RUSTFLAGS)' --features console."
                 cargo build --bin tacacsrs-agentd --release `
                     --features tacacsrs-agentd/console
-                if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
+                if ($LASTEXITCODE -ne 0) { throw 'The cargo build returned an error.' }
             }
             finally {
                 $env:RUSTFLAGS = $savedRustflags
             }
 
-            # Install tokio-console if missing
+            # If tokio-console is not installed, install it.
             $installed = cargo install --list 2>&1 |
                 Select-String -Pattern '^tokio-console v'
             if (-not $installed) {
-                Write-Host 'Installing tokio-console...' -ForegroundColor Green
+                Write-Host 'Install tokio-console.' -ForegroundColor Green
                 cargo install tokio-console
-                if ($LASTEXITCODE -ne 0) { throw 'Failed to install tokio-console' }
+                if ($LASTEXITCODE -ne 0) { throw 'The tokio-console installation returned an error.' }
             }
 
             Write-Host ''
-            Write-Host 'Starting tokio-console viewer...' -ForegroundColor Green
+            Write-Host 'Start the tokio-console viewer.' -ForegroundColor Green
             Start-Process -FilePath 'tokio-console'
 
-            Write-Host 'Starting tacacsrs-agentd (Ctrl+C to stop)...'
+            Write-Host 'Start tacacsrs-agentd. Press Ctrl+C to stop it.'
             & '.\target\release\tacacsrs-agentd.exe' @agentArgs
         }
 

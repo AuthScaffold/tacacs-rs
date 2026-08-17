@@ -16,7 +16,7 @@ runs:
         ARTIFACT_PATH="target/${{ inputs.target }}/${PROFILE}/${ARTIFACT_FILENAME}"
 
         if [ ! -f "$ARTIFACT_PATH" ]; then
-          echo "Error: expected artifact not found at $ARTIFACT_PATH"
+          echo "Error: The expected artifact does not exist at $ARTIFACT_PATH."
           exit 1
         fi
 

@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Build a Rust shared library for Linux under WSL and copy it to the SONiC VM.
+    Builds a Rust shared library for Linux under WSL and copies it to the SONiC VM.
 .DESCRIPTION
-    SONiC needs a Linux ELF artifact. This script builds a Cargo library target
-    through WSL from the Windows checkout path, then copies the resulting .so to
-    the VM and marks it executable.
+    SONiC requires a Linux ELF artifact. This script uses WSL to build a Cargo
+    library target from the Windows checkout. Then it copies the .so file to
+    the VM and makes it executable.
 .EXAMPLE
     .\lde\sonic-vm\Publish-SonicSharedLibrary.ps1 -Package tacacsrs-bash-plugin
 .EXAMPLE
@@ -44,9 +44,9 @@ if (-not $NoBuild) {
     Test-SonicRequiredCommand wsl
     $profileArg = if ($Profile -eq 'release') { ' --release' } else { '' }
     $buildCommand = 'source "$HOME/.cargo/env" 2>/dev/null || true; cargo build -p ' + $Package + $profileArg
-    Write-Host "Building $Package shared library $artifactFileName under WSL at $repoWslPath..."
+    Write-Host "Build shared library $artifactFileName from package $Package under WSL at $repoWslPath."
     & wsl --cd $repoWslPath -- bash -lc $buildCommand
-    if ($LASTEXITCODE -ne 0) { throw "WSL cargo build failed with exit code $LASTEXITCODE." }
+    if ($LASTEXITCODE -ne 0) { throw "The WSL cargo build returned exit code $LASTEXITCODE." }
 }
 
 $profileDir = if ($Profile -eq 'release') { 'release' } else { 'debug' }

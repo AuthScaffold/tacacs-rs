@@ -1,9 +1,9 @@
 name: Build Binary
-description: Build a binary for a specific target using package environment prepared by compute-package-names
+description: Build an artifact for a target with the package environment from compute-package-names
 
 inputs:
   target:
-    description: 'Rust target triple (e.g., x86_64-unknown-linux-gnu)'
+    description: 'Rust target triple (for example, x86_64-unknown-linux-gnu)'
     required: true
   package-name:
     description: 'Cargo package name to build'

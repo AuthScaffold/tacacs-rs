@@ -4,7 +4,7 @@ version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "TACACS+ protocol message types and serialization"
+description = "TACACS+ protocol message types and serialization."
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }

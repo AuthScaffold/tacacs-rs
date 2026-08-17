@@ -4,7 +4,7 @@ version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "SONiC bash execve plugin backed by tacacsrs-agentd IPC"
+description = "A SONiC Bash execve plug-in that uses the tacacsrs-agentd IPC endpoint."
 
 [lib]
 name = "tacacsrs_bash_plugin"
@@ -23,9 +23,9 @@ maintainer = "AuthScaffold <github-discussions@authscaffold.com>"
 copyright = "2024, AuthScaffold"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
-tacacsrs-bash-plugin is a SONiC bash execve authorization plugin backed by the \
-local tacacsrs-agentd IPC service. It installs the shared object used by \
-patched bash to authorize commands through the central TACACS+ client daemon."""
+tacacsrs-bash-plugin is a SONiC Bash execve authorization plug-in. It connects \
+to the local tacacsrs-agentd IPC endpoint. Patched Bash uses the installed \
+shared object to authorize commands through the central TACACS+ client daemon."""
 depends = "$auto, tacacsrs-agentd"
 pre-depends = "debconf (>= 0.5) | debconf-2.0"
 section = "admin"

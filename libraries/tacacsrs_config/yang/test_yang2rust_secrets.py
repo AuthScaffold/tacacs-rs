@@ -62,7 +62,7 @@ expected_matches = 1
 """
         )
 
-        with self.assertRaisesRegex(RuntimeError, "duplicate secret field annotation"):
+        with self.assertRaisesRegex(RuntimeError, "Duplicate secret-field annotation"):
             SecretFieldManifest.load(path)
 
     def test_rejects_incompatible_scalar_type(self) -> None:
@@ -94,7 +94,10 @@ expected_matches = 1
             )
         )
 
-        with self.assertRaisesRegex(RuntimeError, r"matched 0 field\(s\); expected 1"):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"matched 0 field\(s\)\. The expected count is 1\.",
+        ):
             manifest.verify_complete()
 
 

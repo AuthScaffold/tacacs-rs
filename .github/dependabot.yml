@@ -11,7 +11,7 @@ updates:
     labels:
       - "dependencies"
     groups:
-      # Group minor/patch updates to reduce PR noise
+      # Group minor and patch updates to reduce pull request notifications.
       rust-dependencies:
         patterns:
           - "*"

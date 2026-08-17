@@ -10,9 +10,9 @@ service TacacsAgentMockController {
 }
 
 message LoadPolicyRequest {
-  // Rego policy source evaluated for every IPC request.
+  // The emulator evaluates this Rego policy for each IPC request.
   string policy_rego = 1;
-  // Fixed policy data as a JSON object. Empty string means no data.
+  // Fixed policy data in a JSON object. An empty string means that there is no data.
   string data_json = 2;
 }
 

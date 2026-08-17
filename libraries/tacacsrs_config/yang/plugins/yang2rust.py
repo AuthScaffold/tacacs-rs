@@ -1,8 +1,8 @@
-"""pyang plugin that generates Rust struct/enum definitions from YANG modules.
+"""Generate Rust structure and enumeration definitions from YANG modules.
 
-Types are grouped into Rust modules matching their originating YANG module,
-so ietf-keystore groupings produce ``keystore::InlineDefinition`` rather
-than a flattened ``TacacsPlusServerCertificateInlineDefinition``.
+The plug-in groups types into Rust modules that match their source YANG
+modules. Thus, ietf-keystore groupings produce ``keystore::InlineDefinition``
+instead of a flattened ``TacacsPlusServerCertificateInlineDefinition``.
 
 Usage:
     pyang --plugindir <dir-containing-this-file> -f rust \\
@@ -24,7 +24,7 @@ def pyang_plugin_init():
 
 
 # ---------------------------------------------------------------------------
-# YANG type -> Rust type mapping
+# Map YANG types to Rust types.
 # ---------------------------------------------------------------------------
 
 _ENUM_SENTINEL = "__ENUM__"
@@ -49,7 +49,7 @@ _YANG_TO_RUST = {
     "union": "String",
     "decimal64": "f64",
     "instance-identifier": "String",
-    # common derived types from ietf-yang-types / ietf-inet-types
+    # These common types come from ietf-yang-types and ietf-inet-types.
     "date-and-time": "String",
     "counter64": "u64",
     "counter32": "u32",
@@ -75,7 +75,7 @@ _RUST_KEYWORDS = frozenset({
     "override", "priv", "try", "typeof", "unsized", "virtual", "yield",
 })
 
-# YANG module name -> Rust module name
+# Map YANG module names to Rust module names.
 _MODULE_MAP = {
     "ietf-crypto-types": "crypto_types",
     "ietf-keystore": "keystore",
@@ -90,7 +90,7 @@ _MODULE_MAP = {
 _PROJECT_MODULE_NAMES = frozenset({"tacacsrs"})
 _PROJECT_MODULE_PREFIX = "tacacsrs-"
 
-# Modules whose types we skip entirely (just primitives/typedefs)
+# Skip modules that contain only primitive types and typedefs.
 _SKIP_MODULES = frozenset({
     "ietf-inet-types", "ietf-yang-types", "ietf-system",
     "ietf-interfaces", "ietf-network-instance",
@@ -111,7 +111,7 @@ class SecretFieldRule:
 
 
 class SecretFieldManifest:
-    """Fail-closed annotations for YANG leaves containing secret values."""
+    """Store fail-closed annotations for YANG leaves that contain secret values."""
 
     def __init__(self, rules: dict[tuple[str, str], SecretFieldRule]):
         self._rules = rules
@@ -121,36 +121,36 @@ class SecretFieldManifest:
         try:
             document = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as error:
-            raise RuntimeError(f"failed to load secret field manifest {path}") from error
+            raise RuntimeError(f"The plug-in did not load the secret-field manifest {path}") from error
 
         entries = document.get("secret", [])
         if not isinstance(entries, list):
-            raise RuntimeError("secret field manifest 'secret' must be an array of tables")
+            raise RuntimeError("The secret-field manifest value 'secret' must be an array of tables")
 
         rules: dict[tuple[str, str], SecretFieldRule] = {}
         for index, entry in enumerate(entries):
             if not isinstance(entry, dict):
-                raise RuntimeError(f"secret field annotation {index} must be a table")
+                raise RuntimeError(f"Secret-field annotation {index} must be a table")
             module = entry.get("module")
             leaf = entry.get("leaf")
             kind = entry.get("kind")
             expected_matches = entry.get("expected_matches")
             if not isinstance(module, str) or not module:
-                raise RuntimeError(f"secret field annotation {index} requires module")
+                raise RuntimeError(f"Secret-field annotation {index} requires a module")
             if not isinstance(leaf, str) or not leaf:
-                raise RuntimeError(f"secret field annotation {index} requires leaf")
+                raise RuntimeError(f"Secret-field annotation {index} requires a leaf")
             if kind not in ("string", "binary"):
                 raise RuntimeError(
-                    f"secret field annotation {module}:{leaf} has unsupported kind {kind!r}"
+                    f"Secret-field annotation {module}:{leaf} has unsupported kind {kind!r}"
                 )
             if not isinstance(expected_matches, int) or expected_matches < 1:
                 raise RuntimeError(
-                    f"secret field annotation {module}:{leaf} requires positive expected_matches"
+                    f"Secret-field annotation {module}:{leaf} requires a positive expected_matches value"
                 )
             identity = (module, leaf)
             if identity in rules:
                 raise RuntimeError(
-                    f"duplicate secret field annotation for {module}:{leaf}"
+                    f"Duplicate secret-field annotation for {module}:{leaf}"
                 )
             rules[identity] = SecretFieldRule(module, leaf, kind, expected_matches)
         return cls(rules)
@@ -162,8 +162,8 @@ class SecretFieldManifest:
         expected_type = "String" if rule.kind == "string" else "Vec<u8>"
         if rust_type != expected_type:
             raise RuntimeError(
-                f"secret field annotation {module}:{leaf} of kind {rule.kind} "
-                f"requires Rust type {expected_type}, got {rust_type}"
+                f"Secret-field annotation {module}:{leaf} of kind {rule.kind} "
+                f"requires Rust type {expected_type}. The type was {rust_type}."
             )
         rule.actual_matches += 1
         return rule.kind
@@ -172,8 +172,8 @@ class SecretFieldManifest:
         for rule in self._rules.values():
             if rule.actual_matches != rule.expected_matches:
                 raise RuntimeError(
-                    f"secret field annotation {rule.module}:{rule.leaf} matched "
-                    f"{rule.actual_matches} field(s); expected {rule.expected_matches}"
+                    f"Secret-field annotation {rule.module}:{rule.leaf} matched "
+                    f"{rule.actual_matches} field(s). The expected count is {rule.expected_matches}."
                 )
 
 
@@ -282,7 +282,7 @@ def _find_enum_stmts(type_stmt):
 
 
 def _find_bits_stmts(type_stmt):
-    """Find ``bit`` sub-statements, following the typedef chain if needed."""
+    """Find ``bit`` substatements through the typedef chain."""
     if type_stmt is None:
         return []
     bits = type_stmt.search("bit")
@@ -296,8 +296,10 @@ def _find_bits_stmts(type_stmt):
 
 
 def _find_bits_typedef_name(type_stmt) -> str | None:
-    """If a type resolves to a bits type through a named typedef, return
-    the typedef name (PascalCase).  Otherwise return None."""
+    """Return the PascalCase typedef name for a named bits type.
+
+    Return None for all other types.
+    """
     if type_stmt is None:
         return None
     if type_stmt.arg == "bits":
@@ -348,7 +350,7 @@ def _doc_lines(text: str, max_lines: int | None = None) -> list[str]:
 
 
 def _source_module(stmt) -> str | None:
-    """Return the YANG module name that originally defined this node."""
+    """Return the YANG module name that defines this node."""
     if hasattr(stmt, "i_orig_module") and stmt.i_orig_module is not None:
         return stmt.i_orig_module.arg
     if hasattr(stmt, "i_module") and stmt.i_module is not None:
@@ -356,45 +358,45 @@ def _source_module(stmt) -> str | None:
     return None
 
 
-# Map from YANG grouping name to a short, clean PascalCase prefix.
-# The grouping names are verbose (e.g. "inline-or-keystore-end-entity-cert-
-# with-key-grouping"), so we map them to concise prefixes.
+# Map each YANG grouping name to a short PascalCase prefix.
+# For example, map "inline-or-keystore-end-entity-cert-with-key-grouping" to
+# a shorter prefix.
 _GROUPING_PREFIX_MAP = {
-    # ietf-keystore groupings
+    # These groupings are from ietf-keystore.
     "inline-or-keystore-end-entity-cert-with-key-grouping": "EndEntityCertWithKey",
     "inline-or-keystore-asymmetric-key-grouping": "AsymmetricKey",
     "inline-or-keystore-symmetric-key-grouping": "SymmetricKey",
-    # ietf-truststore groupings
+    # These groupings are from ietf-truststore.
     "inline-or-truststore-certs-grouping": "Certs",
     "inline-or-truststore-public-keys-grouping": "PublicKeys",
-    # ietf-crypto-types groupings
+    # These groupings are from ietf-crypto-types.
     "private-key-grouping": "PrivateKey",
     "symmetric-key-grouping": "SymmetricKey",
     "encrypted-value-grouping": "EncryptedValue",
-    # ietf-tls-common groupings
+    # This grouping is from ietf-tls-common.
     "hello-params-grouping": "HelloParams",
-    # ietf-tls-client groupings
+    # This grouping is from ietf-tls-client.
     "tls-client-grouping": "TlsClient",
 }
 
 
 def _grouping_prefix(stmt) -> str:
-    """Derive a PascalCase prefix from the nearest YANG grouping name.
+    """Create a PascalCase prefix from the nearest YANG grouping name.
     
-    Returns an empty string if no grouping context is available.
+    Return an empty string if there is no grouping context.
     """
     if not hasattr(stmt, "i_uses") or not stmt.i_uses:
         return ""
-    # The last uses statement in the chain is the nearest grouping.
+    # The last uses statement in the chain identifies the nearest grouping.
     last_uses = stmt.i_uses[-1]
     grp_name = last_uses.arg
-    # Strip module prefix (e.g. "ks:inline-or-keystore-..." -> "inline-or-...")
+    # Remove the module prefix, for example, "ks:inline-or-keystore-...".
     if ":" in grp_name:
         grp_name = grp_name.split(":", 1)[1]
-    # Check our curated mapping first
+    # Use the curated map first.
     if grp_name in _GROUPING_PREFIX_MAP:
         return _GROUPING_PREFIX_MAP[grp_name]
-    # Fallback: convert the grouping name directly, stripping "-grouping"
+    # Otherwise, remove "-grouping" and convert the grouping name.
     clean = grp_name.removesuffix("-grouping")
     return _yang_to_pascal(clean)
 
@@ -413,39 +415,39 @@ def _leaf_is_optional(stmt) -> bool:
 
 
 def _resolve_default(yang_default: str, rust_type: str) -> str | None:
-    """Convert a YANG default value string to a Rust expression string.
+    """Convert a YANG default string to a Rust expression string.
     
-    Returns None if the default matches Rust's built-in Default::default()
-    (e.g., false for bool, 0 for integers), since #[serde(default)] suffices.
+    Return None if the value matches Rust's built-in Default::default().
+    For example, bool uses false and integer types use 0.
     """
-    # Boolean
+    # Convert a Boolean value.
     if rust_type == "bool":
         if yang_default == "false":
-            return None  # bool::default() is false
+            return None  # bool::default() is false.
         return "true"
 
-    # Integer types
+    # Convert an integer value.
     if rust_type in ("u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"):
         if yang_default == "0":
-            return None  # integer default is 0
+            return None  # The integer default is 0.
         return yang_default
 
-    # Floating point
+    # Convert a floating-point value.
     if rust_type == "f64":
         return yang_default
 
-    # String-like types
+    # Convert a string-like value.
     if rust_type == "String":
         return f'"{yang_default}".to_owned()'
 
-    # Identityref defaults round-trip through the generated parser.
+    # The generated parser accepts identityref defaults and returns the same values.
     if ":" in yang_default:
         return (
             f'{rust_type}::from_rfc7951_str("{yang_default}")'
             '.expect("generated YANG identityref default must be valid")'
         )
 
-    # Bitflags defaults are space-separated flag names.
+    # Bitflag defaults contain space-separated flag names.
     if " " in yang_default:
         parts = [
             f"{rust_type}::{token.upper().replace('-', '_')}"
@@ -453,17 +455,16 @@ def _resolve_default(yang_default: str, rust_type: str) -> str | None:
         ]
         return " | ".join(parts)
 
-    # YANG enum defaults map directly to the generated PascalCase variant.
+    # YANG enumeration defaults map directly to the generated PascalCase variant.
     if "<" not in rust_type:
         return f"{rust_type}::{_yang_to_pascal(yang_default)}"
 
-    # No mapping rule produced a compilable Rust expression. Returning a
-    # comment placeholder here would emit `fn default_xxx() -> T { /* ... */ }`
-    # with no return value, so fail the codegen instead and force a human to
-    # extend the resolver (or remove the YANG default).
+    # No map rule produced a Rust expression that compiles. A comment
+    # placeholder creates a function without a return value. Thus, stop code
+    # generation. A maintainer must extend the resolver or remove the YANG default.
     raise NotImplementedError(
-        f"yang2rust: cannot resolve YANG default {yang_default!r} for "
-        f"Rust type {rust_type!r}; extend _resolve_default() to handle this case"
+        f"yang2rust: Cannot resolve YANG default {yang_default!r} for "
+        f"Rust type {rust_type!r}. Extend _resolve_default() to handle this case."
     )
 
 
@@ -484,7 +485,7 @@ class Field:
         self.optional = optional
         self.is_vec = is_vec
         self.doc = doc
-        # (yang_default_str, rust_expr) or None
+        # This value contains (yang_default_str, rust_expr), or it is None.
         self.default_value: tuple[str, str] | None = default_value
         self.serde_name = serde_name or yang_name
         self.secret_kind = secret_kind
@@ -509,13 +510,13 @@ class Struct:
 
 
 class ChoiceGroup:
-    """Metadata about a YANG choice node flattened into a struct."""
+    """Store metadata for a flattened YANG choice node."""
     __slots__ = ("yang_name", "mandatory", "cases")
 
     def __init__(self, yang_name: str, mandatory: bool):
         self.yang_name = yang_name
         self.mandatory = mandatory
-        # Each case is (case_yang_name, [field_yang_names])
+        # Each case contains (case_yang_name, [field_yang_names]).
         self.cases: list[tuple[str, list[str]]] = []
 
 
@@ -557,7 +558,7 @@ class Bitflags:
 
 
 class IdentityValue:
-    """One concrete identity derived from a base."""
+    """Store one concrete identity that derives from a base."""
     __slots__ = ("yang_name", "rust_name", "module_name", "features", "doc")
 
     def __init__(self, yang_name: str, module_name: str,
@@ -574,7 +575,7 @@ class IdentityValue:
 
 
 class IdentitySet:
-    """A set of concrete identities derived from a YANG base identity."""
+    """Store concrete identities that derive from a YANG base identity."""
     __slots__ = ("name", "base_name", "base_module", "values", "doc")
 
     def __init__(self, name: str, base_name: str, base_module: str,
@@ -587,7 +588,7 @@ class IdentitySet:
 
 
 class ModuleTypes:
-    """Collected types for one YANG module."""
+    """Store the collected types for one YANG module."""
 
     def __init__(self, yang_name: str, rust_name: str):
         self.yang_name = yang_name
@@ -614,10 +615,10 @@ class ModuleTypes:
 # ---------------------------------------------------------------------------
 
 def _find_derived_identities(base_identity, ctx) -> list[dict]:
-    """Find all identities across loaded modules that derive from *base_identity*.
+    """Find identities in loaded modules that derive from *base_identity*.
 
-    Returns a list of dicts with keys: name, module, features, doc.
-    *base_identity* is a pyang identity statement object (from i_identity).
+    Return dictionaries with the keys name, module, features, and doc.
+    *base_identity* is a pyang identity statement object from i_identity.
     """
     from pyang.types import is_derived_from
 
@@ -636,11 +637,11 @@ def _find_derived_identities(base_identity, ctx) -> list[dict]:
 
 
 def _iter_all_modules(ctx):
-    """Yield (module_name, module_stmt) for every module/submodule loaded in ctx."""
+    """Yield (module_name, module_stmt) for each module or submodule in ctx."""
     seen = set()
     for key, mod_list in ctx.modules.items():
-        # ctx.modules is dict: (name, revision) -> module_stmt  (pyang >= 2.x)
-        # but may vary — handle both single and list forms
+        # In pyang 2.x, ctx.modules maps (name, revision) to module_stmt.
+        # The value can also be a list. Handle both forms.
         if isinstance(mod_list, list):
             for m in mod_list:
                 if m.arg not in seen:
@@ -656,7 +657,7 @@ def _iter_all_modules(ctx):
 def _resolve_identityref_base(type_stmt):
     """Return the resolved base identity statement for an identityref type.
 
-    Returns None if the base cannot be resolved.
+    Return None if the base cannot be resolved.
     """
     base = type_stmt.search_one("base")
     if base is None:
@@ -665,13 +666,13 @@ def _resolve_identityref_base(type_stmt):
 
 
 # ---------------------------------------------------------------------------
-# Collector — walks the resolved YANG data tree, groups by source module
+# The collector walks the resolved YANG data tree and groups nodes by source module.
 # ---------------------------------------------------------------------------
 
 class Collector:
     def __init__(self, ctx=None, secret_fields: SecretFieldManifest | None = None):
         self.modules: OrderedDict[str, ModuleTypes] = OrderedDict()
-        # Fingerprint -> (module_name, struct_name) for deduplication
+        # Map a fingerprint to (module_name, struct_name) to remove duplicates.
         self._fingerprints: dict[str, tuple[str, str]] = {}
         self._ctx = ctx
         self._secret_fields = secret_fields
@@ -691,7 +692,7 @@ class Collector:
     def collect_module(self, module):
         self._current_top_module = module.arg
 
-        # Typedefs
+        # Collect typedefs.
         for td in module.search("typedef"):
             td_type = td.search_one("type")
             rust_type = _resolve_type(td_type)
@@ -704,11 +705,11 @@ class Collector:
             else:
                 mod.typedefs[td_pascal] = rust_type
 
-        # Top-level data nodes
+        # Collect top-level data nodes.
         for child in _get_children(module):
             self._process_node(child, parent_prefix="")
 
-        # Augmentations
+        # Collect augmentations.
         for augment in module.search("augment"):
             for child in _get_children(augment):
                 self._process_node(child, parent_prefix="")
@@ -737,24 +738,22 @@ class Collector:
         if bf.bits:
             mod.bitflags[bf_name] = bf
 
-    # -- naming within a module ---
+    # Name types within a module.
 
     def _struct_name(self, stmt, parent_prefix: str) -> tuple[ModuleTypes, str, bool]:
-        """Return (module, name, already_existed) for a container/list struct.
-        
-        Uses structural fingerprinting to deduplicate: if a node from the
-        same YANG module has the same children structure as one we've already
-        emitted, reuse the existing struct name instead of creating a new one.
-        
-        Names are derived from the YANG **grouping name** when available,
-        producing names like ``keystore::AsymmetricKeyInlineDefinition``
-        instead of ``keystore::ClientCredentialsCertificateInlineDefinition``.
+        """Return (module, name, already_existed) for a container or list.
+
+        A structural fingerprint removes duplicate structures. If two nodes
+        have the same module and child structure, reuse the existing name.
+
+        When available, the YANG grouping name supplies the structure name.
+        This produces ``keystore::AsymmetricKeyInlineDefinition`` instead of
+        ``keystore::ClientCredentialsCertificateInlineDefinition``.
         """
         mod = self._mod_for_stmt(stmt)
         fp = self._fingerprint(stmt)
 
-        # Check if we've already emitted a struct with this exact structure
-        # in the same module.
+        # Reuse this exact structure if it exists in the same module.
         fp_key = f"{mod.yang_name}:{fp}"
         if fp_key in self._fingerprints:
             existing_mod_name, existing_name = self._fingerprints[fp_key]
@@ -762,9 +761,9 @@ class Collector:
 
         pascal = _yang_to_pascal(stmt.arg)
 
-        # Derive a context prefix from the nearest YANG grouping name
-        # instead of the usage-site parent. This produces meaningful names
-        # like ``AsymmetricKeyInlineDefinition`` instead of
+        # Get a context prefix from the nearest YANG grouping name.
+        # Do not use the parent at the usage site. This gives names such as
+        # ``AsymmetricKeyInlineDefinition`` instead of
         # ``ClientCredentialsCertificateInlineDefinition``.
         grp_prefix = _grouping_prefix(stmt)
 
@@ -779,10 +778,10 @@ class Collector:
 
     @staticmethod
     def _fingerprint(stmt) -> str:
-        """Create a structural fingerprint of a container/list node.
+        """Create a structural fingerprint of a container or list node.
         
-        Two nodes with the same fingerprint have identical children
-        structure (same leaf names, types, and nested container shapes).
+        Two nodes with the same fingerprint have the same child structure.
+        Their leaf names, types, and nested container shapes are equal.
         """
         parts = []
         children = _get_children(stmt)
@@ -796,7 +795,7 @@ class Collector:
                 type_name = t.arg if t else "?"
                 parts.append(f"LL:{ch.arg}:{type_name}")
             elif ch.keyword in ("container", "list"):
-                # Recurse for shape (but limit depth to avoid explosion)
+                # Recurse to get the shape.
                 sub_fp = Collector._fingerprint(ch)
                 parts.append(f"C:{ch.arg}:{sub_fp}")
             elif ch.keyword == "choice":
@@ -807,7 +806,7 @@ class Collector:
                 parts.append(f"CA:{ch.arg}:{sub_fp}")
         return "|".join(parts)
 
-    # -- main dispatch ---
+    # Send each node to the applicable function.
 
     def _process_node(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field | None:
         kw = stmt.keyword
@@ -820,7 +819,7 @@ class Collector:
         if kw == "leaf-list":
             return self._process_leaf_list(stmt, parent_prefix, current_mod)
         if kw == "choice":
-            return None  # caller uses _flatten_choice
+            return None  # The caller uses _flatten_choice.
         return None
 
     def _process_container(self, stmt, parent_prefix: str) -> Field:
@@ -881,13 +880,13 @@ class Collector:
                 rust_type = f"{mod.rust_name}::{rust_type}"
 
         if rust_type == _IDENTITYREF_SENTINEL:
-            # Try to resolve the base identity and collect derived identities
+            # Resolve the base identity and collect its derived identities.
             base_ident = _resolve_identityref_base(type_stmt)
             if base_ident is not None and self._ctx is not None:
                 base_mod = _source_module(base_ident) or "unknown"
-                # Use the base identity name as the identity set name
+                # Use the base identity name for the identity set.
                 set_name = _yang_to_pascal(base_ident.arg)
-                # Place identity sets in the module that defines the base
+                # Put identity sets in the module that defines the base.
                 target_mod = self._get_mod(base_mod) if base_mod not in _SKIP_MODULES else self._mod_for_stmt(stmt)
                 if set_name not in target_mod.identity_sets:
                     derived = _find_derived_identities(base_ident, self._ctx)
@@ -918,7 +917,7 @@ class Collector:
             elif secret_kind == "binary":
                 rust_type = "tacacsrs_secrets::SecretBytes"
 
-        # Extract YANG default value
+        # Get the YANG default value.
         default_value = None
         default_stmt = stmt.search_one("default")
         has_yang_default = default_stmt is not None
@@ -926,9 +925,9 @@ class Collector:
             rust_expr = _resolve_default(default_stmt.arg, rust_type)
             if rust_expr is not None:
                 default_value = (default_stmt.arg, rust_expr)
-            # else: YANG default matches Rust Default::default(),
-            # _leaf_is_optional already made this non-optional,
-            # but we still need #[serde(default)] — signal via empty tuple
+            # An empty tuple shows that the YANG default matches
+            # Rust Default::default(). _leaf_is_optional already made this
+            # field not optional, but it still needs #[serde(default)].
             else:
                 default_value = (default_stmt.arg, "")
 
@@ -1011,8 +1010,8 @@ class Collector:
     @staticmethod
     def _serde_name(stmt, field_mod: ModuleTypes) -> str:
         src = _source_module(stmt)
-        # Project-owned augment leaves come from separate modules and therefore
-        # use module-qualified RFC 7951 JSON member names.  The qualifier is the
+        # Project-owned augment leaves come from separate modules. Thus, they
+        # use module-qualified RFC 7951 JSON member names. The qualifier is the
         # source YANG module name, not the module prefix.
         if (
             src
@@ -1023,7 +1022,7 @@ class Collector:
         return stmt.arg
 
     def _flatten_choice(self, choice_stmt, parent_prefix: str, current_mod: ModuleTypes) -> tuple[list[Field], ChoiceGroup]:
-        """Flatten all case branches into ``Option<T>`` fields and record choice metadata."""
+        """Flatten case branches into ``Option<T>`` fields and record choice metadata."""
         mandatory = _is_mandatory(choice_stmt)
         choice_group = ChoiceGroup(choice_stmt.arg, mandatory)
         fields = []
@@ -1036,10 +1035,10 @@ class Collector:
             case_field_names = []
             for child in _get_children(case):
                 if child.keyword == "choice":
-                    # Nested choice — recurse and merge
+                    # Recurse into the nested choice and merge it.
                     nested_fields, nested_group = self._flatten_choice(child, parent_prefix, current_mod)
                     fields.extend(nested_fields)
-                    # Attach nested choice as a separate group
+                    # Attach the nested choice as a separate group.
                     choice_group.cases.append((
                         f"{case.arg}/{child.arg}",
                         [f.yang_name for f in nested_fields],
@@ -1068,17 +1067,16 @@ class Collector:
                     rs.fields.append(field)
 
     def _qualified_type(self, stmt, local_name: str) -> str:
-        """Return a type reference, qualified with module:: if cross-module."""
+        """Return a type reference with module:: for a cross-module type."""
         src = _source_module(stmt)
         if not src or src in _SKIP_MODULES:
             src = self._current_top_module
         src_rust = _MODULE_MAP.get(src, _yang_to_snake(src))
         top_rust = _MODULE_MAP.get(self._current_top_module,
                                    _yang_to_snake(self._current_top_module))
-        # If the type lives in a different Rust module than the struct
-        # that references it, qualify it.
-        # For now, always qualify — the emitter wraps each module, so
-        # self-references within the same module use just the name.
+        # Qualify a type if it is in a different Rust module from its structure.
+        # The emitter wraps each module. Thus, a reference in the same module
+        # uses only the type name.
         return f"{src_rust}::{local_name}"
 
 
@@ -1093,7 +1091,7 @@ _GENERIC = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# Emitter — writes Rust modules
+# The emitter writes Rust modules.
 # ---------------------------------------------------------------------------
 
 class RustEmitter:
@@ -1112,24 +1110,24 @@ class RustEmitter:
         w("#![allow(rustdoc::broken_intra_doc_links)]\n\n")
         w("use serde::{Deserialize, Serialize};\n\n")
 
-        # Emit each module
+        # Write each module.
         top_module = None
         for mod in self.c.modules.values():
             if not mod.structs and not mod.enums and not mod.typedefs and not mod.bitflags and not mod.identity_sets:
                 continue
             self._emit_module(mod)
-            # The first module with a TacacsPlus-like top-level struct is the "top"
+            # The first module with a TacacsPlus-like root structure is the top module.
             if top_module is None and any(
                 s.name in ("TacacsPlus", "TacacsPlusConfig")
                 for s in mod.structs.values()
             ):
                 top_module = mod
 
-        # Emit root wrapper for RFC 7951 JSON encoding
+        # Write the root wrapper for RFC 7951 JSON encoding.
         if top_module is not None:
             yang_name = top_module.yang_name
             rust_mod = top_module.rust_name
-            # Find the top-level container name
+            # Find the root container name.
             for s in top_module.structs.values():
                 if s.name in ("TacacsPlus", "TacacsPlusConfig"):
                     self._emit_root_wrapper(yang_name, rust_mod, s.name)
@@ -1137,8 +1135,8 @@ class RustEmitter:
 
     def _emit_root_wrapper(self, yang_module: str, rust_mod: str, struct_name: str):
         w = self.fd.write
-        # The YANG augmentation key: module-name:container-name
-        # For ietf-system-tacacs-plus, the container is "tacacs-plus"
+        # The YANG augmentation key has the form module-name:container-name.
+        # For ietf-system-tacacs-plus, the container name is "tacacs-plus".
         json_key = f"{yang_module}:tacacs-plus"
 
         w(f"/// Root wrapper for RFC 7951 JSON encoding.\n")
@@ -1155,14 +1153,14 @@ class RustEmitter:
 
         w(f"/// Types from `{mod.yang_name}`.\n")
         w(f"pub mod {mod.rust_name} {{\n")
-        # Only import serde derive traits when there's a type that derives them.
-        # Enum, identity, and bitflags helpers use fully qualified serde paths.
+        # Import serde derive traits only if a type derives them.
+        # Enumeration, identity, and bitflag functions use qualified serde paths.
         emitted_use = False
         if mod.structs:
             w("    use serde::{Deserialize, Serialize};\n")
             emitted_use = True
 
-        # Compute which other modules we need to import
+        # Find the other modules to import.
         imports = set()
         for st in mod.structs.values():
             for f in st.fields:
@@ -1176,25 +1174,25 @@ class RustEmitter:
         if emitted_use:
             w("\n")
 
-        # Typedefs
+        # Write typedefs.
         for name, rt in mod.typedefs.items():
             w(f"    pub type {name} = {rt};\n")
         if mod.typedefs:
             w("\n")
 
-        # Enums
+        # Write enumerations.
         for enum in mod.enums.values():
             self._emit_enum(enum)
 
-        # Bitflags
+        # Write bitflags.
         for bf in mod.bitflags.values():
             self._emit_bitflags(bf)
 
-        # Identity sets
+        # Write identity sets.
         for iset in mod.identity_sets.values():
             self._emit_identity_set(iset)
 
-        # Structs
+        # Write structures.
         for st in mod.structs.values():
             self._emit_struct(st, mod.rust_name)
 
@@ -1280,7 +1278,7 @@ class RustEmitter:
             w(f"            const {bit.rust_name} = 1 << {bit.position};\n")
         w("        }\n")
         w("    }\n\n")
-        # Custom Deserialize impl for space-separated string (RFC 7951 §6.7)
+        # Write a custom Deserialize implementation for an RFC 7951 bit string.
         w(f"    impl<'de> serde::Deserialize<'de> for {bf.name} {{\n")
         w(f"        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\n")
         w(f"        where\n")
@@ -1325,7 +1323,7 @@ class RustEmitter:
         w(f"    }}\n\n")
 
     def _emit_identity_set(self, iset: IdentitySet):
-        """Emit an identity set as a Rust enum with serde support and helper methods."""
+        """Write an identity set as a Rust enumeration with serde functions."""
         w = self.fd.write
 
         w(f"    /// Valid identities derived from `{iset.base_module}:{iset.base_name}`.\n")
@@ -1340,24 +1338,24 @@ class RustEmitter:
             w(f"        {val.rust_name},\n")
         w("    }\n\n")
 
-        # impl with as_str, from_rfc7951, ALL, and ALLOWED_VALUES
+        # Write the implementation with as_str, from_rfc7951, ALL, and ALLOWED_VALUES.
         w(f"    impl {iset.name} {{\n")
 
-        # ALL constant
+        # Write the ALL constant.
         w(f"        /// All valid identities for this base.\n")
         w(f"        pub const ALL: &[Self] = &[\n")
         for val in iset.values:
             w(f"            Self::{val.rust_name},\n")
         w("        ];\n\n")
 
-        # ALLOWED_VALUES — RFC 7951 JSON strings
+        # Write the ALLOWED_VALUES constant for RFC 7951 JSON strings.
         w(f"        /// RFC 7951 JSON string values accepted for this identity.\n")
         w(f"        pub const ALLOWED_VALUES: &[&str] = &[\n")
         for val in iset.values:
             w(f'            "{val.rfc7951_name()}",\n')
         w("        ];\n\n")
 
-        # as_rfc7951_str
+        # Write as_rfc7951_str.
         w(f"        /// Returns the RFC 7951 module-qualified JSON string.\n")
         w(f"        #[must_use]\n")
         w(f"        pub fn as_rfc7951_str(&self) -> &'static str {{\n")
@@ -1367,7 +1365,7 @@ class RustEmitter:
         w("            }\n")
         w("        }\n\n")
 
-        # from_rfc7951_str
+        # Write from_rfc7951_str.
         w(f"        /// Parses an RFC 7951 module-qualified string into this identity.\n")
         w(f"        #[must_use]\n")
         w(f"        pub fn from_rfc7951_str(s: &str) -> Option<Self> {{\n")
@@ -1378,7 +1376,7 @@ class RustEmitter:
         w("            }\n")
         w("        }\n\n")
 
-        # is_valid
+        # Write is_valid.
         w(f"        /// Checks whether the given string is a valid RFC 7951 value for this identity.\n")
         w(f"        #[must_use]\n")
         w(f"        pub fn is_valid(s: &str) -> bool {{\n")
@@ -1411,26 +1409,26 @@ class RustEmitter:
     def _emit_struct(self, st: Struct, current_mod: str):
         w = self.fd.write
 
-        # Collect any default helper functions needed for this struct's fields
-        default_fns: dict[str, tuple[str, str, str]] = {}  # field_yang_name -> (fn_name, rust_type, rust_expr)
-        bare_defaults: set[str] = set()  # fields that need #[serde(default)] only
+        # Collect the default functions that the structure fields need.
+        default_fns: dict[str, tuple[str, str, str]] = {}  # Map a field name to (fn_name, rust_type, rust_expr).
+        bare_defaults: set[str] = set()  # These fields need only #[serde(default)].
         for f in st.fields:
             if f.default_value is not None:
                 _yang_default, rust_expr = f.default_value
-                if rust_expr:  # Non-empty means we need a helper function
-                    # Build a snake_case fn name from the struct and field names
+                if rust_expr:  # A nonempty value requires a function.
+                    # Build a snake_case function name from the structure and field names.
                     struct_snake = st.name[0].lower() + st.name[1:]
-                    # Simple PascalCase to snake_case conversion
+                    # Convert PascalCase to snake_case.
                     import re
                     struct_snake = re.sub(r'([A-Z])', r'_\1', struct_snake).lower().lstrip('_')
                     fn_name = f"default_{struct_snake}_{f.rust_name}"
                     default_fns[f.yang_name] = (fn_name, f.rust_type, rust_expr)
-                else:  # Empty means Rust's Default::default() matches
+                else:  # An empty value matches Rust Default::default().
                     bare_defaults.add(f.yang_name)
 
-        # Emit default helper functions before the struct
+        # Write the default functions before the structure.
         for fn_name, rust_type, rust_expr in default_fns.values():
-            # Strip module prefix for local types
+            # Remove the module prefix from local types.
             rt = rust_type.replace(f"{current_mod}::", "")
             w(f"    fn {fn_name}() -> {rt} {{ {rust_expr} }}\n")
         if default_fns:
@@ -1444,7 +1442,7 @@ class RustEmitter:
             self._emit_field(f, current_mod, default_fns, bare_defaults)
         w("    }\n\n")
 
-        # Emit choice group constants if this struct has flattened choices
+        # Write choice-group constants for flattened choices.
         if st.choices:
             self._emit_choice_constants(st)
 
@@ -1475,7 +1473,7 @@ class RustEmitter:
         elif f.yang_name in bare_defaults:
             w("        #[serde(default)]\n")
 
-        # Resolve type reference: strip own module prefix for local types
+        # Resolve the type reference and remove its local module prefix.
         type_str = f.type_string()
         own_prefix = f"{current_mod}::"
         type_str = type_str.replace(own_prefix, "")
@@ -1510,7 +1508,7 @@ class RustEmitter:
 
 
 # ---------------------------------------------------------------------------
-# Plugin class
+# The plug-in class.
 # ---------------------------------------------------------------------------
 
 class YangToRustPlugin(plugin.PyangPlugin):

@@ -1,9 +1,9 @@
-name: Check Unused Dependencies
+name: Make Sure That Dependencies Are Used
 description: Run cargo-udeps for a target platform
 
 inputs:
   target:
-    description: 'Rust target triple to check'
+    description: 'Rust target triple for the validation'
     required: true
   feature-args:
     description: 'Cargo feature arguments to append'
@@ -18,7 +18,7 @@ runs:
       with:
         tool: cargo-udeps
 
-    - name: Check unused dependencies
+    - name: Run cargo-udeps
       shell: bash
       run: |
         cargo +nightly udeps \

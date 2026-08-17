@@ -1,5 +1,5 @@
 name: Stage SBOM Files
-description: Stage generated SBOMs into the package directory and sanitize workspace-specific paths
+description: Stage generated SBOMs in the package directory. Replace workspace-specific paths.
 
 inputs:
   package-root:
@@ -18,7 +18,7 @@ runs:
         XML_DEST="$PACKAGE_DIR/${SBOM_BASENAME}.xml"
 
         if [ -z "$JSON_SOURCE" ] || [ -z "$XML_SOURCE" ]; then
-          echo "Error: generated SBOM files were not found under ${{ inputs.package-root }}"
+          echo "Error: No generated SBOM files exist under ${{ inputs.package-root }}."
           exit 1
         fi
 

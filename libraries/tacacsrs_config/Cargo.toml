@@ -1,6 +1,6 @@
 [package]
 name = "tacacsrs-config"
-description = "YANG JSON configuration types for TACACS+ (ietf-system-tacacs-plus)"
+description = "YANG JSON configuration types for TACACS+ and ietf-system-tacacs-plus."
 version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true

@@ -4,7 +4,7 @@ version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Reusable local IPC client and shared protocol types for the central TACACS+ client service"
+description = "An IPC client and protocol types for the central TACACS+ client service."
 readme = "README.md"
 build = "build.rs"
 

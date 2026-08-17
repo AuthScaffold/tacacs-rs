@@ -2,22 +2,22 @@
 # https://release-plz.ieni.dev/docs/config
 
 [workspace]
-# Not publishing to crates.io; determine versions from git tags
+# The workspace does not publish to crates.io. Git tags determine the versions.
 git_only = true
-# Allow running in repos with uncommitted/gitignored files (e.g. yang cache)
+# Permit uncommitted and ignored files, such as YANG cache files.
 allow_dirty = true
 publish = false
-# Skip cargo package verification — path-only workspace deps lack version
-# fields, which cargo package requires but we don't need since we never publish
+# Skip `cargo package` validation. Path-only workspace dependencies do not have version fields.
+# This validation is not necessary because the workspace does not publish packages.
 publish_no_verify = true
-# No semver API checking (internal libraries, not published)
+# Do not run semantic-version API checks. The internal libraries are not published.
 semver_check = false
-# Label release PRs for identification
+# Add a label that identifies release pull requests.
 pr_labels = ["release"]
-# Only release when the release PR is merged, not on every push
+# The workflow releases packages only after GitHub merges the release pull request.
 release_always = false
 
-# --- Exclude applications (CalVer-managed separately) ---
+# --- Exclude applications. CalVer manages them separately. ---
 
 [[package]]
 name = "tacon"
@@ -27,7 +27,7 @@ release = false
 name = "tacacsrs-agentd"
 release = false
 
-# --- Changelog: flat list of PR titles, no conventional-commit grouping ---
+# --- Changelog: Flat list of pull request titles without conventional-commit groups. ---
 
 [changelog]
 body = """

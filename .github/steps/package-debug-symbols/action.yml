@@ -1,5 +1,5 @@
 name: Package Debug Symbols
-description: Copy target debug symbols into the package directory when they are available
+description: If target debug symbols are available, copy them into the package directory
 
 inputs:
   target:

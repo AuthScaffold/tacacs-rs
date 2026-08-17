@@ -58,7 +58,7 @@ done
 [[ "$live" -eq 1 ]]
 
 if "$probe" --endpoint "$socket_path" --check startup --timeout-seconds 2 >/dev/null 2>&1; then
-    echo "startup unexpectedly serving before Redis" >&2
+    echo "The startup probe served before Redis was available." >&2
     exit 31
 else
     exit_code=$?
@@ -66,7 +66,7 @@ else
 fi
 "$probe" --endpoint "$socket_path" --check liveness --timeout-seconds 2 >/dev/null
 if "$probe" --endpoint "$socket_path" --check readiness --timeout-seconds 2 >/dev/null 2>&1; then
-    echo "readiness unexpectedly serving before Redis" >&2
+    echo "The readiness probe served before Redis was available." >&2
     exit 32
 else
     exit_code=$?
@@ -110,7 +110,7 @@ wait "$agent_pid"
 agent_pid=""
 [[ ! -e "$socket_path" ]]
 if bash -c "exec 9<>/dev/tcp/127.0.0.1/${proxy_port}" 2>/dev/null; then
-    echo "proxy port remained bound after SIGTERM" >&2
+    echo "The proxy listener remained bound after SIGTERM." >&2
     exit 33
 fi
 
@@ -119,7 +119,7 @@ if env -u NOTIFY_SOCKET "$agent" \
     --shared-secret placeholder \
     --host-integration systemd \
     --listen-endpoint "$strict_socket_path" >/dev/null 2>&1; then
-    echo "strict systemd mode started without NOTIFY_SOCKET" >&2
+    echo "Strict systemd mode started without NOTIFY_SOCKET." >&2
     exit 34
 fi
 
@@ -143,4 +143,4 @@ wait "$agent_pid"
 agent_pid=""
 [[ ! -e "$auto_socket_path" ]]
 
-echo "PASS: stale UDS replacement, pre-Redis startup, health recovery, both listeners, active drain, none/auto modes, SIGTERM cleanup, port release, and strict systemd prerequisite failure."
+echo "PASS: The process smoke test replaced a stale Unix domain socket. It covered startup, recovery, both listeners, shutdown, and host-integration modes."

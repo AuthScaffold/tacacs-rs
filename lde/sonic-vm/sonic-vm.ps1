@@ -1,21 +1,21 @@
 <#
 .SYNOPSIS
-    Start / manage a SONiC-VS QEMU VM with SSH access and a persistent data disk.
+    Starts or manages a SONiC-VS QEMU VM with SSH and a persistent data disk.
 
 .DESCRIPTION
-    Wraps qemu-system-x86_64 to run the SONiC virtual switch image. Boots from
-    a qcow2 overlay over the read-only base image, downloading and extracting
-    that image if it is missing. Attaches a second qcow2 disk for persistent
-    user data (mounted in-guest at /data), and forwards host port 2222 -> guest
-    22 for SSH.
+    Runs the SONiC virtual-switch image with qemu-system-x86_64.
+    The VM starts from a qcow2 overlay on the read-only base image.
+    If the base image is missing, the script downloads and extracts it.
+    A second qcow2 disk stores persistent user data at /data in the guest.
+    Host port 2222 forwards SSH traffic to guest port 22.
 
     Move files between Windows and the guest via scp/sftp on port 2222.
 
 .EXAMPLE
-    .\sonic-vm.ps1 -Action Up        # boot in background, wait for SSH
-    .\sonic-vm.ps1 -Action InstallKey # copy your SSH public key to the guest
-    .\sonic-vm.ps1 -Action Mount      # format (first time) + mount /data in guest
-    .\sonic-vm.ps1 -Action Ssh       # interactive shell
+    .\sonic-vm.ps1 -Action Up        # Start in the background and wait for SSH.
+    .\sonic-vm.ps1 -Action InstallKey # Copy your SSH public key to the guest.
+    .\sonic-vm.ps1 -Action Mount      # If necessary, format the disk. Then mount /data.
+    .\sonic-vm.ps1 -Action Ssh       # Start an interactive shell.
     .\sonic-vm.ps1 -Action Stop
 #>
 [CmdletBinding()]
@@ -115,7 +115,7 @@ function Invoke-Ssh {
     } else {
         & ssh @common $target $RemoteCmd
     }
-    if ($LASTEXITCODE -ne 0) { throw "ssh failed with exit code $LASTEXITCODE." }
+    if ($LASTEXITCODE -ne 0) { throw "ssh returned exit code $LASTEXITCODE." }
 }
 
 function Invoke-PasswordSsh {
@@ -128,19 +128,19 @@ function Invoke-PasswordSsh {
             & plink -ssh -P $SshPort -pw $Password -batch -o "StrictHostKeyChecking=no" "$target"
         }
         if ($LASTEXITCODE -eq 0) { return }
-        Write-Warning "plink password SSH failed with exit code $LASTEXITCODE; trying native ssh."
+        Write-Warning "plink password SSH returned exit code $LASTEXITCODE. Try native ssh."
     } else {
         Test-Tool ssh
     }
 
-    Write-Host "Enter SSH password for $target when prompted. Default password: $Password"
+    Write-Host "When the prompt appears, enter the SSH password for $target. Default password: $Password"
     $common = Get-PasswordSshArgs
     if ($RemoteCmd) {
         & ssh @common $target $RemoteCmd
     } else {
         & ssh @common $target
     }
-    if ($LASTEXITCODE -ne 0) { throw "password SSH failed with exit code $LASTEXITCODE." }
+    if ($LASTEXITCODE -ne 0) { throw "Password SSH returned exit code $LASTEXITCODE." }
 }
 
 function Test-SshKeyAuth {
@@ -186,7 +186,7 @@ function Get-PublicKeyLine {
 
     if (-not $line) { throw "SSH public key is empty: $Path" }
     if ($line -notmatch '^(ssh-|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)') {
-        throw "SSH public key does not look like an OpenSSH public key: $Path"
+        throw "The SSH public key does not have the OpenSSH format: $Path"
     }
 
     $line
@@ -194,7 +194,7 @@ function Get-PublicKeyLine {
 
 function Install-SshKey {
     if (Test-SshKeyAuth) {
-        Write-Host "SSH key authentication already works."
+        Write-Host "SSH key authentication is available."
         return
     }
 
@@ -221,11 +221,11 @@ else
 fi
 "@
 
-    Write-Host "Installing SSH public key from $keyPath"
+    Write-Host "Install the SSH public key from $keyPath."
     Invoke-RemoteScript -Script $script -UsePassword
 
     if (-not (Test-SshKeyAuth)) {
-        throw "SSH key was copied, but key authentication still failed."
+        throw "The SSH key was copied, but key authentication returned an error."
     }
 }
 
@@ -257,20 +257,20 @@ function Test-SshBanner {
 
 function Wait-ForSsh {
     param([int]$TimeoutSec = 240)
-    Write-Host "Waiting for SSH on 127.0.0.1:$SshPort ..."
+    Write-Host "Wait for SSH at 127.0.0.1:$SshPort."
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
         if (-not (Get-QemuProc)) {
-            throw "VM process exited before SSH became available. Re-run with -Action Start to see QEMU's console error output."
+            throw "The VM stopped before SSH became available. Run with -Action Start to see the QEMU console error."
         }
         if (Test-SshBanner) {
-            Write-Host "SSH is up."
+            Write-Host "SSH is available."
             return
         }
         Start-Sleep -Seconds 3
-        Write-Host "  ... still booting"
+        Write-Host "The VM is still starting."
     }
-    throw "Timed out waiting for SSH after $TimeoutSec seconds."
+    throw "SSH was not available after $TimeoutSec seconds."
 }
 
 function Test-Admin {
@@ -380,25 +380,25 @@ function Ensure-BaseImage {
             Remove-Item -Force $temporaryDownloadPath
         }
 
-        Write-Host "Base image missing: $ImagePath"
-        Write-Host "Downloading SONiC image to $CompressedImagePath"
-        Write-Host "This can take a while."
+        Write-Host "The base image is missing: $ImagePath"
+        Write-Host "Download the SONiC image to $CompressedImagePath."
+        Write-Host "The download can take several minutes."
         $downloadUrl = Get-ImageDownloadUrl -Url $ImageUrl -SubPath $ImageArtifactSubPath
         Invoke-WebRequest -Uri $downloadUrl -OutFile $temporaryDownloadPath -UseBasicParsing
         Move-Item -Force $temporaryDownloadPath $CompressedImagePath
     } else {
-        Write-Host "Base image missing: $ImagePath"
-        Write-Host "Using existing compressed image: $CompressedImagePath"
+        Write-Host "The base image is missing: $ImagePath"
+        Write-Host "Use the existing compressed image: $CompressedImagePath"
     }
 
-    Write-Host "Extracting $CompressedImagePath to $ImagePath"
+    Write-Host "Extract $CompressedImagePath to $ImagePath."
     Expand-GzipFile -SourcePath $CompressedImagePath -DestinationPath $ImagePath
 }
 
 function Ensure-DataDisk {
     if (-not (Test-Path $QemuImgExe)) { throw "qemu-img not found at $QemuImgExe" }
     if (-not (Test-Path $DataDiskPath)) {
-        Write-Host "Creating data disk $DataDiskPath ($DataDiskSizeGB GB, qcow2 thin)"
+        Write-Host "Create the thin qcow2 data disk $DataDiskPath ($DataDiskSizeGB GB)."
         & $QemuImgExe create -f qcow2 $DataDiskPath "${DataDiskSizeGB}G" | Out-Null
     }
 }
@@ -407,7 +407,7 @@ function Ensure-BaseReadOnly {
     if (-not (Test-Path $ImagePath)) { return }
     $f = Get-Item $ImagePath
     if (-not $f.IsReadOnly) {
-        Write-Host "Marking base image read-only: $ImagePath"
+        Write-Host "Set the base image to read-only: $ImagePath"
         $f.IsReadOnly = $true
     }
 }
@@ -426,7 +426,7 @@ function Ensure-Overlay {
     Ensure-BaseReadOnly
     if (-not (Test-Path $OverlayPath)) {
         $baseFmt = Get-ImageFormat -Path $ImagePath
-        Write-Host "Creating overlay $OverlayPath  (backing: $ImagePath, format: $baseFmt)"
+        Write-Host "Create overlay $OverlayPath (base: $ImagePath, format: $baseFmt)."
         & $QemuImgExe create -f qcow2 -F $baseFmt -b $ImagePath $OverlayPath | Out-Null
     }
 }
@@ -436,30 +436,30 @@ function Get-DiskPath {
 }
 
 function Reset-Overlay {
-    if (-not $UseOverlay) { throw "Reset only applies when -UseOverlay is true." }
-    if (Get-QemuProc) { throw "Stop the VM before resetting the overlay." }
+    if (-not $UseOverlay) { throw "Before you reset the overlay, set -UseOverlay to true." }
+    if (Get-QemuProc) { throw "Before you reset the overlay, stop the VM." }
     if (Test-Path $OverlayPath) {
         Write-Host "Deleting $OverlayPath"
         Remove-Item -Force $OverlayPath
     }
     Ensure-Overlay
-    Write-Host "Overlay reset. Next boot will be from a clean base."
+    Write-Host "The overlay was reset. The next VM start uses a clean base."
 }
 
 function Snapshot-Overlay {
-    if (-not $UseOverlay) { throw "Snapshots use the overlay; enable -UseOverlay." }
+    if (-not $UseOverlay) { throw "Snapshots require the overlay. Set -UseOverlay." }
     if (-not $SnapshotName) { throw "Provide -SnapshotName <name>." }
-    if (Get-QemuProc) { throw "Stop the VM before snapshotting the overlay." }
-    if (-not (Test-Path $OverlayPath)) { throw "No overlay at $OverlayPath to snapshot." }
+    if (Get-QemuProc) { throw "Before you create an overlay snapshot, stop the VM." }
+    if (-not (Test-Path $OverlayPath)) { throw "No overlay was found at $OverlayPath." }
     $dst = Join-Path (Split-Path $OverlayPath) ("overlay.$SnapshotName.qcow2")
     Copy-Item $OverlayPath $dst -Force
     Write-Host "Snapshot saved: $dst"
 }
 
 function Restore-Snapshot {
-    if (-not $UseOverlay) { throw "Snapshots use the overlay; enable -UseOverlay." }
+    if (-not $UseOverlay) { throw "Snapshots require the overlay. Set -UseOverlay." }
     if (-not $SnapshotName) { throw "Provide -SnapshotName <name>." }
-    if (Get-QemuProc) { throw "Stop the VM before restoring." }
+    if (Get-QemuProc) { throw "Before you restore a snapshot, stop the VM." }
     $src = Join-Path (Split-Path $OverlayPath) ("overlay.$SnapshotName.qcow2")
     if (-not (Test-Path $src)) { throw "Snapshot not found: $src" }
     Copy-Item $src $OverlayPath -Force
@@ -484,7 +484,7 @@ function Start-Vm {
     if (-not (Test-Path $QemuExe))   { throw "QEMU not found at $QemuExe" }
 
     if (Get-QemuProc) {
-        Write-Host "VM '$VmName' already running."
+        Write-Host "VM '$VmName' is already active."
         return
     }
 
@@ -511,15 +511,15 @@ function Start-Vm {
         '-netdev', $netdev
     )
 
-    Write-Host "Starting VM (root: $disk, data: $DataDiskPath)"
+    Write-Host "Start the VM (root: $disk, data: $DataDiskPath)."
     Write-Host "  $QemuExe $($qemuArgs -join ' ')"
 
     if ($Daemon) {
         $process = Start-Process -FilePath $QemuExe -ArgumentList $qemuArgs -WindowStyle Minimized -PassThru
         if ($process.WaitForExit(1000)) {
-            throw "QEMU exited immediately with code $($process.ExitCode). Re-run with -Action Start to see QEMU's console error output."
+            throw "QEMU stopped immediately with exit code $($process.ExitCode). Run with -Action Start to see the QEMU console error."
         }
-        Write-Host "VM launched in background."
+        Write-Host "The VM started in the background."
     } else {
         & $QemuExe @qemuArgs
         if ($LASTEXITCODE -ne 0) { throw "QEMU exited with code $LASTEXITCODE." }
@@ -529,7 +529,7 @@ function Start-Vm {
 function Stop-Vm {
     $p = Get-QemuProc
     if (-not $p) { Write-Host "VM '$VmName' is not running."; return }
-    # Try graceful shutdown via QEMU monitor
+    # Request a normal shutdown from the QEMU monitor.
     try {
         $tcp = New-Object Net.Sockets.TcpClient('127.0.0.1', $MonitorPort)
         $stream = $tcp.GetStream()
@@ -541,11 +541,11 @@ function Stop-Vm {
         Start-Sleep -Seconds 2
         $tcp.Close()
     } catch {
-        Write-Warning "Monitor shutdown failed: $_  -- killing process."
+        Write-Warning "The QEMU monitor returned an error: $_. Force-stop the VM."
     }
     Start-Sleep -Seconds 2
     $p = Get-QemuProc
-    if ($p) { Stop-Process -Id $p.ProcessId -Force; Write-Host "VM force-killed." }
+    if ($p) { Stop-Process -Id $p.ProcessId -Force; Write-Host "The VM was force-stopped." }
     else    { Write-Host "VM stopped." }
 }
 
@@ -626,7 +626,7 @@ set_ext4_label() {
     current_label=`$(sudo blkid -s LABEL -o value "`$device" 2>/dev/null || true)
     [ "`$current_label" = "`$label" ] && return 0
 
-    echo "Relabeling `$device from '`$current_label' to '`$label'"
+    echo "Change the label of `$device from '`$current_label' to '`$label'."
     if command -v e2label >/dev/null 2>&1; then
         sudo e2label "`$device" "`$label"
     else
@@ -648,30 +648,30 @@ fi
 if [ -z "`$CAND" ]; then
     CAND=`$(find_blank_data_disk || true)
     if [ -z "`$CAND" ]; then
-        echo "no data disk found with label `$DATA_LABEL or blank size `$EXPECTED_SIZE_BYTES bytes" >&2
-        echo "available block devices:" >&2
+        echo "No data disk has label `$DATA_LABEL or blank size `$EXPECTED_SIZE_BYTES bytes." >&2
+        echo "Available block devices:" >&2
         lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINT >&2
         exit 1
     fi
-    echo "Using `$CAND as blank data disk"
-    echo "Formatting `$CAND as ext4 (label: `$DATA_LABEL)"
+    echo "Use `$CAND as the blank data disk."
+    echo "Format `$CAND as ext4 (label: `$DATA_LABEL)."
     sudo mkfs.ext4 -F -L "`$DATA_LABEL" "`$CAND"
 fi
 
 sudo mkdir -p "`$DATA_MOUNT"
 if mountpoint -q "`$DATA_MOUNT"; then
-    echo "Already mounted at `$DATA_MOUNT"
+    echo "The data disk is already mounted at `$DATA_MOUNT."
 else
     sudo mount "`$CAND" "`$DATA_MOUNT"
     sudo chown `$(id -u):`$(id -g) "`$DATA_MOUNT"
 fi
 
-# Persistent fstab entry (by label so device name doesn't matter)
+# Add a persistent fstab entry by label. Thus, the device name can change.
 if grep -Eq "[[:space:]]`$DATA_MOUNT[[:space:]]" /etc/fstab; then
-    echo "Updating fstab entry"
+    echo "Update the fstab entry."
     sudo sed -i "\|[[:space:]]`$DATA_MOUNT[[:space:]]|c\LABEL=`$DATA_LABEL  `$DATA_MOUNT  ext4  defaults,nofail  0  2" /etc/fstab
 elif ! grep -q "LABEL=`$DATA_LABEL" /etc/fstab; then
-    echo "Adding fstab entry"
+    echo "Add the fstab entry."
     echo "LABEL=`$DATA_LABEL  `$DATA_MOUNT  ext4  defaults,nofail  0  2" | sudo tee -a /etc/fstab >/dev/null
 fi
 
@@ -681,15 +681,15 @@ df -h "`$DATA_MOUNT"
 }
 
 function Umount-DataDisk {
-    Invoke-RemoteScript -Script "sudo umount $DataMount && echo unmounted"
+    Invoke-RemoteScript -Script "sudo umount $DataMount && echo 'The data disk is unmounted.'"
 }
 
 function Show-Status {
     $p = Get-QemuProc
     if ($p) {
-        Write-Host "VM '$VmName' running (PID $($p.ProcessId))"
+        Write-Host "VM '$VmName' is running (PID $($p.ProcessId))."
     } else {
-        Write-Host "VM '$VmName' not running"
+        Write-Host "VM '$VmName' is not running."
     }
     $share = $null
     Write-Host "SSH:     ssh -p $SshPort $User@127.0.0.1   (password: $Password)"
@@ -702,9 +702,9 @@ function Show-Status {
     }
     if (Test-Path $DataDiskPath) {
         $sz = [math]::Round((Get-Item $DataDiskPath).Length / 1MB, 2)
-        Write-Host "Data:    $DataDiskPath  ($sz MB on disk, ${DataDiskSizeGB} GB virtual) -> mounts at $DataMount"
+        Write-Host "Data:    $DataDiskPath  ($sz MB on disk, ${DataDiskSizeGB} GB virtual). Mount: $DataMount"
     } else {
-        Write-Host "Data:    $DataDiskPath  (not yet created; will be ${DataDiskSizeGB} GB on first boot)"
+        Write-Host "Data:    $DataDiskPath is not created. Its first-boot size is ${DataDiskSizeGB} GB."
     }
 }
 
@@ -728,6 +728,6 @@ switch ($Action) {
         Ensure-SshKeyAuthentication
         Mount-DataDisk
         Show-Status
-        Write-Host "`nReady. '.\sonic-vm.ps1 -Action Ssh' to log in. Persistent storage at $DataMount."
+        Write-Host "`nReady. Run '.\sonic-vm.ps1 -Action Ssh' to access the VM through SSH. Persistent storage is at $DataMount."
     }
 }

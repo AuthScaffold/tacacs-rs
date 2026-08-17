@@ -14,7 +14,7 @@ inputs:
     required: false
     default: '-D warnings'
   advisory:
-    description: 'Report clippy failures as warnings instead of failing'
+    description: 'Report Clippy errors as warnings. Do not stop the workflow.'
     required: false
     default: 'false'
 
@@ -31,7 +31,7 @@ runs:
             --target "${{ inputs.target }}" \
             ${{ inputs.feature-args }} \
             -- ${{ inputs.lint-args }} || \
-            echo "::warning::Clippy reported advisory issues"
+            echo "::warning::Clippy found errors during advisory validation."
         else
           cargo clippy \
             --workspace \

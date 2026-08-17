@@ -1,5 +1,5 @@
 name: Compute Package Names
-description: Compute package names and shared environment variables for official build packaging
+description: Compute package names and shared environment variables for official-build packages
 
 inputs:
   asset-name:

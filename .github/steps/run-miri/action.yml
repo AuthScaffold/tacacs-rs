@@ -1,5 +1,5 @@
 name: Run Miri
-description: Run Miri tests as an advisory deep check
+description: Run Miri tests as advisory extended validation
 
 runs:
   using: composite
@@ -10,4 +10,4 @@ runs:
         MIRIFLAGS: -Zmiri-disable-isolation
       run: |
         cargo +nightly miri test --workspace --all-features || \
-          echo "::warning::Miri reported issues; continuing because this check is advisory"
+          echo "::warning::Miri found errors. This validation is advisory, so the workflow continues."

@@ -4,7 +4,7 @@ version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "TACACS+ controlled login session wrapper POC"
+description = "Proof-of-concept TACACS+ login session wrapper"
 build = "build.rs"
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
@@ -29,8 +29,8 @@ maintainer = "AuthScaffold <github-discussions@authscaffold.com>"
 copyright = "2024, AuthScaffold"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
-session-wrapper is a Linux x86_64 login/session wrapper that mediates command \
-execution through TACACS+ authorization using seccomp user notifications."""
+session-wrapper controls commands in Linux x86_64 login sessions. It uses \
+TACACS+ authorization and seccomp user notifications."""
 depends = "$auto"
 section = "admin"
 priority = "optional"

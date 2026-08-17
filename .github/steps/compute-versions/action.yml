@@ -1,8 +1,8 @@
 name: Compute Versions
 description: >
-  Compute all crate versions from git tags.
-  Libraries get semver (with cargo-semver-checks for break detection and
-  dependency-aware cascading). Executables get CalVer.
+  Compute all crate versions from Git tags. Libraries use SemVer.
+  cargo-semver-checks detects breaking changes. Dependency changes propagate
+  to dependent libraries. Executables use CalVer.
 
 inputs:
   binary-name:
@@ -10,15 +10,15 @@ inputs:
     required: false
     default: 'tacon'
   shared-executables:
-    description: 'Comma-separated executable crate names that should share the CalVer version without creating their own tags'
+    description: 'Comma-separated executable crate names that use the CalVer version without separate tags'
     required: false
     default: ''
   skip-semver-checks:
-    description: 'Skip cargo-semver-checks (faster, but always patch-bumps)'
+    description: 'Skip cargo-semver-checks. This option is faster but always increments the patch version.'
     required: false
     default: 'false'
   pre-release:
-    description: 'Pre-release label (e.g. "dev"). When set, produces versions like 0.1.2-dev.5 with no tags.'
+    description: 'Pre-release label, for example "dev". If set, the label produces versions such as 0.1.2-dev.5 and no tags.'
     required: false
     default: ''
 
@@ -27,16 +27,16 @@ outputs:
     description: 'JSON map of crate-name → version'
     value: ${{ steps.compute.outputs.versions }}
   new_tags:
-    description: 'JSON array of new git tags to create'
+    description: 'JSON array of new Git tags to create'
     value: ${{ steps.compute.outputs.new_tags }}
   has_release:
-    description: 'Whether any new tags need to be created'
+    description: 'True if the action must create new tags'
     value: ${{ steps.compute.outputs.has_release }}
   calver_tag:
-    description: 'CalVer tag for the executable (empty if unchanged)'
+    description: 'CalVer tag for the executable. Empty if unchanged.'
     value: ${{ steps.compute.outputs.calver_tag }}
   previous_calver_tag:
-    description: 'Previous CalVer tag used as baseline (empty if first release)'
+    description: 'Previous CalVer baseline tag. Empty for the first release.'
     value: ${{ steps.compute.outputs.previous_calver_tag }}
 
 runs:

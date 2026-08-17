@@ -1,16 +1,18 @@
-"""Compute crate versions from git tags, dependency graph, and semver checks.
+"""Compute crate versions from Git tags, the dependency graph, and SemVer
+validation.
 
-This script discovers all library crates under a ``libraries/`` directory,
-builds a workspace dependency graph from ``path = "..."`` entries in each
-``Cargo.toml``, topologically sorts them, and determines the next semver
-version for each by comparing the current HEAD against the last release tag.
+The script finds all library crates in the ``libraries/`` directory. It builds
+the workspace dependency graph from ``path = "..."`` entries in each
+``Cargo.toml``. Then it sorts the crates by dependency. The script compares the
+current HEAD to the last release tag. This comparison determines the next
+SemVer version for each crate.
 
-For executables under ``executables/``, CalVer (``YYYY.MMDD.BUILD``) is
-computed for the configured binary name.
+The script computes CalVer (``YYYY.MMDD.BUILD``) for the configured executable
+in the ``executables/`` directory.
 
-The script writes its results to ``$GITHUB_OUTPUT`` (or stdout when that
-variable is unset) as JSON-encoded strings suitable for consumption by
-downstream GitHub Actions jobs.
+The script writes JSON-encoded results to ``$GITHUB_OUTPUT``. If this variable
+is unset, the script writes the results to standard output. Downstream GitHub
+Actions jobs use these results.
 """
 
 from __future__ import annotations
@@ -46,13 +48,13 @@ class VersionResult:
 
     name: str
     version: str
-    tag: str | None = None  # non-None when a new tag should be created
+    tag: str | None = None  # This field contains a tag when the release creates one.
     reason: str = ""
-    previous_tag: str | None = None  # the tag this release is based on
+    previous_tag: str | None = None  # The release uses this baseline tag.
 
 
 # ---------------------------------------------------------------------------
-# Cargo.toml parsing (intentionally simple — no TOML library needed)
+# Cargo.toml parsing is intentionally simple. No TOML library is necessary.
 # ---------------------------------------------------------------------------
 
 _NAME_RE = re.compile(r'^name\s*=\s*"([^"]+)"')
@@ -64,10 +66,10 @@ _PATH_DEP_RE = re.compile(
 def parse_cargo_toml(path: Path) -> tuple[str, list[str]]:
     """Return ``(crate_name, [workspace_dep_names])`` from a Cargo.toml.
 
-    Normal and build ``path = "..."`` dependencies that point inside the
-    workspace ``libraries/`` directory are considered workspace deps.
-    Dev-dependencies are excluded because they do not participate in release
-    dependency propagation and Cargo permits reverse dev-dependency edges.
+    Normal and build ``path = "..."`` dependencies in the workspace
+    ``libraries/`` directory are workspace dependencies. Development
+    dependencies do not propagate releases. Cargo also permits reverse
+    development-dependency edges.
     """
     text = path.read_text(encoding="utf-8")
     name = ""
@@ -77,13 +79,13 @@ def parse_cargo_toml(path: Path) -> tuple[str, list[str]]:
     for line in text.splitlines():
         stripped = line.strip()
 
-        # Capture package name (always before [dependencies])
+        # Get the package name, which is always before [dependencies].
         if not name:
             m = _NAME_RE.match(stripped)
             if m:
                 name = m.group(1)
 
-        # Track section headers
+        # Track the section headers.
         if stripped.startswith("["):
             in_deps = stripped in (
                 "[dependencies]",
@@ -95,7 +97,7 @@ def parse_cargo_toml(path: Path) -> tuple[str, list[str]]:
             m = _PATH_DEP_RE.match(stripped)
             if m:
                 dep_path = (path.parent / m.group(2)).resolve()
-                # Only count deps that live inside libraries/
+                # Count only dependencies in libraries/.
                 if "libraries" in dep_path.parts:
                     deps.append(m.group(1))
 
@@ -114,7 +116,7 @@ def discover_libraries(workspace_root: Path) -> dict[str, Crate]:
     for cargo_toml in sorted(libs_dir.glob("*/Cargo.toml")):
         name, deps = parse_cargo_toml(cargo_toml)
         if not name:
-            print(f"WARNING: Could not read crate name from {cargo_toml}", file=sys.stderr)
+            print(f"WARNING: No crate name in {cargo_toml}", file=sys.stderr)
             continue
         crates[name] = Crate(
             name=name,
@@ -164,7 +166,7 @@ def topological_sort(crates: dict[str, Crate]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def git(*args: str, cwd: Path | None = None) -> str:
-    """Run a git command and return stripped stdout."""
+    """Run a Git command and return standard output without surrounding whitespace."""
     result = subprocess.run(
         ["git", *args],
         capture_output=True,
@@ -176,7 +178,7 @@ def git(*args: str, cwd: Path | None = None) -> str:
 
 
 def latest_tag(prefix: str, cwd: Path | None = None) -> str | None:
-    """Return the latest git tag matching ``prefix*``, or ``None``."""
+    """Return the latest Git tag that matches ``prefix*``, or ``None``."""
     result = git(
         "tag", "--list", f"{prefix}*", "--sort=-v:refname",
         cwd=cwd,
@@ -187,7 +189,7 @@ def latest_tag(prefix: str, cwd: Path | None = None) -> str | None:
 
 
 def has_changes_since(tag: str, paths: Sequence[str], cwd: Path | None = None) -> bool:
-    """Check if any files under ``paths`` changed since ``tag``."""
+    """Return ``True`` if a file under ``paths`` changed since ``tag``."""
     args = ["diff", "--name-only", f"{tag}..HEAD", "--"]
     args.extend(paths)
     result = git(*args, cwd=cwd)
@@ -209,7 +211,7 @@ def commit_count_since(ref: str, cwd: Path | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Semver helpers
+# SemVer helpers
 # ---------------------------------------------------------------------------
 
 def parse_semver(version: str) -> tuple[int, int, int]:
@@ -223,7 +225,7 @@ def bump_patch(major: int, minor: int, patch: int) -> str:
 
 
 def bump_breaking(major: int, minor: int, _patch: int) -> str:
-    """Bump for a breaking change: minor if pre-1.0, major otherwise."""
+    """Increment the minor part before 1.0. Increment the major part at or after 1.0."""
     if major == 0:
         return f"0.{minor + 1}.0"
     return f"{major + 1}.0.0"
@@ -234,7 +236,7 @@ def run_semver_checks(
     baseline_rev: str,
     cwd: Path | None = None,
 ) -> bool:
-    """Run ``cargo semver-checks`` and return True if API-compatible."""
+    """Run ``cargo semver-checks`` and return ``True`` for a compatible API."""
     result = subprocess.run(
         [
             "cargo", "semver-checks", "check-release",
@@ -309,10 +311,9 @@ def compute_prerelease_library_versions(
 ) -> list[VersionResult]:
     """Compute pre-release versions for all libraries.
 
-    For each library, the version is ``{latest_tag_version}-{label}.{N}``
-    where N is the number of commits since the last tag.  If there is no
-    tag yet, the version is ``0.0.0-{label}.{N}`` where N is the total
-    commit count.
+    Each library uses ``{latest_tag_version}-{label}.{N}``. N is the number of
+    commits since the last tag. If no tag exists, the version uses
+    ``0.0.0-{label}.{N}``. In this case, N is the total commit count.
     """
     results: list[VersionResult] = []
 
@@ -322,8 +323,8 @@ def compute_prerelease_library_versions(
         latest = latest_tag(tag_prefix, cwd=cwd)
 
         if latest is None:
-            n = commit_count_since("", cwd=cwd)  # total commits
-            # Use git rev-list --count HEAD instead
+            n = commit_count_since("", cwd=cwd)  # The total commit count.
+            # Use git rev-list --count HEAD instead.
             count_str = git("rev-list", "--count", "HEAD", cwd=cwd)
             n = int(count_str) if count_str else 0
             version = f"0.0.0-{pre_release_label}.{n}"
@@ -337,7 +338,7 @@ def compute_prerelease_library_versions(
         results.append(VersionResult(
             name=name,
             version=version,
-            tag=None,  # never create tags for pre-releases
+            tag=None,  # Do not create tags for pre-releases.
             reason=reason,
         ))
 
@@ -388,8 +389,8 @@ def compute_library_versions(
 ) -> list[VersionResult]:
     """Compute versions for all libraries in dependency order.
 
-    When a dependency is bumped, its dependents are also checked
-    even if their own source files didn't change (transitive API change).
+    If a dependency gets a new version, the script also makes sure that each
+    dependent remains compatible. This occurs even if its source files do not change.
     """
     results: list[VersionResult] = []
     bumped: set[str] = set()
@@ -399,11 +400,11 @@ def compute_library_versions(
         tag_prefix = f"{name}-v"
         latest = latest_tag(tag_prefix, cwd=cwd)
 
-        # Check if any workspace dependency was bumped
+        # Determine whether a workspace dependency received a new version.
         dep_bumped = any(d in bumped for d in crate.workspace_deps)
 
         if latest is None:
-            # First release
+            # This is the first release.
             version = "0.1.0"
             results.append(VersionResult(
                 name=name,
@@ -419,7 +420,7 @@ def compute_library_versions(
         source_changed = has_changes_since(latest, [f"{dir_rel}/"], cwd=cwd)
 
         if not source_changed and not dep_bumped:
-            # Nothing changed — keep current version
+            # Nothing changed. Keep the current version.
             results.append(VersionResult(
                 name=name,
                 version=current,
@@ -428,11 +429,11 @@ def compute_library_versions(
             ))
             continue
 
-        # Something changed — determine bump level
+        # Something changed. Determine the increment level.
         major, minor, patch = parse_semver(current)
 
         if skip_semver_checks:
-            # Default to patch bump when semver-checks unavailable
+            # If semver-checks is unavailable, use a patch increment.
             is_compatible = True
         else:
             is_compatible = run_semver_checks(name, latest, cwd=cwd)
@@ -441,7 +442,7 @@ def compute_library_versions(
             version = bump_patch(major, minor, patch)
             reason = "patch"
             if dep_bumped and not source_changed:
-                reason = "patch (dependency bumped)"
+                reason = "patch (dependency version changed)"
         else:
             version = bump_breaking(major, minor, patch)
             reason = "breaking"
@@ -472,9 +473,9 @@ def compute_all_versions(
 ) -> dict:
     """Compute all versions and return a result dict.
 
-    When ``pre_release`` is non-empty (e.g. ``"dev"``), all versions become
-    pre-release identifiers like ``0.1.2-dev.5`` (5 commits since the
-    ``v0.1.2`` tag).  No tags are created in pre-release mode.
+    If ``pre_release`` is not empty, all versions become pre-release
+    identifiers. For example, ``"dev"`` produces ``0.1.2-dev.5`` after five
+    commits from the ``v0.1.2`` tag. The pre-release mode does not create tags.
 
     Returns::
 
@@ -501,7 +502,7 @@ def compute_all_versions(
     order = topological_sort(crates)
 
     if pre_release:
-        # ── Pre-release mode: commit-distance versions, no tags ──
+        # ── Pre-release mode: commit-distance versions and no tags ──
         lib_results = compute_prerelease_library_versions(
             crates, order,
             pre_release_label=pre_release,
@@ -513,7 +514,7 @@ def compute_all_versions(
             cwd=workspace_root,
         )
     else:
-        # ── Release mode: semver bumps + CalVer + tags ──
+        # ── Release mode: SemVer increments, CalVer, and tags ──
         lib_results = compute_library_versions(
             crates, order,
             cwd=workspace_root,
@@ -550,7 +551,7 @@ def compute_all_versions(
         for shared_name in shared_executable_names:
             print(f"  {shared_name}: {calver_result.version} (shared executable version)")
     else:
-        print(f"  {binary_name}: unchanged (no calver)")
+        print(f"  {binary_name}: unchanged (no CalVer)")
 
     return {
         "versions": versions,
@@ -568,7 +569,7 @@ def write_github_output(key: str, value: str) -> None:
         with open(output_file, "a", encoding="utf-8") as f:
             f.write(f"{key}={value}\n")
     else:
-        print(f"  (would set) {key}={value}")
+        print(f"  Output value: {key}={value}")
 
 
 def main() -> None:
@@ -586,7 +587,7 @@ def main() -> None:
     print(f"Workspace: {workspace_root}")
     print(f"Binary: {binary_name}")
     print(f"Shared executables: {shared_executable_names or ['(none)']}")
-    print(f"Skip semver checks: {skip_semver}")
+    print(f"Skip SemVer validation: {skip_semver}")
     print(f"Pre-release label: {pre_release or '(none — release mode)'}")
     print()
 

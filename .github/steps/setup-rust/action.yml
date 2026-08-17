@@ -1,5 +1,5 @@
-name: Setup Rust
-description: Install Rust toolchain with Linux build dependencies, optional components, targets, and caching
+name: Install Rust
+description: Install a Rust toolchain, Linux build dependencies, components, and targets. Configure the cache.
 
 inputs:
   toolchain:
@@ -7,11 +7,11 @@ inputs:
     required: false
     default: 'stable'
   components:
-    description: 'Space-separated list of components to install (e.g., "clippy rustfmt llvm-tools-preview")'
+    description: 'Space-separated list of components to install (for example, "clippy rustfmt llvm-tools-preview")'
     required: false
     default: ''
   targets:
-    description: 'Space-separated list of targets to install (e.g., "x86_64-unknown-linux-musl")'
+    description: 'Space-separated list of targets to install (for example, "x86_64-unknown-linux-musl")'
     required: false
     default: ''
   cache-key:
@@ -19,7 +19,7 @@ inputs:
     required: false
     default: ''
   save-if:
-    description: 'Whether to save the cache at the end of the job. Only the warm-cache job and nightly-specific jobs should save.'
+    description: 'Save the cache at the end of the job. Use true only for the warm-cache job and nightly-specific jobs.'
     required: false
     default: 'false'
   install-musl-tools:
@@ -53,7 +53,7 @@ runs:
       run: |
         CMD="rustup toolchain install $(printf '%q' "${{ inputs.toolchain }}") --profile minimal"
 
-        # Add components if specified
+        # If specified, add the components.
         if [ -n "${{ inputs.components }}" ]; then
           IFS=' ' read -ra COMPONENTS <<< "${{ inputs.components }}"
           for component in "${COMPONENTS[@]}"; do
@@ -61,7 +61,7 @@ runs:
           done
         fi
 
-        # Add targets if specified
+        # If specified, add the targets.
         if [ -n "${{ inputs.targets }}" ]; then
           IFS=' ' read -ra TARGETS <<< "${{ inputs.targets }}"
           for target in "${TARGETS[@]}"; do
@@ -155,11 +155,11 @@ runs:
         echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
         echo "PKG_CONFIG_PATH=$LIBSECCOMP_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
 
-    - name: Setup OpenSSL
+    - name: Install OpenSSL
       if: inputs.install-openssl == 'true'
       uses: ./.github/steps/setup-openssl
 
-    - name: Setup Rust cache
+    - name: Configure Rust cache
       id: rust-cache
       uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
       with:

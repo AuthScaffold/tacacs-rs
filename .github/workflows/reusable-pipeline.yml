@@ -4,32 +4,32 @@ on:
   workflow_call:
     inputs:
       include-fmt:
-        description: 'Include the rustfmt check job'
+        description: 'Run the rustfmt validation job'
         required: false
         default: true
         type: boolean
       include-proto-compat:
-        description: 'Include protobuf backward compatibility check'
+        description: 'Run the protobuf backward-compatibility validation'
         required: false
         default: true
         type: boolean
       include-miri:
-        description: 'Include Miri job'
+        description: 'Run the Miri job'
         required: false
         default: true
         type: boolean
       include-fuzz:
-        description: 'Include fuzz smoke test job'
+        description: 'Run the fuzz smoke-test job'
         required: false
         default: true
         type: boolean
       include-container-build:
-        description: 'Include container image build validation'
+        description: 'Build the container image'
         required: false
         default: true
         type: boolean
       include-container-publish:
-        description: 'Publish the container image after a successful build'
+        description: 'If the build succeeds, publish the container image'
         required: false
         default: false
         type: boolean
@@ -44,37 +44,37 @@ on:
         default: 'tacacsrs-agentd'
         type: string
       include-clippy-nursery:
-        description: 'Include clippy nursery lints job'
+        description: 'Run the Clippy nursery-lint job'
         required: false
         default: true
         type: boolean
       rust-test-matrix:
-        description: 'Deprecated; retained for caller compatibility while test platforms are defined by this workflow'
+        description: 'Deprecated. This workflow defines the test platforms. This input remains for caller compatibility.'
         required: false
         default: '["stable"]'
         type: string
       proto-compat-ref:
-        description: 'Git ref for protobuf backward compatibility check'
+        description: 'Git ref for protobuf backward-compatibility validation'
         required: false
         default: 'main'
         type: string
       include-outdated:
-        description: 'Include the outdated dependencies check job'
+        description: 'Run the outdated-dependency validation job'
         required: false
         default: true
         type: boolean
       skip-audit-if-no-dep-changes:
-        description: 'Skip security audit if no dependency files changed'
+        description: 'If dependency files do not change, skip the security audit'
         required: false
         default: false
         type: boolean
       build-release:
-        description: 'Build and test in release mode'
+        description: 'The build commands and tests use release mode'
         required: false
         default: true
         type: boolean
       products:
-        description: 'JSON array of build product configurations with package, artifact, target, packaging, and feature metadata'
+        description: 'JSON array of configuration objects for build products. Each object contains package, artifact, target, packaging, and feature metadata.'
         required: false
         default: |
           [
@@ -85,7 +85,7 @@ on:
           ]
         type: string
       versions:
-        description: 'JSON map of crate-name → version to inject into Cargo.toml files. Empty or {} is a no-op.'
+        description: 'JSON map of crate names to versions for Cargo.toml files. An empty map or {} causes no changes.'
         required: false
         default: '{}'
         type: string
@@ -132,7 +132,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - name: Setup Rust and native caches
+      - name: Install Rust and configure native caches
         uses: ./.github/steps/setup-rust
         with:
           toolchain: ${{ matrix.config.toolchain }}
@@ -176,7 +176,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup nightly Rust
+      - name: Install nightly Rust
         uses: ./.github/steps/setup-rust
         with:
           toolchain: nightly
@@ -186,17 +186,17 @@ jobs:
           install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
           install-openssl: ${{ matrix.config.install_openssl }}
 
-      - name: Check formatting
+      - name: Make sure that formatting is correct
         if: inputs.include-fmt
         uses: ./.github/steps/check-format
 
-      - name: Check unused dependencies
+      - name: Make sure that dependencies are used
         uses: ./.github/steps/check-unused-deps
         with:
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
 
-      - name: Setup stable Rust
+      - name: Install stable Rust
         uses: ./.github/steps/setup-rust
         with:
           toolchain: stable
@@ -212,7 +212,7 @@ jobs:
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
 
-      - name: Clippy nursery lints
+      - name: Run Clippy nursery lints
         if: inputs.include-clippy-nursery
         uses: ./.github/steps/run-clippy
         with:
@@ -227,17 +227,17 @@ jobs:
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
 
-      - name: Security audit
+      - name: Run security audit
         if: matrix.config.metadata_checks == 'true'
         uses: ./.github/steps/security-audit
         with:
           skip-if-no-dep-changes: ${{ inputs.skip-audit-if-no-dep-changes }}
 
-      - name: Check outdated dependencies
+      - name: Make sure that dependencies are current
         if: matrix.config.metadata_checks == 'true' && inputs.include-outdated
         uses: ./.github/steps/check-outdated
 
-      - name: Protobuf compatibility
+      - name: Make sure that protobuf changes are backward-compatible
         if: matrix.config.metadata_checks == 'true' && inputs.include-proto-compat
         uses: ./.github/steps/proto-compat
         with:
@@ -274,7 +274,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - name: Setup stable Rust
+      - name: Install stable Rust
         uses: ./.github/steps/setup-rust
         with:
           toolchain: stable
@@ -295,7 +295,7 @@ jobs:
         if: matrix.config.coverage == 'true'
         uses: ./.github/steps/run-coverage
 
-      - name: Setup nightly Rust for deep checks
+      - name: Install nightly Rust for extended validation
         if: matrix.config.deep_checks == 'true' && (inputs.include-miri || inputs.include-fuzz)
         uses: ./.github/steps/setup-rust
         with:
@@ -332,7 +332,7 @@ jobs:
         with:
           versions: ${{ inputs.versions }}
 
-      - name: Setup Rust
+      - name: Install Rust
         uses: ./.github/steps/setup-rust
         with:
           targets: ${{ matrix.config.target }}
@@ -461,6 +461,6 @@ jobs:
       - container-build
       - finalize-release-assets
     steps:
-      - name: Check all jobs passed
+      - name: Make sure that all jobs succeeded
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1

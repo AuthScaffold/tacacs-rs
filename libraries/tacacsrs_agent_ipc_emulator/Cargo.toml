@@ -4,7 +4,7 @@ version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rego (Open Policy Agent) driven local IPC emulator for TACACS+ agent integration tests"
+description = "A local IPC emulator that uses Rego for TACACS+ agent integration tests."
 readme = "README.md"
 build = "build.rs"
 
