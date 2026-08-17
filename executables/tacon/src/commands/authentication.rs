@@ -25,7 +25,7 @@ pub fn read_password(from_stdin: bool) -> anyhow::Result<SecretBytes> {
         bytes
     } else {
         if !std::io::stdin().is_terminal() {
-            anyhow::bail!("standard input is not a terminal; use --password-stdin")
+            anyhow::bail!("Standard input is not a terminal. Run with --password-stdin instead.")
         }
         rpassword::prompt_password("PAP password: ")
             .context("Failed to read PAP password")?

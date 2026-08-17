@@ -1,10 +1,9 @@
 //! Long-lived agent runtime lifecycle.
 //!
-//! This module owns startup validation, warm-up orchestration, datastore-driven
-//! reload application, graceful shutdown signalling, and the public
-//! [`TacacsClientService`] entry point. Local client protocol handling lives in
-//! the client API service, while server selection and failover live in the
-//! upstream manager.
+//! This module validates startup configuration and applies datastore reloads.
+//! It also controls warm-up and graceful shutdown. The client API service
+//! handles local client protocols. The upstream manager selects servers and
+//! controls failover.
 
 mod client_service;
 mod health;

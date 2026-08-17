@@ -1,8 +1,8 @@
-# Top-level container build orchestrator.
+# Top-level container build targets.
 #
-# Runs the requested target in every immediate subdirectory that contains a
-# Makefile, mirroring the per-image container Makefiles. This scales to
-# additional images (for example, the IPC emulator) without changing this file.
+# This Makefile runs the requested target in each immediate subdirectory that
+# contains a Makefile. Each image uses the targets in its local Makefile.
+# A new image, such as the IPC emulator, does not require a change to this file.
 #
 # Examples:
 #   make build
@@ -12,7 +12,7 @@
 BUILD_VERSION ?= dev
 REGISTRY ?= tacacsrs
 
-# Every immediate subdirectory that has its own Makefile is a buildable image.
+# Each immediate subdirectory with a Makefile contains a buildable image.
 SUBDIRS := $(patsubst %/Makefile,%,$(wildcard */Makefile))
 
 .PHONY: all build push test clean

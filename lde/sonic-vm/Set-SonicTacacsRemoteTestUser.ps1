@@ -1,12 +1,11 @@
 <#
 .SYNOPSIS
-    Create a SONiC test user that is treated as TACACS remote by the bash plugin.
+    Creates a SONiC test user that the Bash plugin treats as a remote TACACS+ user.
 .DESCRIPTION
-    SONiC's legacy bash_tacplus policy treats users as remote TACACS users when
-    their passwd GECOS/comment field starts with "remote_user". This helper
-    creates or updates a local guest account with that marker so the
-    tacacsrs-bash-plugin takes the TACACS authorization path during VM smoke
-    testing.
+    The legacy SONiC bash_tacplus policy identifies remote TACACS+ users through
+    the passwd GECOS field. The field must start with "remote_user".
+    This script creates or updates a local guest account with that marker.
+    Then tacacsrs-bash-plugin uses the TACACS+ authorization path in the VM smoke test.
 .EXAMPLE
     .\lde\sonic-vm\Set-SonicTacacsRemoteTestUser.ps1
 .EXAMPLE
@@ -73,11 +72,11 @@ for group in "`${requested_groups[@]}"; do
   if getent group "`$group" >/dev/null; then
     sudo usermod -aG "`$group" "`$user"
   else
-    echo "Skipping missing group `$group" >&2
+    echo "Skip the missing Linux group: `$group" >&2
   fi
 done
 
-# Lock password login; tests use sudo from the admin account.
+# Lock password login. The tests use sudo from the admin account.
 sudo passwd -l "`$user" >/dev/null 2>&1 || true
 
 sudo touch "`$config_path"
@@ -97,13 +96,13 @@ fi
 
 echo '--- test user passwd entry'
 getent passwd "`$user"
-echo '--- effective plugin config tokens'
+echo '--- effective plugin configuration tokens'
 sudo grep -E '^(debug|tacacs_authorization|local_authorization|ipc_endpoint)(=|[[:space:]]|`$)' "`$config_path" || true
 
 if [ "`$run_smoke" = '1' ]; then
   echo '--- smoke command as test user'
   sudo -u "`$user" HOME="/home/`$user" USER="`$user" LOGNAME="`$user" SHELL="`$shell_path" \
-    "`$shell_path" --noprofile --norc -c '/usr/bin/id; /bin/echo tacacs remote smoke command completed'
+    "`$shell_path" --noprofile --norc -c '/usr/bin/id; /bin/echo TACACS+ remote smoke command completed'
 fi
 "@
 
@@ -115,7 +114,7 @@ fi
     -AllowFailure
 
 if ($LASTEXITCODE -ne 0) {
-    throw "Remote TACACS test user setup failed with exit code $LASTEXITCODE."
+    throw "The remote TACACS+ test-user command returned exit code $LASTEXITCODE."
 }
 
-Write-Host "Configured SONiC TACACS remote test user '$UserName'."
+Write-Host "Configured the SONiC remote TACACS+ test user '$UserName'."

@@ -1,4 +1,4 @@
-//! Materialization of provider results into generated inline server fields.
+//! Conversion of provider results into generated inline server fields.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -15,14 +15,14 @@ use crate::{
     ResolvedCredential, SymmetricKeyMaterial, resolve_plan,
 };
 
-/// Stable materialization failure category.
+/// Stable materialization error category.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum MaterializationErrorKind {
-    /// Config-local bundle expansion failed.
+    /// Configuration-local bundle expansion failed.
     Enumeration,
-    /// Provider resolution or closed result validation failed.
+    /// Provider resolution or closed-result validation failed.
     Resolution,
-    /// Resolved material could not populate its generated target field.
+    /// A resolved credential did not populate its generated target field.
     InvalidMaterial,
     /// One or more references remained after materialization.
     UnresolvedReference,
@@ -30,7 +30,7 @@ pub enum MaterializationErrorKind {
     Validation,
 }
 
-/// Sanitized materialization failure without reference or credential values.
+/// Sanitized materialization error without reference or credential values.
 pub struct MaterializationError {
     kind: MaterializationErrorKind,
     server_name: Option<String>,
@@ -63,13 +63,13 @@ impl MaterializationError {
         }
     }
 
-    /// Creates a sanitized config-local enumeration failure.
+    /// Creates a sanitized configuration-local enumeration error.
     #[must_use]
     pub fn enumeration() -> Self {
         Self::new(MaterializationErrorKind::Enumeration, None, None)
     }
 
-    /// Returns the stable failure category.
+    /// Returns the stable error category.
     #[must_use]
     pub const fn kind(&self) -> MaterializationErrorKind {
         self.kind
@@ -87,7 +87,7 @@ impl MaterializationError {
         self.field_path
     }
 
-    /// Returns the sanitized resolution failure when resolution failed.
+    /// Returns the sanitized resolution error, if resolution failed.
     #[must_use]
     pub const fn resolution_error(&self) -> Option<&ResolutionError> {
         self.resolution.as_ref()
@@ -96,7 +96,7 @@ impl MaterializationError {
 
 impl fmt::Display for MaterializationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "credential materialization {:?}", self.kind)?;
+        write!(formatter, "credential materialization failed: {:?}", self.kind)?;
         if let Some(server_name) = &self.server_name {
             write!(formatter, " for server '{server_name}'")?;
         }
@@ -115,7 +115,9 @@ impl fmt::Debug for MaterializationError {
 
 impl std::error::Error for MaterializationError {}
 
-/// Materializes an enumerated server and validates its generated inline form.
+/// Adds resolved credentials to one enumerated server.
+///
+/// This function makes sure that the generated inline result is valid.
 ///
 /// # Errors
 ///
@@ -131,11 +133,11 @@ pub async fn materialize_server(
     Ok(candidates.remove(0))
 }
 
-/// Materializes an enumerated server set as one all-or-nothing transaction.
+/// Adds resolved credentials to a server set in one all-or-nothing transaction.
 ///
 /// # Errors
 ///
-/// Returns the first sanitized failure and drops every staged candidate.
+/// Returns the first sanitized error and drops every staged candidate.
 pub async fn materialize_servers(
     servers: Vec<TacacsPlusServer>,
     resolver: &dyn CredentialResolver,
@@ -148,12 +150,14 @@ pub async fn materialize_servers(
     validate_candidates(candidates, validation_options)
 }
 
-/// Enumerates config-local bundles and materializes all servers from one source snapshot.
+/// Enumerates configuration-local bundles and adds credentials to all servers.
+///
+/// All servers come from one source snapshot.
 ///
 /// # Errors
 ///
-/// Returns a sanitized enumeration or materialization error. The source config
-/// is borrowed and remains unchanged.
+/// Returns a sanitized enumeration or materialization error. The source
+/// configuration is borrowed and remains unchanged.
 pub async fn enumerate_materialized_servers(
     config: &TacacsPlus,
     resolver: &dyn CredentialResolver,

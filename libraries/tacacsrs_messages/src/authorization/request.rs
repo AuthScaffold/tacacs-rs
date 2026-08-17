@@ -54,7 +54,7 @@ impl AuthorizationRequest {
     /// Returns an error if the packet body is too short or contains invalid fields.
     pub fn from_packet(packet: &Packet) -> anyhow::Result<Self> {
         let expected_length = Self::size_from_bytes(packet.body())
-            .context("unable to determine expected length of authorization request packet")?;
+            .context("failed to determine the expected authorization request length")?;
         if packet.body().len() < expected_length {
             anyhow::bail!(
                 "invalid authorization request body length: expected {expected_length}, actual {}",
@@ -68,7 +68,7 @@ impl AuthorizationRequest {
     fn size_from_bytes(data: &[u8]) -> anyhow::Result<usize> {
         if data.len() < AUTHORIZATION_REQUEST_MIN_LENGTH {
             anyhow::bail!(
-                "body too short for authorization request fixed fields: expected at least {}, actual {}",
+                "authorization request body is too short for fixed fields: expected at least {}, actual {}",
                 AUTHORIZATION_REQUEST_MIN_LENGTH,
                 data.len()
             );
@@ -78,7 +78,7 @@ impl AuthorizationRequest {
         let arg_sizes_end = AUTHORIZATION_ARG_SIZE_OFFSET + arg_cnt;
         if data.len() < arg_sizes_end {
             anyhow::bail!(
-                "body too short for authorization argument size fields: expected at least {arg_sizes_end}, actual {}",
+                "authorization request body is too short for argument length fields: expected at least {arg_sizes_end}, actual {}",
                 data.len()
             );
         }
@@ -101,33 +101,33 @@ impl AuthorizationRequest {
         let expected_length = Self::size_from_bytes(data)?;
         if data.len() < expected_length {
             anyhow::bail!(
-                "data too short for authorization request: expected {expected_length}, actual {}",
+                "authorization request data is too short: expected {expected_length}, actual {}",
                 data.len()
             );
         }
 
         let mut cursor = Cursor::new(data);
         let authen_method = TacacsAuthenticationMethod::try_from_primitive(
-            cursor.read_u8().context("unable to read authen_method")?,
+            cursor.read_u8().context("failed to read authen_method")?,
         )
         .context("invalid authorization authen_method")?;
-        let priv_lvl = cursor.read_u8().context("unable to read priv_lvl")?;
+        let priv_lvl = cursor.read_u8().context("failed to read priv_lvl")?;
         let authen_type = TacacsAuthenticationType::try_from_primitive(
-            cursor.read_u8().context("unable to read authen_type")?,
+            cursor.read_u8().context("failed to read authen_type")?,
         )
         .context("invalid authorization authen_type")?;
         let authen_service = TacacsAuthenticationService::try_from_primitive(
-            cursor.read_u8().context("unable to read authen_service")?,
+            cursor.read_u8().context("failed to read authen_service")?,
         )
         .context("invalid authorization authen_service")?;
-        let user_len = cursor.read_u8().context("unable to read user_len")?;
-        let port_len = cursor.read_u8().context("unable to read port_len")?;
-        let rem_addr_len = cursor.read_u8().context("unable to read rem_addr_len")?;
-        let arg_cnt = cursor.read_u8().context("unable to read arg_cnt")?;
+        let user_len = cursor.read_u8().context("failed to read user_len")?;
+        let port_len = cursor.read_u8().context("failed to read port_len")?;
+        let rem_addr_len = cursor.read_u8().context("failed to read rem_addr_len")?;
+        let arg_cnt = cursor.read_u8().context("failed to read arg_cnt")?;
 
         let mut arg_sizes = Vec::with_capacity(usize::from(arg_cnt));
         for _ in 0..arg_cnt {
-            arg_sizes.push(cursor.read_u8().context("unable to read arg size")?);
+            arg_sizes.push(cursor.read_u8().context("failed to read argument length")?);
         }
 
         let user = read_string(&mut cursor, usize::from(user_len))?;

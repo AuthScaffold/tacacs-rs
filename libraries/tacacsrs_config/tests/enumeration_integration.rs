@@ -45,25 +45,25 @@ fn enumerate_servers_inlines_credential_bundles() {
             }
         }"#,
     )
-    .expect("config should parse");
+    .expect("configuration must parse");
 
-    let enumerated = enumerate_servers(&config).expect("enumeration should succeed");
+    let enumerated = enumerate_servers(&config).expect("enumeration must succeed");
     assert_eq!(enumerated.len(), 1);
 
     let server = &enumerated[0];
     let client_identity = server
         .client_identity
         .as_ref()
-        .expect("client identity should exist");
+        .expect("client identity must exist");
     assert!(client_identity.credentials_reference.is_none());
     let certificate = client_identity
         .certificate
         .as_ref()
-        .expect("certificate should be inlined from bundle");
+        .expect("bundle must provide an inline certificate");
     let inline_certificate = certificate
         .inline_definition
         .as_ref()
-        .expect("certificate inline definition should exist");
+        .expect("inline certificate definition must exist");
     assert_eq!(inline_certificate.cert_data.as_deref(), Some(b"test-cert".as_slice()),);
     assert_eq!(
         inline_certificate
@@ -76,16 +76,16 @@ fn enumerate_servers_inlines_credential_bundles() {
     let server_authentication = server
         .server_authentication
         .as_ref()
-        .expect("server authentication should exist");
+        .expect("server authentication must exist");
     assert!(server_authentication.credentials_reference.is_none());
     let ca_certs = server_authentication
         .ca_certs
         .as_ref()
-        .expect("ca certs should be inlined from bundle");
+        .expect("bundle must provide inline CA certificates");
     let inline_certs = ca_certs
         .inline_definition
         .as_ref()
-        .expect("ca cert inline definition should exist");
+        .expect("inline CA certificate definition must exist");
     assert_eq!(inline_certs.certificate.len(), 1);
     assert_eq!(inline_certs.certificate[0].cert_data, b"test-cert");
 }
@@ -150,9 +150,9 @@ fn enumerate_servers_preserves_all_nested_central_references_and_metadata() {
             }
         }"#,
     )
-    .expect("central bundle config should parse");
+    .expect("central bundle configuration must parse");
 
-    let enumerated = enumerate_servers(&config).expect("enumeration should succeed");
+    let enumerated = enumerate_servers(&config).expect("enumeration must succeed");
     let certificate_identity = enumerated[0]
         .client_identity
         .as_ref()
@@ -234,10 +234,10 @@ fn central_references_are_not_validated_as_local_bundle_ids() {
             }
         }"#,
     )
-    .expect("raw central references should parse");
+    .expect("raw central references must parse");
 
     validate_credential_references(&root.tacacs_plus)
-        .expect("external central references are not config-local bundle IDs");
+        .expect("external central references are not local bundle IDs");
 }
 
 #[test]
@@ -257,10 +257,10 @@ fn validate_credential_references_collects_missing_client_bundle_ref() {
             }
         }"#,
     )
-    .expect("raw root should parse");
+    .expect("raw root must parse");
 
     let error =
-        validate_credential_references(&root.tacacs_plus).expect_err("validation should fail");
+        validate_credential_references(&root.tacacs_plus).expect_err("validation must fail");
     let message = error.to_string();
     assert!(message.contains("nonexistent-client"), "error: {message}");
     assert!(message.contains("client-identity credentials-reference"), "error: {message}");
@@ -283,10 +283,10 @@ fn validate_credential_references_collects_missing_server_bundle_ref() {
             }
         }"#,
     )
-    .expect("raw root should parse");
+    .expect("raw root must parse");
 
     let error =
-        validate_credential_references(&root.tacacs_plus).expect_err("validation should fail");
+        validate_credential_references(&root.tacacs_plus).expect_err("validation must fail");
     let message = error.to_string();
     assert!(message.contains("nonexistent-server"), "error: {message}");
     assert!(message.contains("server-authentication credentials-reference"), "error: {message}");
@@ -320,10 +320,10 @@ fn validate_credential_references_collects_multiple_missing_bundle_refs() {
             }
         }"#,
     )
-    .expect("raw root should parse");
+    .expect("raw root must parse");
 
     let error =
-        validate_credential_references(&root.tacacs_plus).expect_err("validation should fail");
+        validate_credential_references(&root.tacacs_plus).expect_err("validation must fail");
     let message = error.to_string();
     assert!(message.contains("missing-client"), "error: {message}");
     assert!(message.contains("missing-server"), "error: {message}");

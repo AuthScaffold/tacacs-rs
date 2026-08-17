@@ -20,7 +20,7 @@
 //! - Child reaping is driven by SIGCHLD plus a safety polling interval — no
 //!   busy-wait, no fixed timeout penalty for each loop iteration.
 //! - The control socket watcher runs in `spawn_blocking` (a short-lived
-//!   blocking call) rather than in the poll loop, removing one manual fd from
+//!   blocking call) instead of the poll loop. This removes one manual fd from
 //!   the poll array.
 //!
 //! # Architecture
@@ -68,7 +68,7 @@
 //! The seccomp notification fd supports concurrent use from multiple threads:
 //! `seccomp_notify_respond` uses the notification ID to route responses in the
 //! kernel, so two tasks responding to different notifications simultaneously is
-//! safe.  `seccomp_notify_receive` is only ever called from the single OS
+//! safe. `seccomp_notify_receive` is only called from the single OS
 //! receiver thread, so no locking is needed there.
 //!
 //! # Descendant coverage
@@ -76,12 +76,12 @@
 //! The seccomp filter is inherited across `fork`/`clone` and preserved across
 //! `exec`.  Every process in the supervised tree — nested shells, subshells,
 //! background jobs, shell scripts — sends notifications through the same fd.
-//! The supervisor does not need to track which PID sent a notification; it
+//! The supervisor does not need to track which PID sent a notification. It
 //! authorizes each exec on its own merits using the PID embedded in the request.
 //!
 //! # Fail policy
 //!
-//! | Policy             | Behaviour on IPC failure          |
+//! | Policy             | Behavior on IPC failure           |
 //! |--------------------|-----------------------------------|
 //! | [`FailPolicy::Closed`] | Deny the exec with `EPERM`    |
 //! | [`FailPolicy::Open`]   | Allow the exec (continue)     |
@@ -134,7 +134,7 @@ type SharedIpcClient = Arc<Mutex<Option<Arc<ServiceClient>>>>;
 /// # When does this return an error?
 ///
 /// When the notification fd is closed — which happens when all processes that
-/// hold a copy of the seccomp filter have exited.  The supervisor loop treats
+/// hold a copy of the seccomp filter exit. The supervisor loop treats
 /// this as the session-termination signal.
 pub(crate) fn recv_notification(notif_fd: ScmpFd) -> Result<ScmpNotifReq> {
     ScmpNotifReq::receive(notif_fd).context("failed to receive seccomp notification")
@@ -144,8 +144,8 @@ pub(crate) fn recv_notification(notif_fd: ScmpFd) -> Result<ScmpNotifReq> {
 ///
 /// The `resp.id` field must match the `id` from the corresponding
 /// [`ScmpNotifReq`] or the kernel will return `ENOENT` (the notification is no
-/// longer valid). Callers should always check [`check_notification_valid`]
-/// before sending to handle the TOCTOU window gracefully.
+/// longer valid). Callers must call [`check_notification_valid`] before they
+/// send a response. This handles the TOCTOU window.
 pub(crate) fn send_response(notif_fd: ScmpFd, resp: ScmpNotifResp) -> Result<()> {
     resp.respond(notif_fd)
         .context("failed to send seccomp notification response")
@@ -155,25 +155,24 @@ pub(crate) fn send_response(notif_fd: ScmpFd, resp: ScmpNotifResp) -> Result<()>
 ///
 /// # Why this matters (TOCTOU)
 ///
-/// Between the moment the supervisor receives a notification and the moment it
-/// sends a response, the target process can be:
+/// Between receipt and response, these events can occur:
 ///
-/// - Killed by a signal.
-/// - Have the syscall cancelled by a signal (`EINTR`).
-/// - Replaced entirely if the process is traced with `ptrace`.
+/// - A signal kills the target process.
+/// - A signal cancels the syscall (`EINTR`).
+/// - `ptrace` replaces the target process.
 ///
 /// Sending a response to an invalid notification returns `ENOENT`. Calling
-/// this function between expensive operations (e.g. IPC round-trips) lets the
-/// supervisor detect the race early and skip the response gracefully.
+/// this function between expensive operations, for example IPC round-trips,
+/// lets the supervisor detect the race early and skip the response.
 ///
 /// This does **not** eliminate the TOCTOU window — there is always a small
-/// gap between the check and the subsequent operation.  It is a best-effort
+/// gap between the validity query and the subsequent operation. It is a best-effort
 /// mitigation, sufficient for an interactive shell use case.
 ///
 /// # Errors
 ///
 /// Returns an error if the notification is no longer valid (the target process
-/// exited or the syscall was cancelled).
+/// exited or the syscall was canceled).
 pub(crate) fn check_notification_valid(notif_fd: ScmpFd, id: u64) -> Result<()> {
     notify_id_valid(notif_fd, id).context("seccomp notification is no longer valid")
 }
@@ -189,7 +188,7 @@ pub(crate) fn check_notification_valid(notif_fd: ScmpFd, id: u64) -> Result<()> 
 pub(crate) struct SupervisorConfig {
     /// TACACS+ username for the wrapped session.
     pub(crate) user: String,
-    /// Optional port context for TACACS+ authorization requests (e.g. `"ssh"`).
+    /// Optional port context for TACACS+ authorization requests, for example `"ssh"`.
     pub(crate) port: Option<String>,
     /// Optional remote address for TACACS+ authorization requests.
     pub(crate) rem_addr: Option<String>,
@@ -210,7 +209,7 @@ pub(crate) struct SupervisorConfig {
 enum AuthDecision {
     /// Allow the exec to proceed (`SECCOMP_USER_NOTIF_FLAG_CONTINUE`).
     Allow,
-    /// Deny the exec; the process receives `EPERM`.
+    /// Deny the exec. The process receives `EPERM`.
     Deny(DenyDecision),
 }
 
@@ -233,7 +232,7 @@ enum DenySource {
 
 /// Connects to the TACACS+ agent and returns a usable client.
 ///
-/// Returns `None` if the connection fails; the caller applies the fail policy.
+/// Returns `None` if the connection fails. The caller then applies the fail policy.
 async fn connect_ipc_client(endpoint: &IpcEndpoint) -> Option<ServiceClient> {
     match ServiceClient::connect(endpoint.clone()).await {
         Ok(client) => {
@@ -247,7 +246,7 @@ async fn connect_ipc_client(endpoint: &IpcEndpoint) -> Option<ServiceClient> {
     }
 }
 
-/// Returns a cached IPC client, reconnecting on demand when none is available.
+/// Returns a cached IPC client. If none is available, the function reconnects on demand.
 async fn get_or_connect_ipc_client(
     client: &SharedIpcClient,
     endpoint: &IpcEndpoint,
@@ -338,7 +337,7 @@ async fn ipc_authorize(
 /// Maps an authorization response into the local seccomp decision.
 ///
 /// Seccomp user notification can either continue the original frozen `execve`
-/// or deny it; it cannot inject additional argv values or replace the submitted
+/// or deny it. It cannot inject additional argv values or replace the submitted
 /// argv. RFC 8907 lets clients ignore optional response args, but mandatory
 /// response args must be applied or authorization fails.
 fn map_authorization_response(
@@ -461,15 +460,15 @@ fn fail_policy_decision(policy: FailPolicy, exec_path: &str) -> AuthDecision {
 /// # Steps
 ///
 /// 1. Read the executable path and argv from the target process's memory.
-/// 2. Check the allowlist — if matched, respond immediately with CONTINUE.
+/// 2. Search the allowlist. If the path matches, respond immediately with CONTINUE.
 /// 3. Send a TACACS+ authorization request (`await`) and interpret the response.
 /// 4. Send the kernel the allow or deny response.
 ///
 /// # Notification invalidity
 ///
 /// If the notification becomes invalid (target process killed) at any step,
-/// this function returns `Ok(())` after logging — the kernel has already
-/// cleaned up the frozen syscall, so no response is needed.
+/// this function returns `Ok(())` after logging. The kernel already cleaned up
+/// the frozen syscall, so the function sends no response.
 async fn handle_one_notification(
     notif_fd: ScmpFd,
     req: ScmpNotifReq,
@@ -490,7 +489,7 @@ async fn handle_one_notification(
         Err(err) => {
             if check_notification_valid(notif_fd, req.id).is_err() {
                 log::debug!(
-                    "notification {id} from pid {pid} became invalid before memory read; skipping",
+                    "Notification {id} from pid {pid} became invalid before the memory read. The supervisor skips it.",
                     id = req.id
                 );
                 return Ok(());
@@ -515,12 +514,12 @@ async fn handle_one_notification(
     let (exec_path, exec_args, filename_addr) = exec_info;
     log::debug!("pid {pid} exec: {exec_path:?} args={exec_args:?}");
 
-    // Step 2: Fast-path allowlist check (O(1) HashSet lookup).
+    // Step 2: Fast-path allowlist lookup (O(1) HashSet lookup).
     if allowlist.is_allowed(&exec_path) {
         log::debug!("allowlist hit for {exec_path:?}: allowing without IPC");
 
-        // TOCTOU re-read: verify the path hasn't been swapped by a racing
-        // thread between the initial read and this response.
+        // TOCTOU re-read: Make sure that a racing thread did not swap the path
+        // between the initial read and this response.
         if let Err(err) = verify_exec_path_unchanged(pid, filename_addr, &exec_path) {
             log::warn!("{err:#}");
             eprintln!("session-wrapper: exec denied (TOCTOU): {exec_path}");
@@ -599,21 +598,21 @@ struct DecisionContext<'a> {
 
 /// Sends the allow or deny kernel response for a seccomp notification.
 ///
-/// When the decision is `Allow`, performs a TOCTOU re-read of the exec path
+/// When the decision is `Allow`, the function performs a TOCTOU re-read of the exec path
 /// from `/proc/[pid]/mem` immediately before sending `CONTINUE`. If the path
-/// has changed since the original read (indicating a racing thread swapped it),
-/// the exec is denied with `EPERM` instead.
-/// If the exec path could not be read in the first place and fail-open chose
-/// `Allow`, the filename address is unknown and verification is skipped.
+/// changed since the original read, a racing thread swapped it. The supervisor
+/// denies the exec with `EPERM`.
+/// If the exec path was not readable and fail-open chose `Allow`, the filename
+/// address is unknown and verification is skipped.
 ///
-/// If sending fails because the notification has expired (the target process
-/// exited during our IPC call), the function logs the race and returns `Ok(())`.
-/// This is correct behaviour — there is no process left to deny or allow.
+/// If sending fails because the notification expired, the function logs the
+/// race and returns `Ok(())`. The target process exited during the IPC call, so
+/// no process remains to deny or allow.
 fn apply_decision(context: DecisionContext<'_>, decision: &AuthDecision) -> Result<()> {
     match decision {
         AuthDecision::Allow => {
-            // TOCTOU re-read: verify the path hasn't been swapped by a racing
-            // thread between the initial read and this response. This is the
+            // TOCTOU re-read: Make sure that a racing thread did not swap the
+            // path between the initial read and this response. This is the
             // critical mitigation — it shrinks the TOCTOU window from the full
             // IPC round-trip to just pread + ioctl.
             if let Err(err) =
@@ -687,13 +686,13 @@ fn apply_decision(context: DecisionContext<'_>, decision: &AuthDecision) -> Resu
 
 /// Handles a `send_response` error by re-checking notification validity.
 ///
-/// When the target process exits between our IPC call and our `respond()` call,
+/// When the target process exits between the IPC call and the `respond()` call,
 /// the kernel discards the notification and returns `ENOENT`. This is an
-/// expected race — not an error the supervisor should propagate.
+/// expected race. The supervisor does not propagate it as an error.
 fn log_or_propagate_send_error(err: anyhow::Error, notif_fd: ScmpFd, id: u64) -> Result<()> {
     if check_notification_valid(notif_fd, id).is_err() {
         log::debug!(
-            "notification {id} expired before response could be sent; ignoring respond error: {err:#}"
+            "Notification {id} expired before the response. The supervisor ignores the response error: {err:#}"
         );
         Ok(())
     } else {
@@ -708,17 +707,17 @@ fn log_or_propagate_send_error(err: anyhow::Error, notif_fd: ScmpFd, id: u64) ->
 /// # Why a dedicated OS thread?
 ///
 /// `ScmpNotifReq::receive` is a blocking syscall that can wait indefinitely
-/// for the next notification.  Tokio tasks must not block their worker threads
-/// for long periods; `spawn_blocking` is intended for short-lived blocking
-/// work.  A dedicated `std::thread` is the right tool for a long-running
+/// for the next notification. Tokio tasks must not block their worker threads
+/// for long periods. `spawn_blocking` is intended only for short-lived blocking
+/// work. A dedicated `std::thread` is the right tool for a long-running
 /// blocking loop that feeds a channel.
 ///
 /// When the notification fd is closed (all supervised processes exited), the
-/// receive call returns an error and this function exits, dropping the sender.
+/// receive call returns an error, and this function exits. This drops the sender.
 /// The `mpsc::Receiver` on the tokio side sees the channel close and knows
 /// no more notifications will arrive.
 // The sender must be owned (not borrowed) so it is dropped when this function
-// exits, signalling the channel receiver that no more notifications are coming.
+// exits. This tells the channel receiver that no more notifications will arrive.
 // Clippy flags this as "needless pass by value" because `blocking_send` takes
 // `&self`, but ownership here is intentional for the drop signal.
 #[allow(clippy::needless_pass_by_value)]
@@ -784,13 +783,13 @@ fn reap_children() -> Result<bool> {
 ///
 /// # Overview
 ///
-/// 1. Creates a cached TACACS+ agent IPC client (failure is non-fatal; later
-///    notifications reconnect on demand and fail policy applies while unavailable).
+/// 1. Creates a cached TACACS+ agent IPC client. A connection error is not fatal.
+///    Later notifications reconnect on demand, and fail policy applies while unavailable.
 /// 2. Signals the child that the supervisor is ready to answer notifications.
 /// 3. Spawns a dedicated OS thread to run the blocking receive loop.
 /// 4. Registers a SIGCHLD handler for child reaping.
 /// 5. Starts the control socket watcher in `spawn_blocking`.
-/// 6. Runs the async dispatch loop until all supervised processes have exited.
+/// 6. Runs the async dispatch loop until all supervised processes exit.
 ///
 /// # Arguments
 ///
@@ -816,15 +815,14 @@ pub(crate) async fn run_supervisor(
             .map(Arc::new),
     ));
 
-    // Register the SIGCHLD handler before releasing the child.  A child that
-    // exits immediately after being released would be missed if we registered
-    // the handler after signal_supervisor_ready().
+    // Register the SIGCHLD handler before releasing the child. This order catches
+    // a child that exits immediately after release.
     let sigchld = signal(SignalKind::child()).context("failed to register SIGCHLD handler")?;
 
     // Signal the child that the supervisor is ready to answer notifications.
-    // The child has been waiting for this byte since installing the seccomp
-    // filter.  Without this signal, the child's first execve would block
-    // forever with no supervisor to respond.
+    // The child waits for this byte after it installs the seccomp filter.
+    // Without this signal, the child's first execve blocks forever because no
+    // supervisor can respond.
     session
         .signal_supervisor_ready()
         .context("failed to release child after supervisor setup")?;
@@ -838,8 +836,8 @@ pub(crate) async fn run_supervisor(
 
     // Spawn the blocking notification receive loop in a dedicated OS thread.
     // `std::thread::spawn` is appropriate here because this is a long-lived
-    // blocking loop, not a short-lived blocking operation (which would use
-    // spawn_blocking).
+    // blocking loop, not a short-lived blocking operation. Use spawn_blocking
+    // only for short-lived blocking operations.
     std::thread::Builder::new()
         .name("notif-receiver".to_owned())
         .spawn(move || notification_receiver(notif_fd, notif_tx))
@@ -859,15 +857,15 @@ pub(crate) async fn run_supervisor(
 ///
 /// The loop runs four concurrent logical streams via `tokio::select!`:
 ///
-/// 1. **Notifications** — received from the OS-thread channel; each spawns a
-///    handler task.
+/// 1. **Notifications** — received from the OS-thread channel. Each notification
+///    spawns a handler task.
 /// 2. **SIGCHLD** — triggers a `waitpid(WNOHANG)` reap pass.
 /// 3. **Reap interval** — a 250 ms safety net for coalesced or missed SIGCHLDs.
 /// 4. **Control socket** — propagates a child setup failure as an error.
 ///
 /// The loop exits when:
 /// - `waitpid` reports no remaining children (`ECHILD`).
-/// - All spawned handler tasks have completed.
+/// - All spawned handler tasks complete.
 ///
 /// The notification receiver can still be blocked on the listener fd at that
 /// point because the parent owns the fd until the supervisor returns. Once no
@@ -913,7 +911,7 @@ async fn dispatch_loop(
                     });
                 } else {
                     // Receiver thread exited: notification fd is closed.
-                    // All processes holding the filter have exited.
+                    // All processes holding the filter exited.
                     notifications_open = false;
                     log::debug!(
                         "notification receiver channel closed \
@@ -945,23 +943,23 @@ async fn dispatch_loop(
             res = &mut ctrl_handle, if !ctrl_done => {
                 ctrl_done = true;
                 match res {
-                    Ok(Ok(())) => {} // ControlClosed: child exec'd the command
+                    Ok(Ok(())) => {} // ControlClosed: the child ran `exec` on the command.
                     Ok(Err(e)) => return Err(e),
                     Err(e) => bail!("control socket watcher task panicked: {e}"),
                 }
             }
         }
 
-        // Exit when all child processes have been reaped and all in-flight
-        // notification handlers have finished. The receiver thread may still
-        // be blocked on the listener fd owned by `SessionProcess`; returning
-        // lets that owner close the fd.
+        // Exit after all child processes exit and are reaped, and all in-flight
+        // notification handlers finish. The receiver thread can still be blocked
+        // on the listener fd owned by `SessionProcess`. Returning here lets that
+        // owner close the fd.
         if !has_children && handler_tasks.is_empty() {
             break;
         }
     }
 
-    log::info!("supervisor exiting: all supervised processes have exited");
+    log::info!("The supervisor exits because all supervised processes exited");
     Ok(())
 }
 
@@ -1079,6 +1077,6 @@ mod tests {
     #[test]
     fn unknown_filename_address_skips_exec_path_verification() {
         verify_exec_path_if_available(1234, None, "<unreadable>")
-            .expect("unknown filename address should not fail TOCTOU verification");
+            .expect("the unknown filename address caused a TOCTOU verification error");
     }
 }

@@ -1,4 +1,4 @@
-//! Upstream bridge for raw TACACS+ proxy connections.
+//! Server bridge for raw TACACS+ proxy connections.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -82,14 +82,14 @@ impl ProxyConversation for ClientConversation {
     }
 }
 
-/// Bridges raw TACACS+ proxy streams onto managed upstream sessions.
+/// Maps raw TACACS+ proxy streams to managed server sessions.
 #[derive(Clone)]
 pub(super) struct UpstreamBridge {
     upstream_manager: Arc<UpstreamManager>,
 }
 
 impl UpstreamBridge {
-    /// Creates a raw proxy upstream bridge over the shared upstream manager.
+    /// Creates a raw proxy bridge for the shared upstream manager.
     pub(super) fn new(upstream_manager: Arc<UpstreamManager>) -> Self {
         Self { upstream_manager }
     }
@@ -111,15 +111,13 @@ impl UpstreamBridge {
             Ok(binding) => binding,
             Err(error) => {
                 return Err(error).with_context(|| {
-                    format!(
-                        "Failed to bind TACACS+ proxy client {peer_label} to an upstream server"
-                    )
+                    format!("Failed to bind TACACS+ proxy client {peer_label} to a TACACS+ server")
                 });
             }
         };
 
         log::debug!(
-            "Proxying TACACS+ client {peer_label} via {} (server index {})",
+            "Proxying TACACS+ client {peer_label} through {} (server index {})",
             bound_server.connection.server_address(),
             bound_server.index,
         );
@@ -195,7 +193,7 @@ where
                 break match writer_result {
                     Ok(result) => result,
                     Err(error) => Err(ProxyConnectionError::Downstream(
-                        anyhow::Error::new(error).context("Downstream TACACS+ writer task failed"),
+                        anyhow::Error::new(error).context("The downstream TACACS+ writer task failed"),
                     )),
                 };
             }
@@ -211,7 +209,7 @@ where
                     }
                     Err(error) => {
                         break Err(ProxyConnectionError::Upstream(
-                            anyhow::Error::new(error).context("Upstream TACACS+ session task failed"),
+                            anyhow::Error::new(error).context("The server TACACS+ session task failed"),
                         ));
                     }
                 }
@@ -237,7 +235,7 @@ where
                 if let Some(sender) = session_senders.get(&session_id) {
                     if sender.send(packet).await.is_err() {
                         break Err(ProxyConnectionError::Downstream(anyhow::anyhow!(
-                            "Downstream TACACS+ session {session_id:#x} sent a packet after completion",
+                            "Downstream TACACS+ session {session_id:#x} sent a packet after it completed",
                         )));
                     }
                     continue;
@@ -247,7 +245,7 @@ where
                 session_sender
                     .send(packet)
                     .await
-                    .expect("new session receiver is alive");
+                    .expect("the new session receiver must be active");
                 session_senders.insert(session_id, session_sender);
                 let provider = Arc::clone(&provider);
                 let reply_sender = reply_sender.clone();
@@ -282,7 +280,7 @@ where
     Provider: ProxyConversationProvider,
 {
     let mut conversation = provider.open_conversation().await.map_err(|error| {
-        ProxyConnectionError::Upstream(error.context("Failed to open upstream proxy conversation"))
+        ProxyConnectionError::Upstream(error.context("Failed to open a TACACS+ server session"))
     })?;
     let result = run_proxy_session_inner(
         downstream_session_id,
@@ -308,7 +306,7 @@ where
 {
     let upstream_session_id = conversation.session_id().ok_or_else(|| {
         ProxyConnectionError::Upstream(anyhow::anyhow!(
-            "Upstream TACACS+ conversation completed before proxy session started"
+            "The TACACS+ server session completed before the proxy session started"
         ))
     })?;
     while let Some(request) = packets.recv().await {
@@ -318,12 +316,12 @@ where
                 .await
                 .map_err(|_| {
                     ProxyConnectionError::Upstream(anyhow::anyhow!(
-                        "Timed out waiting for upstream TACACS+ round trip after {timeout:?}"
+                        "The TACACS+ server did not complete a round trip within {timeout:?}"
                     ))
                 })?
                 .map_err(|error| {
                     ProxyConnectionError::Upstream(
-                        error.context("Failed to complete upstream TACACS+ round trip"),
+                        error.context("Failed to complete a TACACS+ server round trip"),
                     )
                 })?;
         let action = reply_action(&upstream_reply);
@@ -340,7 +338,7 @@ where
             .await
             .map_err(|_| {
                 ProxyConnectionError::Downstream(anyhow::anyhow!(
-                    "Downstream TACACS+ reply writer closed"
+                    "The downstream TACACS+ reply writer stopped"
                 ))
             })?;
 
@@ -348,7 +346,7 @@ where
             ReplyAction::Continue => {}
             ReplyAction::Complete => return Ok(()),
             ReplyAction::Unsupported(status) => {
-                log::warn!("Closing TACACS+ proxy session after unsupported reply status {status}");
+                log::warn!("Closing the TACACS+ proxy session because reply status {status} is not supported");
                 return Ok(());
             }
         }
@@ -412,7 +410,7 @@ where
     let mut downstream_session_id = None;
     let upstream_session_id = upstream_conversation.session_id().ok_or_else(|| {
         ProxyConnectionError::Upstream(anyhow::anyhow!(
-            "Upstream TACACS+ conversation completed before proxy session started"
+            "The TACACS+ server session completed before the proxy session started"
         ))
     })?;
 
@@ -429,7 +427,7 @@ where
         match downstream_session_id {
             Some(expected) if expected != packet_session_id => {
                 return Err(ProxyConnectionError::Downstream(anyhow::anyhow!(
-                    "TACACS+ proxy connection attempted session id {packet_session_id:#x} after starting session {expected:#x}"
+                    "TACACS+ proxy connection used session ID {packet_session_id:#x} after it started session {expected:#x}"
                 )));
             }
             Some(_) => {}
@@ -438,7 +436,8 @@ where
             }
         }
 
-        let downstream_session_id = downstream_session_id.expect("session id was just set");
+        let downstream_session_id =
+            downstream_session_id.expect("the downstream session ID must be set");
         let upstream_packet = rewrite_session_id(downstream_packet, upstream_session_id);
 
         let upstream_reply =
@@ -446,12 +445,12 @@ where
                 .await
                 .map_err(|_| {
                     ProxyConnectionError::Upstream(anyhow::anyhow!(
-                        "Timed out waiting for upstream TACACS+ round trip after {timeout:?}"
+                        "The TACACS+ server did not complete a round trip within {timeout:?}"
                     ))
                 })?
                 .map_err(|error| {
                     ProxyConnectionError::Upstream(
-                        error.context("Failed to complete upstream TACACS+ round trip"),
+                        error.context("Failed to complete a TACACS+ server round trip"),
                     )
                 })?;
 
@@ -466,7 +465,7 @@ where
                 return Ok(());
             }
             ReplyAction::Unsupported(status) => {
-                log::warn!("Closing TACACS+ proxy session after unsupported reply status {status}");
+                log::warn!("Closing the TACACS+ proxy session because reply status {status} is not supported");
                 return Ok(());
             }
         }
@@ -539,7 +538,7 @@ mod tests {
                 .lock()
                 .await
                 .pop_front()
-                .ok_or_else(|| anyhow::anyhow!("missing fake proxy reply"))
+                .ok_or_else(|| anyhow::anyhow!("The fake proxy reply is missing"))
         }
 
         async fn complete(&mut self) {
@@ -560,7 +559,7 @@ mod tests {
                 .lock()
                 .await
                 .pop_front()
-                .ok_or_else(|| anyhow::anyhow!("missing fake proxy conversation"))
+                .ok_or_else(|| anyhow::anyhow!("The fake proxy session is missing"))
         }
     }
 
@@ -568,14 +567,14 @@ mod tests {
         stream
             .write_all(&packet.to_bytes())
             .await
-            .expect("packet should write");
+            .expect("the packet write must succeed");
     }
 
     async fn read_packet(stream: &mut tokio::io::DuplexStream) -> Packet {
         let reader = PacketReader::new(None);
         match reader.read_packet(stream).await {
             PacketReadResult::Success(packet) => packet,
-            _ => panic!("packet should read"),
+            _ => panic!("the packet read must succeed"),
         }
     }
 
@@ -811,7 +810,7 @@ mod tests {
             &mut fake_session,
         )
         .await
-        .expect("proxy connection should complete");
+        .expect("the proxy connection must complete");
 
         let (received_len, received_session_id, received_body) = {
             let received_packets = fake_session.received_packets.lock().await;
@@ -856,7 +855,7 @@ mod tests {
             &mut fake_session,
         )
         .await
-        .expect("proxy connection should complete");
+        .expect("the proxy connection must complete");
 
         let downstream_reply = read_packet(&mut client_stream).await;
         assert!(downstream_reply
@@ -891,7 +890,7 @@ mod tests {
             &mut fake_session,
         )
         .await
-        .expect("proxy connection should complete");
+        .expect("the proxy connection must complete");
 
         let (received_len, received_session_id, received_flags, received_body) = {
             let received_packets = fake_session.received_packets.lock().await;
@@ -950,9 +949,9 @@ mod tests {
 
         match result {
             Err(ProxyConnectionError::Downstream(error)) => {
-                assert!(error.to_string().contains("attempted session id"));
+                assert!(error.to_string().contains("used session ID"));
             }
-            _ => panic!("expected downstream session-id rejection"),
+            _ => panic!("the proxy must reject the downstream session ID"),
         }
 
         let (received_len, received_session_id) = {

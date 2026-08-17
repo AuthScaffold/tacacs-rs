@@ -1,6 +1,6 @@
 # Developer Documentation
 
-This document covers development workflows, CI/CD, and release processes for tacacs-rs.
+This document describes the development, CI, and release processes for tacacs-rs.
 
 ## Table of Contents
 
@@ -41,9 +41,9 @@ cargo install cargo-audit
 cargo install cargo-cyclonedx
 ```
 
-### Generating SBOM Locally
+### Generate an SBOM locally
 
-To generate a Software Bill of Materials (SBOM) for compliance purposes:
+Run these commands to generate a Software Bill of Materials (SBOM):
 
 ```bash
 # Generate SBOM in JSON format (CycloneDX standard)
@@ -58,7 +58,7 @@ cargo cyclonedx --format xml --all --all-features
 # - libraries/tacacsrs_networking/tacacsrs-networking.cdx.json
 ```
 
-SBOMs are automatically generated and included with all releases.
+The release pipeline generates SBOMs and includes them with each release.
 
 ## Development Setup
 
@@ -76,11 +76,11 @@ cargo test --workspace
 
 ### Building with OpenSSL-backed TLS
 
-The `tacacsrs_networking` library uses dynamically linked OpenSSL for certificate-based TLS. Optional TLS 1.3 Pre-Shared Key support remains behind the `psk` feature flag and uses additional OpenSSL APIs.
+The `tacacsrs_networking` library uses dynamically linked OpenSSL for certificate-based TLS. The `psk` feature adds TLS 1.3 pre-shared key support.
 
 #### Linux
 
-Install the OpenSSL development libraries from your distribution's package manager:
+Install the OpenSSL development libraries with the package manager for your distribution:
 
 ```bash
 # Debian/Ubuntu
@@ -95,24 +95,24 @@ cargo build --workspace
 
 #### Windows
 
-A pre-built OpenSSL installation is required. The recommended approach is to use [vcpkg](https://vcpkg.io/) to install OpenSSL.
+A prebuilt OpenSSL installation is required. Use [vcpkg](https://vcpkg.io/) to install OpenSSL.
 
 ##### Installing OpenSSL with vcpkg (Recommended)
 
-1. Follow the [vcpkg getting started instructions](https://learn.microsoft.com/en-us/vcpkg/get_started/get-started) to install vcpkg.
+1. Use the [vcpkg getting started instructions](https://learn.microsoft.com/en-us/vcpkg/get_started/get-started) to install vcpkg.
 2. Install OpenSSL:
 
    ```powershell
    vcpkg install openssl
    ```
 
-3. Set your environment variables to point to the vcpkg-installed OpenSSL directory:
+3. Set the environment variable to the OpenSSL directory:
 
    ```powershell
    $env:OPENSSL_DIR = "X:\vcpkg\installed\x64-windows"
    ```
 
-   Adjust the path to match your vcpkg installation location. The directory must contain `include/openssl` and `lib` subdirectories.
+   Change the path for your vcpkg installation. Make sure that the directory contains the `include/openssl` and `lib` subdirectories.
 
 4. Build:
 
@@ -120,18 +120,18 @@ A pre-built OpenSSL installation is required. The recommended approach is to use
    cargo build --workspace
    ```
 
-Set `OPENSSL_DIR` permanently via **System Properties → Environment Variables** so it persists across terminals.
+Set `OPENSSL_DIR` through **System Properties → Environment Variables** to make the value available in new terminals.
 
 ##### Manual OpenSSL installation
 
-If you prefer not to use vcpkg, you can point to any pre-built OpenSSL installation by setting the following environment variables:
+To use a different prebuilt OpenSSL installation, set these environment variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `OPENSSL_DIR` | Root of the OpenSSL installation (must contain an `include/openssl` subdirectory) | `C:\development\tools\openssl` |
 | `OPENSSL_LIB_DIR` | Directory containing `libssl.lib` and `libcrypto.lib` | `C:\development\tools\openssl\lib\VC\x64\MD` |
 
-> **Note:** Use the **MD** (Multi-threaded DLL) variant of the OpenSSL libraries. Rust's MSVC toolchain links against the dynamic C runtime, which must match the OpenSSL build. Using MT, MDd, or MTd variants will cause linker errors or runtime issues.
+> **Note:** Use the **MD** (Multi-threaded DLL) variant of the OpenSSL libraries. The Rust MSVC toolchain links to the dynamic C runtime. The OpenSSL build must use the same runtime. Other variants cause linker errors or runtime errors.
 
 ```powershell
 $env:OPENSSL_DIR     = "C:\development\tools\openssl"
@@ -158,7 +158,9 @@ cargo test -p tacacsrs-messages
 
 ### Session Wrapper Smoke Tests
 
-The Linux `session-wrapper` has additional smoke and integration checks for seccomp notification handling, child lifecycle, and descendant process coverage. See [Session Wrapper Testing](docs/session-wrapper-testing.md).
+The Linux `session-wrapper` has more smoke tests and integration tests. These tests cover seccomp notifications, child processes, and descendant processes.
+
+For the test procedure, read [Session Wrapper Testing](docs/session-wrapper-testing.md).
 
 ### Code Coverage
 
@@ -174,7 +176,7 @@ cargo llvm-cov --workspace --all-features --html
 
 ### Formatting
 
-We use nightly rustfmt for additional formatting options (see `rustfmt.toml`).
+The project uses nightly rustfmt because `rustfmt.toml` enables unstable formatting options.
 
 ```bash
 # Check formatting
@@ -210,7 +212,7 @@ The `libraries/tacacsrs_config` crate contains generated Rust types that mirror 
 
 ### Prerequisites
 
-Install the checked-in generator requirements before regenerating artifacts:
+Before you generate artifacts, install the generator requirements:
 
 ```bash
 cd libraries/tacacsrs_config/yang
@@ -226,7 +228,9 @@ cd libraries/tacacsrs_config/yang
 python expand_yang_tree.py --features-ini feature-flags.ini > expanded-tree.txt
 ```
 
-This refreshes `expanded-tree.txt`, the checked-in reference used to inspect the fully expanded YANG data tree after all `uses` statements and repo-local YANG augmentations under `modules/` are resolved.
+This command updates `expanded-tree.txt`. This checked-in file shows the expanded YANG data tree.
+
+The tree includes all resolved `uses` statements and local YANG augmentations from `modules/`.
 
 ### Regenerate Rust types
 
@@ -241,11 +245,15 @@ python expand_yang_tree.py \
 cp generated_types.rs ../src/generated.rs
 ```
 
-`expand_yang_tree.py` fetches the upstream IETF YANG modules and passes local project modules from `libraries/tacacsrs_config/yang/modules/` to `pyang`. The `feature-flags.ini` file controls both upstream features and project features such as `tacacsrs:psk-dhe-ke-hello-params`.
+`expand_yang_tree.py` gets the upstream IETF YANG modules. It passes the local modules from `libraries/tacacsrs_config/yang/modules/` to `pyang`.
 
-The upstream `YangModels/yang` commit is pinned in `expand_yang_tree.py` and recorded with source/input/output SHA-256 values in `generation-manifest.json`. The cache must be a detached HEAD at that exact commit. Use `--clean` to deliberately replace a stale cache; the generator never silently uses another revision.
+The `feature-flags.ini` file controls upstream and project features. Project features include `tacacsrs:psk-dhe-ke-hello-params`.
 
-Verify source identity, manifest hashes, two-run determinism, and checked-in output before committing generated changes:
+`expand_yang_tree.py` pins the upstream `YangModels/yang` commit. `generation-manifest.json` records this commit and the SHA-256 values for the source, input, and output.
+
+The cache must use a detached HEAD at the specified commit. Use `--clean` to replace an old cache. The generator does not use a different revision.
+
+Before you commit generated changes, run:
 
 ```bash
 cd libraries/tacacsrs_config/yang
@@ -253,68 +261,73 @@ python -m unittest -v test_expand_yang_tree.py
 python verify_generated.py --clean
 ```
 
-The verifier compares canonical LF content so Windows and Linux checkouts produce the same result. `.gitattributes` keeps generation inputs and outputs at LF. Do not recreate `feature-flags.ini` with `--list-features` without reviewing every value because that command emits all discovered features as enabled and can erase deliberate `false` selections.
+The verifier compares canonical LF content. Thus, Windows and Linux checkouts produce the same result.
 
-The reviewed feature map enables RFC 9950 central keystore and central truststore support. Generated direct and bundled model paths include:
+`.gitattributes` keeps generation inputs and outputs at LF. Do not recreate `feature-flags.ini` with `--list-features` before you review each value.
 
-- structured central asymmetric-key and certificate references for client certificate identity;
-- a central symmetric-key reference for TLS 1.3 EPSK while preserving identity, hash, context, target, and group fields;
-- central CA and end-entity certificate-bag references for server authentication.
+That command enables all discovered features. It can remove intentional `false` selections.
 
-Do not hand-edit these shapes in `src/generated.rs`. `tacacsrs-config` validates generated inline-versus-central choices and preserves central values as opaque strings. It expands only config-local bundles. `tacacsrs-credential-resolution` owns provider-neutral request planning, secret-safe material, and closed result matching. SONiC reference grammar, filesystem retrieval, watching, permission checks, refresh policy, and runtime networking projection belong to the P3 provider/integration layer.
+The reviewed feature map enables RFC 9950 central keystore and truststore support. The generated model paths include:
 
-After regenerating, run the workspace formatting, clippy, build, and test commands before committing to ensure the emitted code still matches repository expectations.
+- structured central asymmetric-key and certificate references for the client certificate identity
+- a central symmetric-key reference for TLS 1.3 EPSK that preserves identity, hash, context, target, and group fields
+- central CA and end-entity certificate-bag references for server authentication
+
+Do not edit these shapes in `src/generated.rs`. `tacacsrs-config` validates inline and central choices. It preserves central values as opaque strings and expands only local bundles.
+
+`tacacsrs-credential-resolution` owns provider-neutral request planning. It also owns secret-safe material and closed result matching.
+
+The P3 provider and integration layer owns the SONiC-specific functions. These functions include reference grammar, file retrieval, watching, permissions, refresh policy, and runtime connection projection.
+
+After you generate the code, run the workspace formatting, clippy, build, and test commands. Then commit the changes.
 
 ## CI/CD Overview
 
 ### Pull Request Workflow
 
-When you open a PR, the following checks run automatically:
+When you open a pull request, these jobs run:
 
 | Job | Description |
 |-----|-------------|
-| **Rustfmt** | Code formatting check |
+| **Rustfmt** | Rust formatting validation |
 | **Clippy** | Linting and static analysis |
 | **Test** | Run tests on Linux and Windows |
-| **Build** | Verify compilation for all targets |
+| **Build** | Builds all targets |
 | **Build Artifacts** | Build release binaries for all platforms (same as release) |
 | **SBOM** | Generate Software Bill of Materials (same as release) |
 | **Checksums** | Generate SHA256 checksums for all artifacts |
-| **Documentation** | Ensure docs build without warnings |
+| **Documentation** | Builds documentation without warnings |
 | **Coverage** | Generate and upload code coverage |
-| **Security Audit** | Check for known vulnerabilities (when deps change) |
+| **Security Audit** | Finds known vulnerabilities after dependency changes |
 
-All jobs must pass before merging.
+All jobs must pass before you merge the pull request.
 
-**Note:** The PR workflow now outputs all compiled assets identical to what the release build produces, including binaries for all platforms, SBOM files, and checksums. This ensures parity between CI and release environments.
+**Note:** The pull request workflow produces the same compiled assets as the release build. These assets include binaries, SBOM files, and checksums.
 
 ### Main Branch CI
 
-After merging to `main`, additional checks run:
+After a merge to `main`, these additional checks run:
 
 - Test matrix (stable)
 - Documentation link verification
 
-The CI workflow also generates the same artifacts as the release workflow:
+The CI workflow generates the same artifacts as the release workflow:
 
-- **Release Binaries**: Built for all supported platforms (Linux GNU and Windows MSVC) plus GNU Debian packages for `tacon`, `tacacsrs-agentd`, and `tacacsrs-bash-plugin`
-- **SBOM Files**: Software Bill of Materials in CycloneDX format (JSON and XML)
-- **Checksums**: SHA256 checksums for all generated artifacts
+- **Release Binaries**: Linux GNU and Windows MSVC binaries, plus GNU Debian packages for `tacon`, `tacacsrs-agentd`, and `tacacsrs-bash-plugin`
+- **SBOM Files**: Software Bill of Materials files in CycloneDX JSON and XML formats
+- **Checksums**: SHA-256 checksums for all generated artifacts
 
-These artifacts are uploaded and retained for 7 days, allowing for testing and validation before official releases.
+GitHub stores these artifacts for seven days. You can use them for tests before an official release.
 
-For CI, LDE, documentation, or other non-release changes that should not create
-new version tags, add a `norelease`, `no-release`, or `skip-release` label to
-the merged PR. You can also include `[norelease]`, `[no-release]`, or
-`[skip-release]` in the head commit message. Main branch CI still runs, but it
-skips release version injection, tag creation, and GitHub release publication.
-It also skips updates to the generated `release/versions` branch.
+For nonrelease changes, add a `norelease`, `no-release`, or `skip-release` label to the pull request. You can also add `[norelease]`, `[no-release]`, or `[skip-release]` to the head commit.
+
+Main branch CI still runs. It does not inject release versions, create tags, publish a GitHub release, or update `release/versions`.
 
 ### Release Workflow
 
-Main branch CI is the release workflow. On a push to `main`, GitHub Actions:
+Main branch CI is the release workflow. After a push to `main`, GitHub Actions:
 
-1. Checks the release policy. `[norelease]`, `[no-release]`, `[skip-release]`, or matching PR labels skip release outputs while still running CI.
+1. Applies the release policy. `[norelease]`, `[no-release]`, `[skip-release]`, or matching pull request labels skip release outputs.
 2. Computes versions from existing git tags with `.github/steps/compute-versions`.
 3. Injects the computed version map into `Cargo.toml` files in CI before official builds.
 4. Builds release binaries, Debian packages, SBOMs, checksums, and release assets.
@@ -326,8 +339,7 @@ Main branch CI is the release workflow. On a push to `main`, GitHub Actions:
 
 ### Version Management
 
-Committed package manifests on `main` use `0.0.0-dev`. Do not add a follow-up
-version commit to `main` during normal development or release work.
+Package manifests on `main` use `0.0.0-dev`. Do not add a version commit to `main` during normal development or release work.
 
 Real release versions are derived from git tags:
 
@@ -335,38 +347,42 @@ Real release versions are derived from git tags:
 - Executables receive CalVer versions of the form `YYYY.MMDD.BUILD` and tags of the form `<binary>-YYYY.MMDD.BUILD`.
 - `tacacsrs-agentd` shares the primary `tacon` CalVer version in the current release workflow.
 
-The official build pipeline injects the computed version map before compiling and packaging. This keeps Cargo metadata, CLI version output, Debian package versions, and release assets consistent without committing release versions back to `main`.
+The official pipeline injects the computed version map before the build and packaging steps. It does not commit release versions to `main`.
 
 ### Release Versions Branch
 
-The `release/versions` branch is a generated source branch for consumers who want to clone and build with released Cargo package versions already populated.
+The generated `release/versions` branch contains released Cargo package versions. Use this branch to build released source.
 
-Release automation creates or rewrites that branch after successful release tagging. The release tags remain on the original `main` commit; the generated version commit exists only on `release/versions` and is not merged back to `main`.
+Release automation creates or rewrites this branch after successful release tagging. The release tags stay on the original `main` commit.
+
+The generated version commit exists only on `release/versions`. Automation does not merge it into `main`.
 
 Use `release/versions` for clone-and-build release source checkouts. Use `main` for development.
 
 ### Release Process
 
-1. Merge the development change to `main`.
+1. Merge the development changes into `main`.
 2. Main CI computes release versions from the previous tags and the changed crate paths.
-3. If there are release changes and CI succeeds, the release job creates the new tags and GitHub Release.
+3. If release changes exist and CI succeeds, the release job creates the new tags and GitHub Release.
 4. The same release job updates `release/versions` with the computed final versions injected into `Cargo.toml`.
 
-For CI, LDE, documentation, or other non-release changes, use the no-release labels or commit markers described above.
+For CI, LDE, documentation, or other nonrelease changes, use the no-release labels or commit markers.
 
 ### Pre-release Versions
 
-Pull request CI computes `dev` pre-release versions and injects them into the CI checkout before building artifacts. These versions are for validation artifacts only. They are not tagged, committed, or pushed to `release/versions`.
+Pull request CI computes `dev` prerelease versions. It injects these versions into the CI checkout before the build.
+
+These versions apply only to validation artifacts. CI does not tag, commit, or push them to `release/versions`.
 
 ### Troubleshooting Releases
 
-**Unexpected release tags would be created?**
+**Unexpected release tags**
 
-Add a `norelease`, `no-release`, or `skip-release` label to the PR before merging, or include `[norelease]`, `[no-release]`, or `[skip-release]` in the head commit message.
+Before you merge, add a `norelease`, `no-release`, or `skip-release` label to the pull request. You can also add `[norelease]`, `[no-release]`, or `[skip-release]` to the head commit.
 
 **Tag already exists?**
 
-Delete the conflicting local and remote tag, then rerun the release workflow only after confirming the tag was created by mistake.
+First, make sure that the tag was created by mistake. Then remove the conflicting local and remote tag, and run the release workflow again.
 
 ```bash
 git tag -d <tag-name>
@@ -375,7 +391,9 @@ git push origin :refs/tags/<tag-name>
 
 **`release/versions` failed to update?**
 
-Check whether branch protection allows `github-actions[bot]` to update or force-update the generated branch. If protection is required, add an exception for the release workflow or update the branch through an approved automation token.
+Make sure that branch protection lets `github-actions[bot]` update the generated branch. If protection is required, add an exception for the release workflow.
+
+You can instead update the branch with an approved automation token.
 
 ## Project Structure
 

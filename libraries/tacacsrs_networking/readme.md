@@ -26,7 +26,7 @@ let reply = conversation.round_trip(request).await?;
 ```
 
 `round_trip` enforces one outstanding packet, one session ID and packet type,
-and odd/even sequence progression. RFC 8907 sequence numbers never wrap; a
+and odd/even sequence progression. RFC 8907 sequence numbers never wrap. A
 conversation must restart with a new session ID after exhaustion.
 
 ASCII authentication is intentionally absent from the typed fixed API. The raw
@@ -56,34 +56,35 @@ execute(exchange)
 Conversations register a bounded per-session inbox instead. Only interactive
 and proxy traffic pays that channel cost.
 
-Unknown or late replies are ignored after cancellation. A metadata mismatch on
-an active route is a protocol violation and closes the shared connection.
-Reader or writer failure stops admission and closes all routes so every waiter
-observes connection failure. Shared connection recovery is serialized to avoid
-simultaneous reconnect probes.
+The reader ignores unknown or late replies after cancellation. A metadata
+mismatch on an active route is a protocol violation and closes the shared
+connection. Reader or writer failure stops admission and closes all routes so
+every waiter observes connection failure. Networking serializes shared
+connection recovery to avoid simultaneous reconnect probes.
 
 Cancellation after outbound enqueue has an indeterminate distributed outcome:
-the server may already have processed the request. Networking does not replay
-an in-flight accounting, authorization, or authentication operation
-automatically.
+the server can process the request before the cancellation reaches it.
+Networking does not automatically replay an in-flight accounting,
+authorization, or authentication operation.
 
 ## Dedicated Fallback
 
-When single-connect is disabled, denied by the server, or being negotiated by
-another request, a fixed exchange uses a dedicated TCP/TLS stream. The same
-exchange descriptor and response validation apply. A successful capability
-probe can promote its completed dedicated stream into the shared runtime.
+When single-connect is disabled, denied by the server, or already claimed by
+another in-flight negotiation, a fixed exchange uses a dedicated TCP/TLS
+stream. The same exchange descriptor and response validation apply. A
+successful capability probe can promote its completed dedicated stream into
+the shared runtime.
 
 ## Packet Ownership
 
-Packet bodies are exposed as byte slices, formatted as redacted metadata, and
-zeroized on drop. Obfuscation and deobfuscation mutate owned bodies in place.
-The writer emits the 12-byte header and body separately rather than allocating
-a second combined packet buffer.
+Networking exposes packet bodies as byte slices, formats them as redacted
+metadata, and zeroizes them on drop. Obfuscation and deobfuscation mutate
+owned bodies in place. The writer emits the 12-byte header and body
+separately rather than allocating a second combined packet buffer.
 
 TACACS+ shared-secret obfuscation is not confidentiality. PAP is allowed over
-the operator-configured transport for interoperability, but production
-deployments should use TACACS+ over TLS 1.3.
+the operator-configured transport for interoperability. Prefer TACACS+ over TLS
+1.3 for production deployments.
 
 ## Baseline
 

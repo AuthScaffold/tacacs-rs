@@ -8,7 +8,7 @@ permissions:
   contents: read
   packages: read
 
-# Cancel in-progress runs for the same PR
+# Cancel active runs for the same pull request.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -35,7 +35,7 @@ jobs:
           pre-release: dev
 
   pipeline:
-    name: PR Pipeline
+    name: Pull Request Pipeline
     needs: [compute-versions]
     uses: ./.github/workflows/reusable-pipeline.yml
     permissions:
@@ -61,6 +61,6 @@ jobs:
     needs: [pipeline]
     if: always()
     steps:
-      - name: Check pipeline result
+      - name: Make sure that the pipeline succeeded
         if: needs.pipeline.result != 'success'
         run: exit 1

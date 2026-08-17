@@ -1,5 +1,5 @@
 name: Prepare Debian Package Assets
-description: Prepare binaries, SBOMs, man page, and Debian changelog assets for cargo-deb
+description: Prepare binaries, SBOMs, a man page, and Debian changelog assets for cargo-deb
 
 inputs:
   target:
@@ -32,9 +32,9 @@ runs:
         cp "$PACKAGE_DIR/${SBOM_BASENAME}.json" "${{ inputs.package-root }}/debian/sbom.json"
         cp "$PACKAGE_DIR/${SBOM_BASENAME}.xml" "${{ inputs.package-root }}/debian/sbom.xml"
 
-        # Copy any additional binaries built alongside the primary artifact.
-        # These are binaries defined in src/bin/ of the package that are not
-        # the primary artifact. cargo-deb expects them in target/release/.
+        # Copy each additional binary that was built with the primary artifact.
+        # The package defines these binaries in src/bin/. They are not the
+        # primary artifact. cargo-deb expects them in target/release/.
         PKG_BIN_DIR="${{ inputs.package-root }}/src/bin"
         if [[ -d "$PKG_BIN_DIR" ]]; then
           for RS_FILE in "$PKG_BIN_DIR"/*.rs; do
@@ -75,10 +75,10 @@ runs:
             fi
           done
           if [ -z "$MAN_PAGE" ]; then
-            echo "Error: Generated man page not found for $MAN_PAGE_NAME"
+            echo "Error: No generated man page exists for $MAN_PAGE_NAME."
             exit 1
           fi
-          echo "Found man page at: $MAN_PAGE"
+          echo "Man page: $MAN_PAGE"
           cp "$MAN_PAGE" "${PKG_DIR}/debian/${MAN_PAGE_NAME}.1"
         fi
 
@@ -135,7 +135,7 @@ runs:
           } >> "$CHANGELOG"
         done
 
-        echo "Generated changelog ($(grep -c '^${PKG} ' "$CHANGELOG" || true) stanzas):"
+        echo "Changelog ($(grep -c '^${PKG} ' "$CHANGELOG" || true) stanzas):"
         cat "$CHANGELOG"
 
         cd "${PKG_DIR}/debian"

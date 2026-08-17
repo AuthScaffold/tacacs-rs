@@ -78,7 +78,7 @@ impl Drop for SharedFixedSession {
             });
         } else {
             log::warn!(
-                "Dropping fixed TACACS+ session {session_id:#x} without a Tokio runtime; registry cleanup could not be scheduled"
+                "Cannot schedule registry cleanup for dropped fixed TACACS+ session {session_id:#x}: no Tokio runtime is available"
             );
         }
     }

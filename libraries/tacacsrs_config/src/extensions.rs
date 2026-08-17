@@ -16,18 +16,18 @@ impl FromStr for PskDheKeSupportedGroup {
     }
 }
 
-/// Convenience helpers for runtime-oriented access to a TACACS+ server entry.
+/// Provides runtime access to a TACACS+ server entry.
 ///
-/// These helpers derive values from the generated YANG model without changing
-/// its round-trip semantics.
+/// These methods derive values from the generated YANG model without changing
+/// its round-trip behavior.
 pub trait TacacsPlusServerExt {
-    /// Returns the server socket address in host:port form, using brackets for IPv6.
+    /// Returns the server socket address in `host:port` form with brackets for IPv6.
     fn socket_address(&self) -> String;
 
     /// Returns the configured timeout as a `Duration`.
     fn timeout_duration(&self) -> Duration;
 
-    /// Returns the obfuscation key bytes when shared-secret mode is configured.
+    /// Returns the obfuscation key bytes when the server has a shared secret.
     fn obfuscation_key(&self) -> Option<Vec<u8>>;
 
     /// Returns true when the server uses any TLS-based configuration.

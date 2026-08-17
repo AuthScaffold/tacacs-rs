@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Run a command or script in the SONiC QEMU VM over SSH.
+    Runs a command or script in the SONiC QEMU VM over SSH.
 .DESCRIPTION
-    Uses key-based SSH to admin@127.0.0.1:2222 by default. This wrapper keeps
-    the SSH options consistent for Copilot and local smoke testing.
+    Uses SSH key authentication with admin@127.0.0.1:2222 by default.
+    This wrapper uses the same SSH options for Copilot and local smoke tests.
 .EXAMPLE
     .\lde\sonic-vm\Invoke-SonicCommand.ps1 "redis-cli -n 4 --scan --pattern 'TACPLUS*' | sort"
 .EXAMPLE
@@ -50,13 +50,13 @@ function Invoke-RemoteBashScript {
 
     & ssh @sshArgs $target $remoteCommand
     $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0 -and -not $AllowFailure) { throw "remote script failed with exit code $exitCode." }
+    if ($exitCode -ne 0 -and -not $AllowFailure) { throw "The remote script returned exit code $exitCode." }
 }
 
 if ($Interactive) {
     & ssh @sshArgs $target
     $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0 -and -not $AllowFailure) { throw "ssh failed with exit code $exitCode." }
+    if ($exitCode -ne 0 -and -not $AllowFailure) { throw "ssh returned exit code $exitCode." }
     return
 }
 
@@ -78,4 +78,4 @@ if ([string]::IsNullOrWhiteSpace($remoteCommand)) {
 
 & ssh @sshArgs $target $remoteCommand
 $exitCode = $LASTEXITCODE
-if ($exitCode -ne 0 -and -not $AllowFailure) { throw "remote command failed with exit code $exitCode." }
+if ($exitCode -ne 0 -and -not $AllowFailure) { throw "The remote command returned exit code $exitCode." }

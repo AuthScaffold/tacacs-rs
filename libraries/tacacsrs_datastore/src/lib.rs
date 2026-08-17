@@ -13,10 +13,9 @@ use tokio_stream::StreamExt;
 
 /// Description of how the configuration changed between two snapshots.
 ///
-/// Each [`ConfigChange`] carries the complete new [`TacacsPlus`] snapshot.
-/// Consumers should treat that snapshot as authoritative and use this delta as
-/// a decision aid: apply an incremental update when the delta is simple enough,
-/// or rebuild from the full snapshot when that is safer.
+/// Each [`ConfigChange`] contains the complete new [`TacacsPlus`] snapshot.
+/// Consumers must treat the snapshot as authoritative. They can use this delta
+/// for an incremental update or rebuild from the snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigDelta {
     /// Server names present in the new snapshot but not in the previous one.
@@ -25,15 +24,14 @@ pub struct ConfigDelta {
     pub removed_servers: Vec<String>,
     /// Server names whose definitions changed between snapshots.
     pub modified_servers: Vec<String>,
-    /// Set when something other than the per-server table changed (for example
-    /// shared `client-credentials` / `server-credentials` bundles). When
-    /// `true`, consumers should treat the entire configuration as potentially
-    /// changed even if the server-level deltas are empty.
+    /// `true` when root data such as a shared credential bundle changed.
+    ///
+    /// If this field is `true`, consumers must use the complete configuration.
     pub root_metadata_changed: bool,
 }
 
 impl ConfigDelta {
-    /// Returns `true` if no server-level or root-level changes were detected.
+    /// Returns `true` if the delta contains no server-level or root-level changes.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.added_servers.is_empty()
@@ -42,12 +40,11 @@ impl ConfigDelta {
             && !self.root_metadata_changed
     }
 
-    /// Compute the delta between the previous snapshot and the new snapshot.
+    /// Computes the delta between the previous and new snapshots.
     ///
-    /// "Modified" is determined by structural inequality of the matching
-    /// [`tacacsrs_config::TacacsPlusServer`]; backends that wish to emit a
-    /// finer-grained change (for example a passkey rotation only) may
-    /// construct a [`ConfigDelta`] directly instead of calling this helper.
+    /// Structural inequality of matching
+    /// [`tacacsrs_config::TacacsPlusServer`] values means that a server changed.
+    /// A backend can construct [`ConfigDelta`] directly for a finer delta.
     #[must_use]
     pub fn diff(previous: Option<&TacacsPlus>, new: &TacacsPlus) -> Self {
         let Some(previous) = previous else {
@@ -91,17 +88,15 @@ impl ConfigDelta {
     }
 }
 
-/// Event broadcast by a [`ConfigDatastore`] when the upstream configuration
-/// changes.
+/// Configuration change from a [`ConfigDatastore`].
 ///
-/// Each event carries the full validated [`TacacsPlus`] snapshot so consumers
-/// receive monitor-style notifications: the payload is the latest complete
-/// configuration, and `delta` is a decision aid for incremental handling.
+/// Each event contains the latest complete, validated [`TacacsPlus`] snapshot.
+/// Consumers can use `delta` for incremental processing.
 #[derive(Debug, Clone)]
 pub struct ConfigChange {
     /// The new validated configuration.
     pub config: Arc<TacacsPlus>,
-    /// What the backend believes changed compared to the previous snapshot.
+    /// Changes that the backend detected from the previous snapshot.
     pub delta: ConfigDelta,
 }
 
@@ -110,16 +105,16 @@ pub struct ConfigChange {
 pub enum ConfigChangeEvent {
     /// A complete validated candidate snapshot is available.
     Changed(ConfigChange),
-    /// The datastore observed a change but rejected the resulting candidate.
+    /// The datastore detected a change but rejected the candidate.
     ///
-    /// Backends log their detailed error locally. The event intentionally
-    /// carries no error text or configuration value so health consumers cannot
-    /// expose addresses, credential references, or secrets.
+    /// Backends log the error locally. This event has no error text or
+    /// configuration value. Thus, health consumers cannot expose addresses,
+    /// credential references, or secrets.
     CandidateRejected,
     /// A validated host-binding setting changed but cannot be applied live.
     ///
-    /// The current bound resources remain active until process restart. No
-    /// configuration values are included in this event.
+    /// Bound resources stay active until the process restarts. This event does
+    /// not contain configuration values.
     RestartRequired {
         /// Whether the current validated settings differ from bound resources.
         required: bool,
@@ -173,21 +168,20 @@ impl DatastoreRuntimePolicy {
 
 /// Source of TACACS+ configuration for the agent runtime.
 ///
-/// Implementations supply the initial configuration via [`load`] and an
-/// asynchronous stream of subsequent updates via [`subscribe`]. Both calls
-/// return validated configurations: backends are responsible for translating
-/// vendor-specific formats into the YANG-aligned [`TacacsPlus`] structure and
-/// for failing the corresponding call when validation rejects the input.
+/// Implementations supply initial configuration through [`load`] and later
+/// events through [`subscribe`]. Backends translate vendor formats into the
+/// YANG-aligned [`TacacsPlus`] structure. They return an error when validation
+/// rejects input.
 ///
 /// [`load`]: ConfigDatastore::load
 /// [`subscribe`]: ConfigDatastore::subscribe
 #[async_trait]
 pub trait ConfigDatastore: Send + Sync + 'static {
-    /// Declares how the runtime should supervise this datastore instance.
+    /// Declares how the runtime must supervise this datastore.
     ///
-    /// This is an instance-level contract because a file-backed datastore may
-    /// be immutable when no referenced paths exist and continuously watched
-    /// when its effective configuration depends on files.
+    /// A file-backed datastore can be immutable when it has no referenced
+    /// paths. It requires continuous monitoring when configuration depends on
+    /// files.
     fn runtime_policy(&self) -> DatastoreRuntimePolicy;
 
     /// Returns the validation policy already used to accept source snapshots.
@@ -200,8 +194,8 @@ pub trait ConfigDatastore: Send + Sync + 'static {
 
     /// Load the current configuration snapshot.
     ///
-    /// Called once at startup and may be called again by callers that wish to
-    /// re-read the configuration without subscribing to change events.
+    /// The runtime calls this method at startup. Callers can use it again to
+    /// read the configuration without a subscription.
     ///
     /// # Errors
     ///
@@ -211,12 +205,11 @@ pub trait ConfigDatastore: Send + Sync + 'static {
 
     /// Subscribe to configuration change events.
     ///
-    /// The returned stream emits a [`ConfigChange`] each time the backend
-    /// observes a relevant change in the underlying store. Every event carries
-    /// the complete latest snapshot; callers may use the delta to choose an
-    /// incremental update path but should fall back to rebuilding from the
-    /// snapshot whenever the delta is not sufficient. Backends that cannot
-    /// deliver change notifications return an empty stream.
+    /// The stream emits a [`ConfigChangeEvent`] after each relevant datastore
+    /// change. Each [`ConfigChangeEvent::Changed`] event contains the latest
+    /// complete snapshot. Callers can use its delta for an incremental update.
+    /// If the delta is not sufficient, callers must rebuild from the snapshot.
+    /// Backends without notifications return an empty stream.
     ///
     /// # Errors
     ///
@@ -226,18 +219,17 @@ pub trait ConfigDatastore: Send + Sync + 'static {
     /// failing.
     async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream>;
 
-    /// Human-readable label describing the datastore implementation.
+    /// Returns a human-readable label for the datastore implementation.
     ///
-    /// Used in operator logs to disambiguate which datastore the agent is
-    /// running against (for example, `"static"`, `"sonic-configdb"`).
+    /// Operator logs use this label to identify the datastore, for example
+    /// `"static"` or `"sonic-configdb"`.
     fn label(&self) -> &'static str;
 }
 
 /// In-memory [`ConfigDatastore`] for CLI/file/test workflows.
 ///
-/// `StaticDatastore` holds a single `TacacsPlus` snapshot for the lifetime of
-/// the process. [`subscribe`](ConfigDatastore::subscribe) returns an empty
-/// stream because the configuration cannot change.
+/// `StaticDatastore` holds one `TacacsPlus` snapshot for the process lifetime.
+/// [`subscribe`](ConfigDatastore::subscribe) returns an empty stream.
 #[derive(Debug, Clone)]
 pub struct StaticDatastore {
     config: Arc<TacacsPlus>,
@@ -245,16 +237,15 @@ pub struct StaticDatastore {
 }
 
 impl StaticDatastore {
-    /// Create a new static datastore backed by an already-validated config.
+    /// Creates a static datastore with validated configuration.
     #[must_use]
     pub fn new(config: TacacsPlus) -> Self {
         Self::with_label(config, "static")
     }
 
-    /// Create a new static datastore with a caller-supplied label.
+    /// Creates a static datastore with a caller-supplied label.
     ///
-    /// The label is reported by [`ConfigDatastore::label`] and intended for
-    /// operator logs (for example `"file"` or `"cli"`).
+    /// [`ConfigDatastore::label`] returns this label for operator logs.
     #[must_use]
     pub fn with_label(config: TacacsPlus, label: &'static str) -> Self {
         Self {
@@ -283,13 +274,11 @@ impl ConfigDatastore for StaticDatastore {
     }
 }
 
-/// Helper for backends that publish updates through a `tokio::sync::watch`
-/// channel.
+/// Converts a `tokio::sync::watch` channel into a change stream.
 ///
-/// The first value sent on the channel is treated as the initial snapshot and
-/// is not republished as a change. Subsequent updates are emitted as
-/// [`ConfigChange`] values with deltas computed against the previously
-/// observed snapshot.
+/// The first channel value is the initial snapshot. The stream does not publish
+/// it as a change. Later updates contain a [`ConfigChange`] with a delta from
+/// the previous snapshot.
 #[must_use]
 pub fn watch_to_change_stream(
     receiver: watch::Receiver<Option<Arc<TacacsPlus>>>,
@@ -322,14 +311,14 @@ mod tests {
                     .with_shared_secret("topsecret"),
             )
             .build()
-            .expect("sample config should validate")
+            .expect("sample configuration must be valid")
     }
 
     #[tokio::test]
     async fn static_datastore_returns_config_and_empty_stream() {
         let config = sample_config("192.0.2.1");
         let store = StaticDatastore::new(config.clone());
-        let loaded = store.load().await.expect("load should succeed");
+        let loaded = store.load().await.expect("load must succeed");
         assert_eq!(loaded.server.len(), 1);
         assert_eq!(store.label(), "static");
         assert_eq!(
@@ -337,8 +326,8 @@ mod tests {
             DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None,)
         );
 
-        let mut stream = store.subscribe().await.expect("subscribe should succeed");
-        assert!(stream.next().await.is_none(), "static stream should be empty");
+        let mut stream = store.subscribe().await.expect("subscription must succeed");
+        assert!(stream.next().await.is_none(), "static stream must be empty");
     }
 
     #[test]
@@ -351,15 +340,15 @@ mod tests {
         );
 
         let mut new = sample_config("192.0.2.1");
-        // Modify primary
+        // Modify the primary server.
         new.server[0].timeout = 10;
-        // Add a tertiary server
+        // Add a tertiary server.
         new.server.push(
             TacacsPlusServerBuilder::new("tertiary", TacacsPlusServerType::all(), "192.0.2.3", 49)
                 .with_shared_secret("topsecret")
                 .build(),
         );
-        // Removed: secondary
+        // Remove the secondary server.
 
         let delta = ConfigDelta::diff(Some(&previous), &new);
         assert_eq!(delta.added_servers, vec!["tertiary"]);
@@ -415,7 +404,7 @@ mod tests {
                 }
             }"#,
         )
-        .expect("inline EPSK config should parse");
+        .expect("inline EPSK configuration must parse");
         let mut new = previous.clone();
         new.server[0]
             .client_identity
@@ -441,7 +430,7 @@ mod tests {
         let (tx, rx) = watch::channel(Some(Arc::clone(&initial)));
         let mut stream = watch_to_change_stream(rx);
 
-        // No update yet — initial value is the baseline, not a change.
+        // The initial value is the baseline, not a change.
         assert!(tokio::time::timeout(Duration::from_millis(25), stream.next())
             .await
             .is_err());
@@ -453,7 +442,7 @@ mod tests {
             .expect("send update");
 
         let ConfigChangeEvent::Changed(change) =
-            stream.next().await.expect("should receive change")
+            stream.next().await.expect("stream must provide a change")
         else {
             panic!("expected a changed event");
         };
@@ -474,7 +463,7 @@ mod tests {
         let ConfigChangeEvent::Changed(change) = stream
             .next()
             .await
-            .expect("should receive first real update")
+            .expect("stream must provide the first update")
         else {
             panic!("expected a changed event");
         };

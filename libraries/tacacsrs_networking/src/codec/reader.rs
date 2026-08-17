@@ -4,14 +4,14 @@ use tacacsrs_messages::packet::PacketTrait;
 use tacacsrs_messages::{header::Header, packet::Packet};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-/// Result of reading a packet from the stream.
+/// Result of reading a packet from a connection.
 #[derive(Debug)]
 pub enum PacketReadResult {
-    /// Successfully read and parsed a packet.
+    /// The packet was read and parsed.
     Success(Packet),
-    /// Failed to read header from stream (connection closed or error).
+    /// Reading the header failed because the connection closed or an error occurred.
     HeaderReadError(std::io::Error),
-    /// Failed to parse header bytes.
+    /// Parsing the header bytes failed.
     HeaderParseError(anyhow::Error),
     /// Body length exceeds maximum allowed size.
     BodyLengthExceeded {
@@ -22,12 +22,12 @@ pub enum PacketReadResult {
         /// The maximum allowed body length.
         max_length: u32,
     },
-    /// Failed to read body from stream.
+    /// Reading the body from the connection failed.
     BodyReadError {
         session_id: u32,
         error: std::io::Error,
     },
-    /// Failed to create packet from header and body.
+    /// Creating the packet from the header and body failed.
     PacketCreateError {
         session_id: u32,
         error: anyhow::Error,
@@ -40,7 +40,7 @@ pub struct PacketReader {
 }
 
 impl PacketReader {
-    /// Creates a new `PacketReader` with an optional obfuscation key.
+    /// Creates a `PacketReader` with an optional obfuscation key.
     ///
     /// # Arguments
     /// * `obfuscation_key` - Optional key used to deobfuscate incoming packets.
@@ -57,13 +57,13 @@ impl PacketReader {
     where
         Reader: AsyncRead + Unpin + ?Sized,
     {
-        // Read header
+        // Read the header.
         let mut header_buffer = [0_u8; TACACS_HEADER_LENGTH];
         if let Err(e) = reader.read_exact(&mut header_buffer).await {
             return PacketReadResult::HeaderReadError(e);
         }
 
-        // Parse header
+        // Parse the header.
         let header = match Header::from_bytes(&header_buffer) {
             Ok(header) => header,
             Err(e) => return PacketReadResult::HeaderParseError(e),
@@ -71,13 +71,13 @@ impl PacketReader {
 
         let session_id = header.session_id;
 
-        // Validate body length before allocation to prevent:
-        // 1. Memory exhaustion DoS attacks from malicious peers
-        // 2. Potential truncation issues on 32-bit platforms when casting to usize
+        // Check the body length before allocation. This check prevents:
+        // 1. Memory-exhaustion denial-of-service attacks from malicious peers.
+        // 2. Truncation on 32-bit platforms when the length is cast to usize.
         if header.length > TACACS_MAX_BODY_LENGTH {
             log::warn!(
                 target: "tacacsrs_networking::codec::reader::read_packet",
-                "Rejecting packet with excessive body length. Session ID: {}, Body length: {}, Max allowed: {}",
+                "Rejected packet with excessive body length: session ID {}, body length {}, maximum {}",
                 session_id, header.length, TACACS_MAX_BODY_LENGTH
             );
             return PacketReadResult::BodyLengthExceeded {
@@ -89,16 +89,15 @@ impl PacketReader {
 
         log::trace!(
             target: "tacacsrs_networking::codec::reader::read_packet",
-            "Received header with session id: {}. Loading body of length {}",
+            "Received header for session ID {}. Reading a body of {} bytes",
             session_id, header.length
         );
 
-        // Safe to cast to usize after validation:
-        // TACACS_MAX_BODY_LENGTH (65536) fits comfortably within usize on all platforms
-        // (even 16-bit platforms have usize >= 16 bits = 65536 max value)
+        // The check above makes this cast safe. TACACS_MAX_BODY_LENGTH (65536)
+        // fits in usize on all supported platforms.
         let body_length = header.length as usize;
 
-        // Read body
+        // Read the body.
         let mut body_buffer = vec![0_u8; body_length];
         if let Err(e) = reader.read_exact(&mut body_buffer).await {
             return PacketReadResult::BodyReadError {
@@ -109,10 +108,10 @@ impl PacketReader {
 
         log::trace!(
             target: "tacacsrs_networking::codec::reader::read_packet",
-            "Received body for session id: {session_id}"
+            "Received body for session ID {session_id}"
         );
 
-        // Create packet
+        // Create the packet.
         let mut packet = match Packet::new(header, body_buffer) {
             Ok(packet) => packet,
             Err(e) => {
@@ -123,7 +122,7 @@ impl PacketReader {
             }
         };
 
-        // Deobfuscate if needed
+        // Deobfuscate the packet when necessary.
         let is_packet_deobfuscated = packet
             .header()
             .flags
@@ -134,7 +133,7 @@ impl PacketReader {
                 packet = packet.to_deobfuscated(key);
                 log::trace!(
                     target: "tacacsrs_networking::codec::reader::read_packet",
-                    "Deobfuscated packet for session id: {session_id}"
+                    "Deobfuscated packet for session ID {session_id}"
                 );
             }
         }
@@ -181,25 +180,25 @@ mod tests {
                 assert_eq!(packet.header().session_id, 12345);
                 assert_eq!(packet.body(), &body);
             }
-            _ => panic!("Expected Success result"),
+            _ => panic!("expected a successful packet read"),
         }
     }
 
     #[tokio::test]
     async fn test_read_packet_header_read_error() {
-        // Empty reader - will fail to read header
+        // An empty reader cannot provide a header.
         let mut reader = Cursor::new(Vec::new());
         let packet_reader = PacketReader::new(None);
 
         match packet_reader.read_packet(&mut reader).await {
             PacketReadResult::HeaderReadError(_) => {}
-            _ => panic!("Expected HeaderReadError result"),
+            _ => panic!("expected HeaderReadError"),
         }
     }
 
     #[tokio::test]
     async fn test_read_packet_body_read_error() {
-        // Header says body is 100 bytes, but we only provide header
+        // The header specifies a 100-byte body, but the reader contains only the header.
         let header = create_test_header(12345, 100, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
         let header_bytes = header.to_bytes();
 
@@ -210,7 +209,7 @@ mod tests {
             PacketReadResult::BodyReadError { session_id, .. } => {
                 assert_eq!(session_id, 12345);
             }
-            _ => panic!("Expected BodyReadError result"),
+            _ => panic!("expected BodyReadError"),
         }
     }
 
@@ -218,7 +217,7 @@ mod tests {
     async fn test_read_packet_body_length_exceeded() {
         use tacacsrs_messages::constants::TACACS_MAX_BODY_LENGTH;
 
-        // Create a header with body length exceeding the maximum
+        // Create a header with a body length that exceeds the maximum.
         let excessive_length = TACACS_MAX_BODY_LENGTH + 1;
         let header =
             create_test_header(12345, excessive_length, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
@@ -237,7 +236,7 @@ mod tests {
                 assert_eq!(body_length, excessive_length);
                 assert_eq!(max_length, TACACS_MAX_BODY_LENGTH);
             }
-            _ => panic!("Expected BodyLengthExceeded result"),
+            _ => panic!("expected BodyLengthExceeded"),
         }
     }
 
@@ -245,7 +244,7 @@ mod tests {
     async fn test_read_packet_max_allowed_body_length() {
         use tacacsrs_messages::constants::TACACS_MAX_BODY_LENGTH;
 
-        // Test that exactly the maximum body length is accepted
+        // Make sure that the maximum body length is accepted.
         let header = create_test_header(
             12345,
             TACACS_MAX_BODY_LENGTH,
@@ -253,7 +252,7 @@ mod tests {
         );
         let header_bytes = header.to_bytes();
 
-        // Create a body of exactly max length
+        // Create a body with the maximum length.
         let body = vec![0x42_u8; TACACS_MAX_BODY_LENGTH as usize];
 
         let mut data = Vec::new();
@@ -268,7 +267,7 @@ mod tests {
                 assert_eq!(packet.header().session_id, 12345);
                 assert_eq!(packet.body().len(), TACACS_MAX_BODY_LENGTH as usize);
             }
-            _ => panic!("Expected Success result for max allowed body length"),
+            _ => panic!("expected success for the maximum body length"),
         }
     }
 }

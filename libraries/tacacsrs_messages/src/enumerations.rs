@@ -57,10 +57,9 @@ bitflags! {
     pub struct TacacsFlags: u8 {
         const TAC_PLUS_UNENCRYPTED_FLAG = 0x01;
         const TAC_PLUS_SINGLE_CONNECT_FLAG = 0x04;
-        // NOTE: The following custom flags use currently unassigned/reserved bits in the TACACS+
-        // header (0x40 and 0x80). They are non-standard, implementation-specific extensions and
-        // may cause interoperability issues with other TACACS+ implementations that interpret
-        // these bits differently in the future. See RFC 8907 and the TACACS+ specification.
+        // These nonstandard flags use TACACS+ header bits that RFC 8907
+        // reserves. Other TACACS+ implementations can reject these flags or
+        // interpret them differently.
         const TAC_PLUS_CUSTOM_FLAG_1 = 0x40;
         const TAC_PLUS_CUSTOM_FLAG_2 = 0x80;
     }
@@ -301,22 +300,25 @@ impl fmt::Display for TacacsAuthenticationMethod {
 #[repr(u8)]
 /// TACACS+ authorization reply status octet values.
 ///
-/// These values are carried in the `status` field of a TACACS+ authorization
-/// REPLY body as defined by RFC 8907 section 6.2.
+/// The `status` field of an authorization REPLY body contains one of these
+/// values. RFC 8907 section 6.2 defines the values.
 pub enum TacacsAuthorizationStatus {
-    /// `TAC_PLUS_AUTHOR_STATUS_PASS_ADD` (`0x01`) accepts the request and asks
-    /// the client to append the returned arguments to the submitted argument set.
+    /// `TAC_PLUS_AUTHOR_STATUS_PASS_ADD` (`0x01`) accepts the request.
+    ///
+    /// The client appends the returned arguments to the submitted arguments.
     TacPlusPassAdd = 0x01,
-    /// `TAC_PLUS_AUTHOR_STATUS_PASS_REPL` (`0x02`) accepts the request and asks
-    /// the client to replace the submitted argument set with returned arguments.
+    /// `TAC_PLUS_AUTHOR_STATUS_PASS_REPL` (`0x02`) accepts the request.
+    ///
+    /// The client replaces the submitted arguments with the returned arguments.
     TacPlusPassRepl = 0x02,
     /// `TAC_PLUS_AUTHOR_STATUS_FAIL` (`0x10`) denies the requested operation.
     TacPlusFail = 0x10,
-    /// `TAC_PLUS_AUTHOR_STATUS_ERROR` (`0x11`) reports that authorization could
-    /// not be completed because of a server-side or protocol processing error.
+    /// `TAC_PLUS_AUTHOR_STATUS_ERROR` (`0x11`) reports an authorization error.
+    ///
+    /// The server failed to process the request, or a protocol error occurred.
     TacPlusError = 0x11,
-    /// `TAC_PLUS_AUTHOR_STATUS_FOLLOW` (`0x21`) indicates deployment-specific
-    /// follow-up handling is needed.
+    /// RFC 8907 recommends treating deprecated
+    /// `TAC_PLUS_AUTHOR_STATUS_FOLLOW` (`0x21`) as an authentication failure.
     TacPlusFollow = 0x21,
 }
 

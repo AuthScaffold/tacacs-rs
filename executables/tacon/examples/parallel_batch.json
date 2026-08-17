@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "description": "Parallel execution batch - all requests run simultaneously",
+    "description": "This parallel batch runs all requests at the same time.",
     "parallel": true
   },
   "requests": [

@@ -16,11 +16,11 @@
 //!
 //! # Fork safety and the tokio runtime
 //!
-//! Linux `fork(2)` is not safe to call while a multi-threaded runtime is
-//! running because only the calling thread survives in the child, leaving
-//! other threads' locks permanently acquired.  This module creates the tokio
-//! runtime **after** `spawn_session` returns (i.e. after the fork has already
-//! happened and the child has exec'd).  The child never sees the runtime.
+//! Linux `fork(2)` is not safe to call while a multi-threaded runtime is running.
+//! Only the calling thread survives in the child process. The locks that other
+//! threads held remain permanently acquired. This module creates the tokio runtime
+//! **after** `spawn_session` returns. At that point, the fork already happened,
+//! and the child process already called `exec`. The child never sees the runtime.
 #![allow(unsafe_code)]
 
 #[path = "cli.rs"]

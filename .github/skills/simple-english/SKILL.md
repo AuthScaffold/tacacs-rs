@@ -33,7 +33,11 @@ When asked to write or rewrite technical text:
 5. **Do the self-check** before you deliver. This step is not optional.
 6. **Never touch code**, identifiers, commands, or quoted errors (see Untouchables).
 
-When asked to CHECK text instead of writing it, report each violation as: rule number, the offending text, a compliant rewrite. Cite only rule numbers that exist in this file. Do not cite rule numbers from memory: the numbering is unintuitive and models invent it (tested — an agent without this file cited "Rule 3.1: short sentences"; the real Rule 3.1 is about verb forms).
+When asked to CHECK text, report each violation. Include the rule number, the text, and a compliant rewrite.
+
+Cite only rule numbers that exist in this file. Do not cite rule numbers from memory. The numbering is unintuitive, and models invent it.
+
+For example, an agent cited "Rule 3.1: short sentences." The real Rule 3.1 is about verb forms.
 
 ## Two Modes
 
@@ -106,13 +110,13 @@ Break long noun chains with prepositions (of, on, in, for):
 | 3.7 | Describe an action with a verb, not a noun ("compress the file", not "perform compression of the file"). |
 
 **Approved modals: can, will, must. Banned: should, would, may, might, could.**
-The standard rejects "could" even for possibility: write "an explosion can occur", never "could occur". For "should": a requirement becomes "must"; a suggestion is stated as fact or deleted. This matters double for agent instructions — models read "should" as optional.
+The standard rejects "could" even for possibility: write "an explosion can occur", never "could occur". For "should": a requirement becomes "must." A suggestion is stated as fact or deleted. This matters double for agent instructions — models read "should" as optional.
 
 **Before:** The migration has completed and the table is being rebuilt.
 **After:** The migration is complete. The database rebuilds the table.
 
 **Before:** The flag can be set in the config file, making restarts unnecessary.
-**After:** You can set the flag in the config file. Then a restart is not necessary.
+**After:** You can set the flag in the configuration file. Then a restart is not necessary.
 
 **Before:** The temperature must be adjusted.
 **After:** Adjust the temperature.
@@ -143,7 +147,7 @@ Rule 4.2 is the anti-terseness rule. STE is short sentences with complete gramma
 | 5.5 | Notes give information, never instructions. Notes get the 25-word limit. |
 
 **Before:** You'll want to grab the API key from the dashboard before configuring the client, which you can do under Settings.
-**After:** Get the API key from the dashboard, under Settings. Then configure the client with this key.
+**After:** Get the API key from the dashboard, under the configuration section. Then configure the client with this key.
 
 ### Section 6 — Descriptive writing (Rules 6.1-6.6)
 
@@ -156,7 +160,7 @@ Rule 4.2 is the anti-terseness rule. STE is short sentences with complete gramma
 | 6.5 | One topic per paragraph. |
 | 6.6 | Maximum six sentences per paragraph. |
 
-No imperative in descriptive text. Descriptions explain; procedures instruct.
+No imperative in descriptive text. Descriptions explain. Procedures instruct.
 
 ### Section 7 — Safety instructions (Rules 7.1-7.3)
 
@@ -194,7 +198,17 @@ Rule 8.6 matters for software text: `sqlpipe run --config sqlpipe.yaml` in backt
 | 9.3 | Do not build phrasal verbs ("go down" → "decrease", "set up" → "install" or "configure"). |
 | 9.4 | Keep one consistent style and terminology through the whole document. |
 
-General recommendations GR-1 to GR-8: keep the conjunction "that", be careful with "with", give pronouns clear referents, prefer "this + noun" over bare "this", avoid false friends, avoid Latin abbreviations, use inclusive language, and use the possessive apostrophe form only when you are sure it is correct (GR-8: if unsure, do not use it — non-native readers find it hard).
+General recommendations GR-1 to GR-8 also apply:
+
+- Keep the conjunction "that."
+- Use "with" carefully.
+- Give each pronoun a clear referent.
+- Prefer "this + noun" to bare "this."
+- Avoid false friends and Latin abbreviations.
+- Use inclusive language.
+- Use the possessive apostrophe only when its meaning is clear.
+
+If the possessive apostrophe is not clear, do not use it. It is difficult for non-native readers.
 
 GR-6 for software docs: "e.g." → "for example", "i.e." → "that is", and delete "etc." — name the items or write "and more".
 
@@ -264,7 +278,7 @@ Collapse synonym rotations to one term each (Rules 1.11, 9.4). The two lists bel
 
 - config / configuration / settings / options → pick one
 
-**Dictionary rulings — the standard has already chosen. Use the approved word (strict mode); pick one and keep it consistent (pragmatic mode):**
+**Dictionary rulings — the standard has already chosen. Use the approved word in strict mode. In pragmatic mode, pick one and keep it consistent:**
 
 | You wrote | Dictionary status | Use instead |
 |---|---|---|
@@ -325,7 +339,14 @@ Fix what you find, then deliver. For a full audit, run `references/checklist.md`
 > 2. If the database is managed (RDS, Cloud SQL), make sure that the instance accepts connections from the IP of sqlpipe.
 > 3. If the network is slow, increase `source.connect_timeout_seconds` in the configuration.
 
-What changed: 40-word sentences split under 20; "you're" expanded; "check/confirm" collapsed to "make sure that"; every condition moved before its command; "etc." removed; code and error strings untouched.
+What changed:
+
+- 40-word sentences split under 20 words.
+- "you're" expanded to "you are."
+- "check" and "confirm" collapsed to "make sure that."
+- Every condition moved before its command.
+- "etc." removed.
+- Code and error strings stayed untouched.
 
 ## Limits
 

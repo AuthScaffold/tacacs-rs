@@ -13,22 +13,22 @@ runs:
       shell: bash
       run: |
         cargo +nightly fuzz run fuzz_header_parse -- -max_total_time=30 || \
-          echo "::warning::Header parsing fuzz smoke test reported issues; continuing because this check is advisory"
+          echo "::warning::The header-parsing fuzz smoke test found errors. This test is advisory, so the workflow continues."
 
     - name: Fuzz accounting request parsing
       shell: bash
       run: |
         cargo +nightly fuzz run fuzz_accounting_request_parse -- -max_total_time=30 || \
-          echo "::warning::Accounting request fuzz smoke test reported issues; continuing because this check is advisory"
+          echo "::warning::The accounting-request fuzz smoke test found errors. This test is advisory, so the workflow continues."
 
     - name: Fuzz accounting reply parsing
       shell: bash
       run: |
         cargo +nightly fuzz run fuzz_accounting_reply_parse -- -max_total_time=30 || \
-          echo "::warning::Accounting reply fuzz smoke test reported issues; continuing because this check is advisory"
+          echo "::warning::The accounting-reply fuzz smoke test found errors. This test is advisory, so the workflow continues."
 
     - name: Fuzz accounting request packet parsing
       shell: bash
       run: |
         cargo +nightly fuzz run fuzz_accounting_request_packet_parse -- -max_total_time=30 || \
-          echo "::warning::Accounting request packet fuzz smoke test reported issues; continuing because this check is advisory"
+          echo "::warning::The accounting-request packet fuzz smoke test found errors. This test is advisory, so the workflow continues."

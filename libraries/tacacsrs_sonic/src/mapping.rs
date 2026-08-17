@@ -1,9 +1,8 @@
-//! Pure functions that translate SONiC ConfigDB rows into the
-//! `ietf-system-tacacs-plus` YANG model used by the rest of the workspace.
+//! Functions that translate SONiC ConfigDB rows into the
+//! `ietf-system-tacacs-plus` YANG model.
 //!
-//! All Redis I/O lives in [`crate::store`]; this module is intentionally
-//! decoupled from any particular client so that it can be exhaustively tested
-//! offline.
+//! [`crate::store`] contains all Redis I/O. This module does not depend on a
+//! Redis client, so tests can run offline.
 //!
 //! # SONiC table shape
 //!
@@ -27,7 +26,7 @@
 //! ```
 //!
 //! See [`crate`] documentation for the schema extensions that the bridge
-//! recognises on top of the upstream SONiC schema.
+//! recognizes in addition to the upstream SONiC schema.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
@@ -39,7 +38,7 @@ use tacacsrs_config::{
     ValidationOptions, ValidationRelaxation,
 };
 
-/// Default TCP port used by TACACS+ when `tcp_port` is missing.
+/// Default TACACS+ TCP port when `tcp_port` is missing.
 pub const DEFAULT_TACACS_TCP_PORT: u16 = 49;
 
 /// Default per-server timeout (seconds) when neither the global nor per-server
@@ -56,12 +55,11 @@ pub const DEFAULT_TACACS_TLS_PORT: u16 = 449;
 /// ordering is deterministic in tests and logs.
 pub type SonicHash = BTreeMap<String, String>;
 
-/// Snapshot of SONiC's TACACS+ tables as observed from ConfigDB.
+/// Snapshot of SONiC TACACS+ tables from ConfigDB.
 ///
-/// Construct one with [`SonicTacacsTables::new`] from the global and
-/// per-server hashes obtained from Redis, then call
-/// [`map_sonic_tables_to_tacacs_plus`] to translate the snapshot into the
-/// validated YANG configuration.
+/// Use [`SonicTacacsTables::new`] with global and per-server Redis hashes. Then
+/// use [`map_sonic_tables_to_tacacs_plus`] to create validated YANG
+/// configuration.
 #[derive(Debug, Clone, Default)]
 pub struct SonicTacacsTables {
     /// Contents of the `TACPLUS|global` hash.
@@ -76,7 +74,7 @@ pub struct SonicTacacsTables {
 }
 
 impl SonicTacacsTables {
-    /// Construct a new snapshot from the global and per-server hashes.
+    /// Constructs a snapshot from the global and per-server hashes.
     #[must_use]
     pub fn new(global: SonicHash, servers: BTreeMap<String, SonicHash>) -> Self {
         Self {
@@ -87,7 +85,7 @@ impl SonicTacacsTables {
         }
     }
 
-    /// Construct a complete snapshot including version-1 central-agent tables.
+    /// Constructs a complete snapshot with version 1 central-agent tables.
     #[must_use]
     pub fn with_extended_tables(
         global: SonicHash,
@@ -103,7 +101,7 @@ impl SonicTacacsTables {
         }
     }
 
-    /// Returns `true` if no rows were observed.
+    /// Returns `true` if the snapshot contains no rows.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.global.is_empty()
@@ -138,8 +136,8 @@ impl SonicForwarderSettings {
     ///
     /// # Errors
     ///
-    /// Returns an error for unknown fields, a missing/non-loopback address,
-    /// or an invalid port.
+    /// Returns an error for an unknown field, a missing or non-loopback
+    /// address, or an invalid port.
     pub fn from_hash(hash: &SonicHash) -> anyhow::Result<Option<Self>> {
         if hash.is_empty() {
             return Ok(None);
@@ -343,24 +341,22 @@ impl SonicTlsServerRow {
     }
 }
 
-/// Translate a SONiC ConfigDB snapshot into the YANG `TacacsPlus` root.
+/// Translates a SONiC ConfigDB snapshot into the YANG `TacacsPlus` root.
 ///
 /// Each `TACPLUS_SERVER|<addr>` row becomes one
-/// [`tacacsrs_config::TacacsPlusServer`]. Servers are ordered by descending
-/// `priority` in SONiC's `1..64` range (with stable address-based
-/// tiebreaking) so that the daemon's failover semantics — index 0 is preferred
-/// — line up with SONiC's administrator intent.
+/// [`tacacsrs_config::TacacsPlusServer`]. The function sorts servers by
+/// descending `priority` in SONiC's `1..64` range. It uses the address as a
+/// stable tiebreaker. Thus, index 0 is the preferred server.
 ///
-/// Per-row fields fall back to the matching `TACPLUS|global` field when the
-/// per-server value is absent (this matches SONiC's `pam_tacplus` behavior).
+/// A missing per-server field uses the related `TACPLUS|global` value. This
+/// behavior matches SONiC `pam_tacplus`.
 /// TLS rows map to RFC 9950 central-keystore EPSK references. The mapper never
 /// reads provider files or places resolved key bytes into generated values.
 ///
 /// # Errors
 ///
-/// Returns an error if a row has an invalid numeric value (priority, port, or
-/// timeout), if priority is outside SONiC's `1..64` range, or if the resulting
-/// non-empty configuration fails validation.
+/// Returns an error if a row has an invalid priority, port, or timeout. It also
+/// returns an error if the non-empty configuration fails validation.
 pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Result<TacacsPlus> {
     let parsed = ParsedSonicTables::from_tables(tables)?;
     if parsed.candidates.is_empty() {
@@ -502,14 +498,13 @@ impl SonicGlobal {
                 "use_tls" | "domain_name" | "sni_enabled" => {
                     bail!("TACPLUS|global contains unsupported TLS field '{key}'");
                 }
-                // `auth_type` controls PAM-side defaults (PAP vs CHAP). The
-                // agent does not expose authentication types yet, so the
-                // value is recorded only for log surface.
+                // `auth_type` selects PAM defaults such as PAP or CHAP. The
+                // agent does not support this selector, so only log the field.
                 "auth_type" => {
-                    log::debug!("Ignoring TACPLUS|global.auth_type: agent has no PAM-style authentication selector yet");
+                    log::debug!("ignoring TACPLUS|global.auth_type: the agent has no PAM authentication selector");
                 }
                 other => {
-                    log::warn!("Ignoring unknown TACPLUS|global field '{other}'");
+                    log::warn!("ignoring unknown TACPLUS|global field '{other}'");
                 }
             }
         }
@@ -603,12 +598,10 @@ impl SonicServerRow {
                         format!("TACPLUS_SERVER|{address}.server_type='{value}'")
                     })?;
                 }
-                // SONiC's `pam_tacplus` historically has accepted a small
-                // set of additional, deployment-specific keys. Log and skip
-                // rather than fail so the agent does not refuse to start
-                // because of operator-level annotations.
+                // Some SONiC deployments add keys for local use. Log and skip
+                // these keys so operator annotations do not prevent startup.
                 other => {
-                    log::warn!("Ignoring unknown TACPLUS_SERVER|{address} field '{other}'");
+                    log::warn!("ignoring unknown TACPLUS_SERVER|{address} field '{other}'");
                 }
             }
         }
@@ -639,10 +632,9 @@ impl SonicServerRow {
         server.single_connection = self.single_connection;
         server.vrf_instance.clone_from(&self.vrf_name);
 
-        // The YANG model treats `source-ip` and `source-interface` as
-        // mutually exclusive. Honour any per-server value verbatim, then
-        // fall back to the global `src_intf` only when nothing was set on
-        // the row.
+        // The YANG model does not permit both `source-ip` and
+        // `source-interface`. Use a per-server value first. Use global
+        // `src_intf` only if the row does not contain a source.
         if self.src_ip.is_some() {
             server.source_ip.clone_from(&self.src_ip);
             server.source_interface = None;
@@ -661,13 +653,12 @@ impl SonicServerRow {
     }
 }
 
-/// Build the YANG server `name` for a SONiC row.
+/// Builds the YANG server `name` for a SONiC row.
 ///
-/// SONiC stores upstream servers indexed by address (its primary key) with no
-/// dedicated human-friendly name. The YANG model requires a unique `name`, so
-/// the bridge synthesizes one from the stable ConfigDB key. It intentionally
-/// does not include priority or sorted position so deltas remain stable when a
-/// higher-priority server is inserted.
+/// SONiC uses the address as the primary key for an upstream server. The YANG
+/// model requires a unique `name`, so the bridge creates one from the stable
+/// ConfigDB key. The name excludes priority and position. Therefore, it stays
+/// stable when a higher-priority server is added.
 #[must_use]
 pub fn sonic_server_name(address: &str) -> String {
     format!("sonic-server-{address}")
@@ -779,13 +770,12 @@ fn parse_psk_groups(row: &str, value: &str) -> anyhow::Result<Vec<PskDheKeSuppor
     Ok(groups)
 }
 
-/// Parse SONiC boolean strings.
+/// Parses SONiC Boolean strings.
 ///
 /// SONiC stores booleans as `"true"` / `"false"` (the YANG-canonical form
-/// accepted by `sonic-cfggen`) but legacy templates have used `"yes"`/`"no"`,
-/// `"1"`/`"0"`, `"on"`/`"off"`, and `"enabled"`/`"disabled"`. All of those
-/// variants are accepted (case-insensitive) so the bridge does not refuse a
-/// boolean value that any prior SONiC tooling was willing to write.
+/// accepted by `sonic-cfggen`). Legacy templates also use `"yes"`/`"no"`,
+/// `"1"`/`"0"`, `"on"`/`"off"`, and `"enabled"`/`"disabled"`. The parser
+/// accepts these values without case sensitivity.
 fn parse_bool(value: &str) -> anyhow::Result<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "yes" | "1" | "on" | "enabled" => Ok(true),
@@ -861,7 +851,7 @@ mod tests {
     fn maps_global_defaults_into_each_server() {
         let cfg = map_sonic_tables_to_tacacs_plus(&tables()).expect("mapping succeeds");
         assert_eq!(cfg.server.len(), 2);
-        // Higher priority -> higher preference (index 0).
+        // A higher priority gives a higher preference. Index 0 is preferred.
         assert_eq!(cfg.server[0].address, "192.0.2.20");
         assert_eq!(cfg.server[0].port, 49);
         assert_eq!(cfg.server[0].timeout, 7);
@@ -874,7 +864,7 @@ mod tests {
             "per-server-secret",
         );
 
-        // Per-server passkey absent -> falls back to global.
+        // A missing per-server passkey uses the global passkey.
         assert_eq!(cfg.server[1].address, "192.0.2.10");
         assert_eq!(
             cfg.server[1]
@@ -884,9 +874,9 @@ mod tests {
                 .expose_secret(),
             "default-secret",
         );
-        // Per-server tcp_port absent -> default 49.
+        // A missing per-server tcp_port uses port 49.
         assert_eq!(cfg.server[1].port, DEFAULT_TACACS_TCP_PORT);
-        // Per-server timeout absent -> falls back to global.
+        // A missing per-server timeout uses the global timeout.
         assert_eq!(cfg.server[1].timeout, 7);
     }
 
@@ -904,7 +894,7 @@ mod tests {
     #[test]
     fn empty_servers_table_maps_to_empty_config() {
         let tables = SonicTacacsTables::default();
-        let cfg = map_sonic_tables_to_tacacs_plus(&tables).expect("empty ConfigDB should map");
+        let cfg = map_sonic_tables_to_tacacs_plus(&tables).expect("empty ConfigDB must map");
         assert!(cfg.server.is_empty());
     }
 

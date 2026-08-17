@@ -4,7 +4,7 @@ This note applies to the `session-wrapper` crate when it is built natively on Al
 
 ## Summary
 
-Alpine's Rust toolchain uses the `x86_64-unknown-linux-musl` target, and that target defaults to the static musl C runtime (`crt-static`). `session-wrapper` also links to `libseccomp`. Combining the static musl runtime with a dynamically linked `libseccomp.so` can produce a binary that builds but crashes before the child can send its seccomp notification fd to the parent.
+Alpine's Rust toolchain uses the `x86_64-unknown-linux-musl` target, and that target defaults to the static musl C runtime (`crt-static`). `session-wrapper` also links to `libseccomp`. Combining the static musl runtime with a dynamically linked `libseccomp.so` can produce a binary that builds but crashes. The crash happens before the child can send its seccomp notification fd to the parent.
 
 The crate build script rejects that unsafe combination when it can detect it. Use one of the supported build modes below instead.
 
@@ -20,13 +20,13 @@ Caused by:
     1: control socket closed before fd was received
 ```
 
-With the newer parent-side diagnostics, the final cause may include a signal such as:
+With the newer parent-side diagnostics, the final cause can include a signal such as:
 
 ```text
 control socket closed before fd was received; child 1234 terminated by signal 11 (SIGSEGV)
 ```
 
-If traced with `gdb` or `strace`, the child may fault before the wrapper has a chance to report a Rust error, often around `libseccomp::api::get_api`, `seccomp_api_get`, or `ScmpFilterContext::new`.
+If traced with `gdb` or `strace`, the child can fault before the wrapper reports a Rust error, often around `libseccomp::api::get_api`, `seccomp_api_get`, or `ScmpFilterContext::new`.
 
 ## Preferred: static `libseccomp`
 
@@ -46,14 +46,14 @@ When switching link modes, clean the crate first to avoid reusing old build arti
 cargo clean -p session-wrapper
 ```
 
-The resulting binary should not depend on `libseccomp.so` at runtime:
+The resulting binary must not depend on `libseccomp.so` at runtime:
 
 ```bash
 file target/debug/session-wrapper
 ldd target/debug/session-wrapper
 ```
 
-On Alpine, a static PIE may still be shown through musl's loader by `ldd`; the important check is that `libseccomp.so` is not listed.
+On Alpine, musl's loader can still show a static PIE through `ldd`. Make sure that `libseccomp.so` does not appear in the list.
 
 ## Development-only: dynamic musl binary
 
@@ -81,9 +81,9 @@ cargo build -p session-wrapper --target x86_64-unknown-linux-musl
 
 CI follows this model by building and caching a static musl `libseccomp`.
 
-## Quick checks
+## Quick validation
 
-These commands help confirm which mode you are in:
+Run these commands to make sure that you know the active build mode:
 
 ```bash
 rustc -vV
@@ -96,4 +96,4 @@ If `crt-static` is enabled and `libseccomp.so` appears in the dependency list, r
 
 ## Do not bypass the build guard
 
-The guard is there because the failure happens in the forked child before normal Rust error reporting can run. Bypassing it can recreate the original failure: the parent waits for the seccomp notification fd, the child segfaults first, and the wrapper reports only that the control socket closed before fd handoff.
+The guard is there because the failure happens in the forked child before normal Rust error reporting can run. Bypassing it can recreate the original failure. The parent waits for the seccomp notification fd while the child segfaults first. The wrapper then reports only that the control socket closed before fd handoff.

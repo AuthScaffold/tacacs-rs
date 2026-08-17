@@ -1,11 +1,10 @@
 
-## The following build flag is used to enable tokio-console
-## for watching the process instrumented with
-## console_subscriber::init();
+## Use this build flag to enable tokio-console.
+## It shows async tasks and resources from a process that calls console_subscriber::init().
 #[build]
 #rustflags = ["--cfg", "tokio_unstable"]
 
 
-# Target-specific debug info settings
+# Debug information for each target.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "split-debuginfo=packed"]  # .pdb files on Windows
+rustflags = ["-C", "split-debuginfo=packed"]  # Windows PDB files.

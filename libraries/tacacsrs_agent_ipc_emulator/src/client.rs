@@ -15,7 +15,7 @@ use crate::policy::{CapturedIpcRequest, EmulatorPolicy};
 #[cfg(unix)]
 const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 
-/// Client helper for the emulator mock-controller service.
+/// Client for the emulator mock-controller service.
 pub struct MockControllerClient {
     inner: GeneratedControllerClient<Channel>,
 }
@@ -44,7 +44,7 @@ impl MockControllerClient {
         self.load_policy_rego(policy.rego.clone(), data_json).await
     }
 
-    /// Replaces the active policy from raw Rego source and JSON data.
+    /// Replaces the active policy with raw Rego source and JSON data.
     ///
     /// An empty `data_json` string is treated as no policy data.
     ///
@@ -116,7 +116,7 @@ async fn connect_channel(endpoint: IpcEndpoint) -> anyhow::Result<Channel> {
         IpcEndpoint::Unix(path) => {
             let connect_path = path.clone();
             Endpoint::try_from(UDS_GRPC_CONNECT_URI)
-                .context("Failed to build Unix IPC emulator controller endpoint")?
+                .context("Failed to build the emulator controller Unix domain socket endpoint")?
                 .connect_with_connector(service_fn(move |_: Uri| {
                     let path = connect_path.clone();
                     async move {
@@ -128,15 +128,17 @@ async fn connect_channel(endpoint: IpcEndpoint) -> anyhow::Result<Channel> {
                 .await
                 .with_context(|| {
                     format!(
-                        "Failed to connect to IPC emulator controller socket {}",
+                        "Failed to connect to emulator controller Unix domain socket {}",
                         path.display()
                     )
                 })
         }
         IpcEndpoint::Tcp(address) => Endpoint::from_shared(format!("http://{address}"))
-            .context("Failed to build TCP IPC emulator controller endpoint")?
+            .context("Failed to build the emulator controller TCP IPC endpoint")?
             .connect()
             .await
-            .with_context(|| format!("Failed to connect to IPC emulator controller {address}")),
+            .with_context(|| {
+                format!("Failed to connect to emulator controller IPC endpoint {address}")
+            }),
     }
 }

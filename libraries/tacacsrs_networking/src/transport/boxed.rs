@@ -1,14 +1,13 @@
 //! Type-erased transport.
 //!
-//! [`BoxedTransport`] wraps any [`Transport`] behind a trait object so that
-//! callers returning different concrete stream types at runtime (e.g. plain
-//! TCP vs TLS) can return a single type.
+//! [`BoxedTransport`] wraps any [`Transport`] in a trait object. Thus, callers
+//! can return one type for different connection types, such as TCP and TLS.
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::abstractions::Transport;
 
-/// Object-safe helper so we can store any [`Transport`] in a `Box`.
+/// Object-safe helper that stores any [`Transport`] in a `Box`.
 trait ErasedTransport: Send + 'static {
     fn split_boxed(
         self: Box<Self>,
@@ -26,8 +25,8 @@ impl<T: Transport> ErasedTransport for T {
 
 /// A type-erased [`Transport`].
 ///
-/// Construct one with [`BoxedTransport::new`], passing any concrete
-/// [`Transport`] implementor (e.g. `TcpStream`, `TlsStream<TcpStream>`).
+/// Use [`BoxedTransport::new`] with a concrete [`Transport`] implementation,
+/// such as `TcpStream` or `TlsStream<TcpStream>`.
 pub(crate) struct BoxedTransport(Box<dyn ErasedTransport>);
 
 impl BoxedTransport {

@@ -67,7 +67,7 @@ pub(crate) fn accounting_response(
         "Follow" => AccountingResponseStatus::Follow,
         status => {
             return Err(Status::failed_precondition(format!(
-                "Invalid Accounting response status {status:?}"
+                "Invalid Accounting response status: {status:?}"
             )));
         }
     };
@@ -90,7 +90,7 @@ pub(crate) fn authorization_response(
         "Follow" => AuthorizationResponseStatus::Follow,
         status => {
             return Err(Status::failed_precondition(format!(
-                "Invalid Authorization response status {status:?}"
+                "Invalid Authorization response status: {status:?}"
             )));
         }
     };

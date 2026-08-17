@@ -1,10 +1,9 @@
-//! [`MockTransport`] — the entry point for the mock transport infrastructure.
+//! Entry point for the mock transport.
 //!
 //! See the [module-level documentation](super) for the overall architecture.
 //!
-//! This file contains `MockTransport` itself (which implements [`Transport`]),
-//! the background **write processor** task, and integration tests that exercise
-//! the full round-trip through all mock components.
+//! This file contains `MockTransport`, the background write processor, and
+//! integration tests for all mock components.
 
 use std::sync::Arc;
 
@@ -24,24 +23,23 @@ use super::mock_write_half::MockWriteHalf;
 
 /// A mock transport that implements [`Transport`] for integration testing.
 ///
-/// Construct one with [`MockTransport::new()`], obtain a [`MockTransportCoordinator`]
-/// via [`MockTransport::coordinator()`], then pass the transport into
+/// Create one with [`MockTransport::new()`]. Get a
+/// [`MockTransportCoordinator`] through [`MockTransport::coordinator()`]. Then
+/// pass the transport to
 /// [`MultiplexedConnection`](crate::runtime::MultiplexedConnection).
 ///
-/// Since [`split`](Transport::split) consumes `self`, the compiler enforces
-/// that it can only be called once.
+/// [`split`](Transport::split) consumes `self`, so it can run only once.
 #[derive(Debug)]
 pub(crate) struct MockTransport {
-    /// Shared state holding replies and captured requests.
+    /// Shared state that contains replies and captured requests.
     /// Also accessed by [`MockTransportCoordinator`].
     state: Arc<Mutex<MockState>>,
 
-    /// Sender side of the "read" channel. The write processor pushes reply bytes
+    /// Sender side of the read channel. The write processor puts reply bytes
     /// here so that [`MockReadHalf`] can receive them.
     read_tx: mpsc::UnboundedSender<Vec<u8>>,
 
-    /// Receiver side of the "read" channel, consumed when
-    /// [`split`](Transport::split) is called.
+    /// Receiver side of the read channel. [`split`](Transport::split) consumes it.
     read_rx: mpsc::UnboundedReceiver<Vec<u8>>,
 }
 
@@ -52,13 +50,13 @@ impl Default for MockTransport {
 }
 
 impl MockTransport {
-    /// Creates a new mock transport with empty state (no replies, no requests).
+    /// Creates a mock transport with no replies or requests.
     ///
-    /// After construction, call [`coordinator()`](Self::coordinator) to get a handle
-    /// for configuring replies and inspecting captured requests.
+    /// Call [`coordinator()`](Self::coordinator) to get a handle. Use the handle
+    /// to configure replies and inspect requests.
     #[must_use]
     pub(crate) fn new() -> Self {
-        // This channel carries reply bytes from the write processor → MockReadHalf.
+        // This channel carries reply bytes from the write processor to MockReadHalf.
         let (read_tx, read_rx) = mpsc::unbounded_channel();
         Self {
             state: Arc::new(Mutex::new(MockState::default())),
@@ -70,11 +68,10 @@ impl MockTransport {
     /// Returns a [`MockTransportCoordinator`] handle for configuring and inspecting
     /// this transport.
     ///
-    /// The coordinator shares the same `MockState` and can be used **before and
-    /// during** a connection run — for example to add replies after the connection
-    /// has already started processing.
+    /// The coordinator shares the same `MockState`. Use it before or during a
+    /// connection run. For example, it can add replies after processing starts.
     ///
-    /// Multiple coordinators may be created; they all share the same underlying state.
+    /// You can create multiple coordinators. They share the same state.
     #[must_use]
     pub(crate) fn coordinator(&self) -> MockTransportCoordinator {
         MockTransportCoordinator {
@@ -82,44 +79,40 @@ impl MockTransport {
         }
     }
 
-    /// Spawns the **write processor** — the heart of the mock transport.
+    /// Starts the write processor.
     ///
-    /// This is a `tokio::spawn`-ed async task that:
+    /// This async task:
     ///
-    /// 1. **Reads** complete TACACS+ packets from a [`ChannelReader`] that wraps
+    /// 1. Reads complete TACACS+ packets from a [`ChannelReader`] that wraps
     ///    the byte channel fed by [`MockWriteHalf`]. Packet framing, header
     ///    parsing, and body reassembly are delegated to [`PacketReader`].
-    /// 2. **Records** each parsed request in [`MockState::requests`] so tests
-    ///    can inspect what the connection sent.
-    /// 3. **Looks up** a matching reply in [`MockState::replies`] for the *next*
+    /// 2. Records each parsed request in [`MockState::requests`].
+    /// 3. Finds a matching reply in [`MockState::replies`] for the next
     ///    expected sequence number (`request_seq + 1`).
-    /// 4. **Sends** the reply bytes to `read_tx`, which feeds [`MockReadHalf`].
-    ///    If the reply has a configured delay, a nested `tokio::spawn` sleeps first.
+    /// 4. Sends the reply bytes to `read_tx`, which feeds [`MockReadHalf`].
+    ///    If the reply has a delay, another task waits before it sends the bytes.
     ///
-    /// The task exits when the [`ChannelReader`] returns EOF (i.e. [`MockWriteHalf`]
-    /// is dropped and the channel closes).
+    /// The task exits when the [`ChannelReader`] returns EOF. EOF occurs when
+    /// [`MockWriteHalf`] is dropped and the channel closes.
     ///
     /// # Why a background task?
     ///
-    /// This avoids holding the [`MockState`] mutex inside a `poll_write` call.
-    /// Instead, `poll_write` just pushes bytes into a channel (lock-free), and
-    /// this task does the async `.lock().await` on its own, which is safe because
-    /// it runs as a normal async future — not inside a `poll_*` method.
+    /// This design does not hold the [`MockState`] mutex in `poll_write`.
+    /// `poll_write` puts bytes in a lock-free channel. This task can then use
+    /// `.lock().await` because it runs as an async future, not in a `poll_*`
+    /// method.
     fn spawn_write_processor(
         write_rx: mpsc::UnboundedReceiver<Vec<u8>>,
         state: Arc<Mutex<MockState>>,
         read_tx: mpsc::UnboundedSender<Vec<u8>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
-            // Wrap the channel in an AsyncRead so PacketReader can consume it
-            // as a byte stream, handling framing and reassembly for us.
+            // Wrap the channel in AsyncRead. PacketReader then handles framing
+            // and reassembly.
             //
-            // NOTE: The reader is created **without** an obfuscation key.
-            // This means the mock transport operates like a network capture
-            // (pcap) — it records and replays raw bytes without attempting
-            // to deobfuscate them. If tests need to inspect the cleartext
-            // body of captured request packets, they must deobfuscate
-            // manually after retrieving them from `MockState::requests`.
+            // Create the reader without an obfuscation key. The mock operates
+            // like a network capture: it records and replays raw bytes. Tests
+            // must deobfuscate captured bodies before they inspect cleartext.
             let packet_reader = PacketReader::new(None);
             let mut reader = ChannelReader::new(write_rx);
 
@@ -128,16 +121,15 @@ impl MockTransport {
                     PacketReadResult::Success(request) => {
                         let session_id = request.header().session_id;
                         let request_seq = request.header().seq_no;
-                        // In TACACS+, the server reply has seq_no = request_seq + 1.
+                        // A TACACS+ server reply has seq_no = request_seq + 1.
                         let reply_seq = request_seq.saturating_add(1);
 
                         log::info!(
-                            "mock write processor: captured request for session {session_id} seq_no {request_seq}"
+                            "Mock write processor: captured request for session {session_id}, seq_no {request_seq}"
                         );
 
-                        // Acquire the shared state to record the request and look up
-                        // the reply. This is an async lock — it cooperates with the
-                        // tokio runtime.
+                        // Lock the shared state to record the request and find the
+                        // reply. The async lock cooperates with the Tokio runtime.
                         let mut state = state.lock().await;
 
                         state
@@ -146,57 +138,57 @@ impl MockTransport {
                             .or_default()
                             .insert(request_seq, request);
 
-                        // Remove the reply (consumed — each reply fires once).
+                        // Remove the reply. Each reply is sent once.
                         let reply = state
                             .replies
                             .get_mut(&session_id)
                             .and_then(|reply_map| reply_map.remove(&reply_seq));
 
-                        // Drop the lock before doing I/O or spawning tasks.
+                        // Drop the lock before I/O or task creation.
                         drop(state);
 
                         if let Some(reply_config) = reply {
                             if let Some(delay) = reply_config.delay {
                                 log::info!(
-                                    "mock write processor: scheduling delayed reply ({delay:?}) for session {session_id} seq_no {reply_seq}"
+                                    "Mock write processor: scheduling delayed reply ({delay:?}) for session {session_id}, seq_no {reply_seq}"
                                 );
                                 let tx = read_tx.clone();
                                 tokio::spawn(async move {
                                     tokio::time::sleep(delay).await;
                                     log::info!(
-                                        "mock write processor: sending delayed reply for session {session_id} seq_no {reply_seq}"
+                                        "Mock write processor: sending delayed reply for session {session_id}, seq_no {reply_seq}"
                                     );
                                     let _ = tx.send(reply_config.bytes);
                                 });
                             } else {
                                 log::info!(
-                                    "mock write processor: sending reply for session {session_id} seq_no {reply_seq}"
+                                    "Mock write processor: sending reply for session {session_id}, seq_no {reply_seq}"
                                 );
                                 let _ = read_tx.send(reply_config.bytes);
                             }
                         } else {
                             log::debug!(
-                                "mock write processor: no reply configured for session {session_id} seq_no {reply_seq}"
+                                "Mock write processor: no reply is configured for session {session_id}, seq_no {reply_seq}"
                             );
                         }
                     }
-                    // Channel closed (EOF) — MockWriteHalf was dropped.
+                    // The channel reached EOF because MockWriteHalf was dropped.
                     PacketReadResult::HeaderReadError(_) => {
-                        log::info!("mock write processor: channel closed (EOF), exiting");
+                        log::info!("Mock write processor: channel reached EOF. Stopping");
                         break;
                     }
-                    // Any other error is unexpected in a mock — surface it loudly.
+                    // All other errors indicate a test failure.
                     PacketReadResult::HeaderParseError(e) => panic!(
-                        "mock transport write processor: header parse error: {e}"
+                        "mock transport write processor failed to parse the header: {e}"
                     ),
                     PacketReadResult::BodyLengthExceeded { session_id, body_length, max_length } => panic!(
-                        "mock transport write processor: body length {body_length} exceeds max {max_length} for session {session_id}"
+                        "mock transport write processor received body length {body_length}, which exceeds maximum {max_length}, for session {session_id}"
                     ),
                     PacketReadResult::BodyReadError { session_id, error } => panic!(
-                        "mock transport write processor: body read error for session {session_id}: {error}"
+                        "mock transport write processor failed to read the body for session {session_id}: {error}"
                     ),
                     PacketReadResult::PacketCreateError { session_id, error } => panic!(
-                        "mock transport write processor: packet create error for session {session_id}: {error}"
+                        "mock transport write processor failed to create the packet for session {session_id}: {error}"
                     ),
                 }
             }
@@ -208,20 +200,18 @@ impl Transport for MockTransport {
     type ReadHalf = MockReadHalf;
     type WriteHalf = MockWriteHalf;
 
-    /// Splits the transport into a read half and a write half, and spawns the
+    /// Splits the transport into read and write halves and starts the
     /// background write processor task.
     ///
-    /// This consumes `self`, so it can only be called once (enforced by the
-    /// compiler — no runtime checks needed).
+    /// This consumes `self`, so it can run only once.
     fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
-        log::info!("mock transport: splitting into read and write halves");
+        log::info!("Mock transport: splitting into read and write halves");
 
-        // Create the write channel: MockWriteHalf → write processor task.
+        // Create the channel from MockWriteHalf to the write processor.
         let (write_tx, write_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-        // Spawn the background task that processes written bytes.
-        // It shares `self.state` with the coordinator and pushes reply bytes
-        // into `self.read_tx` which feeds the MockReadHalf.
+        // Start the task that processes written bytes. It shares `self.state`
+        // with the coordinator and puts reply bytes in `self.read_tx`.
         let processor_handle =
             Self::spawn_write_processor(write_rx, Arc::clone(&self.state), self.read_tx);
 
@@ -241,7 +231,7 @@ mod tests {
     use tacacsrs_messages::header::Header;
     use tacacsrs_messages::packet::Packet;
 
-    /// Helper: creates a TACACS+ Header for testing.
+    /// Creates a TACACS+ header for tests.
     fn test_header(session_id: u32, seq_no: u8, body_length: u32) -> Header {
         Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
@@ -254,7 +244,7 @@ mod tests {
         }
     }
 
-    /// Helper: creates a complete TACACS+ Packet for testing.
+    /// Creates a complete TACACS+ packet for tests.
     #[allow(clippy::cast_possible_truncation)] // test data is small
     fn test_packet(session_id: u32, seq_no: u8, body: Vec<u8>) -> Packet {
         let header = test_header(session_id, seq_no, body.len() as u32);
@@ -266,7 +256,7 @@ mod tests {
     #[test]
     fn test_new_creates_transport() {
         let transport = MockTransport::new();
-        // Should be able to obtain a coordinator without panicking.
+        // Make sure that coordinator creation does not panic.
         let _coordinator = transport.coordinator();
     }
 
@@ -283,20 +273,20 @@ mod tests {
         let transport = MockTransport::new();
         let (mut read_half, mut write_half) = transport.split();
 
-        // Write half should accept bytes.
+        // Make sure that the write half accepts bytes.
         let written = write_half.write(&[0u8; 4]).await.unwrap();
         assert_eq!(written, 4);
 
-        // Shut down write half so read half eventually sees EOF.
+        // Stop the write half so the read half reaches EOF.
         write_half.shutdown().await.unwrap();
         drop(write_half);
 
-        // Read half should reach EOF (0 bytes) eventually.
+        // The read half reaches EOF with zero bytes.
         let mut buf = [0u8; 64];
-        // Give the processor a moment to process and close.
+        // Let the processor stop.
         tokio::time::sleep(Duration::from_millis(50)).await;
         let n = read_half.read(&mut buf).await.unwrap();
-        // With no configured reply for the (invalid) bytes, we just get EOF.
+        // Invalid bytes without a configured reply result in EOF.
         assert_eq!(n, 0);
     }
 
@@ -307,7 +297,7 @@ mod tests {
         let transport = MockTransport::new();
         let coordinator = transport.coordinator();
 
-        // Build a request (seq 1) and a matching reply (seq 2).
+        // Build a request with sequence 1 and a matching reply with sequence 2.
         let request = test_packet(1000, 1, vec![0xAA, 0xBB]);
         let reply = test_packet(1000, 2, vec![0xCC, 0xDD]);
 
@@ -315,10 +305,10 @@ mod tests {
 
         let (mut read_half, mut write_half) = transport.split();
 
-        // Write the request into the mock transport.
+        // Write the request to the mock transport.
         write_half.write_all(&request.to_bytes()).await.unwrap();
 
-        // Read the reply back from the read half.
+        // Read the reply from the read half.
         let reply_bytes = reply.to_bytes();
         let mut buf = vec![0u8; reply_bytes.len()];
         read_half.read_exact(&mut buf).await.unwrap();
@@ -340,7 +330,7 @@ mod tests {
 
         write_half.write_all(&request.to_bytes()).await.unwrap();
 
-        // Consume the reply so the processor has finished recording.
+        // Read the reply so the processor finishes recording the request.
         let mut sink = vec![0u8; 128];
         let _ = read_half.read(&mut sink).await.unwrap();
 
@@ -358,7 +348,7 @@ mod tests {
         let reply = test_packet(3000, 2, vec![0xDE, 0xAD]);
         coordinator.add_reply(reply.clone()).await.unwrap();
 
-        // Before delivery, reply should be present.
+        // Make sure that the reply is present before delivery.
         let before = coordinator.get_replies_for_session(3000).await.unwrap();
         assert_eq!(before.len(), 1);
 
@@ -367,14 +357,14 @@ mod tests {
         let request = test_packet(3000, 1, vec![0x00]);
         write_half.write_all(&request.to_bytes()).await.unwrap();
 
-        // Read the reply to let the processor consume it.
+        // Read the reply so the processor consumes it.
         let mut buf = vec![0u8; reply.to_bytes().len()];
         read_half.read_exact(&mut buf).await.unwrap();
 
-        // After delivery, no replies should remain.
+        // Make sure that no replies remain after delivery.
         let after = coordinator.get_replies_for_session(3000).await;
-        // Either no entry or empty map.
-        assert!(after.is_err() || after.unwrap().is_empty(), "reply should have been consumed");
+        // An absent entry and an empty map are both valid.
+        assert!(after.is_err() || after.unwrap().is_empty(), "reply must be consumed");
     }
 
     #[tokio::test]
@@ -387,7 +377,7 @@ mod tests {
         let request = test_packet(4000, 1, vec![0x42]);
         write_half.write_all(&request.to_bytes()).await.unwrap();
 
-        // Give the processor time to handle the packet.
+        // Let the processor handle the packet.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let requests = coordinator.get_requests_for_session(4000).await.unwrap();
@@ -402,7 +392,7 @@ mod tests {
         let transport = MockTransport::new();
         let coordinator = transport.coordinator();
 
-        // Two request-reply pairs for the same session, different seq numbers.
+        // Use two request/reply pairs with different sequence numbers.
         let req1 = test_packet(5000, 1, vec![0x01]);
         let reply1 = test_packet(5000, 2, vec![0x11]);
         let req2 = test_packet(5000, 3, vec![0x02]);
@@ -413,19 +403,19 @@ mod tests {
 
         let (mut read_half, mut write_half) = transport.split();
 
-        // Send first request then read its reply.
+        // Send the first request and read its reply.
         write_half.write_all(&req1.to_bytes()).await.unwrap();
         let mut buf1 = vec![0u8; reply1.to_bytes().len()];
         read_half.read_exact(&mut buf1).await.unwrap();
         assert_eq!(buf1, reply1.to_bytes());
 
-        // Send second request then read its reply.
+        // Send the second request and read its reply.
         write_half.write_all(&req2.to_bytes()).await.unwrap();
         let mut buf2 = vec![0u8; reply2.to_bytes().len()];
         read_half.read_exact(&mut buf2).await.unwrap();
         assert_eq!(buf2, reply2.to_bytes());
 
-        // Both requests should be captured.
+        // Make sure that both requests were captured.
         let requests = coordinator.get_requests_for_session(5000).await.unwrap();
         assert_eq!(requests.len(), 2);
     }
@@ -449,7 +439,7 @@ mod tests {
         write_half.write_all(&request_a.to_bytes()).await.unwrap();
         write_half.write_all(&request_b.to_bytes()).await.unwrap();
 
-        // Read both replies (order matches write order).
+        // Read both replies in write order.
         let mut buf_a = vec![0u8; reply_a.to_bytes().len()];
         read_half.read_exact(&mut buf_a).await.unwrap();
         assert_eq!(buf_a, reply_a.to_bytes());
@@ -458,7 +448,7 @@ mod tests {
         read_half.read_exact(&mut buf_b).await.unwrap();
         assert_eq!(buf_b, reply_b.to_bytes());
 
-        // Each session should have its own captured request.
+        // Make sure that each session has its own captured request.
         let captured_a = coordinator.get_requests_for_session(6000).await.unwrap();
         assert_eq!(captured_a.len(), 1);
         let captured_b = coordinator.get_requests_for_session(7000).await.unwrap();
@@ -492,7 +482,7 @@ mod tests {
         assert_eq!(buf, reply.to_bytes());
         assert!(
             elapsed >= Duration::from_millis(80),
-            "Expected at least ~100ms delay but got {elapsed:?}"
+            "expected a delay of at least 80 ms, but got {elapsed:?}"
         );
     }
 
@@ -505,11 +495,11 @@ mod tests {
 
         let (mut read_half, mut write_half) = transport.split();
 
-        // No reply configured yet — add it after split.
+        // Add the reply after the split.
         let reply = test_packet(9000, 2, vec![0xEE]);
         coordinator.add_reply(reply.clone()).await.unwrap();
 
-        // Now send the request.
+        // Send the request.
         let request = test_packet(9000, 1, vec![0x11]);
         write_half.write_all(&request.to_bytes()).await.unwrap();
 
@@ -532,15 +522,15 @@ mod tests {
 
         let (mut read_half, mut write_half) = transport.split();
 
-        // Write the request in two fragments.
+        // Write the request in two parts.
         let request_bytes = request.to_bytes();
         let mid = request_bytes.len() / 2;
         write_half.write_all(&request_bytes[..mid]).await.unwrap();
-        // Small pause to ensure the first fragment is processed separately.
+        // Wait briefly so the processor handles the first part separately.
         tokio::time::sleep(Duration::from_millis(10)).await;
         write_half.write_all(&request_bytes[mid..]).await.unwrap();
 
-        // Reply should still arrive correctly.
+        // Make sure that the reply arrives correctly.
         let mut buf = vec![0u8; reply.to_bytes().len()];
         read_half.read_exact(&mut buf).await.unwrap();
         assert_eq!(buf, reply.to_bytes());
@@ -553,10 +543,10 @@ mod tests {
         let transport = MockTransport::new();
         let (mut read_half, write_half) = transport.split();
 
-        // Drop the write half — processor exits — read channel closes.
+        // Drop the write half. The processor stops and the read channel closes.
         drop(write_half);
 
-        // Give the processor a moment to shut down.
+        // Let the processor stop.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let mut buf = [0u8; 64];

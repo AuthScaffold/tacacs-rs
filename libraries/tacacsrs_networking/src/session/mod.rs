@@ -1,9 +1,8 @@
 //! Session implementations and session ID ownership.
 //!
-//! The internal [`ClientSession`] facade delegates to one
-//! of the concrete session implementations here. The multiplexed connection
-//! runtime creates [`SharedSession`] values, while dedicated sessions live with
-//! the client facade until they can be split out behind the same boundary.
+//! The internal [`ClientSession`] facade delegates to a concrete session
+//! implementation. The multiplexed connection runtime creates
+//! [`SharedSession`] values. The client facade owns dedicated sessions.
 
 mod channel;
 mod client;

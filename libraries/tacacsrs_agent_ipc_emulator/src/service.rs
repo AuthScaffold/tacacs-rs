@@ -21,9 +21,9 @@ use crate::state::{EmulatorState, EvaluatedDecision};
 #[derive(Clone)]
 /// Emulated implementation of the TACACS+ agent gRPC service.
 ///
-/// Each RPC captures the incoming request, evaluates the active OPA/Rego policy
-/// with the request as `input`, and returns the configured response or gRPC
-/// status error.
+/// Each RPC captures the request and evaluates the active OPA/Rego policy. The
+/// request becomes policy `input`. The RPC returns the configured response or a
+/// gRPC status error.
 pub(crate) struct AgentService {
     pub(crate) state: Arc<Mutex<EmulatorState>>,
 }
@@ -74,7 +74,7 @@ impl TacacsAgent for AgentService {
         log_request(IpcRpc::Accounting, &fields);
         let Some(decision) = self.evaluate(IpcRpc::Accounting, fields).await? else {
             return Err(Status::not_found(
-                "IPC emulator policy returned no Accounting decision for the request",
+                "IPC emulator policy returned no Accounting decision for this request",
             ));
         };
         match decision.response {
@@ -114,7 +114,7 @@ impl TacacsAgent for AgentService {
                 server: "ipc-emulator".to_owned(),
                 status: "Fail".to_owned(),
                 server_message: format!(
-                    "policy returned no authorization decision (undefined) for command \
+                    "authorization policy returned no decision (undefined) for command \
                      {command_display}"
                 ),
                 data: String::new(),
@@ -149,28 +149,31 @@ fn log_request(rpc: IpcRpc, fields: &BTreeMap<String, Value>) {
 
 fn log_decision(rpc: IpcRpc, command: Option<&Value>, decision: Option<&EvaluatedDecision>) {
     if let Some(decision) = decision {
-        log::info!("{rpc} policy decided {}", response_summary(&decision.response));
+        log::info!("{rpc} policy decision: {}", response_summary(&decision.response));
     } else {
         let command = command.map_or_else(|| "<none>".to_owned(), json_value);
-        log::warn!("{rpc} policy returned no decision for command={command}");
+        log::warn!("{rpc} policy returned no decision: command={command}");
     }
 }
 
 fn log_response(rpc: IpcRpc, response: &ResponseBody) {
     log::info!(
-        "{rpc} reply response status={} server={} message={}",
+        "{rpc} response: status={} server={} message={}",
         response.status,
         display_text(&response.server),
         display_text(&response.server_message)
     );
     if !response.args.is_empty() {
-        log::debug!("{rpc} reply authorization args {}", authorization_args_summary(response));
+        log::debug!(
+            "{rpc} authorization response arguments: {}",
+            authorization_args_summary(response)
+        );
     }
 }
 
 fn log_error_response(rpc: IpcRpc, error: &crate::policy::ErrorBody) {
     log::warn!(
-        "{rpc} reply service-error retriable={} server={} message={}",
+        "{rpc} service error: retriable={} server={} message={}",
         error.retriable,
         display_text(&error.server),
         display_text(&error.message)
@@ -199,10 +202,10 @@ fn request_summary(fields: &BTreeMap<String, Value>) -> String {
 fn response_summary(response: &EmulatorResponse) -> String {
     match response {
         EmulatorResponse::Response(body) => {
-            format!("response status={} server={}", body.status, display_text(&body.server))
+            format!("response: status={} server={}", body.status, display_text(&body.server))
         }
         EmulatorResponse::Error(body) => format!(
-            "service-error retriable={} server={} message={}",
+            "service error: retriable={} server={} message={}",
             body.retriable,
             display_text(&body.server),
             display_text(&body.message)
@@ -249,8 +252,8 @@ fn display_text(value: &str) -> String {
 #[derive(Clone)]
 /// Mock-controller gRPC service used by external integration test runners.
 ///
-/// Provides runtime policy replacement, state reset, request inspection, and
-/// graceful shutdown for the same in-memory emulator state.
+/// Replaces the policy, resets state, inspects requests, and stops the emulator.
+/// All operations use the same in-memory emulator state.
 pub(crate) struct ControllerService {
     pub(crate) state: Arc<Mutex<EmulatorState>>,
     pub(crate) shutdown_sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
@@ -276,7 +279,7 @@ impl TacacsAgentMockController for ControllerService {
             .await
             .replace_policy(policy)
             .map_err(|error| Status::invalid_argument(format!("Invalid policy: {error}")))?;
-        log::info!("controller loaded new OPA/Rego policy");
+        log::info!("controller loaded an OPA/Rego policy");
         Ok(Response::new(controller::LoadPolicyReply {}))
     }
 
@@ -302,7 +305,7 @@ impl TacacsAgentMockController for ControllerService {
             .map(controller::CapturedIpcRequest::try_from)
             .collect::<anyhow::Result<Vec<_>>>()
             .map_err(|error| Status::internal(error.to_string()))?;
-        log::debug!("controller returned {} captured request(s)", requests.len());
+        log::debug!("controller returned {} captured requests", requests.len());
         Ok(Response::new(controller::GetCapturedRequestsReply { requests }))
     }
 

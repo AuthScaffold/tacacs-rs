@@ -1,8 +1,8 @@
 # SONiC ConfigDB integration
 
-`tacacsrs-agentd` can run as a native SONiC service, sourcing its TACACS+
+`tacacsrs-agentd` can run as a native SONiC service. It sources its TACACS+
 configuration from SONiC's Redis-backed Configuration Database (CONFIG_DB,
-database index `4`) and reacting to ConfigDB changes via Redis keyspace
+database index `4`) and reacts to ConfigDB changes through Redis keyspace
 notifications.
 
 This document covers the runtime side (how the daemon talks to ConfigDB).
@@ -12,10 +12,10 @@ host is covered in [Running tacacsrs-agentd as a SONiC Docker container](sonic-a
 
 ## Architecture
 
-The agent does not depend directly on Redis. Instead, configuration sources
-are abstracted behind the `tacacsrs-datastore::ConfigDatastore` trait, and
-the SONiC bridge (`tacacsrs-sonic::SonicConfigDb`) is one concrete backend.
-Any future vendor datastore (for example a different NOS, a YAML config
+The agent does not depend directly on Redis. The `tacacsrs-datastore::ConfigDatastore`
+trait abstracts configuration sources, and the SONiC bridge
+(`tacacsrs-sonic::SonicConfigDb`) is one concrete backend.
+Any future vendor datastore (for example a different NOS, a YAML configuration
 service, or a remote management plane) can be plugged in by implementing the
 same trait.
 
@@ -26,17 +26,18 @@ same trait.
                                             |
                        +--------------------+----------------------+
                        |                                           |
-              +----------------+                     +-----------------------+
-              | StaticDatastore|                     | SonicConfigDb         |
-              |  (file / CLI)  |                     |  (Redis CONFIG_DB)    |
-              +----------------+                     +-----------------------+
+              +------------------+                   +-----------------------+
+              | CliFileDatastore |                   | SonicConfigDb         |
+              |  (file / CLI)    |                   |  (Redis CONFIG_DB)    |
+              +------------------+                   +-----------------------+
 ```
 
-`StaticDatastore` is used for file-based and CLI-based configuration; it
-returns a single snapshot and never emits change events. `SonicConfigDb`
-reads `TACPLUS|global` and `TACPLUS_SERVER|*` rows from Redis and emits
-change events whenever a TACPLUS-prefixed key changes (subject to the
-configured debounce window).
+`CliFileDatastore` handles file-based and CLI-based configuration. CLI-only
+input returns one snapshot. Watched YANG, certificate, and key files emit
+change events. `SonicConfigDb` reads `TACPLUS|global`,
+`TACPLUS_SERVER|*`, `TACPLUS_SERVER_TLS|*`, and
+`TACPLUS_FORWARDER|global`. It emits change events when a
+TACPLUS-prefixed key changes, subject to the configured debounce window.
 
 ## ConfigDB schema mapping
 
@@ -59,42 +60,55 @@ TACPLUS_SERVER|192.0.2.10
 
 Each `TACPLUS_SERVER` row becomes one `TacacsPlusServer` in the YANG
 configuration. Per-server fields fall back to the matching `TACPLUS|global`
-field when absent. SONiC `priority` values are in the range `1..64`; higher
+field when absent. SONiC `priority` values are in the range `1..64`. Higher
 numbers are preferred and therefore appear earlier in the daemon's failover
 order. The synthesized YANG `name` for each server is
 `sonic-server-<address>`.
 
-### Forward-compatible extension keys
+### Compatibility extension keys
 
-Operators and SONiC schema maintainers can experiment with TLS-aware fields
-ahead of upstream ConfigDB schema work by adding the following keys to
-`TACPLUS_SERVER|<addr>`:
+Compatibility rows accept these project extension keys:
 
-| Key                 | YANG field                    | Notes                                                                                              |
-|---------------------|-------------------------------|----------------------------------------------------------------------------------------------------|
-| `use_tls`           | `server-authentication: {}`   | Accepts the same boolean forms as `sni_enabled`; also supported on the global TACPLUS row          |
-| `domain_name`       | `domain-name`                 | Used as SNI hostname                                                                               |
-| `sni_enabled`       | `sni-enabled`                 | `true`/`false`/`yes`/`no`/`1`/`0`                                                                  |
-| `single_connection` | `single-connection`           | Boolean                                                                                            |
-| `vrf_name`          | `vrf-instance`                | VRF name for outbound traffic                                                                      |
-| `src_ip`            | `source-ip`                   | Mutually exclusive with `src_intf`                                                                 |
-| `src_intf`          | `source-interface`            | Falls back to the global TACPLUS row                                                               |
-| `server_type`       | `server-type`                 | Defaults to `all`; tokens accept `authentication`, `authorization`, `accounting`, or `all`         |
+| Key                 | YANG field         | Notes |
+|---------------------|--------------------|-------|
+| `single_connection` | `single-connection`| Boolean |
+| `vrf_name`          | `vrf-instance`     | VRF name for outbound traffic |
+| `src_ip`            | `source-ip`        | Mutually exclusive with `src_intf` |
+| `src_intf`          | `source-interface` | Falls back to the global `TACPLUS` row |
+| `server_type`       | `server-type`      | Defaults to `all` |
 
-Unknown fields are logged at `warn` level and ignored, so legacy operator
-annotations on TACPLUS rows do not break the agent.
+The bridge tolerates unknown compatibility fields and logs their names. It
+does not log their values. Compatibility rows reject `use_tls`, `domain_name`,
+and `sni_enabled`. Put TLS configuration in `TACPLUS_SERVER_TLS`.
 
-### Capability gap (TLS)
+### Version-1 TLS and forwarder tables
 
-SONiC's upstream TACACS+ ConfigDB schema does not yet expose certificate
-material, trust anchors, TLS 1.3 ePSKs, or other TLS-only fields from the
-YANG model. Until SONiC adopts a richer schema, the bridge supports the
-shared-secret / obfuscation path (`passkey`) plus a forward-compatible
-`use_tls` extension that selects the empty `server-authentication` container
-used by `tacon --use-tls` when no explicit certificate material is configured.
-The mapping is structured so that promoting richer TLS support upstream will
-only require new ConfigDB fields and a corresponding update to
-`tacacsrs_sonic::mapping`; no daemon-level plumbing changes will be required.
+Each `TACPLUS_SERVER_TLS|<addr>` row defines one TLS 1.3 external PSK (EPSK)
+server:
+
+| Key | Requirement |
+|-----|-------------|
+| `psk_identity` | Required external identity |
+| `psk_secret_ref` | Required opaque EPSK object ID |
+| `priority` | Optional value from `1` through `64`; default `1` |
+| `tcp_port` | Optional TLS port; default `449` |
+| `timeout` | Optional timeout from `1` through `60` seconds; default `5` |
+| `domain_name` | Optional SNI name |
+| `sni_enabled` | Optional boolean; requires `domain_name` when true |
+| `single_connection` | Optional boolean; default false |
+| `psk_hash` | `sha-256` or `sha-384`; default `sha-256` |
+| `psk_key_exchange` | `psk-dhe` or `psk-only`; default `psk-dhe` |
+| `psk_key_exchange_groups` | Optional colon-separated groups for `psk-dhe` |
+
+The production resolver reads `psk_secret_ref` from
+`/etc/sonic/tacacs/credentials/epsk/<id>`. The credential file must satisfy
+the ownership, permission, link-count, and size checks in
+[`tacacsrs-sonic`](../libraries/tacacsrs_sonic/README.md).
+
+`TACPLUS_FORWARDER|global` controls the local raw TACACS+ proxy listener. Its
+`local_listen_address` field is required and must be loopback.
+`local_listen_port` is optional and defaults to `49`. The TLS and forwarder
+tables reject unknown fields.
 
 ## Running on SONiC
 
@@ -111,7 +125,17 @@ redis-cli -n 4 CONFIG SET notify-keyspace-events KEA
 `KEA` enables `K`eyspace events, `E`vent expiration, and `A`ll command
 classes. The bridge subscribes to `__keyspace@4__:TACPLUS*`.
 
-### 2. Install the systemd unit
+### 2. Configure the local forwarder
+
+The daemon reads its proxy listener from `TACPLUS_FORWARDER|global` before it
+binds any service listener:
+
+```bash
+redis-cli -n 4 HSET 'TACPLUS_FORWARDER|global' \
+    local_listen_address 127.0.0.1 local_listen_port 49
+```
+
+### 3. Install the systemd unit
 
 The repository ships an example unit file at
 [`executables/tacacsrs_agentd/sonic/tacacsrs-agentd.service`](../executables/tacacsrs_agentd/sonic/tacacsrs-agentd.service).
@@ -127,7 +151,7 @@ sudo systemctl enable --now tacacsrs-agentd.service
 The unit ordering pulls in `database.service` so the daemon starts only
 after CONFIG_DB is available.
 
-### 3. Register in the SONiC `FEATURE` table
+### 4. Register in the SONiC `FEATURE` table
 
 `executables/tacacsrs_agentd/sonic/feature_table.json` is a sample row that
 exposes the agent through SONiC's standard `config feature` CLI:
@@ -138,7 +162,7 @@ config save -y
 config feature state tacacsrs-agentd enabled
 ```
 
-### 4. Start the daemon manually (for development)
+### 5. Start the daemon manually (for development)
 
 ```bash
 sudo /usr/local/bin/tacacsrs-agentd \
@@ -170,14 +194,14 @@ mutations, and output assertions:
 .\lde\run-sonic-configdb-smoke.ps1
 ```
 
-From WSL, make sure Cargo is on the PowerShell process path:
+From WSL, make sure that Cargo is on the PowerShell process path:
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
 pwsh -NoLogo -NoProfile -File ./lde/run-sonic-configdb-smoke.ps1
 ```
 
-To validate the SONiC-style Unix-domain socket path instead of TCP, run the
+To validate the SONiC-style Unix domain socket path instead of TCP, run the
 same helper from WSL with `-RedisTransport UnixSocket`:
 
 ```bash
@@ -201,11 +225,13 @@ for key in $(redis-cli -n 4 --raw KEYS 'TACPLUS_SERVER|*'); do
     redis-cli -n 4 DEL "$key"
 done
 
+redis-cli -n 4 HSET 'TACPLUS_FORWARDER|global' \
+    local_listen_address 127.0.0.1 local_listen_port 49
 redis-cli -n 4 HSET 'TACPLUS|global' \
     timeout 5 passkey shared-secret auth_type pap src_intf Management0
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' \
     priority 64 tcp_port 49 timeout 10 passkey server-secret \
-    domain_name tacacs-a.example.test sni_enabled true single_connection true
+    single_connection true
 ```
 
 Run the `tacacsrs-sonic` watcher example to validate the datastore contract
@@ -217,8 +243,8 @@ cargo run -p tacacsrs-sonic --example configdb_watch -- \
     --redis-db 4
 ```
 
-Then mutate ConfigDB rows and confirm the example emits a `ConfigChange` with
-the expected delta:
+Then mutate ConfigDB rows. Make sure that the example emits a `ConfigChange`
+with the expected delta:
 
 ```bash
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.20' \
@@ -235,8 +261,8 @@ Expected results:
 2. Adding `TACPLUS_SERVER|192.0.2.20` reports an added server.
 3. Changing `TACPLUS_SERVER|192.0.2.10.timeout` reports a modified server.
 4. Deleting `TACPLUS_SERVER|192.0.2.20` reports a removed server.
-5. Updating `TACPLUS|global` emits a change event after the debounce window;
-   the exact delta depends on whether the global value changes the effective
+5. Updating `TACPLUS|global` emits a change event after the debounce window.
+   The exact delta depends on whether the global value changes the effective
    validated YANG snapshot.
 
 To validate the daemon path, start `tacacsrs-agentd` against the same Redis
@@ -251,23 +277,34 @@ cargo run -p tacacsrs-agentd -- \
     -vv
 ```
 
-Mutating the Redis rows should produce the documented configuration-change log
+Mutating the Redis rows produces the documented configuration-change log
 message. The daemon atomically applies each valid filtered snapshot to new
 sessions without restarting. In-flight sessions keep their existing server-set
 snapshot and connection handles.
 
-## Hot reload behaviour
+## Hot reload behavior
 
 When a TACPLUS-prefixed key changes in CONFIG_DB, the runtime:
 
 1. Coalesces additional changes that arrive within a short debounce window.
-2. Re-reads the full TACPLUS / TACPLUS_SERVER tables.
-3. Validates the new snapshot against the YANG schema.
-4. Emits a typed changed or rejected event.
-5. Filters proxy self-loops and validates the complete candidate.
-6. Atomically replaces the server set for new sessions while preserving unchanged cached connections.
+2. Tries to read and validate all four supported tables up to three times.
+3. If validation fails, emits `CandidateRejected` and keeps the active server set.
+4. If the server configuration changed, emits `Changed`.
+5. Filters proxy self-loops and atomically applies a valid changed server set.
+6. Emits `RestartRequired` when the forwarder row differs from the bound listener.
 
-Invalid candidates leave the previous known-good configuration active and mark runtime health stale/degraded. If Redis is unavailable at process startup, enabled listeners still bind and liveness serves while startup/readiness remain not serving. The daemon retries with capped jittered backoff. Subscription setup failures and ended streams mark the snapshot stale, trigger a fresh load to cover missed changes, and resubscribe without exiting.
+A forwarder-only change does not replace the server set. After a rejected
+reload, the datastore waits for the next ConfigDB notification.
+
+Before listener creation, the daemon waits for Redis and a valid
+`TACPLUS_FORWARDER|global` row. It retries with capped backoff and does not bind
+either listener during this bootstrap phase.
+
+After listener startup, invalid server candidates leave the previous known-good
+configuration active and mark runtime health stale or degraded. A valid
+snapshot satisfies the configuration part of startup. Readiness also requires
+at least one eligible server. Subscription setup errors and ended streams mark
+the snapshot stale, trigger a fresh load, and resubscribe without exiting.
 
 ## Operational commands
 
@@ -286,8 +323,8 @@ journalctl -u tacacsrs-agentd.service -f
 ## Secret handling
 
 The bridge currently reads `passkey` directly from CONFIG_DB. The
-`ConfigDatastore` trait does not constrain how secrets are fetched, so a
-future implementation can compose a secret-resolution backend (HashiCorp
-Vault, Azure Key Vault, encrypted ConfigDB fields, etc.) by wrapping
-`SonicConfigDb` and rewriting the per-server `shared-secret` before
+`ConfigDatastore` trait does not constrain how secrets are fetched. A future
+implementation can compose a secret-resolution backend, for example HashiCorp
+Vault, Azure Key Vault, or encrypted ConfigDB fields. It can wrap
+`SonicConfigDb` and rewrite the per-server `shared-secret` before
 returning the snapshot from `load`.

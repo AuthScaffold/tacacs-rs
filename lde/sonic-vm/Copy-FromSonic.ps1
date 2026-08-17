@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Copy a file or directory from the SONiC QEMU VM to the local machine.
+    Copies a file or directory from the SONiC QEMU VM to the local machine.
 .EXAMPLE
     .\lde\sonic-vm\Copy-FromSonic.ps1 -RemotePath /data/configdb_watch.out -LocalPath target\tmp\configdb_watch.out
 #>
@@ -35,6 +35,6 @@ if (-not [string]::IsNullOrWhiteSpace($localParent)) {
 }
 
 & scp @scpArgs "${target}:$RemotePath" $LocalPath
-if ($LASTEXITCODE -ne 0) { throw "scp from SONiC VM failed with exit code $LASTEXITCODE." }
+if ($LASTEXITCODE -ne 0) { throw "scp from the SONiC VM returned exit code $LASTEXITCODE." }
 
 Write-Host "Copied ${target}:$RemotePath to $LocalPath"

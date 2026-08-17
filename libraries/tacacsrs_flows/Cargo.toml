@@ -4,7 +4,7 @@ version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "TACACS+ protocol flow implementations decoupled from transport/session internals"
+description = "TACACS+ session flows that are independent of connection internals."
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }

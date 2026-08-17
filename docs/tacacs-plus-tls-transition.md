@@ -1,13 +1,13 @@
 # Transition Plain TACACS+ Clients to TACACS+ over TLS
 
-This guide is for hosts that already use local TACACS+ clients such as
+This guide is for hosts that already use local TACACS+ clients, such as
 [`pam_tacplus`](https://github.com/kravietz/pam_tacplus) or
-[`audisp-tacplus`](https://github.com/daveolson53/audisp-tacplus), but need to
+[`audisp-tacplus`](https://github.com/daveolson53/audisp-tacplus). These hosts need to
 move the network path to TACACS+ over TLS.
 
 Those clients speak classic TACACS+ over TCP. `tacacsrs-agentd` can run on the
-same host as a local TACACS+ proxy, accept the existing client traffic on
-loopback, and open protected upstream connections to TACACS+ servers.
+same host as a local TACACS+ proxy. It accepts the existing client traffic on
+loopback, and opens protected upstream connections to TACACS+ servers.
 
 ```text
 pam_tacplus / audisp-tacplus
@@ -40,7 +40,7 @@ Move these responsibilities from each legacy client into `tacacsrs-agentd`:
 
 | Concern | Before | After |
 |---------|--------|-------|
-| Upstream server list | Repeated `server=` entries in PAM or audisp config | `--server-addr` flags or `--config` in `tacacsrs-agentd` |
+| Upstream server list | Repeated `server=` entries in PAM or audisp configuration | `--server-addr` flags or `--config` in `tacacsrs-agentd` |
 | Upstream transport security | None, because the client only speaks classic TACACS+ | `--use-tls`, mTLS, TLS PSK-DHE, or TLS PSK-only in `tacacsrs-agentd` |
 | Failover | Client-specific server-list behavior | Ordered upstream failover in `tacacsrs-agentd` |
 | Local client target | Remote TACACS+ server | Loopback TACACS+ proxy endpoint |
@@ -57,8 +57,8 @@ The downstream client hop has its own TACACS+ obfuscation policy and does not fo
 
 - Outside SONiC mode, keep the legacy client `secret=` value aligned with `tacacsrs-agentd --proxy-shared-secret`.
 - In SONiC mode, configure the local loopback proxy row with the legacy client secret. The daemon filters that self-targeting row from the upstream set and uses its resolved `passkey` for downstream obfuscation.
-- If neither source provides a downstream secret, verify that the legacy client can send TACACS+ packets with the unencrypted flag.
-- Upstream servers may use different classic shared secrets or TLS credentials; failover does not change the local client secret.
+- If neither source provides a downstream secret, make sure that the legacy client can send TACACS+ packets with the unencrypted flag.
+- Upstream servers can use different classic shared secrets or TLS credentials. Failover does not change the local client secret.
 
 TLS protects the upstream connection, but it does not replace the downstream
 TACACS+ packet format expected by `pam_tacplus` or `audisp-tacplus`.
@@ -67,9 +67,9 @@ TACACS+ packet format expected by `pam_tacplus` or `audisp-tacplus`.
 
 Use a loopback TCP endpoint for `pam_tacplus` and `audisp-tacplus` because these
 clients are normal TACACS+ TCP clients. Port `9049` is useful for testing because
-it does not require privileged bind rights. Use `127.0.0.1:49` only when the
-legacy client cannot be pointed at a non-standard port and the daemon has the
-required permissions.
+it does not require privileged bind rights. If the legacy client cannot be
+pointed at a non-standard port and the daemon has the required permissions,
+use `127.0.0.1:49`.
 
 PAP places the password in the TACACS+ Authentication START body. The proxy and
 typed `AuthenticatePap` RPC permit PAP over the operator-configured upstream
@@ -214,8 +214,8 @@ protocol=ssh
 ```
 
 Then restart or reload auditd/audisp using the operating-system procedure for the
-host. Validate by producing a known audited command event and confirming that the
-upstream TACACS+ server receives the accounting record through `tacacsrs-agentd`.
+host. Validate by producing a known audited command event, then make sure that
+the upstream TACACS+ server receives the accounting record through `tacacsrs-agentd`.
 
 ## Rollout Plan
 
@@ -224,19 +224,19 @@ upstream TACACS+ server receives the accounting record through `tacacsrs-agentd`
 3. Configure the upstream TLS mode that matches the TACACS+ server: server-auth TLS, mTLS, PSK-DHE, or PSK-only.
 4. Test with a non-production PAM service or a controlled auditd event.
 5. Repoint one production consumer at a time to the local proxy endpoint.
-6. After confidence is established, remove direct outbound access from the host to the old plain TACACS+ server path so only `tacacsrs-agentd` can reach upstream TACACS+ servers.
+6. After confidence is established, remove direct outbound access from the host to the old plain TACACS+ server path. Only `tacacsrs-agentd` can then reach upstream TACACS+ servers.
 
-## Behavioral Differences to Check
+## Behavioral Differences
 
 - `acct_all` fan-out is not the same as agent failover. Proxy mode sends each downstream connection to one selected upstream server. If accounting must be written to multiple collectors, plan a separate fan-out path.
-- `pam_tacplus` records the successful authentication server for later account/session phases. After the cutover, that server is always the local proxy; upstream server choice is owned by `tacacsrs-agentd`.
-- Debug logging in these legacy clients may include passwords or secrets. Use debug briefly, collect logs carefully, and disable it after validation.
-- Local loopback TACACS+ is still plain TACACS+. Bind the proxy to loopback, avoid exposing the proxy endpoint on non-loopback interfaces, and restrict host access to the process and config files that need it.
+- `pam_tacplus` records the successful authentication server for later account/session phases. After the cutover, that server is always the local proxy. Upstream server choice is owned by `tacacsrs-agentd`.
+- Debug logging in these legacy clients can include passwords or secrets. Use debug briefly, collect logs carefully, and disable it after validation.
+- Local loopback TACACS+ is still plain TACACS+. Bind the proxy to loopback. Avoid exposing the proxy endpoint on non-loopback interfaces. Restrict host access to the process and configuration files that need it.
 
 ## Rollback
 
 Keep a copy of the previous PAM and audisp configuration. Roll back by restoring
-the previous remote `server=` entries, or by leaving the clients pointed at the
-local proxy while starting `tacacsrs-agentd` against the old plain upstream
+the previous remote `server=` entries. Alternatively, leave the clients pointed
+at the local proxy, and start `tacacsrs-agentd` against the old plain upstream
 server without `--use-tls`. The second option keeps the local configuration
 stable while isolating the rollback to the daemon command line or service unit.

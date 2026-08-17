@@ -3,12 +3,12 @@ use tacacsrs_messages::packet::Packet;
 use tacacsrs_messages::packet::PacketTrait;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-/// Result of writing a packet to the stream.
+/// Result of writing a packet to a connection.
 #[derive(Debug)]
 pub enum PacketWriteResult {
-    /// Successfully wrote the packet.
+    /// The packet was written.
     Success,
-    /// Failed to write to stream.
+    /// Writing the packet failed.
     WriteError(std::io::Error),
 }
 
@@ -18,7 +18,7 @@ pub struct PacketWriter {
 }
 
 impl PacketWriter {
-    /// Creates a new `PacketWriter` with an optional obfuscation key.
+    /// Creates a `PacketWriter` with an optional obfuscation key.
     ///
     /// # Arguments
     /// * `obfuscation_key` - Optional key used to obfuscate outgoing packets.
@@ -122,7 +122,7 @@ mod tests {
             PacketWriteResult::Success => {
                 assert_eq!(buffer.into_inner(), expected_bytes);
             }
-            PacketWriteResult::WriteError(error) => panic!("Expected Success result: {error}"),
+            PacketWriteResult::WriteError(error) => panic!("expected success: {error}"),
         }
     }
 
@@ -135,7 +135,7 @@ mod tests {
 
         let prepared = packet_writer.prepare_packet(packet);
 
-        // Without obfuscation key, packet should be unchanged
+        // Without an obfuscation key, the packet must not change.
         assert!(prepared
             .header()
             .flags
@@ -153,29 +153,29 @@ mod tests {
 
         let prepared = packet_writer.prepare_packet(packet);
 
-        // With obfuscation key, packet should be obfuscated (flag removed, body changed)
+        // With an obfuscation key, the flag is removed and the body changes.
         assert!(!prepared
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
-        assert_ne!(prepared.body(), &body); // Body should be different after obfuscation
+        assert_ne!(prepared.body(), &body); // Obfuscation changes the body.
     }
 
     #[tokio::test]
     async fn test_prepare_packet_already_obfuscated() {
         let body = vec![0x01, 0x02, 0x03, 0x04];
-        // Packet without the unencrypted flag (already obfuscated)
+        // A packet without the unencrypted flag is already obfuscated.
         let packet = create_test_packet(12345, body.clone(), TacacsFlags::empty());
         let obfuscation_key = b"test_key".to_vec();
         let packet_writer = PacketWriter::new(Some(obfuscation_key));
 
         let prepared = packet_writer.prepare_packet(packet);
 
-        // Already obfuscated packet should not be double-obfuscated
+        // Do not obfuscate an obfuscated packet again.
         assert!(!prepared
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
-        assert_eq!(prepared.body(), &body); // Body should remain unchanged
+        assert_eq!(prepared.body(), &body); // The body must not change.
     }
 }

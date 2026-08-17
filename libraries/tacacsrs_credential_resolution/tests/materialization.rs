@@ -89,7 +89,7 @@ async fn epsk_materialization_moves_secret_and_clears_reference() {
             }
         }"#,
     )
-    .expect("central EPSK source");
+    .expect("central EPSK configuration must parse");
     let original = source.clone();
 
     let materialized = enumerate_materialized_servers(
@@ -100,22 +100,25 @@ async fn epsk_materialization_moves_secret_and_clears_reference() {
         &ValidationOptions::default(),
     )
     .await
-    .expect("EPSK materialization");
+    .expect("EPSK materialization must succeed");
 
     assert_eq!(source, original, "source snapshot must remain unchanged");
     let epsk = materialized[0]
         .client_identity
         .as_ref()
         .and_then(|identity| identity.tls13_epsk.as_ref())
-        .expect("materialized EPSK");
+        .expect("materialized EPSK must exist");
     assert!(epsk.central_keystore_reference.is_none());
-    let inline = epsk.inline_definition.as_ref().expect("inline EPSK");
+    let inline = epsk
+        .inline_definition
+        .as_ref()
+        .expect("inline EPSK must exist");
     assert_eq!(inline.key_format, Some(SymmetricKeyFormat::OctetStringKeyFormat));
     assert_eq!(
         inline
             .cleartext_symmetric_key
             .as_ref()
-            .expect("symmetric key")
+            .expect("symmetric key must exist")
             .expose_secret(),
         b"resolved-epsk-material",
     );
@@ -147,7 +150,7 @@ async fn certificate_materialization_preserves_formats_names_and_order() {
             }
         }"#,
     )
-    .expect("central certificate source");
+    .expect("central certificate configuration must parse");
 
     let materialized = enumerate_materialized_servers(
         &source,
@@ -157,15 +160,21 @@ async fn certificate_materialization_preserves_formats_names_and_order() {
         &ValidationOptions::default(),
     )
     .await
-    .expect("certificate materialization");
+    .expect("certificate materialization must succeed");
     let server = &materialized[0];
-    let identity = server.client_identity.as_ref().expect("client identity");
-    let certificate = identity.certificate.as_ref().expect("certificate");
+    let identity = server
+        .client_identity
+        .as_ref()
+        .expect("client identity must exist");
+    let certificate = identity
+        .certificate
+        .as_ref()
+        .expect("certificate must exist");
     assert!(certificate.central_keystore_reference.is_none());
     let inline = certificate
         .inline_definition
         .as_ref()
-        .expect("inline certificate");
+        .expect("inline certificate must exist");
     assert_eq!(inline.public_key_format, Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),);
     assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat),);
     assert_eq!(inline.public_key.as_deref(), Some(b"resolved-public-key".as_slice()));
@@ -174,7 +183,7 @@ async fn certificate_materialization_preserves_formats_names_and_order() {
         inline
             .cleartext_private_key
             .as_ref()
-            .expect("private key")
+            .expect("private key must exist")
             .expose_secret(),
         b"resolved-private-key",
     );
@@ -182,24 +191,30 @@ async fn certificate_materialization_preserves_formats_names_and_order() {
     let authentication = server
         .server_authentication
         .as_ref()
-        .expect("server authentication");
-    let ca = authentication.ca_certs.as_ref().expect("CA certificates");
+        .expect("server authentication must exist");
+    let ca = authentication
+        .ca_certs
+        .as_ref()
+        .expect("CA certificates must exist");
     assert!(ca.central_truststore_reference.is_none());
     let ca_names = ca
         .inline_definition
         .as_ref()
-        .expect("inline CA certificates")
+        .expect("inline CA certificates must exist")
         .certificate
         .iter()
         .map(|certificate| certificate.name.as_str())
         .collect::<Vec<_>>();
     assert_eq!(ca_names, ["ca-primary", "ca-secondary"]);
-    let ee = authentication.ee_certs.as_ref().expect("EE certificates");
+    let ee = authentication
+        .ee_certs
+        .as_ref()
+        .expect("EE certificates must exist");
     assert!(ee.central_truststore_reference.is_none());
     assert_eq!(
         ee.inline_definition
             .as_ref()
-            .expect("inline EE certificates")
+            .expect("inline EE certificates must exist")
             .certificate[0]
             .name,
         "ee-primary",
@@ -237,7 +252,7 @@ async fn mixed_inline_local_bundle_and_central_servers_materialize_together() {
             }
         }"#,
     )
-    .expect("mixed source");
+    .expect("mixed credential configuration must parse");
 
     let materialized = enumerate_materialized_servers(
         &source,
@@ -247,26 +262,26 @@ async fn mixed_inline_local_bundle_and_central_servers_materialize_together() {
         &ValidationOptions::default(),
     )
     .await
-    .expect("mixed materialization");
+    .expect("mixed credential materialization must succeed");
 
     assert_eq!(materialized.len(), 2);
     assert_eq!(
         materialized[0]
             .shared_secret
             .as_ref()
-            .expect("inline secret")
+            .expect("inline shared secret must exist")
             .expose_secret(),
         "inline-secret",
     );
     let identity = materialized[1]
         .client_identity
         .as_ref()
-        .expect("client identity");
+        .expect("client identity must exist");
     assert!(identity.credentials_reference.is_none());
     let epsk = identity
         .tls13_epsk
         .as_ref()
-        .expect("EPSK from local bundle");
+        .expect("EPSK from the local bundle must exist");
     assert!(epsk.central_keystore_reference.is_none());
     assert!(epsk.inline_definition.is_some());
 }
@@ -300,8 +315,9 @@ async fn selected_set_failure_returns_no_partial_candidates() {
             }
         }"#,
     )
-    .expect("selected source");
-    let enumerated = tacacsrs_config::enumerate_servers(&source).expect("enumeration");
+    .expect("selected server configuration must parse");
+    let enumerated =
+        tacacsrs_config::enumerate_servers(&source).expect("server enumeration must succeed");
 
     let error = materialize_servers(
         enumerated,
@@ -358,7 +374,7 @@ async fn duplicate_provider_certificate_names_are_rejected_without_values() {
             }
         }"#,
     )
-    .expect("central CA source");
+    .expect("central CA configuration must parse");
 
     let error = enumerate_materialized_servers(
         &source,

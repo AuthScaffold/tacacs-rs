@@ -2,19 +2,19 @@ use serde_json::{Value, json};
 use tacacsrs_config::{YangConfigRoot, parse_yang_json};
 
 fn round_trip(input: &str) -> Value {
-    let parsed = parse_yang_json(input).expect("initial central config should parse");
+    let parsed = parse_yang_json(input).expect("initial central configuration must parse");
     let serialized = serde_json::to_value(YangConfigRoot {
         tacacs_plus: parsed,
     })
-    .expect("central config should serialize");
+    .expect("central configuration must serialize");
     let reparsed = parse_yang_json(
-        &serde_json::to_string(&serialized).expect("serialized config should be JSON"),
+        &serde_json::to_string(&serialized).expect("serialized configuration must be JSON"),
     )
-    .expect("serialized central config should reparse");
+    .expect("serialized central configuration must parse again");
     let reserialized = serde_json::to_value(YangConfigRoot {
         tacacs_plus: reparsed,
     })
-    .expect("reparsed central config should serialize");
+    .expect("reparsed central configuration must serialize");
     assert_eq!(reserialized, serialized);
     serialized
 }

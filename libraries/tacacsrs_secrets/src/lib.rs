@@ -22,9 +22,9 @@ impl SecretBytes {
 
     /// Adopts an already-zeroizing allocation without copying the secret.
     ///
-    /// Use this when the secret was read into a [`Zeroizing<Vec<u8>>`] so the
-    /// bytes stay protected on every path from the initial read through
-    /// ownership by [`SecretBytes`], with no intervening unprotected buffer.
+    /// Use this if code reads the secret into a [`Zeroizing<Vec<u8>>`]. The
+    /// bytes stay protected from the initial read until [`SecretBytes`] owns
+    /// them. No unprotected buffer exists between these steps.
     #[must_use]
     pub fn from_zeroizing(bytes: Zeroizing<Vec<u8>>) -> Self {
         Self(bytes)
@@ -40,8 +40,8 @@ impl SecretBytes {
     ///
     /// This avoids copying secret bytes when ownership must cross into an
     /// external type that requires `Vec<u8>`, such as a generated protobuf
-    /// request. The returned vector no longer zeroizes on drop, so callers
-    /// should keep its lifetime short and must not log or persist it.
+    /// request. The returned vector no longer zeroizes on drop. Callers must
+    /// keep its lifetime short and must not log or persist it.
     #[must_use]
     pub fn into_unprotected_vec(mut self) -> Vec<u8> {
         std::mem::take(&mut *self.0)

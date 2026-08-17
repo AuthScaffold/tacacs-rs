@@ -5,8 +5,8 @@ based on GNU Linux binaries and Debian packages.
 
 ## Rust toolchain
 
-Provision a current stable Rust toolchain inside WSL when the base image does
-not already provide one:
+If the base image does not already provide a current stable Rust toolchain,
+provision one inside WSL:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
@@ -139,13 +139,13 @@ make -C containers/tacacsrs-agentd build REGISTRY=<your-registry> BUILD_VERSION=
 ```
 
 The toolchain and runtime base images are `docker buildx` build arguments
-(`BUILDER_IMAGE` and `RUNTIME_IMAGE`), so downstream builders can substitute
+(`BUILDER_IMAGE` and `RUNTIME_IMAGE`). Downstream builders can substitute
 their own bases without editing the Dockerfile. The default `ENTRYPOINT`/`CMD`
 mirrors the SONiC systemd unit and can be overridden at `docker run` time.
 
 ## Verification
 
-Before enabling SONiC command authorization broadly, verify that:
+Before enabling SONiC command authorization broadly, make sure that:
 
 1. `tacacsrs-agentd` is active and its IPC socket exists.
 2. A manual `tacon` request against the configured endpoint succeeds.

@@ -1,7 +1,7 @@
 //! Shared process shutdown and listener lifecycle coordination.
 //!
-//! One coordinator owns the operating-system signal wait. Listener tasks hold
-//! cloneable receivers and registration guards:
+//! One coordinator waits for operating-system signals. Listener tasks hold
+//! cloneable receivers and registration guards.
 //!
 //! ```text
 //! SIGTERM / Ctrl-C
@@ -37,7 +37,7 @@ impl ShutdownCoordinator {
         }
     }
 
-    /// Starts the single operating-system signal monitor.
+    /// Starts the operating-system signal monitor.
     pub(crate) fn spawn_process_signal_monitor(&self) -> tokio::task::JoinHandle<()> {
         let coordinator = self.clone();
         tokio::spawn(async move {
@@ -46,19 +46,19 @@ impl ShutdownCoordinator {
         })
     }
 
-    /// Withdraws health before broadcasting graceful shutdown.
+    /// Withdraws health and then broadcasts graceful shutdown.
     pub(crate) fn initiate_shutdown(&self) {
         self.health.set_lifecycle(RuntimeLifecycle::Draining);
         self.sender.send_replace(true);
     }
 
-    /// Publishes fatal runtime failure and broadcasts cancellation.
+    /// Publishes a fatal runtime failure and broadcasts cancellation.
     pub(crate) fn fail(&self) {
         self.health.set_lifecycle(RuntimeLifecycle::Failed);
         self.sender.send_replace(true);
     }
 
-    /// Publishes final stopped state after all listener tasks have ended.
+    /// Publishes the final stopped state after all listener tasks stop.
     pub(crate) fn mark_stopped(&self) {
         self.health.set_lifecycle(RuntimeLifecycle::Stopped);
     }
@@ -85,7 +85,7 @@ impl ShutdownReceiver {
     }
 }
 
-/// Publishes listener state and guarantees `Stopped` on every return path.
+/// Publishes listener state and sets `Stopped` on each return path.
 #[derive(Debug)]
 pub(crate) struct ListenerRegistration {
     health: RuntimeHealthPublisher,
@@ -101,7 +101,7 @@ impl ListenerRegistration {
         Self { health, service }
     }
 
-    /// Publishes that the endpoint is configured and accepting work.
+    /// Publishes that the IPC endpoint is bound and accepts work.
     pub(crate) fn mark_bound(&self) {
         let accepted = self.health.set_listener(self.service, ListenerState::Bound);
         debug_assert!(accepted, "cannot bind a disabled listener");
@@ -117,8 +117,7 @@ impl Drop for ListenerRegistration {
     }
 }
 
-/// Waits for a process termination signal that should stop the service from
-/// accepting new local clients.
+/// Waits for a termination signal that stops the service from accepting clients.
 async fn process_shutdown_signal() {
     #[cfg(unix)]
     {
@@ -127,22 +126,22 @@ async fn process_shutdown_signal() {
         if let Ok(mut terminate_signal) = signal(SignalKind::terminate()) {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
-                    log::info!("Received Ctrl-C; initiating graceful shutdown");
+                    log::info!("Received Ctrl-C; starting graceful shutdown");
                 }
                 _ = terminate_signal.recv() => {
-                    log::info!("Received SIGTERM; initiating graceful shutdown");
+                    log::info!("Received SIGTERM; starting graceful shutdown");
                 }
             }
         } else {
             let _ = tokio::signal::ctrl_c().await;
-            log::info!("Received Ctrl-C; initiating graceful shutdown");
+            log::info!("Received Ctrl-C; starting graceful shutdown");
         }
     }
 
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
-        log::info!("Received Ctrl-C; initiating graceful shutdown");
+        log::info!("Received Ctrl-C; starting graceful shutdown");
     }
 }
 

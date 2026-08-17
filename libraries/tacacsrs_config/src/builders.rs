@@ -5,19 +5,18 @@ use crate::{
 };
 use crate::validation::{self, ValidationOptions};
 
-/// Default TLS 1.3 PSK-DHE groups, in preferred `ClientHello` key share order.
+/// Default TLS 1.3 PSK-DHE groups in preferred `ClientHello` key-share order.
 pub const DEFAULT_PSK_DHE_KE_GROUPS: &[PskDheKeSupportedGroup] = &[
     PskDheKeSupportedGroup::Secp384r1,
     PskDheKeSupportedGroup::Secp256r1,
 ];
 
 impl TacacsPlus {
-    /// Creates an empty TACACS+ root with no configured servers or credentials.
+    /// Creates an empty TACACS+ root without servers or credentials.
     ///
-    /// This represents a runtime that is waiting for its first external
-    /// configuration snapshot. Operator-authored static configurations should
-    /// continue to use [`TacacsPlusBuilder::build`] so required-server and
-    /// credential validation is applied.
+    /// Use this value while a runtime waits for its first external
+    /// configuration snapshot. For static configuration, use
+    /// [`TacacsPlusBuilder::build`] to run server and credential validation.
     #[must_use]
     pub const fn empty() -> Self {
         Self {
@@ -35,10 +34,10 @@ impl TacacsPlus {
 /// [`TacacsPlusServerBuilder`] values into the root configuration consumed by
 /// the agent service.
 ///
-/// The shared `client-credentials` / `server-credentials` bundles are
-/// intentionally left empty: in-code construction is expected to inline all
-/// security material directly on each server, bypassing the YANG references
-/// mechanism.
+/// This builder leaves local `client-credentials` and `server-credentials`
+/// bundles empty. A server can contain inline security material or a central
+/// credential reference. It cannot refer to a local bundle that this root does
+/// not define.
 #[derive(Debug, Clone)]
 pub struct TacacsPlusBuilder {
     root: TacacsPlus,
@@ -51,7 +50,7 @@ impl Default for TacacsPlusBuilder {
 }
 
 impl TacacsPlusBuilder {
-    /// Creates an empty root configuration with no servers and no credential bundles.
+    /// Creates an empty root configuration without servers or credential bundles.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -59,7 +58,7 @@ impl TacacsPlusBuilder {
         }
     }
 
-    /// Appends a pre-built [`TacacsPlusServer`] to the root.
+    /// Appends a built [`TacacsPlusServer`] to the root.
     #[must_use]
     pub fn with_server(mut self, server: TacacsPlusServer) -> Self {
         self.root.server.push(server);
@@ -72,11 +71,10 @@ impl TacacsPlusBuilder {
         self.with_server(builder.build())
     }
 
-    /// Validates and returns the constructed [`TacacsPlus`] root.
+    /// Makes sure that the constructed [`TacacsPlus`] root is valid and returns it.
     ///
-    /// Applies the same YANG constraint checks as [`crate::parse_yang_json`],
-    /// including server presence, unique endpoints, SNI requirements, security
-    /// choice constraints, and credential reference integrity.
+    /// This method runs the same YANG constraint checks as
+    /// [`crate::parse_yang_json`].
     ///
     /// # Errors
     ///
@@ -85,12 +83,11 @@ impl TacacsPlusBuilder {
         self.build_with_options(&ValidationOptions::default())
     }
 
-    /// Validates and returns the constructed [`TacacsPlus`] root using the
-    /// supplied validation options.
+    /// Makes sure that the constructed [`TacacsPlus`] root is valid under the
+    /// supplied options and returns it.
     ///
-    /// Behaves identically to [`Self::build`] except that the supplied
-    /// [`ValidationOptions`] are applied during validation, allowing callers
-    /// to opt into specific relaxations.
+    /// This method applies the supplied [`ValidationOptions`] during validation.
+    /// It otherwise behaves like [`Self::build`].
     ///
     /// # Errors
     ///
@@ -108,7 +105,7 @@ pub struct TacacsPlusServerBuilder {
 }
 
 impl TacacsPlusServerBuilder {
-    /// Creates a server builder with the workspace's standard default field values.
+    /// Creates a server builder with the workspace default values.
     #[must_use]
     pub fn new(
         name: impl Into<String>,
@@ -152,10 +149,8 @@ impl TacacsPlusServerBuilder {
 
     /// Selects obfuscation mode using the supplied shared secret.
     ///
-    /// This clears any previously configured TLS identity fields. To add a
-    /// shared secret alongside an already-configured TLS identity (for
-    /// migration purposes), use [`Self::with_shared_secret_alongside_tls`]
-    /// instead.
+    /// This method clears previously configured TLS identity fields. To keep
+    /// TLS during migration, use [`Self::with_shared_secret_alongside_tls`].
     #[must_use]
     pub fn with_shared_secret(mut self, shared_secret: impl Into<String>) -> Self {
         self.server.shared_secret = Some(tacacsrs_secrets::SecretString::new(shared_secret.into()));
@@ -164,12 +159,10 @@ impl TacacsPlusServerBuilder {
         self
     }
 
-    /// Sets the shared secret without affecting any TLS configuration fields.
+    /// Sets the shared secret without changing TLS configuration fields.
     ///
-    /// Use this when constructing a server that has both TLS and a shared
-    /// secret configured simultaneously (e.g. during a migration from legacy
-    /// TACACS+ obfuscation to TLS).  The resulting configuration will only
-    /// pass validation when
+    /// Use this method during a migration that requires TLS and a shared
+    /// secret. The resulting configuration passes validation only when
     /// [`ValidationRelaxation::AllowTlsWithSharedSecret`][crate::ValidationRelaxation::AllowTlsWithSharedSecret]
     /// is active.
     #[must_use]
@@ -369,7 +362,7 @@ mod tests {
     fn root_builder_build_rejects_empty_server_list() {
         let err = TacacsPlusBuilder::new()
             .build()
-            .expect_err("empty server list should be rejected");
+            .expect_err("empty server list must be rejected");
         assert!(err.to_string().contains("at least one"), "unexpected error: {err}");
     }
 
@@ -395,7 +388,7 @@ mod tests {
                 .with_shared_secret("secret"),
             )
             .build()
-            .expect("valid config should build successfully");
+            .expect("valid configuration must build");
 
         assert_eq!(root.server.len(), 2);
         assert_eq!(root.server[0].name, "primary");
@@ -415,9 +408,9 @@ mod tests {
                 .with_shared_secret("secret"),
             )
             .build()
-            .expect("valid config should build successfully");
+            .expect("valid configuration must build");
 
-        let enumerated = enumerate_servers(&root).expect("enumeration should succeed");
+        let enumerated = enumerate_servers(&root).expect("enumeration must succeed");
         assert_eq!(enumerated.len(), 1);
         assert_eq!(enumerated[0].name, "primary");
         assert_eq!(
@@ -443,7 +436,7 @@ mod tests {
             )
             .build();
 
-        assert!(result.is_ok(), "valid config should pass validation: {result:?}");
+        assert!(result.is_ok(), "valid configuration must pass validation: {result:?}");
         let config = result.unwrap();
         assert_eq!(config.server.len(), 1);
         assert_eq!(config.server[0].name, "primary");
@@ -453,7 +446,7 @@ mod tests {
     fn build_rejects_empty_server_list() {
         let result = TacacsPlusBuilder::new().build();
 
-        let err = result.expect_err("empty server list should be rejected");
+        let err = result.expect_err("empty server list must be rejected");
         assert!(err.to_string().contains("at least one"), "unexpected error: {err}");
     }
 
@@ -480,7 +473,7 @@ mod tests {
             )
             .build();
 
-        let err = result.expect_err("duplicate endpoints should be rejected");
+        let err = result.expect_err("duplicate endpoints must be rejected");
         assert!(
             err.to_string().contains("duplicate server address+port"),
             "unexpected error: {err}",
@@ -498,7 +491,7 @@ mod tests {
 
         let result = TacacsPlusBuilder::new().with_server(server).build();
 
-        let err = result.expect_err("sni-enabled without domain-name should be rejected");
+        let err = result.expect_err("sni-enabled without domain-name must be rejected");
         assert!(
             err.to_string().contains("sni-enabled requires domain-name"),
             "unexpected error: {err}",
@@ -513,7 +506,7 @@ mod tests {
 
         let result = TacacsPlusBuilder::new().with_server(server).build();
 
-        let err = result.expect_err("server with no security choice should be rejected");
+        let err = result.expect_err("server without a security choice must be rejected");
         assert!(err.to_string().contains("security"), "unexpected error: {err}");
     }
 }

@@ -21,7 +21,7 @@ pub(super) async fn run_write_loop(
             () = connection.wait_for_close() => {
                 log::info!(
                     target: "tacacsrs_networking::runtime::multiplexed::write_loop",
-                    "Received close signal. Shutting down write handler."
+                    "Received close signal. Stopping the write handler."
                 );
                 let _ = writer.shutdown().await;
                 return Ok(());
@@ -31,7 +31,7 @@ pub(super) async fn run_write_loop(
                 if let Some(packet) = packet { packet } else {
                     log::info!(
                         target: "tacacsrs_networking::runtime::multiplexed::write_loop",
-                        "Channel closed. Shutting down write handler."
+                        "Channel closed. Stopping the write handler."
                     );
                     let _ = writer.shutdown().await;
                     return Ok(());
@@ -43,20 +43,20 @@ pub(super) async fn run_write_loop(
 
         log::trace!(
             target: "tacacsrs_networking::runtime::multiplexed::write_loop",
-            "Received packet for session id {session_id} to send to network"
+            "Received packet for session ID {session_id} to send on the connection"
         );
 
         match packet_writer.write_packet(writer, packet).await {
             PacketWriteResult::Success => {
                 log::trace!(
                     target: "tacacsrs_networking::runtime::multiplexed::write_loop",
-                    "Sent packet for session id {session_id} to network"
+                    "Sent packet for session ID {session_id}"
                 );
             }
             PacketWriteResult::WriteError(error) => {
                 log::error!(
                     target: "tacacsrs_networking::runtime::multiplexed::write_loop",
-                    "Failed to write packet for session id {session_id} due to error: {error}"
+                    "Failed to write packet for session ID {session_id}: {error}"
                 );
                 return Err(error).context("failed to write TACACS+ packet");
             }

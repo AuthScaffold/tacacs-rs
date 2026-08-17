@@ -1,5 +1,5 @@
 name: Package Debian Artifacts
-description: Prepare, build, verify, and collect Debian packages from staged official build assets
+description: Prepare Debian package assets. Then build the packages. Make sure that each package is valid. Then collect the packages.
 
 inputs:
   target:
@@ -40,7 +40,7 @@ runs:
       with:
         package-name: ${{ inputs.package-name }}
 
-    - name: Verify Debian package
+    - name: Make sure that the Debian package is valid
       uses: ./.github/steps/verify-debian-package
       with:
         package-name: ${{ inputs.package-name }}

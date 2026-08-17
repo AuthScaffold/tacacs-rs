@@ -1,8 +1,8 @@
 //! Raw TACACS+ proxy service.
 //!
-//! The proxy accepts one downstream TACACS+ session per local connection,
-//! rewrites only the TACACS+ session id, and forwards packet bodies unchanged
-//! through the managed upstream session selected by [`crate::upstream::manager`].
+//! The proxy accepts downstream TACACS+ sessions on each local connection. It
+//! changes only the TACACS+ session ID and forwards packet bodies without
+//! changes. [`crate::upstream::manager`] selects the managed server session.
 
 mod listener;
 mod service;

@@ -69,7 +69,7 @@ impl AuthenticationStart {
     /// Returns an error if the packet body is too short or contains invalid fields.
     pub fn from_packet(packet: &Packet) -> anyhow::Result<Self> {
         let expected_length = Self::size_from_bytes(packet.body())
-            .context("unable to determine expected length of authentication start packet")?;
+            .context("failed to determine the expected authentication start length")?;
         if packet.body().len() < expected_length {
             anyhow::bail!(
                 "invalid authentication start body length: expected {expected_length}, actual {}",
@@ -83,7 +83,7 @@ impl AuthenticationStart {
     fn size_from_bytes(data: &[u8]) -> anyhow::Result<usize> {
         if data.len() < AUTHENTICATION_START_MIN_LENGTH {
             anyhow::bail!(
-                "body too short for authentication start fixed fields: expected at least {}, actual {}",
+                "authentication start body is too short for fixed fields: expected at least {}, actual {}",
                 AUTHENTICATION_START_MIN_LENGTH,
                 data.len()
             );
@@ -102,29 +102,29 @@ impl AuthenticationStart {
         let expected_length = Self::size_from_bytes(data)?;
         if data.len() < expected_length {
             anyhow::bail!(
-                "data too short for authentication start: expected {expected_length}, actual {}",
+                "authentication start data is too short: expected {expected_length}, actual {}",
                 data.len()
             );
         }
 
         let mut cursor = Cursor::new(data);
         let action = TacacsAuthenticationAction::try_from_primitive(
-            cursor.read_u8().context("unable to read action")?,
+            cursor.read_u8().context("failed to read action")?,
         )
         .context("invalid authentication action")?;
-        let priv_lvl = cursor.read_u8().context("unable to read priv_lvl")?;
+        let priv_lvl = cursor.read_u8().context("failed to read priv_lvl")?;
         let authen_type = TacacsAuthenticationType::try_from_primitive(
-            cursor.read_u8().context("unable to read authen_type")?,
+            cursor.read_u8().context("failed to read authen_type")?,
         )
         .context("invalid authentication authen_type")?;
         let authen_service = TacacsAuthenticationService::try_from_primitive(
-            cursor.read_u8().context("unable to read authen_service")?,
+            cursor.read_u8().context("failed to read authen_service")?,
         )
         .context("invalid authentication authen_service")?;
-        let user_len = cursor.read_u8().context("unable to read user_len")?;
-        let port_len = cursor.read_u8().context("unable to read port_len")?;
-        let rem_addr_len = cursor.read_u8().context("unable to read rem_addr_len")?;
-        let data_len = cursor.read_u8().context("unable to read data_len")?;
+        let user_len = cursor.read_u8().context("failed to read user_len")?;
+        let port_len = cursor.read_u8().context("failed to read port_len")?;
+        let rem_addr_len = cursor.read_u8().context("failed to read rem_addr_len")?;
+        let data_len = cursor.read_u8().context("failed to read data_len")?;
 
         let user = read_string(&mut cursor, usize::from(user_len))?;
         let port = read_string(&mut cursor, usize::from(port_len))?;
@@ -272,7 +272,7 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("invalid authentication start body length"),
-            "Error actual: {err}"
+            "Actual error: {err}"
         );
     }
 
@@ -294,6 +294,6 @@ mod tests {
 
         let err = AuthenticationStart::from_bytes(&body).unwrap_err();
 
-        assert!(err.to_string().contains("invalid authentication action"), "Error actual: {err}");
+        assert!(err.to_string().contains("invalid authentication action"), "Actual error: {err}");
     }
 }

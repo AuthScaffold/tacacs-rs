@@ -1,9 +1,9 @@
-//! Dedicated stream-backed client sessions.
+//! Client sessions over dedicated connections.
 //!
-//! A dedicated session may carry a [`SingleConnectPromotion`] when the server
+//! A dedicated session can carry a [`SingleConnectPromotion`] when the server
 //! configuration requested TACACS+ single-connection mode. The session still
-//! runs as a normal request/response exchange; promotion is deferred until the
-//! session completes and the stream can be transferred safely.
+//! runs as a normal request/response exchange. The promotion transfers the
+//! connection after the session completes.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -27,12 +27,12 @@ const SINGLE_CONNECT_RESPONSE_PENDING: u8 = 0;
 const SINGLE_CONNECT_RESPONSE_UNSUPPORTED: u8 = 1;
 const SINGLE_CONNECT_RESPONSE_SUPPORTED: u8 = 2;
 
-/// Deferred promotion from a dedicated stream to a cached shared connection.
+/// Deferred promotion from a dedicated connection to a cached shared connection.
 ///
 /// This is the callback carried by a dedicated session during TACACS+
 /// single-connection negotiation. It records the server response synchronously
-/// when a packet arrives, but it does not convert the stream at that point: the
-/// dedicated session still owns the reader and writer halves until completion.
+/// when a packet arrives. It does not convert the connection at that point. The
+/// dedicated session owns the reader and writer halves until completion.
 ///
 /// ```text
 /// send request with single-connect flag
@@ -51,7 +51,7 @@ const SINGLE_CONNECT_RESPONSE_SUPPORTED: u8 = 2;
 ///     +-- response lacks flag ---> [Unsupported]
 ///                                    |
 ///                                    v
-///                            mark NotSupported and drop stream
+///                            mark NotSupported and drop connection
 /// ```
 pub(crate) struct SingleConnectPromotion {
     shared_connection: Arc<RwLock<Option<Arc<MultiplexedConnection>>>>,
@@ -113,7 +113,7 @@ impl SingleConnectPromotion {
         {
             log::debug!(
                 target: "tacacsrs_networking::single_connect",
-                "Ignoring late single-connect support confirmation after state became NotSupported",
+                "Ignored late single-connect support confirmation because the state is NotSupported",
             );
             return false;
         }
@@ -121,7 +121,7 @@ impl SingleConnectPromotion {
         if *state != new_state {
             log::info!(
                 target: "tacacsrs_networking::single_connect",
-                "Single connection state changed from {:?} to {:?}",
+                "Single-connection state changed from {:?} to {:?}",
                 *state,
                 new_state,
             );
@@ -461,7 +461,7 @@ mod tests {
             .read()
             .await
             .as_ref()
-            .expect("single-connect response should cache upgraded connection")
+            .expect("single-connect response must cache the upgraded connection")
             .clone();
         assert_eq!(*single_connection_state.read().await, SingleConnectionState::Supported);
         assert_eq!(connection.single_connection_state().await, SingleConnectionState::Supported);

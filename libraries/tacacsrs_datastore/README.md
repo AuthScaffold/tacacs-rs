@@ -8,9 +8,9 @@ The crate intentionally has no opinion on _where_ the configuration comes from.
 It defines:
 
 - [`ConfigDatastore`] — an `async` trait with `load` and `subscribe` methods.
-- [`ConfigChange`] — the event emitted when the upstream configuration is
-  reloaded; it carries the new complete `TacacsPlus` snapshot plus a delta
-  computed against the previous snapshot. Consumers should treat the snapshot
+- [`ConfigChange`] — the event emitted when the datastore reloads the upstream
+  configuration. It carries the new complete `TacacsPlus` snapshot plus a delta
+  computed against the previous snapshot. Consumers must treat the snapshot
   as authoritative and use the delta to decide whether incremental handling is
   sufficient or a full rebuild is clearer.
 - [`StaticDatastore`] — an in-memory backend used for CLI / file / test

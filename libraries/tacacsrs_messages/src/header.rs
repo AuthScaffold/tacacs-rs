@@ -31,22 +31,22 @@ impl Header {
     /// Returns an error if `data` is too short or contains invalid field values.
     pub fn from_bytes(data: &[u8]) -> anyhow::Result<Self> {
         if data.len() < TACACS_HEADER_LENGTH {
-            return Err(anyhow::Error::msg("Data too short"));
+            return Err(anyhow::Error::msg("data is too short for a TACACS+ header"));
         }
 
         let major_version = TacacsMajorVersion::try_from_primitive((data[0] >> 4) & 0x0f)
-            .with_context(|| "Invalid major version. Conversion failed with error")?;
+            .with_context(|| "invalid TACACS+ major version")?;
 
         let minor_version = TacacsMinorVersion::try_from_primitive(data[0] & 0x0f)
-            .with_context(|| "Invalid minor version. Conversion failed with error")?;
+            .with_context(|| "invalid TACACS+ minor version")?;
 
-        let tacacs_type = TacacsType::try_from_primitive(data[1])
-            .with_context(|| "Invalid TACACS+ type. Conversion failed with error")?;
+        let tacacs_type =
+            TacacsType::try_from_primitive(data[1]).with_context(|| "invalid TACACS+ type")?;
 
         let seq_no = data[2];
 
         let flags =
-            TacacsFlags::from_bits(data[3]).ok_or_else(|| anyhow::Error::msg("Invalid flags"))?;
+            TacacsFlags::from_bits(data[3]).ok_or_else(|| anyhow::Error::msg("invalid flags"))?;
 
         let session_id = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
 
@@ -144,18 +144,18 @@ mod tests {
         let header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
-                println!("Failed to create TacacsPacket: {e}");
+                println!("Failed to parse the TACACS+ header: {e}");
                 return;
             }
         };
 
-        assert_eq!(header.major_version as u8, 0xc_u8, "Major version mismatch");
-        assert_eq!(header.minor_version as u8, 1_u8, "Minor version mismatch");
-        assert_eq!(header.tacacs_type as u8, 3_u8, "TACACS+ type mismatch");
-        assert_eq!(header.seq_no, 1, "Sequence number mismatch");
-        assert_eq!(header.flags.bits(), (0xff & 0x01) as u8, "Flags mismatch");
-        assert_eq!(header.session_id as u32, 0xdead_beef_u32, "Session ID mismatch");
-        assert_eq!(header.length, 1, "Length mismatch");
+        assert_eq!(header.major_version as u8, 0xc_u8, "major versions differ");
+        assert_eq!(header.minor_version as u8, 1_u8, "minor versions differ");
+        assert_eq!(header.tacacs_type as u8, 3_u8, "TACACS+ types differ");
+        assert_eq!(header.seq_no, 1, "sequence numbers differ");
+        assert_eq!(header.flags.bits(), (0xff & 0x01) as u8, "flags differ");
+        assert_eq!(header.session_id as u32, 0xdead_beef_u32, "session IDs differ");
+        assert_eq!(header.length, 1, "lengths differ");
     }
 
     #[test]
@@ -166,7 +166,11 @@ mod tests {
         let _header = match Header::from_bytes(binary_data_short) {
             Ok(data) => data,
             Err(e) => {
-                assert!(e.to_string().contains("Data too short"), "Error: {e}");
+                assert!(
+                    e.to_string()
+                        .contains("data is too short for a TACACS+ header"),
+                    "Actual error: {e}"
+                );
                 return;
             }
         };
@@ -182,12 +186,15 @@ mod tests {
         let _header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
-                assert!(e.to_string().contains("Invalid major version"), "Error: {e}");
+                assert!(
+                    e.to_string().contains("invalid TACACS+ major version"),
+                    "Actual error: {e}"
+                );
                 return;
             }
         };
 
-        unreachable!("Invalid major version. Conversion should have failed with error.");
+        unreachable!("an invalid major version must cause conversion to fail");
     }
 
     #[test]
@@ -198,12 +205,15 @@ mod tests {
         let _header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
-                assert!(e.to_string().contains("Invalid minor version"), "Error: {e}");
+                assert!(
+                    e.to_string().contains("invalid TACACS+ minor version"),
+                    "Actual error: {e}"
+                );
                 return;
             }
         };
 
-        unreachable!("Invalid minor version. Conversion should have failed with error.");
+        unreachable!("an invalid minor version must cause conversion to fail");
     }
 
     #[test]
@@ -214,31 +224,32 @@ mod tests {
         let _header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
-                assert!(e.to_string().contains("Invalid TACACS+ type"), "Error: {e}");
+                assert!(e.to_string().contains("invalid TACACS+ type"), "Actual error: {e}");
                 return;
             }
         };
 
-        unreachable!("Invalid TACACS+ type. Conversion should have failed with error.");
+        unreachable!("an invalid TACACS+ type must cause conversion to fail");
     }
 
     #[test]
     fn deserialisation_invalid_flags() {
         let mut binary_data = generate_default_packet();
         let flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
-        // Use a combination of bits that are currently invalid to remain robust against future additions
+        // Use bits that are currently invalid. This keeps the test valid if new
+        // flags use other bits.
         let invalid_bits = 0x02 | 0x08 | 0x10 | 0x20;
         binary_data[3] = flags.bits() | invalid_bits;
 
         let _header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
-                assert!(e.to_string().contains("Invalid flags"), "Error: {e}");
+                assert!(e.to_string().contains("invalid flags"), "Actual error: {e}");
                 return;
             }
         };
 
-        unreachable!("Invalid flags. Conversion should have failed with error.");
+        unreachable!("invalid flags must cause conversion to fail");
     }
 
     #[test]
@@ -248,7 +259,7 @@ mod tests {
         let header = match Header::from_bytes(&binary_data) {
             Ok(data) => data,
             Err(e) => {
-                println!("Failed to create TacacsPacket: {e}");
+                println!("Failed to parse the TACACS+ header: {e}");
                 return;
             }
         };
@@ -256,7 +267,7 @@ mod tests {
         let binary_data_serialised = header.to_bytes();
         assert_eq!(
             binary_data, binary_data_serialised,
-            "Serialised data does not match original data"
+            "serialized data differs from the original data"
         );
     }
 }

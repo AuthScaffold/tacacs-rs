@@ -1,17 +1,17 @@
 # session-wrapper
 
-`session-wrapper` is a Linux `x86_64` proof-of-concept login/session wrapper for TACACS+ command authorization. It starts a command under a seccomp user-notification filter so the parent wrapper process can observe every `execve` crossing and decide — in real time — whether to allow or deny command execution.
+`session-wrapper` is a Linux `x86_64` proof-of-concept login/session wrapper for TACACS+ command authorization. It starts a command under a seccomp user-notification filter. The parent wrapper process observes every `execve` crossing. It then decides, in real time, whether to allow or deny the command.
 
 ## Platform support
 
-The real wrapper is compiled only on Linux `x86_64`, where seccomp user notifications and the current `libseccomp-rs` integration are available. Other platforms compile a noop entrypoint so the workspace still builds on macOS and Windows.
+The workspace builds the real wrapper only for Linux `x86_64`. Only this platform provides seccomp user notifications and the current `libseccomp-rs` integration. Other platforms build a noop entry point, so the workspace still builds on macOS and Windows.
 
 ## What it does today
 
 The wrapper:
 
 1. Parses login/session context from CLI arguments.
-2. Optionally loads an exec allowlist (one path per line; built-in defaults always active).
+2. Optionally loads an exec allowlist (one path per line, with built-in defaults always active).
 3. Forks a child process.
 4. Installs a seccomp user-notification filter in the child (notify on `execve`/`execveat`).
 5. Sends the seccomp notification listener fd from child to parent over a Unix socketpair.
@@ -19,12 +19,12 @@ The wrapper:
 7. Releases the child once the supervisor is ready.
 8. Drops the child to the requested UID/GID and execs `COMMAND [ARGS]...`.
 9. For each intercepted exec:
-   - Checks the exec path against the **allowlist** — if matched, responds CONTINUE immediately.
+   - Compares the exec path with the **allowlist**. If the path matches, it responds CONTINUE immediately.
    - Otherwise, sends a TACACS+ **accounting** record to the agent and interprets the response status as allow/deny.
    - On IPC failure, applies the configured `--fail-policy` (closed = deny, open = allow).
 10. Keeps supervising until the initial child **and all subreaped descendants** exit.
 
-The seccomp filter is inherited across `fork`/`clone` and preserved across `exec`, so every nested shell, subshell, background job, and shell script in the wrapped session sends notifications through the same supervisor without any re-installation.
+The kernel inherits the seccomp filter across `fork`/`clone` calls and preserves it across `exec`. As a result, every nested shell, subshell, background job, and shell script in the wrapped session sends notifications to the same supervisor. The wrapper does not reinstall the filter.
 
 ## Module architecture
 
@@ -41,13 +41,13 @@ The seccomp filter is inherited across `fork`/`clone` and preserved across `exec
 
 The child installs seccomp before its first shell exec. Once installed, `execve` blocks in the kernel until the notification listener responds. The parent therefore must receive the notification fd and start a supervisor **before** releasing the child. A ready byte over the control socket provides that synchronization.
 
-The control socket also lets the child report setup failures after fork — without this, failures during privilege drop or exec would look like a generic child exit.
+The control socket also lets the child report setup failures after fork. Without it, failures during privilege drop or exec look like a generic child exit.
 
-The parent marks itself as a child subreaper so descendants that outlive the initial shell are reparented back to the wrapper, keeping the notification fd alive until the whole process tree exits.
+The parent marks itself as a child subreaper. The kernel then reparents descendants that outlive the initial shell back to the wrapper. This keeps the notification fd alive until the whole process tree exits.
 
 ## Allowlist
 
-On startup the supervisor loads an in-memory `HashSet` of executable paths that are always allowed to run without an IPC round-trip. The set always includes built-in defaults for shell infrastructure (`/bin/bash`, `/bin/sh`, `/usr/bin/env`, `/usr/bin/id`, etc.). An optional config file can add more paths:
+On startup the supervisor loads an in-memory `HashSet` of executable paths. It always allows these paths to run without an IPC round-trip. The set always includes built-in defaults for shell infrastructure, such as `/bin/bash`, `/bin/sh`, `/usr/bin/env`, and `/usr/bin/id`. An optional configuration file can add more paths:
 
 ```
 # One absolute path per line; # comments and blank lines are ignored
@@ -60,12 +60,12 @@ Pass the file with `--allowlist /path/to/file`.
 ## Reading exec arguments
 
 When a notification arrives, the supervisor reads the executable path and argv
-from the target process's virtual memory via `/proc/[pid]/mem` and `pread(2)`.
-The notifying thread is held at the syscall boundary, but sibling threads in
+from the target process's virtual memory through `/proc/[pid]/mem` and `pread(2)`.
+The kernel holds the notifying thread at the syscall boundary. Sibling threads in
 the same process can still modify that memory before the kernel resumes the
-syscall. `check_notification_valid()` is called before and during the read to
-detect whether the notification is still pending, for example because the
-process was not killed mid-read; it does not prove argv memory is unchanged.
+syscall. The supervisor calls `check_notification_valid()` before and during the
+read. This call makes sure that the notification is still pending, for example
+because the process was not killed mid-read. It does not prove that the argv memory is unchanged.
 
 ## Seccomp policy
 
@@ -114,7 +114,7 @@ executables/session_wrapper/demo/allow-all-descendants.sh
 executables/session_wrapper/demo/allow-all-interactive-bash.sh
 ```
 
-The basic and descendant demos are non-interactive and suitable for manual smoke testing. The interactive demo starts a wrapped Bash shell; all execs (including nested shells, subshells, and scripts) hit the supervisor.
+The basic and descendant demos are non-interactive and suitable for manual smoke testing. The interactive demo starts a wrapped Bash shell. All execs in that shell, including nested shells, subshells, and scripts, hit the supervisor.
 
 ## Validation
 
@@ -125,7 +125,7 @@ cargo clippy -p session-wrapper --all-targets -- -D warnings
 cargo test -p session-wrapper
 ```
 
-For musl validation, provide a musl-targeted static `libseccomp` and run:
+For musl validation, provide a musl-targeted static `libseccomp`. Then run:
 
 ```bash
 export LIBSECCOMP_LIB_PATH=/path/to/libseccomp-musl/lib
@@ -141,6 +141,6 @@ See [Session Wrapper Smoke and Integration Testing](../../docs/session-wrapper-t
 
 ## Future work
 
-1. Replace the accounting-as-authorization proxy with a proper TACACS+ command-authorization RPC (`TAC_PLUS_AUTHOR`) once it is implemented in the agent.
+1. After the agent implements a proper TACACS+ command-authorization RPC (`TAC_PLUS_AUTHOR`), replace the accounting-as-authorization proxy with it.
 2. Add integration tests that exercise nested bash, `bash -c`, shell scripts, subshells, and background commands against a live TACACS+ test server.
 3. Promote the non-interactive smoke demos into CI.

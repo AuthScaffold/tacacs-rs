@@ -1,8 +1,7 @@
 //! Prepared TLS 1.3 PSK client configuration.
 //!
 //! The PSK transport prepares and validates its OpenSSL context before the
-//! async handshake begins. That keeps configuration errors separate from
-//! per-connection handshake failures and gives callers sharper diagnostics.
+//! async handshake. This separates configuration errors from handshake errors.
 
 use anyhow::{Context, Result};
 use openssl::ssl::Ssl;
@@ -21,7 +20,7 @@ pub(crate) struct PskClientConfig {
 }
 
 impl PskClientConfig {
-    /// Prepares an OpenSSL TLS 1.3 PSK client context for the supplied EPSK config.
+    /// Prepares an OpenSSL TLS 1.3 PSK client context from EPSK configuration.
     pub(crate) fn prepare(server: std::sync::Arc<TacacsPlusServer>) -> Result<Self> {
         let epsk = super::tls13_epsk::config(&server)?;
         let handshake_hash = epsk.hash;
@@ -42,7 +41,7 @@ impl PskClientConfig {
         })
     }
 
-    /// Establishes a TLS 1.3 PSK connection over the provided TCP stream.
+    /// Establishes a TLS 1.3 PSK connection over the provided TCP connection.
     ///
     /// # Errors
     ///
@@ -68,7 +67,7 @@ impl PskClientConfig {
         }
 
         let mut tls_stream = SslStream::new(ssl, stream).with_context(|| {
-            format!("OpenSSL failed to attach TLS 1.3 PSK SSL object to TCP stream for {address}")
+            format!("OpenSSL failed to attach the TLS 1.3 PSK SSL object to the TCP connection for {address}")
         })?;
 
         tokio_openssl::SslStream::connect(std::pin::Pin::new(&mut tls_stream))
@@ -125,7 +124,7 @@ mod tests {
 
         let Err(error) = PskClientConfig::prepare(super::super::tls13_epsk::test_server(epsk))
         else {
-            panic!("invalid PSK credentials should be rejected during preparation");
+            panic!("invalid PSK credentials must fail during preparation");
         };
         let message = format!("{error:#}");
 
@@ -137,6 +136,6 @@ mod tests {
     fn prepare_accepts_materialized_inline_secret() {
         let epsk = epsk_with_key(b"materialized-inline-secret");
         PskClientConfig::prepare(super::super::tls13_epsk::test_server(epsk))
-            .expect("materialized inline OpenSSL context");
+            .expect("materialized inline key must create an OpenSSL context");
     }
 }

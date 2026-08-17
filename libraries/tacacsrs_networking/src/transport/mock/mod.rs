@@ -1,11 +1,10 @@
-//! Mock transport for integration-testing [`MultiplexedConnection`] without a real network.
+//! Mock transport for testing [`MultiplexedConnection`] without a network.
 //!
 //! # Overview
 //!
-//! This module provides [`MockTransport`] — an in-memory transport that implements
-//! the [`Transport`] trait. It acts as a fake TACACS+ server: you pre-configure
-//! reply packets, hand the transport to [`MultiplexedConnection::run_with_halves`], and afterwards
-//! inspect which request packets the connection sent.
+//! [`MockTransport`] is an in-memory implementation of [`Transport`]. It acts as
+//! a TACACS+ server. Configure reply packets, pass the transport to
+//! [`MultiplexedConnection::run_with_halves`], and then inspect the requests.
 //!
 //! # Architecture
 //!
@@ -50,8 +49,8 @@
 //!
 //! | Type | Role |
 //! |------|------|
-//! | [`MockTransport`] | Created by tests, passed to `MultiplexedConnection`. |
-//! | [`MockTransportCoordinator`] | Obtained via [`MockTransport::coordinator()`]. Used to add replies and read captured requests. Safe to use while the connection is running. |
+//! | [`MockTransport`] | Tests create this transport and pass it to `MultiplexedConnection`. |
+//! | [`MockTransportCoordinator`] | [`MockTransport::coordinator()`] returns this handle. Use it to add replies and read captured requests while the connection runs. |
 //!
 //! # Example (simplified)
 //!
@@ -59,18 +58,18 @@
 //! # use std::sync::Arc;
 //! # use tacacsrs_networking::transport::mock::MockTransport;
 //! # async fn example() {
-//! // 1. Build transport + coordinator
+//! // 1. Create the transport and coordinator.
 //! let transport = MockTransport::new();
 //! let coordinator = transport.coordinator();
 //!
-//! // 2. Pre-configure a reply (via coordinator)
+//! // 2. Configure a reply through the coordinator.
 //! // coordinator.add_reply(some_reply_packet).await.unwrap();
 //!
-//! // 3. Hand the transport to a MultiplexedConnection
+//! // 3. Pass the transport to a MultiplexedConnection.
 //! // let conn = Arc::new(MultiplexedConnection::new(Some(b"secret")));
 //! // conn.run(transport).await.unwrap();
 //!
-//! // 4. Inspect what the connection sent
+//! // 4. Inspect the sent requests.
 //! // let reqs = coordinator.get_requests_for_session(session_id).await.unwrap();
 //! # }
 //! ```

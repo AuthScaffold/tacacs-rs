@@ -25,7 +25,7 @@ async fn execute_single_request_via_service(
             .map_err(|error| format!("Accounting failed: {error}")),
         BatchRequest::Authentication(req) => {
             Err(format!(
-                "PAP authentication is not supported in batch files; use the authentication command with a prompt or --password-stdin (user: {})",
+                "PAP authentication is not supported in batch files. Use the authentication command with a prompt or --password-stdin (user: {})",
                 req.user
             ))
         }
@@ -65,7 +65,7 @@ pub async fn execute_batch_via_service(
     let client = service_client(endpoint).await?;
 
     if let Some(description) = &batch.metadata.description {
-        log::info!("Executing batch: {description}");
+        log::info!("Running batch: {description}");
         println!("Batch: {description}");
     }
 

@@ -12,7 +12,7 @@ runs:
         package_files=(raw/packages/*)
         shopt -u nullglob
         if [ "${#package_files[@]}" -eq 0 ]; then
-          echo "Error: no packaged artifacts were downloaded"
+          echo "Error: No downloaded package artifacts exist."
           exit 1
         fi
         cp "${package_files[@]}" release/

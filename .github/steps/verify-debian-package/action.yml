@@ -1,22 +1,22 @@
-name: Verify Debian Package
-description: Run lintian and display Debian package metadata
+name: Make Sure That the Debian Package Is Valid
+description: Run lintian. Then show the Debian package metadata.
 
 inputs:
   package-name:
-    description: 'Debian package name/prefix to verify'
+    description: 'Debian package name or prefix for validation'
     required: true
 
 runs:
   using: composite
   steps:
-    - name: Verify Debian package with lintian
+    - name: Run lintian
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y lintian
         lintian target/debian/${{ inputs.package-name }}_*.deb || true
 
-    - name: Display Debian package info
+    - name: Show Debian package information
       shell: bash
       run: |
         dpkg --info target/debian/${{ inputs.package-name }}_*.deb

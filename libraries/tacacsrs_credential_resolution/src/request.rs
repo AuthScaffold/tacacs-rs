@@ -1,4 +1,4 @@
-//! Closed resolution plans built from provider-neutral config inspection slots.
+//! Closed resolution plans from provider-neutral configuration inspection slots.
 
 use std::fmt;
 
@@ -27,7 +27,7 @@ impl RequestSlot {
     }
 }
 
-/// Expected resolved material variant for a request.
+/// Expected resolved credential variant for a request.
 #[derive(Debug, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CredentialKind {
     /// End-entity certificate plus private key.
@@ -40,7 +40,7 @@ pub enum CredentialKind {
     EeCertificateBag,
 }
 
-/// Stable request context containing no endpoint or raw reference value.
+/// Stable request context that contains no endpoint or raw reference value.
 #[derive(Debug, Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RequestContext {
     server_name: String,
@@ -156,13 +156,13 @@ impl CredentialRequest {
         &self.context
     }
 
-    /// Returns the expected material kind.
+    /// Returns the expected credential kind.
     #[must_use]
     pub const fn kind(&self) -> CredentialKind {
         self.kind
     }
 
-    /// Explicitly exposes the opaque owned reference to a provider.
+    /// Exposes the opaque owned reference to a provider.
     #[must_use]
     pub const fn reference(&self) -> &CredentialReference {
         &self.reference
@@ -191,11 +191,11 @@ impl ResolutionPlan {
     ///
     /// # Errors
     ///
-    /// Returns [`ResolutionErrorKind::EnumerationRequired`](crate::ResolutionErrorKind::EnumerationRequired)
-    /// if config-local bundle references remain. Returns
-    /// [`ResolutionErrorKind::IncompleteRequest`](crate::ResolutionErrorKind::IncompleteRequest) when
-    /// the generated RFC model preserves a central container that lacks the
-    /// fields needed to form a provider request.
+    /// Returns
+    /// [`ResolutionErrorKind::EnumerationRequired`](crate::ResolutionErrorKind::EnumerationRequired)
+    /// if configuration-local bundle references remain. Returns
+    /// [`ResolutionErrorKind::IncompleteRequest`](crate::ResolutionErrorKind::IncompleteRequest)
+    /// if a central container lacks fields that the provider request requires.
     pub fn from_server(server: &TacacsPlusServer) -> Result<Self, ResolutionError> {
         let slots = inspect_central_references(server).map_err(ResolutionError::from)?;
         let requests = slots

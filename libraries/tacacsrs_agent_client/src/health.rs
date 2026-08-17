@@ -7,8 +7,9 @@ use tonic_health::pb::health_client::HealthClient as GrpcHealthClient;
 use crate::endpoint::connect_channel;
 use crate::IpcEndpoint;
 
-/// Overall health service name. The empty name follows the gRPC health
-/// protocol convention and maps to agent readiness.
+/// Overall health service name.
+///
+/// The empty name follows the gRPC health protocol and maps to agent readiness.
 pub const OVERALL_HEALTH_SERVICE: &str = "";
 
 /// Business RPC service represented by agent readiness.
@@ -42,12 +43,12 @@ impl HealthClient {
         })
     }
 
-    /// Checks one standard gRPC health service name.
+    /// Gets the status of one standard gRPC health service name.
     ///
     /// # Errors
     ///
-    /// Returns the standard gRPC status for unknown names and protocol or
-    /// transport failures.
+    /// Returns the standard gRPC status if the name is unknown. It also returns
+    /// this status for protocol or transport errors.
     pub async fn check(&mut self, service_name: &str) -> Result<ServingStatus, tonic::Status> {
         let response = self
             .client

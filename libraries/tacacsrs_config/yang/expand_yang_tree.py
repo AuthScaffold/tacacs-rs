@@ -1,32 +1,30 @@
 #!/usr/bin/env python3
-"""Expand the ietf-system-tacacs-plus YANG module into a fully resolved tree.
+"""Expand the ietf-system-tacacs-plus YANG module into a resolved tree.
 
-This script clones the required YANG module repository (if not already
-cached), includes project-owned YANG modules from ``modules/``, then runs
-pyang to produce the expanded tree with all grouping references from
-ietf-keystore, ietf-truststore, ietf-tls-client, ietf-crypto-types, etc.
-fully inlined.
+The script gets the required YANG modules from a pinned repository. It uses
+the cached repository if it is available. The script also includes the
+project-owned YANG modules from ``modules/``. Then pyang resolves all grouping
+references and generates the expanded tree.
 
-It can also emit a pyang-compatible feature vector for the TACACS+ module
-and the imported TLS modules it depends on, which is useful when pruning the
-tree by disabling feature-gated nodes such as credential references or raw
-public key support.
+The script can also generate a pyang-compatible feature vector. The vector
+contains features from the TACACS+ module and its imported TLS modules.
+Disable a feature to remove its feature-gated nodes from the tree.
 
 Prerequisites:
-    Install pyang either in an activated virtual environment or globally:
+    Install pyang in an active virtual environment or in the global environment:
         python -m pip install -r requirements.txt
 
 Usage:
-    python expand_yang_tree.py                  # prints to stdout
-    python expand_yang_tree.py -o tree.txt      # writes to file
-    python expand_yang_tree.py --format jstree  # alternate pyang format
-    python expand_yang_tree.py --list-features  # prints a feature vector
+    python expand_yang_tree.py                  # Writes to stdout.
+    python expand_yang_tree.py -o tree.txt      # Writes to a file.
+    python expand_yang_tree.py --format jstree  # Uses another pyang format.
+    python expand_yang_tree.py --list-features  # Writes a feature vector.
     python expand_yang_tree.py --list-features --list-features-format ini
-                                              # emits an editable ini manifest
+                                              # Writes an editable INI manifest.
     python expand_yang_tree.py --features-ini feature-flags.ini
-                                              # applies false entries as disables
+                                              # Disables entries with false values.
     python expand_yang_tree.py -f rust \
-        --features-ini feature-flags.ini       # runs the custom rust plugin
+        --features-ini feature-flags.ini       # Runs the custom Rust plug-in.
 """
 
 from __future__ import annotations
@@ -96,12 +94,12 @@ def _load_pyang_modules(root_module_name: str, search_paths: list[Path], module_
         try:
             module_text = module_path.read_text(encoding="utf-8")
         except OSError as exc:
-            raise OSError(f"failed to read local YANG module {module_path}") from exc
+            raise OSError(f"The script did not read the local YANG module {module_path}") from exc
         ctx.add_module(str(module_path), module_text)
 
     root_module = ctx.search_module(None, root_module_name)
     if root_module is None:
-        raise ValueError(f"failed to load root module '{root_module_name}'")
+        raise ValueError(f"The script did not load the root module '{root_module_name}'")
 
     ctx.validate()
 
@@ -148,7 +146,7 @@ def _resolve_feature_ref(base_stmt: object, feature_ref: str) -> tuple[str, str]
     else:
         module = util.prefix_to_module(base_stmt.i_module, prefix, base_stmt.pos, [])
         if module is None:
-            raise ValueError(f"unknown prefix '{prefix}' in feature reference '{feature_ref}'")
+            raise ValueError(f"Unknown prefix '{prefix}' in feature reference '{feature_ref}'")
         module = _main_module(module)
 
     return module.i_modulename, feature_name
@@ -172,7 +170,7 @@ def _resolve_prefixed_tree_feature_ref(
         if module.i_prefix == prefix:
             return module.i_modulename, feature_name
 
-    raise ValueError(f"unknown prefix '{prefix}' in tree feature reference '{feature_ref}'")
+    raise ValueError(f"Unknown prefix '{prefix}' in tree feature reference '{feature_ref}'")
 
 
 def _get_feature_dependencies(feature_stmt: object) -> set[tuple[str, str]]:
@@ -281,20 +279,22 @@ def parse_feature_ini(feature_ini_path: Path, loaded_modules: dict[str, object])
     for module_name in parser.sections():
         module = loaded_modules.get(module_name)
         if module is None:
-            raise ValueError(f"unknown module '{module_name}' in feature ini {feature_ini_path}")
+            raise ValueError(f"Unknown module '{module_name}' in feature INI file {feature_ini_path}")
 
         module_disabled: list[str] = []
         for feature_name, raw_value in parser.items(module_name):
             if feature_name not in module.i_features:
                 raise ValueError(
-                    f"unknown feature '{feature_name}' in module '{module_name}' in feature ini {feature_ini_path}"
+                    f"Unknown feature '{feature_name}' in module '{module_name}' "
+                    f"in feature INI file {feature_ini_path}"
                 )
 
             try:
                 enabled = parser.getboolean(module_name, feature_name)
             except ValueError as exc:
                 raise ValueError(
-                    f"invalid boolean value '{raw_value}' for feature '{feature_name}' in module '{module_name}'"
+                    f"Invalid Boolean value '{raw_value}' for feature '{feature_name}' "
+                    f"in module '{module_name}'"
                 ) from exc
 
             if not enabled:
@@ -318,8 +318,8 @@ def _verify_repo_revision(repo_path: Path, expected_commit: str) -> None:
     actual_commit = _run(["git", "rev-parse", "HEAD"], cwd=str(repo_path)).stdout.strip()
     if actual_commit != expected_commit:
         raise RuntimeError(
-            f"cached repository {repo_path} is at {actual_commit}, expected {expected_commit}; "
-            "rerun with --clean to deliberately refresh it"
+            f"The cached repository {repo_path} is at commit {actual_commit}. "
+            f"The expected commit is {expected_commit}. Run again with --clean to refresh the cache."
         )
 
     symbolic_head = subprocess.run(
@@ -330,11 +330,11 @@ def _verify_repo_revision(repo_path: Path, expected_commit: str) -> None:
     )
     if symbolic_head.returncode == 0:
         raise RuntimeError(
-            f"cached repository {repo_path} is attached to {symbolic_head.stdout.strip()}, "
-            "expected detached HEAD; rerun with --clean"
+            f"The cached repository {repo_path} is attached to {symbolic_head.stdout.strip()}. "
+            "The repository must have a detached HEAD. Run again with --clean."
         )
     if symbolic_head.returncode != 1:
-        raise RuntimeError(f"failed to inspect cached repository HEAD at {repo_path}")
+        raise RuntimeError(f"The script did not inspect the cached repository HEAD at {repo_path}")
 
 
 def ensure_repo(
@@ -343,7 +343,7 @@ def ensure_repo(
     commit: str,
     sparse_paths: list[str] | None = None,
 ) -> Path:
-    """Clone an exact revision into the cache and verify its detached HEAD."""
+    """Clone an exact revision into the cache and make sure that HEAD is detached."""
     dest = CACHE_DIR / name
     if dest.exists():
         _verify_repo_revision(dest, commit)
@@ -365,11 +365,12 @@ def ensure_repo(
 
 
 def find_pyang() -> str:
-    """Return the pyang executable path, or exit with an error."""
+    """Return the pyang executable path, or stop with an error."""
     pyang = shutil.which("pyang")
     if pyang is None:
         print(
-            "error: pyang is not installed or not on PATH. Install it in your active venv or globally with: python -m pip install pyang",
+            "error: pyang was not found on PATH. Install it in the active virtual "
+            "environment or the global environment: python -m pip install pyang",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -383,49 +384,49 @@ def _append_search_path_args(cmd: list[str], search_paths: list[Path]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("-o", "--output", type=Path, default=None, help="Write output to file instead of stdout")
-    parser.add_argument("-f", "--format", default="tree", help="pyang output format (default: tree)")
-    parser.add_argument("--depth", type=int, default=20, help="Tree depth limit (default: 20)")
+    parser.add_argument("-o", "--output", type=Path, default=None, help="Write output to a file instead of stdout")
+    parser.add_argument("-f", "--format", default="tree", help="Set the pyang output format (default: tree)")
+    parser.add_argument("--depth", type=int, default=20, help="Set the tree depth limit (default: 20)")
     parser.add_argument(
         "--list-features",
         action="store_true",
-        help="Print a pyang-compatible feature vector for the TACACS+ module and exit",
+        help="Write a pyang-compatible feature vector for the TACACS+ module and stop",
     )
     parser.add_argument(
         "--list-features-format",
         choices=("vector", "ini"),
         default="vector",
-        help="Output format for --list-features (default: vector)",
+        help="Set the output format for --list-features (default: vector)",
     )
     parser.add_argument(
         "--features",
         action="append",
         default=[],
         metavar="MODULE:FEATURE[,FEATURE...]",
-        help="Pass through to pyang to include only the listed features for a module; may be repeated",
+        help="Run pyang with only the listed module features. You can repeat this option.",
     )
     parser.add_argument(
         "--exclude-features",
         action="append",
         default=[],
         metavar="MODULE:FEATURE[,FEATURE...]",
-        help="Pass through to pyang to exclude the listed features for a module; may be repeated",
+        help="Run pyang without the listed module features. You can repeat this option.",
     )
     parser.add_argument(
         "--features-ini",
         type=Path,
         default=None,
-        help="Read feature booleans from an ini manifest; only entries set to false are treated as explicit disables",
+        help="Read feature Boolean values from an INI manifest. A false value disables the feature.",
     )
-    parser.add_argument("--clean", action="store_true", help="Remove cached repos and re-clone")
+    parser.add_argument("--clean", action="store_true", help="Remove and clone the cached repositories again")
     args = parser.parse_args()
 
     if args.clean and CACHE_DIR.exists():
         clean_cache()
-        print(f"Removed cache directory: {CACHE_DIR}", file=sys.stderr)
+        print(f"Removed the cache directory: {CACHE_DIR}", file=sys.stderr)
 
-    # Clone required repos
-    print("Fetching YANG modules (cached after first run)...", file=sys.stderr)
+    # Get the required repositories.
+    print("The script gets the YANG modules. It uses the cache after the first run.", file=sys.stderr)
     yang_models = ensure_repo(
         YANG_MODELS_REPO,
         "yang-models",
@@ -433,12 +434,12 @@ def main() -> None:
         sparse_paths=["standard/ietf/RFC"],
     )
 
-    # Build search paths
+    # Create the search paths.
     rfc_yang_dir = yang_models / "standard" / "ietf" / "RFC"
 
     tacacs_module = rfc_yang_dir / TACACS_MODULE
     if not tacacs_module.exists():
-        print(f"error: {tacacs_module} not found", file=sys.stderr)
+        print(f"error: The TACACS+ YANG module was not found: {tacacs_module}", file=sys.stderr)
         sys.exit(1)
 
     local_yang_modules = _local_yang_modules()
@@ -449,7 +450,7 @@ def main() -> None:
 
     if args.list_features:
         if args.features_ini is not None:
-            print("error: --features-ini cannot be used with --list-features", file=sys.stderr)
+            print("error: Do not use --features-ini with --list-features", file=sys.stderr)
             sys.exit(2)
 
         root_module, loaded_modules, feature_index = _load_pyang_modules(
@@ -472,7 +473,7 @@ def main() -> None:
         if tree_result.returncode != 0:
             if tree_result.stderr:
                 print(tree_result.stderr, file=sys.stderr)
-            print(f"pyang exited with code {tree_result.returncode}", file=sys.stderr)
+            print(f"pyang stopped with exit code {tree_result.returncode}", file=sys.stderr)
             sys.exit(tree_result.returncode)
 
         feature_vector = discover_feature_vector_from_tree_text(
@@ -494,7 +495,7 @@ def main() -> None:
     ini_disabled_features: dict[str, list[str]] = {}
     if args.features_ini is not None:
         if args.features:
-            print("error: --features-ini cannot be combined with --features", file=sys.stderr)
+            print("error: Do not use --features-ini with --features", file=sys.stderr)
             sys.exit(2)
 
         _root_module, loaded_modules, _feature_index = _load_pyang_modules(
@@ -508,7 +509,7 @@ def main() -> None:
             print(f"error: {exc}", file=sys.stderr)
             sys.exit(2)
 
-    # Run pyang
+    # Run pyang.
     cmd = [
         pyang,
         "-f", args.format,
@@ -535,7 +536,7 @@ def main() -> None:
         print(result.stderr, file=sys.stderr)
 
     if result.returncode != 0:
-        print(f"pyang exited with code {result.returncode}", file=sys.stderr)
+        print(f"pyang stopped with exit code {result.returncode}", file=sys.stderr)
         sys.exit(result.returncode)
 
     write_output(result.stdout, args.output)

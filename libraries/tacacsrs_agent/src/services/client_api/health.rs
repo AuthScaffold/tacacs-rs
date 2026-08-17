@@ -1,4 +1,4 @@
-//! Standard `grpc.health.v1.Health` mapping for the Client API listener.
+//! Standard `grpc.health.v1.Health` mapping for the client API listener.
 
 use tacacsrs_agent_client::health::{
     LIVENESS_HEALTH_SERVICE, OVERALL_HEALTH_SERVICE, READINESS_HEALTH_SERVICE,
@@ -11,14 +11,14 @@ use tonic_health::server::{HealthReporter, HealthService};
 
 use crate::runtime::{RuntimeHealthSnapshot, ShutdownReceiver};
 
-/// Standard health service plus its runtime snapshot reporter.
+/// Standard health service and its runtime snapshot reporter.
 pub(super) struct StandardHealth {
     reporter: HealthReporter,
     receiver: watch::Receiver<RuntimeHealthSnapshot>,
 }
 
 impl StandardHealth {
-    /// Creates and initializes all supported standard health service names.
+    /// Creates and initializes each supported health service name.
     pub(super) async fn new(
         receiver: watch::Receiver<RuntimeHealthSnapshot>,
     ) -> (Self, HealthServer<HealthService>) {
@@ -29,7 +29,7 @@ impl StandardHealth {
         (health, HealthServer::new(service))
     }
 
-    /// Publishes transitions until listener shutdown.
+    /// Publishes changes until the listener stops.
     pub(super) async fn run(mut self, shutdown: ShutdownReceiver) {
         loop {
             tokio::select! {
@@ -104,9 +104,9 @@ mod tests {
                 service: service_name.to_owned(),
             }))
             .await
-            .expect("health check should succeed")
+            .expect("the health check must succeed")
             .into_inner();
-        WireServingStatus::try_from(response.status).expect("known serving status")
+        WireServingStatus::try_from(response.status).expect("the serving status must be known")
     }
 
     #[tokio::test]
@@ -138,17 +138,17 @@ mod tests {
                 service: READINESS_HEALTH_SERVICE.to_owned(),
             }))
             .await
-            .expect("health watch should open")
+            .expect("the health watch must open")
             .into_inner();
         let shutdown = ShutdownCoordinator::new(publisher.clone());
         let bridge = tokio::spawn(health.run(shutdown.subscribe()));
 
         let initial = tokio_stream::StreamExt::next(&mut stream)
             .await
-            .expect("initial status")
-            .expect("valid initial status");
+            .expect("the stream must contain an initial status")
+            .expect("the initial status must be valid");
         assert_eq!(
-            WireServingStatus::try_from(initial.status).expect("known status"),
+            WireServingStatus::try_from(initial.status).expect("the status must be known"),
             WireServingStatus::NotServing,
         );
 
@@ -157,23 +157,23 @@ mod tests {
         assert!(publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
         let serving = tokio_stream::StreamExt::next(&mut stream)
             .await
-            .expect("serving status")
-            .expect("valid serving status");
+            .expect("the stream must contain a serving status")
+            .expect("the serving status must be valid");
         assert_eq!(
-            WireServingStatus::try_from(serving.status).expect("known status"),
+            WireServingStatus::try_from(serving.status).expect("the status must be known"),
             WireServingStatus::Serving,
         );
 
         shutdown.initiate_shutdown();
         let withdrawn = tokio_stream::StreamExt::next(&mut stream)
             .await
-            .expect("withdrawn status")
-            .expect("valid withdrawn status");
+            .expect("the stream must contain a withdrawn status")
+            .expect("the withdrawn status must be valid");
         assert_eq!(
-            WireServingStatus::try_from(withdrawn.status).expect("known status"),
+            WireServingStatus::try_from(withdrawn.status).expect("the status must be known"),
             WireServingStatus::NotServing,
         );
-        bridge.await.expect("bridge should stop");
+        bridge.await.expect("the bridge must stop");
         assert!(tokio_stream::StreamExt::next(&mut stream).await.is_none());
     }
 }

@@ -4,14 +4,14 @@
 
 The crate owns:
 
-- deterministic typed request plans;
-- an asynchronous resolver trait;
-- typed certificate, private-key, symmetric-key, and trust-bag material;
-- a closed result set that validates request/response slots and variants;
-- materialization APIs that consume results into generated inline fields;
-- provider-neutral credential change events and subscriptions;
-- sanitized typed failures;
-- a deterministic fake resolver for tests.
+- deterministic typed request plans
+- an asynchronous resolver trait
+- typed certificate, private-key, symmetric-key, and trust-bag material
+- a closed result set that validates request/response slots and variants
+- materialization APIs that consume results into generated inline fields
+- provider-neutral credential change events and subscriptions
+- sanitized typed failures
+- a deterministic fake resolver for tests
 
 It performs no filesystem, `SONiC`, `ConfigDB`, watcher, permission, retry, or runtime connection work. Providers inspect opaque references only through explicit request accessors. Debug and public error output omit opaque references and secret bytes.
 
@@ -25,24 +25,26 @@ ResolutionPlan -> CredentialResolver -> ResolvedCredentialSet
 ```
 
 `materialize_server` and `materialize_servers` consume complete closed result
-sets into cloned generated `TacacsPlusServer` values. Matching central
-references are cleared only after their protected inline fields are populated,
-and final validation runs before a candidate is returned. The original
-`TacacsPlus` source remains unchanged. Networking receives only validated
-materialized generated servers.
+sets into cloned generated `TacacsPlusServer` values. The functions clear
+matching central references only after populating the protected inline
+fields, and they run final validation before returning a candidate. The
+original `TacacsPlus` source remains unchanged. Networking receives only
+validated materialized generated servers.
 
 ## Workflow
 
 1. Parse and validate RFC 7951 JSON with `tacacsrs-config`.
-2. Enumerate config-local client and server credential bundles.
+2. Enumerate configuration-local client and server credential bundles.
 3. Build a `ResolutionPlan` for each enumerated server.
-4. Execute the plan with a `CredentialResolver`.
+4. Submit the plan to a `CredentialResolver`.
 5. Consume the validated results into generated inline fields and clear references.
 6. Validate and publish the complete materialized server transaction.
 
 Planning emits deterministic requests for certificate-with-key, TLS 1.3 symmetric key, CA certificate bag, and end-entity certificate bag usages. It rejects unexpanded local bundle references and structurally incomplete central certificate requests. Result-set construction rejects missing, duplicate, unexpected, and wrong-variant responses.
 
-Central reference strings stay opaque. The generic API does not impose a provider grammar, convert a reference into a path, check existence or permissions, watch for changes, or retry retrieval. Provider-specific errors cross this boundary only as sanitized `ProviderErrorKind` values.
+Central reference strings stay opaque. The generic API does not impose provider grammar or convert a reference into a path.
+
+It does not inspect path existence, inspect permissions, watch for changes, or retry retrieval. Only sanitized `ProviderErrorKind` values cross this boundary.
 
 ## Secret Material
 

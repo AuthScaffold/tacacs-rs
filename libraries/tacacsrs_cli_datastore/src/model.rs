@@ -6,11 +6,10 @@ use base64::Engine as _;
 use tacacsrs_config::PskDheKeSupportedGroup;
 use tacacsrs_config::{TacacsPlusServerType, ValidationOptions};
 
-/// Parsed CLI inputs that can produce TACACS+ configuration.
+/// Parsed CLI inputs for TACACS+ configuration.
 ///
-/// Construct with [`CliDatastoreInput::new`] and the `with_*` methods; the
-/// fields are crate-private so the construction path stays the single source of
-/// defaults.
+/// Construct this value with [`CliDatastoreInput::new`] and the `with_*`
+/// methods. Private fields keep these methods as the source of defaults.
 #[derive(Debug, Clone)]
 pub struct CliDatastoreInput {
     pub(crate) source: CliConfigSource,
@@ -20,7 +19,7 @@ pub struct CliDatastoreInput {
 }
 
 impl CliDatastoreInput {
-    /// Create a new input model with strict validation and a conservative debounce.
+    /// Creates an input model with strict validation and a conservative debounce.
     #[must_use]
     pub fn new(source: CliConfigSource, label: &'static str) -> Self {
         Self {
@@ -63,7 +62,7 @@ impl CliDatastoreInput {
 /// Source of the TACACS+ root configuration.
 #[derive(Debug, Clone)]
 pub enum CliConfigSource {
-    /// A YANG JSON configuration file loaded (and watched) from disk.
+    /// YANG JSON configuration file that the datastore loads and watches.
     YangFile { path: PathBuf },
     /// Inline servers built from CLI flags. `security` applies uniformly to
     /// every server in `servers`.
@@ -127,9 +126,9 @@ pub struct TlsServerName {
 
 /// Security configuration derived from parsed CLI fields.
 ///
-/// The security *mode* is orthogonal to `shared_secret`: a shared secret may
-/// accompany a TLS mode only as a migration aid, and is honored during
-/// construction solely when the active [`ValidationOptions`] allow it.
+/// The security mode is independent of `shared_secret`. A TLS mode can have a
+/// shared secret only during migration and only when [`ValidationOptions`]
+/// permit it.
 #[derive(Debug, Clone)]
 pub struct CliSecurity {
     pub mode: CliSecurityMode,
@@ -137,12 +136,11 @@ pub struct CliSecurity {
 }
 
 impl CliSecurity {
-    /// Derive the security configuration from neutral CLI inputs.
+    /// Derives security configuration from neutral CLI inputs.
     ///
-    /// This is the single decision point that maps `--use-tls`, PSK, client
-    /// certificate, and shared-secret flags onto a [`CliSecurityMode`]. Both
-    /// `tacacsrs-agentd` and `tacon` funnel their parsed flags through here so
-    /// the mode-selection logic cannot drift between executables.
+    /// This method maps `--use-tls`, PSK, client certificate, and shared-secret
+    /// flags to a [`CliSecurityMode`]. Both executables use this method, which
+    /// keeps mode selection consistent.
     #[must_use]
     pub fn from_cli_inputs(inputs: CliSecurityInputs) -> Self {
         let shared_secret = inputs.shared_secret;
@@ -205,11 +203,10 @@ pub enum CliSecurityMode {
     },
 }
 
-/// Neutral security inputs collected from an executable's parsed CLI.
+/// Neutral security inputs from an executable's parsed CLI.
 ///
-/// Each executable fills this from its own clap struct;
-/// [`CliSecurity::from_cli_inputs`] owns the decision logic so it stays
-/// identical across executables.
+/// Each executable fills this value from its clap structure.
+/// [`CliSecurity::from_cli_inputs`] provides consistent decision logic.
 #[derive(Debug, Clone, Default)]
 pub struct CliSecurityInputs {
     pub use_tls: bool,
@@ -255,7 +252,7 @@ pub enum PskKeyExchangeMode {
     PskOnly,
 }
 
-/// PSK bytes as they are supplied by each executable's CLI contract.
+/// PSK bytes in the format supplied by an executable CLI.
 #[derive(Debug, Clone)]
 pub enum PskKeyMaterial {
     Raw(Vec<u8>),

@@ -34,17 +34,17 @@ impl HealthCheck {
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agent-health", version, author)]
-#[command(about = "Check tacacsrs-agentd startup, liveness, or readiness")]
+#[command(about = "Report tacacsrs-agentd startup, liveness, or readiness status")]
 struct Cli {
-    /// Client API Unix socket path or loopback TCP endpoint.
+    /// Client API Unix domain socket path or loopback TCP endpoint.
     #[arg(long, default_value = "/run/tacacs/tacacs.sock")]
     endpoint: String,
 
-    /// Health view to check.
+    /// Health check to run.
     #[arg(long, value_enum)]
     check: HealthCheck,
 
-    /// Maximum total check duration.
+    /// Maximum duration of the health check.
     #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
     timeout_seconds: u64,
 }
@@ -109,7 +109,7 @@ mod tests {
             "--timeout-seconds",
             "2",
         ])
-        .expect("documented CLI should parse");
+        .expect("documented CLI must parse");
 
         assert_eq!(cli.endpoint, "127.0.0.1:9049");
         assert_eq!(cli.check.service_name(), READINESS_HEALTH_SERVICE);

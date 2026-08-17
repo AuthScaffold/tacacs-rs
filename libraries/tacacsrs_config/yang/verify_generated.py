@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate TACACS+ model artifacts and verify pinned deterministic output."""
+"""Regenerate TACACS+ model artifacts and make sure that the output is deterministic."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ MANIFEST_PATH = SCRIPT_DIR / "generation-manifest.json"
 
 
 def canonical_bytes(path: Path) -> bytes:
-    """Return UTF-8 file content with explicit canonical LF line endings."""
+    """Return UTF-8 file content with LF line endings."""
     return path.read_bytes().replace(b"\r\n", b"\n")
 
 
@@ -69,7 +69,7 @@ def assert_equal(expected: Path, actual: Path, label: str) -> None:
             n=3,
         )
     )
-    raise RuntimeError(f"{label} differs:\n{difference[:4000]}")
+    raise RuntimeError(f"The outputs for {label} differ:\n{difference[:4000]}")
 
 
 def verify_manifest(manifest: dict[str, object]) -> None:
@@ -77,7 +77,7 @@ def verify_manifest(manifest: dict[str, object]) -> None:
     tools = manifest["tools"]
     artifacts = manifest["artifacts"]
     if not isinstance(source, dict) or not isinstance(tools, dict) or not isinstance(artifacts, dict):
-        raise RuntimeError("generation manifest has invalid section types")
+        raise RuntimeError("The generation manifest has invalid section types")
 
     expected_source = {
         "repository": YANG_MODELS_REPO,
@@ -86,11 +86,12 @@ def verify_manifest(manifest: dict[str, object]) -> None:
     }
     for key, expected in expected_source.items():
         if source.get(key) != expected:
-            raise RuntimeError(f"generation manifest source.{key} must be {expected}")
+            raise RuntimeError(f"The generation manifest source.{key} must be {expected}")
 
     if tools.get("pyang") != pyang.__version__:
         raise RuntimeError(
-            f"pyang version {pyang.__version__} does not match manifest {tools.get('pyang')}"
+            f"The pyang version {pyang.__version__} does not match "
+            f"the manifest version {tools.get('pyang')}"
         )
 
     for relative_path, expected_hash in artifacts.items():
@@ -98,20 +99,21 @@ def verify_manifest(manifest: dict[str, object]) -> None:
         actual_hash = sha256(artifact_path)
         if actual_hash != expected_hash:
             raise RuntimeError(
-                f"{relative_path} SHA-256 {actual_hash} does not match manifest {expected_hash}"
+                f"The SHA-256 value of {relative_path} is {actual_hash}. "
+                f"The manifest value is {expected_hash}."
             )
 
 
 def verify_source_module(manifest: dict[str, object]) -> None:
     source = manifest["source"]
     if not isinstance(source, dict):
-        raise RuntimeError("generation manifest source must be an object")
+        raise RuntimeError("The generation manifest source must be an object")
     module_path = CACHE_DIR / "yang-models" / str(source["module"])
     actual_hash = sha256(module_path)
     if actual_hash != source["moduleSha256"]:
         raise RuntimeError(
-            f"pinned source module SHA-256 {actual_hash} does not match manifest "
-            f"{source['moduleSha256']}"
+            f"The pinned source module SHA-256 value is {actual_hash}. "
+            f"The manifest value is {source['moduleSha256']}."
         )
 
 
@@ -142,7 +144,7 @@ def verify_generated(clean: bool) -> None:
         )
 
     print(
-        "PASS: pinned source, manifest hashes, deterministic regeneration, and checked-in artifacts match."
+        "PASS: The pinned source, manifest hashes, regenerated artifacts, and checked-in artifacts match."
     )
 
 
@@ -151,7 +153,7 @@ def main() -> None:
     parser.add_argument(
         "--clean",
         action="store_true",
-        help="Remove and recreate the pinned sparse YANG cache before verification",
+        help="Remove and recreate the pinned sparse YANG cache before comparison",
     )
     args = parser.parse_args()
     verify_generated(clean=args.clean)

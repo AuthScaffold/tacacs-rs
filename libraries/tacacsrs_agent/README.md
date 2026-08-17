@@ -59,7 +59,7 @@ tacacsrs_agent
 ```text
 ┌──────────────────┐
 │ Local Consumer   │
-│ (e.g. TACON)     │
+│ such as TACON    │
 └──────┬───────────┘
        │ protobuf request / response
        v
@@ -105,13 +105,14 @@ tacacsrs_agent
 └──────────────────────────────┘
 ```
 
-On Unix, the client API gRPC service accepts only Unix socket endpoints. The raw
-TACACS+ proxy is a sibling runtime service with its own endpoint policy: when
-`EnabledServices` includes the proxy service, `TacacsClientService` starts
-`services::tacacs_proxy`; when it includes both services, the proxy runs
-alongside `services::client_api`. The proxy may bind either a Unix socket or
-loopback TCP endpoint on Unix. The proxy uses its own `upstream_bridge` because
-it forwards packet sessions rather than typed RPC operations.
+On Unix, the client API gRPC service accepts only Unix domain socket endpoints.
+The raw TACACS+ proxy is a sibling runtime service with its own endpoint policy.
+When `EnabledServices` includes the proxy service, `TacacsClientService` starts
+`services::tacacs_proxy`. When it includes both services, the proxy runs
+alongside `services::client_api`. The proxy can bind either a Unix domain
+socket or loopback TCP endpoint on Unix. The proxy uses its own
+`upstream_bridge` because it forwards packet sessions rather than typed RPC
+operations.
 
 ## Request activity diagram
 
@@ -221,9 +222,9 @@ On Unix systems the listener follows this startup sequence:
 6. begin serving IPC clients
 ```
 
-One coordinator receives SIGTERM or Ctrl-C, changes the shared lifecycle to `Draining`, and then broadcasts shutdown to every listener. Registration guards publish `Binding`, `Bound`, and `Stopped` on every return path. Shutdown stops accepting new local work, waits for active gRPC and raw proxy requests to finish, removes Unix socket paths, and finally publishes `Stopped`. A listener bind or accept-loop failure marks fatal health, cancels siblings, and waits for their guards and cleanup before returning.
+One coordinator receives SIGTERM or Ctrl-C, changes the shared lifecycle to `Draining`, and then broadcasts shutdown to every listener. Registration guards publish `Binding`, `Bound`, and `Stopped` on every return path. Shutdown stops accepting new local work, waits for active gRPC and raw proxy requests to finish, removes Unix domain socket paths, and finally publishes `Stopped`. A listener bind or accept-loop failure marks fatal health, cancels siblings, and waits for their guards and cleanup before returning.
 
-The same typed watch-backed snapshot drives startup, liveness, readiness, datastore freshness, upstream availability, standard gRPC health, host integration, and operator status. It contains typed flags and counts only; configuration values, server identities, credential references, and raw errors stay outside the shared state.
+The same typed watch-backed snapshot drives startup, liveness, readiness, datastore freshness, upstream availability, standard gRPC health, host integration, and operator status. It contains only typed flags and counts. Configuration values, server identities, credential references, and raw errors stay outside the shared state.
 
 ## Configuration details
 
@@ -231,11 +232,11 @@ The same typed watch-backed snapshot drives startup, liveness, readiness, datast
 
 `ServiceConfig::endpoint` is explicit rather than permissive:
 
-- On Unix, values containing `/` are treated as Unix socket paths, for example
-  `/run/tacacs/tacacs.sock`.
+- On Unix, values containing `/` are treated as Unix domain socket paths, for
+  example `/run/tacacs/tacacs.sock`.
 - On all platforms, values that parse as `SocketAddr` are treated as TCP
   endpoints, for example `127.0.0.1:9049`.
-- An empty string is rejected as invalid configuration; it does **not** fall
+- An empty string is rejected as invalid configuration. It does **not** fall
   back to the platform default endpoint.
 
 The only way to opt into the built-in default endpoint is to call
@@ -244,11 +245,11 @@ The only way to opt into the built-in default endpoint is to call
 ### Upstream warm-up behavior
 
 At startup the service performs a best-effort warm-up pass across the configured
-TACACS+ servers until it finds the first responsive server. Once one usable
-upstream connection has been cached, the warm-up stops immediately; it does
-**not** establish full TACACS+ connections to every configured server.
+TACACS+ servers until it finds the first responsive server. Once the warm-up
+caches one usable upstream connection, it stops immediately. It does **not**
+establish full TACACS+ connections to every configured server.
 
-This keeps startup load bounded in large deployments where many clients may
+This keeps startup load bounded in large deployments where many clients can
 start at once against a relatively small TACACS+ server pool. If no server is
 reachable during startup, the service still starts and later IPC requests retry
 failover on demand.
@@ -257,8 +258,8 @@ Per-server reconnect attempts are serialized inside the upstream manager. When
 many IPC requests arrive at once, they share one in-flight reconnect attempt for
 a given TACACS+ server instead of generating a burst of duplicate TLS handshakes.
 After that reconnect attempt finishes, queued callers reuse the cached
-connection if it succeeded, or fail over without immediately retrying the same
-server again for that same burst of IPC work if it failed.
+connection if it succeeded. If it failed, they fail over without an immediate
+retry against the same server for that burst of IPC work.
 
 ### Per-client request handling
 
@@ -284,8 +285,8 @@ The maintainable split between this crate and
 This keeps the on-the-wire IPC schema explicit and type-safe while still
 letting the rest of the crate work with small hand-written domain types. The
 checked-in `.proto` is the compatibility surface for local IPC, and the build
-step ensures the generated Rust transport bindings stay aligned with it.
+step keeps the generated Rust transport bindings aligned with it.
 
 There is also no compatibility promise for this IPC protocol today. When the
 contract changes, the `.proto`, generated transport bindings, and domain-type
-conversions should change together in the same patch.
+conversions must change together in the same patch.

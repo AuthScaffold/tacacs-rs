@@ -11,20 +11,20 @@ use crate::policy::{
 /// Mutable emulator state shared by the emulated agent service and mock
 /// controller.
 ///
-/// Stores the compiled OPA/Rego policy engine and every captured IPC request.
-/// The policy and its fixed data are compiled once; each request is evaluated
-/// by supplying the captured fields as Rego `input`.
+/// Stores the compiled OPA/Rego policy engine and all captured IPC requests.
+/// The policy and its fixed data are compiled once. Each evaluation supplies
+/// the captured request fields as Rego `input`.
 ///
 /// # Thread safety
 ///
-/// [`regorus::Engine`] is **not** internally synchronized: `set_input` and
-/// `eval_rule` take `&mut self` and share mutable engine state, so feeding one
-/// request's `input` while another request is being evaluated would race. This
-/// type therefore provides no interior synchronization of its own and instead
-/// relies on callers holding it behind a single exclusive lock. All access goes
-/// through `Arc<Mutex<EmulatorState>>` (see [`crate::service`]), and the lock is
-/// held across the whole [`Self::record_and_evaluate`] call so that `set_input`
-/// and `eval_rule` execute atomically for one request at a time.
+/// [`regorus::Engine`] is **not** internally synchronized. `set_input` and
+/// `eval_rule` take `&mut self` and share mutable engine state. Concurrent
+/// evaluations race to update this state. This type has no interior
+/// synchronization. Callers keep it behind one exclusive
+/// `Arc<Mutex<EmulatorState>>` lock. For details,
+/// see [`crate::service`]. Callers hold the lock for the complete
+/// [`Self::record_and_evaluate`] call. Thus, `set_input` and `eval_rule` run
+/// atomically for one request.
 pub(crate) struct EmulatorState {
     policy: EmulatorPolicy,
     engine: Engine,
@@ -60,8 +60,8 @@ impl EmulatorState {
 
     /// Records the request and evaluates the policy against it.
     ///
-    /// Returns `Ok(None)` when the policy leaves `decision` undefined for the
-    /// request, signalling that no rule applied.
+    /// Returns `Ok(None)` if the policy leaves `decision` undefined. This value
+    /// means that no rule applied to the request.
     pub(crate) fn record_and_evaluate(
         &mut self,
         rpc: IpcRpc,
@@ -76,11 +76,10 @@ impl EmulatorState {
 
     /// Sets the request as Rego `input` and evaluates the decision rule.
     ///
-    /// `set_input` followed by `eval_rule` mutates shared engine state and must
-    /// not be interleaved with another request's evaluation. Callers guarantee
-    /// this by holding the surrounding `Mutex<EmulatorState>` for the entire
-    /// call (see the type-level "Thread safety" note); `&mut self` makes that
-    /// exclusivity explicit here.
+    /// `set_input` and `eval_rule` mutate shared engine state. Another request
+    /// must not run between these operations. Callers hold the surrounding
+    /// `Mutex<EmulatorState>` for the complete call. See the type-level
+    /// "Thread safety" section. `&mut self` makes this exclusive access explicit.
     fn evaluate(
         &mut self,
         rpc: IpcRpc,
@@ -127,8 +126,8 @@ fn build_input(rpc: IpcRpc, fields: &BTreeMap<String, Value>) -> Value {
 
 /// A policy decision resolved for a single request.
 ///
-/// Carries the configured response and optional delay outside the state lock so
-/// RPC handlers can wait asynchronously without blocking controller operations.
+/// Carries the configured response and optional delay outside the state lock.
+/// Thus, RPC handlers can wait without blocking controller operations.
 #[derive(Clone)]
 pub(crate) struct EvaluatedDecision {
     pub(crate) response: EmulatorResponse,

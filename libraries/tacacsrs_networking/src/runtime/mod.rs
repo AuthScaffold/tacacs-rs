@@ -1,6 +1,6 @@
 //! Packet-connection runtimes.
 //!
-//! Runtime modules own how packet streams are driven. The dedicated runtime
+//! Runtime modules control packet connections. The dedicated runtime
 //! performs one request/response exchange on a single transport, while the
 //! multiplexed runtime runs many TACACS+ sessions over a confirmed
 //! single-connection transport.

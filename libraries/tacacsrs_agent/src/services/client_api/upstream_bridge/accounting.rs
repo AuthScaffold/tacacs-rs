@@ -30,11 +30,10 @@ impl RoutedOperation for AccountingRoute {
 }
 
 impl UpstreamBridge {
-    /// Executes one IPC accounting RPC against the currently selected upstream
-    /// TACACS+ server.
+    /// Runs one IPC accounting request against the selected TACACS+ server.
     ///
-    /// Connection reuse and single-connection negotiation are handled by the
-    /// networking layer behind the selected upstream connection.
+    /// The networking layer controls connection reuse and single-connection
+    /// negotiation.
     pub(in crate::services::client_api) async fn execute_accounting_request(
         &self,
         request: AccountingOperation,

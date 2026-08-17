@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "description": "Sample batch file demonstrating all request types",
+    "description": "This sample batch shows all request types.",
     "parallel": false
   },
   "requests": [

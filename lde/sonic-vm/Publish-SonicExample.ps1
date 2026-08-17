@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Build a Rust example for Linux under WSL and copy it to the SONiC VM.
+    Builds a Rust example for Linux under WSL and copies it to the SONiC VM.
 .DESCRIPTION
-    SONiC needs a Linux ELF artifact. This script builds through WSL from the
-    Windows checkout path, then copies the no-extension Linux example binary to
-    /data in the VM and marks it executable.
+    SONiC requires a Linux ELF artifact. This script uses WSL to build from the
+    Windows checkout. Then it copies the Linux example binary to /data.
+    The copied binary has no file extension and is executable.
 .EXAMPLE
     .\lde\sonic-vm\Publish-SonicExample.ps1 -Package tacacsrs-sonic -Example configdb_watch
 #>
@@ -38,9 +38,9 @@ if (-not $NoBuild) {
     Test-SonicRequiredCommand wsl
     $profileArg = if ($Profile -eq 'release') { ' --release' } else { '' }
     $buildCommand = 'source "$HOME/.cargo/env" 2>/dev/null || true; cargo build -p ' + $Package + ' --example ' + $Example + $profileArg
-    Write-Host "Building $Package example $Example under WSL at $repoWslPath..."
+    Write-Host "Build example $Example from package $Package under WSL at $repoWslPath."
     & wsl --cd $repoWslPath -- bash -lc $buildCommand
-    if ($LASTEXITCODE -ne 0) { throw "WSL cargo build failed with exit code $LASTEXITCODE." }
+    if ($LASTEXITCODE -ne 0) { throw "The WSL cargo build returned exit code $LASTEXITCODE." }
 }
 
 $profileDir = if ($Profile -eq 'release') { 'release' } else { 'debug' }

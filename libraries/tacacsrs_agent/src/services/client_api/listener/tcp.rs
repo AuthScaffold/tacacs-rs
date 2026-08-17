@@ -11,10 +11,10 @@ use crate::runtime::{ListenerRegistration, RuntimeHealthSnapshot, ShutdownReceiv
 use crate::services::client_api::health::StandardHealth;
 use crate::services::client_api::ClientApiService;
 
-/// Serves loopback TCP IPC clients until shutdown is requested.
+/// Runs a loopback TCP IPC listener until shutdown starts.
 ///
-/// This path exists primarily for non-Unix development workflows where a Unix
-/// domain socket is not available.
+/// This listener supports non-Unix development, where a Unix domain socket is
+/// not available.
 pub(crate) async fn serve(
     address: SocketAddr,
     service: ClientApiService,
@@ -23,7 +23,7 @@ pub(crate) async fn serve(
     health: watch::Receiver<RuntimeHealthSnapshot>,
 ) -> anyhow::Result<()> {
     if !address.ip().is_loopback() {
-        log::error!("Refusing non-loopback TCP IPC endpoint: {address}");
+        log::error!("The TCP IPC endpoint is not a loopback address: {address}");
         bail!("TCP IPC endpoint must be loopback-only: {address}");
     }
 
@@ -35,7 +35,7 @@ pub(crate) async fn serve(
     let health_task = tokio::spawn(standard_health.run(shutdown.clone()));
     registration.mark_bound();
 
-    log::info!("Listening for IPC clients on TCP {address}");
+    log::info!("The IPC listener accepts clients on TCP {address}");
 
     tonic::transport::Server::builder()
         .add_service(TacacsAgentServer::new(service.grpc_service()))
@@ -44,7 +44,7 @@ pub(crate) async fn serve(
         .await
         .with_context(|| format!("TCP IPC server {address} failed"))?;
 
-    log::info!("Shutdown signal received; draining active IPC clients");
+    log::info!("Received a shutdown signal; draining active IPC requests");
     service.wait_for_active_requests().await;
     health_task
         .await

@@ -5,32 +5,29 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Notify;
 
-/// Tracks how many request handlers are currently executing so shutdown can stop
-/// accepting new work first and then wait for in-flight requests to complete.
+/// Tracks active request handlers for graceful shutdown.
 ///
-/// The tracker uses an atomic counter plus a [`Notify`] to avoid holding a lock
-/// during the entire RPC handler lifetime. Incrementing and decrementing the
-/// counter is lock-free; only the shutdown waiter blocks on the notification.
+/// The tracker uses an atomic counter and a [`Notify`]. It does not hold a lock
+/// during the RPC handler lifetime. Only the shutdown task waits for a
+/// notification.
 #[derive(Default)]
 pub(crate) struct RequestTracker {
-    /// Number of handlers currently executing a request.
+    /// Number of active request handlers.
     active_requests: AtomicUsize,
-    /// Notification signalled when `active_requests` reaches zero.
+    /// Notification sent when `active_requests` reaches zero.
     drained: Notify,
 }
 
-/// RAII guard that decrements the active-client count on drop.
+/// RAII guard that decreases the active-request count when dropped.
 ///
-/// Created by [`RequestTracker::start_request`] and held for the duration of one
-/// request handler. When the last guard drops, the tracker notifies the shutdown
-/// waiter.
+/// [`RequestTracker::start_request`] creates this guard for one request handler.
+/// The last guard notifies the shutdown task when it drops.
 pub(crate) struct RequestGuard {
     tracker: Arc<RequestTracker>,
 }
 
 impl RequestTracker {
-    /// Registers one active client handler and returns a guard that will
-    /// decrement the count automatically when the handler finishes.
+    /// Registers one active request handler and returns its guard.
     pub(crate) fn start_request(self: &Arc<Self>) -> RequestGuard {
         self.active_requests.fetch_add(1, Ordering::Relaxed);
         RequestGuard {
@@ -38,32 +35,29 @@ impl RequestTracker {
         }
     }
 
-    /// Waits until all client handlers tracked by this instance have dropped
-    /// their guards.
+    /// Waits until all tracked request handlers drop their guards.
     ///
-    /// This is used only during shutdown after the listeners have stopped
-    /// accepting new connections, so the count is expected to trend toward
-    /// zero. The loop handles races where a notification arrives just before a
-    /// waiter starts sleeping.
+    /// Shutdown calls this method after the listeners stop accepting
+    /// connections. The loop handles a notification that arrives before the
+    /// task starts to wait.
     pub(crate) async fn wait_for_active_requests(&self) {
         loop {
             if self.active_requests.load(Ordering::Relaxed) == 0 {
-                log::debug!("All in-flight request handlers have drained");
+                log::debug!("All active request handlers have finished");
                 return;
             }
 
-            // Register for notification before the recheck so a
-            // decrement-to-zero racing between the recheck and the await is
-            // captured by the already-registered future.
+            // Register before reading the count again. This order captures a zero
+            // transition that occurs before the task starts to wait.
             let notified = self.drained.notified();
 
             let active_requests = self.active_requests.load(Ordering::Relaxed);
             if active_requests == 0 {
-                log::debug!("All in-flight request handlers have drained");
+                log::debug!("All active request handlers have finished");
                 return;
             }
 
-            log::debug!("Waiting for {active_requests} in-flight request handler(s) to finish");
+            log::debug!("Waiting for {active_requests} active request handler(s) to finish");
             notified.await;
         }
     }
@@ -85,17 +79,17 @@ mod tests {
     use super::RequestTracker;
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio time.
     async fn test_drain_returns_immediately_with_no_active_requests() {
         let tracker = Arc::new(RequestTracker::default());
 
         tokio::time::timeout(Duration::from_millis(100), tracker.wait_for_active_requests())
             .await
-            .expect("wait_for_active_requests should return immediately with no active requests");
+            .expect("wait_for_active_requests must return when no requests are active");
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
     async fn test_drain_waits_for_in_flight_request_then_completes() {
         let tracker = Arc::new(RequestTracker::default());
         let request_guard = tracker.start_request();
@@ -105,18 +99,18 @@ mod tests {
                 .await;
         assert!(
             drain_result.is_err(),
-            "wait_for_active_requests should block while a request is in flight"
+            "wait_for_active_requests must wait while a request is active"
         );
 
         drop(request_guard);
 
         tokio::time::timeout(Duration::from_millis(100), tracker.wait_for_active_requests())
             .await
-            .expect("wait_for_active_requests should complete after all requests finish");
+            .expect("wait_for_active_requests must finish after all requests finish");
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio time.
     async fn test_drain_completes_when_guard_drops_between_check_and_await() {
         let tracker = Arc::new(RequestTracker::default());
         let request_guard = tracker.start_request();
@@ -124,6 +118,6 @@ mod tests {
 
         tokio::time::timeout(Duration::from_millis(200), tracker.wait_for_active_requests())
             .await
-            .expect("wait_for_active_requests must not hang after a racing guard drop");
+            .expect("wait_for_active_requests must finish after the guard drops");
     }
 }

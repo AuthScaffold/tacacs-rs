@@ -1,12 +1,12 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    // SAFETY: build scripts run in a single process context for this crate and
-    // only need to point prost/tonic code generation at the vendored protoc.
+    // SAFETY: This build script sets PROTOC before it starts code generation.
+    // No other thread in this process reads or writes the environment.
     std::env::set_var("PROTOC", protoc);
 
-    // Prost emits `PartialEq` (without `Eq`) for some composite message shapes.
-    // Keep clippy strict elsewhere and suppress only on the affected generated
-    // authorization protobuf message and oneof types.
+    // Prost emits `PartialEq` without `Eq` for some composite messages.
+    // Suppress this lint only for the affected generated authorization messages
+    // and oneof types.
     let allow_partial_eq = "#[allow(clippy::derive_partial_eq_without_eq)]";
     tonic_prost_build::configure()
         .type_attribute("tacacsrs.agent.v1.AuthorizationRequest", allow_partial_eq)

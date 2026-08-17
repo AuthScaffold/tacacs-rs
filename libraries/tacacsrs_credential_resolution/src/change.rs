@@ -1,4 +1,4 @@
-//! Provider-neutral credential change notifications owned by orchestration.
+//! Provider-neutral credential change notifications for orchestration.
 
 use std::fmt;
 use std::pin::Pin;
@@ -13,12 +13,12 @@ use crate::{CredentialKind, CredentialReference};
 pub enum CredentialChangeScope {
     /// One known provider reference changed.
     Known {
-        /// Expected credential material kind.
+        /// Expected credential kind.
         kind: CredentialKind,
         /// Opaque provider reference identity.
         reference: CredentialReference,
     },
-    /// The provider cannot identify a safe narrower scope.
+    /// The provider cannot identify a narrower scope safely.
     Unknown,
 }
 
@@ -38,11 +38,11 @@ impl fmt::Debug for CredentialChangeScope {
 /// Credential change-stream lifecycle event.
 #[derive(Clone, Eq, PartialEq)]
 pub enum CredentialChangeEvent {
-    /// Credential material changed within the supplied scope.
+    /// A credential changed within the supplied scope.
     Changed(CredentialChangeScope),
     /// The provider notification stream became unavailable.
     Unavailable,
-    /// The provider notification stream is connected again.
+    /// The provider notification stream is available again.
     Recovered,
 }
 
@@ -56,7 +56,7 @@ impl fmt::Debug for CredentialChangeEvent {
     }
 }
 
-/// Sanitized failure to establish a credential change stream.
+/// Sanitized error from an attempt to establish a credential change stream.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct CredentialChangeError;
 
@@ -72,7 +72,7 @@ impl std::error::Error for CredentialChangeError {}
 pub type CredentialChangeStream =
     Pin<Box<dyn Stream<Item = CredentialChangeEvent> + Send + 'static>>;
 
-/// Separate source of credential provider change notifications.
+/// Source of credential provider change notifications.
 #[async_trait]
 pub trait CredentialChangeSource: Send + Sync {
     /// Establishes a new provider notification stream.

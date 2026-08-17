@@ -4,7 +4,7 @@ version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Central TACACS+ client service for local consumers"
+description = "Local service that connects clients to TACACS+ servers"
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
@@ -55,9 +55,9 @@ maintainer = "AuthScaffold <github-discussions@authscaffold.com>"
 copyright = "2024, AuthScaffold"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
-tacacsrs-agentd is a long-running local TACACS+ client service. It maintains \
-pooled upstream TACACS+ connections and exposes a local IPC interface for \
-clients such as tacon and session-wrapper."""
+tacacsrs-agentd is a local TACACS+ client service. It keeps a connection pool \
+for TACACS+ servers. Clients, such as tacon and session-wrapper, use its IPC \
+endpoint."""
 depends = "$auto, init-system-helpers (>= 1.54)"
 pre-depends = "debconf (>= 0.5) | debconf-2.0"
 section = "net"

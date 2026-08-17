@@ -1,10 +1,11 @@
 Template: tacacsrs-bash-plugin/enable-bash-plugin
 Type: boolean
 Default: false
-Description: Register tacacsrs-bash-plugin in /etc/bash_plugins.conf?
- If enabled, the package adds a managed plugin entry for
+Description: Add tacacsrs-bash-plugin to /etc/bash_plugins.conf?
+ If the value is true, the package adds a managed plugin entry for
  /usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so to
  /etc/bash_plugins.conf.
  .
- Disable this to leave the existing bash plugin configuration untouched. You
- can change this later with dpkg-reconfigure tacacsrs-bash-plugin.
+ A false value removes only the package-managed block. Other content in the
+ configuration file remains unchanged. You can run dpkg-reconfigure
+ tacacsrs-bash-plugin later to change the value.

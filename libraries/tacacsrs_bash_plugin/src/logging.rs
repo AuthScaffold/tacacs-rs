@@ -21,6 +21,9 @@ fn syslog_debug(message: &str) {
     let Ok(message) = CString::new(sanitized) else {
         return;
     };
+    // SAFETY: `format` and `message` are valid NUL-terminated C strings for
+    // this call. The fixed format has one `%s` conversion, which matches the
+    // message pointer argument.
     unsafe {
         libc::syslog(libc::LOG_DEBUG, format.as_ptr(), message.as_ptr());
     }

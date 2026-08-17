@@ -3,18 +3,17 @@
 /// Public configuration for the agent runtime.
 pub mod config;
 
-/// Long-lived service lifecycle and hot-reload orchestration.
+/// Long-lived service lifecycle and configuration reloads.
 pub mod runtime;
 
-/// Internal services with explicit runtime ownership boundaries.
+/// Internal services with explicit runtime owners.
 mod services;
 
 /// Persistent upstream TACACS+ connection management.
 ///
-/// This module adapts lower-level networking/session APIs into the agent's
-/// operation model. Each upstream connection can be reused for many IPC
-/// requests, while the upstream manager keeps ownership of failover decisions
-/// and connection lifecycle.
+/// This module adapts lower-level connection and session APIs to the agent
+/// operation model. The upstream manager controls failover and the connection
+/// lifecycle. It can reuse each server connection for many IPC requests.
 pub mod upstream;
 
 #[cfg(test)]

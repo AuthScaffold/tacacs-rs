@@ -2,17 +2,17 @@ use anyhow::{Context, Result};
 
 use crate::{TacacsPlus, TacacsPlusServer};
 
-/// Enumerate each configured server with shared credential bundles inlined.
+/// Enumerate each server and inline its shared credential bundles.
 ///
-/// This copies `client-credentials` / `server-credentials` bundle contents
-/// onto each server entry and clears the corresponding `credentials-reference`
-/// fields. External `central-keystore-reference` and `central-truststore-reference`
-/// values are preserved.
+/// This operation copies `client-credentials` and `server-credentials` bundle
+/// contents into each server entry. It clears the related
+/// `credentials-reference` fields. It preserves external
+/// `central-keystore-reference` and `central-truststore-reference` values.
 ///
 /// # Errors
 ///
 /// Returns an error if any referenced client or server credential bundle is
-/// missing from the config.
+/// missing from the configuration.
 pub fn enumerate_servers(config: &TacacsPlus) -> Result<Vec<TacacsPlusServer>> {
     config
         .server
@@ -27,7 +27,7 @@ pub fn enumerate_servers(config: &TacacsPlus) -> Result<Vec<TacacsPlusServer>> {
         .collect()
 }
 
-/// Enumerate one server by name with shared credential bundles inlined.
+/// Enumerate one server by name and inline its shared credential bundles.
 ///
 /// # Errors
 ///
@@ -46,16 +46,15 @@ pub fn enumerate_server(config: &TacacsPlus, server_name: &str) -> Result<Tacacs
     Ok(enumerated)
 }
 
-/// Validate that all config-local credential bundle references are defined.
+/// Make sure that all local credential bundle references are defined.
 ///
-/// This checks only `credentials-reference` links into the config's own
-/// `client-credentials` and `server-credentials` lists. It does not validate
-/// external keystore or truststore references.
+/// This function covers only `credentials-reference` links into the
+/// configuration's `client-credentials` and `server-credentials` lists. It
+/// does not validate external keystore or truststore references.
 ///
 /// # Errors
 ///
-/// Returns an aggregated error if any server references a missing credential
-/// bundle.
+/// Returns one error that lists all missing credential bundles.
 pub fn validate_credential_references(config: &TacacsPlus) -> Result<()> {
     let mut errors: Vec<String> = Vec::new();
 

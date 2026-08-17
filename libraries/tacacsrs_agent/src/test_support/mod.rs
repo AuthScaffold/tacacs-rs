@@ -1,7 +1,7 @@
 //! Shared fake types and helpers for agent runtime tests.
 //!
-//! Test fixtures are grouped by purpose so production modules can import only
-//! the behavior they need: reusable fake upstreams and domain request builders.
+//! The fixtures are grouped by purpose. Production modules can import only the
+//! required fake servers and domain request builders.
 
 mod fake_upstream;
 mod requests;

@@ -34,22 +34,21 @@ pub use store::{
 
 /// SONiC ConfigDB-backed [`ConfigDatastore`] implementation.
 ///
-/// Reads the compatibility, TLS upstream, and forwarder TACACS+ tables from
-/// CONFIG_DB and emits a
-/// [`tacacsrs_datastore::ConfigChange`] every time a TACPLUS-prefixed key
-/// changes (subject to the configured debounce window).
+/// This datastore reads TACACS+ compatibility, TLS server, and forwarder tables
+/// from CONFIG_DB. It emits a [`tacacsrs_datastore::ConfigChange`] after a
+/// debounced change to a `TACPLUS` key.
 ///
-/// The datastore is intentionally constructed with a connection settings
-/// struct rather than a live client: the actual Redis connection is opened
-/// lazily inside [`load`](Self::load) / [`subscribe`](Self::subscribe) so the
-/// daemon can survive a restart of the SONiC `database.service`.
+/// The datastore stores connection configuration instead of a live client.
+/// [`load`](Self::load) and [`subscribe`](Self::subscribe) open Redis
+/// connections only when required. Thus, the daemon can continue after SONiC
+/// restarts `database.service`.
 pub struct SonicConfigDb {
     settings: SonicConnection,
     bound_forwarder: Option<SonicForwarderSettings>,
 }
 
 impl SonicConfigDb {
-    /// Create a new datastore with the supplied connection settings.
+    /// Creates a datastore with the supplied connection configuration.
     #[must_use]
     pub fn new(settings: SonicConnection) -> Self {
         Self {
@@ -58,8 +57,8 @@ impl SonicConfigDb {
         }
     }
 
-    /// Creates a datastore that compares later forwarder snapshots with the
-    /// settings already used to bind service listeners.
+    /// Creates a datastore that compares new forwarder snapshots with the
+    /// configuration used to bind service listeners.
     #[must_use]
     pub fn with_bound_forwarder(
         settings: SonicConnection,
@@ -110,18 +109,15 @@ impl ConfigDatastore for SonicConfigDb {
         let bound_forwarder = self.bound_forwarder;
         let (tx, rx) = mpsc::channel(8);
 
-        // Establish the subscription BEFORE loading the baseline so any ConfigDB
-        // change that lands during or after the reconcile is queued and applied,
-        // closing the load-before-subscribe gap where a change could be lost.
+        // Establish the subscription before loading the baseline. This order
+        // queues changes that occur during reconciliation.
         let mut signal = spawn_change_notifier(settings.clone())
             .await
             .context("subscribe to SONiC ConfigDB keyspace notifications")?;
         tokio::spawn(async move {
             let mut previous: Option<Arc<TacacsPlus>> = None;
-            // Reconcile and emit the post-subscription baseline immediately, then
-            // reconcile on every subsequent coalesced change signal. Because the
-            // subscription is already active, any change during the first reconcile
-            // is queued and applied on the next pass.
+            // Emit the baseline immediately. Then reconcile each group of
+            // change signals. The active subscription queues concurrent changes.
             let mut reconcile_now = true;
             loop {
                 if !reconcile_now {
@@ -187,11 +183,8 @@ fn config_change(previous: Option<&TacacsPlus>, snapshot: Arc<TacacsPlus>) -> Op
     })
 }
 
-/// Reconnect-and-reload helper used by the change subscriber.
+/// Candidate loaded by the change subscriber after a reconnect.
 ///
-/// SONiC's `database.service` may be restarted independently of
-/// `tacacsrs-agentd`. To survive these blips we attempt a small number of
-/// reconnect retries before giving up on a particular notification.
 struct ReloadedCandidate {
     config: TacacsPlus,
     forwarder: Option<SonicForwarderSettings>,
@@ -347,8 +340,7 @@ mod tests {
         }));
         let mut events = datastore.subscribe().await.expect("subscribe");
 
-        // subscribe() now establishes the subscription first and emits the
-        // post-subscription baseline before any live change.
+        // subscribe() establishes the subscription before it emits the baseline.
         assert!(matches!(
             next_event(&mut events, "initial baseline change").await,
             ConfigChangeEvent::Changed(_)

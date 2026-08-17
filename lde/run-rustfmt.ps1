@@ -14,22 +14,22 @@ try {
     }
 
     if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
-        throw 'rustup was not found in PATH. This repo requires nightly rustfmt from rustup.'
+        throw 'rustup was not found in PATH. This repository requires nightly rustfmt from rustup.'
     }
 
     $installedToolchains = rustup toolchain list
     if (-not ($installedToolchains | Select-String -Pattern '^nightly(-|\s|$)')) {
-        Write-Host 'Installing nightly toolchain...'
+        Write-Host 'Install the nightly toolchain.'
         rustup toolchain install nightly
     }
 
     $nightlyComponents = rustup component list --toolchain nightly
     if (-not ($nightlyComponents | Select-String -Pattern '^rustfmt-.*\(installed\)$')) {
-        Write-Host 'Installing rustfmt for nightly toolchain...'
+        Write-Host 'Install rustfmt for the nightly toolchain.'
         rustup component add rustfmt --toolchain nightly
     }
 
-    Write-Host 'Running rustfmt across the workspace...'
+    Write-Host 'Run rustfmt across the workspace.'
     cargo +nightly fmt --all
 }
 finally {

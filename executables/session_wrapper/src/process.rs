@@ -2,7 +2,7 @@
 //!
 //! The important hand-off is:
 //!
-//! 1. The parent creates a Unix socketpair and forks.
+//! 1. The parent creates a pair of connected Unix domain sockets, then calls `fork`.
 //! 2. The child installs the seccomp user-notification filter in its own
 //!    process, sends the resulting notification fd to the parent with
 //!    `SCM_RIGHTS`, and then waits for a one-byte "supervisor ready" signal.
@@ -12,7 +12,9 @@
 //!
 //! This is deliberately not implemented with `std::process::Command`: the
 //! parent must receive the seccomp listener before the child is allowed to run
-//! an `execve` that would otherwise block forever waiting for a supervisor.
+//! `execve`. If the child calls `execve` after it installs the filter but before
+//! the parent starts the supervisor, the call blocks because no supervisor can
+//! answer it.
 //! The control socket also gives the child a way to report setup failures after
 //! fork, where returning a normal Rust error to the parent is no longer
 //! possible.
@@ -59,7 +61,7 @@ pub(crate) struct SessionProcess {
     control_socket: OwnedFd,
 }
 
-/// Messages the child can send after the parent has released it.
+/// Messages the child can send after the parent releases it.
 ///
 /// A clean `execv` closes the child's `SOCK_CLOEXEC` control socket, which the
 /// parent treats as the exec boundary. Failures before exec are sent as an
@@ -80,9 +82,9 @@ pub(crate) struct ReapedProcess {
 
 /// Result of a non-blocking reap pass.
 ///
-/// `has_children` preserves information that a plain `Vec<ReapedProcess>` would
-/// lose: `waitpid(..., WNOHANG)` returning 0 means at least one child or
-/// subreaped descendant still exists even if none exited during this pass.
+/// Without `has_children`, a plain `Vec<ReapedProcess>` loses this information:
+/// `waitpid(..., WNOHANG)` returning 0 means at least one child or subreaped
+/// descendant still exists even if none exited during this pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReapStatus {
     pub(crate) reaped: Vec<ReapedProcess>,
@@ -118,7 +120,7 @@ impl SessionProcess {
         self.control_socket.as_raw_fd()
     }
 
-    /// Releases the child after the parent has started its supervisor path.
+    /// Releases the child after the parent starts its supervisor path.
     ///
     /// The child blocks on this byte after installing seccomp and sending the
     /// notification fd. This prevents the child's first `execve` from being
@@ -145,7 +147,7 @@ pub(crate) fn spawn_session(config: ChildProcessConfig) -> Result<SessionProcess
 
     let fork_result = {
         // SAFETY: fork has no Rust wrapper. This call happens before any threads
-        // are started by session-wrapper; both branches immediately close the
+        // are started by session-wrapper. Both branches immediately close the
         // unused socket end and avoid sharing borrowed stack references.
         unsafe { libc::fork() }
     };
@@ -158,10 +160,10 @@ pub(crate) fn spawn_session(config: ChildProcessConfig) -> Result<SessionProcess
         }
         child_pid => {
             drop(child_socket);
-            // This blocks until the child has installed seccomp and transferred
+            // This blocks until the child installs seccomp and transfers
             // the listener fd, or until it reports a setup error. The parent
-            // must not signal readiness before this point because the child
-            // would be able to hit a notified syscall with no listener running.
+            // must not signal readiness before this point. Otherwise, the child
+            // can reach a notified syscall with no listener running.
             let notification_fd =
                 recv_initial_child_message(parent_socket.as_raw_fd(), Some(child_pid))
                     .context("failed to receive seccomp notification fd from child")?;
@@ -205,15 +207,15 @@ fn run_child_or_exit(control_socket: OwnedFd, config: ChildProcessConfig) -> ! {
 /// Setup order is security-critical: install seccomp first, transfer the
 /// listener fd, wait for parent readiness, drop privileges, then exec the command.
 fn run_child(control_socket: &OwnedFd, config: &ChildProcessConfig) -> Result<()> {
-    // Install the filter before dropping privileges or execing the command so the
-    // entire user session, including the first exec, is mediated.
+    // Install the filter before the code drops privileges or runs `exec` on the
+    // command. This mediates the entire user session, including the first exec.
     let notification_fd = seccomp::install_filter()
         .context("failed to install session-wrapper seccomp filter in child")?;
     send_fd(control_socket.as_raw_fd(), notification_fd)
         .context("failed to send seccomp notification fd to parent")?;
-    // After SCM_RIGHTS transfer the child must not keep its copy open. The
-    // supervisor's lifetime should be controlled by the parent's OwnedFd, and
-    // no listener fd should leak into the user command.
+    // After the SCM_RIGHTS transfer, the child must not keep its copy open. The
+    // parent's `OwnedFd` must control the supervisor's lifetime. No listener fd
+    // must leak into the user command.
     close_fd(notification_fd).context("failed to close child copy of seccomp notification fd")?;
 
     // The ready byte is the synchronization point that proves the parent has a
@@ -306,7 +308,7 @@ fn send_fd(socket: RawFd, fd_to_send: RawFd) -> Result<()> {
                 bail!("sendmsg failed while passing fd: {error}");
             }
             if sent != 1 {
-                bail!("sendmsg wrote {sent} bytes while passing fd; expected 1");
+                bail!("sendmsg wrote {sent} bytes while passing fd. Expected 1 byte.");
             }
             break;
         }
@@ -354,11 +356,11 @@ fn recv_initial_child_message(socket: RawFd, child_pid: Option<libc::pid_t>) -> 
             if let Some(status) = child_exit_summary(child_pid)
                 .with_context(|| format!("failed to read child {child_pid} exit status"))?
             {
-                bail!("control socket closed before fd was received; child {child_pid} {status}");
+                bail!("Control socket closed before the fd arrived. Child {child_pid} {status}.");
             }
 
             bail!(
-                "control socket closed before fd was received; child {child_pid} is still running"
+                "Control socket closed before the fd arrived. Child {child_pid} is still running."
             );
         }
 
@@ -481,7 +483,7 @@ fn wait_for_ready(socket: RawFd) -> Result<()> {
     Ok(())
 }
 
-/// Reads a child setup status frame after the parent has released the child.
+/// Reads a child setup status frame after the parent releases the child.
 ///
 /// This free function is `pub(crate)` so the async supervisor can call it from
 /// a `tokio::task::spawn_blocking` closure using only the raw fd, without
@@ -549,8 +551,8 @@ fn read_child_error(socket: RawFd) -> Result<String> {
 /// Drops from the wrapper's current credentials to the target login identity.
 ///
 /// The wrapper normally starts privileged so it can set groups and UID for the
-/// target user. Non-root smoke tests may already be running as that identity,
-/// in which case there is nothing to drop.
+/// target user. Non-root smoke tests can already run as that identity. In that
+/// case, there is nothing to drop.
 fn drop_privileges(user: &str, gid: libc::gid_t, uid: libc::uid_t) -> Result<()> {
     // Non-root smoke tests often target the current user. Treat that as already
     // dropped so local integration checks do not require sudo just to exercise
@@ -632,7 +634,8 @@ fn string_to_cstring(arg: &str) -> Result<CString> {
     CString::new(arg).context("command argument contains an interior NUL byte")
 }
 
-/// Reads exactly `buffer.len()` bytes from a raw fd, retrying on interruption.
+/// Reads exactly `buffer.len()` bytes from a raw fd. Retries automatically if a
+/// signal interrupts the read.
 fn read_exact(fd: RawFd, mut buffer: &mut [u8]) -> Result<()> {
     while !buffer.is_empty() {
         let read_count = {
@@ -659,7 +662,8 @@ fn read_exact(fd: RawFd, mut buffer: &mut [u8]) -> Result<()> {
     Ok(())
 }
 
-/// Writes the whole buffer to a raw fd, retrying on interruption.
+/// Writes the whole buffer to a raw fd. Retries automatically if a signal
+/// interrupts the write.
 fn write_all(fd: RawFd, mut buffer: &[u8]) -> Result<()> {
     while !buffer.is_empty() {
         let written = {
@@ -737,8 +741,9 @@ fn zeroed_msghdr() -> libc::msghdr {
 
 /// Marks the wrapper as a child subreaper for this process tree.
 ///
-/// This lets the wrapper reap descendants that outlive the initial command,
-/// instead of losing visibility when they would otherwise be reparented to PID 1.
+/// This lets the wrapper reap descendants that outlive the initial command.
+/// Without this setting, the kernel reparents these descendants to PID 1, and
+/// the wrapper loses visibility over them.
 fn enable_child_subreaper() -> Result<()> {
     let result = {
         // SAFETY: prctl is called with PR_SET_CHILD_SUBREAPER and integer
@@ -778,7 +783,7 @@ fn session_id(pid: libc::pid_t) -> Result<libc::pid_t> {
 /// Reaps all currently exited child or subreaped descendant processes.
 ///
 /// The return value also tells the supervisor whether any children remain. That
-/// signal is necessary because there may be live descendants even when no PIDs
+/// signal is necessary because live descendants can remain even when no PIDs
 /// were reaped in this pass.
 pub(crate) fn reap_available_children() -> Result<ReapStatus> {
     let mut reaped = Vec::new();
@@ -795,8 +800,8 @@ pub(crate) fn reap_available_children() -> Result<ReapStatus> {
             continue;
         }
         if pid == 0 {
-            // No exits are pending, but waitpid tells us there is still at
-            // least one child/subreaped descendant to supervise.
+            // No exits are pending. `waitpid` reports that at least one child or
+            // subreaped descendant still needs supervision.
             return Ok(ReapStatus {
                 reaped,
                 has_children: true,
@@ -805,7 +810,7 @@ pub(crate) fn reap_available_children() -> Result<ReapStatus> {
 
         let error = io::Error::last_os_error();
         if error.raw_os_error() == Some(libc::ECHILD) {
-            // No children remain. The supervisor may now close the notification
+            // No children remain. The supervisor can now close the notification
             // fd without stranding a descendant that inherited the seccomp
             // filter.
             return Ok(ReapStatus {
@@ -833,17 +838,17 @@ mod tests {
 
     #[test]
     fn passes_file_descriptor_over_unix_socket() {
-        let (sender, receiver) = socket_pair().expect("socketpair should be created");
-        let (pipe_reader, pipe_writer) = pipe().expect("pipe should be created");
+        let (sender, receiver) = socket_pair().expect("failed to create the socket pair");
+        let (pipe_reader, pipe_writer) = pipe().expect("failed to create the pipe");
 
-        send_fd(sender.as_raw_fd(), pipe_reader.as_raw_fd()).expect("fd should be sent");
-        let received_reader =
-            recv_initial_child_message(receiver.as_raw_fd(), None).expect("fd should be received");
+        send_fd(sender.as_raw_fd(), pipe_reader.as_raw_fd()).expect("failed to send the fd");
+        let received_reader = recv_initial_child_message(receiver.as_raw_fd(), None)
+            .expect("failed to receive the fd");
 
-        super::write_all(pipe_writer.as_raw_fd(), b"x").expect("pipe write should succeed");
+        super::write_all(pipe_writer.as_raw_fd(), b"x").expect("failed to write to the pipe");
         let mut byte = [0_u8];
         super::read_exact(received_reader.as_raw_fd(), &mut byte)
-            .expect("pipe read should succeed");
+            .expect("failed to read from the pipe");
 
         assert_eq!(byte, [b'x']);
     }
@@ -857,19 +862,19 @@ mod tests {
 
     #[test]
     fn ready_signal_uses_expected_byte() {
-        let (parent, child) = socket_pair().expect("socketpair should be created");
+        let (parent, child) = socket_pair().expect("failed to create the socket pair");
 
-        signal_ready_for_test(parent.as_raw_fd()).expect("ready byte should be written");
-        super::wait_for_ready(child.as_raw_fd()).expect("ready byte should be accepted");
+        signal_ready_for_test(parent.as_raw_fd()).expect("failed to write the ready byte");
+        super::wait_for_ready(child.as_raw_fd()).expect("failed to accept the ready byte");
     }
 
     #[test]
     fn pre_fd_child_error_is_reported_to_parent() {
-        let (parent, child) = socket_pair().expect("socketpair should be created");
+        let (parent, child) = socket_pair().expect("failed to create the socket pair");
 
-        send_child_error(child.as_raw_fd(), "setup failed").expect("error should be sent");
+        send_child_error(child.as_raw_fd(), "setup failed").expect("failed to send the error");
         let error = recv_initial_child_message(parent.as_raw_fd(), None)
-            .expect_err("fd receive should fail");
+            .expect_err("the fd receive succeeded");
 
         assert!(error.to_string().contains("setup failed"));
     }
@@ -883,23 +888,23 @@ mod tests {
 
     #[test]
     fn post_ready_child_error_is_reported_to_parent() {
-        let (parent, child) = socket_pair().expect("socketpair should be created");
+        let (parent, child) = socket_pair().expect("failed to create the socket pair");
 
         send_child_error(child.as_raw_fd(), "drop privileges failed")
-            .expect("error should be sent");
+            .expect("failed to send the error");
         let status =
-            read_child_setup_status_fd(parent.as_raw_fd()).expect("status should be readable");
+            read_child_setup_status_fd(parent.as_raw_fd()).expect("failed to read the status");
 
         assert_eq!(status, ChildSetupStatus::Failed("drop privileges failed".to_owned()));
     }
 
     #[test]
     fn closed_control_socket_marks_exec_boundary() {
-        let (parent, child) = socket_pair().expect("socketpair should be created");
+        let (parent, child) = socket_pair().expect("failed to create the socket pair");
 
         drop(child);
         let status =
-            read_child_setup_status_fd(parent.as_raw_fd()).expect("status should be readable");
+            read_child_setup_status_fd(parent.as_raw_fd()).expect("failed to read the status");
 
         assert_eq!(status, ChildSetupStatus::ControlClosed);
     }

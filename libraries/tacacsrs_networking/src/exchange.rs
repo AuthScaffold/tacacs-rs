@@ -2,10 +2,10 @@
 
 use tacacsrs_messages::enumerations::{TacacsMinorVersion, TacacsType};
 
-/// Describes one TACACS+ request followed by exactly one reply.
+/// Describes one TACACS+ request and its single reply.
 ///
-/// Networking owns packet headers, session identifiers, sequence numbers, and
-/// transport flags. Implementations only serialize the operation-specific
+/// The networking crate owns packet headers, session identifiers, sequence
+/// numbers, and transport flags. Implementations serialize only the operation-specific
 /// request body and parse the validated reply body.
 pub trait FixedExchange: Send {
     /// Typed reply produced by this exchange.

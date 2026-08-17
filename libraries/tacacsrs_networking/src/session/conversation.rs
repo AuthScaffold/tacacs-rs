@@ -37,8 +37,8 @@ impl ClientConversation {
 
     /// Sends one request and receives its matching reply.
     ///
-    /// The conversation is completed automatically when packet I/O or response
-    /// validation fails. A caller may explicitly complete a successful
+    /// The client automatically completes the conversation when packet I/O or
+    /// response validation fails. A caller can explicitly complete a successful
     /// conversation after receiving a terminal protocol reply.
     ///
     /// # Errors
@@ -124,7 +124,7 @@ impl ClientConversation {
             .context("conversation minor version was not recorded")?;
         let expected_response_sequence = request_sequence
             .checked_add(1)
-            .context("TACACS+ conversation response sequence would wrap")?;
+            .context("TACACS+ conversation response sequence exceeds 255")?;
 
         session.send_packet(request).await?;
         let response = session.receive_packet().await?;

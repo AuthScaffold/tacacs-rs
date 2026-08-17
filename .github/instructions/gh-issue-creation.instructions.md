@@ -8,7 +8,7 @@ applyTo: "**"
 ## Body file approach (preferred)
 
 PowerShell here-strings (`@"..."@`) interpret backtick sequences as escape
-characters (e.g. `` `u `` is a Unicode escape). Issue bodies almost always
+characters (for example, `` `u `` is a Unicode escape). Issue bodies almost always
 contain inline code with backticks, so **always use `--body-file`**:
 
 1. Write the issue body to a temporary Markdown file:
@@ -32,7 +32,8 @@ single quotes, and no dollar signs**. If in doubt, use `--body-file`.
 
 ## Issue body conventions
 
-- Start with a summary section explaining the problem or change but without a markdown title.
+- Start with a summary section that explains the problem or change. Do not add
+  a markdown title to this section.
 - Include a `## Plan` section with numbered steps that reference specific files
   and describe the expected code changes. This makes the issue actionable by
   Copilot or another agent later.
@@ -42,5 +43,5 @@ single quotes, and no dollar signs**. If in doubt, use `--body-file`.
 
 ```markdown
 ## Implementation freedom
-Copilot and other implementers may make breaking changes, refactors, public API modifications, module reorganizations, or any other changes needed to deliver a solid, maintainable, well-documented project. Do not preserve existing APIs, structure, or behavior solely for compatibility if changing them produces a better design for this work.
+Copilot and other implementers can make any change that is necessary for a solid and maintainable project. These changes can include breaking changes, refactors, public API changes, and module reorganizations. Do not preserve existing APIs, structure, or behavior only for compatibility. Change them when the new design is better for this work.
 ```

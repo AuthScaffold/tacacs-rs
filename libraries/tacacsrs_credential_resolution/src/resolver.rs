@@ -22,7 +22,9 @@ pub trait CredentialResolver: Send + Sync {
     ) -> Result<ResolvedCredential, ResolutionError>;
 }
 
-/// Resolves every request in deterministic plan order and validates the closed result set.
+/// Resolves each request in deterministic plan order.
+///
+/// This function also makes sure that the closed result set is valid.
 ///
 /// # Errors
 ///

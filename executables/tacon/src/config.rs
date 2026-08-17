@@ -44,9 +44,9 @@ pub fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
 
 fn validation_options_from_cli(cli: &Cli) -> ValidationOptions {
     // cli::ValidationRelaxation is a separate enum that mirrors
-    // tacacsrs_config::ValidationRelaxation.  The duplication is intentional:
+    // tacacsrs_config::ValidationRelaxation. The duplication is intentional:
     // build.rs includes cli.rs via `include!` to auto-generate the man page, so
-    // cli.rs may only depend on crates listed in [build-dependencies]. This
+    // cli.rs can only depend on crates listed in [build-dependencies]. This
     // function is the single mapping point, so adding a new relaxation requires
     // one change here and one in cli.rs.
     use crate::cli::ValidationRelaxation as CliRelaxation;
@@ -92,11 +92,11 @@ fn cli_psk_inputs(cli: &Cli) -> Option<CliPskInputs> {
     })
 }
 
-/// Loads a [`TacacsPlus`] root from a YANG JSON config file with the supplied validation options.
+/// Loads a [`TacacsPlus`] root from a YANG JSON configuration file with the supplied validation options.
 ///
 /// # Errors
 ///
-/// Returns an error if the config file cannot be read or parsed.
+/// Returns an error if the configuration file cannot be read or parsed.
 pub fn tacacs_plus_from_file(
     path: &std::path::Path,
     options: &ValidationOptions,
@@ -136,10 +136,10 @@ pub fn render_yang_config(cli: &Cli) -> anyhow::Result<String> {
 }
 
 /// Resolves the first upstream server with the requested service type from the
-/// CLI's effective [`TacacsPlus`] config.
+/// CLI's effective [`TacacsPlus`] configuration.
 ///
 /// This is the entry point used by direct-mode commands, which operate on a
-/// single server. Credential references in the parsed config are resolved via
+/// single server. Credential references in the parsed configuration are resolved via
 /// [`tacacsrs_config::enumerate_servers`].
 ///
 /// # Errors
@@ -257,7 +257,7 @@ mod tests {
             }"#,
             &ValidationOptions::default(),
         )
-        .expect("config string should load");
+        .expect("failed to load the configuration string");
 
         assert_eq!(root.server.len(), 2);
         assert_eq!(root.server[0].name, "primary");
@@ -297,10 +297,10 @@ mod tests {
             }"#,
             &ValidationOptions::default(),
         )
-        .expect("config string should load");
+        .expect("failed to load the configuration string");
 
         let server = select_first_server_for_type(&root, TacacsPlusServerType::ACCOUNTING)
-            .expect("accounting server should be selected");
+            .expect("failed to select the accounting server");
         assert_eq!(server.name, "acct");
     }
 
@@ -322,10 +322,10 @@ mod tests {
             }"#,
             &ValidationOptions::default(),
         )
-        .expect("config string should load");
+        .expect("failed to load the configuration string");
 
         let error = select_first_server_for_type(&root, TacacsPlusServerType::ACCOUNTING)
-            .expect_err("accounting server should be required");
+            .expect_err("an accounting server is required");
         assert!(error
             .to_string()
             .contains("No TACACS+ server configured for accounting"));
@@ -349,7 +349,7 @@ mod tests {
             "show",
         ]);
 
-        let root = tacacs_plus_from_cli(&cli).expect("plain-text shared secret should load");
+        let root = tacacs_plus_from_cli(&cli).expect("failed to load the plain-text shared secret");
         assert_eq!(
             root.server[0]
                 .shared_secret
@@ -377,7 +377,7 @@ mod tests {
             "show",
         ]);
 
-        let root = tacacs_plus_from_cli(&cli).expect("CLI server config should load");
+        let root = tacacs_plus_from_cli(&cli).expect("failed to load the CLI server configuration");
 
         assert!(root.server[0].single_connection);
     }
@@ -401,7 +401,7 @@ mod tests {
         ]);
 
         let root = tacacs_plus_from_cli(&cli)
-            .expect("plain TCP without shared-secret should load with relaxation");
+            .expect("failed to load plain TCP without a shared secret under the relaxation");
         assert!(root.server[0].shared_secret.is_none());
         assert!(root.server[0].client_identity.is_none());
         assert!(root.server[0].server_authentication.is_none());
@@ -422,9 +422,9 @@ mod tests {
             "192.0.2.10:49",
             "--use-tls",
             "--client-certificate",
-            cert_path.to_str().expect("path should be UTF-8"),
+            cert_path.to_str().expect("the certificate path is UTF-8"),
             "--client-key",
-            key_path.to_str().expect("path should be UTF-8"),
+            key_path.to_str().expect("the key path is UTF-8"),
             "accounting",
             "--user",
             "alice",
@@ -435,13 +435,13 @@ mod tests {
             "show",
         ]);
 
-        let root = tacacs_plus_from_cli(&cli).expect("PEM client identity should load");
+        let root = tacacs_plus_from_cli(&cli).expect("failed to load the PEM client identity");
         let inline = root.server[0]
             .client_identity
             .as_ref()
             .and_then(|identity| identity.certificate.as_ref())
             .and_then(|certificate| certificate.inline_definition.as_ref())
-            .expect("inline certificate definition should be present");
+            .expect("the inline certificate definition is missing");
 
         assert_eq!(inline.cert_data.as_deref(), Some(expected_cert_der.as_slice()));
         assert_eq!(
@@ -473,12 +473,12 @@ mod tests {
             "show",
         ]);
 
-        let root = tacacs_plus_from_cli(&cli).expect("TLS server name should load");
+        let root = tacacs_plus_from_cli(&cli).expect("failed to load the TLS server name");
         let server = &root.server[0];
 
         assert_eq!(server.domain_name.as_deref(), Some("tacacs.example.com"));
         assert_eq!(server.sni_enabled, Some(true));
-        assert!(server.server_authentication.is_some(), "TLS should be set");
+        assert!(server.server_authentication.is_some(), "TLS is not set");
     }
 
     #[test]
@@ -492,11 +492,12 @@ mod tests {
             "dump-yang-config",
         ]);
 
-        let rendered = render_yang_config(&cli).expect("effective config should serialize");
+        let rendered =
+            render_yang_config(&cli).expect("failed to serialize the effective configuration");
         assert!(rendered.contains("ietf-system-tacacs-plus:tacacs-plus"));
 
         let parsed = tacacsrs_config::parse_yang_json(&rendered)
-            .expect("rendered config should parse back as RFC 7951 JSON");
+            .expect("failed to parse the rendered configuration as RFC 7951 JSON");
         assert_eq!(parsed.server.len(), 1);
         assert_eq!(parsed.server[0].name, "cli");
     }
@@ -510,7 +511,7 @@ mod tests {
             "dump-yang-config",
         ]);
 
-        let error = render_yang_config(&cli).expect_err("service endpoint mode should be rejected");
+        let error = render_yang_config(&cli).expect_err("service endpoint mode was accepted");
         assert!(error
             .to_string()
             .contains("dump-yang-config requires direct configuration"));
@@ -538,17 +539,17 @@ mod tests {
         ]);
 
         let root = tacacs_plus_from_cli(&cli).expect(
-            "AllowTlsWithSharedSecret relaxation should allow TLS + shared-secret from CLI",
+            "the AllowTlsWithSharedSecret relaxation did not allow TLS with a shared secret from the CLI",
         );
 
-        assert!(root.server[0].server_authentication.is_some(), "TLS should be set");
+        assert!(root.server[0].server_authentication.is_some(), "TLS is not set");
         assert_eq!(
             root.server[0]
                 .shared_secret
                 .as_ref()
                 .map(tacacsrs_secrets::SecretString::expose_secret),
             Some("migration-secret"),
-            "shared secret should be set alongside TLS",
+            "the shared secret is not set with TLS",
         );
     }
 
@@ -574,17 +575,17 @@ mod tests {
         ]);
 
         let root = tacacs_plus_from_cli(&cli)
-            .expect("TLS-only server should build successfully without relaxation");
+            .expect("failed to build a TLS-only server without the relaxation");
 
-        assert!(root.server[0].server_authentication.is_some(), "TLS should be set");
+        assert!(root.server[0].server_authentication.is_some(), "TLS is not set");
         assert!(
             root.server[0].shared_secret.is_none(),
-            "shared secret should not be set without relaxation",
+            "the shared secret is set without the relaxation",
         );
     }
 
     fn tls13_epsk_groups(cli: &Cli) -> Vec<PskDheKeSupportedGroup> {
-        let mut root = tacacs_plus_from_cli(cli).expect("PSK config should build");
+        let mut root = tacacs_plus_from_cli(cli).expect("failed to build the PSK configuration");
         root.server
             .remove(0)
             .client_identity
@@ -595,7 +596,7 @@ mod tests {
     }
 
     fn tls13_epsk_key(cli: &Cli) -> tacacsrs_secrets::SecretBytes {
-        let mut root = tacacs_plus_from_cli(cli).expect("PSK config should build");
+        let mut root = tacacs_plus_from_cli(cli).expect("failed to build the PSK configuration");
         root.server
             .remove(0)
             .client_identity
@@ -680,7 +681,7 @@ mod tests {
             "show",
         ]);
 
-        let error = tacacs_plus_from_cli(&cli).expect_err("invalid base64 PSK should fail");
+        let error = tacacs_plus_from_cli(&cli).expect_err("the invalid base64 PSK was accepted");
 
         assert!(error
             .to_string()
@@ -767,7 +768,7 @@ mod tests {
             "show",
         ]);
 
-        let error = tacacs_plus_from_cli(&cli).expect_err("PSK-only plus groups should fail");
+        let error = tacacs_plus_from_cli(&cli).expect_err("PSK-only mode accepted custom groups");
         assert!(error.to_string().contains("--psk-key-exchange psk-only"));
         assert!(error.to_string().contains("--psk-key-exchange-groups"));
     }

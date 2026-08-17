@@ -46,7 +46,7 @@ impl ClientSession {
         match &self.inner {
             ClientSessionInner::Shared(session) => session.send_packet(packet).await,
             ClientSessionInner::SharedFixed(_) => {
-                anyhow::bail!("fixed TACACS+ sessions do not expose packet send")
+                anyhow::bail!("fixed TACACS+ sessions do not support separate packet writes")
             }
             ClientSessionInner::Dedicated(session) => session.send_packet(packet).await,
         }
@@ -56,7 +56,7 @@ impl ClientSession {
         match &self.inner {
             ClientSessionInner::Shared(session) => session.receive_packet().await,
             ClientSessionInner::SharedFixed(_) => {
-                anyhow::bail!("fixed TACACS+ sessions do not expose packet receive")
+                anyhow::bail!("fixed TACACS+ sessions do not support separate packet reads")
             }
             ClientSessionInner::Dedicated(session) => session.receive_packet().await,
         }

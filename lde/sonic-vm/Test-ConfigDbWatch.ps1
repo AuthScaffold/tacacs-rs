@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    Run a bounded configdb_watch scenario inside the SONiC QEMU VM.
+    Runs a bounded configdb_watch scenario in the SONiC QEMU VM.
 .DESCRIPTION
-    Resets TACPLUS rows in CONFIG_DB, seeds one server, starts configdb_watch,
-    adds a second server, deletes it, deletes the final server, and verifies the
-    watcher reports a zero-server snapshot. This script assumes the VM is
-    already running and reachable with key-based SSH.
+    Removes the TACPLUS rows from CONFIG_DB and adds one TACACS+ server.
+    Then the script starts configdb_watch and adds a second server.
+    It removes both servers and makes sure that the watcher reports zero servers.
+    The VM must be active and accept SSH key authentication.
 .EXAMPLE
     .\lde\sonic-vm\Test-ConfigDbWatch.ps1 -Publish
 #>
@@ -41,7 +41,7 @@ function Invoke-Guest {
         & $invokeScript -HostName $HostName -Port $Port -User $User $Command
     }
     if ($LASTEXITCODE -ne 0) {
-        throw "Remote command failed: $Command"
+        throw "The remote command returned an error: $Command"
     }
     ($output | Out-String).TrimEnd()
 }
@@ -61,7 +61,7 @@ function Wait-ForGuestOutputText {
         Start-Sleep -Milliseconds 250
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
 
-    throw "Timed out waiting for $Path to contain '$Text'."
+    throw "$Path did not contain '$Text' before the timeout."
 }
 
 function Wait-ForGuestPidExit {
@@ -77,7 +77,7 @@ function Wait-ForGuestPidExit {
         Start-Sleep -Milliseconds 250
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
 
-    throw "Timed out waiting for guest process in $PidFile to exit."
+    throw "The guest process in $PidFile did not stop before the timeout."
 }
 
 function Assert-Contains {
@@ -87,7 +87,7 @@ function Assert-Contains {
     )
 
     if (-not $Text.Contains($Expected)) {
-        throw "Expected watcher output to contain: $Expected"
+        throw "The watcher output did not contain: $Expected"
     }
 }
 
@@ -100,7 +100,7 @@ $stdoutPath = '/data/configdb_watch.out'
 $stderrPath = '/data/configdb_watch.err'
 $pidPath = '/data/configdb_watch.pid'
 
-Write-Host 'Preparing SONiC ConfigDB TACACS rows...'
+Write-Host 'Prepare the SONiC ConfigDB TACACS+ rows.'
 $prepScript = @"
 set -e
 redis-cli -n 4 CONFIG SET notify-keyspace-events KEA >/dev/null
@@ -113,11 +113,11 @@ rm -f $stdoutPath $stderrPath $pidPath
 "@
 Invoke-Guest -Command $prepScript -ScriptText | Out-Null
 
-Write-Host 'Starting configdb_watch in the guest...'
+Write-Host 'Start configdb_watch in the guest.'
 Invoke-Guest "nohup $quotedWatcherPath --max-events 3 --debounce-ms $DebounceMs > $stdoutPath 2> $stderrPath < /dev/null & echo `$! > $pidPath" | Out-Null
 Wait-ForGuestOutputText -Path $stdoutPath -Text 'watching for TACPLUS keyspace notifications' | Out-Null
 
-Write-Host 'Applying TACACS add/delete sequence...'
+Write-Host 'Run the TACACS+ server add-and-remove sequence.'
 Invoke-Guest "sudo config tacacs add -a pap -o 49 -t 1 $SecondaryServer" | Out-Null
 Start-Sleep -Milliseconds ($DebounceMs + 500)
 Invoke-Guest "sudo config tacacs delete $SecondaryServer" | Out-Null
@@ -134,7 +134,7 @@ Assert-Contains $stdout "removed_servers: [`"sonic-server-$SecondaryServer`"]"
 Assert-Contains $stdout "removed_servers: [`"sonic-server-$PrimaryServer`"]"
 Assert-Contains $stdout 'current_server_count: 0'
 
-Write-Host 'Verifying cold start with zero TACACS servers...'
+Write-Host 'Make sure that a cold start reports zero TACACS+ servers.'
 $coldStart = Invoke-Guest "$quotedWatcherPath --max-events 0"
 Assert-Contains $coldStart 'initial_server_count: 0'
 
@@ -145,4 +145,4 @@ if (-not [string]::IsNullOrWhiteSpace($stderr)) {
     Write-Host 'configdb_watch stderr:' -ForegroundColor Cyan
     Write-Host $stderr
 }
-Write-Host 'SONiC VM configdb_watch scenario passed.' -ForegroundColor Green
+Write-Host 'PASS: The SONiC VM configdb_watch scenario passed.' -ForegroundColor Green

@@ -1,22 +1,21 @@
 //! Internal service for upstream TACACS+ server selection and failover.
 //!
-//! `UpstreamManager` is shared by all listener tasks. It owns the currently
-//! preferred server index and cached upstream connections.
+//! All listener tasks share `UpstreamManager`. It owns the preferred server
+//! index and cached server connections.
 //!
 //! # Concurrency model
 //!
-//! Multiple IPC handlers may call into `UpstreamManager` simultaneously. The
-//! design uses fine-grained locking to minimize contention:
+//! Multiple IPC handlers can call `UpstreamManager` at the same time. The
+//! manager uses small lock scopes to reduce contention.
 //!
 //! | Lock | Scope | Purpose |
 //! |------|-------|---------|
 //! | `active_index` (`RwLock`) | Global | Current preferred server index |
-//! | `connection` (`RwLock`) | Per-server | Cached upstream connection |
+//! | `connection` (`RwLock`) | Per-server | Cached server connection |
 //! | `connect_lock` (`Mutex`) | Per-server | Serializes reconnect attempts |
 //!
-//! The per-server `connect_lock` ensures that concurrent IPC handlers share
-//! one in-flight reconnect attempt instead of stampeding the same TACACS+
-//! server with duplicate TLS handshakes.
+//! The `connect_lock` makes concurrent IPC handlers share one reconnect
+//! attempt. It prevents duplicate TLS handshakes to one TACACS+ server.
 
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::sync::atomic::Ordering;
@@ -37,39 +36,36 @@ mod server_set;
 mod server_slot;
 mod availability;
 
-/// Shared runtime state for all IPC client handlers spawned by the listener.
+/// Shared server state for all IPC request handlers.
 ///
-/// Each incoming IPC connection calls into this type exactly once. The state
-/// then binds that request to an upstream TACACS+ server, executes the
-/// operation, and records any failover information needed for future requests.
+/// Each IPC request uses this type to select a TACACS+ server. The request
+/// handler runs the operation and records failures for later requests.
 ///
-/// The state machine maintains a circular walk through the configured server
-/// list, starting from `active_index`. On failure the index advances; a
-/// background probe can reset it back to `0` (the preferred server) once
-/// recovery is detected.
+/// The state machine walks the server list from `active_index`. After a failure,
+/// it moves to the next index. A background probe resets the index to `0` when
+/// the preferred server recovers.
 ///
-/// Every server admitted into this runtime state is expected to support the
-/// full TACACS+ operation set currently exposed by the agent. That lets the
-/// router use one ordered failover list for accounting and authorization
-/// today; if per-operation routing is introduced later, this type is the seam
-/// where separate catalogs should be added.
+/// Each server in this state must support all TACACS+ operations that the agent
+/// provides. Thus, the router can use one ordered list for authentication,
+/// authorization, and accounting. Add separate catalogs here if the agent adds
+/// operation-specific routing.
 pub(crate) struct UpstreamManager {
-    /// Current immutable routing generation used by new requests.
+    /// Current immutable routing generation for new requests.
     runtime: StdRwLock<Arc<RuntimeRoutingSnapshot>>,
-    /// Factory for creating new upstream connections.
+    /// Factory for new server connections.
     connector: Arc<dyn UpstreamConnector>,
     /// Interval between preferred-server recovery probes.
     preferred_probe_interval: std::time::Duration,
-    /// Race-safe aggregate upstream availability publisher.
+    /// Race-safe aggregate server-availability publisher.
     availability: AvailabilityTracker,
 }
 
 impl UpstreamManager {
     /// Creates shared failover state for the service runtime.
     ///
-    /// The runtime may start with zero configured accounting-capable upstream
-    /// servers while it waits for external configuration. In that state, IPC
-    /// requests fail fast with a retriable waiting-for-config error.
+    /// The runtime can start without a configured server while it waits for
+    /// external configuration. In this state, IPC requests immediately return
+    /// a retriable configuration error.
     #[cfg(test)]
     pub(crate) fn new(
         servers: Vec<TacacsPlusServer>,
@@ -114,7 +110,7 @@ impl UpstreamManager {
             servers
                 .iter()
                 .all(|server| server.supports_server_type(REQUIRED_SERVER_TYPES)),
-            "UpstreamManager expects servers to support the full current TACACS+ operation set"
+            "each server in UpstreamManager must support all required TACACS+ operations"
         );
         let servers = servers
             .into_iter()
@@ -150,22 +146,18 @@ impl UpstreamManager {
         self.current_runtime().proxy_downstream_obfuscation.clone()
     }
 
-    /// Attempts to establish or refresh the first responsive cached connection
-    /// for startup.
+    /// Tries to cache a connection to the first responsive server.
     ///
-    /// This warm-up pass is best-effort and load-conscious: it walks the
-    /// configured server list until one usable upstream connection is cached,
-    /// then stops immediately. It does **not** fan out and establish
-    /// connections to every configured server, because large deployments may
-    /// have many more clients than TACACS+ servers.
+    /// This best-effort warm-up walks the server list until it caches one usable
+    /// connection. It does not connect to all servers.
     ///
-    /// If no server is reachable during startup the service still starts; the
-    /// first IPC requests will retry failover on demand.
+    /// If no server responds, the service still starts. IPC requests try the
+    /// failover list again when necessary.
     pub(crate) async fn warm_connections(&self) {
         let server_set = self.current_server_set();
         if server_set.server_count() == 0 {
             log::warn!(
-                "No TACACS+ servers are configured yet that support authentication, authorization, and accounting; waiting for runtime configuration"
+                "No configured TACACS+ server supports authentication, authorization, and accounting; waiting for configuration"
             );
             return;
         }
@@ -178,10 +170,7 @@ impl UpstreamManager {
                 Ok(connection) => {
                     *server_set.active_index.write().await = index;
                     self.availability.available(availability_attempt);
-                    log::info!(
-                        "Initialized startup upstream connection using {}",
-                        connection.server_address()
-                    );
+                    log::info!("Warmed the server connection to {}", connection.server_address());
                     return;
                 }
                 Err(error) => {
@@ -193,25 +182,21 @@ impl UpstreamManager {
             }
         }
 
-        log::warn!(
-            "Startup did not find a responsive TACACS+ server; requests will retry on demand"
-        );
+        log::warn!("No TACACS+ server responded during startup; requests will try again");
         self.availability.unavailable(availability_attempt);
     }
 
-    /// Returns the number of configured upstream TACACS+ servers.
+    /// Returns the number of configured TACACS+ servers.
     pub(crate) fn server_count(&self) -> usize {
         self.current_server_set().server_count()
     }
 
-    /// Atomically replaces the configured upstream TACACS+ server set.
+    /// Atomically replaces the configured TACACS+ server set.
     ///
-    /// New IPC requests observe the new ordered server snapshot immediately.
-    /// Requests that already bound to the previous snapshot keep running with
-    /// their existing connection handles. Cached connections for unchanged
-    /// servers are preserved, while removed or modified server connections are
-    /// marked as not accepting new sessions and then dropped from the active
-    /// runtime state.
+    /// New IPC requests use the new ordered server set. Bound requests continue
+    /// to use their existing connections. The manager keeps cached connections
+    /// for unchanged servers. Connections for removed or changed servers stop
+    /// accepting new sessions and leave the active runtime state.
     #[cfg(test)]
     pub(crate) async fn reload_servers(
         &self,
@@ -289,11 +274,11 @@ impl UpstreamManager {
 
         if new_set.server_count() == 0 {
             log::warn!(
-                "Reloaded TACACS+ upstream server set: 0 servers support authentication, authorization, and accounting; waiting for runtime configuration"
+                "Reloaded the TACACS+ server set: no server supports authentication, authorization, and accounting; waiting for configuration"
             );
         } else {
             log::info!(
-                "Reloaded TACACS+ upstream server set: {} server(s), active index {} ({})",
+                "Reloaded the TACACS+ server set: {} server(s), active index {} ({})",
                 new_set.server_count(),
                 new_active_index,
                 new_set.servers[new_active_index].socket_address(),
@@ -311,12 +296,10 @@ impl UpstreamManager {
         Ok(())
     }
 
-    /// Starts the background probe that periodically checks whether the
-    /// preferred server (index `0`) has recovered while the service is failed
-    /// over to another server.
+    /// Starts a background probe for the preferred server at index `0`.
     ///
-    /// The probe is intentionally idle while the preferred server is already
-    /// active, so it only adds extra connection work during a failover period.
+    /// The probe is idle while the preferred server is active. Thus, it creates
+    /// extra connections only during failover.
     pub(crate) fn spawn_preferred_probe(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let state = Arc::clone(self);
         tokio::spawn(async move {
@@ -331,14 +314,14 @@ impl UpstreamManager {
                 let active_index = *server_set.active_index.read().await;
                 if active_index == 0 {
                     log::trace!(
-                        "Preferred server probe: already using preferred server {}",
+                        "The preferred-server probe is idle because {} is active",
                         server_set.servers[0].socket_address(),
                     );
                     continue;
                 }
 
                 log::debug!(
-                    "Probing preferred server {} (currently failed over to {})",
+                    "Probing preferred server {}; the active server is {}",
                     server_set.servers[0].socket_address(),
                     server_set.servers[active_index].socket_address(),
                 );
@@ -348,7 +331,7 @@ impl UpstreamManager {
                     Ok(connection) => {
                         state.availability.available(availability_attempt);
                         log::info!(
-                            "Preferred TACACS+ server {} recovered; routing new sessions back to it",
+                            "Preferred TACACS+ server {} recovered; routing new sessions to it",
                             connection.server_address()
                         );
                         *server_set.active_index.write().await = 0;
@@ -364,29 +347,22 @@ impl UpstreamManager {
         })
     }
 
-    /// Selects the upstream TACACS+ server for a newly accepted IPC session.
+    /// Selects a TACACS+ server for a new session.
     ///
-    /// This is called once per IPC client connection. It starts at the current
-    /// `active_index` and walks the configured server list until it finds a
-    /// reachable upstream connection manager. If a server is down, the method
-    /// records that failure and advances to the next server, wrapping at the
-    /// end of the list.
+    /// This method starts at `active_index` and walks the server list. It stops
+    /// when it gets a connection. If a server is unavailable, the method records
+    /// the failure and moves to the next server.
     ///
-    /// Connection establishment is serialized per server. Concurrent IPC
-    /// clients therefore share one in-flight reconnect attempt instead of
-    /// stampeding the same TACACS+ server with many simultaneous handshakes.
-    /// Callers that arrive while another task is reconnecting wait on that
-    /// server's reconnect lock. Once the lock is released they either reuse the
-    /// cached connection created by that one reconnect attempt, or skip that
-    /// server for this IPC request if the reconnect attempt already failed.
+    /// Connection attempts are serialized for each server. Concurrent requests
+    /// share one reconnect attempt. A caller waits if another task holds the
+    /// server reconnect lock. It then uses the new cached connection or moves to
+    /// the next server if that attempt failed.
     ///
-    /// Because the runtime only admits servers that support every TACACS+
-    /// operation the agent exposes today, this shared selection path is valid
-    /// for both accounting and authorization requests.
+    /// This selection path supports all operations because each server supports
+    /// all required TACACS+ operations.
     ///
-    /// When no such servers are configured yet, the method fails immediately
-    /// with a retriable waiting-for-config error instead of trying to route the
-    /// request.
+    /// If no eligible server is configured, this method immediately returns a
+    /// retriable configuration error.
     pub(crate) async fn bind_server_for_new_session(&self) -> anyhow::Result<BoundServer> {
         let server_set = self.current_server_set();
         self.bind_server_from_set(server_set).await
@@ -408,7 +384,7 @@ impl UpstreamManager {
     ) -> anyhow::Result<BoundServer> {
         if server_set.server_count() == 0 {
             bail!(
-                "No TACACS+ servers are configured yet that support authentication, authorization, and accounting; waiting for initial configuration"
+                "No configured TACACS+ server supports authentication, authorization, and accounting; waiting for initial configuration"
             );
         }
         let availability_attempt = self.availability.begin_attempt();
@@ -428,7 +404,7 @@ impl UpstreamManager {
                 }
                 Err(error) => {
                     log::warn!(
-                        "TACACS+ server {} is non-responsive: {error}",
+                        "TACACS+ server {} did not respond: {error}",
                         server_set.servers[index].socket_address()
                     );
                     self.note_failure(&server_set, index).await;
@@ -436,48 +412,37 @@ impl UpstreamManager {
             }
         }
 
-        log::error!(
-            "All configured TACACS+ servers are currently non-responsive; failing IPC request"
-        );
+        log::error!("No configured TACACS+ server responded; the IPC request failed");
         self.availability.unavailable(availability_attempt);
-        bail!("No responsive TACACS+ servers are currently available");
+        bail!("No TACACS+ server is available");
     }
 
-    /// Returns a cached upstream connection manager for `index`, or creates a
-    /// fresh one if the cache is empty.
+    /// Returns the cached connection for `index` or opens a new connection.
     ///
-    /// This method is the reconnect path used by both warm-up and per-request
-    /// server selection. The flow is intentionally exact:
+    /// Warm-up and request routing use this reconnect sequence:
     ///
-    /// 1. check the cached connection without taking the per-server connect lock
-    /// 2. if it exists, return it immediately
-    /// 3. record the current completed-reconnect generation for this server
-    /// 4. wait for the per-server connect lock so only one task can reconnect
-    /// 5. once the lock is held, re-check the cache because another waiter may
-    ///    already have populated it
-    /// 6. if the reconnect generation changed while this caller waited, then
-    ///    another task already completed the one allowed reconnect attempt; do
-    ///    not immediately retry the same server again for this request
-    /// 7. otherwise perform one real upstream connect attempt
-    /// 8. cache the successful connection so queued callers reuse it, or mark
-    ///    that one reconnect attempt as completed so queued callers fail over
+    /// 1. Make sure that the cache has no connection before taking the lock.
+    /// 2. Return the connection if the cache contains one.
+    /// 3. Record the completed-attempt count.
+    /// 4. Wait for the server connection lock.
+    /// 5. Make sure that the cache still has no connection.
+    /// 6. If the count changed, do not try the same server for this request.
+    /// 7. Otherwise, make one connection attempt.
+    /// 8. Cache a successful connection or record a failed attempt.
     ///
-    /// The cached value is a networking-owned connection manager rather than a
-    /// raw transport. Dedicated versus single-connection behavior is handled
-    /// inside `tacacsrs-networking` when an operation creates a session.
+    /// The networking crate owns the cached connection. `tacacsrs-networking`
+    /// selects dedicated or single-connection behavior when it creates a
+    /// session.
     ///
-    /// This method returns upstream boundary errors only; each consuming
-    /// service decides how to translate those errors for its own callers.
+    /// This method returns only server-boundary errors. Each service converts
+    /// these errors for its callers.
     async fn ensure_connection(
         &self,
         server_slot: &Arc<ServerSlot>,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         let existing_conn = server_slot.connection.read().await.clone();
         if let Some(existing) = existing_conn {
-            log::debug!(
-                "Reusing cached upstream connection manager for {}",
-                server_slot.socket_address()
-            );
+            log::debug!("Reusing the cached server connection to {}", server_slot.socket_address());
             return Ok(existing);
         }
 
@@ -489,7 +454,7 @@ impl UpstreamManager {
         let existing_conn = server_slot.connection.read().await.clone();
         if let Some(existing) = existing_conn {
             log::debug!(
-                "Reusing cached upstream connection manager for {} after waiting on another reconnect",
+                "Reusing the cached server connection to {} after another reconnect",
                 server_slot.socket_address()
             );
             return Ok(existing);
@@ -501,16 +466,16 @@ impl UpstreamManager {
             != reconnect_generation
         {
             log::debug!(
-                "Skipping duplicate reconnect to {}; another attempt already completed",
+                "Not reconnecting to {} because another attempt completed",
                 server_slot.socket_address(),
             );
             bail!(
-                "Another reconnect attempt for TACACS+ server {} already completed for this request wave",
+                "Another connection attempt to TACACS+ server {} completed for this request",
                 server_slot.socket_address()
             );
         }
 
-        log::debug!("Opening upstream connection to {}", server_slot.socket_address());
+        log::debug!("Opening a connection to TACACS+ server {}", server_slot.socket_address());
         match self
             .connector
             .connect(Arc::clone(&server_slot.server))
@@ -518,7 +483,7 @@ impl UpstreamManager {
         {
             Ok(connection) => {
                 log::info!(
-                    "Upstream connection to {} established successfully",
+                    "Opened a connection to TACACS+ server {}",
                     server_slot.socket_address(),
                 );
                 *server_slot.connection.write().await = Some(Arc::clone(&connection));
@@ -541,27 +506,24 @@ impl UpstreamManager {
         }
     }
 
-    /// Records that the server at `index` failed for new-session purposes.
+    /// Records that the server at `index` failed for new sessions.
     ///
-    /// This clears the cached connection so future callers reconnect instead of
-    /// reusing a known-bad handle. If the failed server was the current
-    /// preferred choice for new sessions, the active index is advanced so later
-    /// IPC clients start from the next server in the ordered list.
+    /// This method clears the cached connection. Later callers reconnect instead
+    /// of using a known bad connection. If the active server failed, the active
+    /// index moves to the next server.
     ///
-    /// This does not itself send any reply to IPC clients. The client that hit
-    /// the failure receives the error from the request execution path, while
-    /// this method updates shared state for subsequent clients.
+    /// This method does not send an IPC reply. The request path returns the
+    /// error, and this method updates state for later requests.
     async fn note_failure(&self, server_set: &Arc<ServerSet>, index: usize) {
-        // Keep request-time failure recording ordered with reconnect attempts
-        // so a waiter that is about to reconnect observes the cleared cache
-        // before it decides whether it must establish a fresh connection.
+        // Order failure recording with reconnect attempts. A waiting task must
+        // see the empty cache before it decides whether to reconnect.
         let _connect_guard = server_set.servers[index].connect_lock.lock().await;
         *server_set.servers[index].connection.write().await = None;
         let mut active_index = server_set.active_index.write().await;
         if *active_index == index {
             let next_index = (index + 1) % server_set.server_count();
             log::info!(
-                "Failing over new IPC sessions from {} to {}",
+                "Failing over new TACACS+ sessions from {} to {}",
                 server_set.servers[index].socket_address(),
                 server_set.servers[next_index].socket_address()
             );
@@ -569,7 +531,7 @@ impl UpstreamManager {
         }
     }
 
-    /// Records a request failure against the server snapshot that request used.
+    /// Records a request failure in the server set that the request used.
     pub(crate) async fn note_bound_server_failure(&self, bound_server: &BoundServer) {
         self.note_failure(&bound_server.server_set, bound_server.index)
             .await;
@@ -669,7 +631,7 @@ mod tests {
             .and_then(|identity| identity.tls13_epsk.as_ref())
             .and_then(|epsk| epsk.inline_definition.as_ref())
             .and_then(|inline| inline.cleartext_symmetric_key.as_ref())
-            .expect("resolved secret")
+            .expect("the shared secret must be resolved")
             .expose_secret()
     }
 
@@ -714,22 +676,28 @@ mod tests {
             test_health(),
         );
 
-        let first_binding = state.bind_server_for_new_session().await.expect("bind A");
+        let first_binding = state
+            .bind_server_for_new_session()
+            .await
+            .expect("the first server must bind");
         state
             .reload_shared_servers(vec![second])
             .await
-            .expect("apply B");
+            .expect("the replacement server must apply");
         connection.usable.store(true, Ordering::Relaxed);
-        let second_binding = state.bind_server_for_new_session().await.expect("bind B");
+        let second_binding = state
+            .bind_server_for_new_session()
+            .await
+            .expect("the replacement server must bind");
         state
             .reload_shared_servers(vec![rollback])
             .await
-            .expect("roll back to A");
+            .expect("the first server must apply again");
         connection.usable.store(true, Ordering::Relaxed);
         let rollback_binding = state
             .bind_server_for_new_session()
             .await
-            .expect("bind rollback A");
+            .expect("the restored server must bind");
 
         assert_eq!(bound_secret(&first_binding), b"first-secret-material");
         assert_eq!(bound_secret(&second_binding), b"second-secret-material");
@@ -778,13 +746,13 @@ mod tests {
                 second_policy.clone(),
             )
             .await
-            .expect("publish replacement runtime generation");
+            .expect("the replacement runtime generation must publish");
         release.notify_one();
 
         let (bound_server, bound_policy) = binding
             .await
-            .expect("binding task")
-            .expect("bind proxy server");
+            .expect("the binding task must stop")
+            .expect("the proxy server must bind");
         assert_eq!(bound_server.server().address, "192.0.2.70");
         assert_eq!(bound_policy, first_policy);
         assert_eq!(state.proxy_downstream_obfuscation(), second_policy);
@@ -795,7 +763,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
     async fn test_server_selection_wraps_to_later_server() {
         let first = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),
@@ -835,7 +803,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
     async fn test_warm_connections_stops_after_first_responsive_server() {
         let first = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),
@@ -882,7 +850,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
     async fn reload_preserves_unchanged_cached_connection() {
         let first = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),
@@ -922,7 +890,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
     async fn reload_drops_removed_or_modified_cached_connection() {
         let first = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),
@@ -964,7 +932,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
     async fn preferred_probe_started_with_zero_servers_recovers_after_reload() {
         let preferred = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),
@@ -993,11 +961,11 @@ mod tests {
         state
             .reload_servers(vec![test_server("server-a:49"), test_server("server-b:49")])
             .await
-            .expect("reload should succeed");
+            .expect("the reload must succeed");
         let failed_over = state
             .bind_server_for_new_session()
             .await
-            .expect("backup should bind");
+            .expect("the backup server must bind");
         assert_eq!(failed_over.connection.server_address(), backup.address);
         assert_eq!(
             health.snapshot().upstream_availability(),
@@ -1017,7 +985,7 @@ mod tests {
         let recovered = state
             .bind_server_for_new_session()
             .await
-            .expect("preferred should recover");
+            .expect("the preferred server must recover");
         assert_eq!(recovered.connection.server_address(), preferred.address);
         assert_eq!(connector.connect_attempts_for(&preferred.address).await, 3);
 
@@ -1028,7 +996,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio sync not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio synchronization.
     async fn aggregate_exhaustion_marks_upstreams_unavailable() {
         let first = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),
@@ -1066,7 +1034,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio sync not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio synchronization.
     async fn material_server_reload_resets_availability_to_unknown() {
         let connection = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),
@@ -1085,7 +1053,7 @@ mod tests {
         state
             .bind_server_for_new_session()
             .await
-            .expect("server should bind");
+            .expect("the server must bind");
         assert_eq!(
             health.snapshot().upstream_availability(),
             crate::UpstreamAvailability::Available,
@@ -1094,13 +1062,13 @@ mod tests {
         state
             .reload_servers(vec![test_server("server-a:49"), test_server("server-b:49")])
             .await
-            .expect("reload should succeed");
+            .expect("the reload must succeed");
 
         assert_eq!(health.snapshot().upstream_availability(), crate::UpstreamAvailability::Unknown,);
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio spawn/time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
     async fn test_concurrent_failover_coalesces_connection_attempts() {
         let first = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),

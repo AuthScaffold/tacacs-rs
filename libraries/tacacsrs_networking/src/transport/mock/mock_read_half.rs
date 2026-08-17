@@ -1,4 +1,4 @@
-//! [`MockReadHalf`] — the read side of the mock transport.
+//! Read side of the mock transport.
 //!
 //! Implements [`AsyncRead`] by delegating to a [`ChannelReader`]
 //! that receives reply bytes dispatched by the background write processor task.
@@ -20,12 +20,12 @@ use super::channel_reader::ChannelReader;
 ///
 /// Internally delegates to a [`ChannelReader`].
 pub(crate) struct MockReadHalf {
-    /// The channel-backed reader that does the actual buffering and reading.
+    /// The channel-backed reader that buffers and reads bytes.
     inner: ChannelReader,
 }
 
 impl MockReadHalf {
-    /// Creates a new `MockReadHalf` backed by the given channel receiver.
+    /// Creates a `MockReadHalf` from the specified channel receiver.
     pub(super) const fn new(rx: mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
         Self {
             inner: ChannelReader::new(rx),

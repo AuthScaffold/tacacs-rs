@@ -1,15 +1,15 @@
-# Rustfmt configuration (requires nightly)
-# Run with: rustup run nightly cargo fmt
+# rustfmt configuration. This configuration requires nightly Rust.
+# Run: rustup run nightly cargo fmt
 #
-# Your style preferences:
-# - No trailing commas after match arm braces
-# - Function signatures on multiple lines (not collapsed)
-# - Macro calls on multiple lines (not collapsed)
+# Style rules:
+# - Omit trailing commas after match-arm braces.
+# - Keep function signatures on multiple lines.
+# - Keep macro calls on multiple lines.
 
 edition = "2021"
 unstable_features = true
 
-# Line width - set lower to prevent collapsing
+# Use a narrow line width to prevent collapsed layouts.
 max_width = 100
 fn_call_width = 100
 attr_fn_like_width = 100
@@ -19,39 +19,38 @@ single_line_let_else_max_width = 0
 tab_spaces = 4
 hard_tabs = false
 
-# Function signatures - short ones on one line, long ones wrapped
+# Keep short function signatures on one line. Wrap long function signatures.
 fn_params_layout = "Tall"
 fn_single_line = false
 
-# Struct literals/patterns - allow short ones on single line
+# Permit short structure literals and patterns on one line.
 struct_lit_single_line = true
 where_single_line = false
 
-# Trailing commas - NOT after match arms
+# Use trailing commas. Omit them after match arms.
 trailing_comma = "Vertical"
 match_block_trailing_comma = false
 
-# Preserve import organization
+# Keep the import order.
 reorder_imports = false
 reorder_modules = false
 imports_granularity = "Preserve"
 
-# Allow extra blank lines
+# Permit extra blank lines.
 blank_lines_upper_bound = 2
 
-# Don't modify strings or comments
+# Do not change strings or comments.
 format_strings = false
 wrap_comments = false
 normalize_comments = false
 normalize_doc_attributes = false
 
-# Macros - don't collapse
+# Do not collapse macros.
 format_macro_matchers = false
 format_macro_bodies = true
 
-# Other
+# Other configuration.
 newline_style = "Auto"
 use_field_init_shorthand = true
 format_generated_files = false
 ignore = ["libraries/tacacsrs_config/src/generated.rs"]
-

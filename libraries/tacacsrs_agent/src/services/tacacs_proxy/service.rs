@@ -22,7 +22,7 @@ pub(crate) struct TacacsProxyService {
 }
 
 impl TacacsProxyService {
-    /// Creates a raw TACACS+ proxy service over shared runtime state.
+    /// Creates a raw TACACS+ proxy service with shared runtime state.
     pub(crate) fn new(
         upstream_manager: Arc<UpstreamManager>,
         request_tracker: Arc<RequestTracker>,
@@ -33,7 +33,7 @@ impl TacacsProxyService {
         }
     }
 
-    /// Serves the configured TACACS+ proxy endpoint until process shutdown is signalled.
+    /// Runs the TACACS+ proxy listener until the process receives a shutdown signal.
     pub(crate) async fn serve(
         &self,
         endpoint: &IpcEndpoint,

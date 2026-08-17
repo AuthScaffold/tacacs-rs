@@ -1,14 +1,14 @@
-# YANG Config Guide
+# YANG Configuration Guide
 
 `tacacsrs-config` provides TACACS+ configuration support using the RFC 7951 JSON encoding of the `ietf-system-tacacs-plus` YANG module. The crate owns parsing, generated model types, validation, local credential bundle enumeration, and helper APIs used by `tacon` and `tacacsrs-agentd`.
 
-Use this guide when you need to author, validate, or consume TACACS+ server configuration from JSON.
+If you need to author, validate, or consume TACACS+ server configuration from JSON, use this guide.
 
 ## What the configuration crate provides
 
 - Generated Rust types that mirror the expanded TACACS+ YANG tree.
 - RFC 7951 JSON parsing into the generated TACACS+ model.
-- Validation for required server data, unique addresses, TLS choice constraints, SNI requirements, key format identities, base64-encoded key material, and config-local credential references.
+- Validation for required server data, unique addresses, TLS choice constraints, SNI requirements, key format identities, base64-encoded key material, and configuration-local credential references.
 - Bundle enumeration helpers that inline local `client-credentials` and `server-credentials` references onto server entries.
 - Secret-free inspection of central keystore and truststore references.
 - A `TacacsPlusServerBuilder` for constructing valid server definitions in Rust.
@@ -57,7 +57,7 @@ The primary entry points are:
 | --- | --- |
 | `parse_yang_json(&str)` | Parse and structurally validate a JSON string without mutating credential references. |
 | `parse_yang_json_file(&Path)` | Parse a JSON file from disk. |
-| `validate_credential_references(&TacacsPlus)` | Validate config-local credential bundle references. |
+| `validate_credential_references(&TacacsPlus)` | Validate configuration-local credential bundle references. |
 | `enumerate_servers(&TacacsPlus)` | Inline shared credential bundles onto every server. |
 | `enumerate_server(&TacacsPlus, &str)` | Inline shared credential bundles for one named server. |
 | `inspect_central_references(&TacacsPlusServer)` | Inspect typed central usages without retrieving material. |
@@ -77,7 +77,7 @@ The crate separates parsing and runtime preparation into three layers.
 
 ### Raw YANG model
 
-Use the raw pipeline when you need the submitted YANG model preserved exactly for round-tripping or reporting:
+If you need the submitted YANG model preserved exactly for round-tripping or reporting, use the raw pipeline:
 
 ```rust
 use tacacsrs_config::pipeline;
@@ -86,9 +86,9 @@ let raw_config = pipeline::parse_root_json(json_str)?;
 # anyhow::Ok::<()>(())
 ```
 
-### Config-local bundle enumeration
+### Configuration-local bundle enumeration
 
-Credential references may point to bundles in the same configuration. Validate those references, then enumerate the selected server:
+Credential references can point to bundles in the same configuration. Validate those references, then enumerate the selected server:
 
 ```rust
 use tacacsrs_config::{enumerate_server, parse_yang_json, validate_credential_references};
@@ -108,7 +108,7 @@ Neither generic crate interprets a central string as a SONiC identifier or files
 
 ## Programmatic server construction
 
-Use `TacacsPlusServerBuilder` when code needs to construct server definitions directly instead of parsing RFC 7951 JSON:
+When code needs to construct server definitions directly instead of parsing RFC 7951 JSON, use `TacacsPlusServerBuilder`:
 
 ```rust
 use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerExt, TacacsPlusServerType};

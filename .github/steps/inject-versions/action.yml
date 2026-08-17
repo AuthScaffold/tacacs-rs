@@ -5,8 +5,8 @@ inputs:
   versions:
     description: >
       JSON object mapping crate names to versions,
-      e.g. {"tacon":"2026.424.0","tacacsrs-messages":"0.1.3"}.
-      Empty or '{}' is a no-op.
+      for example {"tacon":"2026.424.0","tacacsrs-messages":"0.1.3"}.
+      An empty object or '{}' causes no changes.
     required: false
     default: '{}'
 
@@ -19,17 +19,17 @@ runs:
         VERSIONS='${{ inputs.versions }}'
 
         if [ -z "$VERSIONS" ] || [ "$VERSIONS" = "{}" ]; then
-          echo "No versions to inject — skipping"
+          echo "No versions to inject. Skip version injection."
           exit 0
         fi
 
         echo "$VERSIONS" | jq -r 'to_entries[] | "\(.key)\t\(.value)"' | tr -d '\r' | while IFS=$'\t' read -r CRATE VERSION; do
-          # Find the Cargo.toml that declares this crate
+          # Find the Cargo.toml that declares this crate.
           CARGO_TOML=$(find . -name 'Cargo.toml' -not -path '*/target/*' \
             -exec grep -l "^name = \"${CRATE}\"" {} \;)
 
           if [ -z "$CARGO_TOML" ]; then
-            echo "WARNING: No Cargo.toml found for crate '${CRATE}'"
+            echo "WARNING: No Cargo.toml exists for crate '${CRATE}'."
             continue
           fi
 

@@ -2,9 +2,9 @@
 
 `session-wrapper` is a per-session login wrapper that mediates command execution
 through TACACS+ authorization. It is launched once per SSH login (typically by
-`sshd` via `ForceCommand`), forks the user's shell under a seccomp
-user-notification filter, and asks the local `tacacsrs-agentd` daemon whether
-each `execve` should be allowed.
+`sshd` via `ForceCommand`). It forks the user's shell under a seccomp
+user-notification filter and asks the local `tacacsrs-agentd` daemon whether to
+allow each `execve`.
 
 For module-level architecture and the wrapper's process lifecycle, see the
 crate-level [README](../executables/session_wrapper/README.md). For local smoke
@@ -33,9 +33,9 @@ Key properties:
 - The supervisor lives in the **parent** process. The user's shell runs in the
   **child**, after privilege drop, with the seccomp filter already installed.
 - The seccomp filter is **inherited across `fork`/`clone`** and **preserved
-  across `exec`**, so nested shells, subshells, pipelines, background jobs, and
-  shell scripts in the wrapped session all hit the same supervisor without any
-  re-installation.
+  across `exec`**. As a result, nested shells, subshells, pipelines, background
+  jobs, and shell scripts in the wrapped session all hit the same supervisor
+  without any re-installation.
 - The supervisor keeps processing notifications until the wrapped session is
   **drained** — that is, until the initial shell *and* every reparented
   descendant have exited. It does not stop when the first shell PID exits.
@@ -43,16 +43,15 @@ Key properties:
 ## SSH integration
 
 `session-wrapper` is invoked by `sshd` after a successful authentication. There
-are two supported integration modes; pick whichever fits your platform.
+are two supported integration modes. Pick whichever fits your platform.
 
 ### Option 1: `sshd_config` `ForceCommand` (recommended)
 
 Add a `Match` block to `/etc/ssh/sshd_config` so users in a designated group
 are forced through the wrapper regardless of which command they request:
 
-Because `ForceCommand` takes a single command string and does not expand all
-the SSH environment we want, the cleanest pattern is to point it at a tiny
-shim script:
+`ForceCommand` takes a single command string and does not expand the SSH
+environment automatically. The cleanest pattern is a tiny shim script:
 
 ```sshd_config
 Match Group tacacs-authorized
@@ -84,10 +83,10 @@ easier to maintain than a long inline command.
 #### Why `ForceCommand`?
 
 `ForceCommand` runs *unconditionally* for matched logins, even when the SSH
-client requests a specific command (`ssh user@host -- whoami`). The original
-command is exposed to the forced command via the `SSH_ORIGINAL_COMMAND`
-environment variable, but the wrapper's seccomp filter still mediates
-everything the user shell tries to exec.
+client requests a specific command (`ssh user@host -- whoami`). The
+`SSH_ORIGINAL_COMMAND` environment variable exposes the original command to the
+forced command. The wrapper's seccomp filter still mediates everything the user
+shell tries to exec.
 
 ### Option 2: Login shell via `/etc/passwd` or NSS
 
@@ -118,13 +117,13 @@ For platforms where modifying `sshd_config` is impractical, set
    The wrapper script must be listed in `/etc/shells` and have mode `0755`.
 
 2. **NSS-provided shell** — when users come from `libnss-tacplus` or a similar
-   NSS module, configure that module to return the wrapper script path as the
-   shell field. The mechanics are NSS-module specific; the wrapper script
-   itself is identical to the one above.
+   NSS module, configure it to return the wrapper script path. The mechanics
+   are NSS-module specific. The wrapper script itself is identical to the one
+   above.
 
 Compared to `ForceCommand`, the login-shell pattern relies on the user not
-being able to bypass their shell (e.g. `ssh -t user@host /bin/bash` would skip
-it). Use `ForceCommand` whenever possible.
+being able to bypass their shell. For example, `ssh -t user@host /bin/bash`
+skips it. Use `ForceCommand` whenever possible.
 
 ### SSH environment variables
 
@@ -145,8 +144,8 @@ REM_ADDR="${SSH_CONNECTION%% *}"   # first whitespace-delimited field
 PORT="${SSH_TTY:-ssh}"             # fall back to "ssh" for non-tty sessions
 ```
 
-These should be passed to `--rem-addr` and `--port` in your `ForceCommand` or
-login-shell wrapper.
+Pass these to `--rem-addr` and `--port` in your `ForceCommand` or login-shell
+wrapper.
 
 ## CLI reference
 
@@ -159,7 +158,7 @@ session-wrapper [OPTIONS] -- COMMAND [ARGS]...
 | `--user <NAME>`                 | *(required)*         | Target username for TACACS+ accounting context |
 | `--user-uid <UID>`              | *(required)*         | UID to drop to before exec |
 | `--user-gid <GID>`              | *(required)*         | Primary GID to drop to before exec |
-| `--service-endpoint <PATH>`     | `/run/tacacs/tacacs.sock`   | Unix socket (or `host:port`) for `tacacsrs-agentd` IPC |
+| `--service-endpoint <PATH>`     | `/run/tacacs/tacacs.sock`   | Unix domain socket (or `host:port`) for `tacacsrs-agentd` IPC |
 | `--fail-policy <closed\|open>`  | `closed`             | What to do when IPC is unreachable |
 | `--authorization-timeout-ms <N>`| `5000`               | Per-request authorization timeout (ms) |
 | `--privilege-level <0..=15>`    | `1`                  | Current TACACS+ privilege level |
@@ -176,8 +175,8 @@ Run `session-wrapper --help` for the authoritative list (it is generated from
 
 ### Fail-closed (production default)
 
-Deny the session if the local agent or the upstream TACACS+ server is
-unreachable. This is the safe default for managed network devices.
+If the local agent or the upstream TACACS+ server is unreachable, deny the
+session. This is the safe default for managed network devices.
 
 ```bash
 session-wrapper \
@@ -190,8 +189,8 @@ session-wrapper \
 
 ### Fail-open (lab / bring-up only)
 
-Allow the session if authorization cannot be reached. Use only during
-bring-up, lab testing, or for break-glass roles where lockout is worse than
+If authorization is unavailable, allow the session. Use this mode only for
+bring-up, lab tests, or break-glass roles where lockout is worse than
 unaudited access.
 
 ```bash
@@ -206,7 +205,7 @@ session-wrapper \
 Authorization round-trips on every `execve` are expensive for shells that
 fork frequently (prompt rendering, completion, pipelines). The wrapper ships a
 built-in allowlist for shell infrastructure (`/bin/bash`, `/bin/sh`,
-`/usr/bin/env`, `/usr/bin/id`, …); add site-specific tools by file:
+`/usr/bin/env`, `/usr/bin/id`, …). Add site-specific tools by file:
 
 ```text
 # /etc/session-wrapper.allow
@@ -233,18 +232,18 @@ genuinely uninteresting helpers.
 
 When a notification fires, the supervisor reads the target process's argv
 from `/proc/[pid]/mem` while the notifying thread is held at the syscall
-boundary. That does **not** make the process address space immutable: another
+boundary. That does **not** make the process address space immutable. Another
 thread in the same process can still rewrite the exec path after the supervisor
 reads it and before the kernel resumes the syscall. `check_notification_valid()`
-only confirms that the notification is still pending, for example because the
-target process was not killed or reaped mid-read; it does not prove that argv
+only reports that the notification is still pending, for example because the
+target process was not killed or reaped mid-read. It does not prove that argv
 memory is unchanged.
 
 This TOCTOU window is inherent to seccomp user notifications and cannot be
-completely eliminated inside the seccomp authorization path. Practical mitigations
-can reduce exploitability, such as denying `userfaultfd` and `process_vm_writev`,
-but complete protection requires a kernel-enforced execution boundary such as
-Landlock, AppArmor, SELinux, or an equivalent LSM policy.
+completely eliminated inside the seccomp authorization path. Practical
+mitigations can reduce exploitability, such as denying `userfaultfd` and
+`process_vm_writev`. Complete protection requires a kernel-enforced execution
+boundary, such as Landlock, AppArmor, SELinux, or an equivalent LSM policy.
 
 ### `ptrace` is blocked
 
@@ -259,12 +258,12 @@ not work inside the wrapped shell — that is intentional.
 The wrapper expects to be started as `root` (so it can `setgid`/`setuid` to
 the target user) and drops to `--user-uid` / `--user-gid` in the **child**
 before `execve`. The supervisor parent retains its original privileges only
-long enough to receive the seccomp listener fd, then services notifications
+long enough to receive the seccomp listener fd. It then services notifications
 without any need to be root for the wrapped session itself.
 
-If the wrapper is started as a non-root user that already matches `--user-uid`
-the drop is a no-op; this is the expected configuration when launched from a
-PAM session that already changed identity.
+If the wrapper is started as a non-root user that already matches
+`--user-uid`, the drop is a no-op. This is the expected configuration when
+launched from a PAM session that already changed identity.
 
 ### Descendant coverage
 
@@ -280,16 +279,16 @@ The seccomp filter is installed once, in the child, before its first
 The parent registers itself as a **child subreaper** (`prctl(PR_SET_CHILD_SUBREAPER)`),
 so descendants whose original parent exits are reparented back to the
 wrapper. The supervisor keeps the notification fd open and continues to
-service notifications until the entire subtree has been reaped — not just
-until the initial shell PID exits.
+service notifications until it reaps the entire subtree. It does not
+stop just because the initial shell PID exits.
 
 ### IPC trust boundary
 
 The wrapper only authenticates the IPC endpoint via filesystem permissions
-on the Unix socket (or network ACLs for TCP endpoints). The
-`tacacsrs-agentd` socket should be mode `0660` and owned by a group that
-includes the wrapper's UID. Do not point `--service-endpoint` at a
-user-writable path.
+on the Unix domain socket (or network ACLs for TCP endpoints). The socket
+permissions must prevent untrusted users from connecting. Mode `0660` is
+suitable when the owning group includes the wrapper's UID. Do not point
+`--service-endpoint` at a user-writable path.
 
 ## Troubleshooting
 
@@ -299,7 +298,8 @@ The child reports setup errors back to the parent over the control socket
 before exec. Look at the message text:
 
 - **`execv …: No such file or directory`** — the wrapped command does not
-  exist on the target. Check the absolute path passed after `--`.
+  exist on the target. Make sure that the absolute path passed after `--` is
+  correct.
 - **`setgid` / `setuid` failure** — the wrapper was not started with enough
   privilege to drop to the requested UID/GID. Run as root, or have PAM hand
   the wrapper an already-correct identity and pass matching `--user-uid` /
@@ -312,13 +312,14 @@ before exec. Look at the message text:
 
 The supervisor likely failed to start. Possible causes:
 
-- `tacacsrs-agentd` is not running. Confirm the socket exists
+- `tacacsrs-agentd` is not running. Make sure that the socket exists
   (`ls -l /run/tacacs/tacacs.sock`) and the daemon is listening.
-- The wrapper does not have permission to connect to the socket. Check the
-  socket's mode and the wrapped user's group membership.
-- A `--fail-policy closed` deployment combined with an unreachable agent will
-  hang only briefly — then the session will be denied with a clear error in
-  the wrapper's log. If you see an indefinite hang instead, increase
+- The wrapper does not have permission to connect to the socket. Make sure
+  that the socket's mode and the wrapped user's group membership allow the
+  connection.
+- A `--fail-policy closed` deployment combined with an unreachable agent hangs
+  only briefly. Then the session is denied with a clear error in the
+  wrapper's log. If you see an indefinite hang instead, increase
   verbosity with `-vv` and re-run.
 
 ### Session does not exit after the user logs out
@@ -327,25 +328,26 @@ The wrapper waits for the **entire** wrapped subtree, not just the
 interactive shell. Common causes:
 
 - A background job (`some-tool &` or `nohup …`) is still running and still
-  inherits the seccomp filter. Send SIGTERM/SIGKILL to that PID, or have the
-  user use `disown -h` and detach via `nohup … </dev/null >/dev/null 2>&1 &`
-  *before* logging out so the descendant is fully detached.
+  inherits the seccomp filter. Send SIGTERM/SIGKILL to that PID. Alternatively,
+  have the user run `disown -h` and detach with
+  `nohup … </dev/null >/dev/null 2>&1 &` before logging out, so the descendant
+  is fully detached.
 - A shell function or trap kept a subshell alive. Inspect
   `ps --ppid <wrapper_pid>` and the wider subtree (`pstree -p <wrapper_pid>`).
 - A daemonized process forgot to `setsid` and is still parented to the
   subreaper. Either fix the daemon or kill the orphan.
 
-This is by design: stopping supervision while a descendant is still alive
-would create an authorization gap. If you need to forcibly tear down the
-wrapped session, signal the wrapper PID — it will propagate signals and reap
+This is by design. If supervision stops while a descendant is still alive, an
+authorization gap appears. If you need to forcibly tear down the wrapped
+session, signal the wrapper PID — it will propagate signals and reap
 descendants.
 
 ### Built-in commands cause unexpected denies
 
 Built-in shell commands (`cd`, `echo` when implemented in the shell, `if`,
-`for`, …) do not call `execve` and are never seen by the wrapper. If
-`/bin/echo` is being denied while `echo` works, the user is invoking the
-external binary explicitly — add it to the allowlist or to TACACS+ command
+`for`, …) do not call `execve` and are never seen by the wrapper. If the
+wrapper denies `/bin/echo` while `echo` still works, the user invokes the
+external binary explicitly. Add it to the allowlist or to TACACS+ command
 authorization rules.
 
 ### Authorization round-trips are slow
@@ -357,10 +359,10 @@ Mitigations, in order of preference:
 1. Add high-frequency, harmless binaries to `--allowlist`.
 2. Tune `--authorization-timeout-ms` down so failed servers are detected
    faster (only useful with multiple agentd upstreams configured).
-3. Ensure `tacacsrs-agentd` is configured with multiple upstream servers so
-   failover does not stall.
+3. Make sure that `tacacsrs-agentd` is configured with multiple upstream
+   servers so failover does not stall.
 
-### Verifying with the demo scripts
+### Run the demo scripts
 
 The wrapper ships allow-all demos in `executables/session_wrapper/demo/` that
 exercise the lifecycle without needing TACACS+ infrastructure:

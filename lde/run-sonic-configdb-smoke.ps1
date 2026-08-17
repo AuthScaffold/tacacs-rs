@@ -2,19 +2,19 @@
 .SYNOPSIS
     Runs the tacacsrs-sonic ConfigDB watcher smoke test against containerized Redis.
 .DESCRIPTION
-    Starts a Redis container, seeds SONiC-style TACPLUS / TACPLUS_SERVER rows in
-    database 4, runs the configdb_watch example, mutates Redis, and verifies the
-    example reports added, modified, and removed server deltas.
+    Starts a Redis container and adds SONiC-style TACPLUS and TACPLUS_SERVER rows
+    to database 4. Then the script runs the configdb_watch example.
+    It changes Redis data and makes sure that the example reports all TACACS+ server changes.
 .PARAMETER ContainerRuntime
-    Container CLI to use. Defaults to podman.
+    The container CLI. The default is podman.
 .PARAMETER RedisImage
-    Redis image to run.
+    The Redis image.
 .PARAMETER RedisPort
-    Host TCP port mapped to the Redis container.
+    The host TCP port that maps to the Redis container.
 .PARAMETER RedisTransport
-    Redis connection transport used by the example. UnixSocket requires Linux or WSL.
+    The Redis transport. UnixSocket is available only on Linux or WSL.
 .PARAMETER KeepContainer
-    Leave the Redis container running after the smoke test completes.
+    Keeps the Redis container after the smoke test is complete.
 .EXAMPLE
     .\lde\run-sonic-configdb-smoke.ps1
 #>
@@ -78,7 +78,7 @@ function Invoke-Redis {
         $output = & $ContainerRuntime exec $ContainerName redis-cli -n $RedisDb @RedisArgs
     }
     if ($LASTEXITCODE -ne 0) {
-        throw "redis-cli failed: $($RedisArgs -join ' ')"
+        throw "redis-cli returned an error: $($RedisArgs -join ' ')"
     }
     $output
 }
@@ -99,7 +99,7 @@ function Wait-ForRedis {
         Start-Sleep -Milliseconds 500
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
 
-    throw 'Timed out waiting for Redis to accept commands.'
+    throw 'Redis did not accept commands before the timeout.'
 }
 
 function Wait-ForTcpEndpoint {
@@ -124,7 +124,7 @@ function Wait-ForTcpEndpoint {
         Start-Sleep -Milliseconds 250
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
 
-    throw "Timed out waiting for Redis TCP endpoint ${HostName}:${Port}."
+    throw "Redis did not accept a TCP connection at ${HostName}:${Port} before the timeout."
 }
 
 function Wait-ForOutputText {
@@ -142,7 +142,7 @@ function Wait-ForOutputText {
         Start-Sleep -Milliseconds 250
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
 
-    throw "Timed out waiting for example output containing '$Text'."
+    throw "The example output did not contain '$Text' before the timeout."
 }
 
 function Assert-Contains {
@@ -152,7 +152,7 @@ function Assert-Contains {
     )
 
     if (-not $Text.Contains($Expected)) {
-        throw "Expected output to contain: $Expected"
+        throw "The output did not contain: $Expected"
     }
 }
 
@@ -172,10 +172,10 @@ try {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $socketDir
         New-Item -ItemType Directory -Force -Path $socketDir | Out-Null
         & chmod 0777 $socketDir
-        if ($LASTEXITCODE -ne 0) { throw "Failed to make Redis socket directory writable: $socketDir" }
+        if ($LASTEXITCODE -ne 0) { throw "The script did not make the Redis Unix domain socket directory writable: $socketDir" }
     }
 
-    Write-Host "Starting Redis container with $ContainerRuntime..."
+    Write-Host "Start the Redis container with $ContainerRuntime."
     $redisCommand = @()
     if ($useUnixSocketTransport) {
         $redisCommand = @('redis-server', '--port', '0', '--unixsocket', $containerSocketPath, '--unixsocketperm', '777')
@@ -197,28 +197,28 @@ try {
             & $ContainerRuntime run --detach --name $ContainerName --publish "${RedisPort}:6379" $RedisImage @redisCommand | Out-Null
         }
     }
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to start Redis container.' }
+    if ($LASTEXITCODE -ne 0) { throw 'The Redis container returned an error during startup.' }
 
     Wait-ForRedis
     if ($useTcpTransport) {
         Wait-ForTcpEndpoint -HostName '127.0.0.1' -Port $RedisPort
     } elseif (-not (Test-Path $socketPath)) {
-        throw "Redis Unix socket was not created at $socketPath."
+        throw "The Redis Unix domain socket was not created at $socketPath."
     }
 
-    Write-Host 'Building configdb_watch example...'
+    Write-Host 'Build the configdb_watch example.'
     cargo build -p tacacsrs-sonic --example configdb_watch
-    if ($LASTEXITCODE -ne 0) { throw 'cargo build failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'The cargo build returned an error.' }
 
     $exampleExe = if ($isLinuxHost) { Join-Path $repoRoot 'target\debug\examples\configdb_watch' } else { Join-Path $repoRoot 'target\debug\examples\configdb_watch.exe' }
     if (-not (Test-Path $exampleExe) -and -not $isLinuxHost) {
         $exampleExe = Join-Path $repoRoot 'target\debug\examples\configdb_watch'
     }
     if (-not (Test-Path $exampleExe)) {
-        throw 'Could not find built configdb_watch example binary.'
+        throw 'The configdb_watch example binary was not found after the build.'
     }
 
-    Write-Host 'Seeding SONiC ConfigDB rows...'
+    Write-Host 'Add the SONiC ConfigDB rows.'
     Invoke-Redis @('CONFIG', 'SET', 'notify-keyspace-events', 'KEA') | Out-Null
     Invoke-Redis @('DEL', 'TACPLUS|global') | Out-Null
     $serverKeys = Invoke-Redis @('KEYS', 'TACPLUS_SERVER|*')
@@ -241,7 +241,7 @@ try {
         'single_connection', 'true'
     ) | Out-Null
 
-    Write-Host 'Starting configdb_watch example...'
+    Write-Host 'Start the configdb_watch example.'
     $redisUrl = if ($useUnixSocketTransport) { "unix://${socketPath}?db=$RedisDb" } else { "redis://127.0.0.1:$RedisPort" }
     $exampleArgs = @(
         '--redis-url', $redisUrl,
@@ -256,7 +256,7 @@ try {
     try {
         Wait-ForOutputText -Path $stdoutPath -Text 'watching for TACPLUS keyspace notifications'
 
-        Write-Host 'Mutating Redis rows to trigger add, modify, and remove events...'
+        Write-Host 'Change Redis rows to cause add, modify, and remove events.'
         Invoke-Redis @(
             'HSET', 'TACPLUS_SERVER|192.0.2.20',
             'priority', '2',
@@ -271,7 +271,7 @@ try {
 
         if (-not $process.WaitForExit(60000)) {
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-            throw 'Timed out waiting for configdb_watch to consume all events.'
+            throw 'configdb_watch did not consume all events before the timeout.'
         }
         if ($process.ExitCode -ne 0) {
             throw "configdb_watch exited with code $($process.ExitCode)."
@@ -306,7 +306,7 @@ try {
         Write-Host 'configdb_watch stderr:' -ForegroundColor Cyan
         Write-Host $stderr
     }
-    Write-Host 'SONiC ConfigDB smoke test passed.' -ForegroundColor Green
+    Write-Host 'PASS: The SONiC ConfigDB smoke test passed.' -ForegroundColor Green
 }
 finally {
     if (-not $KeepContainer) {

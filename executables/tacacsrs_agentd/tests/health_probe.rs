@@ -25,7 +25,7 @@ async fn run_probe(endpoint: &str, check: &str, timeout_seconds: u64) -> Output 
         ])
         .output()
         .await
-        .expect("probe should run")
+        .expect("probe must run")
 }
 
 async fn start_tcp_health(
@@ -33,7 +33,7 @@ async fn start_tcp_health(
 ) -> (SocketAddr, CancellationToken, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("health listener should bind");
+        .expect("health listener must bind");
     let address = listener.local_addr().expect("listener address");
     let incoming = TcpListenerStream::new(listener);
     let (reporter, service) = tonic_health::server::health_reporter();
@@ -47,7 +47,7 @@ async fn start_tcp_health(
             .add_service(service)
             .serve_with_incoming_shutdown(incoming, child.cancelled_owned())
             .await
-            .expect("health server should run");
+            .expect("health server must run");
     });
     (address, cancellation, task)
 }
@@ -61,7 +61,7 @@ async fn tcp_probe_exit_codes_are_stable() {
     assert!(serving.status.success());
 
     cancellation.cancel();
-    task.await.expect("server task should join");
+    task.await.expect("server task must join");
     let unavailable = run_probe(&endpoint, "readiness", 2).await;
     assert_eq!(unavailable.status.code(), Some(EXIT_CHECK_ERROR));
     let diagnostic = String::from_utf8_lossy(&unavailable.stderr);
@@ -85,25 +85,25 @@ async fn not_serving_and_unknown_service_are_distinct_standard_results() {
 
     let mut client = HealthClient::connect(&endpoint)
         .await
-        .expect("health client should connect");
+        .expect("health client must connect");
     let error = client
         .check("tacacsrs.agent.health.v1.Unknown")
         .await
-        .expect_err("unknown service should fail");
+        .expect_err("unknown service must fail");
     assert_eq!(error.code(), Code::NotFound);
 
     cancellation.cancel();
-    task.await.expect("server task should join");
+    task.await.expect("server task must join");
 }
 
 #[tokio::test]
 async fn timeout_returns_check_error() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("silent listener should bind");
+        .expect("silent listener must bind");
     let endpoint = listener.local_addr().expect("listener address").to_string();
     let connection = tokio::spawn(async move {
-        let (_stream, _) = listener.accept().await.expect("probe should connect");
+        let (_stream, _) = listener.accept().await.expect("probe must connect");
         std::future::pending::<()>().await;
     });
 
@@ -125,10 +125,10 @@ async fn unix_socket_probe_reports_serving() {
 
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("clock should be valid")
+        .expect("clock must be valid")
         .as_nanos();
     let path = PathBuf::from(format!("/tmp/tacacsrs-health-probe-{unique}.sock"));
-    let listener = UnixListener::bind(&path).expect("health socket should bind");
+    let listener = UnixListener::bind(&path).expect("health socket must bind");
     let incoming = UnixListenerStream::new(listener);
     let (reporter, service) = tonic_health::server::health_reporter();
     reporter
@@ -141,13 +141,13 @@ async fn unix_socket_probe_reports_serving() {
             .add_service(service)
             .serve_with_incoming_shutdown(incoming, child.cancelled_owned())
             .await
-            .expect("health server should run");
+            .expect("health server must run");
     });
 
     let output = run_probe(path.to_str().expect("UTF-8 path"), "readiness", 2).await;
 
     cancellation.cancel();
-    task.await.expect("server task should join");
+    task.await.expect("server task must join");
     tokio::fs::remove_file(path)
         .await
         .expect("remove health socket");

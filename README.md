@@ -1,12 +1,22 @@
 # TACACS-rs
 
-`tacacs-rs` is a Rust implementation of the TACACS+ protocol and a suite of products for TACACS+ operations across network infrastructure. The key products are `tacacsrs-agent`, which provides a TACACS+ TCP proxy and a gRPC-based AAA service built around TACACS+ authentication, authorization, and accounting semantics, and `tacon`, an interactive TACACS+ test application for exercising plain TCP, TLS, TLS mTLS, TLS PSK, and TLS PSK-DHE operation modes. The workspace also includes configuration parsing, agent daemon packaging, IPC emulation, and integration surfaces for operating TACACS+ services.
+`tacacs-rs` implements the TACACS+ protocol in Rust. It provides TACACS+ authentication, authorization, and accounting components for network infrastructure.
+
+The `tacacsrs-agent` component provides a TACACS+ TCP proxy and a gRPC-based AAA service. The `tacon` application tests plain TCP and TLS transport modes. These modes include mTLS, TLS PSK, and TLS PSK-DHE.
+
+The workspace also provides configuration parsing, daemon packaging, IPC emulation, and integration components.
 
 ## TACACS+ Proxy for `pam_tacplus`, `audisp-tacplus`, and Legacy TACACS+ Clients
 
-`tacacsrs-agentd` can operate as a local TACACS+ compatibility proxy for clients that cannot initiate TACACS+ over TLS themselves, including [`pam_tacplus`](https://github.com/kravietz/pam_tacplus), [`audisp-tacplus`](https://github.com/daveolson53/audisp-tacplus), and other classic TACACS+ TCP integrations.
+`tacacsrs-agentd` can operate as a local compatibility proxy. It supports clients that cannot connect directly to a TACACS+ server through TLS.
 
-The proxy accepts ordinary TACACS+ packets on a loopback TCP endpoint, multiplexes concurrent downstream session IDs, preserves each conversation's packet order, and establishes upstream TACACS+ over TLS 1.3 to one or more servers. This lets the local integration boundary stay stable while transport security, ordered failover, connection reuse, and TLS credential handling move into the daemon. Upstream modes include server-authenticated TLS, mTLS, TLS 1.3 PSK-DHE, and explicit TLS 1.3 PSK-only interoperability mode.
+These clients include [`pam_tacplus`](https://github.com/kravietz/pam_tacplus) and [`audisp-tacplus`](https://github.com/daveolson53/audisp-tacplus). The proxy also supports other TACACS+ TCP integrations.
+
+The proxy accepts TACACS+ packets on a loopback TCP endpoint. It multiplexes concurrent downstream session IDs and preserves the packet order for each session.
+
+The daemon connects to one or more upstream servers through TLS 1.3. It manages transport security, ordered failover, connection reuse, and TLS credentials.
+
+The upstream modes include server-authenticated TLS, mTLS, TLS 1.3 PSK-DHE, and TLS 1.3 PSK-only interoperability.
 
 ```bash
 tacacsrs-agentd \
@@ -17,24 +27,24 @@ tacacsrs-agentd \
   --use-tls
 ```
 
-The proxy is intended to allow users of existing libraries to seamlessly transition to the newer RFC 9887 TLS upstream:
+Use the proxy to move existing clients to the RFC 9887 TLS transport:
 
-- For `pam_tacplus` TLS migration, keep the PAM module in place and repoint its `server=` setting to the loopback TACACS+ proxy.
-- For `audisp-tacplus` TACACS+ over TLS accounting, keep the auditd plugin and TACACS+ accounting fields unchanged while the daemon forwards the accounting packets upstream over TLS.
+- For `pam_tacplus`, keep the PAM module. Set its `server=` value to the loopback TACACS+ proxy.
+- For `audisp-tacplus`, keep the auditd plugin and the TACACS+ accounting fields. The daemon forwards accounting packets through TLS.
 
-See the [Plain TACACS+ to TACACS+ over TLS Transition Guide](docs/tacacs-plus-tls-transition.md) for the full host-by-host cutover plan.
+For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Transition Guide](docs/tacacs-plus-tls-transition.md).
 
 ## Components
 
 | Component | Description |
 |-----------|-------------|
-| **tacacsrs-agent** | Core agent library providing the TACACS+ TCP proxy and gRPC-based AAA service for local consumers |
-| **tacon** | Interactive TACACS+ test application for authentication, authorization, accounting, and transport validation across plain TCP, TLS, TLS mTLS, TLS PSK, and TLS PSK-DHE |
-| **tacacsrs-agentd** | Central daemon executable that hosts `tacacsrs-agent`, maintains persistent upstream connections, and provides automatic failover |
-| **tacacsrs-agent-ipc-emulatord** | OPA/Rego-driven gRPC IPC emulator for integration tests that exercise `ServiceClient` clients without a live daemon |
-| **tacacsrs-config** | Open YANG JSON model for `ietf-system-tacacs-plus` parsing, validation, and config-local bundle enumeration |
-| **tacacsrs-credential-resolution** | Provider-neutral central credential plans, secret-safe resolved material, and closed request/result matching |
-| **session-wrapper** | Linux session wrapper POC for TACACS+ command authorization via seccomp user notifications |
+| **tacacsrs-agent** | TACACS+ TCP proxy and gRPC-based AAA service library |
+| **tacon** | TACACS+ test application for AAA operations and transport modes |
+| **tacacsrs-agentd** | Daemon that hosts `tacacsrs-agent`, maintains upstream connections, and manages failover |
+| **tacacsrs-agent-ipc-emulatord** | OPA/Rego-based gRPC IPC emulator for `ServiceClient` integration tests |
+| **tacacsrs-config** | YANG JSON parser, validator, and local credential-bundle enumerator for `ietf-system-tacacs-plus` |
+| **tacacsrs-credential-resolution** | Provider-neutral credential plans, secret-safe material, and request-result matching |
+| **session-wrapper** | Linux proof of concept for TACACS+ command authorization through seccomp user notifications |
 
 ## Workspace Architecture
 
@@ -61,11 +71,15 @@ tacacsrs-credential-resolution ──► tacacsrs-config
                               └──► tacacsrs-secrets
 ```
 
-`tacacsrs-config` is the entry point for RFC 7951 YANG JSON parsing. It owns the generated `ietf-system-tacacs-plus` Rust types, validates YANG-specific constraints, and expands config-local credential bundles while preserving external central references as opaque values. `tacacsrs-credential-resolution` turns those references into typed provider-neutral requests and validates resolved results. Provider-specific retrieval and runtime connection projection are separate integration concerns.
+`tacacsrs-config` is the entry point for RFC 7951 YANG JSON parsing. It owns the generated `ietf-system-tacacs-plus` Rust types and validates YANG constraints.
+
+The crate expands local credential bundles. It preserves external central references as opaque values.
+
+`tacacsrs-credential-resolution` converts these references into typed, provider-neutral requests. It also validates resolved results. Other integration components retrieve credentials and create runtime connections.
 
 ## Documentation
 
-- [Documentation site](https://authscaffold.github.io/tacacs-rs/) - Browsable static site generated from the project guides with mdBook
+- [Documentation site](https://authscaffold.github.io/tacacs-rs/) - Static mdBook site for the project guides
 - [GitHub Discussions](https://github.com/AuthScaffold/tacacs-rs/discussions) is the preferred place for questions, support, design discussion, and migration help.
 - [tacon Usage Guide](docs/tacon.md) — CLI client reference, connection modes, batch execution
 - [tacacsrs-agentd Usage Guide](docs/tacacsrs-agentd.md) — Central service deployment, failover, IPC protocol
@@ -83,7 +97,9 @@ tacacsrs-credential-resolution ──► tacacsrs-config
 
 ## Rust Toolchain
 
-This project targets the **current stable Rust release**. The `rust-version` field in `Cargo.toml` reflects the minimum toolchain required by the resolved dependency graph and is updated without ceremony when dependencies require it. Since no crates are published to crates.io, there is no MSRV stability guarantee.
+This project has a minimum supported Rust version (MSRV) of **1.88**. The `rust-version` field in `Cargo.toml` defines this version.
+
+The workspace crates are internal and are not published to crates.io.
 
 ## Quick Start
 
@@ -102,9 +118,7 @@ cargo build --release --package tacon
 sudo cp target/release/tacon /usr/local/bin/
 ```
 
-The `main` branch keeps Cargo package versions at `0.0.0-dev` for development.
-To build from source with released version metadata already populated, clone the
-generated `release/versions` branch:
+The `main` branch keeps Cargo package versions at `0.0.0-dev`. To build with released version metadata, clone the generated `release/versions` branch:
 
 ```bash
 git clone https://github.com/AuthScaffold/tacacs-rs.git --branch release/versions
@@ -112,8 +126,7 @@ cd tacacs-rs
 cargo build --release --package tacon
 ```
 
-The `release/versions` branch is updated by release automation and may be
-rewritten. Use `main` for development work.
+Release automation updates and can rewrite the `release/versions` branch. Use `main` for development work.
 
 ### Basic Usage
 
@@ -145,7 +158,7 @@ tacon --config ./tacacs.json authorization \
 
 ### YANG JSON Configuration
 
-Both `tacon` and `tacacsrs-agentd` can load TACACS+ server definitions from an RFC 7951 JSON document matching the `ietf-system-tacacs-plus` YANG model.
+Both `tacon` and `tacacsrs-agentd` can load server definitions from an RFC 7951 JSON document. The document must match the `ietf-system-tacacs-plus` YANG model.
 
 ```json
 {
@@ -164,11 +177,13 @@ Both `tacon` and `tacacsrs-agentd` can load TACACS+ server definitions from an R
 }
 ```
 
-Use `--config <file>` with either executable to load this configuration. The `tacacsrs-config` crate owns the generated YANG types, validation, and mapping from YANG JSON into runtime `ServerConnectionConfig` values consumed by the CLI and agent daemon.
+Use `--config <file>` with either executable to load this configuration. The `tacacsrs-config` crate owns the generated YANG types and validation.
+
+The crate maps YANG JSON to the runtime `ServerConnectionConfig` values. The CLI and the agent daemon use these values.
 
 ## Local Testing
 
-Local testing uses Docker. A compose file in `lde/containers` provides a TACACS+ server on port 49 (plain) and 449 (TLS):
+Local tests use Docker. A Compose file in `lde/containers` provides a server on port 49 for plain TCP. It uses port 449 for TLS.
 
 ```bash
 cd lde/containers

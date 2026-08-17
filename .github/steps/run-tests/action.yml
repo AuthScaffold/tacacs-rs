@@ -3,7 +3,7 @@ description: Run workspace tests for a target platform
 
 inputs:
   target:
-    description: 'Rust target triple to test'
+    description: 'Rust target triple for the tests'
     required: true
   feature-args:
     description: 'Cargo feature arguments to append'

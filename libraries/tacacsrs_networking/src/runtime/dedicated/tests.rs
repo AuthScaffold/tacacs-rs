@@ -77,7 +77,7 @@ async fn write_packet_obfuscates_when_key_is_configured() {
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG),
-        "captured request should be obfuscated"
+        "captured request must be obfuscated"
     );
 }
 

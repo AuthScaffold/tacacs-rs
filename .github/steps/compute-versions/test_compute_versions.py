@@ -1,7 +1,7 @@
-"""Tests for compute_versions.py.
+"""Run tests for compute_versions.py.
 
-These tests use a temporary git repo with simulated workspace structure
-to exercise version computation logic without touching the real repo.
+These tests use a temporary Git repository and a simulated workspace. They run
+version computations without changes to the real repository.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-# Import from sibling module
+# Import the sibling module.
 from compute_versions import (
     Crate,
     VersionResult,
@@ -42,11 +42,11 @@ from compute_versions import (
 
 @pytest.fixture()
 def tmp_workspace(tmp_path: Path) -> Path:
-    """Create a minimal git repo with workspace structure."""
+    """Create a minimal Git repository and workspace."""
     ws = tmp_path / "workspace"
     ws.mkdir()
 
-    # Initialize git repo
+    # Initialize the Git repository.
     subprocess.run(["git", "init"], cwd=ws, check=True, capture_output=True)
     subprocess.run(
         ["git", "config", "user.email", "test@test.com"],
@@ -85,7 +85,7 @@ def make_library(
 
     cargo_toml.write_text("\n".join(lines), encoding="utf-8")
 
-    # Create a source file so there's something to change
+    # Create a source file. The tests can change this file.
     src = lib_dir / "src"
     src.mkdir(exist_ok=True)
     (src / "lib.rs").write_text("// placeholder\n", encoding="utf-8")
@@ -192,7 +192,7 @@ class TestParseCargoToml:
         assert deps == []
 
     def test_path_dep(self, tmp_path: Path) -> None:
-        # Set up directory structure so path resolution works
+        # Create the directory structure for path resolution.
         libs = tmp_path / "libraries"
         lib_a = libs / "lib_a"
         lib_b = libs / "lib_b"
@@ -215,7 +215,7 @@ class TestParseCargoToml:
         assert deps == ["lib-a"]
 
     def test_non_library_path_dep_excluded(self, tmp_path: Path) -> None:
-        """Path deps outside libraries/ should be excluded."""
+        """The parser excludes path dependencies outside libraries/."""
         lib = tmp_path / "libraries" / "lib_a"
         lib.mkdir(parents=True)
         ext = tmp_path / "external" / "ext_crate"
@@ -238,7 +238,7 @@ class TestParseCargoToml:
     def test_reverse_dev_dependency_does_not_create_release_cycle(
         self, tmp_path: Path,
     ) -> None:
-        """A reverse dev edge may support examples without changing release order."""
+        """A reverse development edge supports examples. It does not change release order."""
         libs = tmp_path / "libraries"
         networking = libs / "networking"
         flows = libs / "flows"
@@ -312,7 +312,7 @@ class TestTopologicalSort:
             topological_sort(crates)
 
     def test_matches_real_workspace(self) -> None:
-        """Verify topological sort matches the actual tacacs-rs dep graph."""
+        """The topological sort matches the actual tacacs-rs dependency graph."""
         crates = {
             "tacacsrs-messages": Crate(
                 name="tacacsrs-messages", directory=Path("libraries/tacacsrs_messages"),
@@ -331,7 +331,7 @@ class TestTopologicalSort:
         }
         order = topological_sort(crates)
 
-        # Messages and agent-client have no deps — they come first
+        # Messages and agent-client have no dependencies. They come first.
         assert order.index("tacacsrs-messages") < order.index("tacacsrs-networking")
         assert order.index("tacacsrs-messages") < order.index("tacacsrs-agent")
         assert order.index("tacacsrs-agent-client") < order.index("tacacsrs-agent")
@@ -344,7 +344,7 @@ class TestTopologicalSort:
 
 class TestComputeLibraryVersions:
     def test_initial_release(self, tmp_workspace: Path) -> None:
-        """First release of a library should be 0.1.0."""
+        """The first library release is 0.1.0."""
         make_library(tmp_workspace, "my-lib", "my_lib")
         git_commit(tmp_workspace, "initial")
 
@@ -360,7 +360,7 @@ class TestComputeLibraryVersions:
         assert results[0].reason == "initial release"
 
     def test_unchanged_after_tag(self, tmp_workspace: Path) -> None:
-        """Library with no changes since tag should keep its version."""
+        """A library without changes since its tag keeps its version."""
         make_library(tmp_workspace, "my-lib", "my_lib")
         git_commit(tmp_workspace, "initial")
         git_tag(tmp_workspace, "my-lib-v0.1.0")
@@ -377,12 +377,12 @@ class TestComputeLibraryVersions:
         assert results[0].reason == "unchanged"
 
     def test_patch_bump_on_change(self, tmp_workspace: Path) -> None:
-        """Changed library should get a patch bump."""
+        """A changed library gets a patch increment."""
         lib = make_library(tmp_workspace, "my-lib", "my_lib")
         git_commit(tmp_workspace, "initial")
         git_tag(tmp_workspace, "my-lib-v0.1.0")
 
-        # Make a change
+        # Make a change.
         (lib / "src" / "lib.rs").write_text("// changed\n", encoding="utf-8")
         git_commit(tmp_workspace, "change")
 
@@ -396,7 +396,7 @@ class TestComputeLibraryVersions:
         assert results[0].tag == "my-lib-v0.1.1"
 
     def test_cascading_bump(self, tmp_workspace: Path) -> None:
-        """When a dependency is bumped, dependents should also be checked."""
+        """A new dependency version also increments each dependent."""
         make_library(tmp_workspace, "base-lib", "base_lib")
         make_library(
             tmp_workspace, "top-lib", "top_lib",
@@ -406,7 +406,7 @@ class TestComputeLibraryVersions:
         git_tag(tmp_workspace, "base-lib-v0.1.0")
         git_tag(tmp_workspace, "top-lib-v0.1.0")
 
-        # Change only the base library
+        # Change only the base library.
         base_src = tmp_workspace / "libraries" / "base_lib" / "src" / "lib.rs"
         base_src.write_text("// changed base\n", encoding="utf-8")
         git_commit(tmp_workspace, "change base")
@@ -420,17 +420,17 @@ class TestComputeLibraryVersions:
 
         by_name = {r.name: r for r in results}
 
-        # Base should be bumped
+        # The base library gets a new version.
         assert by_name["base-lib"].version == "0.1.1"
         assert by_name["base-lib"].tag is not None
 
-        # Top should also be bumped (dependency cascade)
+        # The dependent library also gets a new version.
         assert by_name["top-lib"].version == "0.1.1"
         assert by_name["top-lib"].tag is not None
-        assert "dependency bumped" in by_name["top-lib"].reason
+        assert "dependency version changed" in by_name["top-lib"].reason
 
     def test_no_cascade_when_dep_unchanged(self, tmp_workspace: Path) -> None:
-        """No cascade when the dependency itself wasn't bumped."""
+        """No cascade occurs when the dependency keeps its version."""
         make_library(tmp_workspace, "base-lib", "base_lib")
         make_library(
             tmp_workspace, "top-lib", "top_lib",
@@ -440,7 +440,7 @@ class TestComputeLibraryVersions:
         git_tag(tmp_workspace, "base-lib-v0.1.0")
         git_tag(tmp_workspace, "top-lib-v0.1.0")
 
-        # No changes at all
+        # Do not make changes.
         crates = discover_libraries(tmp_workspace)
         order = topological_sort(crates)
 
@@ -462,7 +462,7 @@ class TestComputeLibraryVersions:
         git_tag(tmp_workspace, "b-v0.1.0")
         git_tag(tmp_workspace, "c-v0.2.0")
 
-        # Change only 'a'
+        # Change only 'a'.
         (tmp_workspace / "libraries" / "a" / "src" / "lib.rs").write_text(
             "// deep change\n", encoding="utf-8",
         )
@@ -478,7 +478,7 @@ class TestComputeLibraryVersions:
 
         assert by_name["a"].version == "0.1.1"
         assert by_name["b"].version == "0.1.1"
-        assert by_name["c"].version == "0.2.1"  # bumps from 0.2.0
+        assert by_name["c"].version == "0.2.1"  # The prior version is 0.2.0.
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +508,7 @@ class TestComputeCalver:
         git_commit(tmp_workspace, "initial")
         git_tag(tmp_workspace, "tacon-2026.424.0")
 
-        # Make a change
+        # Make a change.
         src = tmp_workspace / "executables" / "tacon" / "src" / "main.rs"
         src.write_text("fn main() { println!(\"v2\"); }\n", encoding="utf-8")
         git_commit(tmp_workspace, "change")
@@ -544,7 +544,7 @@ class TestComputeCalver:
         src.write_text("fn main() { println!(\"v2\"); }\n", encoding="utf-8")
         git_commit(tmp_workspace, "change")
 
-        # Different day
+        # Use a different day.
         now = datetime(2026, 4, 25, tzinfo=timezone.utc)
         result = compute_calver(
             "tacon",
@@ -621,7 +621,7 @@ class TestComputeAllVersions:
         git_tag(tmp_workspace, "active-v0.1.0")
         git_tag(tmp_workspace, "myapp-2026.424.0")
 
-        # Change only "active"
+        # Change only "active".
         (tmp_workspace / "libraries" / "active" / "src" / "lib.rs").write_text(
             "// updated\n", encoding="utf-8",
         )
@@ -637,11 +637,11 @@ class TestComputeAllVersions:
 
         assert result["versions"]["stable"] == "0.1.0"
         assert result["versions"]["active"] == "0.1.1"
-        # myapp should also get a new CalVer since libraries/ changed
+        # myapp also gets a new CalVer because libraries/ changed.
         assert result["versions"]["myapp"] == "2026.424.1"
         assert result["has_release"] is True
 
-        # stable should NOT have a new tag
+        # stable does not get a new tag.
         new_tag_names = result["new_tags"]
         assert "stable-v0.1.0" not in new_tag_names
         assert "active-v0.1.1" in new_tag_names
@@ -664,7 +664,7 @@ class TestWriteGithubOutput:
 
     def test_no_file_no_crash(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            # Should print to stdout, not crash
+            # Print to standard output. Do not stop.
             write_github_output("key", "value")
 
 
@@ -703,7 +703,7 @@ class TestCommitCountSince:
 
 class TestComputePrereleaseLibraryVersions:
     def test_prerelease_with_tag(self, tmp_workspace: Path) -> None:
-        """Pre-release version should be {current}-dev.{N}."""
+        """The pre-release version is {current}-dev.{N}."""
         lib = make_library(tmp_workspace, "my-lib", "my_lib")
         git_commit(tmp_workspace, "initial")
         git_tag(tmp_workspace, "my-lib-v0.1.2")
@@ -721,7 +721,7 @@ class TestComputePrereleaseLibraryVersions:
         )
         assert len(results) == 1
         assert results[0].version == "0.1.2-dev.2"
-        assert results[0].tag is None  # never create tags
+        assert results[0].tag is None  # Do not create tags.
 
     def test_prerelease_no_tag(self, tmp_workspace: Path) -> None:
         """Without any tag, use 0.0.0-dev.{total_commits}."""
@@ -738,7 +738,7 @@ class TestComputePrereleaseLibraryVersions:
         assert results[0].version == "0.0.0-dev.2"
 
     def test_prerelease_at_tag(self, tmp_workspace: Path) -> None:
-        """At the tag commit itself, should be {version}-dev.0."""
+        """At the tag commit, the version is {version}-dev.0."""
         make_library(tmp_workspace, "my-lib", "my_lib")
         git_commit(tmp_workspace, "initial")
         git_tag(tmp_workspace, "my-lib-v0.3.0")
@@ -831,5 +831,5 @@ class TestComputeAllVersionsPrerelease:
         assert result["versions"]["base-lib"] == "0.1.0-dev.2"
         assert result["versions"]["top-lib"] == "0.2.0-dev.2"
         assert result["versions"]["myapp"] == "2026.424.0-dev.2"
-        assert result["new_tags"] == []  # no tags in pre-release mode
+        assert result["new_tags"] == []  # The pre-release mode creates no tags.
         assert result["has_release"] is False

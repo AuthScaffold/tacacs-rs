@@ -1,4 +1,4 @@
-//! Build TLS 1.3 PSK connections directly from a [`TacacsPlusServer`]
+//! Builds TLS 1.3 PSK connections directly from [`TacacsPlusServer`]
 //! configuration.
 
 use anyhow::{Context, Result};
@@ -9,8 +9,8 @@ use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, Tls13Epsk};
 
 use super::PskClientConfig;
 
-/// Returns `true` when `server` carries a TLS 1.3 PSK client identity that
-/// would direct the dispatcher to use the PSK transport.
+/// Returns `true` when `server` has a TLS 1.3 PSK client identity. The dispatcher
+/// uses this result to select the PSK transport.
 #[must_use]
 pub(crate) fn server_has_psk(server: &TacacsPlusServer) -> bool {
     server
@@ -19,7 +19,7 @@ pub(crate) fn server_has_psk(server: &TacacsPlusServer) -> bool {
         .is_some_and(|ci| ci.tls13_epsk.is_some())
 }
 
-/// Establishes a TLS 1.3 PSK connection over an existing TCP stream using the
+/// Establishes a TLS 1.3 PSK connection over an existing TCP connection using the
 /// PSK material carried in `server`.
 ///
 /// The PSK identity is taken from `client-identity.tls13-epsk.external-identity`
@@ -28,11 +28,11 @@ pub(crate) fn server_has_psk(server: &TacacsPlusServer) -> bool {
 ///
 /// # Errors
 ///
-/// Returns an error if the configured PSK material is invalid (e.g. empty key,
-/// identity containing a NUL byte) or the TLS-PSK handshake fails. Callers
-/// should ensure [`server_has_psk`] returns `true` before invoking this
-/// function — if no PSK is configured, an error is returned because there is
-/// no key material to negotiate with.
+/// Returns an error if the configured PSK material is invalid. Examples include
+/// an empty key and an identity that contains a NUL byte. The function also
+/// returns an error if the TLS-PSK handshake fails. Before calling this function,
+/// make sure that [`server_has_psk`] returns `true`. Without PSK configuration,
+/// the function returns an error.
 pub(crate) async fn establish_from_server(
     server: std::sync::Arc<TacacsPlusServer>,
     address: &str,
@@ -42,16 +42,16 @@ pub(crate) async fn establish_from_server(
     let server_name = derive_sni_name(&server)?.map(str::to_owned);
 
     log::debug!(
-        "Negotiating TLS-PSK handshake with {address} (SNI: {})",
+        "Starting TLS-PSK handshake with {address} (SNI: {})",
         server_name.as_deref().unwrap_or("disabled")
     );
 
     let tls_stream = PskClientConfig::prepare(server)
-        .context("Invalid TLS PSK OpenSSL configuration")?
+        .context("Invalid OpenSSL TLS-PSK configuration")?
         .connect(address, server_name.as_deref(), tcp_stream)
         .await
         .inspect_err(|e| log::warn!("TLS-PSK handshake with {address} failed: {e:#}"))
-        .context("Failed to establish TLS PSK connection")?;
+        .context("Failed to establish TLS-PSK connection")?;
 
     log::debug!("TLS-PSK connection to {address} ready");
     Ok(tls_stream)
@@ -62,7 +62,7 @@ fn tls13_epsk(server: &TacacsPlusServer) -> Result<&Tls13Epsk> {
         .client_identity
         .as_ref()
         .and_then(|ci| ci.tls13_epsk.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("server has no TLS 1.3 PSK client-identity"))
+        .ok_or_else(|| anyhow::anyhow!("Server has no TLS 1.3 PSK client identity"))
 }
 
 fn derive_sni_name(server: &TacacsPlusServer) -> Result<Option<&str>> {
@@ -74,7 +74,7 @@ fn derive_sni_name(server: &TacacsPlusServer) -> Result<Option<&str>> {
         .domain_name
         .as_deref()
         .map(Some)
-        .ok_or_else(|| anyhow::anyhow!("sni-enabled requires domain-name to be configured"))
+        .ok_or_else(|| anyhow::anyhow!("sni-enabled requires domain-name"))
 }
 
 #[cfg(test)]
@@ -128,7 +128,7 @@ mod tests {
     }
 
     fn epsk(server: &TacacsPlusServer) -> &Tls13Epsk {
-        tls13_epsk(server).expect("tls13 epsk")
+        tls13_epsk(server).expect("server must have TLS 1.3 EPSK configuration")
     }
 
     #[test]
@@ -163,7 +163,7 @@ mod tests {
     fn derive_sni_name_returns_none_when_sni_disabled() {
         let server = server_with_psk("client-id", &[0u8; 16]);
 
-        assert_eq!(derive_sni_name(&server).expect("SNI should derive"), None);
+        assert_eq!(derive_sni_name(&server).expect("SNI derivation must succeed"), None);
     }
 
     #[test]
@@ -173,7 +173,7 @@ mod tests {
         server.domain_name = Some("tacacs.example.com".to_owned());
 
         assert_eq!(
-            derive_sni_name(&server).expect("SNI should derive"),
+            derive_sni_name(&server).expect("SNI derivation must succeed"),
             Some("tacacs.example.com")
         );
     }
@@ -183,7 +183,7 @@ mod tests {
         let mut server = server_with_psk("client-id", &[0u8; 16]);
         server.sni_enabled = Some(true);
 
-        let error = derive_sni_name(&server).expect_err("missing SNI domain should be rejected");
+        let error = derive_sni_name(&server).expect_err("a missing SNI domain must fail");
 
         assert!(error
             .to_string()

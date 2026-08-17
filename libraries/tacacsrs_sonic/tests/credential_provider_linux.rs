@@ -66,7 +66,7 @@ fn epsk_plan(reference: &str) -> ResolutionPlan {
             }}
         }}"#
     );
-    let config = parse_yang_json(&json).expect("central EPSK config");
+    let config = parse_yang_json(&json).expect("central EPSK configuration");
     ResolutionPlan::from_server(&config.server[0]).expect("resolution plan")
 }
 
@@ -91,7 +91,7 @@ fn certificate_plan() -> ResolutionPlan {
             }
         }"#,
     )
-    .expect("central certificate config");
+    .expect("central certificate configuration");
     ResolutionPlan::from_server(&config.server[0]).expect("resolution plan")
 }
 

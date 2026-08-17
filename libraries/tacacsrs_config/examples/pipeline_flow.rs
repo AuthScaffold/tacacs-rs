@@ -33,12 +33,12 @@ fn main() -> anyhow::Result<()> {
         }
     }"#;
 
-    // Step 1: Parse YANG config (non-destructive - preserves original for round-tripping)
+    // Step 1: Parse the YANG configuration without changing it.
     let config = parse_yang_json(json)?;
     println!("🧪 Pipeline flow example");
     println!("1. Parsed YANG JSON into the raw model\n");
 
-    // Step 2: Access raw YANG model structure
+    // Step 2: Read the YANG model structure.
     let server = &config.server[0];
     println!("2. Inspected the raw server entry:");
     println!("   ├─ name: {}", server.name);
@@ -46,11 +46,11 @@ fn main() -> anyhow::Result<()> {
     println!("   ├─ has client-identity: {}", server.client_identity.is_some());
     println!("   └─ has server-authentication: {}", server.server_authentication.is_some());
 
-    // Step 3: For production code:
+    // Step 3: Use this sequence in production:
     // 1. Call enumerate_server(s) to inline shared credential bundles.
     // 2. Hand the enumerated server to runtime code directly.
-    // 3. If external secret providers are added later, resolve them at a
-    //    separate runtime/provider boundary before connecting.
+    // 3. If external secret providers are added, resolve credentials at the
+    //    runtime provider boundary before opening a connection.
     println!("\n3. Production flow: enumerate bundles, then resolve external secrets at a separate runtime boundary only if that feature is introduced");
 
     Ok(())

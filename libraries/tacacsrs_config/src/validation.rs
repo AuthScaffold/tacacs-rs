@@ -10,29 +10,26 @@ use crate::generated::tacacs_plus::{
 // Validation options and relaxations
 // ---------------------------------------------------------------------------
 
-/// An optional relaxation that loosens a specific YANG validation constraint.
+/// Optional relaxation for one YANG validation constraint.
 ///
-/// Relaxations are opt-in; default (strict) validation never applies them.
-/// They are designed as a migration aid and should be removed once the
-/// underlying configuration is updated to comply with strict YANG constraints.
+/// Strict validation does not apply relaxations. Use them only during
+/// migration. Remove them after the configuration satisfies the strict YANG
+/// constraints.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ValidationRelaxation {
-    /// Allow TLS and `shared-secret` to coexist on the same server.
+    /// Allow TLS and `shared-secret` on the same server.
     ///
-    /// By default the YANG `security` choice is strict: either TLS
-    /// (`client-identity` / `server-authentication`) **or** obfuscation
-    /// (`shared-secret`) may be configured, but not both.
+    /// Strict validation permits either TLS (`client-identity` or
+    /// `server-authentication`) or obfuscation (`shared-secret`), but not both.
     ///
-    /// This relaxation permits the combination as a temporary migration state
-    /// for server implementations that cannot yet cleanly remove
-    /// shared-secret handling after enabling TLS.
+    /// This relaxation permits the combination during a temporary migration.
     AllowTlsWithSharedSecret,
 
     /// Allow a plain TCP TACACS+ server with neither TLS nor `shared-secret`.
     ///
     /// Strict YANG validation treats the `security` choice as mandatory. This
-    /// relaxation permits legacy deployments that intentionally send TACACS+
-    /// packets without TLS and without TACACS+ body obfuscation.
+    /// relaxation permits legacy deployments to send TACACS+ packets without
+    /// TLS or TACACS+ body obfuscation.
     AllowPlainTcpWithoutSharedSecret,
 }
 
@@ -62,11 +59,10 @@ impl std::str::FromStr for ValidationRelaxation {
     }
 }
 
-/// Options that control YANG validation behaviour.
+/// Options that control YANG validation behavior.
 ///
-/// By default all options are empty, producing the same strict behaviour as
-/// the original `validate_config` call. Individual [`ValidationRelaxation`]
-/// values can be opted into via [`ValidationOptions::with_relaxation`].
+/// The default empty set uses strict validation. Add each required
+/// [`ValidationRelaxation`] with [`ValidationOptions::with_relaxation`].
 ///
 /// # Example
 ///
@@ -88,14 +84,14 @@ impl ValidationOptions {
         Self::default()
     }
 
-    /// Adds a [`ValidationRelaxation`] to this options set.
+    /// Adds a [`ValidationRelaxation`] to this set.
     #[must_use]
     pub fn with_relaxation(mut self, relaxation: ValidationRelaxation) -> Self {
         self.relaxations.insert(relaxation);
         self
     }
 
-    /// Returns `true` if the given relaxation is active.
+    /// Returns `true` if the specified relaxation is active.
     #[must_use]
     pub fn allows(&self, relaxation: &ValidationRelaxation) -> bool {
         self.relaxations.contains(relaxation)
@@ -103,10 +99,10 @@ impl ValidationOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Config validation entry points
+// Configuration validation entry points
 // ---------------------------------------------------------------------------
 
-/// Validate a parsed TACACS+ configuration against YANG model constraints.
+/// Make sure that a parsed TACACS+ configuration satisfies YANG constraints.
 ///
 /// This uses strict (default) validation. To opt into relaxations, call
 /// [`validate_config_with_options`] instead.
@@ -118,7 +114,7 @@ pub fn validate_config(config: &TacacsPlus) -> anyhow::Result<()> {
     validate_config_with_options(config, &ValidationOptions::default())
 }
 
-/// Validate a parsed TACACS+ configuration with the supplied validation options.
+/// Make sure that a parsed TACACS+ configuration satisfies the selected constraints.
 ///
 /// # Errors
 ///
@@ -210,8 +206,8 @@ fn validate_security_choice(
         return Ok(());
     }
 
-    // When AllowTlsWithSharedSecret is active, permit both TLS and shared-secret
-    // simultaneously.  We still require at least one security mode.
+    // Permit TLS with a shared secret only when the relaxation is active.
+    // All remaining paths require at least one security mode.
     if has_tls && has_obfuscation && options.allows(&ValidationRelaxation::AllowTlsWithSharedSecret)
     {
         return Ok(());
@@ -418,8 +414,7 @@ fn choice_case_names(choice_cases: &[(&str, &[&str])]) -> String {
 // Unsupported feature rejection
 // ---------------------------------------------------------------------------
 
-/// Rejects unsupported inline key features that are parsed by the YANG model
-/// but not yet handled by the resolver/connection layers.
+/// Rejects inline key features that the resolver and connection layers do not support.
 fn reject_unsupported_inline_features(
     context: &str,
     ci: &TlsClientClientIdentity,
@@ -432,7 +427,7 @@ fn reject_unsupported_inline_features(
     Ok(())
 }
 
-/// Rejects unsupported inline key features in a client-credentials bundle.
+/// Rejects unsupported inline key features in a `client-credentials` bundle.
 fn reject_unsupported_credentials_features(
     context: &str,
     creds: &ClientCredentials,
@@ -468,7 +463,7 @@ fn reject_unsupported_epsk_derivation(context: &str, epsk: &Tls13Epsk) -> anyhow
 // Inline key material validation
 // ---------------------------------------------------------------------------
 
-/// Validate inline key material in all inline definitions across the config.
+/// Make sure that all inline definitions contain valid key material.
 pub(crate) fn validate_key_formats(config: &TacacsPlus) -> anyhow::Result<()> {
     for server in &config.server {
         let ctx = format!("server '{}'", server.name);
@@ -522,7 +517,7 @@ fn validate_server_auth_key_formats(
     sa: &TlsClientServerAuthentication,
     context: &str,
 ) -> anyhow::Result<()> {
-    // Validate inline CA and EE certificate data
+    // Make sure that inline CA and end-entity certificate data is valid.
     if let Some(ref ca) = sa.ca_certs {
         if let Some(ref inline) = ca.inline_definition {
             for cert_entry in &inline.certificate {
@@ -577,10 +572,10 @@ fn validate_client_credential_key_formats(
     Ok(())
 }
 
-/// Validates that a parsed YANG `binary` field contains usable data.
+/// Makes sure that a parsed YANG `binary` field contains data.
 ///
-/// RFC 7951 base64 decoding already happened during deserialization, so the
-/// remaining semantic validation here is that the field is not empty.
+/// Deserialization already decodes RFC 7951 base64 data. This function rejects
+/// an empty field.
 fn validate_binary_data(data: &[u8], context: &str, field: &str) -> anyhow::Result<()> {
     if data.is_empty() {
         anyhow::bail!("{context}: {field} must not be empty");
@@ -588,8 +583,7 @@ fn validate_binary_data(data: &[u8], context: &str, field: &str) -> anyhow::Resu
     Ok(())
 }
 
-/// Validates that inline asymmetric key material fields (public-key,
-/// cleartext-private-key, cert-data) contain decodable data when present.
+/// Makes sure that present inline asymmetric key fields contain data.
 fn validate_inline_asymmetric_key_material(
     public_key: Option<&[u8]>,
     cleartext_private_key: Option<&[u8]>,

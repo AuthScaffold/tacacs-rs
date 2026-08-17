@@ -1,8 +1,8 @@
 //! Internal runtime services.
 //!
-//! Each child module owns a distinct service boundary used by
-//! [`crate::runtime::TacacsClientService`]: local client API and raw TACACS+
-//! proxying.
+//! Each child module owns one service boundary for
+//! [`crate::runtime::TacacsClientService`]. The boundaries are the local client
+//! API and the raw TACACS+ proxy.
 
 use crate::config::ServiceConfig;
 

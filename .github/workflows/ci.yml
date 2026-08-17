@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main"]
   schedule:
-    # Run weekly on Monday at 00:00 UTC to catch dependency issues
+    # Run weekly on Monday at 00:00 UTC to detect dependency errors.
     - cron: "0 0 * * 1"
 
 permissions:
@@ -64,7 +64,7 @@ jobs:
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
           echo "skip_release=${skip_release} (${reason})"
 
-  # ── Compute versions from git tags ───────────────────────
+  # ── Compute versions from Git tags ───────────────────────
   compute-versions:
     name: Compute Versions
     runs-on: ubuntu-latest
@@ -83,7 +83,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Rust
+      - name: Install Rust
         uses: ./.github/steps/setup-rust
         with:
           cache-key: stable
@@ -128,7 +128,7 @@ jobs:
     needs: [pipeline]
     if: always()
     steps:
-      - name: Check pipeline result
+      - name: Make sure that the pipeline succeeded
         if: needs.pipeline.result != 'success'
         run: exit 1
 
@@ -175,15 +175,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ── Create all new tags (library semver + CalVer) ──
-      - name: Create git tags
+      # ── Create all new tags (library SemVer and CalVer) ──
+      - name: Create Git tags
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           NEW_TAGS='${{ needs.compute-versions.outputs.new-tags }}'
           echo "$NEW_TAGS" | jq -r '.[]' | while read -r TAG; do
-            echo "Creating tag: $TAG"
+            echo "Create tag: $TAG"
             git tag -a "$TAG" -m "Release $TAG"
           done
 

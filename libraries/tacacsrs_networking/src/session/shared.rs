@@ -42,7 +42,7 @@ impl SharedSession {
             return;
         }
 
-        // Notify the session manager to remove this session from the registry
+        // Tell the session manager to remove this session from the registry.
         if let Some(mgr) = &self.manager {
             mgr.remove_session(self.id).await;
         }
@@ -83,7 +83,7 @@ impl Drop for SharedSession {
             Err(_) => {
                 log::warn!(
                     target: "tacacsrs_networking::session::shared::drop",
-                    "Dropping session {session_id} without a Tokio runtime; session registry cleanup could not be scheduled"
+                    "Cannot schedule registry cleanup for dropped session {session_id}: no Tokio runtime is available"
                 );
             }
         }

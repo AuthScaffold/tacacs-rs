@@ -36,7 +36,7 @@ runs:
         echo "version=${version}" >> "$GITHUB_OUTPUT"
         echo "Using container image version: ${version}"
 
-    - name: Check Docker Buildx
+    - name: Make sure that Docker Buildx is available
       shell: bash
       run: docker buildx version
 

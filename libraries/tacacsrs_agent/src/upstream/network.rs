@@ -17,11 +17,13 @@ use super::connection::{UpstreamConnection, UpstreamConnector};
 
 /// Production connector backed by [`tacacsrs_networking`].
 ///
-/// Extracts per-server connection parameters from the provided
-/// [`tacacsrs_config::TacacsPlusServer`] at each connection attempt.
+/// Reads the connection parameters from
+/// [`tacacsrs_config::TacacsPlusServer`] for each connection attempt.
 #[derive(Debug, Clone)]
 pub(crate) struct NetworkUpstreamConnector {
-    /// Dangerously disable TLS certificate verification for upstream connections.
+    /// Disables TLS certificate verification for server connections.
+    ///
+    /// This option is dangerous. Use it only for development and tests.
     pub disable_certificate_verification: bool,
 }
 
@@ -45,16 +47,15 @@ impl UpstreamConnector for NetworkUpstreamConnector {
     }
 }
 
-/// Wraps a configured networking client connection for use by the service state
-/// machine.
+/// Wraps a configured network client for the service state machine.
 ///
-/// The networking layer owns whether each operation uses a dedicated stream or
-/// an upgraded single-connection stream. The agent sees only request/reply flow
-/// execution and failover across configured servers.
+/// The networking layer selects a dedicated connection or a shared
+/// single-connection transport for each operation. The agent only runs
+/// request/reply flows and controls failover.
 struct TacacsUpstreamConnection {
-    /// The `host:port` of the upstream server this connection targets.
+    /// The `host:port` address of the TACACS+ server.
     server_address: String,
-    /// The underlying adaptive client connection.
+    /// The adaptive client connection.
     connection: TacacsClient,
 }
 
@@ -72,7 +73,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         self.connection
             .open_conversation()
             .await
-            .with_context(|| format!("Failed to open conversation on {}", self.server_address))
+            .with_context(|| format!("Failed to open a session on {}", self.server_address))
     }
 
     async fn send_accounting(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply> {
@@ -148,7 +149,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 }
 
 fn log_session_start(operation: &'static str, server_address: &str, summary: &str) {
-    log::debug!("Creating TACACS+ session on {server_address} for {operation} request ({summary})");
+    log::debug!("Starting a TACACS+ session on {server_address} for {operation} ({summary})");
 }
 
 fn log_protocol_reply<Status: std::fmt::Debug>(
@@ -158,7 +159,7 @@ fn log_protocol_reply<Status: std::fmt::Debug>(
     server_msg: &str,
 ) {
     log::debug!(
-        "{operation} response from {server_address}: status={status:?}, server_msg={}",
+        "{operation} reply from {server_address}: status={status:?}, server_msg={}",
         if server_msg.is_empty() {
             "(empty)"
         } else {
@@ -172,5 +173,5 @@ fn log_session_failure(operation: &'static str, server_address: &str, error: &an
 }
 
 fn shared_failure_context(operation: &'static str, server_address: &str) -> String {
-    format!("Failed to send {operation} request via {server_address}")
+    format!("Failed to send an {operation} request to {server_address}")
 }

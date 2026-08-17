@@ -1,4 +1,4 @@
-//! Typed resolved credential material with non-revealing formatting.
+//! Typed resolved credentials with non-revealing formatting.
 
 use std::fmt;
 
@@ -7,7 +7,7 @@ use tacacsrs_secrets::SecretBytes;
 
 use crate::CredentialKind;
 
-/// Public certificate bytes whose debug output reveals length only.
+/// Public certificate bytes with debug output that shows only the length.
 pub struct PublicBytes(Vec<u8>);
 
 impl PublicBytes {
@@ -46,7 +46,7 @@ pub struct CertificateWithKeyMaterial {
     pub public_key_format: Option<PublicKeyFormat>,
     /// Public key data when returned separately from the certificate.
     pub public_key: Option<PublicBytes>,
-    /// Provider-supplied private key format.
+    /// Private key format from the provider.
     pub private_key_format: PrivateKeyFormat,
     /// Public end-entity certificate.
     pub certificate: PublicBytes,
@@ -57,7 +57,7 @@ pub struct CertificateWithKeyMaterial {
 /// One named public certificate from a provider certificate bag.
 #[derive(Debug)]
 pub struct NamedCertificateMaterial {
-    /// Stable provider-supplied certificate name.
+    /// Stable certificate name from the provider.
     pub name: String,
     /// Public certificate bytes.
     pub certificate: PublicBytes,
@@ -66,14 +66,14 @@ pub struct NamedCertificateMaterial {
 /// Resolved public certificate bag.
 #[derive(Debug)]
 pub struct CertificateBagMaterial {
-    /// Public certificates in provider order.
+    /// Public certificates in the order from the provider.
     pub certificates: Vec<NamedCertificateMaterial>,
 }
 
 /// Resolved symmetric key and its YANG key format metadata.
 #[derive(Debug)]
 pub struct SymmetricKeyMaterial {
-    /// Symmetric key format when known by the provider.
+    /// Symmetric key format, if the provider supplies it.
     pub key_format: Option<SymmetricKeyFormat>,
     /// Secret symmetric key bytes.
     pub key: SecretBytes,
@@ -93,7 +93,7 @@ pub enum ResolvedCredential {
 }
 
 impl ResolvedCredential {
-    /// Returns the material kind for request/response matching.
+    /// Returns the credential kind for request and response matching.
     #[must_use]
     pub const fn kind(&self) -> CredentialKind {
         match self {

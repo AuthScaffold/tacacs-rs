@@ -18,23 +18,22 @@ use crate::model::CliDatastoreInput;
 
 /// File-backed datastore for CLI-supplied TACACS+ configuration inputs.
 ///
-/// The datastore rebuilds the effective [`TacacsPlus`] snapshot from the
-/// original CLI/file inputs on every relevant filesystem event. A successful
-/// rebuild is published to subscribers; failed reloads are logged and the
-/// previous active configuration remains in effect.
+/// The datastore rebuilds the effective [`TacacsPlus`] snapshot after each
+/// relevant file event. It publishes a successful rebuild to subscribers. If
+/// a reload fails, it logs the error and keeps the active configuration.
 #[derive(Debug, Clone)]
 pub struct CliFileDatastore {
     input: CliDatastoreInput,
 }
 
 impl CliFileDatastore {
-    /// Create a new file-backed datastore from parsed CLI inputs.
+    /// Creates a file-backed datastore from parsed CLI inputs.
     #[must_use]
     pub fn new(input: CliDatastoreInput) -> Self {
         Self { input }
     }
 
-    /// Parsed input model used to build each configuration snapshot.
+    /// Returns the parsed input model for each configuration snapshot.
     #[must_use]
     pub fn input(&self) -> &CliDatastoreInput {
         &self.input
@@ -74,7 +73,7 @@ impl ConfigDatastore for CliFileDatastore {
         let mut watcher = RecommendedWatcher::new(
             move |event| {
                 if event_tx.blocking_send(event).is_err() {
-                    log::debug!("CLI file datastore subscriber dropped; exiting watcher callback");
+                    log::debug!("CLI file datastore subscriber dropped; stopping watcher callback");
                 }
             },
             Config::default(),
@@ -109,7 +108,7 @@ impl ConfigDatastore for CliFileDatastore {
                                     .await
                                     .is_err()
                                 {
-                                    log::debug!("CLI file datastore subscriber dropped; exiting");
+                                    log::debug!("CLI file datastore subscriber dropped; stopping");
                                     break;
                                 }
                             }
@@ -165,10 +164,9 @@ fn paths_match(event_path: &Path, watched_path: &Path) -> bool {
         return true;
     }
 
-    // We watch the parent directory (not the file), so `notify` may report a
-    // sibling path that is not byte-identical to `watched_path` (for example a
-    // non-canonicalized form after an atomic rename). Matching on file name plus
-    // parent covers those cases without watching unrelated files.
+    // We watch the parent directory, not the file. After an atomic rename,
+    // `notify` can report a noncanonical form of the same path. Compare the
+    // parent and file name to match it without watching unrelated files.
     event_path.file_name() == watched_path.file_name()
         && event_path.parent() == watched_path.parent()
 }
@@ -190,20 +188,20 @@ mod tests {
     fn temp_config(contents: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
+            .expect("clock must be after epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!("cli-file-datastore-{unique}.json"));
-        fs::write(&path, contents).expect("temp config should be written");
+        fs::write(&path, contents).expect("temporary configuration file must be written");
         path
     }
 
     fn temp_file(prefix: &str, contents: &[u8]) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
+            .expect("clock must be after epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!("cli-file-datastore-{prefix}-{unique}"));
-        fs::write(&path, contents).expect("temp file should be written");
+        fs::write(&path, contents).expect("temporary file must be written");
         path
     }
 
@@ -241,10 +239,10 @@ mod tests {
     {
         let event = timeout(Duration::from_secs(5), futures_util::StreamExt::next(stream))
             .await
-            .expect("change should arrive")
-            .expect("stream should yield change");
+            .expect("change must arrive")
+            .expect("stream must yield a change");
         let tacacsrs_datastore::ConfigChangeEvent::Changed(change) = event else {
-            panic!("expected a changed event");
+            panic!("expected changed event");
         };
         change
     }
@@ -256,9 +254,12 @@ mod tests {
             CliDatastoreInput::new(CliConfigSource::YangFile { path: path.clone() }, "file")
                 .with_debounce(Duration::from_millis(50));
         let datastore = CliFileDatastore::new(input);
-        let mut stream = datastore.subscribe().await.expect("subscribe should work");
+        let mut stream = datastore
+            .subscribe()
+            .await
+            .expect("subscription must succeed");
 
-        fs::write(&path, config("192.0.2.11")).expect("config should update");
+        fs::write(&path, config("192.0.2.11")).expect("configuration file must update");
 
         let change = next_change(&mut stream).await;
         fs::remove_file(path).ok();
@@ -273,14 +274,17 @@ mod tests {
             CliDatastoreInput::new(CliConfigSource::YangFile { path: path.clone() }, "file")
                 .with_debounce(Duration::from_millis(50));
         let datastore = CliFileDatastore::new(input);
-        let mut stream = datastore.subscribe().await.expect("subscribe should work");
+        let mut stream = datastore
+            .subscribe()
+            .await
+            .expect("subscription must succeed");
 
-        fs::write(&path, "not valid JSON").expect("config should update");
+        fs::write(&path, "not valid JSON").expect("configuration file must update");
 
         let event = timeout(Duration::from_secs(5), futures_util::StreamExt::next(&mut stream))
             .await
-            .expect("rejection should arrive")
-            .expect("stream should yield rejection");
+            .expect("rejection must arrive")
+            .expect("stream must yield a rejection");
         fs::remove_file(path).ok();
 
         assert!(matches!(event, ConfigChangeEvent::CandidateRejected));
@@ -333,9 +337,12 @@ mod tests {
         )
         .with_debounce(Duration::from_millis(50));
         let datastore = CliFileDatastore::new(input);
-        let mut stream = datastore.subscribe().await.expect("subscribe should work");
+        let mut stream = datastore
+            .subscribe()
+            .await
+            .expect("subscription must succeed");
 
-        fs::write(&cert_path, b"cert-b").expect("certificate should update");
+        fs::write(&cert_path, b"cert-b").expect("certificate file must update");
 
         let change = next_change(&mut stream).await;
         fs::remove_file(cert_path).ok();

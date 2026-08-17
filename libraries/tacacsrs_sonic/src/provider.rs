@@ -15,7 +15,7 @@ use tacacsrs_credential_resolution::{
 #[cfg(target_os = "linux")]
 use tacacsrs_credential_resolution::{SecretBytes, SymmetricKeyMaterial};
 
-/// Production credential roots used by the SONiC central agent.
+/// Production credential roots for the SONiC central agent.
 #[derive(Clone)]
 pub struct SonicCredentialRoots {
     epsk: PathBuf,
@@ -25,10 +25,10 @@ pub struct SonicCredentialRoots {
 impl SonicCredentialRoots {
     /// Production EPSK provider root.
     pub const DEFAULT_EPSK_ROOT: &'static str = "/etc/sonic/tacacs/credentials/epsk";
-    /// Production ACMS certificate provider root reserved for a later schema revision.
+    /// Production ACMS certificate root reserved for a later schema revision.
     pub const DEFAULT_ACMS_ROOT: &'static str = "/etc/sonic/credentials";
 
-    /// Creates injectable provider roots.
+    /// Creates provider roots that tests can replace.
     #[must_use]
     pub fn new(epsk: impl Into<PathBuf>, acms: impl Into<PathBuf>) -> Self {
         Self {
@@ -66,7 +66,7 @@ impl fmt::Debug for SonicCredentialRoots {
     }
 }
 
-/// Reviewed ownership, mode, and size policy for EPSK objects.
+/// Ownership, mode, and size policy for EPSK objects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SonicCredentialPolicy {
     expected_uid: u32,
@@ -89,7 +89,7 @@ impl SonicCredentialPolicy {
         }
     }
 
-    /// Creates an injectable policy for tests and non-production validation.
+    /// Creates a policy for tests and non-production checks.
     #[must_use]
     pub const fn new(owner_uid: u32, group_gid: u32) -> Self {
         Self {
@@ -101,7 +101,7 @@ impl SonicCredentialPolicy {
         }
     }
 
-    /// Creates production policy that trusts the root-owned directory's group.
+    /// Creates a production policy that trusts the root-owned directory group.
     #[must_use]
     pub const fn production_from_root_group() -> Self {
         Self {
@@ -117,9 +117,9 @@ impl SonicCredentialPolicy {
 /// Sanitized provider initialization failure.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SonicCredentialInitializationError {
-    /// The platform cannot provide the required descriptor-relative filesystem API.
+    /// The platform does not provide the required descriptor-relative file API.
     UnsupportedPlatform,
-    /// The EPSK root could not be opened.
+    /// The provider cannot open the EPSK root.
     RootUnavailable,
     /// The EPSK root metadata violates the configured policy.
     InvalidRootMetadata,
@@ -150,12 +150,12 @@ pub struct SonicCredentialResolver {
 }
 
 impl SonicCredentialResolver {
-    /// Opens and validates the configured provider roots.
+    /// Opens the configured provider roots and makes sure that they are valid.
     ///
     /// # Errors
     ///
-    /// Returns a sanitized error if the platform is unsupported or the EPSK
-    /// root cannot be safely opened under the configured metadata policy.
+    /// Returns a sanitized error if the platform is unsupported. It also
+    /// returns an error if the EPSK root does not satisfy the metadata policy.
     pub fn open(
         roots: SonicCredentialRoots,
         policy: SonicCredentialPolicy,
@@ -180,7 +180,8 @@ impl SonicCredentialResolver {
         }
     }
 
-    /// Creates a provider that opens and validates roots during each reload.
+    /// Creates a provider that opens roots and makes sure that they are valid
+    /// during each reload.
     #[must_use]
     pub fn reloadable(roots: SonicCredentialRoots, policy: SonicCredentialPolicy) -> Self {
         Self {
@@ -435,7 +436,8 @@ mod linux {
                 fs::write(&object_path, [0x42; 48]).expect("replace open inode contents");
             });
 
-            // Map away the secret owner before asserting so a regression cannot print the bytes.
+            // Remove the secret owner before the assertion. This prevents a
+            // regression from printing the bytes.
             assert_eq!(outcome.map(|_| ()).err(), Some(ProviderErrorKind::Unavailable));
         }
 
@@ -454,7 +456,7 @@ mod linux {
             let policy = SonicCredentialPolicy::new(metadata.uid(), metadata.gid());
             let (root, _) = open_root(&root_path, policy).expect("open root");
 
-            // The explicit type is compile-time evidence the read path never yields a plain Vec<u8>.
+            // The explicit type makes sure that this path cannot return a plain Vec<u8>.
             let secret: Zeroizing<Vec<u8>> =
                 read_epsk_with_hook(&root, "good-object", policy, || {}).expect("read object");
             assert_eq!(secret.as_slice(), vec![0x41u8; 32]);

@@ -1,6 +1,6 @@
 # Use cases beyond documentation
 
-STE was built for aircraft maintenance manuals. The same properties — one meaning per word, short sentences, condition-first commands — transfer to any text where misreading has a cost. By the end of Issue 8, 64% of registered STE users were outside aerospace and defense.
+Aerospace and defense manufacturers built STE for aircraft maintenance manuals. The same properties — one meaning per word, short sentences, condition-first commands — transfer to any text where misreading has a cost. By the end of Issue 8, 64% of registered STE users were outside aerospace and defense.
 
 Each case below names the mode and the adaptations.
 
@@ -8,7 +8,10 @@ Each case below names the mode and the adaptations.
 
 Mode: procedural. This is the highest-value target: an error message is a 2 a.m. instruction to a stressed reader.
 
-Pattern: state what happened (past simple), state the cause if known, give the command or condition to fix it.
+Pattern:
+- State what happened, in the simple past.
+- State the cause, if known.
+- Give the command or condition to fix it.
 
 > **Before:** Oops! Something went wrong while attempting to establish a connection. Please ensure your credentials are properly configured and try again.
 > **After:** Connection to the database failed. The password for user `app` was not correct. Set `DB_PASSWORD` and connect again.
@@ -53,7 +56,7 @@ Mode: descriptive, 25-word limit. Non-native readers are the majority of many us
 
 ## Translation and localization prep
 
-Mode: strict. STE's original purpose was making English readable for non-native maintenance crews, and it doubles as pre-editing for machine translation. One meaning per word plus complete grammar (articles, "that") removes most translation ambiguity. If your docs get localized, STE cuts the error rate and the cost.
+Mode: strict. STE's original purpose was to make English readable for non-native maintenance crews, and it doubles as pre-editing for machine translation. One meaning per word plus complete grammar (articles, "that") removes most translation ambiguity. If you localize your docs, STE reduces the error rate and the cost.
 
 ## UI copy and empty states
 

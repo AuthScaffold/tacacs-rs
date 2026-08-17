@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$repo_root"
 
 if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
-  echo "session-wrapper demos require Linux x86_64" >&2
+  echo "The session-wrapper demos require Linux x86_64." >&2
   exit 1
 fi
 
@@ -15,16 +15,16 @@ if [[ "$shell_path" != /* ]]; then
 fi
 
 if [[ ! -x "$shell_path" ]]; then
-  echo "shell is not executable: $shell_path" >&2
+  echo "The shell is not executable: $shell_path" >&2
   exit 1
 fi
 
-echo "[demo] building session-wrapper"
+echo "[demo] Run the build for session-wrapper."
 cargo build -p session-wrapper
 
 cat <<EOF
-[demo] starting an interactive shell under session-wrapper
-[demo] current authorization mode is allow-all; try commands such as:
+[demo] Start an interactive shell under session-wrapper.
+[demo] The current authorization mode is allow-all. Run one of these commands:
 [demo]   id
 [demo]   bash -lc 'echo nested shell works'
 [demo]   exit

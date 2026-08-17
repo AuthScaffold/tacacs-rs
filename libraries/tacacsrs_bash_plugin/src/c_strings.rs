@@ -5,6 +5,8 @@ pub(crate) fn c_string(ptr: *const c_char) -> String {
     if ptr.is_null() {
         String::new()
     } else {
+        // SAFETY: Callers pass pointers from Bash or libc. These pointers remain
+        // valid for this call and identify a NUL-terminated C string.
         unsafe { CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned()
@@ -15,6 +17,9 @@ pub(crate) fn argv_strings(argv: *mut *mut c_char) -> Vec<String> {
     let mut args = Vec::new();
     let mut current = argv;
     while !current.is_null() {
+        // SAFETY: Bash supplies argv as a readable, NUL-terminated pointer
+        // array. Each non-null entry points to a valid C string. The array and
+        // strings remain valid while this function copies them.
         unsafe {
             let arg = *current;
             if arg.is_null() {

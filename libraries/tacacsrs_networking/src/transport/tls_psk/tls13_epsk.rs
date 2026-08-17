@@ -6,7 +6,7 @@ use tacacsrs_config::TacacsPlusServer;
 
 /// The minimum required TLS 1.3 EPSK key length in bytes.
 ///
-/// Per RFC 9257 section 6, PSKs must be at least 128 bits.
+/// RFC 9257 section 6 requires PSKs of at least 128 bits.
 pub(crate) const MIN_PSK_KEY_LENGTH: usize = 16;
 
 /// Returns the inline symmetric key configured for a TLS 1.3 EPSK.
@@ -15,10 +15,10 @@ pub(crate) fn config(server: &TacacsPlusServer) -> Result<&Tls13Epsk> {
         .client_identity
         .as_ref()
         .and_then(|identity| identity.tls13_epsk.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("server has no TLS 1.3 PSK client identity"))
+        .ok_or_else(|| anyhow::anyhow!("Server has no TLS 1.3 PSK client identity"))
 }
 
-/// Returns resolved central or inline symmetric key bytes.
+/// Returns the resolved central or inline symmetric key bytes.
 pub(crate) fn symmetric_key(server: &TacacsPlusServer) -> Result<&[u8]> {
     let secret = config(server)?
         .inline_definition
@@ -41,14 +41,14 @@ pub(crate) fn validate(server: &TacacsPlusServer) -> Result<()> {
 
     if epsk.external_identity.contains('\0') {
         bail!(
-            "PSK identity must not contain NUL bytes (identity is passed to OpenSSL as a byte string)"
+            "PSK identity must not contain NUL bytes because OpenSSL receives it as a byte string"
         );
     }
 
     let key = symmetric_key(server)?;
     if key.len() < MIN_PSK_KEY_LENGTH {
         bail!(
-            "PSK key must be at least {} bytes (128 bits), per RFC 9257 section 6; got {} bytes",
+            "PSK key must be at least {} bytes (128 bits) as required by RFC 9257 section 6; got {} bytes",
             MIN_PSK_KEY_LENGTH,
             key.len()
         );

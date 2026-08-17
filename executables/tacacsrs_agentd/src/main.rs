@@ -44,9 +44,9 @@ fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
 
 /// Initializes the logger based on verbosity level.
 ///
-/// When built with the `console` feature, the tokio-console tracing
-/// subscriber is used instead of `env_logger`, enabling real-time async
-/// runtime profiling via the `tokio-console` tool.
+/// When built with the `console` feature, the daemon uses the tokio-console
+/// tracing subscriber instead of `env_logger`. This subscriber gives real-time
+/// async runtime profiling with the `tokio-console` tool.
 #[cfg(feature = "console")]
 fn init_logger(_verbose: u8) {
     console_subscriber::init();
@@ -114,7 +114,9 @@ async fn wait_for_sonic_forwarder(
         if let Ok(forwarder) = load {
             return Ok(forwarder);
         }
-        log::warn!("SONiC forwarder settings are unavailable; retrying before bind");
+        log::warn!(
+            "SONiC forwarder configuration is unavailable. The daemon retries before it binds."
+        );
         tokio::select! {
             () = tokio::time::sleep(delay) => {}
             signal = bootstrap_shutdown_signal() => {
@@ -208,22 +210,23 @@ fn cli_psk_inputs(cli: &Cli) -> Option<CliPskInputs> {
     })
 }
 
-/// Construct the [`ConfigDatastore`] selected by the operator on the CLI.
+/// Constructs the [`ConfigDatastore`] selected by the operator on the CLI.
 ///
-/// File and CLI flag inputs are wrapped in a file-backed CLI datastore so YANG
-/// config and CLI-provided TLS certificate/key files can trigger hot reloads.
+/// This function wraps file and CLI flag inputs in a file-backed CLI datastore.
+/// As a result, YANG configuration and CLI-provided TLS certificate and key
+/// files can trigger hot reloads.
 /// `--sonic` selects the SONiC ConfigDB-backed datastore.
 ///
-/// Construction is infallible: every datastore validates its configuration
-/// lazily in [`ConfigDatastore::load`], so configuration errors surface when
-/// the daemon performs its initial load rather than here.
+/// Construction cannot fail. Each datastore validates its configuration lazily
+/// in [`ConfigDatastore::load`]. As a result, configuration errors surface
+/// during the daemon's initial load, not during construction.
 fn build_datastore(
     cli: &Cli,
     sonic_forwarder: Option<tacacsrs_sonic::SonicForwarderSettings>,
 ) -> Arc<dyn ConfigDatastore> {
     if cli.sonic {
         let settings = sonic_connection_from_cli(cli);
-        log::info!("Configured SONiC ConfigDB datastore (database index {})", settings.db_index);
+        log::info!("SONiC ConfigDB datastore uses database index {}", settings.db_index);
         return Arc::new(match sonic_forwarder {
             Some(forwarder) => SonicConfigDb::with_bound_forwarder(settings, forwarder),
             None => SonicConfigDb::new(settings),
@@ -231,7 +234,7 @@ fn build_datastore(
     }
 
     if let Some(ref config_path) = cli.config {
-        log::info!("Loading YANG JSON configuration from {}", config_path.display());
+        log::info!("Loading the YANG JSON configuration file at {}", config_path.display());
         return Arc::new(CliFileDatastore::new(CliDatastoreInput::new(
             CliConfigSource::YangFile {
                 path: config_path.clone(),
@@ -305,9 +308,9 @@ async fn run_supervised_service(
 /// Coordinates the service, host integration, and configuration supervisor as
 /// peers so that an unexpected exit of any one of them is observed immediately.
 ///
-/// The configuration supervisor is critical: if it returns, errors, or panics
-/// while the service is still serving, the runtime would otherwise keep serving
-/// stale configuration, so this is fatal.
+/// The configuration supervisor is critical. If it returns, errors, or panics
+/// while the service still serves requests, the runtime keeps serving stale
+/// configuration. This is fatal.
 async fn supervise_tasks(
     service_future: impl std::future::Future<Output = anyhow::Result<()>>,
     mut host_task: tokio::task::JoinHandle<anyhow::Result<()>>,
@@ -330,7 +333,7 @@ async fn supervise_tasks(
         }
         result = &mut supervisor_task => {
             supervisor_task_completed = true;
-            // Publish a typed failure without embedding the underlying config or credential error.
+            // Publish a typed failure without embedding the underlying configuration or credential error.
             health.set_lifecycle(RuntimeLifecycle::Failed);
             Err(supervisor_exit_to_fatal_error(result))
         }
@@ -383,9 +386,9 @@ fn build_credential_provider(cli: &Cli) -> CredentialProvider {
 
 /// Starts the central TACACS+ client service process.
 ///
-/// The service listens on the configured local IPC endpoint, maintains
-/// persistent upstream TACACS+ connections with ordered failover, and shuts
-/// down gracefully when it receives a termination signal.
+/// The service listens on the configured local IPC endpoint. It maintains
+/// persistent upstream TACACS+ connections with ordered failover. It stops in
+/// an orderly manner when it receives a termination signal.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -683,10 +686,10 @@ mod tests {
     fn write_temp_config(contents: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
+            .expect("clock must be after epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!("agentd-config-test-{unique}.json"));
-        fs::write(&path, contents).expect("temp config should be written");
+        fs::write(&path, contents).expect("temporary configuration file must be written");
         path
     }
 
@@ -716,7 +719,7 @@ mod tests {
         );
 
         let root = tacacs_plus_from_file(&path, &ValidationOptions::default())
-            .expect("config file should load");
+            .expect("configuration file must load");
         fs::remove_file(&path).ok();
 
         assert_eq!(root.server.len(), 2);
@@ -742,7 +745,7 @@ mod tests {
         ]);
 
         let root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
-            .expect("plain-text shared secret should load");
+            .expect("plain-text shared secret must load");
         assert_eq!(
             root.server[0]
                 .shared_secret
@@ -763,7 +766,7 @@ mod tests {
         ]);
 
         let root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
-            .expect("CLI config should load");
+            .expect("CLI configuration must load");
         assert!(root.server[0].single_connection);
     }
 
@@ -779,7 +782,7 @@ mod tests {
         ]);
 
         let root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
-            .expect("CLI config should load");
+            .expect("CLI configuration must load");
         assert!(!root.server[0].single_connection);
     }
 
@@ -897,19 +900,19 @@ mod tests {
             "192.0.2.20:49",
             "--use-tls",
             "--client-certificate",
-            cert_path.to_str().expect("path should be UTF-8"),
+            cert_path.to_str().expect("path must be UTF-8"),
             "--client-key",
-            key_path.to_str().expect("path should be UTF-8"),
+            key_path.to_str().expect("path must be UTF-8"),
         ]);
 
         let root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
-            .expect("PEM client identity should load");
+            .expect("PEM client identity must load");
         let inline = root.server[0]
             .client_identity
             .as_ref()
             .and_then(|identity| identity.certificate.as_ref())
             .and_then(|certificate| certificate.inline_definition.as_ref())
-            .expect("inline certificate definition should be present");
+            .expect("inline certificate definition must be present");
 
         assert_eq!(inline.cert_data.as_deref(), Some(expected_cert_der.as_slice()));
         assert_eq!(
@@ -924,7 +927,7 @@ mod tests {
 
     fn tls13_epsk_groups(cli: &Cli) -> Vec<PskDheKeSupportedGroup> {
         let mut root = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(cli))
-            .expect("PSK config should build");
+            .expect("PSK configuration must build");
         root.server
             .remove(0)
             .client_identity
@@ -1010,7 +1013,7 @@ mod tests {
         ]);
 
         let error = tacacs_plus_from_cli_input(&cli_datastore_input_from_cli(&cli))
-            .expect_err("PSK-only plus groups should fail");
+            .expect_err("PSK-only plus groups must fail");
         assert!(error.to_string().contains("--psk-key-exchange psk-only"));
         assert!(error.to_string().contains("--psk-key-exchange-groups"));
     }

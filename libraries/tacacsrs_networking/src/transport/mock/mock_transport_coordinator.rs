@@ -1,4 +1,4 @@
-//! The [`MockTransportCoordinator`] — the test-facing control handle for the mock transport.
+//! Test control handle for the mock transport.
 //!
 //! See the [module-level documentation](super) for the overall architecture.
 
@@ -19,9 +19,9 @@ use super::mock_state::{MockState, ReplyConfig};
 
 /// Builder for registering accounting reply packets on a [`MockTransportCoordinator`].
 ///
-/// Created via [`MockTransportCoordinator::accounting_reply`] or
+/// Create this builder through [`MockTransportCoordinator::accounting_reply`] or
 /// [`MockTransportCoordinator::accounting_reply_for_id`]. Call [`send`](Self::send)
-/// to finalize construction and register the reply.
+/// to finish construction and register the reply.
 ///
 /// # Defaults
 ///
@@ -43,8 +43,9 @@ pub(crate) struct MockAccountingReplyBuilder<'a> {
 impl<'a> MockAccountingReplyBuilder<'a> {
     /// Overrides the default flags on the reply packet header.
     ///
-    /// By default the builder uses [`TAC_PLUS_UNENCRYPTED_FLAG`](TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG).
-    /// Calling this **replaces** the flags entirely.
+    /// The default is
+    /// [`TAC_PLUS_UNENCRYPTED_FLAG`](TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG).
+    /// This method replaces all flags.
     #[must_use]
     pub(crate) const fn with_flags(mut self, flags: TacacsFlags) -> Self {
         self.flags = flags;
@@ -68,9 +69,8 @@ impl<'a> MockAccountingReplyBuilder<'a> {
 
     /// Obfuscates the reply packet before registering it.
     ///
-    /// The mock transport replays raw bytes without deobfuscation, so
-    /// an obfuscated reply must be pre-obfuscated to match what a real
-    /// TACACS+ server would send.
+    /// The mock transport replays raw bytes without deobfuscation. Thus, callers
+    /// must obfuscate a reply before registration to simulate a TACACS+ server.
     #[must_use]
     pub(crate) const fn with_obfuscation_key(mut self, key: &'a [u8]) -> Self {
         self.obfuscation_key = Some(key);
@@ -92,11 +92,10 @@ impl<'a> MockAccountingReplyBuilder<'a> {
         }
     }
 
-    /// Builds the accounting reply packet and returns it without registering.
+    /// Builds the accounting reply packet without registering it.
     ///
-    /// This is useful when a test needs to register the packet under a
-    /// different session ID or sequence number than the one in the header
-    /// (e.g. to test header-mismatch error handling).
+    /// Use this when a test must register the packet with metadata that differs
+    /// from its header. For example, this can test header-mismatch errors.
     /// # Errors
     /// Returns an error if the reply packet cannot be constructed.
     #[allow(clippy::cast_possible_truncation)] // body length bounded by u16 field sizes
@@ -125,9 +124,9 @@ impl<'a> MockAccountingReplyBuilder<'a> {
 
 /// Builder for registering authorization reply packets on a [`MockTransportCoordinator`].
 ///
-/// Created via [`MockTransportCoordinator::authorization_reply`] or
+/// Create this builder through [`MockTransportCoordinator::authorization_reply`] or
 /// [`MockTransportCoordinator::authorization_reply_for_id`]. Call [`send`](Self::send)
-/// to finalize construction and register the reply.
+/// to finish construction and register the reply.
 ///
 /// # Defaults
 ///
@@ -149,8 +148,9 @@ pub(crate) struct MockAuthorizationReplyBuilder<'a> {
 impl<'a> MockAuthorizationReplyBuilder<'a> {
     /// Overrides the default flags on the reply packet header.
     ///
-    /// By default the builder uses [`TAC_PLUS_UNENCRYPTED_FLAG`](TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG).
-    /// Calling this **replaces** the flags entirely.
+    /// The default is
+    /// [`TAC_PLUS_UNENCRYPTED_FLAG`](TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG).
+    /// This method replaces all flags.
     #[must_use]
     pub(crate) const fn with_flags(mut self, flags: TacacsFlags) -> Self {
         self.flags = flags;
@@ -174,9 +174,8 @@ impl<'a> MockAuthorizationReplyBuilder<'a> {
 
     /// Obfuscates the reply packet before registering it.
     ///
-    /// The mock transport replays raw bytes without deobfuscation, so
-    /// an obfuscated reply must be pre-obfuscated to match what a real
-    /// TACACS+ server would send.
+    /// The mock transport replays raw bytes without deobfuscation. Thus, callers
+    /// must obfuscate a reply before registration to simulate a TACACS+ server.
     #[must_use]
     pub(crate) const fn with_obfuscation_key(mut self, key: &'a [u8]) -> Self {
         self.obfuscation_key = Some(key);
@@ -198,11 +197,10 @@ impl<'a> MockAuthorizationReplyBuilder<'a> {
         }
     }
 
-    /// Builds the authorization reply packet and returns it without registering.
+    /// Builds the authorization reply packet without registering it.
     ///
-    /// This is useful when a test needs to register the packet under a
-    /// different session ID or sequence number than the one in the header
-    /// (e.g. to test header-mismatch error handling).
+    /// Use this when a test must register the packet with metadata that differs
+    /// from its header. For example, this can test header-mismatch errors.
     /// # Errors
     /// Returns an error if the reply packet cannot be constructed.
     #[allow(clippy::cast_possible_truncation)] // body length bounded by reply field sizes
@@ -231,17 +229,16 @@ impl<'a> MockAuthorizationReplyBuilder<'a> {
 
 /// Control handle for configuring and inspecting a [`super::MockTransport`].
 ///
-/// Obtained via [`MockTransport::coordinator()`](super::MockTransport::coordinator).
-/// This handle shares the same `MockState` as the transport, connected through an
-/// `Arc<Mutex<..>>`. It can be held independently from the transport instance that
-/// is consumed by `MultiplexedConnection`, so tests do not need to clone the
-/// transport itself.
+/// Get this handle through
+/// [`MockTransport::coordinator()`](super::MockTransport::coordinator). An
+/// `Arc<Mutex<..>>` shares `MockState` with the transport. Tests can keep this
+/// handle after `MultiplexedConnection` consumes the transport.
 ///
 /// # Concurrency
 ///
-/// All methods acquire the shared async mutex, so it is safe to call these
-/// **while the connection is running** (e.g. to add a reply mid-conversation).
-/// The mutex is held only for the duration of the `HashMap` insert/lookup.
+/// All methods acquire the shared async mutex. You can call them while the
+/// connection runs, including during a conversation. Each method holds the
+/// mutex only for a `HashMap` operation.
 #[derive(Clone, Debug)]
 pub(crate) struct MockTransportCoordinator {
     /// Shared state with the write processor task.
@@ -249,8 +246,8 @@ pub(crate) struct MockTransportCoordinator {
 }
 
 impl MockTransportCoordinator {
-    /// Registers a reply packet that will be sent when the write processor
-    /// receives a request for the same `session_id` with `seq_no - 1`.
+    /// Registers a reply packet. The write processor sends it when it
+    /// receives a request with the same `session_id` and `seq_no - 1`.
     ///
     /// The session ID and sequence number are extracted from the packet header.
     /// # Errors
@@ -258,22 +255,21 @@ impl MockTransportCoordinator {
     pub(crate) async fn add_reply(&self, reply: Packet) -> anyhow::Result<()> {
         let session_id = reply.header().session_id;
         let seq_no = reply.header().seq_no;
-        log::info!("mock coordinator: registering reply for session {session_id} seq_no {seq_no}");
+        log::info!("Mock coordinator: registering reply for session {session_id}, seq_no {seq_no}");
         self.add_reply_bytes(session_id, seq_no, reply.to_bytes())
             .await
     }
 
-    /// Registers raw pre-serialised reply bytes for a given session and sequence number.
+    /// Registers raw serialized reply bytes for a session and sequence number.
     ///
-    /// This is the low-level building block used by the other `add_reply*` methods.
-    /// Use this when you need full control over the byte representation (e.g. to
-    /// test malformed packets).
+    /// The other `add_reply*` methods use this method. Use it to control the byte
+    /// representation, such as when a test requires a malformed packet.
     ///
     /// # Arguments
     ///
     /// * `session_id` — the TACACS+ session ID the reply belongs to.
     /// * `seq_no` — the sequence number of the reply (must be `request_seq + 1`).
-    /// * `reply_bytes` — the complete serialised packet bytes.
+    /// * `reply_bytes` — the complete serialized packet bytes.
     /// # Errors
     /// This method is infallible but returns `Result` for API consistency.
     pub(crate) async fn add_reply_bytes(
@@ -283,7 +279,7 @@ impl MockTransportCoordinator {
         reply_bytes: Vec<u8>,
     ) -> anyhow::Result<()> {
         log::info!(
-            "mock coordinator: registering raw reply bytes ({} bytes) for session {session_id} seq_no {seq_no}",
+            "Mock coordinator: registering {} raw reply byte(s) for session {session_id}, seq_no {seq_no}",
             reply_bytes.len()
         );
         let mut state = self.state.lock().await;
@@ -299,10 +295,10 @@ impl MockTransportCoordinator {
         Ok(())
     }
 
-    /// Registers a reply packet that will be delivered after a specified delay.
+    /// Registers a reply packet with a specified delivery delay.
     ///
-    /// Useful for testing timeout behaviour — the write processor spawns a task
-    /// that sleeps for `delay` before sending the reply bytes.
+    /// Use this method to test timeout behavior. The write processor waits for
+    /// `delay` before it sends the reply bytes.
     /// # Errors
     /// This method is infallible but returns `Result` for API consistency.
     pub(crate) async fn add_reply_with_delay(
@@ -311,7 +307,7 @@ impl MockTransportCoordinator {
         delay: Duration,
     ) -> anyhow::Result<()> {
         log::info!(
-            "mock coordinator: registering delayed reply ({delay:?}) for session {} seq_no {}",
+            "Mock coordinator: registering delayed reply ({delay:?}) for session {}, seq_no {}",
             reply.header().session_id,
             reply.header().seq_no
         );
@@ -356,10 +352,9 @@ impl MockTransportCoordinator {
     /// Creates a [`MockAccountingReplyBuilder`] for registering an accounting
     /// reply for a known `session_id`.
     ///
-    /// This is the counterpart of [`accounting_reply`](Self::accounting_reply)
-    /// for callers that do not have a [`Session`] reference — e.g. when
-    /// testing [`DedicatedConnection`](crate::runtime::DedicatedConnection) with a
-    /// predetermined session ID.
+    /// Use this instead of [`accounting_reply`](Self::accounting_reply) when no
+    /// [`SharedSession`] is available. For example, dedicated-connection tests
+    /// can use a predetermined session ID.
     #[must_use]
     pub(crate) const fn accounting_reply_for_id<'a>(
         &'a self,
@@ -406,10 +401,9 @@ impl MockTransportCoordinator {
     /// Creates a [`MockAuthorizationReplyBuilder`] for registering an authorization
     /// reply for a known `session_id`.
     ///
-    /// This is the counterpart of [`authorization_reply`](Self::authorization_reply)
-    /// for callers that do not have a [`Session`] reference - e.g. when
-    /// testing [`DedicatedConnection`](crate::runtime::DedicatedConnection) with a
-    /// predetermined session ID.
+    /// Use this instead of [`authorization_reply`](Self::authorization_reply)
+    /// when no [`SharedSession`] is available. For example,
+    /// dedicated-connection tests can use a predetermined session ID.
     #[must_use]
     pub(crate) const fn authorization_reply_for_id<'a>(
         &'a self,
@@ -430,14 +424,13 @@ impl MockTransportCoordinator {
 
     /// Returns all request packets captured for the given `session_id`.
     ///
-    /// The returned map is keyed by sequence number. These are the packets that
-    /// the connection actually wrote through the transport.
+    /// The returned map is keyed by sequence number. It contains the packets
+    /// that the connection wrote to the transport.
     ///
-    /// **Note:** The mock transport does **not** deobfuscate packets — it
-    /// operates like a network capture (pcap). If the connection under test
-    /// uses an obfuscation key, the packet bodies returned here will still
-    /// be obfuscated. Call [`Packet::to_deobfuscated`] with the appropriate
-    /// key if you need to inspect cleartext content.
+    /// The mock transport does not deobfuscate packets. It operates like a
+    /// network capture. If the connection uses an obfuscation key, the returned
+    /// packet bodies remain obfuscated. Call [`Packet::to_deobfuscated`] with the
+    /// correct key before you inspect cleartext content.
     ///
     /// # Errors
     ///
@@ -452,18 +445,15 @@ impl MockTransportCoordinator {
 
         let count = result.as_ref().map_or(0, std::collections::HashMap::len);
         log::debug!(
-            "mock coordinator: get_requests_for_session({session_id}) → {count} request(s)"
+            "Mock coordinator: get_requests_for_session({session_id}) returned {count} request(s)"
         );
-        result.ok_or_else(|| {
-            anyhow::anyhow!("No requests recorded for session {session_id} (session not seen)")
-        })
+        result.ok_or_else(|| anyhow::anyhow!("No requests were recorded for session {session_id}"))
     }
 
-    /// Returns **unconsumed** reply packets still configured for the given `session_id`.
+    /// Returns unconsumed reply packets for the specified `session_id`.
     ///
-    /// Replies that have already been matched and sent by the write processor
-    /// are removed from the map and will **not** appear here. This is useful
-    /// for verifying that all expected replies were actually consumed.
+    /// The write processor removes replies after it matches and sends them.
+    /// Use this method to make sure that all expected replies were consumed.
     ///
     /// # Errors
     ///
@@ -476,16 +466,12 @@ impl MockTransportCoordinator {
         let configured = state
             .replies
             .get(&session_id)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No replies configured for session {session_id} (session not found)"
-                )
-            })?
+            .ok_or_else(|| anyhow::anyhow!("No replies are configured for session {session_id}"))?
             .clone();
         drop(state);
 
         log::debug!(
-            "mock coordinator: get_replies_for_session({session_id}) → {} unconsumed reply(ies)",
+            "Mock coordinator: get_replies_for_session({session_id}) returned {} unconsumed reply(ies)",
             configured.len()
         );
 

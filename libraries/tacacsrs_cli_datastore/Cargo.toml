@@ -1,6 +1,6 @@
 [package]
 name = "tacacsrs-cli-datastore"
-description = "CLI and file-backed datastore for TACACS+ configuration inputs."
+description = "A datastore for TACACS+ configuration from a CLI or configuration file."
 version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true

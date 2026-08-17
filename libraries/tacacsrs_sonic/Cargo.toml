@@ -1,6 +1,6 @@
 [package]
 name = "tacacsrs-sonic"
-description = "SONiC ConfigDB datastore backend for tacacsrs-agentd: maps the SONiC TACPLUS / TACPLUS_SERVER tables to the ietf-system-tacacs-plus YANG model."
+description = "Maps SONiC ConfigDB TACPLUS and TACPLUS_SERVER data to the ietf-system-tacacs-plus YANG model."
 version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true

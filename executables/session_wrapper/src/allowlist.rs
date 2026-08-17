@@ -4,9 +4,9 @@
 //!
 //! Every `execve`/`execveat` system call in the wrapped session triggers a
 //! seccomp user notification that pauses the target process until the supervisor
-//! responds. For commands that are definitively safe (shells, basic utilities
-//! bash invokes internally), waiting for a round-trip to the TACACS+ agent adds
-//! latency without meaningful security benefit.
+//! responds. Some commands are definitively safe, such as shells and basic
+//! utilities that bash invokes internally. For these commands, a round-trip to
+//! the TACACS+ agent adds latency without meaningful security benefit.
 //!
 //! The allowlist provides an O(1) short-circuit: if the executable path is in
 //! the set, the supervisor immediately responds with "continue" and never
@@ -14,12 +14,12 @@
 //!
 //! # Security scope
 //!
-//! The allowlist is a **trust-by-path** mechanism. It does **not** verify file
-//! integrity (no hash checking). Entries should be limited to paths that:
+//! The allowlist is a **trust-by-path** mechanism. It does **not** make sure that
+//! file contents are unchanged (no hash comparison). Entries must be limited to paths that:
 //!
 //! 1. Are owned by root and not writable by the session user.
-//! 2. Are utilities so fundamental that denying them would break basic shell
-//!    operation (e.g. `/bin/bash` when bash is the configured shell).
+//! 2. Are utilities so fundamental that denying them breaks basic shell
+//!    operation. For example, `/bin/bash` is required when bash is the configured shell.
 //!
 //! # Built-in defaults
 //!
@@ -27,14 +27,14 @@
 //! `src/builtin_allowlist.txt` via [`include_str!`]. This means:
 //!
 //! - The list is embedded in the binary (no runtime file dependency).
-//! - Changes to the file trigger a recompile, keeping it version-tracked
-//!   alongside the code but in a dedicated, operator-readable file.
+//! - Changes to the file trigger a recompile. The file stays version-tracked
+//!   alongside the code, in a dedicated, operator-readable location.
 //! - Security reviewers can audit the list independently of the surrounding
 //!   Rust code.
 //!
-//! # Operator config file format
+//! # Operator configuration file format
 //!
-//! The optional user-supplied config file uses the same format as
+//! The optional user-supplied configuration file uses the same format as
 //! `builtin_allowlist.txt`:
 //!
 //! ```text
@@ -45,7 +45,7 @@
 //!
 //! Blank lines and lines beginning with `#` are ignored. Only absolute paths
 //! (starting with `/`) are accepted. Built-in defaults are always active and
-//! cannot be removed via the config file.
+//! cannot be removed via the configuration file.
 
 use std::collections::HashSet;
 use std::fs;
@@ -55,10 +55,10 @@ use anyhow::{Context, Result};
 
 /// Built-in allowlist source, embedded at compile time from `builtin_allowlist.txt`.
 ///
-/// The file uses the same format as the operator config file: one absolute
-/// path per line, `#` comments, blank lines ignored. Embedding it with
-/// [`include_str!`] means any edit to the file forces a recompile, keeping
-/// the policy data version-tracked separately from the surrounding Rust code.
+/// The file uses the same format as the operator configuration file: one
+/// absolute path per line, `#` comments, and blank lines. Embedding it with
+/// [`include_str!`] means any edit to the file forces a recompile. The policy
+/// data stays version-tracked separately from the surrounding Rust code.
 const BUILTIN_ALLOWLIST_SRC: &str = include_str!("builtin_allowlist.txt");
 
 /// Parses a plain-text allowlist source into a set of absolute paths.
@@ -67,7 +67,7 @@ const BUILTIN_ALLOWLIST_SRC: &str = include_str!("builtin_allowlist.txt");
 /// start with `/` are skipped with a warning (they are not absolute paths).
 ///
 /// This function is used both for the built-in compile-time source and for
-/// operator-supplied config files so that the parsing logic is consistent.
+/// operator-supplied configuration files so that the parsing logic is consistent.
 fn parse_allowlist_source(src: &str, source_label: &str) -> HashSet<String> {
     let mut paths = HashSet::new();
 
@@ -97,7 +97,7 @@ fn parse_allowlist_source(src: &str, source_label: &str) -> HashSet<String> {
 ///
 /// # Construction
 ///
-/// Use [`Allowlist::default_only`] when no config file is provided, or
+/// Use [`Allowlist::default_only`] when no configuration file is provided, or
 /// [`Allowlist::load`] to merge a user-supplied file with the built-in
 /// defaults.
 #[derive(Debug)]
@@ -112,7 +112,7 @@ impl Allowlist {
     /// The built-in paths are parsed from [`BUILTIN_ALLOWLIST_SRC`], which is
     /// embedded at compile time from `src/builtin_allowlist.txt`.
     ///
-    /// This is the fallback when the operator has not supplied a config file.
+    /// This is the fallback when the operator does not supply a configuration file.
     pub(crate) fn default_only() -> Self {
         let paths = parse_allowlist_source(BUILTIN_ALLOWLIST_SRC, "builtin_allowlist.txt");
         Self { paths }
@@ -124,8 +124,8 @@ impl Allowlist {
     /// # File format
     ///
     /// Each line is an absolute path. Lines beginning with `#` and blank lines
-    /// are ignored. Paths are not validated — if an entry does not match an
-    /// actual file, it is simply never matched.
+    /// are ignored. Paths are not validated. A submitted path matches when its
+    /// text is identical to an allowlist entry.
     ///
     /// # Errors
     ///
@@ -151,8 +151,8 @@ impl Allowlist {
         Ok(allowlist)
     }
 
-    /// Returns `true` if `path` is on the allowlist and should be permitted
-    /// to execute without a TACACS+ authorization round-trip.
+    /// Returns `true` when `path` is on the allowlist. An allowed path runs
+    /// without a TACACS+ authorization round-trip.
     ///
     /// The lookup is O(1) average-case (hash table). The path is matched
     /// exactly — no glob expansion, no symlink resolution.
@@ -169,7 +169,7 @@ mod tests {
 
     use super::{Allowlist, BUILTIN_ALLOWLIST_SRC};
 
-    /// Returns the built-in paths parsed from the embedded source, mirroring
+    /// Returns the built-in paths parsed from the embedded source. This mirrors
     /// the logic in `default_only()`. Tests use this instead of a hard-coded
     /// list so they stay in sync with `builtin_allowlist.txt` automatically.
     fn builtin_paths() -> impl Iterator<Item = &'static str> {
@@ -185,19 +185,16 @@ mod tests {
     fn default_only_contains_all_builtin_paths() {
         let al = Allowlist::default_only();
         for path in builtin_paths() {
-            assert!(
-                al.is_allowed(path),
-                "built-in path {path:?} should be in the default allowlist"
-            );
+            assert!(al.is_allowed(path), "built-in path {path:?} is not in the default allowlist");
         }
     }
 
     #[test]
     fn default_only_rejects_arbitrary_path() {
         let al = Allowlist::default_only();
-        assert!(!al.is_allowed("/usr/bin/vim"), "arbitrary path should not match");
-        assert!(!al.is_allowed(""), "empty string should not match");
-        assert!(!al.is_allowed("/"), "root should not match");
+        assert!(!al.is_allowed("/usr/bin/vim"), "the arbitrary path matched");
+        assert!(!al.is_allowed(""), "the empty string matched");
+        assert!(!al.is_allowed("/"), "the root path matched");
     }
 
     // ── load ────────────────────────────────────────────────────────────────
@@ -208,10 +205,10 @@ mod tests {
         writeln!(tmp, "/usr/local/bin/my-tool").expect("write");
         writeln!(tmp, "/opt/vendor/helper").expect("write");
 
-        let al = Allowlist::load(tmp.path()).expect("load should succeed");
+        let al = Allowlist::load(tmp.path()).expect("the allowlist failed to load");
 
-        assert!(al.is_allowed("/usr/local/bin/my-tool"), "user entry should match");
-        assert!(al.is_allowed("/opt/vendor/helper"), "second user entry should match");
+        assert!(al.is_allowed("/usr/local/bin/my-tool"), "the user entry does not match");
+        assert!(al.is_allowed("/opt/vendor/helper"), "the second user entry does not match");
     }
 
     #[test]
@@ -219,10 +216,13 @@ mod tests {
         let mut tmp = NamedTempFile::new().expect("tempfile");
         writeln!(tmp, "/custom/path").expect("write");
 
-        let al = Allowlist::load(tmp.path()).expect("load should succeed");
+        let al = Allowlist::load(tmp.path()).expect("the allowlist failed to load");
 
         for path in builtin_paths() {
-            assert!(al.is_allowed(path), "builtin {path:?} must survive loading a config file");
+            assert!(
+                al.is_allowed(path),
+                "builtin {path:?} must survive loading a configuration file"
+            );
         }
     }
 
@@ -235,9 +235,9 @@ mod tests {
         writeln!(tmp, "/valid/path").expect("write");
         writeln!(tmp, "# another comment").expect("write");
 
-        let al = Allowlist::load(tmp.path()).expect("load should succeed");
+        let al = Allowlist::load(tmp.path()).expect("the allowlist failed to load");
 
-        assert!(al.is_allowed("/valid/path"), "valid path should be allowed");
+        assert!(al.is_allowed("/valid/path"), "the valid path is not allowed");
         assert!(!al.is_allowed("# This is a comment"), "comment line must not be a path entry");
     }
 
@@ -248,7 +248,7 @@ mod tests {
         writeln!(tmp, "./also-relative").expect("write");
         writeln!(tmp, "/absolute/path").expect("write");
 
-        let al = Allowlist::load(tmp.path()).expect("load should succeed");
+        let al = Allowlist::load(tmp.path()).expect("the allowlist failed to load");
 
         assert!(!al.is_allowed("relative/path"), "relative path must be skipped");
         assert!(!al.is_allowed("./also-relative"), "dot-relative path must be skipped");
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn load_returns_error_for_missing_file() {
         let result = Allowlist::load(std::path::Path::new("/nonexistent/path/to/allowlist"));
-        assert!(result.is_err(), "missing file should return an error");
+        assert!(result.is_err(), "the missing file did not return an error");
     }
 
     // ── builtin_allowlist.txt content ────────────────────────────────────────
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn builtin_allowlist_contains_required_shell_infrastructure() {
         // These paths are required for a minimal interactive bash session.
-        // This test pins the minimum set; builtin_allowlist.txt may contain more.
+        // This test pins the minimum set. builtin_allowlist.txt can contain more.
         let required = ["/bin/bash", "/bin/sh", "/usr/bin/env", "/usr/bin/id"];
         let al = Allowlist::default_only();
         for path in required {
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn is_allowed_is_case_sensitive() {
         let al = Allowlist::default_only();
-        // Built-in paths are all lowercase; capitalized variant must not match.
+        // Built-in paths are all lowercase. The capitalized variant must not match.
         assert!(!al.is_allowed("/Bin/Bash"), "lookup must be case-sensitive");
     }
 

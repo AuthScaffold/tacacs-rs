@@ -1,15 +1,15 @@
 [Unit]
-Description=Central TACACS+ client service for local consumers (SONiC)
+Description=Local TACACS+ client service for SONiC
 Documentation=https://github.com/AuthScaffold/tacacs-rs
-# SONiC stores configuration in Redis (CONFIG_DB). Ordering normally avoids an
-# initial retry, but the daemon also survives database startup and restarts.
+# SONiC stores configuration in Redis CONFIG_DB.
+# The ordering usually prevents an initial retry.
+# The daemon also tolerates database starts and restarts.
 After=database.service network-online.target
 Wants=database.service network-online.target
 
 [Service]
-# Keep the unit in "activating" with a clear status line until SONiC pushes
-# the first TACACS+ server into ConfigDB. The daemon emits READY=1 once that
-# initial configuration arrives.
+# The unit stays in "activating" until SONiC supplies the first TACACS+ server.
+# The daemon sends READY=1 after it receives the initial configuration.
 Type=notify
 NotifyAccess=all
 ExecStart=/usr/sbin/tacacsrs-agentd \
@@ -19,7 +19,7 @@ ExecStart=/usr/sbin/tacacsrs-agentd \
     --host-integration systemd \
     -vv
 
-# Recreate the socket after restart and tear it down on stop.
+# Recreate the Unix domain socket after a restart. Remove it after a stop.
 Restart=on-failure
 RestartSec=2s
 RuntimeDirectory=tacacs
@@ -27,13 +27,13 @@ RuntimeDirectoryMode=0755
 TimeoutStartSec=0
 TimeoutStopSec=15s
 
-# SONiC keyspace notifications must be enabled on Redis for hot reload to
-# work. The agent retries subscription setup and reloads before resubscribing
-# after a notification stream ends.
+# Hot reload requires Redis keyspace notifications.
+# The agent retries subscription setup after an error.
+# If a notification stream ends, the agent reloads the configuration before it subscribes again.
 #   redis-cli -n 4 CONFIG SET notify-keyspace-events KEA
 
-# Hardening (loose defaults compatible with SONiC's privileged service model;
-# tighten as appropriate for your image).
+# These hardening defaults support the privileged SONiC service model.
+# If the image supports stricter values, use them.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

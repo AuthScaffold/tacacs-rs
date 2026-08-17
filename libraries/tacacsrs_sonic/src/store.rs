@@ -1,9 +1,8 @@
 //! Async Redis I/O for SONiC ConfigDB.
 //!
-//! This module is a thin wrapper around [`redis::aio::MultiplexedConnection`]
-//! that reads the TACACS+ tables in a single call (`HGETALL` per table key,
-//! preceded by a `KEYS` scan) and exposes a Tokio task that subscribes to
-//! Redis keyspace notifications on `__keyspace@<db>__:TACPLUS*`.
+//! This module wraps [`redis::aio::MultiplexedConnection`]. It reads the
+//! TACACS+ tables in one atomic Redis call. It also provides a Tokio task that
+//! subscribes to `__keyspace@<db>__:TACPLUS*` notifications.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -30,7 +29,7 @@ use crate::mapping::{SonicForwarderSettings, SonicHash, SonicTacacsTables};
 
 /// Default Redis URL when the operator does not override it.
 ///
-/// SONiC ships Redis with a Unix-domain socket at `/var/run/redis/redis.sock`
+/// SONiC ships Redis with a Unix domain socket at `/var/run/redis/redis.sock`
 /// and uses database index `4` for `CONFIG_DB`.
 pub const DEFAULT_REDIS_URL: &str = "unix:///var/run/redis/redis.sock?db=4";
 
@@ -46,7 +45,7 @@ pub const TACPLUS_SERVER_TLS_TABLE: &str = "TACPLUS_SERVER_TLS";
 /// CONFIG_DB key for central-agent bind-time settings.
 pub const TACPLUS_FORWARDER_TABLE: &str = "TACPLUS_FORWARDER";
 
-/// SONiC EPSK filesystem change source kept separate from credential resolution.
+/// SONiC EPSK file change source that is separate from credential resolution.
 #[derive(Debug, Clone)]
 pub struct SonicCredentialChangeSource {
     root: PathBuf,
@@ -80,8 +79,8 @@ pub struct SonicConnection {
     pub url: String,
     /// Database index that holds CONFIG_DB. SONiC defaults to `4`.
     pub db_index: i64,
-    /// Debounce window applied to keyspace notifications. Multiple changes
-    /// arriving within this window are coalesced into a single reload.
+    /// Debounce window for keyspace notifications. One reload handles all
+    /// changes in this window.
     pub debounce: Duration,
     /// EPSK root watched for same-ID atomic replacement.
     pub credential_watch_root: Option<PathBuf>,
@@ -100,7 +99,8 @@ impl Default for SonicConnection {
     }
 }
 
-// The Redis URL can carry credentials and the watch root is an on-disk secret path; keep both out of Debug.
+// The Redis URL can contain credentials. The watch root is a sensitive path.
+// Do not include either value in Debug output.
 impl fmt::Debug for SonicConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SonicConnection")
@@ -116,7 +116,7 @@ impl fmt::Debug for SonicConnection {
 }
 
 impl SonicConnection {
-    /// Open a new multiplexed async connection to ConfigDB.
+    /// Opens a multiplexed asynchronous connection to ConfigDB.
     ///
     /// # Errors
     ///
@@ -133,11 +133,11 @@ impl SonicConnection {
             .arg(self.db_index)
             .query_async::<()>(&mut conn)
             .await
-            .with_context(|| format!("Failed to select SONiC ConfigDB index {}", self.db_index))?;
+            .with_context(|| format!("failed to select SONiC ConfigDB index {}", self.db_index))?;
         Ok(conn)
     }
 
-    /// The keyspace-notification pattern that covers TACPLUS / TACPLUS_SERVER.
+    /// Returns the keyspace pattern that covers TACPLUS tables.
     #[must_use]
     pub fn keyspace_pattern(&self) -> String {
         format!("__keyspace@{}__:TACPLUS*", self.db_index)
@@ -168,18 +168,15 @@ async fn read_forwarder_settings(
     SonicForwarderSettings::from_hash(&fields)
 }
 
-/// Reads the reviewed TACACS+ ConfigDB tables in one atomic, point-in-time
-/// server-side execution.
+/// Reads the supported TACACS+ ConfigDB tables in one atomic Redis operation.
 ///
-/// A single Lua script enumerates only the `TACPLUS*` prefixes and reads every
-/// row so a concurrent ConfigDB mutation cannot produce a torn or hybrid
-/// snapshot the way separate `KEYS` + per-key `HGETALL` calls could.
+/// One Lua script reads all rows with `TACPLUS*` prefixes. A concurrent
+/// ConfigDB update cannot create a mixed snapshot.
 ///
 /// # Errors
 ///
 /// Returns an error if the script fails or the reply is malformed. Missing
-/// tables are not an error — the caller decides whether an empty snapshot
-/// should be rejected (the mapping function rejects it by default).
+/// tables are valid and produce an empty configuration.
 pub async fn read_tacacs_tables(
     conn: &mut MultiplexedConnection,
 ) -> anyhow::Result<SonicTacacsTables> {
@@ -218,9 +215,8 @@ return {
 
 /// Parses the atomic snapshot reply into typed tables.
 ///
-/// Rows can carry secret material (for example a `passkey`), so errors never
-/// echo any ConfigDB value. Malformed shapes are rejected and a row whose hash
-/// is empty is skipped rather than materialized as a phantom default.
+/// Rows can contain secret material such as a `passkey`. Errors do not include
+/// ConfigDB values. The parser rejects malformed shapes and skips empty hashes.
 fn parse_snapshot(reply: redis::Value) -> anyhow::Result<SonicTacacsTables> {
     let redis::Value::Array(mut sections) = reply else {
         bail!("ConfigDB snapshot reply was not an array");
@@ -262,9 +258,9 @@ fn parse_hash(value: redis::Value) -> anyhow::Result<SonicHash> {
     Ok(hash)
 }
 
-/// Parses a `[key, hash, key, hash, ...]` reply keyed by the address portion of
-/// each row, skipping rows whose hash is empty so a vanished key is never
-/// materialized as a phantom default.
+/// Parses a `[key, hash, key, hash, ...]` reply by row address.
+///
+/// The parser skips empty hashes so a removed key does not create a default row.
 fn parse_keyed_hashes(
     value: redis::Value,
     prefix: &str,
@@ -294,8 +290,9 @@ fn parse_keyed_hashes(
     Ok(rows)
 }
 
-/// Converts a scalar Redis value into an owned string without echoing the value
-/// on error, since a row may carry secret material.
+/// Converts a scalar Redis value into an owned string.
+///
+/// Errors do not include the value because a row can contain secret material.
 fn redis_string(value: redis::Value) -> anyhow::Result<String> {
     match value {
         redis::Value::BulkString(bytes) => String::from_utf8(bytes)
@@ -306,18 +303,15 @@ fn redis_string(value: redis::Value) -> anyhow::Result<String> {
     }
 }
 
-/// Spawn a background task that subscribes to TACPLUS keyspace notifications
-/// and forwards a unit signal to the receiver each time a relevant key
-/// changes.
+/// Spawns a task that subscribes to TACPLUS keyspace notifications.
 ///
-/// SONiC requires that keyspace notifications be enabled on the Redis server
-/// (`CONFIG SET notify-keyspace-events KEA` or equivalent in
-/// `/etc/redis/redis.conf`). If notifications are disabled the task will
-/// still run but no events will be delivered.
+/// SONiC requires Redis keyspace notifications. Enable them with
+/// `CONFIG SET notify-keyspace-events KEA` or an equivalent setting in
+/// `/etc/redis/redis.conf`. If notifications are disabled, the task runs but
+/// does not send events.
 ///
-/// The returned receiver yields one signal per coalesced change window. The
-/// task terminates when the receiver is dropped or when the underlying Redis
-/// connection breaks.
+/// The receiver yields one signal for each coalesced change window. The task
+/// stops when the receiver closes or the Redis connection fails.
 ///
 /// # Errors
 ///
@@ -342,13 +336,12 @@ pub async fn spawn_change_notifier(
     let debounce = settings.debounce;
 
     tokio::spawn(async move {
-        log::info!("Subscribed to SONiC ConfigDB keyspace notifications: {pattern}");
+        log::info!("subscribed to SONiC ConfigDB keyspace notifications: {pattern}");
         let mut stream = pubsub.on_message();
         while let Some(msg) = stream.next().await {
             log::debug!("ConfigDB change on channel '{}'", msg.get_channel_name());
 
-            // Debounce: drain any additional events that arrive within the
-            // window so we coalesce bursts into one reload.
+            // Drain events during the debounce window. One reload handles the group.
             if debounce > Duration::ZERO {
                 let deadline = tokio::time::sleep(debounce);
                 tokio::pin!(deadline);
@@ -451,7 +444,7 @@ pub async fn spawn_credential_change_notifier(
             if refresh_root_watch.swap(false, Ordering::AcqRel) {
                 let _ = watcher.unwatch(&root);
                 if root.exists() && watcher.watch(&root, RecursiveMode::NonRecursive).is_err() {
-                    log::warn!("Failed to re-register SONiC EPSK root watch");
+                    log::warn!("failed to register the SONiC EPSK root watch again");
                 }
                 scope = CredentialChangeScope::Unknown;
             }
@@ -795,7 +788,7 @@ mod tests {
 
     #[test]
     fn parse_snapshot_skips_a_row_whose_hash_is_empty() {
-        // A discovered key with an empty hash must never become a phantom default row.
+        // Skip a discovered key with an empty hash.
         let reply = Value::Array(vec![
             Value::Array(vec![]),
             Value::Array(vec![]),

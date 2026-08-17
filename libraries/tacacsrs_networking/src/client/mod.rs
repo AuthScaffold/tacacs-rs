@@ -1,9 +1,8 @@
-//! Preferred client-side TACACS+ session provider.
+//! Client-side TACACS+ session provider.
 //!
 //! [`TacacsClient`] owns transport setup and the dedicated-to-shared
-//! single-connection transition. It deliberately stops at
-//! callers execute typed request/reply descriptors or open a mutable packet
-//! conversation for transparent proxying.
+//! single-connection transition. Callers execute typed request/reply
+//! descriptors or open a mutable packet conversation for transparent proxying.
 
 use std::sync::Arc;
 
@@ -31,31 +30,30 @@ use crate::session::{
 };
 use crate::transport::BoxedTransport;
 
-/// A configured TACACS+ client connection that transparently chooses between
-/// dedicated one-shot streams and a cached multiplexed connection.
+/// A configured TACACS+ client that selects a dedicated or shared connection.
 ///
 /// When the server configuration enables single-connection mode, the first
-/// operation either uses the configured preflight or a dedicated session to ask
+/// operation uses the configured preflight or a dedicated session to ask
 /// the server for single-connection support. If the server echoes the
-/// single-connect flag, that transport is upgraded and cached for future
+/// single-connect flag, the client upgrades and caches that connection for future
 /// sessions. If single-connection mode is disabled in configuration or
 /// unsupported by the server, future operations continue to use dedicated
-/// streams.
+/// connections.
 pub struct TacacsClient {
     server: Arc<TacacsPlusServer>,
     options: ConnectOptions,
     shared_connection: Arc<RwLock<Option<Arc<MultiplexedConnection>>>>,
     single_connection_state: Arc<RwLock<SingleConnectionState>>,
-    /// Serializes recovery when the cached shared connection is unavailable.
+    /// Serializes recovery when the cached shared connection is not available.
     ///
     /// The normal shared-session path does not take this lock. It only protects
-    /// the slow path so a burst of concurrent callers does not all open probe
-    /// connections after the same shared stream disconnects.
+    /// the slow path so concurrent callers do not all open probe
+    /// connections after the same shared connection disconnects.
     shared_recovery_lock: Mutex<()>,
 }
 
 impl TacacsClient {
-    /// Creates a client connection without opening the network transport yet.
+    /// Creates a client without opening a network connection.
     #[must_use]
     fn new(server: Arc<TacacsPlusServer>, options: ConnectOptions) -> Self {
         let single_connection_enabled = server.single_connection;
@@ -81,7 +79,7 @@ impl TacacsClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if TCP connection, TLS negotiation, or PSK setup fails.
+    /// Returns an error if the TCP connection, TLS negotiation, or PSK setup fails.
     pub async fn connect(
         server: TacacsPlusServer,
         options: ConnectOptions,
@@ -89,7 +87,9 @@ impl TacacsClient {
         Self::connect_shared(Arc::new(server), options).await
     }
 
-    /// Creates a client from a shared materialized server and optionally performs preflight.
+    /// Creates a client from shared server configuration.
+    ///
+    /// This function runs the configured preflight when preflight is enabled.
     ///
     /// # Errors
     ///
@@ -106,7 +106,7 @@ impl TacacsClient {
 
     /// Creates a client session suitable for running TACACS+ flows.
     ///
-    /// Session selection follows the server configuration and the observed
+    /// Session selection uses the server configuration and the observed
     /// single-connection state:
     ///
     /// ```text
@@ -124,7 +124,7 @@ impl TacacsClient {
     ///     |                                  |
     ///     |                                  v
     ///     |                         first create_session uses
-    ///     |                         cached shared stream
+    ///     |                         cached shared connection
     ///     |
     ///     +-- server omits flag ---------> [NotSupported]
     ///                                        |
@@ -143,14 +143,14 @@ impl TacacsClient {
     ///     +-- server echoes flag --------> [Supported]
     ///     |                                  |
     ///     |                                  v
-    ///     |                         use cached shared stream
+    ///     |                         use cached shared connection
     ///     |                                  |
-    ///     |                                  +-- shared stream is still healthy
+    ///     |                                  +-- shared connection is still healthy
     ///     |                                  |       |
     ///     |                                  |       v
     ///     |                                  |   shared session
     ///     |                                  |
-    ///     |                                  +-- shared stream disconnects
+    ///     |                                  +-- shared connection disconnects
     ///     |                                          |
     ///     |                                          v
     ///     |                                 clear cache and return to [Initial]
@@ -174,36 +174,36 @@ impl TacacsClient {
     ///                              dedicated sessions only
     /// ```
     ///
-    /// After a hard disconnect from a cached shared stream, the next session
-    /// probes again because a fresh TCP/TLS connection may land on a different
-    /// server. If that new server is behind a load balancer and does not echo
+    /// After a hard disconnect from a cached shared connection, the next session
+    /// probes again because a fresh TCP/TLS connection can connect to a different
+    /// TACACS+ server. If that server is behind a load balancer and does not echo
     /// the single-connect flag, negotiation records `NotSupported` and this
-    /// client uses dedicated streams for the rest of its lifetime.
+    /// client uses dedicated connections for the rest of its lifetime.
     ///
     /// # Why the staged checks?
     ///
     /// This function re-checks state several times because other tasks can
     /// complete probes, lose shared streams, or mark single-connection mode as
-    /// unsupported while this task is waiting. Those checks are not repeated TCP
-    /// connect attempts:
+    /// unsupported while this task waits. These checks do not repeat TCP
+    /// connection attempts:
     ///
     /// 1. If configuration disables single-connection mode, create a fresh
-    ///    dedicated stream.
+    ///    dedicated connection.
     /// 2. If capability is unknown because preflight was disabled or a cached
-    ///    shared stream disconnected, create the one dedicated probe that will
-    ///    answer whether a future shared stream is allowed.
-    /// 3. If a probe is already active, use a fresh dedicated stream without a
+    ///    shared connection disconnected, create one dedicated probe. This probe
+    ///    determines whether a future shared connection is allowed.
+    /// 3. If a probe is already active, use a fresh dedicated connection without a
     ///    promotion so concurrent callers do not race to publish conflicting
     ///    capability results.
     /// 4. If support is known, try the cached shared connection without taking
     ///    a lock. This is the hot path.
     /// 5. If the cached shared connection was rejected, re-read the state
-    ///    because the rejection may have reset the client to `Initial` or marked
-    ///    it `NotSupported`.
+    ///    because the rejection can reset the client to `Initial` or mark it
+    ///    `NotSupported`.
     /// 6. Only the recovery path takes `shared_recovery_lock`, preventing many
-    ///    callers from opening replacement probe connections at the same time.
+    ///    concurrent callers from opening replacement probe connections.
     /// 7. After waiting for that lock, try the shared cache again because the
-    ///    previous holder may already have restored it.
+    ///    previous holder can restore it first.
     /// 8. If no shared session is available, perform the one required fallback:
     ///    dedicated-only for `NotSupported`, otherwise a new dedicated probe.
     ///
@@ -231,18 +231,18 @@ impl TacacsClient {
         }
 
         // Stage 1: unknown capability and active negotiation are decided before
-        // looking for a shared cache. Initial only happens when preflight was
-        // disabled or after a cached shared stream disconnected. Only Initial
-        // may start the capability probe; Negotiating means another session
-        // already owns it.
+        // looking for a shared cache. Initial occurs only when preflight was
+        // disabled or after a cached shared connection disconnected. Only Initial
+        // can start the capability probe. Negotiating means another session already
+        // owns it.
         match self.single_connection_state().await {
             SingleConnectionState::Initial => {
                 return self.create_single_connect_negotiation_session().await;
             }
             SingleConnectionState::Negotiating | SingleConnectionState::NotSupported => {
                 // Negotiating means another session already owns the probe.
-                // NotSupported means that probe denied capability. In both
-                // cases, open a fresh dedicated stream without promotion.
+                // NotSupported means that the probe denied support. In both
+                // cases, open a fresh dedicated connection without promotion.
                 return Ok(ClientSession::dedicated(
                     self.create_fresh_dedicated_session(None).await?,
                 ));
@@ -294,7 +294,7 @@ impl TacacsClient {
     /// Stops the cached shared connection from accepting new sessions.
     ///
     /// Dedicated sessions are opened per operation and have no cached state to
-    /// drain. If a shared stream exists, it is removed from the cache and told
+    /// drain. If a shared connection exists, it is removed from the cache and told
     /// to reject future session creation while already-created sessions finish.
     pub async fn stop_accepting_new_sessions(&self) {
         let connection = self.shared_connection.write().await.take();
@@ -307,16 +307,16 @@ impl TacacsClient {
         &self,
         expected: Option<ExpectedResponseHeader>,
     ) -> anyhow::Result<ClientSession> {
-        // Stage 3: the failed shared attempt may have changed client state. For
-        // example, a graceful server shutdown becomes NotSupported, while a hard
+        // Stage 3: the failed shared attempt can change the client state. For
+        // example, a graceful server shutdown becomes NotSupported. A hard
         // disconnect returns to Initial so the next connection can negotiate.
         match self.single_connection_state().await {
             SingleConnectionState::Initial => {
                 return self.create_single_connect_negotiation_session().await;
             }
             SingleConnectionState::Negotiating | SingleConnectionState::NotSupported => {
-                // Active negotiation and terminal denial both use fresh
-                // dedicated streams without promotion.
+                // Active negotiation and terminal denial both use new
+                // dedicated connections without promotion.
                 return Ok(ClientSession::dedicated(
                     self.create_fresh_dedicated_session(None).await?,
                 ));
@@ -324,22 +324,22 @@ impl TacacsClient {
             SingleConnectionState::Supported => {}
         }
 
-        // Stage 4: slow-path serialization. Only one task should replace a
-        // missing shared connection; other tasks wait and then re-check.
+        // Stage 4: slow-path serialization. Only one task can replace a
+        // missing shared connection. Other tasks wait and then check again.
         let _shared_recovery_guard = self.shared_recovery_lock.lock().await;
 
-        // Stage 5: another task may have restored the shared cache while this
-        // one waited for the recovery lock.
+        // Stage 5: another task can restore the shared cache while this task
+        // waits for the recovery lock.
         if let Some(session) = self.try_create_shared_session(expected).await {
             return Ok(session);
         }
 
         // Stage 6: final fallback. This opens at most one fresh dedicated
-        // session on this path: either no-probe dedicated for NotSupported, or
-        // a probe that can promote the completed stream to shared.
+        // session on this path. It opens a connection without a probe for
+        // NotSupported, or a probe that can promote the completed connection.
         match self.single_connection_state().await {
             SingleConnectionState::NotSupported => {
-                // Another task may have recorded denial while this task waited
+                // Another task can record denial while this task waits
                 // on recovery. Keep terminal NotSupported on fresh streams.
                 Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?))
             }
@@ -367,7 +367,7 @@ impl TacacsClient {
     /// Starts or joins single-connection negotiation for a dedicated session.
     ///
     /// The returned promotion object is the response callback for that session:
-    /// it observes whether the server echoed the single-connect flag and later
+    /// it records whether the server echoed the single-connect flag and later
     /// receives the completed dedicated connection if promotion is safe.
     ///
     /// ```text
@@ -398,7 +398,7 @@ impl TacacsClient {
 
         log::info!(
             target: "tacacsrs_networking::client::single_connection_state",
-            "Single connection state changed from {:?} to {:?}",
+            "Single-connection state changed from {:?} to {:?}",
             *state,
             new_state,
         );
@@ -411,7 +411,7 @@ impl TacacsClient {
     /// reasons:
     ///
     /// ```text
-    /// cached shared stream cannot create a session
+    /// cached shared connection cannot create a session
     ///     |
     ///     v
     /// inspect cached connection state
@@ -426,16 +426,16 @@ impl TacacsClient {
     ///     +-- [Initial] / [Negotiating] / [Supported]
     ///             |
     ///             v
-    ///         stream ended without a capability denial
+    ///         connection ended without a capability denial
     ///         mark client [Initial]
     ///         next session opens a dedicated probe
     ///             |
-    ///             +-- new backend echoes flag --> cache shared stream
+    ///             +-- new backend echoes flag --> cache shared connection
     ///             +-- new backend omits flag --> mark [NotSupported]
     /// ```
     ///
     /// The second path is the load-balancer-safe path: after a shared
-    /// connection drops, the client does not assume the next backend has the
+    /// connection closes, the client does not assume that the next backend has the
     /// same single-connection capability.
     async fn update_state_after_shared_connection_rejection(
         &self,
@@ -480,7 +480,7 @@ impl TacacsClient {
             Ok(session) => Some(session),
             Err(error) => {
                 log::debug!(
-                    "Cached TACACS+ connection to {} could not create a session: {error:#}",
+                    "Cached connection to TACACS+ server {} failed to create a session: {error:#}",
                     self.server.socket_address(),
                 );
                 self.update_state_after_shared_connection_rejection(&connection)
@@ -503,7 +503,7 @@ impl TacacsClient {
 
     /// Creates a dedicated session from a newly opened transport.
     ///
-    /// This is the steady-state dedicated path for configuration-disabled
+    /// This is the normal dedicated path when configuration disables
     /// clients, concurrent callers while a single-connect probe is active, and
     /// clients whose initial single-connect probe reached terminal `NotSupported`.
     async fn create_fresh_dedicated_session(
@@ -538,7 +538,7 @@ impl TacacsClient {
 
         match reply.status {
             TacacsAccountingStatus::TacPlusAcctStatusSuccess => Ok(()),
-            status => anyhow::bail!("TACACS+ accounting watchdog preflight failed: {status:?}"),
+            status => anyhow::bail!("TACACS+ accounting WATCHDOG preflight failed: {status:?}"),
         }
     }
 
@@ -546,7 +546,7 @@ impl TacacsClient {
         let address = self.server.socket_address();
         establish::establish_stream(Arc::clone(&self.server), &self.options)
             .await
-            .with_context(|| format!("Failed to connect to {address}"))
+            .with_context(|| format!("Failed to connect to TACACS+ server {address}"))
     }
 }
 

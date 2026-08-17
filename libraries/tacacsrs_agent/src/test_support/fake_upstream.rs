@@ -1,8 +1,7 @@
 //! Reusable fake upstream fixtures for routing and IPC tests.
 //!
-//! This module is only compiled under `#[cfg(test)]` and provides reusable
-//! mock implementations of [`UpstreamConnection`] and [`UpstreamConnector`]
-//! that the `state` and `coordinator` test suites share.
+//! This module compiles only with `#[cfg(test)]`. It provides reusable fake
+//! implementations of [`UpstreamConnection`] and [`UpstreamConnector`].
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,7 +43,7 @@ impl UpstreamConnection for FakeConnection {
     }
 
     async fn open_conversation(&self) -> anyhow::Result<tacacsrs_networking::ClientConversation> {
-        anyhow::bail!("fake upstream {} does not implement raw proxy sessions", self.address)
+        anyhow::bail!("Fake server {} does not implement raw proxy sessions", self.address)
     }
 
     async fn send_accounting(
@@ -53,7 +52,7 @@ impl UpstreamConnection for FakeConnection {
     ) -> anyhow::Result<AccountingReply> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
-            anyhow::bail!("simulated failure from {}", self.address);
+            anyhow::bail!("Simulated failure from {}", self.address);
         }
 
         Ok(AccountingReply {
@@ -69,7 +68,7 @@ impl UpstreamConnection for FakeConnection {
     ) -> anyhow::Result<AuthenticationReply> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
-            anyhow::bail!("simulated failure from {}", self.address);
+            anyhow::bail!("Simulated failure from {}", self.address);
         }
         Ok(AuthenticationReply {
             status: TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
@@ -85,7 +84,7 @@ impl UpstreamConnection for FakeConnection {
     ) -> anyhow::Result<AuthorizationReply> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
-            anyhow::bail!("simulated failure from {}", self.address);
+            anyhow::bail!("Simulated failure from {}", self.address);
         }
 
         Ok(AuthorizationReply {
@@ -158,12 +157,12 @@ impl UpstreamConnector for FakeConnector {
         let connection = self
             .connections
             .get(&address)
-            .with_context(|| format!("missing fake connection for {address}"))?;
+            .with_context(|| format!("No fake connection exists for {address}"))?;
 
         let result = if connection.usable.load(Ordering::Relaxed) {
             Ok(Arc::clone(connection) as Arc<dyn UpstreamConnection>)
         } else {
-            Err(anyhow::anyhow!("{address} is currently down"))
+            Err(anyhow::anyhow!("{address} is unavailable"))
         };
 
         self.in_flight_connects.fetch_sub(1, Ordering::Relaxed);

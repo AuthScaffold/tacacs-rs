@@ -1,15 +1,15 @@
-//! Public configuration types for the local IPC listener and upstream failover.
+//! Configuration types for local listeners and upstream failover.
 //!
-//! This module intentionally keeps parsing and defaults close to the config
-//! structs so operators can see, in one place, how endpoint strings are
-//! interpreted by the service runtime.
+//! This module keeps parsing and defaults close to the configuration types.
+//! Operators can use one module to see how the runtime interprets IPC endpoint
+//! strings.
 //!
 //! # Configuration flow
 //!
-//! The executable (e.g. `tacacsrs_agentd`) parses CLI flags or a YANG JSON
-//! config file into a [`ServiceConfig`], passes it to
+//! The executable, such as `tacacsrs_agentd`, parses CLI flags or a YANG JSON
+//! configuration file into a [`ServiceConfig`]. It passes the result to
 //! [`TacacsClientService::new`](crate::TacacsClientService::new) for
-//! validation, and then calls
+//! validation. It then calls
 //! [`serve`](crate::TacacsClientService::serve) to start the runtime.
 
 use std::time::Duration;
@@ -20,10 +20,10 @@ use tacacsrs_secrets::SecretString;
 
 /// Runtime services hosted by the TACACS+ client service process.
 ///
-/// The client API is the local gRPC/protobuf service used by `tacon`,
-/// `session-wrapper`, and other typed local consumers. The TACACS+ proxy is a
-/// sibling service that accepts raw TACACS+ packets and forwards them upstream.
-/// At least one service must be enabled for the process to do useful work.
+/// The client API is the local gRPC/protobuf service. `tacon`,
+/// `session-wrapper`, and other typed local clients use this service. The
+/// TACACS+ proxy accepts raw TACACS+ packets and sends them to a server. Enable
+/// at least one service.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct EnabledServices {
     client_api: bool,
@@ -52,19 +52,19 @@ impl EnabledServices {
         }
     }
 
-    /// Returns a value indicating whether the local client API service is enabled.
+    /// Returns whether the local client API service is enabled.
     #[must_use]
     pub const fn client_api(self) -> bool {
         self.client_api
     }
 
-    /// Returns a value indicating whether no runtime services are enabled.
+    /// Returns whether all runtime services are disabled.
     #[must_use]
     pub const fn is_empty(self) -> bool {
         !self.client_api && !self.tacacs_proxy
     }
 
-    /// Returns a value indicating whether the raw TACACS+ proxy service is enabled.
+    /// Returns whether the raw TACACS+ proxy service is enabled.
     #[must_use]
     pub const fn tacacs_proxy(self) -> bool {
         self.tacacs_proxy
@@ -74,19 +74,19 @@ impl EnabledServices {
 /// Downstream obfuscation policy for raw TACACS+ proxy clients.
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub enum ProxyDownstreamObfuscation {
-    /// Expect downstream proxy clients to send unobfuscated TACACS+ packets.
+    /// Requires downstream proxy clients to send unobfuscated TACACS+ packets.
     #[default]
     Unobfuscated,
 
-    /// Expect downstream proxy clients to use this shared secret for TACACS+
+    /// Requires downstream proxy clients to use this shared secret for TACACS+
     /// message obfuscation.
     SharedSecret(SecretString),
 }
 
 /// Configuration for the long-lived TACACS+ client service process.
 ///
-/// The service consumes this once at startup. Validation that requires cross-
-/// field context, such as credential-reference resolution, happens in
+/// The service reads this configuration at startup. It validates related
+/// fields, such as credential references, in
 /// [`TacacsClientService::new`](crate::TacacsClientService::new).
 ///
 /// # Required fields
@@ -94,8 +94,7 @@ pub enum ProxyDownstreamObfuscation {
 /// - **`enabled_services`** — the local runtime services to host. At least one
 ///   service must be enabled.
 /// - **`tacacs_plus`** — the YANG-modelled root configuration. The order of
-///   `tacacs_plus.server` determines failover priority (index 0 is preferred)
-///   when one or more accounting-capable servers are configured.
+///   `tacacs_plus.server` sets the failover priority. Index 0 is preferred.
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
     /// Runtime services to host in this process.
@@ -105,54 +104,51 @@ pub struct ServiceConfig {
     /// service is enabled.
     ///
     /// Unix builds must use filesystem paths such as
-    /// `/run/tacacs/tacacs.sock`. Non-Unix builds accept a loopback TCP socket
-    /// address such as `127.0.0.1:9049` for developer workflows. Empty strings
-    /// are rejected instead of defaulting.
+    /// `/run/tacacs/tacacs.sock`. Non-Unix builds accept a loopback TCP address,
+    /// such as `127.0.0.1:9049`, for development. An empty string is invalid.
     pub endpoint: IpcEndpoint,
 
     /// Optional local TACACS+ proxy endpoint.
     ///
     /// When the TACACS+ proxy service is enabled, this endpoint accepts raw
-    /// TACACS+ client connections and proxies each downstream connection to
-    /// one upstream TACACS+ session. TCP proxy endpoints must be loopback-only.
+    /// TACACS+ client connections. It maps each downstream connection to one
+    /// upstream TACACS+ session. A TCP proxy endpoint must use a loopback address.
     pub proxy_endpoint: Option<IpcEndpoint>,
 
     /// Obfuscation policy expected from raw TACACS+ proxy clients.
     ///
-    /// This is intentionally separate from upstream server shared secrets:
-    /// the proxy has to deobfuscate and reobfuscate packets when rewriting
-    /// TACACS+ session IDs across the downstream/upstream boundary, so the
-    /// downstream client-facing choice is simply whether clients send
-    /// unobfuscated packets or packets obfuscated with a local proxy secret.
+    /// This policy is separate from the shared secrets for servers. The proxy
+    /// deobfuscates and reobfuscates packets when it rewrites TACACS+ session
+    /// IDs. A downstream client sends either unobfuscated packets or packets
+    /// obfuscated with the local proxy shared secret.
     pub proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
 
-    /// Root TACACS+ configuration including upstream servers and any shared
+    /// Root TACACS+ configuration that contains servers and shared
     /// credential bundles.
     ///
     /// The service resolves `client-credentials` / `server-credentials`
-    /// references at startup via
-    /// [`tacacsrs_config::enumerate_servers`]. In-process construction via
-    /// [`tacacsrs_config::TacacsPlusBuilder`] typically inlines all security
-    /// material directly on each server and leaves the credential bundles
-    /// empty.
+    /// references at startup with [`tacacsrs_config::enumerate_servers`].
+    /// [`tacacsrs_config::TacacsPlusBuilder`] usually puts security material
+    /// directly in each server. In this case, the credential bundles are empty.
     pub tacacs_plus: TacacsPlus,
 
-    /// How often the preferred server should be reprobed while failed over.
+    /// Interval between preferred-server probes during failover.
     ///
-    /// Only effective when more than one server is configured. A shorter
-    /// interval detects recovery faster at the cost of more probe connections.
+    /// This value has an effect only when the configuration contains multiple
+    /// servers. A shorter interval detects recovery faster but creates more
+    /// probe connections.
     pub preferred_probe_interval: Duration,
 
     #[cfg(unix)]
-    /// File mode applied to the bound Unix socket path.
+    /// File mode for the bound Unix domain socket.
     ///
     /// Typical values: `0o660` (owner + group) or `0o666` (world-accessible).
     pub socket_mode: u32,
 
-    /// Dangerously disable TLS certificate verification for upstream connections.
+    /// Disables TLS certificate verification for server connections.
     ///
-    /// This is intended for development and testing only. In production,
-    /// certificate verification should always be enabled.
+    /// This option is dangerous. Use it only for development and tests. Always
+    /// enable certificate verification in production.
     #[doc(hidden)]
     pub disable_certificate_verification: bool,
 }

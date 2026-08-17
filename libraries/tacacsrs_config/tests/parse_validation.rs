@@ -12,19 +12,20 @@ fn write_temp_json_file(json: &str) -> PathBuf {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be after unix epoch")
+            .expect("system time must be after Unix epoch")
             .as_nanos(),
     );
     path.push(unique);
 
-    std::fs::write(&path, json).expect("should write temp json file");
+    std::fs::write(&path, json).expect("temporary JSON file must be written");
     path
 }
 
 fn assert_unknown_field_error(err: &anyhow::Error, field: &str) {
     let message = err.to_string();
     assert!(
-        message.contains("failed to parse config: unknown field(s):") && message.contains(field),
+        message.contains("failed to parse configuration: unknown field(s):")
+            && message.contains(field),
         "unexpected error: {message}",
     );
 }
@@ -47,7 +48,7 @@ fn parse_minimal_obfuscation_config() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("should parse minimal config");
+    let config = parse_yang_json(json).expect("minimal configuration must parse");
     assert_eq!(config.server.len(), 1);
 
     let s = &config.server[0];
@@ -499,8 +500,8 @@ fn accept_tls13_epsk_config_without_runtime_psk_support() {
         }
     }"#;
 
-    let config =
-        parse_yang_json(json).expect("tls13-epsk config should parse without runtime PSK support");
+    let config = parse_yang_json(json)
+        .expect("tls13-epsk configuration must parse without runtime PSK support");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "epsk-server");
 }
@@ -521,8 +522,8 @@ fn yang_types_support_round_trip_serialization() {
         }
     }"#;
 
-    let root: YangConfigRoot = serde_json::from_str(json).expect("root should deserialize");
-    let serialized = serde_json::to_string(&root).expect("root should serialize");
+    let root: YangConfigRoot = serde_json::from_str(json).expect("root must deserialize");
+    let serialized = serde_json::to_string(&root).expect("root must serialize");
 
     assert!(serialized.contains("\"ietf-system-tacacs-plus:tacacs-plus\""));
     assert!(serialized.contains("\"server-type\":\"authentication authorization accounting\""));
@@ -548,7 +549,7 @@ fn parse_yang_json_file_parses_and_validates_config() {
     let result = parse_yang_json_file(&path);
     let _ = std::fs::remove_file(&path);
 
-    let config = result.expect("file-based parse should succeed");
+    let config = result.expect("configuration file parse must succeed");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "from_file");
 }
@@ -573,7 +574,7 @@ fn pipeline_parse_root_json_file_reads_root_without_validation() {
     let result = pipeline::parse_root_json_file(&path);
     let _ = std::fs::remove_file(&path);
 
-    let root = result.expect("root parse from file should succeed");
+    let root = result.expect("root parse from the file must succeed");
     assert_eq!(root.tacacs_plus.server.len(), 1);
     assert_eq!(root.tacacs_plus.server[0].name, "root_only");
 }
@@ -584,7 +585,11 @@ fn pipeline_parse_root_json_file_reports_missing_file() {
     missing.push("tacacsrs-config-test-does-not-exist.json");
 
     let err = pipeline::parse_root_json_file(&missing).unwrap_err();
-    assert!(err.to_string().contains("failed to read config file"), "unexpected error: {err}");
+    assert!(
+        err.to_string()
+            .contains("failed to read configuration file"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -604,7 +609,7 @@ fn resolve_server_finds_server_by_name() {
             }
         }"#,
     )
-    .expect("config should parse");
+    .expect("configuration must parse");
 
     let result = resolve_server(&config, "exists");
     assert!(result.is_ok(), "expected successful lookup");
@@ -627,7 +632,7 @@ fn resolve_server_rejects_unknown_name() {
             }
         }"#,
     )
-    .expect("config should parse");
+    .expect("configuration must parse");
 
     let err = resolve_server(&config, "missing").unwrap_err();
     assert!(err.to_string().contains("server 'missing' not found"), "unexpected error: {err}");
@@ -650,10 +655,10 @@ fn validate_credential_references_returns_ok_for_simple_config() {
             }
         }"#,
     )
-    .expect("config should parse");
+    .expect("configuration must parse");
 
     validate_credential_references(&config)
-        .expect("validate_credential_references should return Ok for simple config");
+        .expect("simple configuration must have valid credential references");
 }
 
 #[test]
@@ -993,7 +998,7 @@ fn accept_server_authentication_with_ee_certs_only() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("ee-certs explicit mode should be accepted");
+    let config = parse_yang_json(json).expect("explicit ee-certs mode must be accepted");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "ee-only");
 }
@@ -1061,7 +1066,7 @@ fn accept_client_credentials_with_certificate_auth_type() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("certificate auth-type should be accepted");
+    let config = parse_yang_json(json).expect("certificate auth-type must be accepted");
     assert_eq!(config.client_credentials.len(), 1);
     assert_eq!(config.client_credentials[0].id, "cert-only");
 }
@@ -1123,7 +1128,7 @@ fn accept_client_credentials_with_tls13_epsk_auth_type() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("tls13-epsk auth-type should be accepted with psk");
+    let config = parse_yang_json(json).expect("tls13-epsk auth-type with PSK must be accepted");
     assert_eq!(config.client_credentials.len(), 1);
     assert_eq!(config.client_credentials[0].id, "epsk-only");
 }
@@ -1135,10 +1140,10 @@ fn validation_maps_all_tacacs_plus_choice_mandatory_constants_to_expected_valida
 
     let tacacs_plus_start = generated
         .find("pub mod tacacs_plus {")
-        .expect("generated.rs should contain tacacs_plus module");
+        .expect("generated.rs must contain the tacacs_plus module");
     let keystore_start = generated
         .find("/// Types from `ietf-keystore`.")
-        .expect("generated.rs should contain keystore module marker");
+        .expect("generated.rs must contain the keystore module marker");
     let tacacs_plus_block = &generated[tacacs_plus_start..keystore_start];
     let generated_constants = generated_tacacs_plus_choice_mandatory_constants(tacacs_plus_block);
     let expected_mappings = expected_choice_mandatory_mappings();
@@ -1195,7 +1200,7 @@ fn generated_tacacs_plus_choice_mandatory_constants(
                         .strip_prefix("impl ")
                         .and_then(|value| value.strip_suffix(" {"))
                 })
-                .expect("choice constant should be declared inside an impl block");
+                .expect("choice constant must be in an impl block");
 
             Some(format!("{owner}::{constant_name}"))
         })
@@ -1460,7 +1465,7 @@ fn accept_tls13_epsk_when_present() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("tls13-epsk should parse");
+    let config = parse_yang_json(json).expect("tls13-epsk must parse");
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "epsk-ok");
 }
@@ -1492,12 +1497,12 @@ fn accept_tls13_epsk_with_psk_dhe_groups() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("psk_dhe_ke groups should parse");
+    let config = parse_yang_json(json).expect("psk_dhe_ke groups must parse");
     let groups = &config.server[0]
         .client_identity
         .as_ref()
         .and_then(|identity| identity.tls13_epsk.as_ref())
-        .expect("tls13-epsk should be present")
+        .expect("tls13-epsk must be present")
         .psk_dhe_ke_groups;
     assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::X25519)));
     assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp256r1)));
@@ -1536,11 +1541,11 @@ fn accept_client_credentials_tls13_epsk_with_psk_dhe_groups() {
         }
     }"#;
 
-    let config = parse_yang_json(json).expect("credential-bundle psk_dhe_ke groups should parse");
+    let config = parse_yang_json(json).expect("credential-bundle psk_dhe_ke groups must parse");
     let groups = &config.client_credentials[0]
         .tls13_epsk
         .as_ref()
-        .expect("tls13-epsk should be present")
+        .expect("tls13-epsk must be present")
         .psk_dhe_ke_groups;
     assert!(matches!(groups.first(), Some(PskDheKeSupportedGroup::Secp256r1)));
     assert!(matches!(groups.get(1), Some(PskDheKeSupportedGroup::Secp384r1)));
@@ -1653,7 +1658,7 @@ fn accept_valid_private_key_format() {
         }
     }"#;
 
-    parse_yang_json(json).expect("valid key formats should be accepted");
+    parse_yang_json(json).expect("valid key formats must be accepted");
 }
 
 #[test]
@@ -1823,7 +1828,7 @@ fn accept_valid_symmetric_key_format() {
         }
     }"#;
 
-    parse_yang_json(json).expect("valid symmetric key format should be accepted");
+    parse_yang_json(json).expect("valid symmetric key format must be accepted");
 }
 
 // ---------------------------------------------------------------------------
@@ -2520,7 +2525,7 @@ fn reject_invalid_symmetric_key_format_in_server_epsk() {
 
 #[test]
 fn strict_default_rejects_tls_with_shared_secret() {
-    // Default (strict) parse_yang_json must still reject TLS + shared-secret.
+    // Strict parse_yang_json must reject TLS with a shared secret.
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
             "server": [
@@ -2546,7 +2551,7 @@ fn strict_default_rejects_tls_with_shared_secret() {
     assert!(
         err.to_string()
             .contains("security allows only one of [tls, obfuscation]"),
-        "strict default should reject TLS + shared-secret: {err}",
+        "strict validation must reject TLS with a shared secret: {err}",
     );
 }
 
@@ -2579,7 +2584,7 @@ fn relaxed_allows_tls_with_shared_secret_via_parse_yang_json_with_options() {
         ValidationOptions::new().with_relaxation(ValidationRelaxation::AllowTlsWithSharedSecret);
 
     let config = parse_yang_json_with_options(json, &options)
-        .expect("AllowTlsWithSharedSecret relaxation should permit TLS + shared-secret");
+        .expect("AllowTlsWithSharedSecret must permit TLS with a shared secret");
 
     assert_eq!(config.server.len(), 1);
     assert_eq!(config.server[0].name, "migration");
@@ -2620,8 +2625,8 @@ fn relaxed_parse_yang_json_file_with_options_allows_tls_with_shared_secret() {
     let result = parse_yang_json_file_with_options(&path, &options);
     let _ = std::fs::remove_file(&path);
 
-    let config = result
-        .expect("AllowTlsWithSharedSecret relaxation should permit TLS + shared-secret from file");
+    let config =
+        result.expect("AllowTlsWithSharedSecret must permit file-based TLS with a shared secret");
     assert_eq!(config.server[0].name, "file-migration");
     assert!(config.server[0].shared_secret.is_some());
     assert!(config.server[0].server_authentication.is_some());
@@ -2629,8 +2634,8 @@ fn relaxed_parse_yang_json_file_with_options_allows_tls_with_shared_secret() {
 
 #[test]
 fn tls_shared_secret_relaxation_does_not_permit_no_security_mode() {
-    // The relaxation only loosens the "at most one" constraint, not the
-    // "at least one" mandatory requirement.
+    // The relaxation changes only the "at most one" constraint. It does not
+    // change the mandatory "at least one" requirement.
     use tacacsrs_config::{ValidationOptions, ValidationRelaxation, parse_yang_json_with_options};
 
     let json = r#"{
@@ -2653,7 +2658,7 @@ fn tls_shared_secret_relaxation_does_not_permit_no_security_mode() {
     assert!(
         err.to_string()
             .contains("security requires one of [tls, obfuscation]"),
-        "TLS/shared-secret relaxation should still require at least one security mode: {err}",
+        "TLS with shared-secret relaxation must require one security mode: {err}",
     );
 }
 
@@ -2678,7 +2683,7 @@ fn relaxed_allows_plain_tcp_without_shared_secret() {
         .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret);
 
     let config = parse_yang_json_with_options(json, &options)
-        .expect("AllowPlainTcpWithoutSharedSecret should permit no security choice");
+        .expect("AllowPlainTcpWithoutSharedSecret must permit no security choice");
 
     assert_eq!(config.server[0].name, "bare");
     assert!(config.server[0].shared_secret.is_none());
@@ -2708,7 +2713,7 @@ fn builder_build_with_options_allows_tls_with_shared_secret() {
     let config = TacacsPlusBuilder::new()
         .with_server_builder(server)
         .build_with_options(&options)
-        .expect("AllowTlsWithSharedSecret should permit TLS + shared-secret in builder");
+        .expect("AllowTlsWithSharedSecret must permit builder TLS with a shared secret");
 
     assert_eq!(config.server[0].name, "migration");
     assert!(config.server[0].shared_secret.is_some());
@@ -2731,7 +2736,7 @@ fn builder_build_with_options_allows_plain_tcp_without_shared_secret() {
     let config = TacacsPlusBuilder::new()
         .with_server_builder(server)
         .build_with_options(&options)
-        .expect("AllowPlainTcpWithoutSharedSecret should permit plain TCP without shared-secret");
+        .expect("AllowPlainTcpWithoutSharedSecret must permit plain TCP without a shared secret");
 
     assert_eq!(config.server[0].name, "bare");
     assert!(config.server[0].shared_secret.is_none());
@@ -2755,7 +2760,7 @@ fn builder_strict_build_rejects_tls_with_shared_secret() {
     let err = TacacsPlusBuilder::new()
         .with_server_builder(server)
         .build()
-        .expect_err("strict build should reject TLS + shared-secret");
+        .expect_err("strict build must reject TLS with a shared secret");
 
     assert!(
         err.to_string()
@@ -2774,14 +2779,14 @@ fn with_shared_secret_alongside_tls_does_not_clear_tls_fields() {
             .with_shared_secret_alongside_tls("secret")
             .build();
 
-    assert!(server.server_authentication.is_some(), "TLS fields should be preserved");
+    assert!(server.server_authentication.is_some(), "TLS fields must be preserved");
     assert_eq!(
         server
             .shared_secret
             .as_ref()
             .map(tacacsrs_secrets::SecretString::expose_secret),
         Some("secret"),
-        "shared secret should be set",
+        "shared secret must be set",
     );
 }
 
@@ -2791,13 +2796,13 @@ fn validation_relaxation_from_str_roundtrip() {
     use tacacsrs_config::ValidationRelaxation;
 
     let tls_relaxation = ValidationRelaxation::from_str("allow-tls-with-shared-secret")
-        .expect("should parse allow-tls-with-shared-secret");
+        .expect("allow-tls-with-shared-secret must parse");
     assert_eq!(tls_relaxation, ValidationRelaxation::AllowTlsWithSharedSecret);
     assert_eq!(tls_relaxation.to_string(), "allow-tls-with-shared-secret");
 
     let plain_tcp_relaxation =
         ValidationRelaxation::from_str("allow-plain-tcp-without-shared-secret")
-            .expect("should parse allow-plain-tcp-without-shared-secret");
+            .expect("allow-plain-tcp-without-shared-secret must parse");
     assert_eq!(plain_tcp_relaxation, ValidationRelaxation::AllowPlainTcpWithoutSharedSecret,);
     assert_eq!(plain_tcp_relaxation.to_string(), "allow-plain-tcp-without-shared-secret",);
 }

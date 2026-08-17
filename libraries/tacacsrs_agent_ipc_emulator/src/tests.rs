@@ -74,12 +74,12 @@ fn authorization_request(command: &str) -> AuthorizationOperation {
     .key_value(AuthorizationKey::Service, true, "shell")
     .key_value(AuthorizationKey::Cmd, true, command)
     .build()
-    .expect("authorization operation should build")
+    .expect("authorization operation must build")
 }
 
 fn state_from(rego: &str) -> EmulatorState {
     let policy = EmulatorPolicy::new(rego);
-    let engine = policy.compile().expect("policy should compile");
+    let engine = policy.compile().expect("policy must compile");
     EmulatorState::new(policy, engine)
 }
 
@@ -87,14 +87,14 @@ fn state_from(rego: &str) -> EmulatorState {
 fn compiles_valid_policy() {
     EmulatorPolicy::new(ACCOUNTING_POLICY)
         .compile()
-        .expect("valid policy should compile");
+        .expect("valid policy must compile");
 }
 
 #[test]
 fn rejects_invalid_policy() {
     let error = EmulatorPolicy::new("this is not rego")
         .compile()
-        .expect_err("invalid policy should fail to compile");
+        .expect_err("invalid policy must not compile");
     assert!(error.to_string().contains("Rego policy"));
 }
 
@@ -108,12 +108,12 @@ fn evaluates_request_fields_as_input() {
 
     let decision = state
         .record_and_evaluate(IpcRpc::Accounting, &fields)
-        .expect("evaluation should succeed")
-        .expect("policy should produce a decision");
+        .expect("evaluation must succeed")
+        .expect("policy must produce a decision");
 
     match decision.response {
         EmulatorResponse::Response(response) => assert_eq!(response.server, "primary"),
-        EmulatorResponse::Error(_) => panic!("expected response"),
+        EmulatorResponse::Error(_) => panic!("policy must return a response"),
     }
     assert_eq!(state.captured_requests().len(), 1);
 }
@@ -125,7 +125,7 @@ fn undefined_decision_returns_none() {
 
     let decision = state
         .record_and_evaluate(IpcRpc::Accounting, &fields)
-        .expect("evaluation should succeed");
+        .expect("evaluation must succeed");
 
     assert!(decision.is_none());
     assert_eq!(state.captured_requests().len(), 1);
@@ -149,16 +149,16 @@ decision := {
     );
     let (emulator, endpoint) = IpcEmulator::from_policy(policy)
         .await
-        .expect("emulator should start");
+        .expect("emulator must start");
     let client = ServiceClient::connect(endpoint)
         .await
-        .expect("client should connect");
+        .expect("client must connect");
 
     let start = Instant::now();
     client
         .send_accounting(accounting_request("admin", "show"))
         .await
-        .expect("request should succeed");
+        .expect("request must succeed");
 
     assert!(start.elapsed() >= Duration::from_millis(25));
     emulator.shutdown().await;
@@ -168,15 +168,15 @@ decision := {
 async fn captures_requests() {
     let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(ACCOUNTING_POLICY))
         .await
-        .expect("emulator should start");
+        .expect("emulator must start");
     let client = ServiceClient::connect(endpoint)
         .await
-        .expect("client should connect");
+        .expect("client must connect");
 
     client
         .send_accounting(accounting_request("admin", "show"))
         .await
-        .expect("request should succeed");
+        .expect("request must succeed");
 
     let captured = emulator.captured_requests().await;
     assert_eq!(captured.len(), 1);
@@ -189,20 +189,20 @@ async fn captures_requests() {
 async fn undefined_accounting_decision_returns_grpc_error() {
     let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(ACCOUNTING_POLICY))
         .await
-        .expect("emulator should start");
+        .expect("emulator must start");
     let client = ServiceClient::connect(endpoint)
         .await
-        .expect("client should connect");
+        .expect("client must connect");
 
     let error = client
         .send_accounting(accounting_request("guest", "show"))
         .await
-        .expect_err("undefined accounting decision should fail");
+        .expect_err("undefined accounting decision must fail");
 
     let grpc_status = error
         .chain()
         .find_map(|cause| cause.downcast_ref::<tonic::Status>())
-        .expect("error should include tonic status");
+        .expect("error must include tonic status");
     assert_eq!(grpc_status.code(), Code::NotFound);
     assert!(grpc_status
         .message()
@@ -215,15 +215,15 @@ async fn undefined_accounting_decision_returns_grpc_error() {
 async fn authorization_response_works_with_service_client() {
     let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(AUTHORIZATION_POLICY))
         .await
-        .expect("emulator should start");
+        .expect("emulator must start");
     let client = ServiceClient::connect(endpoint)
         .await
-        .expect("client should connect");
+        .expect("client must connect");
 
     let response = client
         .send_authorization(authorization_request("show"))
         .await
-        .expect("authorization request should succeed");
+        .expect("authorization request must succeed");
 
     assert_eq!(response.status, AuthorizationResponseStatus::PassAdd);
     emulator.shutdown().await;
@@ -233,21 +233,21 @@ async fn authorization_response_works_with_service_client() {
 async fn undefined_authorization_decision_returns_fail_response() {
     let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(AUTHORIZATION_POLICY))
         .await
-        .expect("emulator should start");
+        .expect("emulator must start");
     let client = ServiceClient::connect(endpoint)
         .await
-        .expect("client should connect");
+        .expect("client must connect");
 
     let response = client
         .send_authorization(authorization_request("/usr/bin/htop"))
         .await
-        .expect("authorization no-decision should be a TACACS+ response");
+        .expect("an undefined authorization decision must return a TACACS+ response");
 
     assert_eq!(response.status, AuthorizationResponseStatus::Fail);
     assert_eq!(response.server, "ipc-emulator");
     assert!(response
         .server_message
-        .contains("policy returned no authorization decision"));
+        .contains("authorization policy returned no decision"));
     assert!(response.server_message.contains("/usr/bin/htop"));
     assert_eq!(emulator.captured_requests().await.len(), 1);
     emulator.shutdown().await;
@@ -258,15 +258,15 @@ async fn authorization_error_status_returns_response() {
     let policy = EmulatorPolicy::new(AUTHORIZATION_POLICY).with_data(json!({ "error_mode": true }));
     let (emulator, endpoint) = IpcEmulator::from_policy(policy)
         .await
-        .expect("emulator should start");
+        .expect("emulator must start");
     let client = ServiceClient::connect(endpoint)
         .await
-        .expect("client should connect");
+        .expect("client must connect");
 
     let response = client
         .send_authorization(authorization_request("show"))
         .await
-        .expect("authorization Error status should be a TACACS+ response");
+        .expect("Authorization Error status must return a TACACS+ response");
 
     assert_eq!(response.status, AuthorizationResponseStatus::Error);
     assert_eq!(response.server_message, "authorization policy evaluation failed");
@@ -276,20 +276,20 @@ async fn authorization_error_status_returns_response() {
 #[tokio::test]
 async fn policy_data_drives_authorization_denylist() {
     let policy = EmulatorPolicy::from_file("examples/policy.rego")
-        .expect("example policy should compile")
+        .expect("example policy must compile")
         .with_data(
             serde_json::from_str(
                 &std::fs::read_to_string("examples/policy_data.json")
-                    .expect("example data should load"),
+                    .expect("example data must load"),
             )
-            .expect("example data should parse"),
+            .expect("example data must parse"),
         );
     let (emulator, endpoint) = IpcEmulator::from_policy(policy)
         .await
-        .expect("emulator should start");
+        .expect("emulator must start");
     let client = ServiceClient::connect(endpoint)
         .await
-        .expect("client should connect");
+        .expect("client must connect");
 
     let denied = client
         .send_authorization(
@@ -304,17 +304,17 @@ async fn policy_data_drives_authorization_denylist() {
             .key_value(AuthorizationKey::Cmd, true, "/usr/bin/git")
             .key_value(AuthorizationKey::CmdArg, false, "--force")
             .build()
-            .expect("authorization operation should build"),
+            .expect("authorization operation must build"),
         )
         .await
-        .expect("denied request should still return a response");
+        .expect("denied request must return a response");
     assert_eq!(denied.status, AuthorizationResponseStatus::Fail);
     assert!(denied.server_message.contains("--force"));
 
     let allowed = client
         .send_authorization(authorization_request("/usr/bin/git"))
         .await
-        .expect("allowed request should succeed");
+        .expect("allowed request must succeed");
     assert_eq!(allowed.status, AuthorizationResponseStatus::PassAdd);
     emulator.shutdown().await;
 }
@@ -323,35 +323,32 @@ async fn policy_data_drives_authorization_denylist() {
 async fn controller_can_reset_and_replace_policy() {
     let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(ACCOUNTING_POLICY))
         .await
-        .expect("emulator should start");
+        .expect("emulator must start");
     let client = ServiceClient::connect(endpoint.clone())
         .await
-        .expect("client should connect");
+        .expect("client must connect");
     let mut controller = MockControllerClient::connect(endpoint)
         .await
-        .expect("controller should connect");
+        .expect("controller must connect");
 
     client
         .send_accounting(accounting_request("admin", "show"))
         .await
-        .expect("request should succeed");
+        .expect("request must succeed");
     assert_eq!(
         controller
             .captured_requests()
             .await
-            .expect("captures should load")
+            .expect("captured requests must load")
             .len(),
         1
     );
 
-    controller
-        .reset_state()
-        .await
-        .expect("reset should succeed");
+    controller.reset_state().await.expect("reset must succeed");
     assert!(controller
         .captured_requests()
         .await
-        .expect("captures should load")
+        .expect("captured requests must load")
         .is_empty());
 
     controller
@@ -372,15 +369,15 @@ decision := {
 "#,
         ))
         .await
-        .expect("load should succeed");
+        .expect("policy load must succeed");
     client
         .send_accounting(accounting_request("guest", "show"))
         .await
-        .expect("new policy should match");
+        .expect("new policy must match");
     let captured = controller
         .captured_requests()
         .await
-        .expect("captures should load");
+        .expect("captured requests must load");
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].fields["user"], json!("guest"));
     emulator.shutdown().await;

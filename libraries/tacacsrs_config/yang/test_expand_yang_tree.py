@@ -45,11 +45,11 @@ class VerifyRepoRevisionTests(unittest.TestCase):
     def test_rejects_wrong_commit(self) -> None:
         subprocess.run(["git", "checkout", "-q", "--detach", self.commit], cwd=self.repo, check=True)
 
-        with self.assertRaisesRegex(RuntimeError, "expected 000000"):
+        with self.assertRaisesRegex(RuntimeError, "The expected commit is 000000"):
             _verify_repo_revision(self.repo, "0" * 40)
 
     def test_rejects_attached_head(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "expected detached HEAD"):
+        with self.assertRaisesRegex(RuntimeError, "The repository must have a detached HEAD"):
             _verify_repo_revision(self.repo, self.commit)
 
     def test_remove_readonly_retries_after_making_file_writable(self) -> None:

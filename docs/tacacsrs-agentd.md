@@ -1,6 +1,6 @@
 # tacacsrs-agentd — Central TACACS+ Service
 
-`tacacsrs-agentd` is a long-running daemon that maintains persistent TACACS+ connections to one or more upstream servers and exposes a local IPC interface for clients like [tacon](tacon.md). It handles connection pooling, session multiplexing, and ordered failover automatically.
+`tacacsrs-agentd` is a long-running daemon. It maintains persistent TACACS+ connections to one or more upstream servers and exposes a local IPC interface for clients like [tacon](tacon.md). It handles connection pooling, session multiplexing, and ordered failover automatically.
 
 ## Architecture
 
@@ -51,16 +51,16 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | Flag | Description |
 |------|-------------|
 | `--server-addr <ADDR>` | TACACS+ server address (repeatable, ordered by preference). First entry is the preferred server. |
-| `--config <FILE>` | Load upstream server definitions from a YANG JSON config file |
+| `--config <FILE>` | Load upstream server definitions from a YANG JSON configuration file |
 
 ### IPC Listener
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--listen-endpoint <ENDPOINT>` | `/run/tacacs/tacacs.sock` | Unix socket path (Linux) or TCP address (other platforms) |
-| `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Optional TACACS+ proxy listener on a Unix socket path or loopback TCP address |
+| `--listen-endpoint <ENDPOINT>` | `/run/tacacs/tacacs.sock` | Unix domain socket path (Linux) or TCP address (other platforms) |
+| `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Optional TACACS+ proxy listener on a Unix domain socket path or loopback TCP address |
 | `--service-mode <MODE>` | `client-api`, or `both` when `--proxy-endpoint` is set | Runtime services to host: `client-api`, `tacacs-proxy`, or `both` |
-| `--socket-mode <MODE>` | `660` | File permission mode for the Unix socket (octal) |
+| `--socket-mode <MODE>` | `660` | File permission mode for the Unix domain socket (octal) |
 | `--host-integration <MODE>` | `auto` | Host adapter: `auto`, `none`, or strict `systemd` |
 
 ### Runtime Service Modes
@@ -69,9 +69,9 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 
 | Mode | Services hosted | Required endpoint flags |
 |------|-----------------|-------------------------|
-| `client-api` | gRPC/protobuf client API only | `--listen-endpoint` optional; defaults to the platform local endpoint |
+| `client-api` | gRPC/protobuf client API only | `--listen-endpoint` optional, defaults to the platform local endpoint |
 | `tacacs-proxy` | raw TACACS+ proxy only | `--proxy-endpoint` required |
-| `both` | client API and raw TACACS+ proxy | `--proxy-endpoint` required; `--listen-endpoint` optional |
+| `both` | client API and raw TACACS+ proxy | `--proxy-endpoint` required, `--listen-endpoint` optional |
 
 If `--service-mode` is omitted, the daemon preserves the old behavior: it runs `client-api` by default, and switches to `both` when `--proxy-endpoint` is supplied. Configurations with no hosted services are rejected.
 
@@ -83,19 +83,23 @@ For a host-by-host cutover plan from plain TACACS+ clients such as `pam_tacplus`
 
 Proxy mode preserves TACACS+ packet bodies while managing session routing:
 
-- A downstream connection may carry multiple concurrent TACACS+ session IDs.
+- A downstream connection can carry multiple concurrent TACACS+ session IDs.
 - Each downstream session owns one sequential upstream conversation with independent sequence validation.
-- Different sessions may receive replies out of request order. One downstream writer serializes the resulting packets onto the TCP stream.
+- Different sessions can receive replies out of request order. One downstream writer serializes the resulting packets onto the TCP stream.
 - Per-session input and connection reply queues are bounded to apply backpressure.
 - Packet bodies are forwarded unchanged. The proxy rewrites only session IDs and the locally advertised single-connect flag.
 - The proxy advertises single-connect support based on its own downstream multiplexer, not the selected upstream server's flag.
 - Accounting and authorization conversations close after one reply. Authentication conversations continue across challenge replies and close when the reply status is terminal.
-- `FOLLOW` replies are forwarded to the downstream client and then the connection is closed. Per RFC 8907, authorization and accounting `FOLLOW` use the authentication `FOLLOW` behavior; authentication `FOLLOW` is treated like `FAIL`.
-- Authentication `RESTART` replies are forwarded and complete that session. A restarted sequence uses a new session ID and sequence number 1 as required by RFC 8907; the downstream TCP connection may remain open.
+- `FOLLOW` replies are forwarded to the downstream client and complete that session. Per RFC 8907, authorization and accounting `FOLLOW` use the authentication `FOLLOW` behavior. Authentication `FOLLOW` is treated like `FAIL`.
+- Authentication `RESTART` replies are forwarded and complete that session. A restarted sequence uses a new session ID and sequence number 1, as required by RFC 8907. The downstream TCP connection can remain open.
 
 Proxy TCP endpoints must be loopback addresses. Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. When `client-api` and `tacacs-proxy` run together, the proxy endpoint must be different from `--listen-endpoint`.
 
-Downstream TACACS+ obfuscation is independent of the selected upstream transport. In SONiC mode, the daemon filters rows that target its own loopback proxy and uses the highest-priority matching row's resolved `passkey` for the local hop. Outside SONiC mode, use `--proxy-shared-secret`. If neither source provides a local-hop secret, downstream clients must send unobfuscated TACACS+ packets. Upstream failover never changes the downstream secret.
+Downstream TACACS+ obfuscation is independent of the selected upstream transport. In SONiC mode, the daemon filters rows that target its loopback proxy.
+
+The daemon uses the highest-priority row's resolved `passkey` for the local hop. Outside SONiC mode, use `--proxy-shared-secret`.
+
+If neither source provides a local-hop secret, downstream clients must send unobfuscated TACACS+ packets. Upstream failover never changes the downstream shared secret.
 
 ### Upstream Encryption
 
@@ -116,8 +120,8 @@ Downstream TACACS+ obfuscation is independent of the selected upstream transport
 When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemon present a TLS client identity to upstream TACACS+ servers.
 
 - Provide both flags together.
-- Both files may be PEM or DER. PEM input is detected at runtime and normalized to DER internally before the daemon builds its runtime connection settings.
-- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags; provide PEM or DER certificate/key material instead.
+- Both files can be PEM or DER. The daemon detects PEM input and converts it to DER before it builds the runtime connection configuration.
+- Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags. Provide PEM or DER certificate and private-key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If upstream TLS material is loaded through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 
 ### Timeouts and Failover
@@ -125,7 +129,7 @@ When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemo
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections |
-| `--preferred-probe-interval-seconds <SECS>` | `30` | How often to check if the preferred server has recovered |
+| `--preferred-probe-interval-seconds <SECS>` | `30` | Probe interval for recovery of the preferred server |
 
 ### Debugging
 
@@ -136,7 +140,7 @@ When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemo
 | `-vvv` | Debug |
 | `-vvvv` | Trace |
 
-## Failover Behaviour
+## Failover Behavior
 
 Servers are tried in the order they are specified. The first server (`--server-addr` index 0) is always the preferred server.
 
@@ -168,21 +172,25 @@ Servers are tried in the order they are specified. The first server (`--server-a
 
 While failed over to a backup server, the daemon periodically probes the preferred server (index 0) at the configured interval. When a probe succeeds, traffic is automatically routed back to the preferred server.
 
-### Reconnect Behaviour
+### Reconnect Behavior
 
 When multiple IPC requests arrive simultaneously during a reconnect, only one connection attempt runs per server. Other callers wait for the result rather than triggering duplicate TLS handshakes.
 
 ## Startup Warm-up
 
-On startup the daemon attempts to connect to servers in order and stops at the first success. This prevents connection storms when many instances start simultaneously (e.g. during a fleet rollout). If no server is reachable at startup, the daemon still starts and requests will retry on demand.
+On startup, the daemon attempts to connect to servers in order and stops at the first success. This prevents connection storms when many instances start at the same time, for example during a fleet rollout. If no server is reachable at startup, the daemon still starts, and requests retry on demand.
 
 SONiC ConfigDB is supervised differently from local CLI or file input. Before constructing the service, the daemon waits for a valid `TACPLUS_FORWARDER|global` row and uses its loopback address and port for the raw TACACS+ proxy listener. SONiC mode always hosts both the Client API and proxy. A conflicting `--proxy-endpoint` or non-`both` service mode is rejected. Ctrl-C or SIGTERM cancels this pre-bind retry.
 
-After forwarder bootstrap, the daemon binds both listeners with an empty upstream configuration, reports startup/readiness as not serving, and retries server and credential dependencies with capped jittered backoff. Each candidate is loaded, filtered, bundle-enumerated, completely resolved through the SONiC provider, materialized into generated inline server fields, and validated before one atomic apply. A missing provider root or object therefore cannot apply a partial server list.
+After forwarder bootstrap, the daemon binds both listeners with an empty upstream configuration and reports startup and readiness as not serving. It then retries server and credential dependencies with capped jittered backoff. Each candidate is loaded, filtered, bundle-enumerated, completely resolved through the SONiC provider, materialized into generated inline server fields, and validated before one atomic apply. A missing provider root or object therefore cannot apply a partial server list.
 
-When Redis and every referenced credential become available, the same process applies the first complete snapshot and becomes ready. Subscription failures and ended streams trigger a fresh load before resubscription. Invalid ConfigDB or credential candidates leave the previous known-good runtime configuration active and mark health degraded. The reload-safe provider reopens the root for each candidate, so a credential mount that appears after startup and an explicitly replaced provider root can recover without restarting the process.
+When Redis and every referenced credential become available, the same process applies the first complete snapshot and becomes ready. Subscription failures and ended streams trigger a fresh load before resubscription. Invalid ConfigDB or credential candidates leave the previous known-good runtime configuration active and mark health degraded. The reload-safe provider reopens the root for each candidate. This lets a credential mount that appears after startup, or an explicitly replaced provider root, recover without a process restart.
 
-Post-bind forwarder changes are validated with the same complete ConfigDB snapshot as live upstream changes. Upstream server and credential updates continue to apply, while changed or deleted forwarder settings leave active endpoints unchanged and add a sanitized restart-required degradation. Restoring the bound values clears that degradation; malformed rows are rejected without claiming either listener changed.
+The daemon validates forwarder changes against the same complete ConfigDB snapshot as live upstream changes. Server and credential updates continue to apply.
+
+Changes to the forwarder configuration do not change active endpoints. Instead, the daemon reports a sanitized, restart-required degradation.
+
+The daemon clears this degradation after the bound values return. It rejects malformed rows without reporting a listener change.
 
 ## Health and Probes
 
@@ -218,11 +226,11 @@ The health endpoint exists only when `client-api` is enabled. A proxy-only proce
 
 ## Host Integration
 
-`--host-integration auto` selects systemd only when `NOTIFY_SOCKET` is present. `none` never invokes a host API and is the container setting. Explicit `systemd` requires both `NOTIFY_SOCKET` and `systemd-notify`; missing prerequisites and runtime notification failures are fatal. Systemd receives a waiting status before readiness, `READY=1` exactly once, sanitized degraded status updates, and `STOPPING=1` before listener drain.
+`--host-integration auto` selects systemd only when `NOTIFY_SOCKET` is present. `none` never invokes a host API and is the container setting. Explicit `systemd` requires both `NOTIFY_SOCKET` and `systemd-notify`. Missing prerequisites and runtime notification failures are fatal. Systemd receives a waiting status before readiness, `READY=1` exactly once, sanitized degraded status updates, and `STOPPING=1` before listener drain.
 
 ## IPC Protocol
 
-The daemon communicates with clients via gRPC over Unix domain sockets (Linux) or loopback TCP (other platforms). The protocol is defined in protobuf:
+The daemon communicates with clients through gRPC over Unix domain sockets (Linux) or loopback TCP (other platforms). The protobuf file defines the protocol:
 
 **Available RPCs:**
 
@@ -230,14 +238,16 @@ The daemon communicates with clients via gRPC over Unix domain sockets (Linux) o
 |-----------------|--------------------------------------|
 | `AuthenticatePap` | Authenticate one username/password pair with fixed PAP |
 | `Accounting`    | Record user activity (unary)         |
-| `Authorization` | Check command authorization (unary)  |
+| `Authorization` | Authorize a command (unary)  |
 
 Typed authentication intentionally exposes PAP only. Interactive ASCII remains
 available through the raw TACACS+ proxy. Authorization requests carry explicit
-ASCII, PAP, or unauthenticated context; shell-session profile retrieval uses
+ASCII, PAP, or unauthenticated context. Shell-session profile retrieval uses
 `service=shell` with an empty `cmd` value.
 
-**Error responses** include a `retriable` flag. When `true`, the client should retry the request — this typically means the daemon is reconnecting to a different upstream server.
+**Error responses** include a `retriable` flag. When this flag is set, the client can retry the request.
+
+A `true` value usually means that the daemon is reconnecting to a different upstream server.
 
 The optional TACACS+ proxy endpoint is separate from IPC. It accepts raw TACACS+ packets and is configured with `--proxy-endpoint`.
 
@@ -341,7 +351,7 @@ tacacsrs-agentd \
     --shared-secret "shared_secret"
 ```
 
-### Loading a YANG JSON config
+### Loading a YANG JSON configuration
 
 ```bash
 tacacsrs-agentd \
@@ -353,4 +363,4 @@ When `--config` is used, upstream server definitions are loaded from the `ietf-s
 
 ## Connection Reuse
 
-The daemon maintains persistent upstream connections and multiplexes TACACS+ sessions over them. This avoids TCP/TLS handshake overhead for every request. When a connection can no longer accept new sessions (e.g. the server does not support single-connect mode), the daemon transparently reconnects.
+The daemon maintains persistent upstream connections and multiplexes TACACS+ sessions over them. This avoids TCP/TLS handshake overhead for every request. When a connection can no longer accept new sessions, for example because the server does not support single-connect mode, the daemon reconnects automatically.

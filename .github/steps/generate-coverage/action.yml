@@ -1,5 +1,5 @@
 name: Generate Coverage
-description: Generate code coverage report with summary and HTML artifact
+description: Generate a code-coverage report, a summary, and an HTML artifact
 
 inputs:
   output-path:
@@ -7,7 +7,7 @@ inputs:
     required: false
     default: 'lcov.info'
   fail-under-lines:
-    description: 'Fail if line coverage is below this percentage (0 to disable)'
+    description: 'If line coverage is less than this percentage, stop with an error. Use 0 to disable this limit.'
     required: false
     default: '0'
 
@@ -56,7 +56,7 @@ runs:
         name: coverage-report
         path: coverage-html/
 
-    - name: Check minimum coverage
+    - name: Make sure that coverage meets the minimum
       if: inputs.fail-under-lines != '0'
       shell: bash
       run: cargo llvm-cov report --fail-under-lines ${{ inputs.fail-under-lines }}

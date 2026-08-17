@@ -43,13 +43,11 @@ pub(super) async fn serve(
     }
 }
 
-/// Grace period for in-flight proxy connections to finish after shutdown begins
-/// before they are force-aborted.
+/// Time for active proxy connections to finish before forced cancellation.
 ///
-/// Bounds process exit: a client that keeps sending valid traffic after
-/// shutdown cannot delay termination beyond this window. Sized to let a normal
-/// in-flight authorization or accounting exchange complete while staying well
-/// under a typical container termination grace period.
+/// This limit prevents a client from delaying process termination with
+/// continuous valid traffic. It gives a normal authorization or accounting
+/// exchange time to finish.
 const PROXY_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 async fn accept_loop<Listener, Stream>(
@@ -68,7 +66,7 @@ where
     loop {
         tokio::select! {
             () = &mut shutdown => {
-                log::info!("Shutdown signal received; stopping TACACS+ proxy listener on {endpoint_label}");
+                log::info!("Received a shutdown signal; stopping the TACACS+ proxy listener on {endpoint_label}");
                 break;
             }
             accepted = listener.accept_proxy_stream() => {
@@ -77,7 +75,7 @@ where
                 let service = service.clone();
                 connections.spawn(async move {
                     if let Err(error) = service.handle_connection(stream, peer_label.clone(), request_guard).await {
-                        log::warn!("TACACS+ proxy connection {peer_label} closed with error: {error:#}");
+                        log::warn!("TACACS+ proxy connection {peer_label} stopped with an error: {error:#}");
                     }
                 });
             }
@@ -91,9 +89,9 @@ where
 
 /// Drains owned proxy connection tasks with a bounded grace period.
 ///
-/// In-flight connections are given `grace` to finish on their own; any that are
-/// still running when the deadline elapses are aborted and joined, so shutdown
-/// always completes within the bound regardless of downstream client behaviour.
+/// Active connections have `grace` to finish. When the time expires, this
+/// function cancels and joins the remaining tasks. Thus, a downstream client
+/// cannot make shutdown exceed the limit.
 async fn drain_connections(mut connections: JoinSet<()>, grace: Duration, endpoint_label: &str) {
     if connections.is_empty() {
         return;
@@ -106,7 +104,7 @@ async fn drain_connections(mut connections: JoinSet<()>, grace: Duration, endpoi
         tokio::select! {
             () = &mut deadline => {
                 log::warn!(
-                    "Grace period elapsed; aborting {} in-flight TACACS+ proxy connection(s) on {endpoint_label}",
+                    "The shutdown time limit expired; cancelling {} active TACACS+ proxy connection(s) on {endpoint_label}",
                     connections.len()
                 );
                 connections.shutdown().await;
@@ -114,7 +112,7 @@ async fn drain_connections(mut connections: JoinSet<()>, grace: Duration, endpoi
             }
             result = connections.join_next() => {
                 if result.is_none() {
-                    log::debug!("All in-flight TACACS+ proxy connections drained on {endpoint_label}");
+                    log::debug!("All active TACACS+ proxy connections stopped on {endpoint_label}");
                     return;
                 }
             }
@@ -138,7 +136,7 @@ mod tests {
     use crate::runtime::RequestTracker;
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio time.
     async fn drain_lets_short_requests_finish_before_the_deadline() {
         let tracker = Arc::new(RequestTracker::default());
         let guard = tracker.start_request();
@@ -153,22 +151,22 @@ mod tests {
 
         assert!(
             start.elapsed() < Duration::from_secs(1),
-            "a short request should finish well before the grace deadline"
+            "a short request must finish before the shutdown time limit"
         );
         tokio::time::timeout(Duration::from_millis(100), tracker.wait_for_active_requests())
             .await
-            .expect("request tracker should reach zero after a clean drain");
+            .expect("the request tracker must reach zero after a clean drain");
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // tokio time not supported
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio time.
     async fn drain_aborts_connections_that_outlast_the_grace_period() {
         let tracker = Arc::new(RequestTracker::default());
         let guard = tracker.start_request();
         let mut connections = JoinSet::new();
         connections.spawn(async move {
             let _guard = guard;
-            // Never completes on its own, modelling a client that keeps sending valid traffic.
+            // Model a client that sends valid traffic continuously.
             std::future::pending::<()>().await;
         });
 
@@ -177,10 +175,10 @@ mod tests {
 
         assert!(
             start.elapsed() < Duration::from_secs(2),
-            "drain must return shortly after the grace deadline"
+            "drain must return soon after the shutdown time limit"
         );
         tokio::time::timeout(Duration::from_millis(100), tracker.wait_for_active_requests())
             .await
-            .expect("aborting the connection must drop its guard so the tracker reaches zero");
+            .expect("cancelling the connection must drop its guard");
     }
 }

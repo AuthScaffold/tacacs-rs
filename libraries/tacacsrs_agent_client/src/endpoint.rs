@@ -2,8 +2,8 @@
 //!
 //! Both the [`ServiceClient`](crate::ServiceClient) and the service-side
 //! listener use [`IpcEndpoint`] to describe the local communication channel.
-//! The same parsing logic is shared so the client and server always agree on
-//! how endpoint strings are interpreted.
+//! Shared parsing makes sure that the client and server interpret endpoint
+//! strings in the same way.
 //!
 //! # Endpoint formats
 //!
@@ -32,9 +32,9 @@ const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 
 /// Local IPC endpoint used between local consumers and the central service.
 ///
-/// On Unix, the preferred transport is a Unix domain socket for security (file
-/// permissions) and performance (no TCP overhead). On non-Unix platforms (or
-/// for developer convenience) a loopback TCP socket is accepted instead.
+/// On Unix, the preferred transport is a Unix domain socket. File permissions
+/// control access, and this transport has no TCP overhead. Other platforms
+/// accept a loopback TCP socket.
 ///
 /// # Parsing
 ///
@@ -48,8 +48,8 @@ const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 /// assert!(matches!(tcp, IpcEndpoint::Tcp(_)));
 /// ```
 ///
-/// Empty strings are explicitly rejected so configuration mistakes are
-/// surfaced early rather than silently falling back to a default.
+/// The parser rejects an empty string. This behavior reports configuration
+/// errors instead of silently using a default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IpcEndpoint {
     /// Unix domain socket endpoint used for Linux-style local IPC.
@@ -61,23 +61,20 @@ pub enum IpcEndpoint {
 
     /// Loopback TCP fallback used for non-Unix developer workflows.
     ///
-    /// The service enforces that the address is loopback-only at bind time to
-    /// prevent accidental exposure on a network interface.
+    /// At bind time, the service makes sure that this address is loopback-only.
+    /// This restriction prevents exposure on a network interface.
     Tcp(SocketAddr),
 }
 
 impl IpcEndpoint {
-    /// Returns the platform default local endpoint used when callers opt into
-    /// the built-in default rather than supplying an explicit configuration
-    /// value.
+    /// Returns the default local IPC endpoint for this platform.
     ///
     /// | Platform | Default |
     /// |----------|---------|
     /// | Unix | `/run/tacacs/tacacs.sock` |
     /// | Non-Unix | `127.0.0.1:9049` |
     ///
-    /// This is not used implicitly by [`FromStr`]. Passing an empty string is
-    /// still an error so configuration mistakes are surfaced early.
+    /// [`FromStr`] does not use this default. An empty string remains an error.
     #[must_use]
     pub fn default_local() -> Self {
         #[cfg(unix)]
@@ -97,14 +94,14 @@ impl FromStr for IpcEndpoint {
 
     /// Parses an IPC endpoint string.
     ///
-    /// On Unix, values containing `/` are interpreted as filesystem paths for
-    /// Unix domain sockets. All other values are parsed as `host:port` TCP
-    /// socket addresses. Empty strings are rejected.
+    /// On Unix, the parser treats a value that contains `/` as a Unix domain
+    /// socket path. It parses all other values as `host:port` TCP socket
+    /// addresses. It rejects empty strings.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let value = value.trim();
         if value.is_empty() {
             bail!(
-                "IPC endpoint cannot be empty; expected a Unix socket path or loopback host:port"
+                "IPC endpoint cannot be empty; expected a Unix domain socket path or loopback host:port"
             );
         }
 
@@ -133,7 +130,7 @@ pub async fn connect_channel(endpoint: &IpcEndpoint) -> anyhow::Result<Channel> 
             let path = path.clone();
             let connect_path = path.clone();
             Endpoint::try_from(UDS_GRPC_CONNECT_URI)
-                .context("Failed to build Unix IPC gRPC endpoint")?
+                .context("Failed to build the Unix domain socket gRPC endpoint")?
                 .connect_with_connector(service_fn(move |_: Uri| {
                     let path = connect_path.clone();
                     async move {
@@ -143,13 +140,15 @@ pub async fn connect_channel(endpoint: &IpcEndpoint) -> anyhow::Result<Channel> 
                     }
                 }))
                 .await
-                .with_context(|| format!("Failed to connect to service socket {}", path.display()))
+                .with_context(|| {
+                    format!("Failed to connect to service Unix domain socket {}", path.display())
+                })
         }
         IpcEndpoint::Tcp(address) => Endpoint::from_shared(format!("http://{address}"))
-            .context("Failed to build TCP IPC gRPC endpoint")?
+            .context("Failed to build the TCP IPC gRPC endpoint")?
             .connect()
             .await
-            .with_context(|| format!("Failed to connect to service endpoint {address}")),
+            .with_context(|| format!("Failed to connect to service IPC endpoint {address}")),
     }
 }
 
@@ -169,7 +168,7 @@ mod tests {
     fn test_tcp_endpoint_string_parses() {
         let endpoint = "127.0.0.1:9049"
             .parse::<IpcEndpoint>()
-            .expect("tcp endpoint should parse");
+            .expect("TCP IPC endpoint must parse");
         assert!(matches!(endpoint, IpcEndpoint::Tcp(_)));
     }
 
@@ -178,7 +177,7 @@ mod tests {
     fn test_unix_endpoint_string_parses() {
         let endpoint = "/run/tacacs/tacacs.sock"
             .parse::<IpcEndpoint>()
-            .expect("unix endpoint should parse");
+            .expect("Unix domain socket IPC endpoint must parse");
         assert!(matches!(endpoint, IpcEndpoint::Unix(_)));
     }
 }

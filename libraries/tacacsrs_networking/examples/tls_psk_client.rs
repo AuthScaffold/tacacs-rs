@@ -1,5 +1,4 @@
-//! Demonstrates establishing a TLS 1.3 PSK connection through the public client
-//! session API.
+//! Shows how to establish a TLS 1.3 PSK connection through the public client API.
 
 use env_logger::Env;
 use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerType};
@@ -43,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
         }))
         .await?;
 
-    println!("Received accounting response: {response:#?}");
+    println!("Accounting response: {response:#?}");
 
     Ok(())
 }

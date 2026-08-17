@@ -63,7 +63,7 @@ pub(super) fn direct_authorization_exchange(
     }
 }
 
-/// Executes a single batch request on a session
+/// Runs a single batch request over a connection.
 pub(super) async fn execute_single_request(
     connection: &Connection,
     request: &BatchRequest,
@@ -92,7 +92,7 @@ pub(super) async fn execute_single_request(
         }
         BatchRequest::Authentication(req) => {
             Err(format!(
-                "PAP authentication is not supported in batch files; use the authentication command with a prompt or --password-stdin (user: {})",
+                "PAP authentication is not supported in batch files. Use the authentication command with a prompt or --password-stdin (user: {})",
                 req.user
             ))
         }
@@ -116,7 +116,7 @@ pub(super) fn load_test_iterations(
     })
 }
 
-/// Executes load test iterations with controlled concurrency.
+/// Runs load test iterations with controlled concurrency.
 pub(super) async fn run_load_test<'a, I, F, Fut>(
     total_requests: usize,
     iterations: I,
@@ -169,7 +169,7 @@ where
     build_load_test_result(start_time, total_requests, &results, failure_msg)
 }
 
-/// Builds the final load test result from execution data
+/// Builds the final load test result from run data.
 fn build_load_test_result(
     start_time: Instant,
     total_requests: usize,

@@ -1,63 +1,64 @@
 <#
 .SYNOPSIS
-    Runs the reusable CI pipeline pre-tests stage locally.
+    Runs the reusable CI pipeline `pre-tests` job locally.
 
 .DESCRIPTION
-    Mirrors .github/workflows/reusable-pipeline.yml job `pre-tests` for the
-    selected matrix entry. The script installs Rust toolchains, components, and
-    targets through rustup, checks formatting, runs cargo-udeps, clippy, clippy
-    nursery advisory lints, documentation, Linux GNU metadata checks, and the
-    Linux Debian package validation helper.
+    Uses the `pre-tests` job from .github/workflows/reusable-pipeline.yml for the
+    selected matrix entry. The script uses rustup to install Rust components.
+    It makes sure that formatting is correct. It runs cargo-udeps and Clippy.
+    It builds the documentation.
+    It can also run advisory Clippy nursery lints and Linux GNU metadata validation.
+    The Linux entry can run the Debian package validation helper.
 
-    By default the script runs the matrix entry for the current OS. On Windows
-    this is the Windows MSVC entry. Run the Linux entries from Linux or WSL with
-    PowerShell installed.
+    By default, the script runs the matrix entry for the current OS.
+    On Windows, it runs the Windows MSVC entry.
+    On Linux or WSL, run the Linux entries with PowerShell.
 
 .PARAMETER Matrix
-    Matrix entry to run: Local, WindowsMsvc, LinuxGnu, or All.
+    The matrix entry: Local, WindowsMsvc, LinuxGnu, or All.
 
 .PARAMETER Task
-    Pre-test task or tasks to run. Defaults to All. Explicit task selection
-    overrides the Include* toggles for that task.
+    One or more pre-test tasks. The default is All.
+    An explicit task selection overrides the corresponding Include* parameter.
 
-    Debian package validation is available as the `DebianPackages` task and only
-    runs in the Linux GNU matrix entry.
+    The `DebianPackages` task runs Debian package validation.
+    This task is available only in the Linux GNU matrix entry.
 
 .PARAMETER FixFormatting
-    Run cargo +nightly fmt --all before the CI formatting check.
+    Runs `cargo +nightly fmt --all` before the CI formatting validation.
 
 .PARAMETER ApplyFixes
-    Automatically run available fixes for each selected test before running the
-    corresponding check. The shorter -Fix alias is also supported.
+    Runs available fixes before each selected validation.
+    You can also use the shorter -Fix alias.
 
 .PARAMETER IncludeFmt
-    Include the rustfmt check. Matches the workflow_call include-fmt input.
+    Includes the rustfmt validation. Matches the workflow_call include-fmt input.
 
 .PARAMETER IncludeClippyNursery
-    Include advisory clippy nursery lints.
+    Includes advisory Clippy nursery lints.
 
 .PARAMETER IncludeOutdated
-    Include cargo outdated in metadata checks.
+    Includes cargo-outdated in the metadata validation.
 
 .PARAMETER IncludeProtoCompat
-    Include advisory buf protobuf compatibility checks in metadata checks.
+    Includes the advisory buf compatibility validation for protobuf in the metadata validation.
 
 .PARAMETER SkipAuditIfNoDepChanges
-    Skip cargo audit when Cargo.toml and Cargo.lock did not change relative to
-    ChangeBase or the working tree.
+    Skips cargo-audit if Cargo.toml and Cargo.lock did not change.
+    The comparison uses ChangeBase or the working tree.
 
 .PARAMETER ChangeBase
-    Optional git ref used when SkipAuditIfNoDepChanges is set.
+    The optional Git reference for SkipAuditIfNoDepChanges.
 
 .PARAMETER ProtoCompatRef
-    Git ref used for buf breaking --against. Defaults to main, matching CI.
+    The Git reference for `buf breaking --against`. The default matches CI: main.
 
 .PARAMETER InstallMissingCargoTools
-    Install missing cargo-udeps, cargo-audit, and cargo-outdated tools with
-    cargo install --locked. Defaults to true.
+    Installs missing cargo-udeps, cargo-audit, and cargo-outdated tools.
+    The script runs `cargo install --locked`. The default is true.
 
 .PARAMETER SkipSystemDependencyChecks
-    Skip local checks for OpenSSL and Linux native packages.
+    Skips validation of OpenSSL and native Linux packages.
 
 .EXAMPLE
     .\lde\run-pre-tests.ps1
@@ -237,11 +238,11 @@ function Invoke-CheckedCommand {
 
     if ($exitCode -ne 0) {
         if ($Advisory) {
-            Write-Warning "Advisory command failed with exit code ${exitCode}: $display"
+            Write-Warning "The advisory command returned exit code ${exitCode}: $display"
             return
         }
 
-        throw "Command failed with exit code ${exitCode}: $display"
+        throw "The command returned exit code ${exitCode}: $display"
     }
 }
 
@@ -412,7 +413,7 @@ function Assert-CargoTool {
         throw "cargo $CargoSubcommand is not installed. Install it with: cargo install $CrateName --locked"
     }
 
-    Write-Host "Installing $CrateName..." -ForegroundColor Yellow
+    Write-Host "Install $CrateName." -ForegroundColor Yellow
     Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('install', $CrateName, '--locked')
 }
 
@@ -462,12 +463,12 @@ function Set-WindowsOpenSslEnvironment {
     if (Test-Path $vcpkgOpenSsl) {
         $env:OPENSSL_DIR = $vcpkgOpenSsl
         $env:OPENSSL_LIB_DIR = Join-Path $vcpkgOpenSsl 'lib'
-        Write-Host "OpenSSL configured from $vcpkgOpenSsl" -ForegroundColor DarkGray
+        Write-Host "The OpenSSL configuration uses $vcpkgOpenSsl." -ForegroundColor DarkGray
         return
     }
 
     if (Test-CommandExists 'vcpkg') {
-        Write-Host 'Installing OpenSSL through vcpkg...' -ForegroundColor Yellow
+        Write-Host 'Install OpenSSL through vcpkg.' -ForegroundColor Yellow
         Invoke-CheckedCommand -FilePath 'vcpkg' -Arguments @('install', 'openssl:x64-windows')
         Invoke-CheckedCommand -FilePath 'vcpkg' -Arguments @('integrate', 'install')
         if (Test-Path $vcpkgOpenSsl) {
@@ -477,7 +478,7 @@ function Set-WindowsOpenSslEnvironment {
         }
     }
 
-    throw 'OpenSSL for x64-windows was not found. Install vcpkg OpenSSL or set OPENSSL_DIR before running all-features checks.'
+    throw 'OpenSSL for x64-windows was not found. Before you run all-features validation, install vcpkg OpenSSL or set OPENSSL_DIR.'
 }
 
 function Get-ChangedFiles {
@@ -520,7 +521,7 @@ function Confirm-ProtoCompatRef {
 
     & git rev-parse --verify $RefName *> $null
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "Ref '$RefName' already exists locally" -ForegroundColor DarkGray
+        Write-Host "The Git reference '$RefName' already exists locally." -ForegroundColor DarkGray
         return
     }
 
@@ -528,11 +529,11 @@ function Confirm-ProtoCompatRef {
     & git rev-parse --verify $originRef *> $null
     if ($LASTEXITCODE -eq 0) {
         Invoke-CheckedCommand -FilePath 'git' -Arguments @('branch', $RefName, $originRef)
-        Write-Host "Created local branch '$RefName' from '$originRef'" -ForegroundColor DarkGray
+        Write-Host "Created the local branch '$RefName' from '$originRef'." -ForegroundColor DarkGray
         return
     }
 
-    throw "Ref '$RefName' not found locally or on origin."
+    throw "The Git reference '$RefName' was not found locally or on origin."
 }
 
 function Invoke-PreTestsForConfig {
@@ -579,12 +580,12 @@ function Invoke-PreTestsForConfig {
     }
 
     if (Test-OptionalTaskSelected -Name 'CheckFormatting' -Include $IncludeFmt) {
-        Write-Host "`n--- Check formatting ---" -ForegroundColor Yellow
+        Write-Host "`n--- Make sure that formatting is correct ---" -ForegroundColor Yellow
         Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('+nightly', 'fmt', '--all', '--', '--check')
     }
 
     if (Test-TaskSelected -Name 'Udeps') {
-        Write-Host "`n--- Check unused dependencies ---" -ForegroundColor Yellow
+        Write-Host "`n--- Find unused dependencies ---" -ForegroundColor Yellow
         Assert-CargoTool -CargoSubcommand 'udeps' -CrateName 'cargo-udeps' -Toolchain 'nightly'
         $udepsCommand = @('+nightly', 'udeps', '--workspace', '--all-targets', '--target', $Config.Target) + $Config.FeatureArgs
         Invoke-CheckedCommand -FilePath 'cargo' -Arguments $udepsCommand
@@ -607,8 +608,8 @@ function Invoke-PreTestsForConfig {
     }
 
     if (Test-OptionalTaskSelected -Name 'ClippyNursery' -Include $IncludeClippyNursery) {
-        # Probably a bad idea since the Clippy Nursery is very opinionated about drop and const stuff that
-        # sometimes doesn't matter....
+        # Automatic fixes for Clippy nursery lints can change intentional `drop`
+        # and `const` code. Keep these fixes disabled.
         # if (Test-AutoFixSelected -Name 'ClippyNursery') {
         #     Write-Host "`n--- Fix Clippy nursery suggestions ---" -ForegroundColor Yellow
         #     Invoke-ClippyFix -Config $Config -LintArgs @('-W', 'clippy::nursery')
@@ -639,19 +640,19 @@ function Invoke-PreTestsForConfig {
                 Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('audit')
             }
             else {
-                Write-Host 'Skipping audit - no dependency changes detected' -ForegroundColor DarkGray
+                Write-Host 'The audit did not run because no dependencies changed.' -ForegroundColor DarkGray
             }
         }
 
         if (Test-OptionalTaskSelected -Name 'Outdated' -Include $IncludeOutdated) {
-            Write-Host "`n--- Check outdated dependencies ---" -ForegroundColor Yellow
+            Write-Host "`n--- Find outdated dependencies ---" -ForegroundColor Yellow
             Assert-CargoTool -CargoSubcommand 'outdated' -CrateName 'cargo-outdated'
             Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('outdated', '--workspace', '--exit-code', '1')
         }
 
         if (Test-OptionalTaskSelected -Name 'ProtoCompat' -Include $IncludeProtoCompat) {
             Write-Host "`n--- Protobuf compatibility (advisory) ---" -ForegroundColor Yellow
-            Assert-CommandExists -Name 'buf' -InstallHint 'Install buf from https://buf.build/docs/installation before running protobuf compatibility checks.'
+            Assert-CommandExists -Name 'buf' -InstallHint 'Before you run protobuf compatibility validation, install buf from https://buf.build/docs/installation.'
             Confirm-ProtoCompatRef -RefName $ProtoCompatRef
             Invoke-CheckedCommand -FilePath 'buf' -Arguments @('breaking', '--against', ".git#branch=$ProtoCompatRef") -Advisory
         }

@@ -11,27 +11,25 @@ use tacacsrs_networking::ClientConversation;
 use tacacsrs_flows::authentication::PapAuthenticationExchange;
 
 #[async_trait]
-/// Abstracts a single persistent TACACS+ server connection used by the service.
+/// Provides one persistent connection to a TACACS+ server.
 ///
-/// This trait is the seam between the service's failover state machine and the
-/// actual network I/O. Production code wraps a [`tacacsrs_networking::TacacsClient`];
-/// tests inject fakes that simulate failures, single-session servers, and
-/// connection delays.
+/// This trait separates the service failover state from network I/O. Production
+/// code wraps a [`tacacsrs_networking::TacacsClient`]. Tests use fakes to
+/// simulate failures, servers that permit one session, and connection delays.
 pub(crate) trait UpstreamConnection: Send + Sync {
     /// Returns the `host:port` address string for this upstream server.
     fn server_address(&self) -> &str;
 
     /// Stops this cached connection from accepting new TACACS+ sessions.
     ///
-    /// Existing sessions that have already been created are allowed to drain
-    /// through the networking runtime. The service calls this when a datastore
-    /// reload removes or replaces a server definition.
+    /// Existing sessions can finish through the networking runtime. The service
+    /// calls this method when a datastore reload removes or replaces a server.
     async fn stop_accepting_new_sessions(&self);
 
     /// Creates a raw TACACS+ packet session against this upstream server.
     ///
-    /// The caller is responsible for sending and receiving TACACS+ packets over
-    /// the returned session and marking it complete when proxying finishes.
+    /// The caller sends and receives TACACS+ packets through the returned
+    /// session. The caller marks the session complete when proxying stops.
     ///
     /// # Errors
     ///
@@ -46,7 +44,7 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// exchange fails at the TACACS+ protocol level.
     async fn send_accounting(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply>;
 
-    /// Executes one fixed PAP authentication exchange.
+    /// Runs one fixed PAP authentication exchange.
     async fn authenticate_pap(
         &self,
         exchange: PapAuthenticationExchange,
@@ -65,13 +63,13 @@ pub(crate) trait UpstreamConnection: Send + Sync {
 }
 
 #[async_trait]
-/// Creates upstream connections for a configured TACACS+ server.
+/// Creates connections to a configured TACACS+ server.
 ///
-/// The connector is called by [`UpstreamManager`](crate::upstream::manager::UpstreamManager)
-/// whenever a fresh upstream connection manager is needed, such as during
-/// startup warm-up or after a previous operation failed.
+/// [`UpstreamManager`](crate::upstream::manager::UpstreamManager) calls the
+/// connector when it needs a new connection. This occurs during startup warm-up
+/// or after an operation fails.
 pub(crate) trait UpstreamConnector: Send + Sync {
-    /// Establishes a new upstream connection manager for the given TACACS+ server.
+    /// Opens a new connection to the specified TACACS+ server.
     ///
     /// # Errors
     ///

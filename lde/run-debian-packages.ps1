@@ -1,30 +1,28 @@
 <#
 .SYNOPSIS
-    Builds and verifies TACACS-rs Debian packages locally on Linux.
+    Builds TACACS-rs Debian packages locally on Linux.
 
 .DESCRIPTION
-    Mirrors the Linux GNU packaging flow used by the shared CI pipeline for the
-    official TACACS-rs Debian packages. The script builds the Linux artifacts,
-    generates package-local changelog, man page, and SBOM assets, runs
-    `cargo deb --no-build --dbgsym`, executes `lintian`, displays package
-    metadata, and copies the resulting `.deb` and `.ddeb` files into
-    `packaged/`.
+    Uses the Linux GNU package flow from the shared CI pipeline. The script
+    builds the Linux artifacts and creates the package assets.
+    The assets include the changelog, man page, and SBOM.
+    The script runs `cargo deb --no-build --dbgsym` and `lintian`.
+    It shows package metadata and copies the `.deb` and `.ddeb` files to `packaged/`.
 
-    This script is intended to run from Linux or WSL with PowerShell installed.
+    On Linux or WSL, run this script with PowerShell.
 
 .PARAMETER Package
-    Package or packages to build: All, tacon, tacacsrs-agentd,
-    tacacsrs-bash-plugin.
+    One or more packages: All, tacon, tacacsrs-agentd, or tacacsrs-bash-plugin.
 
 .PARAMETER Target
-    Rust target triple to build. Defaults to x86_64-unknown-linux-gnu.
+    The Rust target triple. The default is x86_64-unknown-linux-gnu.
 
 .PARAMETER InstallMissingCargoTools
-    Install missing cargo-deb and cargo-cyclonedx tools with cargo install
-    --locked. Defaults to true.
+    Installs missing cargo-deb and cargo-cyclonedx tools with `cargo install --locked`.
+    The default is true.
 
 .PARAMETER SkipSystemDependencyChecks
-    Skip local checks for Linux package dependencies.
+    Skips validation of the local Linux package dependencies.
 
 .EXAMPLE
     ./lde/run-debian-packages.ps1
@@ -110,11 +108,11 @@ function Invoke-CheckedCommand {
 
     if ($exitCode -ne 0) {
         if ($Advisory) {
-            Write-Warning "Advisory command failed with exit code ${exitCode}: $display"
+            Write-Warning "The advisory command returned exit code ${exitCode}: $display"
             return
         }
 
-        throw "Command failed with exit code ${exitCode}: $display"
+        throw "The command returned exit code ${exitCode}: $display"
     }
 }
 
@@ -148,7 +146,7 @@ function Assert-CargoTool {
         throw "cargo $CargoSubcommand is not installed. Install it with: cargo install $CrateName --locked"
     }
 
-    Write-Host "Installing $CrateName..." -ForegroundColor Yellow
+    Write-Host "Install $CrateName." -ForegroundColor Yellow
     Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('install', $CrateName, '--locked')
 }
 
@@ -159,12 +157,12 @@ function Enable-GitWorktreeForWsl {
     }
 
     if (-not (Test-Path .git -PathType Leaf)) {
-        throw "git metadata is unavailable in $((Get-Location).Path)"
+        throw "Git metadata was not found in $((Get-Location).Path)"
     }
 
     $gitdirLine = Get-Content .git | Where-Object { $_ -like 'gitdir: *' } | Select-Object -First 1
     if (-not $gitdirLine) {
-        throw "Unable to parse gitdir from $((Get-Location).Path)/.git"
+        throw "The script did not parse gitdir from $((Get-Location).Path)/.git"
     }
 
     $gitdir = $gitdirLine.Substring('gitdir: '.Length).Replace('\', '/')
@@ -179,7 +177,7 @@ function Enable-GitWorktreeForWsl {
 
     & git rev-parse --is-inside-work-tree *> $null
     if ($LASTEXITCODE -ne 0) {
-        throw "Unable to activate git worktree metadata from $gitdir"
+        throw "The script did not activate the Git worktree metadata from $gitdir"
     }
 }
 
@@ -336,7 +334,7 @@ function Invoke-GenerateSboms {
     $jsonSource = Get-ChildItem -Path $Config.PackageRoot -Filter '*.cdx.json' -File | Select-Object -First 1
     $xmlSource = Get-ChildItem -Path $Config.PackageRoot -Filter '*.cdx.xml' -File | Select-Object -First 1
     if (-not $jsonSource -or -not $xmlSource) {
-        throw "Generated SBOM files were not found under $($Config.PackageRoot)"
+        throw "The generated SBOM files were not found under $($Config.PackageRoot)"
     }
 
     $packageDir = Join-Path 'staging' $Config.AssetName
@@ -353,7 +351,7 @@ function Get-GitLogLines {
 
     $lines = @(& git @Arguments)
     if ($LASTEXITCODE -ne 0) {
-        throw "git $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+        throw "The git command returned exit code ${LASTEXITCODE}: git $($Arguments -join ' ')"
     }
 
     return @($lines | Where-Object { $_ -ne $null -and $_ -ne '' })
@@ -442,7 +440,7 @@ function Get-ManPagePath {
         }
     }
 
-    throw "Generated man page not found for $($Config.ManPageName)"
+    throw "The generated man page was not found for $($Config.ManPageName)"
 }
 
 function Invoke-GzipFile {
@@ -461,7 +459,7 @@ function Invoke-GzipFile {
     & gzip @arguments > $Destination
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
-        throw "gzip failed with exit code ${exitCode}: $Source"
+        throw "gzip returned exit code ${exitCode}: $Source"
     }
 }
 
@@ -471,7 +469,7 @@ function Prepare-PackageAssets {
     $artifactFileName = Get-ArtifactFileName -Config $Config
     $artifactPath = Join-Path 'target' "$Target/release/$artifactFileName"
     if (-not (Test-Path $artifactPath -PathType Leaf)) {
-        throw "Expected artifact not found at $artifactPath"
+        throw "The required artifact was not found at $artifactPath"
     }
 
     New-Item -ItemType Directory -Path 'target/release' -Force | Out-Null
@@ -533,7 +531,7 @@ $hostKind = Get-HostKind
 Initialize-RustEnvironment
 
 if ($hostKind -ne 'Linux') {
-    throw 'run-debian-packages.ps1 only supports Linux/WSL. Run it from Linux or WSL with PowerShell installed.'
+    throw 'This script requires Linux or WSL with PowerShell.'
 }
 
 Push-Location $repoRoot

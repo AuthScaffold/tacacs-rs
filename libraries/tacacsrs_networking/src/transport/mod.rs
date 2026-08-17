@@ -1,12 +1,12 @@
 //! Transport implementations and shared abstractions.
 //!
-//! This module organizes transport support into dedicated submodules:
-//! - [`abstractions`] for common transport traits and shared logic
-//! - [`tcp`] for plain TCP transport support
-//! - `tls` for TLS transport support (crate-internal; constructed via
-//!   [`crate::establish::establish_stream`])
-//! - `tls_psk` for TLS-PSK transport support (crate-internal;
-//!   constructed via [`crate::establish::establish_stream`])
+//! This module contains:
+//! - [`abstractions`] for common transport traits and shared logic,
+//! - [`tcp`] for TCP transport,
+//! - `tls` for crate-internal TLS transport, and
+//! - `tls_psk` for crate-internal TLS-PSK transport.
+//!
+//! [`crate::establish::establish_stream`] constructs TLS transports.
 
 pub(crate) mod abstractions;
 pub(crate) mod boxed;

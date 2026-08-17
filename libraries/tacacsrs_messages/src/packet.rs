@@ -25,7 +25,7 @@ impl Packet {
             let expected_length = header.length as usize;
             let actual_length = body.len();
             let error_message = format!(
-                "Invalid body length. Expected: {expected_length}, Actual: {actual_length}"
+                "invalid packet body length: expected {expected_length}, actual {actual_length}"
             );
             return Err(anyhow::Error::msg(error_message));
         }
@@ -56,7 +56,7 @@ impl Packet {
         self
     }
 
-    /// Replaces packet flags without copying its body.
+    /// Replaces the packet flags without copying its body.
     #[must_use]
     pub fn with_flags(mut self, flags: TacacsFlags) -> Self {
         self.header.flags = flags;

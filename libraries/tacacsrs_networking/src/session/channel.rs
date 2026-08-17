@@ -27,7 +27,7 @@ impl DuplexChannel {
         let mut reader_lock = self.receiver.write().await;
         match reader_lock.recv().await {
             Some(response) => Ok(response),
-            None => Err(anyhow::Error::msg("Failed to receive response")),
+            None => Err(anyhow::Error::msg("Failed to receive a TACACS+ response")),
         }
     }
 

@@ -11,16 +11,15 @@ use crate::controller;
 
 /// Rego query path evaluated for every captured IPC request.
 ///
-/// The policy is expected to define a `decision` rule in the `tacacs.emulator`
-/// package that returns the emulator response for the request supplied as Rego
-/// `input`.
+/// The policy must define a `decision` rule in the `tacacs.emulator` package.
+/// The rule returns the emulator response for the request in Rego `input`.
 pub const DECISION_QUERY: &str = "data.tacacs.emulator.decision";
 
 /// An Open Policy Agent policy that drives the emulator.
 ///
-/// The policy is composed of Rego source and a fixed JSON data document. The
-/// data is loaded once when the policy is compiled, and the captured TACACS+
-/// request is supplied as Rego `input` at evaluation time.
+/// The policy contains Rego source and a fixed JSON data document. Compilation
+/// loads the data once. Each evaluation supplies the captured TACACS+ request
+/// as Rego `input`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmulatorPolicy {
     /// Rego policy source.
@@ -134,8 +133,8 @@ impl EmulatorPolicy {
 
 /// The decision produced by evaluating the policy for a single request.
 ///
-/// `delay_ms` is flattened alongside the response so a Rego `decision` object
-/// can specify a response and an optional artificial delay in one object.
+/// `delay_ms` is next to the flattened response. Thus, one Rego `decision`
+/// object can specify a response and an optional simulated delay.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyDecision {
     #[serde(flatten)]

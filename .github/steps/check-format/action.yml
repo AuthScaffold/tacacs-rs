@@ -1,9 +1,9 @@
-name: Check Formatting
+name: Make Sure That Formatting Is Correct
 description: Run rustfmt over the Rust workspace
 
 runs:
   using: composite
   steps:
-    - name: Check formatting
+    - name: Run rustfmt
       shell: bash
       run: cargo +nightly fmt --all -- --check

@@ -1,4 +1,4 @@
-//! Domain request builders shared by agent tests.
+//! Domain request builders for agent tests.
 
 #[cfg(unix)]
 use tacacsrs_agent_client::AccountingOperation;
@@ -23,5 +23,5 @@ pub(crate) fn build_authorization_request() -> AuthorizationOperation {
         .command("show")
         .command_arg("users")
         .build()
-        .expect("test authorization request is valid")
+        .expect("the test authorization request must be valid")
 }

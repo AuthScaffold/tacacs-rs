@@ -10,15 +10,15 @@ use tacacsrs_flows::accounting::AccountingExchange;
 
 use crate::connection::Connection;
 
-/// Sends an accounting request to record command execution.
+/// Sends an accounting request to record a command run.
 ///
 /// # Arguments
 ///
-/// * `session` - The active TACACS+ session, consumed by this one accounting flow
-/// * `user` - Username executing the command
-/// * `port` - Port identifier (e.g., "tty0")
+/// * `connection` - The connection used to send this accounting exchange
+/// * `user` - Username that runs the command
+/// * `port` - Port identifier (for example, "tty0")
 /// * `rem_address` - Remote address of the client
-/// * `cmd` - The command being executed
+/// * `cmd` - The command that the user runs
 /// * `cmd_args` - Optional arguments to the command
 ///
 /// # Returns

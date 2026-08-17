@@ -1,19 +1,18 @@
 //! Thin transport dispatcher that selects the appropriate transport backend
-//! for a [`TacacsPlusServer`] configuration and establishes a stream.
+//! for [`TacacsPlusServer`] configuration and establishes a connection.
 //!
-//! This module deliberately does **not** know how to parse certificates,
-//! private keys, or PSK material. Each transport backend (the crate-internal
-//! `transport::tls` and `transport::tls_psk` modules) owns its own
-//! translation from [`TacacsPlusServer`] to a connected stream. The dispatcher
-//! is only responsible for:
+//! This module does not parse certificates, private keys, or PSK material.
+//! Each crate-internal transport backend (`transport::tls` and
+//! `transport::tls_psk`) translates [`TacacsPlusServer`] into a connection. The
+//! dispatcher:
 //!
-//! - opening the TCP connection (with optional timeout),
-//! - choosing which backend handles the connection, and
-//! - boxing the resulting stream as a [`BoxedTransport`].
+//! - opens the TCP connection with an optional timeout,
+//! - selects the backend, and
+//! - boxes the resulting connection as a [`BoxedTransport`].
 //!
 //! This is the single entry point used by both `tacon` and the
 //! `tacacsrs_agent` daemon when they need to talk to an upstream TACACS+
-//! server.
+//! TACACS+ server.
 
 use std::time::Duration;
 
@@ -28,26 +27,26 @@ use crate::transport::BoxedTransport;
 ///
 /// TACACS+ single-connection mode is intentionally controlled by
 /// [`TacacsPlusServer::single_connection`]. Callers that need dedicated mode
-/// should pass a server value with `single_connection` set to `false`.
+/// must pass a server value with `single_connection` set to `false`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConnectPreflight {
-    /// Do not perform any connection preflight when constructing a client.
+    /// Do not run a connection preflight when constructing a client.
     #[default]
     Disabled,
     /// Send a TACACS+ accounting WATCHDOG request before returning the client.
     ///
     /// When the server configuration enables single-connection mode, this also
-    /// discovers support and promotes the preflight stream if the server echoes
+    /// discovers support and promotes the preflight connection if the server echoes
     /// the single-connect flag.
     AccountingWatchdog,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ConnectOptions {
-    /// Dangerously disable TLS certificate verification.
+    /// Disables TLS certificate verification.
     disable_certificate_verification: bool,
     /// Connection timeout. When `None`, no timeout is applied to the TCP
-    /// connect phase — callers are responsible for their own timeouts.
+    /// connection phase. Callers must apply other timeouts.
     timeout: Option<Duration>,
     /// Optional preflight operation performed by `TacacsClient::connect`.
     preflight: ConnectPreflight,
@@ -81,7 +80,7 @@ impl ConnectOptions {
     }
 }
 
-/// Establishes a transport stream to the server described by `server`.
+/// Establishes a transport connection to the TACACS+ server in `server`.
 ///
 /// The transport type is selected based on the resolved server configuration:
 ///
@@ -92,8 +91,8 @@ impl ConnectOptions {
 /// | `shared-secret` only | Plain TCP |
 /// | no TLS fields and no `shared-secret` | Plain TCP without TACACS+ obfuscation |
 ///
-/// The actual interpretation of the TLS / PSK fields lives in the owning
-/// transport backend — this function only routes between them.
+/// The selected transport backend interprets the TLS or PSK fields. This
+/// function only selects the backend.
 ///
 /// # Errors
 ///
@@ -116,7 +115,7 @@ pub(crate) async fn establish_stream(
     let tcp_stream = match options.timeout {
         Some(dur) => tokio::time::timeout(dur, connect_tcp(&address))
             .await
-            .with_context(|| format!("Timed out connecting to {address}"))?
+            .with_context(|| format!("Connection to TACACS+ server {address} timed out"))?
             .with_context(|| format!("Failed to establish TCP connection to {address}"))?,
         None => connect_tcp(&address)
             .await

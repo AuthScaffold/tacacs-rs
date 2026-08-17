@@ -1,5 +1,5 @@
 name: Security Audit
-description: Run cargo-audit, optionally skipping when dependency manifests are unchanged
+description: Run cargo-audit. If dependency manifests are unchanged, the action can skip the audit.
 
 inputs:
   skip-if-no-dep-changes:
@@ -19,7 +19,7 @@ runs:
             - '**/Cargo.toml'
             - '**/Cargo.lock'
 
-    - name: Should run audit
+    - name: Determine whether to run the audit
       id: should-run-audit
       shell: bash
       run: |
@@ -48,4 +48,4 @@ runs:
     - name: Skip audit notice
       if: steps.should-run-audit.outputs.run != 'true'
       shell: bash
-      run: echo "Skipping audit - no dependency changes detected"
+      run: echo "No dependency changes. Skip the audit."

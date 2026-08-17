@@ -1,7 +1,6 @@
-//! Progress display utilities for batch execution
+//! Progress display utilities for batch runs
 //!
-//! This module handles the visual progress display during batch
-//! and load test execution.
+//! This module shows progress during batch runs and load tests.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -36,7 +35,7 @@ impl Default for ProgressConfig {
 pub struct ProgressTracker {
     /// Counter for completed requests
     pub completed: Arc<AtomicUsize>,
-    /// Flag indicating if execution has failed
+    /// Flag that shows if the run failed
     pub failed: Arc<AtomicBool>,
     /// Storage for the first failure message
     pub first_failure: Arc<tokio::sync::Mutex<Option<String>>>,
@@ -85,25 +84,25 @@ impl ProgressTracker {
                 let filled = (progress * bar_width as f64) as usize;
                 let empty = bar_width - filled;
 
-                // Build the progress bar
+                // Build the progress bar.
                 let bar: String = std::iter::repeat_n('█', filled)
                     .chain(std::iter::repeat_n('░', empty))
                     .collect();
 
-                // Print progress line (using \r to overwrite)
+                // Print the progress line. The carriage return overwrites the current line.
                 print!(
                     "\r  [{bar}] {count:>7}/{total_requests:<7} | {throughput:>8.1} req/s | {elapsed_secs:>6.1}s "
                 );
                 let _ = std::io::stdout().flush();
 
-                // Check if we should stop
+                // Stop after all requests finish or a request fails.
                 if count >= total_requests || progress_failed.load(Ordering::Relaxed) {
                     break;
                 }
 
                 tokio::time::sleep(update_interval).await;
             }
-            println!(); // Final newline
+            println!(); // Print the final newline.
         });
 
         Self {
@@ -115,7 +114,7 @@ impl ProgressTracker {
     }
 
     /// Creates a tracker without spawning a progress display task
-    /// Useful for silent execution or testing
+    /// Use this tracker for silent runs or tests.
     pub fn silent() -> Self {
         Self {
             completed: Arc::new(AtomicUsize::new(0)),
@@ -130,7 +129,7 @@ impl ProgressTracker {
         self.completed.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Records a failure and stores the error message (only the first failure is stored)
+    /// Records a failure and stores the error message. The tracker keeps only the first message.
     pub async fn record_failure(&self, message: String) {
         if !self.failed.swap(true, Ordering::Relaxed) {
             let mut failure = self.first_failure.lock().await;
@@ -138,7 +137,7 @@ impl ProgressTracker {
         }
     }
 
-    /// Returns true if a failure has been recorded
+    /// Returns true if the tracker recorded a failure.
     pub fn has_failed(&self) -> bool {
         self.failed.load(Ordering::Relaxed)
     }
@@ -173,9 +172,9 @@ pub fn print_load_test_summary(result: &LoadTestResult) {
     }
 }
 
-/// Prints a summary of batch execution results
+/// Prints a summary of the batch run.
 pub fn print_results_summary(results: &[RequestResult]) {
-    println!("\n=== Batch Execution Summary ===");
+    println!("\n=== Batch Run Summary ===");
 
     let successful = results.iter().filter(|r| r.result.is_ok()).count();
     let failed = results.len() - successful;
