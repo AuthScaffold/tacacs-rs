@@ -124,8 +124,8 @@ impl Allowlist {
     /// # File format
     ///
     /// Each line is an absolute path. Lines beginning with `#` and blank lines
-    /// are ignored. Paths are not validated. The allowlist never matches an entry
-    /// that does not identify an actual file.
+    /// are ignored. Paths are not validated. A submitted path matches when its
+    /// text is identical to an allowlist entry.
     ///
     /// # Errors
     ///

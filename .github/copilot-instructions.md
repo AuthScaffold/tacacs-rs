@@ -222,26 +222,25 @@ injects them during builds through `.github/steps/compute-versions` and
 - Reuse existing abstractions: `Transport`, `BoxedTransport`,
   `ClientSessionFlowIoTrait`, `AccountingFlow`, `ConfigDatastore`,
   `ServiceError`, `IpcEndpoint`, and the mock transport/controller patterns.
-- Essential behavior must be inherent on the owning type. Traits must expose
-  extension or abstraction seams, not hide core functionality.
-- Use builders for complex construction with many optional combinations. Builder
-  methods must be chainable, named after the value they set, and end in
-  `build()`.
+- Prefer essential behavior on the owning type. Use traits for extension or
+  abstraction seams, not to hide core functionality.
+- Use builders for complex construction with many optional combinations. Prefer
+  chainable methods that use the value name and end in `build()`.
 - Unless that is the point of the API, avoid exposing smart pointers, nested
   generics, or concrete async runtime machinery in public APIs.
 
 ## Async and Concurrency
 
-- Unless there is a documented reason they cannot be, public futures and
-  primary async entry points must be `Send`.
+- Prefer `Send` public futures and primary async entry points. Document each
+  exception.
 - Do not hold `Rc`, `RefCell`, non-Send guards, or long-held locks across
   `.await` points.
 - When sharing is cheaper and clearer than recomputation, use `Arc`, `Mutex`,
   and `RwLock`. Keep lock scopes small.
 - Do not hot-spin. Await readiness, sleep through configured intervals, or use
   channels and notifications.
-- Long CPU-bound work in async code must use `spawn_blocking` or cooperative
-  yield points so it does not starve the runtime.
+- For long CPU-bound work in async code, prefer `spawn_blocking` or cooperative
+  yield points. These options prevent runtime starvation.
 - Preserve the service failover model: per-server reconnects are serialized, new
   sessions use the active server index, and the preferred-server probe only does
   extra work while failed over.
@@ -259,16 +258,16 @@ injects them during builds through `.github/steps/compute-versions` and
   substitute for recoverable errors.
 - Avoid `unwrap()` and `expect()` in production library code. If an invariant
   truly justifies one, make the message specific.
-- Do not catch panics as control flow. Even when a panic normally aborts the
-  process, code must remain panic-safe.
+- Do not catch panics as control flow. Prefer panic-safe code even when a panic
+  normally aborts the process.
 
 ## Documentation
 
-- Public library modules must have `//!` module docs that explain what the
-  module contains, when to use it, and the important invariants or side effects.
-- Public items must have a concise first rustdoc sentence. Keep `# Errors`,
+- Prefer `//!` module docs for public library modules. Explain the module
+  contents, its uses, and its important invariants or side effects.
+- Prefer a concise first rustdoc sentence for public items. Keep `# Errors`,
   `# Panics`, `# Safety`, and examples where applicable.
-- Examples must be directly usable where practical and must prefer `?` over
+- Prefer directly usable examples where practical. In examples, prefer `?` over
   `unwrap()`.
 - Document magic constants by naming them and explaining why the value matters.
 - Do not add parameter tables to rustdoc. Explain parameters in normal prose.
@@ -335,10 +334,10 @@ supports the preferred shape.
 - Configuration parsing uses RFC 7951/YANG JSON generated types. Entry points
   include `parse_yang_json`, `parse_yang_json_file`, validation options,
   builders, and server enumeration helpers.
-- SONiC mapping must stay deterministic and reviewable. Preserve stable server
+- Prefer deterministic and reviewable SONiC mapping. Preserve stable server
   ordering, explicit validation, and clear separation between ConfigDB shape and
   generated YANG model shape.
-- TLS credential choices must remain unambiguous. Do not mix TCP,
+- Keep TLS credential choices unambiguous. Avoid mixing TCP,
   certificate-based TLS, mTLS, and PSK configuration into an invalid
   intermediate configuration.
 

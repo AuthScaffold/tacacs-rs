@@ -191,10 +191,9 @@ with an error that includes the OpenSSL group list and points at
 
 ### Practical Guidance
 
-In practice, when you configure EPSK for TACACS+, the `tls13-epsks` leaf in
-`server-authentication` must always be present. It declares that PSK-based
-server authentication is acceptable, the only kind possible when the server
-accepts the PSK.
+This transport does not require or read the `tls13-epsks` leaf in
+`server-authentication`. You can include the leaf for other consumers of the
+same YANG model.
 
 ## Implementation Architecture
 

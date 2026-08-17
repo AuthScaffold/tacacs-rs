@@ -12,8 +12,9 @@
 //!
 //! This is deliberately not implemented with `std::process::Command`: the
 //! parent must receive the seccomp listener before the child is allowed to run
-//! `execve`. If the child calls `execve` before the listener exists, the call
-//! blocks forever because no supervisor can answer it.
+//! `execve`. If the child calls `execve` after it installs the filter but before
+//! the parent starts the supervisor, the call blocks because no supervisor can
+//! answer it.
 //! The control socket also gives the child a way to report setup failures after
 //! fork, where returning a normal Rust error to the parent is no longer
 //! possible.
