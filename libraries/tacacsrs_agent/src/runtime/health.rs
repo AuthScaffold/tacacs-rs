@@ -333,17 +333,18 @@ impl RuntimeHealthPublisher {
     }
 
     fn update(&self, mutation: impl FnOnce(&mut RuntimeHealthSnapshot)) {
-        let mut next = self.snapshot();
-        mutation(&mut next);
-        if next.lifecycle == RuntimeLifecycle::Starting
-            && next.applied_configuration
-            && next.all_enabled_listeners_bound()
-        {
-            next.lifecycle = RuntimeLifecycle::Serving;
-        }
-        if next != *self.sender.borrow() {
-            self.sender.send_replace(next);
-        }
+        let mut mutation = Some(mutation);
+        self.sender.send_if_modified(move |snapshot| {
+            let previous = snapshot.clone();
+            mutation.take().expect("health mutation is invoked once")(snapshot);
+            if snapshot.lifecycle == RuntimeLifecycle::Starting
+                && snapshot.applied_configuration
+                && snapshot.all_enabled_listeners_bound()
+            {
+                snapshot.lifecycle = RuntimeLifecycle::Serving;
+            }
+            *snapshot != previous
+        });
     }
 }
 
@@ -357,6 +358,8 @@ fn initial_listener_state(enabled: bool) -> ListenerState {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Barrier};
+
     use super::*;
 
     #[test]
@@ -372,6 +375,38 @@ mod tests {
         assert!(snapshot.is_liveness_serving());
         assert!(!snapshot.is_startup_serving());
         assert!(!snapshot.is_readiness_serving());
+    }
+
+    #[test]
+    fn concurrent_publishers_preserve_independent_health_updates() {
+        let publisher = Arc::new(RuntimeHealthPublisher::new(EnabledServices::CLIENT_API));
+        let barrier = Arc::new(Barrier::new(3));
+        let lifecycle_task = {
+            let publisher = Arc::clone(&publisher);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                publisher.set_lifecycle(RuntimeLifecycle::Draining);
+            })
+        };
+        let degradation_task = {
+            let publisher = Arc::clone(&publisher);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                publisher.set_degraded(DegradationReason::CredentialNotificationsUnavailable, true);
+            })
+        };
+
+        barrier.wait();
+        lifecycle_task.join().expect("lifecycle publisher");
+        degradation_task.join().expect("degradation publisher");
+
+        let snapshot = publisher.snapshot();
+        assert_eq!(snapshot.lifecycle(), RuntimeLifecycle::Draining);
+        assert!(snapshot
+            .degradation_reasons()
+            .contains(&DegradationReason::CredentialNotificationsUnavailable));
     }
 
     #[test]

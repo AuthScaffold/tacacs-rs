@@ -125,7 +125,10 @@ impl HostIntegration {
 
                     tokio::select! {
                         biased;
-                        () = cancellation.cancelled() => return Ok(()),
+                        () = cancellation.cancelled() => {
+                            integration.publish(&health.borrow().clone())?;
+                            return Ok(());
+                        }
                         () = &mut retry => {
                             retry_pending = integration.publish(&health.borrow().clone())?;
                         }
@@ -168,7 +171,8 @@ impl SystemdIntegration {
 
         let want_ready = snapshot.is_readiness_serving() && !self.ready_sent;
         let want_stopping =
-            snapshot.lifecycle() == RuntimeLifecycle::Draining && !self.stopping_sent;
+            matches!(snapshot.lifecycle(), RuntimeLifecycle::Draining | RuntimeLifecycle::Stopped)
+                && !self.stopping_sent;
         if want_ready {
             arguments.push("--ready".to_owned());
         }
@@ -473,6 +477,42 @@ mod tests {
         assert_eq!(stopping_calls, 2);
     }
 
+    #[test]
+    fn publish_retries_stopping_after_lifecycle_advances_to_stopped() {
+        let command = Arc::new(CapturingCommand {
+            available: true,
+            fail_first: Mutex::new(1),
+            ..Default::default()
+        });
+        let mut integration = SystemdIntegration {
+            command: Arc::clone(&command) as Arc<dyn SystemdCommand>,
+            strict: false,
+            ready_sent: true,
+            stopping_sent: false,
+            retry_backoff: Duration::from_millis(1),
+        };
+        let health = ready_publisher();
+        health.set_lifecycle(RuntimeLifecycle::Draining);
+
+        assert!(integration
+            .publish(&health.snapshot())
+            .expect("auto tolerates failure"));
+        health.set_lifecycle(RuntimeLifecycle::Stopped);
+        assert!(!integration
+            .publish(&health.snapshot())
+            .expect("stopping retry succeeds"));
+        assert!(integration.stopping_sent);
+
+        let calls = command.calls.lock().expect("calls lock");
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.contains(&"--stopping".to_owned()))
+                .count(),
+            2,
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn auto_run_retries_a_failed_ready_without_a_health_change() {
         let command = Arc::new(CapturingCommand {
@@ -540,5 +580,41 @@ mod tests {
         task.await
             .expect("join")
             .expect("auto tolerates perpetual failure until cancelled");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn auto_run_retries_stopping_when_stopped_and_cancelled_arrive_together() {
+        let command = Arc::new(CapturingCommand {
+            available: true,
+            fail_first: Mutex::new(1),
+            ..Default::default()
+        });
+        let health = ready_publisher();
+        health.set_lifecycle(RuntimeLifecycle::Draining);
+        let integration = HostIntegration::Systemd(SystemdIntegration {
+            command: Arc::clone(&command) as Arc<dyn SystemdCommand>,
+            strict: false,
+            ready_sent: true,
+            stopping_sent: false,
+            retry_backoff: Duration::from_secs(1),
+        });
+        let cancellation = CancellationToken::new();
+        let task = tokio::spawn(integration.run(health.subscribe(), cancellation.clone()));
+
+        tokio::task::yield_now().await;
+        health.set_lifecycle(RuntimeLifecycle::Stopped);
+        cancellation.cancel();
+        task.await
+            .expect("join")
+            .expect("final stopping retry succeeds");
+
+        let calls = command.calls.lock().expect("calls lock");
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.contains(&"--stopping".to_owned()))
+                .count(),
+            2,
+        );
     }
 }

@@ -140,14 +140,13 @@ impl ConfigDatastore for SonicConfigDb {
                             None => false,
                         };
                         let snapshot = Arc::new(candidate.config);
-                        let change = ConfigChange {
-                            delta: ConfigDelta::diff(previous.as_deref(), &snapshot),
-                            config: Arc::clone(&snapshot),
-                        };
+                        let change = config_change(previous.as_deref(), Arc::clone(&snapshot));
                         previous = Some(snapshot);
-                        if tx.send(ConfigChangeEvent::Changed(change)).await.is_err() {
-                            log::debug!("SONiC datastore subscriber dropped; exiting");
-                            break;
+                        if let Some(change) = change {
+                            if tx.send(ConfigChangeEvent::Changed(change)).await.is_err() {
+                                log::debug!("SONiC datastore subscriber dropped; exiting");
+                                break;
+                            }
                         }
                         if tx
                             .send(ConfigChangeEvent::RestartRequired {
@@ -177,6 +176,15 @@ impl ConfigDatastore for SonicConfigDb {
     fn label(&self) -> &'static str {
         "sonic-configdb"
     }
+}
+
+fn config_change(previous: Option<&TacacsPlus>, snapshot: Arc<TacacsPlus>) -> Option<ConfigChange> {
+    let is_baseline = previous.is_none();
+    let delta = ConfigDelta::diff(previous, &snapshot);
+    (is_baseline || !delta.is_empty()).then_some(ConfigChange {
+        config: snapshot,
+        delta,
+    })
 }
 
 /// Reconnect-and-reload helper used by the change subscriber.
@@ -226,6 +234,14 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
+
+    #[test]
+    fn config_change_emits_baseline_and_suppresses_unchanged_snapshot() {
+        let snapshot = Arc::new(TacacsPlus::empty());
+
+        assert!(config_change(None, Arc::clone(&snapshot)).is_some());
+        assert!(config_change(Some(&snapshot), Arc::clone(&snapshot)).is_none());
+    }
 
     async fn next_event(events: &mut ConfigChangeStream, context: &str) -> ConfigChangeEvent {
         timeout(Duration::from_secs(5), events.next())
@@ -372,10 +388,6 @@ mod tests {
             .await
             .expect("delete forwarder");
         assert!(matches!(
-            next_event(&mut events, "deletion change").await,
-            ConfigChangeEvent::Changed(_)
-        ));
-        assert!(matches!(
             next_event(&mut events, "deletion restart").await,
             ConfigChangeEvent::RestartRequired { required: true }
         ));
@@ -390,10 +402,6 @@ mod tests {
             )
             .await
             .expect("restore forwarder");
-        assert!(matches!(
-            next_event(&mut events, "restore change").await,
-            ConfigChangeEvent::Changed(_)
-        ));
         assert!(matches!(
             next_event(&mut events, "clear restart").await,
             ConfigChangeEvent::RestartRequired { required: false }

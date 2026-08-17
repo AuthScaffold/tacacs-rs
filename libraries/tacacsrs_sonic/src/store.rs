@@ -8,6 +8,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -15,7 +17,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -377,37 +379,64 @@ pub async fn spawn_change_notifier(
 ///
 /// # Errors
 ///
-/// Returns an error if the root or its parent cannot be watched.
+/// Returns an error if the root's parent cannot be watched, or if an existing
+/// root cannot be watched.
 pub async fn spawn_credential_change_notifier(
     root: PathBuf,
     debounce: Duration,
 ) -> anyhow::Result<mpsc::Receiver<CredentialChangeEvent>> {
     let (event_tx, mut event_rx) = mpsc::channel(32);
+    let lost_events = Arc::new(AtomicBool::new(false));
+    let refresh_root_watch = Arc::new(AtomicBool::new(false));
+    let reconcile = Arc::new(Notify::new());
+    let callback_lost_events = Arc::clone(&lost_events);
+    let callback_refresh_root_watch = Arc::clone(&refresh_root_watch);
+    let callback_reconcile = Arc::clone(&reconcile);
+    let callback_root = root.clone();
     let mut watcher = RecommendedWatcher::new(
         move |event| {
-            if event_tx.blocking_send(event).is_err() {
-                log::debug!("SONiC credential watcher consumer dropped");
-            }
+            enqueue_credential_event(
+                &event_tx,
+                &callback_lost_events,
+                &callback_refresh_root_watch,
+                &callback_reconcile,
+                &callback_root,
+                event,
+            );
         },
         Config::default(),
     )
     .context("create SONiC credential watcher")?;
-    watcher
-        .watch(&root, RecursiveMode::NonRecursive)
-        .context("watch SONiC EPSK root")?;
     if let Some(parent) = root.parent() {
         watcher
             .watch(parent, RecursiveMode::NonRecursive)
             .context("watch SONiC EPSK parent")?;
     }
+    if root.exists() {
+        watcher
+            .watch(&root, RecursiveMode::NonRecursive)
+            .context("watch SONiC EPSK root")?;
+    }
 
     let (signal_tx, signal_rx) = mpsc::channel(1);
     tokio::spawn(async move {
-        let _watcher = watcher;
-        while let Some(event) = event_rx.recv().await {
-            let Some(mut scope) = credential_change_scope(event, &root) else {
-                continue;
+        loop {
+            let scope = tokio::select! {
+                event = event_rx.recv() => {
+                    let Some(event) = event else {
+                        break;
+                    };
+                    credential_change_scope(event, &root)
+                }
+                () = reconcile.notified() => Some(CredentialChangeScope::Unknown),
             };
+            if scope.is_none()
+                && !lost_events.load(Ordering::Acquire)
+                && !refresh_root_watch.load(Ordering::Acquire)
+            {
+                continue;
+            }
+            let mut scope = scope.unwrap_or(CredentialChangeScope::Unknown);
             if debounce > Duration::ZERO {
                 tokio::time::sleep(debounce).await;
             }
@@ -415,6 +444,16 @@ pub async fn spawn_credential_change_notifier(
                 if let Some(next_scope) = credential_change_scope(event, &root) {
                     scope = merge_credential_change_scopes(scope, &next_scope);
                 }
+            }
+            if lost_events.swap(false, Ordering::AcqRel) {
+                scope = CredentialChangeScope::Unknown;
+            }
+            if refresh_root_watch.swap(false, Ordering::AcqRel) {
+                let _ = watcher.unwatch(&root);
+                if root.exists() && watcher.watch(&root, RecursiveMode::NonRecursive).is_err() {
+                    log::warn!("Failed to re-register SONiC EPSK root watch");
+                }
+                scope = CredentialChangeScope::Unknown;
             }
             if signal_tx
                 .send(CredentialChangeEvent::Changed(scope))
@@ -426,6 +465,36 @@ pub async fn spawn_credential_change_notifier(
         }
     });
     Ok(signal_rx)
+}
+
+fn enqueue_credential_event(
+    event_tx: &mpsc::Sender<notify::Result<Event>>,
+    lost_events: &AtomicBool,
+    refresh_root_watch: &AtomicBool,
+    reconcile: &Notify,
+    root: &Path,
+    event: notify::Result<Event>,
+) {
+    if event_affects_root_watch(&event, root) {
+        refresh_root_watch.store(true, Ordering::Release);
+    }
+    match event_tx.try_send(event) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            lost_events.store(true, Ordering::Release);
+            reconcile.notify_one();
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            log::debug!("SONiC credential watcher consumer dropped");
+        }
+    }
+}
+
+fn event_affects_root_watch(event: &notify::Result<Event>, root: &Path) -> bool {
+    match event {
+        Ok(event) => event.paths.iter().any(|path| path == root),
+        Err(_) => true,
+    }
 }
 
 fn credential_change_scope(
@@ -499,6 +568,31 @@ mod tests {
             paths: vec![PathBuf::from(path)],
             attrs: EventAttributes::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn saturated_credential_event_queue_requests_unknown_root_reconciliation() {
+        let root = PathBuf::from("/reviewed/epsk");
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        event_tx
+            .try_send(Ok(event(EventKind::Modify(ModifyKind::Any), "/reviewed/epsk/object-1")))
+            .expect("fill event queue");
+        let lost_events = AtomicBool::new(false);
+        let refresh_root_watch = AtomicBool::new(false);
+        let reconcile = Notify::new();
+
+        enqueue_credential_event(
+            &event_tx,
+            &lost_events,
+            &refresh_root_watch,
+            &reconcile,
+            &root,
+            Ok(event(EventKind::Modify(ModifyKind::Any), "/reviewed/epsk")),
+        );
+
+        reconcile.notified().await;
+        assert!(lost_events.load(Ordering::Acquire));
+        assert!(refresh_root_watch.load(Ordering::Acquire));
     }
 
     #[test]

@@ -377,12 +377,16 @@ impl ConfigSupervisor {
                         filtered.proxy_downstream_obfuscation,
                     )
                     .await;
-                let result = match coordinator.materialize(attempt).await {
-                    Ok(prepared) => coordinator.publish(prepared, &self.service).await,
-                    Err(_) => Err(anyhow::anyhow!("credential materialization failed")),
-                };
-                self.health
-                    .set_degraded(DegradationReason::CredentialResolutionFailed, result.is_err());
+                let result = self.materialize_and_publish(coordinator, attempt).await;
+                match result {
+                    Ok(PublicationOutcome::Published) => self
+                        .health
+                        .set_degraded(DegradationReason::CredentialResolutionFailed, false),
+                    Ok(PublicationOutcome::Superseded) => {}
+                    Err(_) => self
+                        .health
+                        .set_degraded(DegradationReason::CredentialResolutionFailed, true),
+                }
                 result
             }
             None => self
@@ -396,7 +400,7 @@ impl ConfigSupervisor {
         };
         apply.map_err(|_| {
             log::warn!(
-                "Datastore '{}' configuration candidate was rejected by runtime validation",
+                "Datastore '{}' configuration candidate could not be prepared or published",
                 self.datastore.label(),
             );
         })
@@ -422,8 +426,6 @@ impl ConfigSupervisor {
                 continue;
             };
 
-            self.health
-                .set_degraded(DegradationReason::CredentialNotificationsUnavailable, false);
             attempt = 0;
             loop {
                 let event = tokio::select! {
@@ -433,12 +435,21 @@ impl ConfigSupervisor {
                 match event {
                     Some(CredentialChangeEvent::Changed(scope)) => {
                         self.apply_credential_change(&scope).await;
-                    }
-                    Some(CredentialChangeEvent::Recovered) => {
                         self.health.set_degraded(
                             DegradationReason::CredentialNotificationsUnavailable,
                             false,
                         );
+                    }
+                    Some(CredentialChangeEvent::Recovered) => {
+                        if self
+                            .apply_credential_change(&CredentialChangeScope::Unknown)
+                            .await
+                        {
+                            self.health.set_degraded(
+                                DegradationReason::CredentialNotificationsUnavailable,
+                                false,
+                            );
+                        }
                     }
                     Some(CredentialChangeEvent::Unavailable) | None => {
                         self.mark_credential_notifications_unavailable();
@@ -453,24 +464,42 @@ impl ConfigSupervisor {
         }
     }
 
-    async fn apply_credential_change(&self, scope: &CredentialChangeScope) {
+    async fn apply_credential_change(&self, scope: &CredentialChangeScope) -> bool {
         let Some(coordinator) = self.materialization_coordinator.as_deref() else {
-            return;
+            return true;
         };
         let Some(attempt) = coordinator.credential_change(scope).await else {
-            return;
+            return true;
         };
-        let result = match coordinator.materialize(attempt).await {
-            Ok(prepared) => coordinator.publish(prepared, &self.service).await,
-            Err(_) => Err(anyhow::anyhow!("credential rematerialization failed")),
-        };
-        self.health
-            .set_degraded(DegradationReason::CredentialResolutionFailed, result.is_err());
+        let result = self.materialize_and_publish(coordinator, attempt).await;
         match result {
-            Ok(PublicationOutcome::Published) => self.mark_current(),
-            Ok(PublicationOutcome::Superseded) => {}
-            Err(_) => self.mark_source_problem(),
+            Ok(PublicationOutcome::Published) => {
+                self.health
+                    .set_degraded(DegradationReason::CredentialResolutionFailed, false);
+                true
+            }
+            Ok(PublicationOutcome::Superseded) => true,
+            Err(_) => {
+                self.health
+                    .set_degraded(DegradationReason::CredentialResolutionFailed, true);
+                false
+            }
         }
+    }
+
+    async fn materialize_and_publish(
+        &self,
+        coordinator: &MaterializationCoordinator,
+        attempt: crate::materialization_coordinator::MaterializationAttempt,
+    ) -> anyhow::Result<PublicationOutcome> {
+        let prepared = match coordinator.materialize(attempt.clone()).await {
+            Ok(prepared) => prepared,
+            Err(_) if !coordinator.is_current_attempt(&attempt).await => {
+                return Ok(PublicationOutcome::Superseded);
+            }
+            Err(_) => anyhow::bail!("credential materialization failed"),
+        };
+        coordinator.publish(prepared, &self.service).await
     }
 
     async fn wait_for_retry(&self, attempt: u32, cancellation: &CancellationToken) -> bool {
@@ -988,9 +1017,58 @@ mod tests {
                 .resolved_servers
                 .lock()
                 .expect("resolved servers lock"),
-            ["server-0", "server-1", "server-0"],
+            ["server-0", "server-1", "server-0", "server-1", "server-0"],
         );
         assert_eq!(service.server_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn credential_refresh_preserves_rejected_datastore_candidate_state() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (_, health, service) = supervisor(Arc::clone(&datastore), Duration::ZERO);
+        let resolver = Arc::new(CountingResolver {
+            resolved_servers: Mutex::new(Vec::new()),
+        });
+        let supervisor = ConfigSupervisor::with_backoff_and_resolver(
+            datastore,
+            service,
+            health.clone(),
+            Arc::new(NoopTacacsPlusFilter::default()),
+            Arc::new(FixedBackoff(Duration::ZERO)),
+            Some(resolver as Arc<dyn CredentialResolver>),
+        );
+
+        supervisor
+            .apply_candidate(central_test_config(1))
+            .await
+            .expect("apply known-good candidate");
+        supervisor.mark_current();
+        supervisor.mark_candidate_rejected();
+
+        assert!(
+            supervisor
+                .apply_credential_change(&CredentialChangeScope::Known {
+                    kind: CredentialKind::SymmetricKey,
+                    reference: CredentialReference::SymmetricKey("object-0".to_owned()),
+                })
+                .await
+        );
+
+        let snapshot = health.snapshot();
+        assert_eq!(snapshot.datastore(), DatastoreState::Stale);
+        assert!(snapshot
+            .degradation_reasons()
+            .contains(&DegradationReason::DatastoreStale));
+        assert!(snapshot
+            .degradation_reasons()
+            .contains(&DegradationReason::CandidateConfigurationRejected));
+        assert!(!snapshot
+            .degradation_reasons()
+            .contains(&DegradationReason::CredentialResolutionFailed));
     }
 
     #[tokio::test]

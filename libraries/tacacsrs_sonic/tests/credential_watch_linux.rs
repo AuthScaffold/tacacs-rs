@@ -54,6 +54,35 @@ async fn watcher_reports_provider_root_replacement() {
         .await
         .expect("root replacement signal timeout")
         .expect("root replacement signal stream");
+
+    fs::write(root.join("object-1"), b"replacement-material")
+        .expect("write object in replacement root");
+    tokio::time::timeout(Duration::from_secs(2), signals.recv())
+        .await
+        .expect("replacement root object signal timeout")
+        .expect("replacement root object signal stream");
+}
+
+#[tokio::test]
+async fn watcher_observes_root_created_after_startup() {
+    let temp = tempfile::tempdir().expect("temporary credential parent");
+    let root = temp.path().join("epsk");
+    let mut signals = spawn_credential_change_notifier(root.clone(), Duration::from_millis(20))
+        .await
+        .expect("start credential watcher before root exists");
+
+    fs::create_dir(&root).expect("create EPSK root");
+    tokio::time::timeout(Duration::from_secs(2), signals.recv())
+        .await
+        .expect("root creation signal timeout")
+        .expect("root creation signal stream");
+
+    fs::write(root.join("object-1"), b"created-after-startup")
+        .expect("write object after root creation");
+    tokio::time::timeout(Duration::from_secs(2), signals.recv())
+        .await
+        .expect("new root object signal timeout")
+        .expect("new root object signal stream");
 }
 
 #[tokio::test]

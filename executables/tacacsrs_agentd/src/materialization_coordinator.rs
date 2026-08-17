@@ -28,7 +28,7 @@ struct CoordinatorState {
     active_servers: Vec<Arc<TacacsPlusServer>>,
     source_generation: u64,
     active_source_generation: Option<u64>,
-    materialization_attempt: u64,
+    attempt_id: u64,
 }
 
 impl Default for CoordinatorState {
@@ -41,7 +41,7 @@ impl Default for CoordinatorState {
             active_servers: Vec::new(),
             source_generation: 0,
             active_source_generation: None,
-            materialization_attempt: 0,
+            attempt_id: 0,
         }
     }
 }
@@ -52,8 +52,9 @@ pub(crate) struct MaterializationCoordinator {
     validation_options: ValidationOptions,
 }
 
+#[derive(Clone)]
 pub(crate) struct MaterializationAttempt {
-    attempt: u64,
+    attempt_id: u64,
     source_generation: u64,
     runtime_source: Arc<TacacsPlus>,
     proxy_policy: ProxyDownstreamObfuscation,
@@ -98,13 +99,13 @@ impl MaterializationCoordinator {
             .collect();
         let mut state = self.state.lock().await;
         state.source_generation = state.source_generation.wrapping_add(1);
-        state.materialization_attempt = state.materialization_attempt.wrapping_add(1);
+        state.attempt_id = state.attempt_id.wrapping_add(1);
         state.desired_source = Some(Arc::new(desired_source));
         state.desired_runtime_source = Some(Arc::clone(&runtime_source));
         state.desired_proxy_policy = Some(proxy_policy.clone());
         state.desired_dependencies = dependencies;
         MaterializationAttempt {
-            attempt: state.materialization_attempt,
+            attempt_id: state.attempt_id,
             source_generation: state.source_generation,
             runtime_source,
             proxy_policy,
@@ -138,9 +139,9 @@ impl MaterializationCoordinator {
         if selected_servers.is_empty() {
             return None;
         }
-        state.materialization_attempt = state.materialization_attempt.wrapping_add(1);
+        state.attempt_id = state.attempt_id.wrapping_add(1);
         Some(MaterializationAttempt {
-            attempt: state.materialization_attempt,
+            attempt_id: state.attempt_id,
             source_generation: state.source_generation,
             runtime_source,
             proxy_policy,
@@ -166,13 +167,19 @@ impl MaterializationCoordinator {
         })
     }
 
+    pub(crate) async fn is_current_attempt(&self, attempt: &MaterializationAttempt) -> bool {
+        let state = self.state.lock().await;
+        attempt.attempt_id == state.attempt_id
+            && attempt.source_generation == state.source_generation
+    }
+
     pub(crate) async fn publish(
         &self,
         prepared: PreparedMaterialization,
         service: &TacacsClientService,
     ) -> anyhow::Result<PublicationOutcome> {
         let mut state = self.state.lock().await;
-        if prepared.attempt.attempt != state.materialization_attempt
+        if prepared.attempt.attempt_id != state.attempt_id
             || prepared.attempt.source_generation != state.source_generation
         {
             return Ok(PublicationOutcome::Superseded);
@@ -607,6 +614,31 @@ mod tests {
             PublicationOutcome::Published,
         );
         assert_eq!(service.server_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_attempt_identity_becomes_superseded_after_new_source() {
+        let resolver = resolver(&[("first", b"first-material"), ("second", b"second-material")]);
+        let coordinator = MaterializationCoordinator::new(resolver, ValidationOptions::default());
+        let first_source = source("first", "192.0.2.10");
+        let first = coordinator
+            .accept_source(
+                first_source.clone(),
+                first_source,
+                ProxyDownstreamObfuscation::default(),
+            )
+            .await;
+        let second_source = source("second", "192.0.2.11");
+        let second = coordinator
+            .accept_source(
+                second_source.clone(),
+                second_source,
+                ProxyDownstreamObfuscation::default(),
+            )
+            .await;
+
+        assert!(!coordinator.is_current_attempt(&first).await);
+        assert!(coordinator.is_current_attempt(&second).await);
     }
 
     #[tokio::test]
