@@ -56,7 +56,7 @@ Token | Effect
 Example:
 
 ```text
-# Other SONiC TACACS settings may remain in this file and are ignored here.
+# Other SONiC TACACS settings can remain in this file and are ignored here.
 server=192.0.2.10 secret=example timeout=5
 
 # Enable bash command authorization through tacacsrs-agentd.

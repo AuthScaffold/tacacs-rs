@@ -126,7 +126,7 @@ pub struct AccountingOperation {
 /// request and the TACACS+ accounting reply status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountingOperationResponse {
-    /// Upstream TACACS+ server that handled the request (e.g. `"tacacs.corp:49"`).
+    /// Upstream TACACS+ server that handled the request, for example, `"tacacs.corp:49"`.
     pub server: String,
     /// TACACS+ accounting reply status.
     ///
@@ -246,7 +246,7 @@ impl AuthorizationOperation {
 ///   the argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationArg {
-    /// Argument name (e.g. `"priv-lvl"`, `"cmd"`, `"service"`).
+    /// Argument name, for example, `"priv-lvl"`, `"cmd"`, or `"service"`.
     pub name: String,
     /// `true` when the original separator was `=` (mandatory).
     /// `false` when the original separator was `*` (optional).
@@ -632,8 +632,7 @@ pub enum AuthorizationResponseStatus {
     PassRepl,
     /// `TAC_PLUS_AUTHOR_STATUS_FAIL` (`0x10`) — authorization is denied.
     Fail,
-    /// `TAC_PLUS_AUTHOR_STATUS_ERROR` (`0x11`) — authorization could not be
-    /// completed due to an error.
+    /// `TAC_PLUS_AUTHOR_STATUS_ERROR` (`0x11`) — an error prevented authorization.
     Error,
     /// `TAC_PLUS_AUTHOR_STATUS_FOLLOW` (`0x21`) — RFC 8907 recommends treating
     /// this deprecated status as an authentication failure.
@@ -800,7 +799,7 @@ pub struct ServiceError {
     pub message: String,
     /// Upstream server associated with the error, if the service selected one.
     pub server: Option<String>,
-    /// Whether retrying against the service may succeed after failover or recovery.
+    /// Whether retrying against the service can succeed after failover or recovery.
     pub retriable: bool,
 }
 

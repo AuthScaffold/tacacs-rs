@@ -175,7 +175,7 @@ impl TacacsClient {
     /// ```
     ///
     /// After a hard disconnect from a cached shared connection, the next session
-    /// probes again because a fresh TCP/TLS connection may land on a different
+    /// probes again because a fresh TCP/TLS connection can connect to a different
     /// TACACS+ server. If that server is behind a load balancer and does not echo
     /// the single-connect flag, negotiation records `NotSupported` and this
     /// client uses dedicated connections for the rest of its lifetime.
@@ -198,12 +198,12 @@ impl TacacsClient {
     /// 4. If support is known, try the cached shared connection without taking
     ///    a lock. This is the hot path.
     /// 5. If the cached shared connection was rejected, re-read the state
-    ///    because the rejection may have reset the client to `Initial` or marked
-    ///    it `NotSupported`.
+    ///    because the rejection can reset the client to `Initial` or mark it
+    ///    `NotSupported`.
     /// 6. Only the recovery path takes `shared_recovery_lock`, preventing many
     ///    concurrent callers from opening replacement probe connections.
     /// 7. After waiting for that lock, try the shared cache again because the
-    ///    previous holder may already have restored it.
+    ///    previous holder can restore it first.
     /// 8. If no shared session is available, perform the one required fallback:
     ///    dedicated-only for `NotSupported`, otherwise a new dedicated probe.
     ///
@@ -233,8 +233,8 @@ impl TacacsClient {
         // Stage 1: unknown capability and active negotiation are decided before
         // looking for a shared cache. Initial occurs only when preflight was
         // disabled or after a cached shared connection disconnected. Only Initial
-        // may start the capability probe; Negotiating means another session
-        // already owns it.
+        // can start the capability probe. Negotiating means another session already
+        // owns it.
         match self.single_connection_state().await {
             SingleConnectionState::Initial => {
                 return self.create_single_connect_negotiation_session().await;
@@ -307,8 +307,8 @@ impl TacacsClient {
         &self,
         expected: Option<ExpectedResponseHeader>,
     ) -> anyhow::Result<ClientSession> {
-        // Stage 3: the failed shared attempt may have changed client state. For
-        // For example, a graceful server shutdown becomes NotSupported. A hard
+        // Stage 3: the failed shared attempt can change the client state. For
+        // example, a graceful server shutdown becomes NotSupported. A hard
         // disconnect returns to Initial so the next connection can negotiate.
         match self.single_connection_state().await {
             SingleConnectionState::Initial => {
@@ -339,7 +339,7 @@ impl TacacsClient {
         // NotSupported, or a probe that can promote the completed connection.
         match self.single_connection_state().await {
             SingleConnectionState::NotSupported => {
-                // Another task may have recorded denial while this task waited
+                // Another task can record denial while this task waits
                 // on recovery. Keep terminal NotSupported on fresh streams.
                 Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?))
             }

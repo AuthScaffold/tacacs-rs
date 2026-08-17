@@ -124,7 +124,7 @@ impl ClientConversation {
             .context("conversation minor version was not recorded")?;
         let expected_response_sequence = request_sequence
             .checked_add(1)
-            .context("TACACS+ conversation response sequence would wrap")?;
+            .context("TACACS+ conversation response sequence exceeds 255")?;
 
         session.send_packet(request).await?;
         let response = session.receive_packet().await?;

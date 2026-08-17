@@ -35,7 +35,7 @@ tacacsrs_agent_client
 ```text
 ┌──────────────────┐
 │ Local Consumer   │
-│ (e.g. TACON)     │
+│ such as TACON    │
 └──────┬───────────┘
        │ constructs / provides
        v

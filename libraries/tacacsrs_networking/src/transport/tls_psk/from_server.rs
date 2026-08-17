@@ -9,8 +9,8 @@ use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, Tls13Epsk};
 
 use super::PskClientConfig;
 
-/// Returns `true` when `server` carries a TLS 1.3 PSK client identity that
-/// would direct the dispatcher to use the PSK transport.
+/// Returns `true` when `server` has a TLS 1.3 PSK client identity. The dispatcher
+/// uses this result to select the PSK transport.
 #[must_use]
 pub(crate) fn server_has_psk(server: &TacacsPlusServer) -> bool {
     server
@@ -28,10 +28,11 @@ pub(crate) fn server_has_psk(server: &TacacsPlusServer) -> bool {
 ///
 /// # Errors
 ///
-/// Returns an error if the configured PSK material is invalid (e.g. empty key,
-/// identity that contains a NUL byte) or the TLS-PSK handshake fails. Before
-/// calling this function, make sure that [`server_has_psk`] returns `true`.
-/// Without PSK configuration, the function returns an error.
+/// Returns an error if the configured PSK material is invalid. Examples include
+/// an empty key and an identity that contains a NUL byte. The function also
+/// returns an error if the TLS-PSK handshake fails. Before calling this function,
+/// make sure that [`server_has_psk`] returns `true`. Without PSK configuration,
+/// the function returns an error.
 pub(crate) async fn establish_from_server(
     server: std::sync::Arc<TacacsPlusServer>,
     address: &str,

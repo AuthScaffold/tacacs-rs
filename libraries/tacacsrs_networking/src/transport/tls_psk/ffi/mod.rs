@@ -175,7 +175,7 @@ unsafe fn build_callback_session(
     if cipher.is_null() {
         log::error!(
             target: module_path!(),
-            "OpenSSL could not find TLS 1.3 cipher suite {}",
+            "OpenSSL did not find TLS 1.3 cipher suite {}",
             handshake_hash.tls13_ciphersuites()
         );
         return None;

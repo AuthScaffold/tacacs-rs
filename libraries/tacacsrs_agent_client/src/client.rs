@@ -113,9 +113,9 @@ impl ServiceClient {
     ///
     /// Returns an error if:
     /// - The gRPC exchange fails at the transport level.
-    /// - The service returns a structured [`ServiceError`] (e.g. all upstream
-    ///   TACACS+ servers are unavailable). The error message includes the
-    ///   server name, if known, and whether the caller can retry.
+    /// - The service returns a structured [`ServiceError`], for example, when all
+    ///   upstream TACACS+ servers are unavailable. The message includes the server
+    ///   name, if known, and whether the caller can retry.
     pub async fn send_accounting(
         &self,
         request: AccountingOperation,

@@ -43,5 +43,5 @@ single quotes, and no dollar signs**. If in doubt, use `--body-file`.
 
 ```markdown
 ## Implementation freedom
-Copilot and other implementers may make breaking changes, refactors, public API modifications, module reorganizations, or any other changes needed to deliver a solid, maintainable, well-documented project. Do not preserve existing APIs, structure, or behavior solely for compatibility if changing them produces a better design for this work.
+Copilot and other implementers can make any change that is necessary for a solid and maintainable project. These changes can include breaking changes, refactors, public API changes, and module reorganizations. Do not preserve existing APIs, structure, or behavior only for compatibility. Change them when the new design is better for this work.
 ```

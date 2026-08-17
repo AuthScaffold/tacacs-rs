@@ -1,9 +1,9 @@
 //! Client sessions over dedicated connections.
 //!
-//! A dedicated session may carry a [`SingleConnectPromotion`] when the server
+//! A dedicated session can carry a [`SingleConnectPromotion`] when the server
 //! configuration requested TACACS+ single-connection mode. The session still
-//! runs as a normal request/response exchange; promotion is deferred until the
-//! session completes and the connection can be transferred safely.
+//! runs as a normal request/response exchange. The promotion transfers the
+//! connection after the session completes.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};

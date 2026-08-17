@@ -59,7 +59,7 @@ tacacsrs_agent
 ```text
 ┌──────────────────┐
 │ Local Consumer   │
-│ (e.g. TACON)     │
+│ such as TACON    │
 └──────┬───────────┘
        │ protobuf request / response
        v
