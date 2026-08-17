@@ -207,7 +207,7 @@ fn validate_security_choice(
     }
 
     // Permit TLS with a shared secret only when the relaxation is active.
-    // Always require at least one security mode.
+    // All remaining paths require at least one security mode.
     if has_tls && has_obfuscation && options.allows(&ValidationRelaxation::AllowTlsWithSharedSecret)
     {
         return Ok(());

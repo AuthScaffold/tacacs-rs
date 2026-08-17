@@ -130,10 +130,10 @@ unsafe extern "C" fn psk_use_session_callback(
         return 0;
     };
     let identity_bytes = epsk.external_identity.as_bytes();
-    // SAFETY: OpenSSL reads these output parameters before the callback
-    // returns. The identity bytes live in the context ex-data for the lifetime
-    // of the `SSL_CTX`, and `callback_session` transfers ownership of a newly
-    // allocated `SSL_SESSION` to OpenSSL.
+    // SAFETY: OpenSSL provides valid storage for these output values. It uses
+    // the identity bytes after the callback returns. The bytes live in the
+    // context ex-data for the lifetime of the `SSL_CTX`. `callback_session`
+    // transfers ownership of a new `SSL_SESSION` to OpenSSL.
     unsafe {
         *identity = identity_bytes.as_ptr();
         *identity_len = identity_bytes.len();

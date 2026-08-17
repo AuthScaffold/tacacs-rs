@@ -138,9 +138,9 @@ impl Drop for UnixSocketCleanupGuard {
 
 /// Creates a Unix domain socket listener.
 ///
-/// The returned guard holds an exclusive advisory lock on `<path>.lock`. Thus,
-/// two processes cannot inspect, remove, and bind the same path at the same
-/// time. This function removes only a stale Unix domain socket. It does not
+/// The returned guard holds an exclusive advisory lock on `<path>.lock`. This
+/// lock prevents cooperating service instances from using the same path at the
+/// same time. This function removes only a stale Unix domain socket. It does not
 /// remove regular files, directories, symbolic links, or devices.
 pub(crate) async fn prepare_unix_listener(
     path: &Path,
