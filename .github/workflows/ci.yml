@@ -137,91 +137,11 @@ jobs:
         if: needs.pipeline.result != 'success'
         run: exit 1
 
-  migrate-release-branch:
-    name: Migrate Release Branch
-    runs-on: ubuntu-latest
-    needs: [ci-success]
-    if: >-
-      github.event_name == 'push' &&
-      github.repository_owner == 'AuthScaffold' &&
-      needs.ci-success.result == 'success'
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          fetch-depth: 1
-
-      - name: Rename the generated release branch
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          release_exists=false
-          legacy_exists=false
-          stale_tacon_exists=false
-          git ls-remote --exit-code --heads origin release \
-            >/dev/null 2>&1 && release_exists=true
-          git ls-remote --exit-code --heads origin release/versions \
-            >/dev/null 2>&1 && legacy_exists=true
-          git ls-remote --exit-code --heads origin release/tacon/0.2.0 \
-            >/dev/null 2>&1 && stale_tacon_exists=true
-
-          if [ "$release_exists" = true ] && [ "$legacy_exists" = true ]; then
-            echo "Error: Both release and release/versions exist."
-            exit 1
-          fi
-
-          if [ "$release_exists" = false ] && [ "$legacy_exists" = true ]; then
-            unexpected_refs=$(
-              git ls-remote --heads origin 'release/*' |
-                awk '{ print $2 }' |
-                grep -Ev '^refs/heads/release/(versions|tacon/0\.2\.0)$' ||
-                true
-            )
-            if [ -n "$unexpected_refs" ]; then
-              echo "Error: Unexpected branches block the release branch:"
-              echo "$unexpected_refs"
-              exit 1
-            fi
-
-            if [ "$stale_tacon_exists" = true ]; then
-              echo "Delete stale branch release/tacon/0.2.0."
-              git push origin --delete release/tacon/0.2.0
-            fi
-
-            echo "Rename release/versions to release."
-            gh api \
-              --method POST \
-              "repos/${GITHUB_REPOSITORY}/branches/release%2Fversions/rename" \
-              -f new_name=release \
-              >/dev/null
-
-            for attempt in {1..30}; do
-              release_exists=false
-              legacy_exists=false
-              git ls-remote --exit-code --heads origin release \
-                >/dev/null 2>&1 && release_exists=true
-              git ls-remote --exit-code --heads origin release/versions \
-                >/dev/null 2>&1 && legacy_exists=true
-              if [ "$release_exists" = true ] && [ "$legacy_exists" = false ]; then
-                exit 0
-              fi
-              echo "Wait for the branch rename (${attempt}/30)."
-              sleep 2
-            done
-
-            echo "Error: The release branch rename did not finish."
-            exit 1
-          fi
-
   # ── Release: tag and publish (only on push to main) ──────
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [ci-success, compute-versions, release-policy, migrate-release-branch]
+    needs: [ci-success, compute-versions, release-policy]
     if: >-
       github.event_name == 'push' &&
       github.repository_owner == 'AuthScaffold' &&
