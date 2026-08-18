@@ -389,7 +389,6 @@ mod tests {
                 proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                 tacacs_plus: TacacsPlus::empty(),
                 preferred_probe_interval: Duration::from_secs(1),
-                #[cfg(unix)]
                 socket_mode: 0o660,
                 disable_certificate_verification: false,
             },

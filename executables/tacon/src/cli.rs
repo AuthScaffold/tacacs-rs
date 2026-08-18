@@ -40,6 +40,11 @@ fn psk_dhe_ke_supported_group_parser(
         })
 }
 
+#[cfg(not(target_os = "linux"))]
+fn unsupported_service_endpoint(_value: &str) -> Result<String, String> {
+    Err("--service-endpoint is supported only on Linux".to_owned())
+}
+
 /// TACACS+ Client CLI
 ///
 /// This command-line tool interacts with TACACS+ servers. It supports
@@ -47,11 +52,16 @@ fn psk_dhe_ke_supported_group_parser(
 #[derive(Parser, Clone)]
 #[command(name = "tacon", version, author)]
 #[command(about = "TACACS+ client CLI", long_about = None)]
-#[command(group(
+#[cfg_attr(target_os = "linux", command(group(
     ArgGroup::new("transport_target")
         .required(true)
         .args(["server_addr", "service_endpoint", "config"])
-))]
+)))]
+#[cfg_attr(not(target_os = "linux"), command(group(
+    ArgGroup::new("transport_target")
+        .required(true)
+        .args(["server_addr", "config"])
+)))]
 #[command(group(
     ArgGroup::new("certificate_verification_target")
         .args(["use_tls", "config"])
@@ -70,6 +80,10 @@ pub struct Cli {
 
     /// IPC endpoint for the central TACACS+ client service
     #[arg(long, value_name = "PATH_OR_ADDR")]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        arg(hide = true, value_parser = unsupported_service_endpoint)
+    )]
     pub service_endpoint: Option<String>,
 
     /// Shared secret for TACACS+ message obfuscation
@@ -497,6 +511,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_service_endpoint_parses_without_server_addr() {
         let result = Cli::try_parse_from([
@@ -586,6 +601,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_server_addr_conflicts_with_service_endpoint() {
         let result = Cli::try_parse_from([
@@ -678,6 +694,7 @@ mod tests {
         assert!(result.unwrap().validation_relaxation.is_empty());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_validation_relaxation_conflicts_with_service_endpoint() {
         let result = Cli::try_parse_from([
@@ -690,6 +707,30 @@ mod tests {
             "batch.txt",
         ]);
 
+        assert!(result.is_err());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn service_endpoint_is_not_available() {
+        use clap::CommandFactory;
+
+        let help = Cli::command().render_long_help().to_string();
+        assert!(!help.contains("--service-endpoint"));
+
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--service-endpoint",
+            "127.0.0.1:9049",
+            "accounting",
+            "--user",
+            "testuser",
+            "--port",
+            "tty0",
+            "--rem-addr",
+            "192.168.1.100",
+            "test_cmd",
+        ]);
         assert!(result.is_err());
     }
 }

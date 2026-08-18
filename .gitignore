@@ -11,14 +11,6 @@ book/
 # PDB files contain debug information.
 *.pdb
 
-# Debian packaging generates these files.
-**/debian/changelog
-**/debian/changelog.gz
-**/debian/*.1
-**/debian/*.1.gz
-**/debian/sbom.json
-**/debian/sbom.xml
-
 # Output from local package validation.
 packaged/
 staging/

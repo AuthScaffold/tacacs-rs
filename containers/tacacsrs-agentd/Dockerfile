@@ -44,6 +44,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY .cargo ./.cargo
 COPY libraries ./libraries
 COPY executables ./executables
+COPY lde/containers/config/certificates ./lde/containers/config/certificates
 
 # The sample certificate files for the networking crate are worktree symlinks.
 # Copy the target files into the image. This copy supports Windows checkouts
@@ -86,6 +87,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # runtime: image with only the binary and its runtime dependencies
 # -----------------------------------------------------------------------------
 FROM ${RUNTIME_IMAGE} AS runtime
+ARG BUILD_VERSION=dev
+ARG SOURCE_URL=https://github.com/AuthScaffold/tacacs-rs
+ARG REVISION=unknown
+
+LABEL org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
 
 # `libssl3` supplies the OpenSSL runtime dependency for TLS and PSK support.
 # `ca-certificates` supplies the trust store for certificate-based TLS.

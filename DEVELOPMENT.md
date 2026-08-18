@@ -62,12 +62,28 @@ The release pipeline generates SBOMs and includes them with each release.
 
 ## Development Setup
 
+### Development container
+
+The development container is the supported environment for complete workspace development. It includes the Linux GNU dependencies.
+
+On Windows, start a Podman 5 or later machine before you open the repository. A Hyper-V or WSL2 machine is supported.
+
+Configure VS Code to use Podman:
+
+```json
+{
+  "dev.containers.dockerPath": "podman"
+}
+```
+
+Then run **Dev Containers: Reopen in Container**. Docker is an alternative container runtime.
+
 ```bash
 # Clone the repository
 git clone https://github.com/AuthScaffold/tacacs-rs
 cd tacacs-rs
 
-# Build all crates
+# Build all crates in Linux
 cargo build --workspace
 
 # Run all tests
@@ -93,7 +109,7 @@ sudo dnf install openssl-devel
 cargo build --workspace
 ```
 
-#### Windows
+#### Windows `tacon`
 
 A prebuilt OpenSSL installation is required. Use [vcpkg](https://vcpkg.io/) to install OpenSSL.
 
@@ -114,10 +130,10 @@ A prebuilt OpenSSL installation is required. Use [vcpkg](https://vcpkg.io/) to i
 
    Change the path for your vcpkg installation. Make sure that the directory contains the `include/openssl` and `lib` subdirectories.
 
-4. Build:
+4. Build the supported Windows packages:
 
    ```powershell
-   cargo build --workspace
+   cargo build --package tacon
    ```
 
 Set `OPENSSL_DIR` through **System Properties → Environment Variables** to make the value available in new terminals.
@@ -137,7 +153,7 @@ To use a different prebuilt OpenSSL installation, set these environment variable
 $env:OPENSSL_DIR     = "C:\development\tools\openssl"
 $env:OPENSSL_LIB_DIR = "C:\development\tools\openssl\lib\VC\x64\MD"
 
-cargo build --workspace
+cargo build --package tacon
 ```
 
 ## Running Tests
@@ -291,7 +307,7 @@ When you open a pull request, these jobs run:
 |-----|-------------|
 | **Rustfmt** | Rust formatting validation |
 | **Clippy** | Linting and static analysis |
-| **Test** | Run tests on Linux and Windows |
+| **Test** | Run the workspace on Linux and the `tacon` package group on Windows |
 | **Build** | Builds all targets |
 | **Build Artifacts** | Build release binaries for all platforms (same as release) |
 | **SBOM** | Generate Software Bill of Materials (same as release) |
@@ -313,7 +329,7 @@ After a merge to `main`, these additional checks run:
 
 The CI workflow generates the same artifacts as the release workflow:
 
-- **Release Binaries**: Linux GNU and Windows MSVC binaries, plus GNU Debian packages for `tacon`, `tacacsrs-agentd`, and `tacacsrs-bash-plugin`
+- **Release Archives**: Linux GNU `.tar.gz` archives and a Windows MSVC `.zip` archive
 - **SBOM Files**: Software Bill of Materials files in CycloneDX JSON and XML formats
 - **Checksums**: SHA-256 checksums for all generated artifacts
 
@@ -330,7 +346,7 @@ Main branch CI is the release workflow. After a push to `main`, GitHub Actions:
 1. Applies the release policy. `[norelease]`, `[no-release]`, `[skip-release]`, or matching pull request labels skip release outputs.
 2. Computes versions from existing git tags with `.github/steps/compute-versions`.
 3. Injects the computed version map into `Cargo.toml` files in CI before official builds.
-4. Builds release binaries, Debian packages, SBOMs, checksums, and release assets.
+4. Builds release archives, SBOMs, checksums, and release assets.
 5. Creates and pushes any new library semver tags and executable CalVer tags.
 6. Creates the GitHub Release for the primary executable release tag.
 7. Updates the generated `release/versions` branch with final Cargo package metadata populated.
@@ -400,7 +416,6 @@ You can instead update the branch with an approved automation token.
 ```
 tacacs-rs/
 ├── Cargo.toml              # Workspace root and shared package metadata
-├── release-plz.toml        # git-only release-plz configuration
 ├── rustfmt.toml            # Formatting configuration
 ├── .github/
 │   ├── workflows/          # CI/CD workflows

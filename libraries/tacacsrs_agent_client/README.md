@@ -17,8 +17,7 @@ long-lived TACACS+ client service.
   on-the-wire IPC contract.
 - Expose operation-centric Rust types so callers never deal with generated
   protobuf structs directly.
-- Support Unix domain socket IPC on Linux and loopback TCP as a fallback for
-  non-Unix developer workflows.
+- Support Unix domain socket IPC on Linux and loopback TCP for the IPC emulator.
 
 ## Module hierarchy
 
@@ -69,7 +68,7 @@ empty? ──yes──> Error: cannot be empty
   no
   |
   v
-contains '/'? (Unix only)
+contains '/'?
   |           |
  yes          no
   |           |

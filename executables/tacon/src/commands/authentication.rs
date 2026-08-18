@@ -3,6 +3,7 @@
 use std::io::{IsTerminal, Read};
 
 use anyhow::Context;
+#[cfg(target_os = "linux")]
 use tacacsrs_agent_client::{
     PapAuthenticationOperation, PapAuthenticationOperationResponse, ServiceClient,
 };
@@ -51,6 +52,7 @@ pub async fn authenticate_direct(
         .await
 }
 
+#[cfg(target_os = "linux")]
 pub async fn authenticate_service(
     client: &ServiceClient,
     args: &RequestArgs,

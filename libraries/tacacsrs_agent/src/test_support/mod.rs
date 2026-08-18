@@ -8,5 +8,4 @@ mod requests;
 
 pub(crate) use fake_upstream::{FakeConnection, FakeConnector};
 pub(crate) use requests::build_authorization_request;
-#[cfg(unix)]
 pub(crate) use requests::build_request;

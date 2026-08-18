@@ -1,3 +1,6 @@
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+compile_error!("tacacsrs-agent-ipc-emulatord supports Linux GNU only");
+
 use std::path::PathBuf;
 use std::io::Write;
 use std::str::FromStr;
@@ -70,7 +73,6 @@ fn init_logger(verbose: u8, quiet: bool) {
 fn endpoint_string(endpoint: &IpcEndpoint) -> String {
     match endpoint {
         IpcEndpoint::Tcp(address) => address.to_string(),
-        #[cfg(unix)]
         IpcEndpoint::Unix(path) => path.display().to_string(),
     }
 }

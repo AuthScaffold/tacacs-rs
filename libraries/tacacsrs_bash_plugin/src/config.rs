@@ -212,15 +212,9 @@ pub(crate) fn format_flags(flags: c_int) -> String {
 }
 
 pub(crate) fn format_endpoint(endpoint: &IpcEndpoint) -> String {
-    #[cfg(unix)]
-    if let IpcEndpoint::Unix(path) = endpoint {
-        return path.display().to_string();
-    }
-
     match endpoint {
         IpcEndpoint::Tcp(address) => address.to_string(),
-        #[cfg(unix)]
-        IpcEndpoint::Unix(_) => unreachable!("the Unix domain socket endpoint was handled above"),
+        IpcEndpoint::Unix(path) => path.display().to_string(),
     }
 }
 

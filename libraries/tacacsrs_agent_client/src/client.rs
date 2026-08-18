@@ -3,12 +3,11 @@
 //! Callers give the client a local IPC endpoint. The client sends each request
 //! through the protobuf/gRPC contract. It does not expose TACACS+ wire details.
 //!
-//! # Platform behavior
+//! # Transport behavior
 //!
-//! | Platform | Transport | Notes |
-//! |----------|-----------|-------|
-//! | Linux / macOS | Unix domain socket | Default: `/run/tacacs/tacacs.sock` |
-//! | Windows / other | Loopback TCP | Default: `127.0.0.1:9049` |
+//! The production service uses a Unix domain socket at
+//! `/run/tacacs/tacacs.sock`. The client also supports loopback TCP endpoints
+//! for the Linux IPC emulator.
 //!
 //! [`ServiceClient`] holds a persistent gRPC [`tonic::transport::Channel`] that
 //! is established during construction and reused for all requests. gRPC over
@@ -90,7 +89,7 @@ impl ServiceClient {
     ///
     /// The returned [`ServiceClient`] reuses the channel for all requests.
     ///
-    /// On Unix, this connects over a Unix domain socket using `tonic`'s
+    /// This connects over a Unix domain socket using `tonic`'s
     /// `connect_with_connector` to bridge `tokio::net::UnixStream` into the
     /// HTTP/2 transport. On other platforms it connects over loopback TCP.
     ///

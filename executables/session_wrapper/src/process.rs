@@ -283,7 +283,7 @@ fn send_fd(socket: RawFd, fd_to_send: RawFd) -> Result<()> {
     message.msg_iov = ptr::addr_of_mut!(iov);
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    set_msg_controllen(&mut message, control.len())?;
+    set_msg_controllen(&mut message, control.len());
 
     // SAFETY: message points to a valid iovec and control buffer sized with
     // CMSG_SPACE for one RawFd. The cmsg header is initialized before sendmsg.
@@ -334,7 +334,7 @@ fn recv_initial_child_message(socket: RawFd, child_pid: Option<libc::pid_t>) -> 
     message.msg_iov = ptr::addr_of_mut!(iov);
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    set_msg_controllen(&mut message, control.len())?;
+    set_msg_controllen(&mut message, control.len());
 
     let received = loop {
         let received = {
@@ -713,16 +713,9 @@ fn cmsg_space_for_fd() -> usize {
     unsafe { libc::CMSG_SPACE(raw_fd_size_for_cmsg()) as usize }
 }
 
-#[allow(clippy::useless_conversion)]
 /// Assigns `msghdr.msg_controllen` portably across libc implementations.
-fn set_msg_controllen(message: &mut libc::msghdr, len: usize) -> Result<()> {
-    // glibc exposes msg_controllen as usize, while musl exposes it as socklen_t
-    // (u32 on x86_64). The fallible conversion keeps one implementation working
-    // for both CI targets.
-    message.msg_controllen = len
-        .try_into()
-        .context("control message buffer length does not fit msg_controllen")?;
-    Ok(())
+fn set_msg_controllen(message: &mut libc::msghdr, len: usize) {
+    message.msg_controllen = len;
 }
 
 #[allow(clippy::cast_possible_truncation)]

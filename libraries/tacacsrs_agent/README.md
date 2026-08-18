@@ -30,7 +30,6 @@ tacacsrs_agent
 │   │   ├── service  - ClientApiService runtime dependency owner
 │   │   ├── grpc     - Tonic TacacsAgent adapter
 │   │   ├── listener - endpoint dispatch and shutdown drain
-│   │   │   ├── tcp  - loopback TCP binding for non-Unix builds
 │   │   │   └── unix - Unix socket binding and cleanup
 │   │   └── upstream_bridge
 │   │                - client API operation/protocol mapping and failover bridge
@@ -67,7 +66,7 @@ tacacsrs_agent
 │ ServiceClient    │
 │ (client crate)   │
 └──────┬───────────┘
-       │ gRPC over Unix socket / loopback TCP
+       │ gRPC over Unix socket
        v
 ┌──────────────────────────────┐
 │ TacacsClientService          │
@@ -105,12 +104,12 @@ tacacsrs_agent
 └──────────────────────────────┘
 ```
 
-On Unix, the client API gRPC service accepts only Unix domain socket endpoints.
+The client API gRPC service accepts only Unix domain socket endpoints.
 The raw TACACS+ proxy is a sibling runtime service with its own endpoint policy.
 When `EnabledServices` includes the proxy service, `TacacsClientService` starts
 `services::tacacs_proxy`. When it includes both services, the proxy runs
 alongside `services::client_api`. The proxy can bind either a Unix domain
-socket or loopback TCP endpoint on Unix. The proxy uses its own
+socket or loopback TCP endpoint. The proxy uses its own
 `upstream_bridge` because it forwards packet sessions rather than typed RPC
 operations.
 
@@ -211,7 +210,7 @@ ordered list.
 
 ## Listener lifecycle and shutdown
 
-On Unix systems the listener follows this startup sequence:
+The listener follows this startup sequence:
 
 ```text
 1. create the parent directory if it does not exist
@@ -232,12 +231,12 @@ The same typed watch-backed snapshot drives startup, liveness, readiness, datast
 
 `ServiceConfig::endpoint` is explicit rather than permissive:
 
-- On Unix, values containing `/` are treated as Unix domain socket paths, for
+- Values containing `/` are treated as Unix domain socket paths, for
   example `/run/tacacs/tacacs.sock`.
-- On all platforms, values that parse as `SocketAddr` are treated as TCP
-  endpoints, for example `127.0.0.1:9049`.
+- Values that parse as `SocketAddr` identify TCP endpoints for the TACACS+
+  proxy or IPC emulator. The client API rejects TCP endpoints.
 - An empty string is rejected as invalid configuration. It does **not** fall
-  back to the platform default endpoint.
+  back to the default endpoint.
 
 The only way to opt into the built-in default endpoint is to call
 `IpcEndpoint::default_local()`.

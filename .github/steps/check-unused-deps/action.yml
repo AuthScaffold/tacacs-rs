@@ -2,6 +2,10 @@ name: Make Sure That Dependencies Are Used
 description: Run cargo-udeps for a target platform
 
 inputs:
+  package-args:
+    description: 'Cargo workspace or package selection arguments'
+    required: false
+    default: '--workspace'
   target:
     description: 'Rust target triple for the validation'
     required: true
@@ -22,7 +26,7 @@ runs:
       shell: bash
       run: |
         cargo +nightly udeps \
-          --workspace \
+          ${{ inputs.package-args }} \
           --all-targets \
           --target "${{ inputs.target }}" \
           ${{ inputs.feature-args }}

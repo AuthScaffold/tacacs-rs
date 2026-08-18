@@ -1,7 +1,7 @@
 # Building for SONiC
 
-SONiC runs on a Debian/glibc userspace, so the supported TACACS-rs build flow is
-based on GNU Linux binaries and Debian packages.
+SONiC runs on a glibc userspace. The supported TACACS-rs build flow produces
+Linux GNU binaries and shared libraries.
 
 ## Rust toolchain
 
@@ -31,8 +31,8 @@ target/x86_64-unknown-linux-gnu/release/tacacsrs-agentd
 target/x86_64-unknown-linux-gnu/release/libtacacsrs_bash_plugin.so
 ```
 
-For package-oriented validation, prefer the GNU Debian packages produced by CI
-or the local `cargo deb --no-build` flow described in `DEBIAN_PACKAGING.md`.
+CI publishes each Linux artifact in a `.tar.gz` archive with its SBOM files.
+The SONiC repository owns the installation scripts and target paths.
 
 If you are starting from Windows, run these Linux-targeted Cargo commands from
 WSL. Do not copy Windows-built binaries or libraries into SONiC.
@@ -95,7 +95,7 @@ sudo systemctl enable --now tacacsrs-agentd
 
 ## Bash plugin installation path
 
-The standalone Debian package installs the plugin to:
+Install the plugin to:
 
 ```text
 /usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so

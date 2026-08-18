@@ -205,16 +205,14 @@ mod tests {
         path
     }
 
-    fn sample_key_der() -> Vec<u8> {
+    fn sample_credential(file_name: &str) -> Vec<u8> {
         fs::read(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("tacacsrs_networking")
-                .join("examples")
-                .join("samples")
-                .join("client.key.der"),
+                .join("../..")
+                .join("lde/containers/config/certificates")
+                .join(file_name),
         )
-        .expect("sample DER key exists")
+        .expect("sample credential exists")
     }
 
     fn config(address: &str) -> String {
@@ -321,8 +319,8 @@ mod tests {
 
     #[tokio::test]
     async fn subscribe_emits_change_after_certificate_file_update() {
-        let cert_path = temp_file("cert", b"cert-a");
-        let key_path = temp_file("key", &sample_key_der());
+        let cert_path = temp_file("cert", &sample_credential("client.crt"));
+        let key_path = temp_file("key", &sample_credential("client.key.der"));
         let input = CliDatastoreInput::new(
             CliConfigSource::Inline {
                 servers: vec![CliServerInput::new("server-0", "192.0.2.10:49")],
@@ -342,7 +340,8 @@ mod tests {
             .await
             .expect("subscription must succeed");
 
-        fs::write(&cert_path, b"cert-b").expect("certificate file must update");
+        fs::write(&cert_path, sample_credential("server.crt"))
+            .expect("certificate file must update");
 
         let change = next_change(&mut stream).await;
         fs::remove_file(cert_path).ok();

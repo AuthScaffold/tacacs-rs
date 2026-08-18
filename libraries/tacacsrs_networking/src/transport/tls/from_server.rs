@@ -256,8 +256,8 @@ mod tests {
     fn parse_certificate_data_der_bytes() {
         let cert_pem = std::fs::read(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("examples")
-                .join("samples")
+                .join("../..")
+                .join("lde/containers/config/certificates")
                 .join("client.crt"),
         )
         .expect("sample certificate must exist");

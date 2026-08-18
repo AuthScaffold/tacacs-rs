@@ -1,3 +1,9 @@
+#[cfg(not(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "msvc")
+)))]
+compile_error!("tacon supports Linux GNU and Windows MSVC only");
+
 mod batch;
 mod cli;
 mod commands;
@@ -5,18 +11,26 @@ mod config;
 mod connection;
 
 use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::str::FromStr;
 
-use anyhow::{bail, Context};
+use anyhow::bail;
+#[cfg(target_os = "linux")]
+use anyhow::Context;
 use clap::Parser;
+#[cfg(target_os = "linux")]
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
 use tacacsrs_networking::ConnectOptions;
 
 use cli::{Cli, Command};
 use commands::accounting::send_accounting_request;
-use commands::authentication::{authenticate_direct, authenticate_service, read_password};
-use commands::authorization::{authorize_direct, authorize_service};
+use commands::authentication::{authenticate_direct, read_password};
+#[cfg(target_os = "linux")]
+use commands::authentication::authenticate_service;
+use commands::authorization::authorize_direct;
+#[cfg(target_os = "linux")]
+use commands::authorization::authorize_service;
 use connection::{Connection, establish_connection, establish_dedicated_connection};
 
 /// Initializes the logger based on verbosity level
@@ -93,6 +107,7 @@ async fn execute_command(command: &Command, connection: &Connection) -> anyhow::
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 async fn execute_command_via_service(endpoint: &str, command: &Command) -> anyhow::Result<()> {
     let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
     let client = ServiceClient::connect(endpoint)
@@ -164,19 +179,26 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
         batch_file.metadata.parallel
     );
 
-    let results = if let Some(ref endpoint) = cli.service_endpoint {
-        batch::execute_batch_via_service(endpoint, &batch_file).await?
-    } else {
-        let required_type = batch_file
-            .required_server_type()
-            .unwrap_or(TacacsPlusServerType::ACCOUNTING);
-        let server_config = config::resolve_server_for_type(cli, required_type)?;
-        let options = ConnectOptions::default()
-            .with_certificate_verification_disabled(cli.insecure_disable_certificate_verification);
-        batch::execute_batch(&server_config, cli.dedicated, &batch_file, &options).await?
-    };
+    #[cfg(target_os = "linux")]
+    if let Some(ref endpoint) = cli.service_endpoint {
+        let results = batch::execute_batch_via_service(endpoint, &batch_file).await?;
+        return finish_batch(&results);
+    }
 
-    batch::print_results_summary(&results);
+    let required_type = batch_file
+        .required_server_type()
+        .unwrap_or(TacacsPlusServerType::ACCOUNTING);
+    let server_config = config::resolve_server_for_type(cli, required_type)?;
+    let options = ConnectOptions::default()
+        .with_certificate_verification_disabled(cli.insecure_disable_certificate_verification);
+    let results =
+        batch::execute_batch(&server_config, cli.dedicated, &batch_file, &options).await?;
+
+    finish_batch(&results)
+}
+
+fn finish_batch(results: &[batch::RequestResult]) -> anyhow::Result<()> {
+    batch::print_results_summary(results);
 
     // Return error if any requests failed
     let failed_count = results.iter().filter(|r| r.result.is_err()).count();
@@ -212,6 +234,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         | Command::Authorization { .. } => {}
     }
 
+    #[cfg(target_os = "linux")]
     if let Some(ref endpoint) = cli.service_endpoint {
         return execute_command_via_service(endpoint, &cli.command).await;
     }
