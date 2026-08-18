@@ -48,28 +48,3 @@ normal = ["env_logger"]
 
 [lints]
 workspace = true
-
-# Debian package metadata
-[package.metadata.deb]
-maintainer = "AuthScaffold <github-discussions@authscaffold.com>"
-copyright = "2024, AuthScaffold"
-license-file = ["../../LICENSE", "0"]
-extended-description = """\
-tacacsrs-agentd is a local TACACS+ client service. It keeps a connection pool \
-for TACACS+ servers. Clients, such as tacon and session-wrapper, use its IPC \
-endpoint."""
-depends = "$auto, init-system-helpers (>= 1.54)"
-pre-depends = "debconf (>= 0.5) | debconf-2.0"
-section = "net"
-priority = "optional"
-maintainer-scripts = "debian/maintainer-scripts"
-assets = [
-    ["target/release/tacacsrs-agentd", "usr/sbin/", "755"],
-    ["target/release/tacacsrs-agent-health", "usr/bin/", "755"],
-    ["debian/tacacsrs-agentd-config.ini", "etc/tacacsrs-agentd/config.ini", "644"],
-    ["sonic/tacacsrs-agentd.service", "lib/systemd/system/tacacsrs-agentd.service", "644"],
-    ["../../docs/tacacsrs-agentd.md", "usr/share/doc/tacacsrs-agentd/README.md", "644"],
-    ["../../LICENSE", "usr/share/doc/tacacsrs-agentd/", "644"],
-    ["debian/changelog.gz", "usr/share/doc/tacacsrs-agentd/changelog.Debian.gz", "644"],
-    ["debian/tacacsrs-agentd.1.gz", "usr/share/man/man1/tacacsrs-agentd.1.gz", "644"],
-]

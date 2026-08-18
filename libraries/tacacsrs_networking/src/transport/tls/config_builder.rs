@@ -114,8 +114,8 @@ mod tests {
 
     fn sample_path(file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("examples")
-            .join("samples")
+            .join("../..")
+            .join("lde/containers/config/certificates")
             .join(file_name)
     }
 

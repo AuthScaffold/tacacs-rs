@@ -4,7 +4,7 @@
 
 ## Platform support
 
-The workspace builds the real wrapper only for Linux `x86_64`. Only this platform provides seccomp user notifications and the current `libseccomp-rs` integration. Other platforms build a noop entry point, so the workspace still builds on macOS and Windows.
+The workspace builds the wrapper only for Linux GNU `x86_64`. Other targets are not supported.
 
 ## What it does today
 
@@ -125,19 +125,7 @@ cargo clippy -p session-wrapper --all-targets -- -D warnings
 cargo test -p session-wrapper
 ```
 
-For musl validation, provide a musl-targeted static `libseccomp`. Then run:
-
-```bash
-export LIBSECCOMP_LIB_PATH=/path/to/libseccomp-musl/lib
-export LIBSECCOMP_LINK_TYPE=static
-export PKG_CONFIG_ALLOW_CROSS=1
-export PKG_CONFIG_PATH=/path/to/libseccomp-musl/lib/pkgconfig
-
-cargo clippy -p session-wrapper --target x86_64-unknown-linux-musl --all-targets -- -D warnings
-cargo test -p session-wrapper --target x86_64-unknown-linux-musl
-```
-
-See [Session Wrapper Smoke and Integration Testing](../../docs/session-wrapper-testing.md) for detailed smoke tests and expected results. Native Alpine builds have a separate [Alpine Linux technical note](README.alpine.md). For SSH integration (`ForceCommand`, login-shell pattern, SSH environment-variable mapping), configuration examples, security considerations, and troubleshooting, see the [Session Wrapper Deployment Guide](../../docs/session-wrapper.md).
+See [Session Wrapper Smoke and Integration Testing](../../docs/session-wrapper-testing.md) for detailed smoke tests and expected results. For SSH integration (`ForceCommand`, login-shell pattern, SSH environment-variable mapping), configuration examples, security considerations, and troubleshooting, see the [Session Wrapper Deployment Guide](../../docs/session-wrapper.md).
 
 ## Future work
 

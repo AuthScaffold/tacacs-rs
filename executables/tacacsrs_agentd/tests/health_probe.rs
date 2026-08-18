@@ -114,7 +114,6 @@ async fn timeout_returns_check_error() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("timed out"));
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn unix_socket_probe_reports_serving() {
     use std::path::PathBuf;

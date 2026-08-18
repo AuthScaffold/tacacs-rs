@@ -2,17 +2,14 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
 use async_trait::async_trait;
-#[cfg(target_os = "linux")]
 use tacacsrs_config::crypto_types::SymmetricKeyFormat;
 use tacacsrs_credential_resolution::{
     CredentialKind, CredentialRequest, CredentialResolver, ProviderErrorKind, ResolutionError,
     ResolvedCredential,
 };
-#[cfg(target_os = "linux")]
 use tacacsrs_credential_resolution::{SecretBytes, SymmetricKeyMaterial};
 
 /// Production credential roots for the SONiC central agent.
@@ -117,8 +114,6 @@ impl SonicCredentialPolicy {
 /// Sanitized provider initialization failure.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SonicCredentialInitializationError {
-    /// The platform does not provide the required descriptor-relative file API.
-    UnsupportedPlatform,
     /// The provider cannot open the EPSK root.
     RootUnavailable,
     /// The EPSK root metadata violates the configured policy.
@@ -128,9 +123,6 @@ pub enum SonicCredentialInitializationError {
 impl fmt::Display for SonicCredentialInitializationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedPlatform => {
-                formatter.write_str("SONiC credential provider requires Linux")
-            }
             Self::RootUnavailable => formatter.write_str("SONiC EPSK provider root is unavailable"),
             Self::InvalidRootMetadata => {
                 formatter.write_str("SONiC EPSK provider root metadata is invalid")
@@ -145,7 +137,6 @@ impl std::error::Error for SonicCredentialInitializationError {}
 pub struct SonicCredentialResolver {
     roots: SonicCredentialRoots,
     policy: SonicCredentialPolicy,
-    #[cfg(target_os = "linux")]
     epsk_root: Option<Arc<rustix::fd::OwnedFd>>,
 }
 
@@ -160,24 +151,16 @@ impl SonicCredentialResolver {
         roots: SonicCredentialRoots,
         policy: SonicCredentialPolicy,
     ) -> Result<Self, SonicCredentialInitializationError> {
-        #[cfg(target_os = "linux")]
-        {
-            let (root, root_gid) = linux::open_root(roots.epsk(), policy)?;
-            let policy = SonicCredentialPolicy {
-                expected_gid: Some(root_gid),
-                ..policy
-            };
-            Ok(Self {
-                roots,
-                policy,
-                epsk_root: Some(Arc::new(root)),
-            })
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (roots, policy);
-            Err(SonicCredentialInitializationError::UnsupportedPlatform)
-        }
+        let (root, root_gid) = linux::open_root(roots.epsk(), policy)?;
+        let policy = SonicCredentialPolicy {
+            expected_gid: Some(root_gid),
+            ..policy
+        };
+        Ok(Self {
+            roots,
+            policy,
+            epsk_root: Some(Arc::new(root)),
+        })
     }
 
     /// Creates a provider that opens roots and makes sure that they are valid
@@ -187,7 +170,6 @@ impl SonicCredentialResolver {
         Self {
             roots,
             policy,
-            #[cfg(target_os = "linux")]
             epsk_root: None,
         }
     }
@@ -225,58 +207,45 @@ impl CredentialResolver for SonicCredentialResolver {
             ResolutionError::provider(ProviderErrorKind::InvalidMaterial, request.context())
         })?;
 
-        #[cfg(target_os = "linux")]
-        {
-            let root = self.epsk_root.as_ref().map(Arc::clone);
-            let roots = self.roots.clone();
-            let configured_policy = self.policy;
-            let reference = reference.to_owned();
-            let bytes = tokio::task::spawn_blocking(move || {
-                let (root, policy) = if let Some(root) = root {
-                    (root, configured_policy)
-                } else {
-                    let (root, root_gid) = linux::open_root(roots.epsk(), configured_policy)
-                        .map_err(map_initialization_error)?;
-                    (
-                        Arc::new(root),
-                        SonicCredentialPolicy {
-                            expected_gid: Some(root_gid),
-                            ..configured_policy
-                        },
-                    )
-                };
-                linux::read_epsk(&root, &reference, policy)
-            })
-            .await
-            .map_err(|_| {
-                ResolutionError::provider(ProviderErrorKind::Unavailable, request.context())
-            })?
-            .map_err(|kind| ResolutionError::provider(kind, request.context()))?;
-            Ok(ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
-                key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
-                key: SecretBytes::from_zeroizing(bytes),
-            }))
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = reference;
-            Err(ResolutionError::provider(ProviderErrorKind::Unavailable, request.context()))
-        }
+        let root = self.epsk_root.as_ref().map(Arc::clone);
+        let roots = self.roots.clone();
+        let configured_policy = self.policy;
+        let reference = reference.to_owned();
+        let bytes = tokio::task::spawn_blocking(move || {
+            let (root, policy) = if let Some(root) = root {
+                (root, configured_policy)
+            } else {
+                let (root, root_gid) = linux::open_root(roots.epsk(), configured_policy)
+                    .map_err(map_initialization_error)?;
+                (
+                    Arc::new(root),
+                    SonicCredentialPolicy {
+                        expected_gid: Some(root_gid),
+                        ..configured_policy
+                    },
+                )
+            };
+            linux::read_epsk(&root, &reference, policy)
+        })
+        .await
+        .map_err(|_| ResolutionError::provider(ProviderErrorKind::Unavailable, request.context()))?
+        .map_err(|kind| ResolutionError::provider(kind, request.context()))?;
+        Ok(ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+            key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
+            key: SecretBytes::from_zeroizing(bytes),
+        }))
     }
 }
 
-#[cfg(target_os = "linux")]
 fn map_initialization_error(error: SonicCredentialInitializationError) -> ProviderErrorKind {
     match error {
-        SonicCredentialInitializationError::RootUnavailable
-        | SonicCredentialInitializationError::UnsupportedPlatform => ProviderErrorKind::Unavailable,
+        SonicCredentialInitializationError::RootUnavailable => ProviderErrorKind::Unavailable,
         SonicCredentialInitializationError::InvalidRootMetadata => {
             ProviderErrorKind::InvalidMaterial
         }
     }
 }
 
-#[cfg(target_os = "linux")]
 mod linux {
     use std::fs::File;
     use std::io::Read;

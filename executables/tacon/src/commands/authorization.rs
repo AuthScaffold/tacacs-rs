@@ -1,5 +1,6 @@
 //! Explicit shell session and command authorization.
 
+#[cfg(target_os = "linux")]
 use tacacsrs_agent_client::{
     AuthorizationAuthenticationContext, AuthorizationOperation, AuthorizationOperationResponse,
     ServiceClient,
@@ -39,6 +40,7 @@ pub async fn authorize_direct(
     connection.execute(exchange).await
 }
 
+#[cfg(target_os = "linux")]
 pub async fn authorize_service(
     client: &ServiceClient,
     args: &RequestArgs,
@@ -73,6 +75,7 @@ const fn flow_context(context: AuthorizationAuthContext) -> AuthenticationContex
     }
 }
 
+#[cfg(target_os = "linux")]
 const fn ipc_context(context: AuthorizationAuthContext) -> AuthorizationAuthenticationContext {
     match context {
         AuthorizationAuthContext::Ascii => AuthorizationAuthenticationContext::TacacsAscii,

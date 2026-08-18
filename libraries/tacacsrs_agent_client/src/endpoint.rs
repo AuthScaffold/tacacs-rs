@@ -10,36 +10,31 @@
 //! | Input | Platform | Result |
 //! |-------|----------|--------|
 //! | `/run/tacacs/tacacs.sock` | Unix | `IpcEndpoint::Unix(PathBuf)` |
-//! | `127.0.0.1:9049` | All | `IpcEndpoint::Tcp(SocketAddr)` |
-//! | *(empty string)* | All | Error |
+//! | `127.0.0.1:9049` | Linux emulator | `IpcEndpoint::Tcp(SocketAddr)` |
+//! | *(empty string)* | Linux | Error |
 
 use std::net::SocketAddr;
-#[cfg(unix)]
 use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Context, bail};
-#[cfg(unix)]
 use http::Uri;
-#[cfg(unix)]
 use hyper_util::rt::TokioIo;
 use tonic::transport::{Channel, Endpoint};
-#[cfg(unix)]
 use tower::service_fn;
 
-#[cfg(unix)]
 const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 
 /// Local IPC endpoint used between local consumers and the central service.
 ///
-/// On Unix, the preferred transport is a Unix domain socket. File permissions
-/// control access, and this transport has no TCP overhead. Other platforms
-/// accept a loopback TCP socket.
+/// The production transport is a Unix domain socket. File permissions control
+/// access, and this transport has no TCP overhead. The Linux IPC emulator also
+/// accepts a loopback TCP socket.
 ///
 /// # Parsing
 ///
 /// `IpcEndpoint` implements [`FromStr`] so it can be used directly with
-/// command-line argument parsers. On Unix, any value containing `/` is treated
+/// command-line argument parsers. Any value containing `/` is treated
 /// as a socket path; otherwise the value is parsed as a `SocketAddr`.
 ///
 /// ```
@@ -56,10 +51,9 @@ pub enum IpcEndpoint {
     ///
     /// Preferred on production Linux deployments because filesystem permissions
     /// control access and there is no TCP overhead.
-    #[cfg(unix)]
     Unix(PathBuf),
 
-    /// Loopback TCP fallback used for non-Unix developer workflows.
+    /// Loopback TCP endpoint used by Linux emulator workflows.
     ///
     /// At bind time, the service makes sure that this address is loopback-only.
     /// This restriction prevents exposure on a network interface.
@@ -67,25 +61,14 @@ pub enum IpcEndpoint {
 }
 
 impl IpcEndpoint {
-    /// Returns the default local IPC endpoint for this platform.
+    /// Returns the default local IPC endpoint.
     ///
-    /// | Platform | Default |
-    /// |----------|---------|
-    /// | Unix | `/run/tacacs/tacacs.sock` |
-    /// | Non-Unix | `127.0.0.1:9049` |
+    /// The default is `/run/tacacs/tacacs.sock`.
     ///
     /// [`FromStr`] does not use this default. An empty string remains an error.
     #[must_use]
     pub fn default_local() -> Self {
-        #[cfg(unix)]
-        {
-            Self::Unix(PathBuf::from("/run/tacacs/tacacs.sock"))
-        }
-
-        #[cfg(not(unix))]
-        {
-            Self::Tcp(SocketAddr::from(([127, 0, 0, 1], 9049)))
-        }
+        Self::Unix(PathBuf::from("/run/tacacs/tacacs.sock"))
     }
 }
 
@@ -94,7 +77,7 @@ impl FromStr for IpcEndpoint {
 
     /// Parses an IPC endpoint string.
     ///
-    /// On Unix, the parser treats a value that contains `/` as a Unix domain
+    /// The parser treats a value that contains `/` as a Unix domain
     /// socket path. It parses all other values as `host:port` TCP socket
     /// addresses. It rejects empty strings.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
@@ -105,7 +88,6 @@ impl FromStr for IpcEndpoint {
             );
         }
 
-        #[cfg(unix)]
         if value.contains('/') {
             return Ok(Self::Unix(PathBuf::from(value)));
         }
@@ -125,7 +107,6 @@ impl FromStr for IpcEndpoint {
 /// transport or the local socket cannot be reached.
 pub async fn connect_channel(endpoint: &IpcEndpoint) -> anyhow::Result<Channel> {
     match endpoint {
-        #[cfg(unix)]
         IpcEndpoint::Unix(path) => {
             let path = path.clone();
             let connect_path = path.clone();
@@ -172,7 +153,6 @@ mod tests {
         assert!(matches!(endpoint, IpcEndpoint::Tcp(_)));
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_unix_endpoint_string_parses() {
         let endpoint = "/run/tacacs/tacacs.sock"

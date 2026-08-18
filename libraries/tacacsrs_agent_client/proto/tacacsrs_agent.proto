@@ -1,9 +1,8 @@
 // Local IPC contract for the central TACACS+ client service.
 //
 // This schema defines the gRPC interface of the central TACACS+ client service.
-// The service exposes the interface through an IPC endpoint. On Linux, the
-// endpoint is a Unix domain socket. On other platforms, it is a loopback TCP
-// listener. Local clients use this contract. They do not manage TACACS+
+// The service exposes the interface through a Linux Unix domain socket. Local
+// clients use this contract. They do not manage TACACS+
 // sessions, TCP or TLS connections, failover, or protocol details.
 //
 // ## Building your own client
@@ -12,8 +11,7 @@
 //    your language. For example, use grpcio-tools for Python.
 //
 // 2. Connect to the local IPC endpoint:
-//      - Linux default: Unix domain socket at /run/tacacs/tacacs.sock
-//      - Non-Unix development fallback: loopback TCP at 127.0.0.1:9049
+//      - Unix domain socket at /run/tacacs/tacacs.sock
 //    The service operator can configure the IPC endpoint.
 //
 // 3. Send a unary Accounting or Authorization RPC. The service selects the

@@ -1,6 +1,9 @@
 #![doc = include_str!("../README.md")]
 #![allow(clippy::doc_markdown, clippy::ignored_unit_patterns)]
 
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+compile_error!("tacacsrs-sonic supports Linux GNU only");
+
 pub mod mapping;
 mod provider;
 pub mod store;

@@ -12,31 +12,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = "1.0.102"
+libc = "0.2"
 tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[package.metadata.deb]
-maintainer = "AuthScaffold <github-discussions@authscaffold.com>"
-copyright = "2024, AuthScaffold"
-license-file = ["../../LICENSE", "0"]
-extended-description = """\
-tacacsrs-bash-plugin is a SONiC Bash execve authorization plug-in. It connects \
-to the local tacacsrs-agentd IPC endpoint. Patched Bash uses the installed \
-shared object to authorize commands through the central TACACS+ client daemon."""
-depends = "$auto, tacacsrs-agentd"
-pre-depends = "debconf (>= 0.5) | debconf-2.0"
-section = "admin"
-priority = "optional"
-maintainer-scripts = "debian/maintainer-scripts"
-assets = [
-	["target/release/libtacacsrs_bash_plugin.so", "usr/lib/x86_64-linux-gnu/security/tacacsrs_bash_plugin.so", "755"],
-	["README.md", "usr/share/doc/tacacsrs-bash-plugin/README.md", "644"],
-	["../../LICENSE", "usr/share/doc/tacacsrs-bash-plugin/", "644"],
-	["debian/changelog.gz", "usr/share/doc/tacacsrs-bash-plugin/changelog.Debian.gz", "644"],
-]
 
 [lints.rust]
 unsafe_code = "allow"

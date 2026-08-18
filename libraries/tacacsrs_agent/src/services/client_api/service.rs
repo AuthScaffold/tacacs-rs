@@ -45,7 +45,6 @@ impl ClientApiService {
             .await
     }
 
-    #[cfg(unix)]
     pub(crate) fn validate_endpoint(endpoint: &IpcEndpoint) -> anyhow::Result<()> {
         listener::validate_endpoint(endpoint)
     }

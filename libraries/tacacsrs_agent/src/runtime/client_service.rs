@@ -17,7 +17,7 @@
 //!
 //! 1. Each listener stops accepting connections.
 //! 2. Active request handlers finish.
-//! 3. On Unix, the service removes the Unix domain socket path.
+//! 3. The service removes the Unix domain socket path.
 
 use std::sync::Arc;
 
@@ -112,7 +112,6 @@ impl TacacsClientService {
         health: RuntimeHealthPublisher,
         configuration_applied: bool,
     ) -> anyhow::Result<Self> {
-        #[cfg(unix)]
         if config.enabled_services.client_api() {
             ClientApiService::validate_endpoint(&config.endpoint)?;
         }
@@ -146,7 +145,7 @@ impl TacacsClientService {
         })
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(super) fn new_with_connector(
         config: ServiceConfig,
         connector: Arc<dyn UpstreamConnector>,

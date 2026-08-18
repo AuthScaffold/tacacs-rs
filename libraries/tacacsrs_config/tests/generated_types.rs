@@ -1,3 +1,5 @@
+#![allow(clippy::assertions_on_constants)]
+
 use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
 use tacacsrs_config::{parse_yang_json, PskDheKeSupportedGroup, TacacsPlusServerType};
 use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder};

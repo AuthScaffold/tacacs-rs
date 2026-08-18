@@ -11,10 +11,8 @@ use crate::runtime::{ListenerRegistration, ShutdownReceiver};
 use crate::services::ListenerOptions;
 
 mod tcp;
-#[cfg(unix)]
 mod unix;
 
-#[cfg(unix)]
 pub(super) async fn serve(
     endpoint: &IpcEndpoint,
     service: TacacsProxyService,
@@ -26,19 +24,6 @@ pub(super) async fn serve(
         IpcEndpoint::Unix(path) => {
             unix::serve(path, service, options.socket_mode(), shutdown, registration).await
         }
-        IpcEndpoint::Tcp(address) => tcp::serve(*address, service, shutdown, registration).await,
-    }
-}
-
-#[cfg(not(unix))]
-pub(super) async fn serve(
-    endpoint: &IpcEndpoint,
-    service: TacacsProxyService,
-    _options: ListenerOptions,
-    shutdown: ShutdownReceiver,
-    registration: ListenerRegistration,
-) -> anyhow::Result<()> {
-    match endpoint {
         IpcEndpoint::Tcp(address) => tcp::serve(*address, service, shutdown, registration).await,
     }
 }

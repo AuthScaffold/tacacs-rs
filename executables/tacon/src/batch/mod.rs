@@ -22,7 +22,9 @@ use std::path::Path;
 pub use types::{BatchFile, RequestResult};
 
 // Re-export the run functions.
-pub use executor::{execute_batch, execute_batch_via_service};
+pub use executor::execute_batch;
+#[cfg(target_os = "linux")]
+pub use executor::execute_batch_via_service;
 
 // Re-export display functions
 pub use progress::print_results_summary;

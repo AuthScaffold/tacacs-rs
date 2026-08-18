@@ -2,6 +2,10 @@ name: Build Documentation
 description: Build Rust documentation for a target platform
 
 inputs:
+  package-args:
+    description: 'Cargo workspace or package selection arguments'
+    required: false
+    default: '--workspace'
   target:
     description: 'Rust target triple to document'
     required: true
@@ -26,7 +30,7 @@ runs:
         fi
 
         RUSTDOCFLAGS="$RUSTDOCFLAGS_VALUE" cargo doc \
-          --workspace \
+          ${{ inputs.package-args }} \
           --no-deps \
           --document-private-items \
           --target "${{ inputs.target }}" \

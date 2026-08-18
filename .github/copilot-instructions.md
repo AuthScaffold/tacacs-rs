@@ -71,8 +71,6 @@ locally. If you cannot run a job, explain why:
   aliasing-sensitive changes.
 - `cargo +nightly fuzz run <target> -- -max_total_time=30` for protocol parser
   changes under `fuzz/`.
-- When CLI packaging assets or Debian metadata change, run
-  `cargo deb --package tacon --no-build --dbgsym`.
 
 The full reusable pipeline also runs these additional checks:
 
@@ -91,7 +89,7 @@ The full reusable pipeline also runs these additional checks:
 - Fuzz smoke tests
 - Build artifacts
 - SBOM generation
-- Debian packaging
+- Linux release archives
 
 ## Workspace Architecture
 
@@ -176,8 +174,6 @@ injects them during builds through `.github/steps/compute-versions` and
 - Executables receive CalVer versions of the form `YYYY.MMDD.BUILD` for the
   configured `binary-name` (default: `tacon`) and tags of the form
   `<binary>-YYYY.MMDD.BUILD`.
-- `release-plz.toml` is configured for git-only, non-publishing workflows. Do
-  not assume crates are published to crates.io.
 
 ## Feature Flags and Platforms
 
@@ -185,7 +181,10 @@ injects them during builds through `.github/steps/compute-versions` and
   TLS 1.3 pre-shared key support.
 - Library features must be additive: enabling a feature can add capability, but
   must not remove or change unrelated public API behavior.
-- Use platform `cfg`s narrowly around code that truly needs them.
+- The complete workspace supports Linux GNU. Product crates do not provide
+  unsupported-platform fallback implementations.
+- Windows supports `tacon` direct mode and its dependency crates only.
+- Use the development container for complete workspace development on Windows.
 - Windows CI packages OpenSSL runtime DLLs with release artifacts. Linux GNU
   release artifacts dynamically link against the system OpenSSL packages.
 - `session-wrapper` is Linux x86_64-specific. On Windows, validate it through WSL
@@ -355,8 +354,8 @@ supports the preferred shape.
 
 - Before you add a dependency, make sure that the standard library or an
   existing workspace dependency is not sufficient.
-- Keep default builds working without non-Rust system prerequisites. When
-  possible, gate native dependencies behind opt-in features or platform `cfg`s.
+- Keep portable library builds working without non-Rust system prerequisites.
+- Linux product crates can use their required native dependencies directly.
 - Prefer libraries that are well-maintained, small in API surface, and compatible
   with the workspace MSRV.
 - When dependency changes require it, update `Cargo.toml`, `Cargo.lock`, docs,
