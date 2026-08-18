@@ -164,9 +164,9 @@ session-wrapper -> tacacsrs-agent-client
 
 ## Versioning and Release
 
-Committed manifests use `0.0.0-dev`. CI computes real versions from git tags and
-injects them during builds through `.github/steps/compute-versions` and
-`.github/steps/inject-versions`.
+Manifests on `main` use `0.0.0-dev`. CI computes real versions from git tags.
+The `.github/steps/inject-versions` action hydrates the manifests and
+`Cargo.lock` before each release build.
 
 - Libraries receive semver versions and tags of the form `<crate>-vX.Y.Z`.
   The compute step can run `cargo-semver-checks` and cascades dependency-aware
@@ -174,6 +174,9 @@ injects them during builds through `.github/steps/compute-versions` and
 - Executables receive CalVer versions of the form `YYYY.MMDD.BUILD` for the
   configured `binary-name` (default: `tacon`) and tags of the form
   `<binary>-YYYY.MMDD.BUILD`.
+- The append-only `release` branch contains the hydrated source for each release.
+  Release tags point to these generated commits. Each commit records its source
+  commit from `main`.
 
 ## Feature Flags and Platforms
 

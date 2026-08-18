@@ -12,6 +12,10 @@ inputs:
   image-name:
     description: 'Container image repository name'
     required: true
+  image-tag:
+    description: 'Registry tag for the built image. The package version is the default.'
+    required: false
+    default: ''
   publish:
     description: 'Push the image after a successful build'
     required: false
@@ -20,6 +24,11 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Hydrate Cargo package versions
+      uses: ./.github/steps/inject-versions
+      with:
+        versions: ${{ inputs.versions }}
+
     - name: Compute container image version
       id: container-version
       shell: bash
@@ -32,9 +41,15 @@ runs:
         if [ -z "${version}" ]; then
           version=dev
         fi
+        image_tag='${{ inputs.image-tag }}'
+        if [ -z "${image_tag}" ]; then
+          image_tag="${version}"
+        fi
 
         echo "version=${version}" >> "$GITHUB_OUTPUT"
+        echo "image-tag=${image_tag}" >> "$GITHUB_OUTPUT"
         echo "Using container image version: ${version}"
+        echo "Using container image tag: ${image_tag}"
 
     - name: Make sure that Docker Buildx is available
       shell: bash
@@ -57,8 +72,11 @@ runs:
       run: >-
         make -C containers/tacacsrs-agentd build
         BUILD_VERSION=${{ steps.container-version.outputs.version }}
+        IMAGE_TAG=${{ steps.container-version.outputs.image-tag }}
         REGISTRY=${{ inputs.registry }}
         IMAGE_NAME=${{ inputs.image-name }}
+        SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+        REVISION=${{ github.sha }}
 
     - name: Publish tacacsrs-agentd container image
       if: inputs.publish == 'true'
@@ -66,5 +84,8 @@ runs:
       run: >-
         make -C containers/tacacsrs-agentd push
         BUILD_VERSION=${{ steps.container-version.outputs.version }}
+        IMAGE_TAG=${{ steps.container-version.outputs.image-tag }}
         REGISTRY=${{ inputs.registry }}
         IMAGE_NAME=${{ inputs.image-name }}
+        SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+        REVISION=${{ github.sha }}

@@ -188,9 +188,29 @@ def latest_tag(prefix: str, cwd: Path | None = None) -> str | None:
     return result.splitlines()[0]
 
 
-def has_changes_since(tag: str, paths: Sequence[str], cwd: Path | None = None) -> bool:
-    """Return ``True`` if a file under ``paths`` changed since ``tag``."""
-    args = ["diff", "--name-only", f"{tag}..HEAD", "--"]
+def source_ref_for_tag(tag: str, cwd: Path | None = None) -> str:
+    """Return the main source commit recorded by a generated release tag."""
+    message = git("log", "-1", "--format=%B", tag, cwd=cwd)
+    matches = re.findall(r"(?m)^Source-Commit:\s*([0-9a-fA-F]{40})\s*$", message)
+    if len(matches) > 1:
+        raise ValueError(f"Tag {tag} has more than one Source-Commit trailer")
+    if not matches:
+        return tag
+
+    source_ref = git(
+        "rev-parse",
+        "--verify",
+        f"{matches[0]}^{{commit}}",
+        cwd=cwd,
+    )
+    if not source_ref:
+        raise ValueError(f"Tag {tag} records an invalid Source-Commit")
+    return source_ref
+
+
+def has_changes_since(ref: str, paths: Sequence[str], cwd: Path | None = None) -> bool:
+    """Return ``True`` if a file under ``paths`` changed since ``ref``."""
+    args = ["diff", "--name-only", f"{ref}..HEAD", "--"]
     args.extend(paths)
     result = git(*args, cwd=cwd)
     return bool(result)
@@ -265,7 +285,8 @@ def compute_calver(
     latest = latest_tag(tag_prefix, cwd=cwd)
 
     if latest is not None:
-        if not has_changes_since(latest, list(watch_paths), cwd=cwd):
+        source_ref = source_ref_for_tag(latest, cwd=cwd)
+        if not has_changes_since(source_ref, list(watch_paths), cwd=cwd):
             return None
 
     if now is None:
@@ -417,7 +438,8 @@ def compute_library_versions(
 
         current = latest[len(tag_prefix):]
         dir_rel = str(crate.directory.relative_to(crate.directory.parents[1]))
-        source_changed = has_changes_since(latest, [f"{dir_rel}/"], cwd=cwd)
+        source_ref = source_ref_for_tag(latest, cwd=cwd)
+        source_changed = has_changes_since(source_ref, [f"{dir_rel}/"], cwd=cwd)
 
         if not source_changed and not dep_bumped:
             # Nothing changed. Keep the current version.

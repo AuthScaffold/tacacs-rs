@@ -31,6 +31,7 @@ from compute_versions import (
     discover_libraries,
     parse_cargo_toml,
     parse_semver,
+    source_ref_for_tag,
     topological_sort,
     write_github_output,
 )
@@ -135,6 +136,22 @@ def git_tag(ws: Path, tag: str) -> None:
     subprocess.run(
         ["git", "tag", "-a", tag, "-m", f"tag {tag}"],
         cwd=ws, check=True, capture_output=True,
+    )
+
+
+def git_release_commit(ws: Path, source_commit: str) -> str:
+    """Create a generated release commit with a source trailer."""
+    manifest = ws / "libraries" / "my_lib" / "Cargo.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'version = "0.0.0-dev"',
+            'version = "0.1.0"',
+        ),
+        encoding="utf-8",
+    )
+    return git_commit(
+        ws,
+        f"chore: hydrate release versions\n\nSource-Commit: {source_commit}",
     )
 
 
@@ -376,6 +393,67 @@ class TestComputeLibraryVersions:
         assert results[0].tag is None
         assert results[0].reason == "unchanged"
 
+    def test_ignores_hydration_in_generated_release_tag(
+        self,
+        tmp_workspace: Path,
+    ) -> None:
+        """A generated manifest version does not cause another release."""
+        make_library(tmp_workspace, "my-lib", "my_lib")
+        source_commit = git_commit(tmp_workspace, "initial")
+        release_commit = git_release_commit(tmp_workspace, source_commit)
+        git_tag(tmp_workspace, "my-lib-v0.1.0")
+        subprocess.run(
+            ["git", "checkout", "--detach", source_commit],
+            cwd=tmp_workspace,
+            check=True,
+            capture_output=True,
+        )
+
+        crates = discover_libraries(tmp_workspace)
+        results = compute_library_versions(
+            crates,
+            topological_sort(crates),
+            cwd=tmp_workspace,
+            skip_semver_checks=True,
+        )
+
+        assert source_ref_for_tag(
+            "my-lib-v0.1.0",
+            cwd=tmp_workspace,
+        ) == source_commit
+        assert release_commit != source_commit
+        assert results[0].version == "0.1.0"
+        assert results[0].tag is None
+
+    def test_detects_source_change_after_generated_release_tag(
+        self,
+        tmp_workspace: Path,
+    ) -> None:
+        """A source change after a generated tag causes a new release."""
+        lib = make_library(tmp_workspace, "my-lib", "my_lib")
+        source_commit = git_commit(tmp_workspace, "initial")
+        git_release_commit(tmp_workspace, source_commit)
+        git_tag(tmp_workspace, "my-lib-v0.1.0")
+        subprocess.run(
+            ["git", "checkout", "--detach", source_commit],
+            cwd=tmp_workspace,
+            check=True,
+            capture_output=True,
+        )
+        (lib / "src" / "lib.rs").write_text("// changed\n", encoding="utf-8")
+        git_commit(tmp_workspace, "change")
+
+        crates = discover_libraries(tmp_workspace)
+        results = compute_library_versions(
+            crates,
+            topological_sort(crates),
+            cwd=tmp_workspace,
+            skip_semver_checks=True,
+        )
+
+        assert results[0].version == "0.1.1"
+        assert results[0].tag == "my-lib-v0.1.1"
+
     def test_patch_bump_on_change(self, tmp_workspace: Path) -> None:
         """A changed library gets a patch increment."""
         lib = make_library(tmp_workspace, "my-lib", "my_lib")
@@ -523,6 +601,31 @@ class TestComputeCalver:
         assert result is not None
         assert result.version == "2026.424.1"
 
+    def test_ignores_hydration_in_generated_release_tag(
+        self,
+        tmp_workspace: Path,
+    ) -> None:
+        make_executable(tmp_workspace, "tacon", "tacon")
+        make_library(tmp_workspace, "my-lib", "my_lib")
+        source_commit = git_commit(tmp_workspace, "initial")
+        git_release_commit(tmp_workspace, source_commit)
+        git_tag(tmp_workspace, "tacon-2026.424.0")
+        subprocess.run(
+            ["git", "checkout", "--detach", source_commit],
+            cwd=tmp_workspace,
+            check=True,
+            capture_output=True,
+        )
+
+        result = compute_calver(
+            "tacon",
+            ["executables/tacon/", "libraries/"],
+            cwd=tmp_workspace,
+            now=datetime(2026, 4, 25, tzinfo=timezone.utc),
+        )
+
+        assert result is None
+
     def test_calver_no_changes(self, tmp_workspace: Path) -> None:
         make_executable(tmp_workspace, "tacon", "tacon")
         git_commit(tmp_workspace, "initial")
@@ -650,6 +753,19 @@ class TestComputeAllVersions:
 # ---------------------------------------------------------------------------
 # Output tests
 # ---------------------------------------------------------------------------
+
+class TestSourceRefForTag:
+    def test_rejects_missing_source_commit(self, tmp_workspace: Path) -> None:
+        make_library(tmp_workspace, "my-lib", "my_lib")
+        git_commit(
+            tmp_workspace,
+            "release\n\nSource-Commit: ffffffffffffffffffffffffffffffffffffffff",
+        )
+        git_tag(tmp_workspace, "my-lib-v0.1.0")
+
+        with pytest.raises(ValueError, match="invalid Source-Commit"):
+            source_ref_for_tag("my-lib-v0.1.0", cwd=tmp_workspace)
+
 
 class TestWriteGithubOutput:
     def test_writes_to_file(self, tmp_path: Path) -> None:

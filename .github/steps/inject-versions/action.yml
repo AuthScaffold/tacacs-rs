@@ -1,5 +1,5 @@
 name: Inject Versions
-description: Rewrite Cargo.toml version fields from a JSON map of crate names to versions
+description: Hydrate Cargo.toml and Cargo.lock versions from a JSON map
 
 inputs:
   versions:
@@ -13,26 +13,9 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Inject versions into Cargo.toml files
+    - name: Hydrate Cargo package versions
       shell: bash
       run: |
-        VERSIONS='${{ inputs.versions }}'
-
-        if [ -z "$VERSIONS" ] || [ "$VERSIONS" = "{}" ]; then
-          echo "No versions to inject. Skip version injection."
-          exit 0
-        fi
-
-        echo "$VERSIONS" | jq -r 'to_entries[] | "\(.key)\t\(.value)"' | tr -d '\r' | while IFS=$'\t' read -r CRATE VERSION; do
-          # Find the Cargo.toml that declares this crate.
-          CARGO_TOML=$(find . -name 'Cargo.toml' -not -path '*/target/*' \
-            -exec grep -l "^name = \"${CRATE}\"" {} \;)
-
-          if [ -z "$CARGO_TOML" ]; then
-            echo "WARNING: No Cargo.toml exists for crate '${CRATE}'."
-            continue
-          fi
-
-          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" "$CARGO_TOML"
-          echo "  ${CRATE} → ${VERSION}  (${CARGO_TOML})"
-        done
+        python "${{ github.action_path }}/hydrate_versions.py" \
+          --workspace "${{ github.workspace }}" \
+          --versions '${{ inputs.versions }}'

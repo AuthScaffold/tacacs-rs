@@ -7,6 +7,10 @@ on:
     # Run weekly on Monday at 00:00 UTC to detect dependency errors.
     - cron: "0 0 * * 1"
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   packages: read
@@ -111,6 +115,7 @@ jobs:
       include-fmt: false
       include-proto-compat: false
       include-outdated: false
+      include-container-build: ${{ github.event_name != 'push' || needs.compute-versions.outputs.has-release != 'true' }}
       container-registry: ghcr.io/authscaffold
       products: |
         [
@@ -132,8 +137,8 @@ jobs:
         if: needs.pipeline.result != 'success'
         run: exit 1
 
-  container-publish:
-    name: Container Publish
+  container-stage:
+    name: Stage Container
     runs-on: ubuntu-latest
     needs: [ci-success, compute-versions, release-policy]
     if: >-
@@ -148,74 +153,137 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - name: Build and publish tacacsrs-agentd container image
+      - name: Build and stage the release container
         uses: ./.github/steps/container-image
         with:
-          versions: ${{ needs.compute-versions.outputs.versions || '{}' }}
+          versions: ${{ needs.compute-versions.outputs.versions }}
           registry: ghcr.io/authscaffold
           image-name: tacacsrs-agentd
+          image-tag: sha-${{ github.sha }}
           publish: 'true'
 
   # ── Release: tag and publish (only on push to main) ──────
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [ci-success, compute-versions, release-policy, container-publish]
+    needs: [ci-success, compute-versions, release-policy, container-stage]
     if: >-
       github.event_name == 'push' &&
       github.repository_owner == 'AuthScaffold' &&
       needs.release-policy.outputs.skip-release != 'true' &&
       needs.ci-success.result == 'success' &&
-      needs.container-publish.result == 'success' &&
+      needs.container-stage.result == 'success' &&
       needs.compute-versions.outputs.has-release == 'true'
     permissions:
       contents: write
+      packages: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
-      # ── Create all new tags (library SemVer and CalVer) ──
-      - name: Create Git tags
+      - name: Fetch the generated release branch
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set -euo pipefail
 
-          NEW_TAGS='${{ needs.compute-versions.outputs.new-tags }}'
-          echo "$NEW_TAGS" | jq -r '.[]' | while read -r TAG; do
-            echo "Create tag: $TAG"
-            git tag -a "$TAG" -m "Release $TAG"
-          done
+          if git ls-remote --exit-code --heads origin release >/dev/null 2>&1; then
+            git fetch origin +refs/heads/release:refs/remotes/origin/release
+          fi
 
-          git push origin --tags
-
-      # ── Publish generated source branch with final Cargo metadata ──
-      - name: Prepare release versions branch
-        run: git checkout -B release/versions "$GITHUB_SHA"
-
-      - name: Inject release versions
+      - name: Hydrate release versions
         uses: ./.github/steps/inject-versions
         with:
           versions: ${{ needs.compute-versions.outputs.versions }}
 
-      - name: Publish release versions branch
+      - name: Publish the generated release commit and tags
+        id: publish-release
         shell: bash
+        env:
+          NEW_TAGS: ${{ needs.compute-versions.outputs.new-tags }}
+          VERSIONS: ${{ needs.compute-versions.outputs.versions }}
         run: |
-          git add -- Cargo.toml libraries/*/Cargo.toml executables/*/Cargo.toml
+          set -euo pipefail
 
-          if git diff --cached --quiet; then
-            echo "No release version changes to publish"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- Cargo.lock ':(glob)**/Cargo.toml'
+
+          existing_commit=
+          existing_count=0
+          tag_count=$(jq 'length' <<< "$NEW_TAGS")
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            if tag_commit=$(git rev-parse --verify "refs/tags/$tag^{commit}" 2>/dev/null); then
+              existing_count=$((existing_count + 1))
+              if [ -n "$existing_commit" ] && [ "$existing_commit" != "$tag_commit" ]; then
+                echo "Error: Existing release tags do not point to one commit."
+                exit 1
+              fi
+              existing_commit=$tag_commit
+            fi
+          done < <(jq -r '.[]' <<< "$NEW_TAGS")
+
+          if [ "$existing_count" -ne 0 ]; then
+            if [ "$existing_count" -ne "$tag_count" ]; then
+              echo "Error: Only some release tags already exist."
+              exit 1
+            fi
+            branch_commit=$(git rev-parse refs/remotes/origin/release)
+            source_commit=$(git log -1 --format='%(trailers:key=Source-Commit,valueonly)' "$existing_commit")
+            if ! git merge-base --is-ancestor "$existing_commit" "$branch_commit" ||
+              [ "$source_commit" != "$GITHUB_SHA" ]; then
+              echo "Error: Existing release refs do not match this source commit."
+              exit 1
+            fi
+            echo "Release refs already exist for $existing_commit."
+            echo "release-commit=$existing_commit" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          git commit -m "chore: populate release versions"
-
-          if git ls-remote --exit-code --heads origin release/versions >/dev/null 2>&1; then
-            git fetch origin +release/versions:refs/remotes/origin/release/versions
-            git push --force-with-lease=refs/heads/release/versions origin HEAD:refs/heads/release/versions
-          else
-            git push origin HEAD:refs/heads/release/versions
+          if git diff --cached --quiet; then
+            echo "Error: Release hydration did not change the generated tree."
+            exit 1
           fi
+
+          tree=$(git write-tree)
+          parents=(-p "$GITHUB_SHA")
+          if git rev-parse --verify refs/remotes/origin/release >/dev/null 2>&1; then
+            parents=(-p refs/remotes/origin/release -p "$GITHUB_SHA")
+          fi
+
+          release_commit=$(
+            printf \
+              'chore: hydrate release versions\n\nVersions: %s\nSource-Commit: %s\n' \
+              "$VERSIONS" \
+              "$GITHUB_SHA" |
+              git commit-tree "$tree" "${parents[@]}"
+          )
+          echo "release-commit=$release_commit" >> "$GITHUB_OUTPUT"
+
+          push_refs=("$release_commit:refs/heads/release")
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "Create tag: $tag"
+            git tag -a "$tag" "$release_commit" -m "Release $tag"
+            push_refs+=("refs/tags/$tag")
+          done < <(jq -r '.[]' <<< "$NEW_TAGS")
+
+          git push --atomic origin "${push_refs[@]}"
+
+      - name: Promote the tested container image
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_VERSION: ${{ fromJson(needs.compute-versions.outputs.versions)['tacacsrs-agentd'] }}
+        run: |
+          set -euo pipefail
+
+          echo "$GH_TOKEN" |
+            docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx imagetools create \
+            --tag "ghcr.io/authscaffold/tacacsrs-agentd:${IMAGE_VERSION}" \
+            "ghcr.io/authscaffold/tacacsrs-agentd:sha-${GITHUB_SHA}"
 
       # ── Download artifacts built by the pipeline ──
       - name: Download release assets
