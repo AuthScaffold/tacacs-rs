@@ -1,9 +1,12 @@
-use anyhow::Context;
 use futures::stream::{self, StreamExt};
 use std::future::Future;
+#[cfg(target_os = "linux")]
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
+#[cfg(target_os = "linux")]
+use anyhow::Context;
+#[cfg(target_os = "linux")]
 use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
 use tacacsrs_flows::authorization::{AuthenticationContext, AuthorizationExchange};
 
@@ -11,11 +14,13 @@ use crate::commands::accounting::send_accounting_request;
 use crate::connection::Connection;
 
 use super::super::progress::{ProgressConfig, ProgressTracker};
+#[cfg(target_os = "linux")]
+use super::super::types::AccountingRequest;
 use super::super::types::{
-    AccountingRequest, AuthorizationAuthenticationContext, AuthorizationRequest, BatchRequest,
-    LoadTestResult,
+    AuthorizationAuthenticationContext, AuthorizationRequest, BatchRequest, LoadTestResult,
 };
 
+#[cfg(target_os = "linux")]
 pub(super) async fn service_client(endpoint: &str) -> anyhow::Result<ServiceClient> {
     let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
     ServiceClient::connect(endpoint)
@@ -23,6 +28,7 @@ pub(super) async fn service_client(endpoint: &str) -> anyhow::Result<ServiceClie
         .context("Failed to connect to TACACS+ service")
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn to_service_accounting_request(request: &AccountingRequest) -> AccountingOperation {
     AccountingOperation {
         user: request.user.clone(),

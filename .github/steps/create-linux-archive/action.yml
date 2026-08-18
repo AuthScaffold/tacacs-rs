@@ -1,0 +1,19 @@
+name: Create Linux Archive
+description: Create a Linux tar archive from the staged package directory
+
+inputs:
+  asset-name:
+    description: 'Platform-specific release asset name'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Create Linux archive
+      shell: bash
+      run: |
+        mkdir -p packaged
+        tar \
+          -C "$(dirname "$PACKAGE_DIR")" \
+          -czf "packaged/${{ inputs.asset-name }}.tar.gz" \
+          "$(basename "$PACKAGE_DIR")"

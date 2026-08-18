@@ -24,7 +24,7 @@ This site collects the project guides into a browsable static documentation set.
 
 ## SONiC integration
 
-- [Building for SONiC](sonic-build-guide.md) covers Linux GNU binaries, Debian package-oriented validation, and container image builds.
+- [Building for SONiC](sonic-build-guide.md) covers Linux GNU artifacts and container image builds.
 - [SONiC ConfigDB Integration](sonic-configdb-integration.md) covers CONFIG_DB schema mapping, Redis notifications, hot reload behavior, and local smoke tests.
 - [Running tacacsrs-agentd as a SONiC Docker container](sonic-agentd-container.md) covers the container run command, host networking rationale, Redis socket mount, and exposure checks.
 

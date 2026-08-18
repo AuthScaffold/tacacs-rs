@@ -1,5 +1,8 @@
 #![allow(clippy::doc_markdown)]
 
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+compile_error!("tacacsrs-agentd supports Linux GNU only");
+
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -37,7 +40,6 @@ use crate::config_filter::{TacacsPlusFilter, config_filter_from_runtime_options}
 use crate::config_supervisor::ConfigSupervisor;
 use crate::host_integration::HostIntegration;
 
-#[cfg(unix)]
 fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
     u32::from_str_radix(mode, 8).with_context(|| format!("Invalid socket mode: {mode}"))
 }
@@ -129,22 +131,12 @@ async fn wait_for_sonic_forwarder(
 }
 
 async fn bootstrap_shutdown_signal() -> anyhow::Result<()> {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
+    use tokio::signal::unix::{SignalKind, signal};
 
-        let mut terminate = signal(SignalKind::terminate()).context("register SIGTERM handler")?;
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => result.context("register Ctrl-C handler"),
-            _ = terminate.recv() => Ok(()),
-        }
-    }
-
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c()
-            .await
-            .context("register Ctrl-C handler")
+    let mut terminate = signal(SignalKind::terminate()).context("register SIGTERM handler")?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result.context("register Ctrl-C handler"),
+        _ = terminate.recv() => Ok(()),
     }
 }
 
@@ -410,7 +402,6 @@ async fn main() -> anyhow::Result<()> {
         log::info!("Client API service disabled");
     }
 
-    #[cfg(unix)]
     if enabled_services.client_api() && matches!(endpoint, IpcEndpoint::Tcp(_)) {
         anyhow::bail!("Linux deployments must use a Unix domain socket endpoint");
     }
@@ -468,7 +459,6 @@ async fn main() -> anyhow::Result<()> {
                 proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                 tacacs_plus: empty_tacacs_plus,
                 preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
-                #[cfg(unix)]
                 socket_mode: parse_socket_mode(&cli.socket_mode)?,
                 disable_certificate_verification: cli.insecure_disable_certificate_verification,
             },
@@ -674,12 +664,8 @@ mod tests {
 
     fn sample_path(file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("libraries")
-            .join("tacacsrs_networking")
-            .join("examples")
-            .join("samples")
+            .join("../..")
+            .join("lde/containers/config/certificates")
             .join(file_name)
     }
 

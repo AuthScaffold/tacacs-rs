@@ -1,9 +1,0 @@
-name: Install Cargo Deb
-description: Install cargo-deb for Debian package generation
-
-runs:
-  using: composite
-  steps:
-    - name: Install cargo-deb
-      shell: bash
-      run: cargo install cargo-deb

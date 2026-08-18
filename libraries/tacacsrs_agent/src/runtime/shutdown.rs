@@ -119,27 +119,18 @@ impl Drop for ListenerRegistration {
 
 /// Waits for a termination signal that stops the service from accepting clients.
 async fn process_shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
+    use tokio::signal::unix::{SignalKind, signal};
 
-        if let Ok(mut terminate_signal) = signal(SignalKind::terminate()) {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    log::info!("Received Ctrl-C; starting graceful shutdown");
-                }
-                _ = terminate_signal.recv() => {
-                    log::info!("Received SIGTERM; starting graceful shutdown");
-                }
+    if let Ok(mut terminate_signal) = signal(SignalKind::terminate()) {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                log::info!("Received Ctrl-C; starting graceful shutdown");
             }
-        } else {
-            let _ = tokio::signal::ctrl_c().await;
-            log::info!("Received Ctrl-C; starting graceful shutdown");
+            _ = terminate_signal.recv() => {
+                log::info!("Received SIGTERM; starting graceful shutdown");
+            }
         }
-    }
-
-    #[cfg(not(unix))]
-    {
+    } else {
         let _ = tokio::signal::ctrl_c().await;
         log::info!("Received Ctrl-C; starting graceful shutdown");
     }

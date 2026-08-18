@@ -1,5 +1,8 @@
 #![doc = include_str!("../README.md")]
 
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+compile_error!("tacacsrs-agent-client supports Linux GNU only");
+
 /// Local gRPC client helpers for communication with the central TACACS+ service.
 ///
 /// The [`ServiceClient`] type is the main entry point. Callers construct it

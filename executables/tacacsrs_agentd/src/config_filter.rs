@@ -317,7 +317,6 @@ mod tests {
         assert_eq!(filtered.proxy_downstream_obfuscation, ProxyDownstreamObfuscation::Unobfuscated);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn runtime_options_select_noop_filter_for_unix_proxy() {
         let endpoint = Some(

@@ -91,8 +91,7 @@ The crate expands local credential bundles. It preserves external central refere
 - [session-wrapper README](executables/session_wrapper/README.md) — Linux seccomp session wrapper architecture and current allow-all behavior
 - [Session Wrapper Deployment Guide](docs/session-wrapper.md) — SSH `ForceCommand` integration, configuration examples, security notes, troubleshooting
 - [Session Wrapper Testing](docs/session-wrapper-testing.md) — Linux smoke and integration checks for the session wrapper
-- [Building for SONiC](docs/sonic-build-guide.md) — Static musl binaries for network switches
-- [Debian Packaging](DEBIAN_PACKAGING.md) — Building `.deb` packages
+- [Building for SONiC](docs/sonic-build-guide.md) — Linux GNU artifacts for network switches
 - [Development Guide](DEVELOPMENT.md) — Building, testing, CI, project structure
 
 ## Rust Toolchain
@@ -101,14 +100,25 @@ This project has a minimum supported Rust version (MSRV) of **1.88**. The `rust-
 
 The workspace crates are internal and are not published to crates.io.
 
+## Platform support
+
+| Environment | Supported scope |
+| ----------- | --------------- |
+| Linux GNU | Complete workspace |
+| Windows MSVC | `tacon` direct mode and its dependency crates |
+| Linux GNU x86-64 | `session-wrapper` |
+
+The workspace does not support musl or macOS. Use the development container for complete workspace development on Windows.
+
 ## Quick Start
 
 ### Installation
 
-**From GitHub Releases (Debian/Ubuntu):**
+**From GitHub Releases:**
 
 ```bash
-sudo dpkg -i tacon_*.deb
+tar -xzf tacon-linux-gnu-x86_64.tar.gz
+sudo install -m 755 tacon-linux-gnu-x86_64/tacon /usr/local/bin/tacon
 ```
 
 **From source:**

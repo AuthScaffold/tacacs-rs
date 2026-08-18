@@ -223,12 +223,8 @@ mod tests {
 
     fn sample_path(file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("libraries")
-            .join("tacacsrs_networking")
-            .join("examples")
-            .join("samples")
+            .join("../..")
+            .join("lde/containers/config/certificates")
             .join(file_name)
     }
 
@@ -502,6 +498,7 @@ mod tests {
         assert_eq!(parsed.server[0].name, "cli");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn render_yang_config_rejects_service_endpoint_mode() {
         let cli = Cli::parse_from([

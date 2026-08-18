@@ -1,10 +1,8 @@
 //! Domain request builders for agent tests.
 
-#[cfg(unix)]
 use tacacsrs_agent_client::AccountingOperation;
 use tacacsrs_agent_client::{AuthorizationAuthenticationContext, AuthorizationOperation};
 
-#[cfg(unix)]
 pub(crate) fn build_request() -> AccountingOperation {
     AccountingOperation {
         user: "admin".to_owned(),

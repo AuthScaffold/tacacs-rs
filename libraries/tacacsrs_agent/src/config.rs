@@ -103,9 +103,8 @@ pub struct ServiceConfig {
     /// Local IPC endpoint exposed to local consumers when the client API
     /// service is enabled.
     ///
-    /// Unix builds must use filesystem paths such as
-    /// `/run/tacacs/tacacs.sock`. Non-Unix builds accept a loopback TCP address,
-    /// such as `127.0.0.1:9049`, for development. An empty string is invalid.
+    /// The client API must use a filesystem path such as
+    /// `/run/tacacs/tacacs.sock`. An empty string is invalid.
     pub endpoint: IpcEndpoint,
 
     /// Optional local TACACS+ proxy endpoint.
@@ -139,7 +138,6 @@ pub struct ServiceConfig {
     /// probe connections.
     pub preferred_probe_interval: Duration,
 
-    #[cfg(unix)]
     /// File mode for the bound Unix domain socket.
     ///
     /// Typical values: `0o660` (owner + group) or `0o666` (world-accessible).

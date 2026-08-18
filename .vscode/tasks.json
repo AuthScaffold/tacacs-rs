@@ -1,0 +1,42 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Rust: Check formatting",
+            "type": "shell",
+            "command": "cargo +nightly fmt --all -- --check",
+            "problemMatcher": []
+        },
+        {
+            "label": "Rust: Clippy workspace",
+            "type": "shell",
+            "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build"
+        },
+        {
+            "label": "Rust: Test workspace",
+            "type": "shell",
+            "command": "cargo test --workspace --all-features",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "test"
+        },
+        {
+            "label": "Rust: Build documentation",
+            "type": "shell",
+            "command": "cargo doc --workspace --no-deps --all-features",
+            "options": {
+                "env": {
+                    "RUSTDOCFLAGS": "-D warnings"
+                }
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        }
+    ]
+}

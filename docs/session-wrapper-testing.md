@@ -44,46 +44,16 @@ On Debian or Ubuntu, install the native Linux dependencies:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential gperf libseccomp-dev linux-libc-dev musl-tools
-rustup target add x86_64-unknown-linux-musl
+sudo apt-get install -y build-essential libseccomp-dev
 ```
-
-GNU builds can use the distribution `libseccomp-dev`. Musl builds require a musl-targeted static libseccomp. The shared Rust setup action builds and caches this in CI. Locally, point Cargo at a musl libseccomp install before running musl checks:
-
-```bash
-export LIBSECCOMP_LIB_PATH=/path/to/libseccomp-musl/lib
-export LIBSECCOMP_LINK_TYPE=static
-export PKG_CONFIG_ALLOW_CROSS=1
-export PKG_CONFIG_PATH=/path/to/libseccomp-musl/lib/pkgconfig
-```
-
-Native Alpine builds have one extra `libseccomp`/musl linking caveat. See the crate-local [Alpine Linux technical note](../executables/session_wrapper/README.alpine.md).
 
 ## Compile-time integration checks
 
-On non-Linux development machines, run the portable checks first:
-
-```bash
-cargo check -p session-wrapper
-cargo test -p session-wrapper
-cargo clippy -p session-wrapper --all-targets -- -D warnings
-```
-
-These checks exercise the portable modules and the mock PAL backend. They do not
-validate fork, seccomp, `/proc`, signal, or child-reaping behavior.
-
-Run these on Linux x86_64:
+Run these checks on Linux GNU x86-64:
 
 ```bash
 cargo clippy -p session-wrapper --all-targets -- -D warnings
 cargo test -p session-wrapper
-```
-
-When you validate the static musl path, run:
-
-```bash
-cargo clippy -p session-wrapper --target x86_64-unknown-linux-musl --all-targets -- -D warnings
-cargo test -p session-wrapper --target x86_64-unknown-linux-musl
 ```
 
 These tests cover CLI parsing, seccomp policy generation, file descriptor passing, child setup status reporting, and socket close handling.
@@ -219,7 +189,7 @@ These smoke tests are good candidates for a Linux-only integration test job once
 
 | Check | Requires root | Purpose |
 | ----- | ------------- | ------- |
-| Compile-time integration checks | No | Covers Rust code, seccomp policy construction, fd passing, and musl compatibility |
+| Compile-time integration checks | No | Covers Rust code, seccomp policy construction, and fd passing |
 | Child starts and exits | No | Validate notification fd handoff, ready synchronization, and child exec |
 | Missing shell failure | No | Validate child-to-parent setup error reporting |
 | Descendant execution | No | Validate inherited seccomp coverage and subreaper lifecycle handling |

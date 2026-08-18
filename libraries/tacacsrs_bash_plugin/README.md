@@ -25,7 +25,7 @@ bash authorization policy flags:
   unavailable.
 - `debug` enables stderr diagnostics from the plugin.
 
-Set `TACACSRS_BASH_PLUGIN_CONFIG` to use a different configuration file. On Unix, the IPC endpoint defaults to `/run/tacacs/tacacs.sock`.
+Set `TACACSRS_BASH_PLUGIN_CONFIG` to use a different configuration file. The IPC endpoint defaults to `/run/tacacs/tacacs.sock`.
 
 Use `ipc_endpoint=<endpoint>` in the configuration file to change the endpoint. If this value is absent, the plugin reads `TACACSRS_AGENT_ENDPOINT`.
 

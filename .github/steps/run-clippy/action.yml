@@ -2,6 +2,10 @@ name: Run Clippy
 description: Run clippy for a target platform
 
 inputs:
+  package-args:
+    description: 'Cargo workspace or package selection arguments'
+    required: false
+    default: '--workspace'
   target:
     description: 'Rust target triple to lint'
     required: true
@@ -26,7 +30,7 @@ runs:
       run: |
         if [ "${{ inputs.advisory }}" = "true" ]; then
           cargo clippy \
-            --workspace \
+            ${{ inputs.package-args }} \
             --all-targets \
             --target "${{ inputs.target }}" \
             ${{ inputs.feature-args }} \
@@ -34,7 +38,7 @@ runs:
             echo "::warning::Clippy found errors during advisory validation."
         else
           cargo clippy \
-            --workspace \
+            ${{ inputs.package-args }} \
             --all-targets \
             --target "${{ inputs.target }}" \
             ${{ inputs.feature-args }} \

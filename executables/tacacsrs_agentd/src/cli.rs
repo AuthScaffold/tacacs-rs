@@ -109,7 +109,6 @@ pub(crate) struct Cli {
     pub(crate) service_mode: Option<ServiceMode>,
 
     /// File mode applied to the Unix domain socket path (octal string, for example 660).
-    #[cfg(unix)]
     #[arg(long, default_value = "660")]
     pub(crate) socket_mode: String,
 

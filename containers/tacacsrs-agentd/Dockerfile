@@ -44,6 +44,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY .cargo ./.cargo
 COPY libraries ./libraries
 COPY executables ./executables
+COPY lde/containers/config/certificates ./lde/containers/config/certificates
 
 # The sample certificate files for the networking crate are worktree symlinks.
 # Copy the target files into the image. This copy supports Windows checkouts

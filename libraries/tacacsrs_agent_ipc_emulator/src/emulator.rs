@@ -1,8 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-#[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,7 +8,6 @@ use anyhow::{bail, Context};
 use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgentServer;
 use tacacsrs_agent_client::IpcEndpoint;
 use tokio::sync::{oneshot, Mutex};
-#[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
@@ -81,7 +78,6 @@ impl IpcEmulator {
     ) -> anyhow::Result<(Self, IpcEndpoint)> {
         match endpoint {
             IpcEndpoint::Tcp(address) => Self::serve_tcp(policy, address).await,
-            #[cfg(unix)]
             IpcEndpoint::Unix(path) => Self::serve_unix(policy, path).await,
         }
     }
@@ -146,7 +142,6 @@ impl IpcEmulator {
         Ok((emulator, IpcEndpoint::Tcp(local_addr)))
     }
 
-    #[cfg(unix)]
     async fn serve_unix(
         policy: EmulatorPolicy,
         path: PathBuf,
@@ -215,7 +210,6 @@ impl IpcEmulator {
     }
 }
 
-#[cfg(unix)]
 async fn remove_unix_socket(path: &Path) -> anyhow::Result<()> {
     match tokio::fs::remove_file(path).await {
         Ok(()) => Ok(()),

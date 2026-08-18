@@ -8,7 +8,6 @@
     It makes sure that formatting is correct. It runs cargo-udeps and Clippy.
     It builds the documentation.
     It can also run advisory Clippy nursery lints and Linux GNU metadata validation.
-    The Linux entry can run the Debian package validation helper.
 
     By default, the script runs the matrix entry for the current OS.
     On Windows, it runs the Windows MSVC entry.
@@ -20,9 +19,6 @@
 .PARAMETER Task
     One or more pre-test tasks. The default is All.
     An explicit task selection overrides the corresponding Include* parameter.
-
-    The `DebianPackages` task runs Debian package validation.
-    This task is available only in the Linux GNU matrix entry.
 
 .PARAMETER FixFormatting
     Runs `cargo +nightly fmt --all` before the CI formatting validation.
@@ -78,15 +74,13 @@
 .EXAMPLE
     .\lde\run-pre-tests.ps1 -Task Udeps,Docs
 
-.EXAMPLE
-    .\lde\run-pre-tests.ps1 -Matrix LinuxGnu -Task DebianPackages
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Local', 'WindowsMsvc', 'LinuxGnu', 'All')]
     [string]$Matrix = 'Local',
 
-    [ValidateSet('All', 'FixFormatting', 'CheckFormatting', 'Udeps', 'Clippy', 'ClippyNursery', 'Docs', 'Audit', 'Outdated', 'ProtoCompat', 'Metadata', 'DebianPackages')]
+    [ValidateSet('All', 'FixFormatting', 'CheckFormatting', 'Udeps', 'Clippy', 'ClippyNursery', 'Docs', 'Audit', 'Outdated', 'ProtoCompat', 'Metadata')]
     [string[]]$Task = @('All'),
 
     [switch]$FixFormatting,
@@ -252,11 +246,7 @@ function Invoke-ClippyFix {
         [string[]]$LintArgs = @()
     )
 
-    $clippyFixCommand = @(
-        '+stable',
-        'clippy',
-        '--fix',
-        '--workspace',
+    $clippyFixCommand = @('+stable', 'clippy', '--fix') + $Config.PackageArgs + @(
         '--all-targets',
         '--allow-dirty',
         '--target',
@@ -317,6 +307,7 @@ function Get-MatrixConfigs {
             InstallLibseccompDev = $true
             InstallOpenSsl = $true
             MetadataChecks = $true
+            PackageArgs = @('--workspace')
         },
         [PSCustomObject]@{
             Name = 'Windows MSVC'
@@ -327,6 +318,16 @@ function Get-MatrixConfigs {
             InstallLibseccompDev = $false
             InstallOpenSsl = $true
             MetadataChecks = $false
+            PackageArgs = @(
+                '--package', 'tacon',
+                '--package', 'tacacsrs-cli-datastore',
+                '--package', 'tacacsrs-config',
+                '--package', 'tacacsrs-datastore',
+                '--package', 'tacacsrs-flows',
+                '--package', 'tacacsrs-messages',
+                '--package', 'tacacsrs-networking',
+                '--package', 'tacacsrs-secrets'
+            )
         }
     )
 
@@ -548,10 +549,6 @@ function Invoke-PreTestsForConfig {
         throw "Metadata tasks only run in the Linux GNU pre-tests matrix entry. Run with -Matrix LinuxGnu under Linux/WSL."
     }
 
-    if ((Test-ExplicitTaskSelection) -and (Test-TaskSelected -Name 'DebianPackages') -and -not $Config.MetadataChecks) {
-        throw "Debian package validation only runs in the Linux GNU pre-tests matrix entry. Run with -Matrix LinuxGnu under Linux/WSL."
-    }
-
     Write-Host "`n=== Pre-Tests ($($Config.Name)) ===" -ForegroundColor Cyan
 
     if ($HostKind -eq 'Linux') {
@@ -587,7 +584,7 @@ function Invoke-PreTestsForConfig {
     if (Test-TaskSelected -Name 'Udeps') {
         Write-Host "`n--- Find unused dependencies ---" -ForegroundColor Yellow
         Assert-CargoTool -CargoSubcommand 'udeps' -CrateName 'cargo-udeps' -Toolchain 'nightly'
-        $udepsCommand = @('+nightly', 'udeps', '--workspace', '--all-targets', '--target', $Config.Target) + $Config.FeatureArgs
+        $udepsCommand = @('+nightly', 'udeps') + $Config.PackageArgs + @('--all-targets', '--target', $Config.Target) + $Config.FeatureArgs
         Invoke-CheckedCommand -FilePath 'cargo' -Arguments $udepsCommand
     }
 
@@ -603,7 +600,7 @@ function Invoke-PreTestsForConfig {
         }
 
         Write-Host "`n--- Run Clippy ---" -ForegroundColor Yellow
-        $clippyCommand = @('+stable', 'clippy', '--workspace', '--all-targets', '--target', $Config.Target) + $Config.FeatureArgs + @('--', '-D', 'warnings')
+        $clippyCommand = @('+stable', 'clippy') + $Config.PackageArgs + @('--all-targets', '--target', $Config.Target) + $Config.FeatureArgs + @('--', '-D', 'warnings')
         Invoke-CheckedCommand -FilePath 'cargo' -Arguments $clippyCommand
     }
 
@@ -616,13 +613,13 @@ function Invoke-PreTestsForConfig {
         # }
 
         Write-Host "`n--- Clippy nursery lints (advisory) ---" -ForegroundColor Yellow
-        $nurseryCommand = @('+stable', 'clippy', '--workspace', '--all-targets', '--target', $Config.Target) + $Config.FeatureArgs + @('--', '-W', 'clippy::nursery')
+        $nurseryCommand = @('+stable', 'clippy') + $Config.PackageArgs + @('--all-targets', '--target', $Config.Target) + $Config.FeatureArgs + @('--', '-W', 'clippy::nursery')
         Invoke-CheckedCommand -FilePath 'cargo' -Arguments $nurseryCommand -Advisory
     }
 
     if (Test-TaskSelected -Name 'Docs') {
         Write-Host "`n--- Build documentation ---" -ForegroundColor Yellow
-        $docCommand = @('+stable', 'doc', '--workspace', '--no-deps', '--document-private-items', '--target', $Config.Target) + $Config.FeatureArgs
+        $docCommand = @('+stable', 'doc') + $Config.PackageArgs + @('--no-deps', '--document-private-items', '--target', $Config.Target) + $Config.FeatureArgs
         Invoke-CheckedCommand -FilePath 'cargo' -Arguments $docCommand -Environment @{ RUSTDOCFLAGS = '-D warnings' }
     }
 
@@ -655,17 +652,6 @@ function Invoke-PreTestsForConfig {
             Assert-CommandExists -Name 'buf' -InstallHint 'Before you run protobuf compatibility validation, install buf from https://buf.build/docs/installation.'
             Confirm-ProtoCompatRef -RefName $ProtoCompatRef
             Invoke-CheckedCommand -FilePath 'buf' -Arguments @('breaking', '--against', ".git#branch=$ProtoCompatRef") -Advisory
-        }
-
-        if (Test-TaskSelected -Name 'DebianPackages') {
-            Write-Host "`n--- Debian package validation ---" -ForegroundColor Yellow
-            Invoke-CheckedCommand -FilePath 'pwsh' -Arguments @(
-                '-File',
-                (Join-Path 'lde' 'run-debian-packages.ps1'),
-                '-InstallMissingCargoTools',
-                $InstallMissingCargoTools,
-                '-SkipSystemDependencyChecks:' + $SkipSystemDependencyChecks.IsPresent
-            )
         }
     }
 }

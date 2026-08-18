@@ -73,10 +73,10 @@ on:
         required: false
         default: |
           [
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries", "man_page_name": "tacon", "debian_package": true},
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-agentd-linux-gnu-x86_64", "package_name": "tacacsrs-agentd", "package_root": "executables/tacacsrs_agentd", "artifact_name": "tacacsrs-agentd", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries", "man_page_name": "tacacsrs-agentd", "debian_package": true},
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-bash-plugin-linux-gnu-x86_64", "package_name": "tacacsrs-bash-plugin", "package_root": "libraries/tacacsrs_bash_plugin", "artifact_name": "tacacsrs_bash_plugin", "artifact_kind": "cdylib", "features": "", "sbom_describe": "all-cargo-targets", "man_page_name": "", "debian_package": true},
-            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries", "man_page_name": "tacon", "debian_package": false}
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"},
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-agentd-linux-gnu-x86_64", "package_name": "tacacsrs-agentd", "package_root": "executables/tacacsrs_agentd", "artifact_name": "tacacsrs-agentd", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"},
+            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-bash-plugin-linux-gnu-x86_64", "package_name": "tacacsrs-bash-plugin", "package_root": "libraries/tacacsrs_bash_plugin", "artifact_name": "tacacsrs_bash_plugin", "artifact_kind": "cdylib", "features": "", "sbom_describe": "all-cargo-targets"},
+            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"}
           ]
         type: string
       versions:
@@ -159,6 +159,7 @@ jobs:
             install_libseccomp_dev: 'true'
             install_openssl: 'true'
             metadata_checks: 'true'
+            package_args: '--workspace'
           - name: Windows MSVC
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -166,6 +167,7 @@ jobs:
             install_libseccomp_dev: 'false'
             install_openssl: 'true'
             metadata_checks: 'false'
+            package_args: '--package tacon --package tacacsrs-cli-datastore --package tacacsrs-config --package tacacsrs-datastore --package tacacsrs-flows --package tacacsrs-messages --package tacacsrs-networking --package tacacsrs-secrets'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -188,6 +190,7 @@ jobs:
       - name: Make sure that dependencies are used
         uses: ./.github/steps/check-unused-deps
         with:
+          package-args: ${{ matrix.config.package_args }}
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
 
@@ -204,6 +207,7 @@ jobs:
       - name: Run Clippy
         uses: ./.github/steps/run-clippy
         with:
+          package-args: ${{ matrix.config.package_args }}
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
 
@@ -211,6 +215,7 @@ jobs:
         if: inputs.include-clippy-nursery
         uses: ./.github/steps/run-clippy
         with:
+          package-args: ${{ matrix.config.package_args }}
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
           lint-args: -W clippy::nursery
@@ -219,6 +224,7 @@ jobs:
       - name: Build documentation
         uses: ./.github/steps/build-docs
         with:
+          package-args: ${{ matrix.config.package_args }}
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
 
@@ -257,6 +263,7 @@ jobs:
             install_openssl: 'true'
             coverage: 'true'
             deep_checks: 'true'
+            package_args: '--workspace'
           - name: Windows MSVC
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -266,6 +273,7 @@ jobs:
             install_openssl: 'true'
             coverage: 'false'
             deep_checks: 'false'
+            package_args: '--package tacon --package tacacsrs-cli-datastore --package tacacsrs-config --package tacacsrs-datastore --package tacacsrs-flows --package tacacsrs-messages --package tacacsrs-networking --package tacacsrs-secrets'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -282,6 +290,7 @@ jobs:
       - name: Run unit tests
         uses: ./.github/steps/run-tests
         with:
+          package-args: ${{ matrix.config.package_args }}
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
           build-release: ${{ inputs.build-release }}
@@ -381,15 +390,11 @@ jobs:
         with:
           asset-name: ${{ matrix.config.asset_name }}
 
-      - name: Package Debian artifacts
-        if: runner.os == 'Linux' && matrix.config.debian_package
-        uses: ./.github/steps/package-debian
+      - name: Create Linux archive
+        if: runner.os == 'Linux'
+        uses: ./.github/steps/create-linux-archive
         with:
-          target: ${{ matrix.config.target }}
-          package-name: ${{ matrix.config.package_name }}
-          package-root: ${{ matrix.config.package_root }}
-          man-page-name: ${{ matrix.config.man_page_name }}
-          versions: ${{ inputs.versions }}
+          asset-name: ${{ matrix.config.asset_name }}
 
       - name: Upload packaged artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

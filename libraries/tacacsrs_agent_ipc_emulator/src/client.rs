@@ -1,18 +1,14 @@
 use anyhow::Context;
-#[cfg(unix)]
 use http::Uri;
-#[cfg(unix)]
 use hyper_util::rt::TokioIo;
 use tacacsrs_agent_client::IpcEndpoint;
 use tonic::transport::{Channel, Endpoint};
-#[cfg(unix)]
 use tower::service_fn;
 
 use crate::controller;
 use crate::controller::tacacs_agent_mock_controller_client::TacacsAgentMockControllerClient as GeneratedControllerClient;
 use crate::policy::{CapturedIpcRequest, EmulatorPolicy};
 
-#[cfg(unix)]
 const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 
 /// Client for the emulator mock-controller service.
@@ -112,7 +108,6 @@ impl MockControllerClient {
 
 async fn connect_channel(endpoint: IpcEndpoint) -> anyhow::Result<Channel> {
     match endpoint {
-        #[cfg(unix)]
         IpcEndpoint::Unix(path) => {
             let connect_path = path.clone();
             Endpoint::try_from(UDS_GRPC_CONNECT_URI)
