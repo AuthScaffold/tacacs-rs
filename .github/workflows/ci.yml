@@ -115,7 +115,7 @@ jobs:
       include-fmt: false
       include-proto-compat: false
       include-outdated: false
-      include-container-publish: ${{ github.event_name == 'push' && github.repository_owner == 'AuthScaffold' && needs.release-policy.outputs.skip-release != 'true' && needs.compute-versions.outputs.has-release == 'true' }}
+      include-container-build: ${{ github.event_name != 'push' || needs.compute-versions.outputs.has-release != 'true' }}
       container-registry: ghcr.io/authscaffold
       products: |
         [
@@ -137,9 +137,8 @@ jobs:
         if: needs.pipeline.result != 'success'
         run: exit 1
 
-  # ── Release: tag and publish (only on push to main) ──────
-  release:
-    name: Release
+  container-stage:
+    name: Stage Container
     runs-on: ubuntu-latest
     needs: [ci-success, compute-versions, release-policy]
     if: >-
@@ -147,6 +146,33 @@ jobs:
       github.repository_owner == 'AuthScaffold' &&
       needs.release-policy.outputs.skip-release != 'true' &&
       needs.ci-success.result == 'success' &&
+      needs.compute-versions.outputs.has-release == 'true'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Build and stage the release container
+        uses: ./.github/steps/container-image
+        with:
+          versions: ${{ needs.compute-versions.outputs.versions }}
+          registry: ghcr.io/authscaffold
+          image-name: tacacsrs-agentd
+          image-tag: sha-${{ github.sha }}
+          publish: 'true'
+
+  # ── Release: tag and publish (only on push to main) ──────
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [ci-success, compute-versions, release-policy, container-stage]
+    if: >-
+      github.event_name == 'push' &&
+      github.repository_owner == 'AuthScaffold' &&
+      needs.release-policy.outputs.skip-release != 'true' &&
+      needs.ci-success.result == 'success' &&
+      needs.container-stage.result == 'success' &&
       needs.compute-versions.outputs.has-release == 'true'
     permissions:
       contents: write
