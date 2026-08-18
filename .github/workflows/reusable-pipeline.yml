@@ -28,11 +28,6 @@ on:
         required: false
         default: true
         type: boolean
-      include-container-publish:
-        description: 'If the build succeeds, publish the container image'
-        required: false
-        default: false
-        type: boolean
       container-registry:
         description: 'Container registry and namespace used for image tags, for example ghcr.io/authscaffold'
         required: false
@@ -405,7 +400,7 @@ jobs:
 
   container-build:
     name: Container Build
-    needs: [testing]
+    needs: [testing, finalize-release-assets]
     if: ${{ !cancelled() && !failure() && inputs.include-container-build }}
     runs-on: ubuntu-latest
     permissions:
