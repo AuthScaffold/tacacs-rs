@@ -86,6 +86,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # runtime: image with only the binary and its runtime dependencies
 # -----------------------------------------------------------------------------
 FROM ${RUNTIME_IMAGE} AS runtime
+ARG BUILD_VERSION=dev
+ARG SOURCE_URL=https://github.com/AuthScaffold/tacacs-rs
+ARG REVISION=unknown
+
+LABEL org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
 
 # `libssl3` supplies the OpenSSL runtime dependency for TLS and PSK support.
 # `ca-certificates` supplies the trust store for certificate-based TLS.
