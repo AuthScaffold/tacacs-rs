@@ -98,6 +98,8 @@ pub enum DegradationReason {
     CredentialNotificationsUnavailable,
     /// A candidate configuration was rejected while an older snapshot remained active.
     CandidateConfigurationRejected,
+    /// A candidate runtime policy was rejected while an older policy remained active.
+    CandidatePolicyRejected,
     /// Credential resolution failed for candidate configuration.
     CredentialResolutionFailed,
     /// Validated listener or host-binding settings require a process restart.

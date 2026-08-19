@@ -14,7 +14,7 @@ that both the server and local consumers share the same protocol definitions.
 
 - Expose a higher-level RPC contract instead of raw TACACS+ packet headers.
 - Keep upstream TACACS+ connections persistent and reusable across IPC requests.
-- Support ordered failover with automatic preferred-server recovery.
+- Support ordered failover independently for each TACACS+ operation.
 - Keep the IPC contract visible and versioned through a checked-in `.proto`
   schema.
 - Make the same architecture documentation visible in both rustdoc and GitHub.
@@ -24,6 +24,7 @@ that both the server and local consumers share the same protocol definitions.
 ```text
 tacacsrs_agent
 ├── config           - public runtime configuration
+│   └── policy       - failover strategies and operation limits
 ├── runtime          - TacacsClientService lifecycle, hot reload, and drains
 ├── services         - internal service boundaries
 │   ├── client_api   - local client-facing gRPC service and IPC transports
@@ -43,15 +44,58 @@ tacacsrs_agent
 │           │          - downstream/upstream TACACS+ packet read/write helpers
 │           ├── reply_action
 │           │          - reply status classification for session completion
+│           ├── session
+│           │          - initial packet execution and conversation pinning
 │           ├── session_mapping
 │           │          - TACACS+ session-id rewriting
 │           └── error - downstream/upstream connection error boundary
 ├── upstream         - TACACS+ upstream service boundary
-│   ├── manager      - server snapshots, failover, cache, and probes
+│   ├── router       - per-service facade over the upstream manager
+│   ├── executor     - the one retry loop that applies a failover plan
+│   ├── failover     - shared strategy and replay-safety decisions
+│   ├── admission    - shared operation-size and concurrency admission
+│   ├── operation    - authentication, authorization, and accounting identity
+│   ├── attempt      - transmission-aware request failures
+│   ├── proxy_transport
+│   │                - downstream settings published with the server set
+│   ├── manager      - server snapshots and operation routing
+│   │   ├── circuit  - server-operation recovery state
+│   │   ├── routing  - route selection and connection invalidation
+│   │   ├── server_set
+│   │   │            - immutable catalogs and operation cursors
+│   │   └── server_slot
+│   │                - operation-scoped connection ownership
 │   ├── connection   - upstream connection and connector traits
 │   └── network      - production TCP/TLS upstream connector
 └── test_support     - fake upstream fixtures for tests
 ```
+
+## Failover ownership
+
+Only two modules read the failover configuration:
+
+- `upstream::failover` turns a `RuntimePolicy` into a `FailoverPlan`. The plan
+  holds the attempt budget and the replay-safety rule for one operation.
+- `upstream::executor` applies that plan. It is the only retry loop.
+
+A service does not read the plan. It implements `FailoverAttempt` and returns
+one `Attempt` value for each try. This keeps strategy interpretation out of the
+client API bridge and out of the raw proxy bridge.
+
+Services reach routing and admission through `upstream::OperationRouter`. The
+router binds one `PolicyService` identity at construction. A service therefore
+cannot read another service's state, cannot change the runtime configuration,
+and does not pass a service identity on each call.
+
+## Tower boundary
+
+The upstream failover plan is domain code. It interprets TACACS+ `ERROR`
+responses, uncertain accounting outcomes, and authentication session pinning.
+Tower retry and balancing layers do not model these rules directly.
+
+Tower can wrap the local gRPC transport, but it does not own upstream routing.
+The runtime uses one shared failover plan for typed IPC operations and proxy
+initial packets. It uses Tokio semaphores for operation-wide admission.
 
 ## Architecture overview
 
@@ -86,9 +130,9 @@ tacacsrs_agent
   v
 ┌──────────────────────────────┐
 │ UpstreamManager              │
-│ - active server selection    │
-│ - preferred server probing   │
-│ - connection cache           │
+│ - operation server catalogs  │
+│ - shared operation cursors   │
+│ - recovery circuits          │
 └──────┬───────────────────────┘
        │ creates / reuses sessions
        v
@@ -157,7 +201,7 @@ send TACACS+ accounting request
   |      |
   |      v
   |   clear cached connection
-  |   advance active index
+  |   advance the operation cursor
   |   return ServiceError { server, retriable: true }
   |
   v
@@ -169,43 +213,27 @@ return protobuf response envelope
 
 ## Failover state chart
 
-The preferred server is always server index `0`. New sessions use that server
-whenever it is healthy. A failed request or failed connection attempt marks the
-current server unusable for new sessions and advances selection through the
-ordered list.
+Each operation has an independent ordered server catalog. IPC and proxy requests
+share one cursor for each operation. A retryable failure opens the applicable
+server-operation circuit and advances only that operation cursor.
 
 ```text
-                       preferred probe succeeds
-                 +----------------------------------+
-                 |                                  |
-                 v                                  |
-        +---------------------+                     |
-        | PreferredActive(0)  |                     |
-        +----------+----------+                     |
-                   |                                |
-                   | connection/session failure     |
-                   v                                |
-        +---------------------+                     |
-        | FailedOver(n > 0)   |---------------------+
-        +----------+----------+
-                   |
-                   | current server fails
-                   v
-        +---------------------+
-        | FailedOver(next n)  |
-        +----------+----------+
-                   |
-                   | all servers unavailable
-                   v
-        +---------------------+
-        | NoResponsiveServer  |
-        +----------+----------+
-                   |
-                   | a server connects successfully
-                   v
-        +---------------------+
-        | PreferredActive(0)  |  if server 0 is back
-        +---------------------+
+active operation route
+        |
+        | retryable failure
+        v
+open server-operation circuit
+        |
+        v
+select next eligible server
+        |
+        | recovery interval expires
+        v
+one real recovery trial
+        |
+        +-- success --> restore higher-priority route
+        |
+        +-- failure --> reopen circuit
 ```
 
 ## Listener lifecycle and shutdown

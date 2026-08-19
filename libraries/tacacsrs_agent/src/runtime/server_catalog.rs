@@ -1,7 +1,10 @@
 //! Runtime extraction of configured TACACS+ servers.
 
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType};
+use tacacsrs_config::TacacsPlusServer;
+#[cfg(test)]
+use tacacsrs_config::TacacsPlusServerType;
 
+#[cfg(test)]
 pub(crate) const REQUIRED_SERVER_TYPES: TacacsPlusServerType = TacacsPlusServerType::AUTHENTICATION
     .union(TacacsPlusServerType::AUTHORIZATION)
     .union(TacacsPlusServerType::ACCOUNTING);
@@ -9,9 +12,5 @@ pub(crate) const REQUIRED_SERVER_TYPES: TacacsPlusServerType = TacacsPlusServerT
 pub(crate) fn enumerate_supported_servers(
     config: &tacacsrs_config::TacacsPlus,
 ) -> anyhow::Result<Vec<TacacsPlusServer>> {
-    let servers = tacacsrs_config::enumerate_servers(config)?;
-    Ok(servers
-        .into_iter()
-        .filter(|server| server.supports_server_type(REQUIRED_SERVER_TYPES))
-        .collect::<Vec<_>>())
+    tacacsrs_config::enumerate_servers(config)
 }

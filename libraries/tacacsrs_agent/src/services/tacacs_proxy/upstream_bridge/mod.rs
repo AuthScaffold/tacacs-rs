@@ -4,83 +4,38 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context;
-use async_trait::async_trait;
-use tacacsrs_messages::packet::{Packet, PacketTrait};
-use tacacsrs_networking::{ClientConversation, PacketWriter};
+use tacacsrs_messages::packet::PacketTrait;
+use tacacsrs_networking::PacketWriter;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use self::error::ProxyConnectionError;
 use self::packet_io::{read_downstream_packet, write_downstream_packet};
+use self::session::{
+    ProxyConversationProvider, SessionPacket, SessionReply, UpstreamConversationProvider,
+    run_proxy_session,
+};
+#[cfg(test)]
 use self::reply_action::{ReplyAction, reply_action};
+#[cfg(test)]
+use self::session::ProxyConversation;
+#[cfg(test)]
 use self::session_mapping::rewrite_session_id;
-use crate::config::ProxyDownstreamObfuscation;
+use crate::config::{PolicyService, ProxyDownstreamObfuscation};
 use crate::runtime::RequestGuard;
-use crate::upstream::UpstreamConnection;
-use crate::upstream::manager::{BoundServer, UpstreamManager};
+use crate::upstream::OperationRouter;
+use crate::upstream::manager::UpstreamManager;
 
 mod error;
+mod error_reply;
 mod packet_io;
 mod reply_action;
+mod session;
 mod session_mapping;
 
 const SESSION_QUEUE_CAPACITY: usize = 8;
 const REPLY_QUEUE_CAPACITY: usize = 32;
-
-#[async_trait]
-trait ProxyConversation: Send {
-    fn session_id(&self) -> Option<u32>;
-    async fn round_trip(&mut self, packet: Packet) -> anyhow::Result<Packet>;
-    async fn complete(&mut self);
-}
-
-#[async_trait]
-trait ProxyConversationProvider: Send + Sync + 'static {
-    type Conversation: ProxyConversation;
-
-    async fn open_conversation(&self) -> anyhow::Result<Self::Conversation>;
-}
-
-struct UpstreamConversationProvider {
-    connection: Arc<dyn UpstreamConnection>,
-}
-
-#[async_trait]
-impl ProxyConversationProvider for UpstreamConversationProvider {
-    type Conversation = ClientConversation;
-
-    async fn open_conversation(&self) -> anyhow::Result<Self::Conversation> {
-        self.connection.open_conversation().await
-    }
-}
-
-struct SessionPacket {
-    packet: Packet,
-    reply_obfuscation: packet_io::DownstreamObfuscation,
-    advertise_single_connect: bool,
-}
-
-struct SessionReply {
-    packet: Packet,
-    obfuscation: packet_io::DownstreamObfuscation,
-}
-
-#[async_trait]
-impl ProxyConversation for ClientConversation {
-    fn session_id(&self) -> Option<u32> {
-        Self::session_id(self)
-    }
-
-    async fn round_trip(&mut self, packet: Packet) -> anyhow::Result<Packet> {
-        Self::round_trip(self, packet).await
-    }
-
-    async fn complete(&mut self) {
-        Self::complete(self).await;
-    }
-}
 
 /// Maps raw TACACS+ proxy streams to managed server sessions.
 #[derive(Clone)]
@@ -103,59 +58,23 @@ impl UpstreamBridge {
     where
         Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let (bound_server, downstream_obfuscation) = match self
-            .upstream_manager
-            .bind_proxy_server_for_new_session()
-            .await
-        {
-            Ok(binding) => binding,
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("Failed to bind TACACS+ proxy client {peer_label} to a TACACS+ server")
-                });
+        let transport = self.upstream_manager.proxy_transport_settings();
+        let router =
+            OperationRouter::new(Arc::clone(&self.upstream_manager), PolicyService::TacacsProxy);
+        log::debug!("Accepted TACACS+ proxy client {peer_label}");
+        proxy_multiplexed_connection(
+            stream,
+            transport.read_timeout(),
+            downstream_obfuscation_key(transport.downstream_obfuscation()),
+            Arc::new(UpstreamConversationProvider::new(router)),
+        )
+        .await
+        .map_err(|error| match error {
+            ProxyConnectionError::Upstream(error) | ProxyConnectionError::Downstream(error) => {
+                error
             }
-        };
-
-        log::debug!(
-            "Proxying TACACS+ client {peer_label} through {} (server index {})",
-            bound_server.connection.server_address(),
-            bound_server.index,
-        );
-
-        let result = proxy_bound_connection(stream, &bound_server, downstream_obfuscation).await;
-
-        match result {
-            Ok(()) => Ok(()),
-            Err(ProxyConnectionError::Upstream(error)) => {
-                self.upstream_manager
-                    .note_bound_server_failure(&bound_server)
-                    .await;
-                Err(error)
-            }
-            Err(ProxyConnectionError::Downstream(error)) => Err(error),
-        }
+        })
     }
-}
-
-async fn proxy_bound_connection<Stream>(
-    stream: Stream,
-    bound_server: &BoundServer,
-    downstream_obfuscation: ProxyDownstreamObfuscation,
-) -> Result<(), ProxyConnectionError>
-where
-    Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let timeout = bound_server.timeout_duration();
-    let obfuscation_key = downstream_obfuscation_key(&downstream_obfuscation);
-    proxy_multiplexed_connection(
-        stream,
-        timeout,
-        obfuscation_key,
-        Arc::new(UpstreamConversationProvider {
-            connection: Arc::clone(&bound_server.connection),
-        }),
-    )
-    .await
 }
 
 fn downstream_obfuscation_key(
@@ -267,91 +186,6 @@ where
     session_tasks.abort_all();
     writer_task.abort();
     result
-}
-
-async fn run_proxy_session<Provider>(
-    downstream_session_id: u32,
-    timeout: Duration,
-    provider: &Provider,
-    mut packets: mpsc::Receiver<SessionPacket>,
-    replies: mpsc::Sender<SessionReply>,
-) -> Result<(), ProxyConnectionError>
-where
-    Provider: ProxyConversationProvider,
-{
-    let mut conversation = provider.open_conversation().await.map_err(|error| {
-        ProxyConnectionError::Upstream(error.context("Failed to open a TACACS+ server session"))
-    })?;
-    let result = run_proxy_session_inner(
-        downstream_session_id,
-        timeout,
-        &mut conversation,
-        &mut packets,
-        &replies,
-    )
-    .await;
-    conversation.complete().await;
-    result
-}
-
-async fn run_proxy_session_inner<Conversation>(
-    downstream_session_id: u32,
-    timeout: Duration,
-    conversation: &mut Conversation,
-    packets: &mut mpsc::Receiver<SessionPacket>,
-    replies: &mpsc::Sender<SessionReply>,
-) -> Result<(), ProxyConnectionError>
-where
-    Conversation: ProxyConversation,
-{
-    let upstream_session_id = conversation.session_id().ok_or_else(|| {
-        ProxyConnectionError::Upstream(anyhow::anyhow!(
-            "The TACACS+ server session completed before the proxy session started"
-        ))
-    })?;
-    while let Some(request) = packets.recv().await {
-        let upstream_packet = rewrite_session_id(request.packet, upstream_session_id);
-        let upstream_reply =
-            tokio::time::timeout(timeout, conversation.round_trip(upstream_packet))
-                .await
-                .map_err(|_| {
-                    ProxyConnectionError::Upstream(anyhow::anyhow!(
-                        "The TACACS+ server did not complete a round trip within {timeout:?}"
-                    ))
-                })?
-                .map_err(|error| {
-                    ProxyConnectionError::Upstream(
-                        error.context("Failed to complete a TACACS+ server round trip"),
-                    )
-                })?;
-        let action = reply_action(&upstream_reply);
-        let mut flags = upstream_reply.header().flags;
-        flags.set(
-            tacacsrs_messages::enumerations::TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
-            request.advertise_single_connect,
-        );
-        replies
-            .send(SessionReply {
-                packet: rewrite_session_id(upstream_reply.with_flags(flags), downstream_session_id),
-                obfuscation: request.reply_obfuscation,
-            })
-            .await
-            .map_err(|_| {
-                ProxyConnectionError::Downstream(anyhow::anyhow!(
-                    "The downstream TACACS+ reply writer stopped"
-                ))
-            })?;
-
-        match action {
-            ReplyAction::Continue => {}
-            ReplyAction::Complete => return Ok(()),
-            ReplyAction::Unsupported(status) => {
-                log::warn!("Closing the TACACS+ proxy session because reply status {status} is not supported");
-                return Ok(());
-            }
-        }
-    }
-    Ok(())
 }
 
 async fn run_downstream_writer<Writer>(
@@ -475,9 +309,10 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use async_trait::async_trait;
     use tacacsrs_messages::accounting::reply::AccountingReply;
     use tacacsrs_messages::authentication::reply::AuthenticationReply;
     use tacacsrs_messages::enumerations::{
@@ -492,6 +327,8 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
+    use crate::config::{FailoverStrategy, OperationPolicies, PolicyService, RuntimePolicy};
+    use crate::upstream::{AdmissionError, AdmissionPermit, FailoverPlan, OperationKind};
 
     #[derive(Default)]
     struct FakeProxySession {
@@ -500,6 +337,7 @@ mod tests {
         replies: Mutex<VecDeque<Packet>>,
         session_id: u32,
         reply_delay: Duration,
+        completions: Option<Arc<AtomicUsize>>,
     }
 
     impl FakeProxySession {
@@ -510,11 +348,18 @@ mod tests {
                 replies: Mutex::new(replies.into()),
                 session_id,
                 reply_delay: Duration::ZERO,
+                completions: None,
             }
         }
 
         fn with_reply_delay(mut self, reply_delay: Duration) -> Self {
             self.reply_delay = reply_delay;
+            self
+        }
+
+        /// Counts every `complete` call so a test can observe session cleanup.
+        fn with_completion_counter(mut self, completions: Arc<AtomicUsize>) -> Self {
+            self.completions = Some(completions);
             self
         }
 
@@ -543,23 +388,89 @@ mod tests {
 
         async fn complete(&mut self) {
             self.complete.store(true, Ordering::Release);
+            if let Some(completions) = &self.completions {
+                completions.fetch_add(1, Ordering::AcqRel);
+            }
         }
     }
 
     struct FakeConversationProvider {
         conversations: Mutex<VecDeque<FakeProxySession>>,
+        strategy: FailoverStrategy,
+        eligible_server_count: usize,
+        opened: AtomicUsize,
+    }
+
+    impl FakeConversationProvider {
+        fn new(conversations: Vec<FakeProxySession>) -> Self {
+            Self {
+                conversations: Mutex::new(conversations.into()),
+                strategy: FailoverStrategy::DeferredFailover,
+                eligible_server_count: 1,
+                opened: AtomicUsize::new(0),
+            }
+        }
+
+        fn ordered(conversations: Vec<FakeProxySession>) -> Self {
+            Self {
+                conversations: Mutex::new(conversations.into()),
+                strategy: FailoverStrategy::OrderedSafeRetry,
+                eligible_server_count: 2,
+                opened: AtomicUsize::new(0),
+            }
+        }
+
+        fn opened(&self) -> usize {
+            self.opened.load(Ordering::Acquire)
+        }
     }
 
     #[async_trait]
     impl ProxyConversationProvider for FakeConversationProvider {
         type Conversation = FakeProxySession;
 
-        async fn open_conversation(&self) -> anyhow::Result<Self::Conversation> {
+        async fn open_conversation(
+            &self,
+            _operation: OperationKind,
+        ) -> anyhow::Result<Self::Conversation> {
+            self.opened.fetch_add(1, Ordering::AcqRel);
             self.conversations
                 .lock()
                 .await
                 .pop_front()
                 .ok_or_else(|| anyhow::anyhow!("The fake proxy session is missing"))
+        }
+
+        async fn admit(
+            &self,
+            _operation: OperationKind,
+            _body_length: usize,
+        ) -> Result<Option<AdmissionPermit>, AdmissionError> {
+            Ok(None)
+        }
+
+        fn validate_body_length(
+            &self,
+            _operation: OperationKind,
+            _body_length: usize,
+        ) -> Result<(), AdmissionError> {
+            Ok(())
+        }
+
+        fn failover_plan(&self, operation: OperationKind) -> FailoverPlan {
+            let policy = RuntimePolicy::new(
+                FailoverStrategy::default(),
+                self.strategy,
+                OperationPolicies::default(),
+                Duration::from_secs(30),
+            )
+            .expect("test policy");
+            FailoverPlan::new(
+                &policy,
+                PolicyService::TacacsProxy,
+                operation,
+                self.eligible_server_count,
+            )
         }
     }
 
@@ -648,36 +559,31 @@ mod tests {
         let first_upstream_id = 0x5555_6666;
         let second_upstream_id = 0x7777_8888;
         let reply_body = accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess);
-        let provider = Arc::new(FakeConversationProvider {
-            conversations: Mutex::new(
-                vec![
-                    FakeProxySession::new(
-                        first_upstream_id,
-                        vec![test_packet(
-                            TacacsType::TacPlusAccounting,
-                            first_upstream_id,
-                            reply_body.clone(),
-                        )],
-                    )
-                    .with_reply_delay(Duration::from_millis(50)),
-                    FakeProxySession::new(
-                        second_upstream_id,
-                        vec![test_packet(
-                            TacacsType::TacPlusAccounting,
-                            second_upstream_id,
-                            reply_body,
-                        )],
-                    ),
-                ]
-                .into(),
+        let provider = Arc::new(FakeConversationProvider::new(vec![
+            FakeProxySession::new(
+                first_upstream_id,
+                vec![test_packet(
+                    TacacsType::TacPlusAccounting,
+                    first_upstream_id,
+                    reply_body.clone(),
+                )],
+            )
+            .with_reply_delay(Duration::from_millis(50)),
+            FakeProxySession::new(
+                second_upstream_id,
+                vec![test_packet(
+                    TacacsType::TacPlusAccounting,
+                    second_upstream_id,
+                    reply_body,
+                )],
             ),
-        });
+        ]));
         let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
         let proxy_task = tokio::spawn(proxy_multiplexed_connection(
             proxy_stream,
             Duration::from_secs(1),
             None,
-            provider,
+            Arc::clone(&provider),
         ));
 
         for session_id in [first_downstream_id, second_downstream_id] {
@@ -714,38 +620,31 @@ mod tests {
     async fn multiplexed_proxy_preserves_multi_turn_ascii_conversation() {
         let downstream_id = 0x1111_2222;
         let upstream_id = 0x3333_4444;
-        let provider = Arc::new(FakeConversationProvider {
-            conversations: Mutex::new(
-                vec![FakeProxySession::new(
+        let provider = Arc::new(FakeConversationProvider::new(vec![FakeProxySession::new(
+            upstream_id,
+            vec![
+                test_packet(
+                    TacacsType::TacPlusAuthentication,
                     upstream_id,
-                    vec![
-                        test_packet(
-                            TacacsType::TacPlusAuthentication,
-                            upstream_id,
-                            authentication_reply_body(
-                                TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass,
-                            ),
-                        ),
-                        test_packet_with_sequence(
-                            TacacsType::TacPlusAuthentication,
-                            upstream_id,
-                            4,
-                            TacacsFlags::empty(),
-                            authentication_reply_body(
-                                TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
-                            ),
-                        ),
-                    ],
-                )]
-                .into(),
-            ),
-        });
+                    authentication_reply_body(
+                        TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass,
+                    ),
+                ),
+                test_packet_with_sequence(
+                    TacacsType::TacPlusAuthentication,
+                    upstream_id,
+                    4,
+                    TacacsFlags::empty(),
+                    authentication_reply_body(TacacsAuthenticationStatus::TacPlusAuthenStatusPass),
+                ),
+            ],
+        )]));
         let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
         let proxy_task = tokio::spawn(proxy_multiplexed_connection(
             proxy_stream,
             Duration::from_secs(1),
             None,
-            provider,
+            Arc::clone(&provider),
         ));
 
         write_packet(
@@ -782,8 +681,155 @@ mod tests {
             AuthenticationReply::status_from_packet(&terminal),
             Some(TacacsAuthenticationStatus::TacPlusAuthenStatusPass as u8)
         );
+        assert_eq!(provider.opened(), 1);
 
         proxy_task.abort();
+    }
+
+    #[tokio::test]
+    async fn ordered_proxy_retry_uses_the_next_server_after_authentication_error() {
+        let downstream_id = 0x1111_2222;
+        let first_upstream_id = 0x3333_4444;
+        let second_upstream_id = 0x5555_6666;
+        let provider = Arc::new(FakeConversationProvider::ordered(vec![
+            FakeProxySession::new(
+                first_upstream_id,
+                vec![test_packet(
+                    TacacsType::TacPlusAuthentication,
+                    first_upstream_id,
+                    authentication_reply_body(TacacsAuthenticationStatus::TacPlusAuthenStatusError),
+                )],
+            ),
+            FakeProxySession::new(
+                second_upstream_id,
+                vec![test_packet(
+                    TacacsType::TacPlusAuthentication,
+                    second_upstream_id,
+                    authentication_reply_body(TacacsAuthenticationStatus::TacPlusAuthenStatusPass),
+                )],
+            ),
+        ]));
+        let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
+        let proxy_task = tokio::spawn(proxy_multiplexed_connection(
+            proxy_stream,
+            Duration::from_secs(1),
+            None,
+            Arc::clone(&provider),
+        ));
+
+        write_packet(
+            &mut client_stream,
+            &test_packet_with_sequence(
+                TacacsType::TacPlusAuthentication,
+                downstream_id,
+                1,
+                TacacsFlags::empty(),
+                b"start".to_vec(),
+            ),
+        )
+        .await;
+        let reply = read_packet(&mut client_stream).await;
+
+        assert_eq!(
+            AuthenticationReply::status_from_packet(&reply),
+            Some(TacacsAuthenticationStatus::TacPlusAuthenStatusPass as u8)
+        );
+        assert_eq!(provider.opened(), 2);
+        proxy_task.abort();
+    }
+
+    #[tokio::test]
+    async fn ordered_proxy_retry_closes_the_abandoned_upstream_session() {
+        let downstream_id = 0x1111_2222;
+        let first_upstream_id = 0x3333_4444;
+        let second_upstream_id = 0x5555_6666;
+        let completions = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(FakeConversationProvider::ordered(vec![
+            FakeProxySession::new(
+                first_upstream_id,
+                vec![test_packet(
+                    TacacsType::TacPlusAuthentication,
+                    first_upstream_id,
+                    authentication_reply_body(TacacsAuthenticationStatus::TacPlusAuthenStatusError),
+                )],
+            )
+            .with_completion_counter(Arc::clone(&completions)),
+            FakeProxySession::new(
+                second_upstream_id,
+                vec![test_packet(
+                    TacacsType::TacPlusAuthentication,
+                    second_upstream_id,
+                    authentication_reply_body(TacacsAuthenticationStatus::TacPlusAuthenStatusPass),
+                )],
+            ),
+        ]));
+        let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
+        let proxy_task = tokio::spawn(proxy_multiplexed_connection(
+            proxy_stream,
+            Duration::from_secs(1),
+            None,
+            Arc::clone(&provider),
+        ));
+
+        write_packet(
+            &mut client_stream,
+            &test_packet_with_sequence(
+                TacacsType::TacPlusAuthentication,
+                downstream_id,
+                1,
+                TacacsFlags::empty(),
+                b"start".to_vec(),
+            ),
+        )
+        .await;
+        let _reply = read_packet(&mut client_stream).await;
+
+        assert_eq!(
+            completions.load(Ordering::Acquire),
+            1,
+            "the failover executor must close the rejected upstream session"
+        );
+        proxy_task.abort();
+    }
+
+    #[tokio::test]
+    async fn ordered_proxy_does_not_replay_uncertain_accounting_request() {
+        let downstream_id = 0x1111_2222;
+        let first_upstream_id = 0x3333_4444;
+        let second_upstream_id = 0x5555_6666;
+        let provider = Arc::new(FakeConversationProvider::ordered(vec![
+            FakeProxySession::new(first_upstream_id, Vec::new()),
+            FakeProxySession::new(
+                second_upstream_id,
+                vec![test_packet(
+                    TacacsType::TacPlusAccounting,
+                    second_upstream_id,
+                    accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess),
+                )],
+            ),
+        ]));
+        let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
+        let proxy_task = tokio::spawn(proxy_multiplexed_connection(
+            proxy_stream,
+            Duration::from_secs(1),
+            None,
+            Arc::clone(&provider),
+        ));
+
+        write_packet(
+            &mut client_stream,
+            &test_packet_with_sequence(
+                TacacsType::TacPlusAccounting,
+                downstream_id,
+                1,
+                TacacsFlags::empty(),
+                b"record".to_vec(),
+            ),
+        )
+        .await;
+
+        assert!(proxy_task.await.expect("proxy task joins").is_err());
+        assert_eq!(provider.opened(), 1);
     }
 
     #[tokio::test]

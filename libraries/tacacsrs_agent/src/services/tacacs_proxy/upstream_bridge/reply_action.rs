@@ -23,6 +23,23 @@ pub(super) fn reply_action(packet: &Packet) -> ReplyAction {
     }
 }
 
+pub(super) fn is_error_reply(packet: &Packet) -> bool {
+    match packet.header().tacacs_type {
+        TacacsType::TacPlusAccounting => {
+            AccountingReply::status_from_packet(packet)
+                == Some(TacacsAccountingStatus::TacPlusAcctStatusError as u8)
+        }
+        TacacsType::TacPlusAuthorisation => {
+            AuthorizationReply::status_from_packet(packet)
+                == Some(TacacsAuthorizationStatus::TacPlusError as u8)
+        }
+        TacacsType::TacPlusAuthentication => {
+            AuthenticationReply::status_from_packet(packet)
+                == Some(TacacsAuthenticationStatus::TacPlusAuthenStatusError as u8)
+        }
+    }
+}
+
 fn accounting_reply_action(packet: &Packet) -> ReplyAction {
     let status = AccountingReply::status_from_packet(packet).unwrap_or_default();
     match TacacsAccountingStatus::try_from(status) {

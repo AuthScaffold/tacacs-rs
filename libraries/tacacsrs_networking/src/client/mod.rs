@@ -22,6 +22,7 @@ use tacacsrs_messages::traits::TacacsBodyTrait;
 
 use crate::establish::{self, ConnectOptions, ConnectPreflight};
 use crate::exchange::FixedExchange;
+use crate::exchange_error::FixedExchangeError;
 use crate::runtime::MultiplexedConnection;
 use crate::single_connect::SingleConnectionState;
 use crate::session::{
@@ -273,9 +274,30 @@ impl TacacsClient {
     where
         Exchange: FixedExchange,
     {
+        self.execute_classified(exchange)
+            .await
+            .map_err(FixedExchangeError::into_error)
+    }
+
+    /// Executes one fixed exchange and reports whether transmission started.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error for session creation, request encoding,
+    /// packet I/O, response validation, or reply parsing.
+    pub async fn execute_classified<Exchange>(
+        &self,
+        exchange: Exchange,
+    ) -> Result<Exchange::Reply, FixedExchangeError>
+    where
+        Exchange: FixedExchange,
+    {
         let expected =
             ExpectedResponseHeader::fixed(exchange.packet_type(), exchange.minor_version());
-        let session = self.create_fixed_session(expected).await?;
+        let session = self
+            .create_fixed_session(expected)
+            .await
+            .map_err(FixedExchangeError::not_sent)?;
         let result = execute_on_session(&session, exchange).await;
         session.complete().await;
         result
@@ -575,7 +597,7 @@ impl FixedExchange for AccountingWatchdogExchange {
 async fn execute_on_session<Exchange>(
     session: &ClientSession,
     exchange: Exchange,
-) -> anyhow::Result<Exchange::Reply>
+) -> Result<Exchange::Reply, FixedExchangeError>
 where
     Exchange: FixedExchange,
 {
@@ -585,9 +607,12 @@ where
     let session_id = session.session_id();
     let packet_type = exchange.packet_type();
     let minor_version = exchange.minor_version();
-    let body = exchange.encode_request()?;
+    let body = exchange
+        .encode_request()
+        .map_err(FixedExchangeError::not_sent)?;
     let length = u32::try_from(body.len())
-        .context("fixed TACACS+ request body exceeds the protocol length field")?;
+        .context("fixed TACACS+ request body exceeds the protocol length field")
+        .map_err(FixedExchangeError::not_sent)?;
     let request = Packet::new(
         Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
@@ -599,9 +624,13 @@ where
             length,
         },
         body,
-    )?;
+    )
+    .map_err(FixedExchangeError::not_sent)?;
 
-    let response = session.fixed_round_trip(request).await?;
+    let response = session
+        .fixed_round_trip(request)
+        .await
+        .map_err(FixedExchangeError::outcome_unknown)?;
     let header = response.header();
 
     if header.session_id != session_id
@@ -610,7 +639,7 @@ where
         || header.major_version != TacacsMajorVersion::TacacsPlusMajor1
         || header.minor_version != minor_version
     {
-        anyhow::bail!(
+        return Err(FixedExchangeError::outcome_unknown(anyhow::anyhow!(
             "unexpected fixed TACACS+ response header: session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}; expected session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}",
             header.session_id,
             header.seq_no,
@@ -622,10 +651,12 @@ where
             packet_type,
             TacacsMajorVersion::TacacsPlusMajor1,
             minor_version,
-        );
+        )));
     }
 
-    exchange.decode_reply(response.body())
+    exchange
+        .decode_reply(response.body())
+        .map_err(FixedExchangeError::outcome_unknown)
 }
 
 fn packet_obfuscation_key(server: &TacacsPlusServer) -> Option<Vec<u8>> {
