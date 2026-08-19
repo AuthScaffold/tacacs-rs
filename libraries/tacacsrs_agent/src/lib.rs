@@ -22,7 +22,11 @@ pub mod upstream;
 #[cfg(test)]
 mod test_support;
 
-pub use config::{EnabledServices, ProxyDownstreamObfuscation, ServiceConfig};
+pub use config::{
+    EnabledServices, FailoverStrategy, OperationPolicies, PolicyService,
+    ProxyDownstreamObfuscation, RequestLimits, RuntimePolicy, ServiceConfig,
+};
+pub use upstream::OperationKind;
 pub use runtime::{
     DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher,
     RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, TacacsClientService,

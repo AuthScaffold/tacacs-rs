@@ -388,7 +388,13 @@ mod tests {
                 proxy_endpoint: None,
                 proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                 tacacs_plus: TacacsPlus::empty(),
-                preferred_probe_interval: Duration::from_secs(1),
+                runtime_policy: tacacsrs_agent::RuntimePolicy::new(
+                    tacacsrs_agent::FailoverStrategy::default(),
+                    tacacsrs_agent::FailoverStrategy::default(),
+                    tacacsrs_agent::OperationPolicies::default(),
+                    Duration::from_secs(1),
+                )
+                .expect("test runtime policy"),
                 socket_mode: 0o660,
                 disable_certificate_verification: false,
             },

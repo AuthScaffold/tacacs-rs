@@ -12,7 +12,7 @@ use anyhow::Context;
 use clap::Parser;
 use tacacsrs_agent::{
     EnabledServices, ProxyDownstreamObfuscation, RuntimeHealthPublisher, RuntimeLifecycle,
-    ServiceConfig, TacacsClientService,
+    RuntimePolicy, ServiceConfig, TacacsClientService,
 };
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_cli_datastore::{
@@ -33,12 +33,16 @@ mod config_filter;
 mod config_supervisor;
 mod host_integration;
 mod materialization_coordinator;
+mod policy_file;
+mod policy_supervisor;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
 use crate::config_filter::{TacacsPlusFilter, config_filter_from_runtime_options};
 use crate::config_supervisor::ConfigSupervisor;
 use crate::host_integration::HostIntegration;
+use crate::policy_file::PolicyFile;
+use crate::policy_supervisor::PolicySupervisor;
 
 fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
     u32::from_str_radix(mode, 8).with_context(|| format!("Invalid socket mode: {mode}"))
@@ -243,10 +247,11 @@ async fn run_supervised_service(
     service: Arc<TacacsClientService>,
     health: RuntimeHealthPublisher,
     config_filter: Arc<dyn TacacsPlusFilter>,
-    credential_resolver: Option<Arc<dyn CredentialResolver>>,
-    credential_change_source: Option<Arc<dyn CredentialChangeSource>>,
+    credential_provider: CredentialProvider,
     host_integration: HostIntegration,
+    policy_file: Option<PolicyFile>,
 ) -> anyhow::Result<()> {
+    let (credential_resolver, credential_change_source) = credential_provider;
     let datastore_policy = datastore.runtime_policy();
     let supervisor = match (credential_resolver, credential_change_source) {
         (Some(resolver), Some(change_source)) => ConfigSupervisor::new_with_credential_provider(
@@ -272,6 +277,8 @@ async fn run_supervised_service(
         ),
     };
     let cancellation = CancellationToken::new();
+    let policy_supervisor = policy_file
+        .map(|source| PolicySupervisor::new(source, Arc::clone(&service), health.clone()));
 
     if datastore_policy.initial_load == InitialLoadPolicy::FailFast {
         supervisor.load_initial(&cancellation).await?;
@@ -285,11 +292,30 @@ async fn run_supervised_service(
     let supervisor_task = {
         let cancellation = cancellation.clone();
         tokio::spawn(async move {
-            if datastore_policy.initial_load == InitialLoadPolicy::RetryUntilAvailable {
-                supervisor.run(&cancellation).await
-            } else {
-                supervisor.run_notifications(&cancellation).await;
-                Ok(())
+            let config_cancellation = cancellation.clone();
+            let config_future = async move {
+                if datastore_policy.initial_load == InitialLoadPolicy::RetryUntilAvailable {
+                    supervisor.run(&config_cancellation).await
+                } else {
+                    supervisor.run_notifications(&config_cancellation).await;
+                    Ok(())
+                }
+            };
+
+            let Some(policy_supervisor) = policy_supervisor else {
+                return config_future.await;
+            };
+            let policy_cancellation = cancellation.clone();
+            tokio::select! {
+                result = config_future => result,
+                result = policy_supervisor.run(&policy_cancellation) => {
+                    if policy_cancellation.is_cancelled() {
+                        result
+                    } else {
+                        result?;
+                        Err(anyhow::anyhow!("Runtime policy supervisor stopped unexpectedly"))
+                    }
+                }
             }
         })
     };
@@ -448,6 +474,15 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let datastore = build_datastore(&cli, sonic_forwarder);
+    let policy_file = cli.runtime_policy.clone().map(PolicyFile::new);
+    let runtime_policy = match &policy_file {
+        Some(source) => {
+            let policy = source.load().await?;
+            log::info!("Loaded runtime policy from {}", source.path().display());
+            policy
+        }
+        None => RuntimePolicy::default(),
+    };
     let health = RuntimeHealthPublisher::new(enabled_services);
     let empty_tacacs_plus = tacacsrs_config::TacacsPlus::empty();
     let service = Arc::new(
@@ -458,7 +493,7 @@ async fn main() -> anyhow::Result<()> {
                 proxy_endpoint,
                 proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                 tacacs_plus: empty_tacacs_plus,
-                preferred_probe_interval: Duration::from_secs(cli.preferred_probe_interval_seconds),
+                runtime_policy,
                 socket_mode: parse_socket_mode(&cli.socket_mode)?,
                 disable_certificate_verification: cli.insecure_disable_certificate_verification,
             },
@@ -466,15 +501,15 @@ async fn main() -> anyhow::Result<()> {
         )
         .context("Failed to build TACACS+ client service configuration")?,
     );
-    let (credential_resolver, credential_change_source) = build_credential_provider(&cli);
+    let credential_provider = build_credential_provider(&cli);
     run_supervised_service(
         datastore,
         service,
         health,
         config_filter,
-        credential_resolver,
-        credential_change_source,
+        credential_provider,
         host_integration,
+        policy_file,
     )
     .await
 }

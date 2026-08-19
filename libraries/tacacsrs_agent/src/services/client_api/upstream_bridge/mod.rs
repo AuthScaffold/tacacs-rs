@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use crate::config::PolicyService;
+use crate::upstream::OperationRouter;
 use crate::upstream::manager::UpstreamManager;
 
 mod accounting;
@@ -15,16 +17,25 @@ mod authorization;
 mod mapping;
 mod routed;
 
+#[cfg(test)]
+mod routing_tests;
+
 /// Sends local client API operations through selected server connections.
+///
+/// The bridge holds an [`OperationRouter`], not the whole upstream manager. It
+/// can select servers and record outcomes. It cannot read proxy settings or
+/// change the runtime configuration.
 #[derive(Clone)]
 pub(super) struct UpstreamBridge {
-    upstream_manager: Arc<UpstreamManager>,
+    router: OperationRouter,
 }
 
 impl UpstreamBridge {
     /// Creates a client API bridge for the shared upstream manager.
     pub(super) fn new(upstream_manager: Arc<UpstreamManager>) -> Self {
-        Self { upstream_manager }
+        Self {
+            router: OperationRouter::new(upstream_manager, PolicyService::ClientApi),
+        }
     }
 }
 

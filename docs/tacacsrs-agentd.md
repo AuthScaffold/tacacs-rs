@@ -129,7 +129,7 @@ When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemo
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections |
-| `--preferred-probe-interval-seconds <SECS>` | `30` | Probe interval for recovery of the preferred server |
+| `--runtime-policy <FILE>` | none | Optional live JSON policy for failover and request limits |
 
 ### Debugging
 
@@ -142,43 +142,96 @@ When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemo
 
 ## Failover Behavior
 
-Servers are tried in the order they are specified. The first server (`--server-addr` index 0) is always the preferred server.
+The server configuration order sets the preference order. Each operation uses
+only servers that declare support for that operation.
+
+Authentication, authorization, and accounting have independent routing
+cursors. IPC and proxy requests share the cursor for a given operation.
+
+Each server has a separate connection for each operation. Therefore, an
+authorization connection failure does not close authentication or accounting
+sessions.
 
 ### State Transitions
 
 ```
-              startup
-                │
-                ▼
-        ┌────────────────┐
-        │ PreferredActive│◄──── probe succeeds
-        │   (server 0)   │
-        └───────┬────────┘
-                │ connection fails
-                ▼
-        ┌────────────────┐
-        │  FailedOver    │──── try server 1, 2, ...
-        │  (server N)    │
-        └───────┬────────┘
-                │ all servers fail
-                ▼
-        ┌───────────────────┐
-        │ NoResponsiveServer│
-        │ (returns error)   │──── requests get retriable error
-        └───────────────────┘
+preferred route
+      |
+      | retryable operation failure
+      v
+open circuit and select the next eligible server
+      |
+      | recovery interval expires
+      v
+allow one real operation as a recovery trial
+      |
+      +-- success --> restore the higher-priority route
+      |
+      +-- failure --> reopen the circuit
 ```
+
+### Failover Strategies
+
+The default strategy is `deferred-failover`. The current request returns its
+failure. The next request uses the next eligible server.
+
+The `ordered-safe-retry` strategy can try the next eligible server during the
+current request. These replay rules always apply:
+
+- A denial is a valid response and does not cause failover.
+- A server `ERROR` reply can use the next server.
+- Authentication and authorization can use the next server after an uncertain transport failure.
+- Accounting does not retry after an uncertain transport failure.
+- A continuing authentication session stays on the server that sent its first valid reply.
 
 ### Preferred Server Recovery
 
-While failed over to a backup server, the daemon periodically probes the preferred server (index 0) at the configured interval. When a probe succeeds, traffic is automatically routed back to the preferred server.
+The daemon does not use a cross-operation probe. After the recovery interval,
+one real request tests a higher-priority server. Other requests continue to use
+the active fallback during this trial.
 
 ### Reconnect Behavior
 
-When multiple IPC requests arrive simultaneously during a reconnect, only one connection attempt runs per server. Other callers wait for the result rather than triggering duplicate TLS handshakes.
+One connection attempt runs for each server and operation. Concurrent callers
+share its result instead of starting duplicate TLS handshakes.
 
 ## Startup Warm-up
 
-On startup, the daemon attempts to connect to servers in order and stops at the first success. This prevents connection storms when many instances start at the same time, for example during a fleet rollout. If no server is reachable at startup, the daemon still starts, and requests retry on demand.
+The daemon creates operation connections on first use. It does not send an
+accounting watchdog to test authentication or authorization routes.
+
+## Runtime Policy
+
+The optional policy file contains no credentials. The daemon watches the file
+and atomically applies each valid update. An invalid update leaves the
+last-known-good policy active and marks runtime health as degraded.
+
+An omitted field uses its safe default. This example enables same-request
+failover for both local services:
+
+```json
+{
+  "failover-recovery-interval-seconds": 30,
+  "client-api-failover-strategy": "ordered-safe-retry",
+  "tacacs-proxy-failover-strategy": "ordered-safe-retry",
+  "authentication": {
+    "max-body-length": 4096,
+    "max-concurrent-requests": 64
+  },
+  "authorization": {
+    "max-body-length": 16384,
+    "max-concurrent-requests": 64
+  },
+  "accounting": {
+    "max-body-length": 16384,
+    "max-concurrent-requests": 64
+  }
+}
+```
+
+Each operation has one packet-size limit and one concurrency limit. IPC and
+proxy clients share that capacity. A request waits for capacity for no longer
+than the active server timeout.
 
 SONiC ConfigDB is supervised differently from local CLI or file input. Before constructing the service, the daemon waits for a valid `TACPLUS_FORWARDER|global` row and uses its loopback address and port for the raw TACACS+ proxy listener. SONiC mode always hosts both the Client API and proxy. A conflicting `--proxy-endpoint` or non-`both` service mode is rejected. Ctrl-C or SIGTERM cancels this pre-bind retry.
 
@@ -271,7 +324,7 @@ ExecStart=/usr/local/bin/tacacsrs-agentd \
     --socket-mode 660 \
     --host-integration systemd \
     --shared-secret "shared_secret" \
-    --preferred-probe-interval-seconds 30
+    --runtime-policy /etc/tacacs/runtime-policy.json
 Restart=on-failure
 RestartSec=5
 
@@ -311,7 +364,7 @@ tacacsrs-agentd \
     --server-addr secondary.dc1.example.com:49 \
     --server-addr primary.dc2.example.com:49 \
     --connect-timeout-seconds 3 \
-    --preferred-probe-interval-seconds 15 \
+    --runtime-policy /etc/tacacs/runtime-policy.json \
     --shared-secret "shared_secret" \
     --listen-endpoint /run/tacacs/tacacs.sock \
     -vv

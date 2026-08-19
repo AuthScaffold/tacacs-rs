@@ -23,7 +23,7 @@ use tacacsrs_messages::enumerations::{
 use tacacsrs_flows::authentication::PapAuthenticationExchange;
 use tokio::sync::Mutex;
 
-use crate::upstream::{UpstreamConnection, UpstreamConnector};
+use crate::upstream::{OperationKind, UpstreamConnection, UpstreamConnector, UpstreamRequestError};
 
 #[derive(Debug)]
 pub(crate) struct FakeConnection {
@@ -49,10 +49,13 @@ impl UpstreamConnection for FakeConnection {
     async fn send_accounting(
         &self,
         _request: AccountingRequest,
-    ) -> anyhow::Result<AccountingReply> {
+    ) -> Result<AccountingReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
-            anyhow::bail!("Simulated failure from {}", self.address);
+            return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
+                "Simulated failure from {}",
+                self.address
+            )));
         }
 
         Ok(AccountingReply {
@@ -65,10 +68,13 @@ impl UpstreamConnection for FakeConnection {
     async fn authenticate_pap(
         &self,
         _exchange: PapAuthenticationExchange,
-    ) -> anyhow::Result<AuthenticationReply> {
+    ) -> Result<AuthenticationReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
-            anyhow::bail!("Simulated failure from {}", self.address);
+            return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
+                "Simulated failure from {}",
+                self.address
+            )));
         }
         Ok(AuthenticationReply {
             status: TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
@@ -81,10 +87,13 @@ impl UpstreamConnection for FakeConnection {
     async fn send_authorization(
         &self,
         _request: AuthorizationRequest,
-    ) -> anyhow::Result<AuthorizationReply> {
+    ) -> Result<AuthorizationReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
-            anyhow::bail!("Simulated failure from {}", self.address);
+            return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
+                "Simulated failure from {}",
+                self.address
+            )));
         }
 
         Ok(AuthorizationReply {
@@ -140,6 +149,7 @@ impl UpstreamConnector for FakeConnector {
     async fn connect(
         &self,
         server: Arc<TacacsPlusServer>,
+        _operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         let address = server.socket_address();
         {

@@ -17,6 +17,8 @@ pub use health::{
     RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, UpstreamAvailability,
 };
 
-pub(crate) use server_catalog::{REQUIRED_SERVER_TYPES, enumerate_supported_servers};
+#[cfg(test)]
+pub(crate) use server_catalog::REQUIRED_SERVER_TYPES;
+pub(crate) use server_catalog::enumerate_supported_servers;
 pub(crate) use request_tracker::{RequestGuard, RequestTracker};
 pub(crate) use shutdown::{ListenerRegistration, ShutdownCoordinator, ShutdownReceiver};

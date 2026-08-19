@@ -74,6 +74,10 @@ pub(crate) struct Cli {
     ])]
     pub(crate) config: Option<PathBuf>,
 
+    /// Optional live runtime-policy JSON file.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) runtime_policy: Option<PathBuf>,
+
     /// Ordered list of TACACS+ upstream servers. The first server is preferred.
     #[arg(long = "server-addr", conflicts_with_all = ["sonic", "sonic_redis_url", "sonic_redis_db"])]
     pub(crate) server_addresses: Vec<String>,
@@ -140,10 +144,6 @@ pub(crate) struct Cli {
     /// Use a dedicated upstream connection per request instead of TACACS+ single-connection mode.
     #[arg(long, requires = "server_addresses", conflicts_with = "sonic")]
     pub(crate) dedicated: bool,
-
-    /// Probe interval, in seconds, between checks of whether the preferred server recovered.
-    #[arg(long, default_value_t = 30)]
-    pub(crate) preferred_probe_interval_seconds: u64,
 
     /// Increase the log level. Repeat up to four times: -v, -vv, -vvv, or -vvvv.
     #[arg(short, long, action = clap::ArgAction::Count)]
