@@ -10,6 +10,9 @@ use tacacsrs_messages::authorization::request::AuthorizationRequest;
 use tacacsrs_networking::ClientConversation;
 use tacacsrs_flows::authentication::PapAuthenticationExchange;
 
+use super::OperationKind;
+use super::UpstreamRequestError;
+
 #[async_trait]
 /// Provides one persistent connection to a TACACS+ server.
 ///
@@ -42,13 +45,16 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     ///
     /// Returns an error if the session cannot be created or the accounting
     /// exchange fails at the TACACS+ protocol level.
-    async fn send_accounting(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply>;
+    async fn send_accounting(
+        &self,
+        request: AccountingRequest,
+    ) -> Result<AccountingReply, UpstreamRequestError>;
 
     /// Runs one fixed PAP authentication exchange.
     async fn authenticate_pap(
         &self,
         exchange: PapAuthenticationExchange,
-    ) -> anyhow::Result<AuthenticationReply>;
+    ) -> Result<AuthenticationReply, UpstreamRequestError>;
 
     /// Sends one authorization request and returns the server's reply.
     ///
@@ -59,7 +65,7 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     async fn send_authorization(
         &self,
         request: AuthorizationRequest,
-    ) -> anyhow::Result<AuthorizationReply>;
+    ) -> Result<AuthorizationReply, UpstreamRequestError>;
 }
 
 #[async_trait]
@@ -78,5 +84,6 @@ pub(crate) trait UpstreamConnector: Send + Sync {
     async fn connect(
         &self,
         server: Arc<TacacsPlusServer>,
+        operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
 }

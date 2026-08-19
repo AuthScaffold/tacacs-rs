@@ -19,6 +19,9 @@ Use `--host-integration none` in containers. `auto` selects systemd only when `N
 
 The daemon supervises SONiC ConfigDB startup and notification subscriptions. It can bind listeners before Redis exists, and it retries with capped jittered backoff. It applies valid snapshots without a restart. It keeps the previous known-good configuration after invalid reloads or subscription outages.
 
+Use `--runtime-policy <FILE>` to load live failover strategies and request
+limits. The daemon keeps the last-known-good policy after an invalid update.
+
 ## Runtime Service Modes
 
 Use `--service-mode client-api`, `--service-mode tacacs-proxy`, or

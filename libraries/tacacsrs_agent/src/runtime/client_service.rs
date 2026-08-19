@@ -7,8 +7,8 @@
 //! # Startup sequence
 //!
 //! 1. [`TacacsClientService::new`] resolves the current upstream server set.
-//! 2. [`TacacsClientService::serve`] warms server connections. It starts the
-//!    preferred-server probe when necessary and binds each listener.
+//! 2. [`TacacsClientService::serve`] publishes lazy connection state and binds
+//!    each listener.
 //! 3. The service accepts clients until it receives a shutdown signal.
 //!
 //! # Graceful shutdown
@@ -30,7 +30,7 @@ use super::{
     RequestTracker, RuntimeHealthPublisher, ShutdownCoordinator, UpstreamAvailability,
     enumerate_supported_servers,
 };
-use crate::config::{ProxyDownstreamObfuscation, ServiceConfig};
+use crate::config::{ProxyDownstreamObfuscation, RuntimePolicy, ServiceConfig};
 use crate::services::client_api::ClientApiService;
 use crate::services::tacacs_proxy::TacacsProxyService;
 use crate::services::ListenerOptions;
@@ -128,8 +128,8 @@ impl TacacsClientService {
         let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
             servers.into_iter().map(Arc::new).collect(),
             config.proxy_downstream_obfuscation.clone(),
+            config.runtime_policy.clone(),
             connector,
-            config.preferred_probe_interval,
             health.clone(),
         ));
         let request_tracker = Arc::new(RequestTracker::default());
@@ -164,8 +164,8 @@ impl TacacsClientService {
         let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
             servers.into_iter().map(Arc::new).collect(),
             config.proxy_downstream_obfuscation.clone(),
+            config.runtime_policy.clone(),
             connector,
-            config.preferred_probe_interval,
             health.clone(),
         ));
         let request_tracker = Arc::new(RequestTracker::default());
@@ -189,9 +189,19 @@ impl TacacsClientService {
     /// the method does not change the runtime state.
     pub async fn reload_tacacs_plus(&self, tacacs_plus: TacacsPlus) -> anyhow::Result<()> {
         let _reload_guard = self.reload_lock.lock().await;
-        let proxy_downstream_obfuscation = self.state.proxy_downstream_obfuscation();
+        let proxy_downstream_obfuscation = self
+            .state
+            .proxy_transport_settings()
+            .downstream_obfuscation()
+            .clone();
         self.reload_tacacs_plus_inner(tacacs_plus, proxy_downstream_obfuscation)
             .await
+    }
+
+    /// Atomically applies a validated runtime policy to new requests.
+    pub async fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) {
+        let _reload_guard = self.reload_lock.lock().await;
+        self.state.reload_runtime_policy(runtime_policy);
     }
 
     /// Applies TACACS+ configuration and the downstream proxy obfuscation policy.
@@ -263,7 +273,7 @@ impl TacacsClientService {
         Ok(())
     }
 
-    /// Returns the number of servers that support all required operations.
+    /// Returns the number of configured TACACS+ servers.
     #[must_use]
     pub fn server_count(&self) -> usize {
         self.state.server_count()
@@ -271,8 +281,7 @@ impl TacacsClientService {
 
     /// Runs the local service listeners until the process stops.
     ///
-    /// Startup tries to warm the first responsive server connection. When
-    /// multiple servers exist, it starts a background preferred-server probe.
+    /// Startup leaves operation connections unopened until their first request.
     /// If no eligible servers exist, the listeners still start. A later
     /// datastore reload can make the service ready without a process restart.
     ///
@@ -290,15 +299,8 @@ impl TacacsClientService {
 
     async fn serve_with_shutdown(&self, shutdown: &ShutdownCoordinator) -> anyhow::Result<()> {
         log::info!("Warming TACACS+ server connections");
-        self.state.warm_connections().await;
-        log::info!(
-            "Starting the preferred-server probe with interval {:?}",
-            self.config.preferred_probe_interval,
-        );
-        let probe_task = self.state.spawn_preferred_probe();
-
+        self.state.warm_connections();
         let result = self.serve_enabled_services(shutdown).await;
-        probe_task.abort();
         if result.is_ok() {
             shutdown.mark_stopped();
         }
@@ -401,7 +403,10 @@ mod tests {
     };
     use tonic::Request;
 
-    use crate::config::{EnabledServices, ProxyDownstreamObfuscation};
+    use crate::config::{
+        EnabledServices, FailoverStrategy, OperationPolicies, ProxyDownstreamObfuscation,
+        RuntimePolicy,
+    };
     use super::TacacsClientService;
     use crate::runtime::{
         ListenerState, REQUIRED_SERVER_TYPES, RequestTracker, RuntimeHealthPublisher,
@@ -453,7 +458,13 @@ mod tests {
             proxy_endpoint: None,
             proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
             tacacs_plus,
-            preferred_probe_interval: Duration::from_millis(50),
+            runtime_policy: RuntimePolicy::new(
+                FailoverStrategy::default(),
+                FailoverStrategy::default(),
+                OperationPolicies::default(),
+                Duration::from_millis(50),
+            )
+            .expect("test runtime policy"),
             socket_mode: 0o660,
             disable_certificate_verification: false,
         }
@@ -473,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn service_uses_only_servers_supporting_runtime_operations() {
+    fn service_builds_independent_operation_catalogs() {
         let endpoint = test_endpoint("tacacs-service-runtime-filter");
         let mut partial = test_server("partial:49");
         partial.server_type = tacacsrs_config::TacacsPlusServerType::AUTHORIZATION
@@ -484,7 +495,19 @@ mod tests {
         let connector = Arc::new(FakeConnector::new(HashMap::new()));
         let service = test_service_with_connector(config, connector).unwrap();
 
-        assert_eq!(service.state.server_count(), 1);
+        assert_eq!(service.state.server_count(), 2);
+        assert_eq!(
+            service
+                .state
+                .eligible_server_count(crate::OperationKind::Authentication),
+            1
+        );
+        assert_eq!(
+            service
+                .state
+                .eligible_server_count(crate::OperationKind::Authorization),
+            2
+        );
     }
 
     #[test]
@@ -499,7 +522,19 @@ mod tests {
         let service = test_service_with_connector(config, connector)
             .expect("the service must accept a waiting state");
 
-        assert_eq!(service.state.server_count(), 0);
+        assert_eq!(service.state.server_count(), 1);
+        assert_eq!(
+            service
+                .state
+                .eligible_server_count(crate::OperationKind::Authentication),
+            0
+        );
+        assert_eq!(
+            service
+                .state
+                .eligible_server_count(crate::OperationKind::Accounting),
+            1
+        );
     }
 
     #[test]

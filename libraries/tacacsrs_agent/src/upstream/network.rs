@@ -11,9 +11,10 @@ use tacacsrs_messages::accounting::request::AccountingRequest;
 use tacacsrs_messages::authentication::reply::AuthenticationReply;
 use tacacsrs_messages::authorization::reply::AuthorizationReply;
 use tacacsrs_messages::authorization::request::AuthorizationRequest;
-use tacacsrs_networking::{ConnectOptions, ConnectPreflight, TacacsClient};
+use tacacsrs_networking::{ConnectOptions, TacacsClient};
 
 use super::connection::{UpstreamConnection, UpstreamConnector};
+use super::{OperationKind, UpstreamRequestError};
 
 /// Production connector backed by [`tacacsrs_networking`].
 ///
@@ -32,16 +33,17 @@ impl UpstreamConnector for NetworkUpstreamConnector {
     async fn connect(
         &self,
         server: Arc<TacacsPlusServer>,
+        operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         let address = server.socket_address();
         let options = ConnectOptions::default()
             .with_certificate_verification_disabled(self.disable_certificate_verification)
-            .with_timeout(server.timeout_duration())
-            .with_preflight(ConnectPreflight::AccountingWatchdog);
+            .with_timeout(server.timeout_duration());
         let connection = TacacsClient::connect_shared(server, options).await?;
 
         Ok(Arc::new(TacacsUpstreamConnection {
             server_address: address,
+            operation,
             connection,
         }))
     }
@@ -55,6 +57,8 @@ impl UpstreamConnector for NetworkUpstreamConnector {
 struct TacacsUpstreamConnection {
     /// The `host:port` address of the TACACS+ server.
     server_address: String,
+    /// Operation isolated on this adaptive client.
+    operation: OperationKind,
     /// The adaptive client connection.
     connection: TacacsClient,
 }
@@ -76,7 +80,11 @@ impl UpstreamConnection for TacacsUpstreamConnection {
             .with_context(|| format!("Failed to open a session on {}", self.server_address))
     }
 
-    async fn send_accounting(&self, request: AccountingRequest) -> anyhow::Result<AccountingReply> {
+    async fn send_accounting(
+        &self,
+        request: AccountingRequest,
+    ) -> Result<AccountingReply, UpstreamRequestError> {
+        debug_assert_eq!(self.operation, OperationKind::Accounting);
         log_session_start(
             "accounting",
             &self.server_address,
@@ -85,7 +93,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
         let response = self
             .connection
-            .execute(AccountingExchange::new(request))
+            .execute_classified(AccountingExchange::new(request))
             .await;
 
         match &response {
@@ -102,23 +110,35 @@ impl UpstreamConnection for TacacsUpstreamConnection {
             }
         }
 
-        response.with_context(|| shared_failure_context("accounting", &self.server_address))
+        response.map_err(|error| {
+            UpstreamRequestError::from_fixed(
+                error,
+                shared_failure_context("accounting", &self.server_address),
+            )
+        })
     }
 
     async fn authenticate_pap(
         &self,
         exchange: PapAuthenticationExchange,
-    ) -> anyhow::Result<AuthenticationReply> {
+    ) -> Result<AuthenticationReply, UpstreamRequestError> {
+        debug_assert_eq!(self.operation, OperationKind::Authentication);
         self.connection
-            .execute(exchange)
+            .execute_classified(exchange)
             .await
-            .with_context(|| shared_failure_context("PAP authentication", &self.server_address))
+            .map_err(|error| {
+                UpstreamRequestError::from_fixed(
+                    error,
+                    shared_failure_context("PAP authentication", &self.server_address),
+                )
+            })
     }
 
     async fn send_authorization(
         &self,
         request: AuthorizationRequest,
-    ) -> anyhow::Result<AuthorizationReply> {
+    ) -> Result<AuthorizationReply, UpstreamRequestError> {
+        debug_assert_eq!(self.operation, OperationKind::Authorization);
         log_session_start(
             "authorization",
             &self.server_address,
@@ -127,7 +147,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
         let response = self
             .connection
-            .execute(AuthorizationExchange::new(request))
+            .execute_classified(AuthorizationExchange::new(request))
             .await;
 
         match &response {
@@ -144,7 +164,12 @@ impl UpstreamConnection for TacacsUpstreamConnection {
             }
         }
 
-        response.with_context(|| shared_failure_context("authorization", &self.server_address))
+        response.map_err(|error| {
+            UpstreamRequestError::from_fixed(
+                error,
+                shared_failure_context("authorization", &self.server_address),
+            )
+        })
     }
 }
 
@@ -168,7 +193,11 @@ fn log_protocol_reply<Status: std::fmt::Debug>(
     );
 }
 
-fn log_session_failure(operation: &'static str, server_address: &str, error: &anyhow::Error) {
+fn log_session_failure(
+    operation: &'static str,
+    server_address: &str,
+    error: &tacacsrs_networking::FixedExchangeError,
+) {
     log::warn!("{operation} request to {server_address} failed: {error:#}");
 }
 

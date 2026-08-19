@@ -35,7 +35,7 @@ use tacacsrs_secrets::SecretBytes;
 use crate::ipc;
 
 /// Client-supplied inputs for one fixed PAP authentication operation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PapAuthenticationOperation {
     pub user: String,
     pub password: SecretBytes,

@@ -12,11 +12,15 @@
 //! validation. It then calls
 //! [`serve`](crate::TacacsClientService::serve) to start the runtime.
 
-use std::time::Duration;
-
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
 use tacacsrs_secrets::SecretString;
+
+pub use self::policy::{
+    FailoverStrategy, OperationPolicies, PolicyService, RequestLimits, RuntimePolicy,
+};
+
+mod policy;
 
 /// Runtime services hosted by the TACACS+ client service process.
 ///
@@ -131,12 +135,8 @@ pub struct ServiceConfig {
     /// directly in each server. In this case, the credential bundles are empty.
     pub tacacs_plus: TacacsPlus,
 
-    /// Interval between preferred-server probes during failover.
-    ///
-    /// This value has an effect only when the configuration contains multiple
-    /// servers. A shorter interval detects recovery faster but creates more
-    /// probe connections.
-    pub preferred_probe_interval: Duration,
+    /// Live failover and request-admission policy.
+    pub runtime_policy: RuntimePolicy,
 
     /// File mode for the bound Unix domain socket.
     ///
