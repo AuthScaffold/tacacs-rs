@@ -138,11 +138,11 @@ redis-cli -n 4 HSET 'TACPLUS_FORWARDER|global' \
 ### 3. Install the systemd unit
 
 The repository ships an example unit file at
-[`executables/tacacsrs_agentd/sonic/tacacsrs-agentd.service`](../executables/tacacsrs_agentd/sonic/tacacsrs-agentd.service).
+[`sonic/tacacsrs-agentd.service`](sonic/tacacsrs-agentd.service).
 
 ```bash
 sudo install -m 0644 \
-    executables/tacacsrs_agentd/sonic/tacacsrs-agentd.service \
+    docs/sonic/tacacsrs-agentd.service \
     /etc/systemd/system/tacacsrs-agentd.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now tacacsrs-agentd.service
@@ -153,11 +153,11 @@ after CONFIG_DB is available.
 
 ### 4. Register in the SONiC `FEATURE` table
 
-`executables/tacacsrs_agentd/sonic/feature_table.json` is a sample row that
+[`sonic/feature_table.json`](sonic/feature_table.json) is a sample row that
 exposes the agent through SONiC's standard `config feature` CLI:
 
 ```bash
-sonic-cfggen -j executables/tacacsrs_agentd/sonic/feature_table.json --write-to-db
+sonic-cfggen -j docs/sonic/feature_table.json --write-to-db
 config save -y
 config feature state tacacsrs-agentd enabled
 ```

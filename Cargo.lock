@@ -1998,6 +1998,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tacacsrs-agent-health"
+version = "0.0.0-dev"
+dependencies = [
+ "clap",
+ "tacacsrs-agent-client",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tonic-health",
+]
+
+[[package]]
 name = "tacacsrs-agent-ipc-emulator"
 version = "0.0.0-dev"
 dependencies = [

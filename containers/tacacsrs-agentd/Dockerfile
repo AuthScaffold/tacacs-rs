@@ -4,9 +4,9 @@
 #
 # This build has these stages:
 #   base    -> Rust toolchain plus the build dependencies for the `psk` feature
-#   test    -> agent daemon test suite (used by `make test`)
-#   build   -> `tacacsrs-agentd` binary compiled with BuildKit caches
-#   runtime -> image with only the binary and its runtime dependencies
+#   test    -> agent daemon and health probe test suites (used by `make test`)
+#   build   -> daemon and health probe binaries compiled with BuildKit caches
+#   runtime -> image with only the binaries and their runtime dependencies
 #
 # The build context must be the workspace root. Cargo requires all manifests and
 # crates under `libraries/` and `executables/`. The local Makefile sets this context.
@@ -63,7 +63,8 @@ ARG CACHEBUST=0
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo test --locked -p tacacsrs-agentd --features "${FEATURES}"
+    cargo test --locked -p tacacsrs-agentd  --features "${FEATURES}" \
+    && cargo test --locked -p tacacsrs-agent-health
 
 # -----------------------------------------------------------------------------
 # build: compile the release binary
@@ -78,10 +79,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     if [ "${PROFILE}" = "debug" ]; then \
         cargo build --locked -p tacacsrs-agentd --features "${FEATURES}"; \
+        cargo build --locked -p tacacsrs-agent-health; \
     else \
         cargo build --locked --profile "${PROFILE}" -p tacacsrs-agentd --features "${FEATURES}"; \
+        cargo build --locked --profile "${PROFILE}" -p tacacsrs-agent-health; \
     fi \
-    && cp "target/${PROFILE}/tacacsrs-agentd" /build/tacacsrs-agentd
+    && cp "target/${PROFILE}/tacacsrs-agentd" /build/tacacsrs-agentd \
+    && cp "target/${PROFILE}/tacacsrs-agent-health" /build/tacacsrs-agent-health
 
 # -----------------------------------------------------------------------------
 # runtime: image with only the binary and its runtime dependencies
@@ -105,6 +109,7 @@ RUN apt-get update \
     && mkdir -p /run/tacacs
 
 COPY --from=build /build/tacacsrs-agentd /usr/sbin/tacacsrs-agentd
+COPY --from=build /build/tacacsrs-agent-health /usr/bin/tacacsrs-agent-health
 
 # The agent runs as a foreground process. The default `CMD` matches the SONiC
 # systemd unit. Override it for other environments.

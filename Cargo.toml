@@ -17,6 +17,7 @@ members = [
     "executables/tacon",
     "executables/session_wrapper",
     "executables/tacacsrs_agentd",
+    "executables/tacacsrs_agent_health",
     "executables/tacacsrs_agent_ipc_emulatord"
 ]
 exclude = ["fuzz"]
