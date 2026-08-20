@@ -690,6 +690,7 @@ class TestComputeAllVersions:
     def test_shared_executable_uses_primary_calver_and_watch_paths(self, tmp_workspace: Path) -> None:
         make_executable(tmp_workspace, "tacon", "tacon")
         make_executable(tmp_workspace, "tacacsrs-agentd", "tacacsrs_agentd")
+        make_executable(tmp_workspace, "tacacsrs-agent-health", "tacacsrs_agent_health")
         git_commit(tmp_workspace, "initial")
         git_tag(tmp_workspace, "tacon-2026.424.0")
 
@@ -703,13 +704,14 @@ class TestComputeAllVersions:
         result = compute_all_versions(
             tmp_workspace,
             binary_name="tacon",
-            shared_executable_names=["tacacsrs-agentd"],
+            shared_executable_names=["tacacsrs-agentd", "tacacsrs-agent-health"],
             skip_semver_checks=True,
             now=now,
         )
 
         assert result["versions"]["tacon"] == "2026.424.1"
         assert result["versions"]["tacacsrs-agentd"] == "2026.424.1"
+        assert result["versions"]["tacacsrs-agent-health"] == "2026.424.1"
         assert result["calver_tag"] == "tacon-2026.424.1"
         assert "tacon-2026.424.1" in result["new_tags"]
         assert result["has_release"] is True

@@ -2,8 +2,8 @@
   "metadata": {
     "description": "This load-test batch repeats one request 100 times. It runs no more than 10 requests at the same time.",
     "load_test": {
-      "repetitions": 100,
-      "max_parallel": 10
+      "repetitions": 50000,
+      "max_parallel": 8
     }
   },
   "requests": [

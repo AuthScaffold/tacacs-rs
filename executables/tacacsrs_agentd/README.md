@@ -6,7 +6,7 @@ For full deployment and failover guidance, see [../../docs/tacacsrs-agentd.md](.
 
 ## Health and Host Integration
 
-When the Client API is enabled, its existing endpoint also serves standard `grpc.health.v1.Health` names for startup, liveness, readiness, the overall empty name, and `tacacsrs.agent.v1.TacacsAgent`. Use the packaged probe:
+When the Client API is enabled, its existing endpoint also serves standard `grpc.health.v1.Health` names for startup, liveness, readiness, the overall empty name, and `tacacsrs.agent.v1.TacacsAgent`. Use the separate `tacacsrs-agent-health` executable:
 
 ```bash
 tacacsrs-agent-health \
