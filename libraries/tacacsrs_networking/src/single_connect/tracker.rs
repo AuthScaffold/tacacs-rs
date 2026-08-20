@@ -38,7 +38,7 @@ impl SingleConnectFlag {
 ///
 /// This state mirrors the session manager state and reduces async calls. It:
 /// - starts negotiation on the first packet,
-/// - detects graceful shutdown when the server removes the flag, and
+/// - ignores the single-connect flag after the first packet, and
 /// - enters a terminal state if the server does not support single-connection mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum LocalSingleConnectState {
@@ -67,9 +67,7 @@ impl LocalSingleConnectState {
     ///     |
     ///     +-- yes --> [Supported]
     ///     |              |
-    ///     |              | later packet without flag
-    ///     |              v
-    ///     |        [NotSupported] (terminal)
+    ///     |              +-- later flags are ignored
     ///     |
     ///     +-- no ---> [NotSupported] (terminal)
     /// ```
@@ -87,12 +85,7 @@ impl LocalSingleConnectState {
                 connection.set_single_connection_state(false).await;
                 Self::NotSupported
             }
-            (Self::Supported, SingleConnectFlag::Set) => Self::Supported,
-            (Self::Supported, SingleConnectFlag::NotSet) => {
-                // The server removed the flag to start a graceful shutdown.
-                connection.set_single_connection_state(false).await;
-                Self::NotSupported
-            }
+            (Self::Supported, _) => Self::Supported,
             (Self::NotSupported, _) => {
                 // This state is terminal.
                 Self::NotSupported
@@ -146,19 +139,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_supported_transitions_to_not_supported_on_graceful_shutdown() {
+    async fn test_supported_ignores_unset_flag_after_negotiation() {
         let connection = Arc::new(SessionManager::new());
-        // First, change to the Supported state.
         let state = LocalSingleConnectState::AwaitingFirstPacket
             .process_packet(SingleConnectFlag::Set, &connection)
             .await;
 
-        // Simulate flag removal by the server.
         let new_state = state
             .process_packet(SingleConnectFlag::NotSet, &connection)
             .await;
 
-        assert_eq!(new_state, LocalSingleConnectState::NotSupported);
+        assert_eq!(new_state, LocalSingleConnectState::Supported);
+        assert!(connection.can_create_sessions().await);
     }
 
     #[tokio::test]
