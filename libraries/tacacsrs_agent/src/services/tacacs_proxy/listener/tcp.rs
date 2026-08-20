@@ -1,8 +1,8 @@
-//! Loopback TCP listener for raw TACACS+ proxy clients.
+//! TCP listener for raw TACACS+ proxy clients.
 
 use std::net::SocketAddr;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 
 use super::{ProxyListener, accept_loop};
 use crate::runtime::{ListenerRegistration, ShutdownReceiver};
@@ -14,11 +14,6 @@ pub(super) async fn serve(
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
 ) -> anyhow::Result<()> {
-    if !address.ip().is_loopback() {
-        log::error!("The TCP TACACS+ proxy endpoint is not a loopback address: {address}");
-        bail!("TCP TACACS+ proxy endpoint must be loopback-only: {address}");
-    }
-
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .with_context(|| format!("Failed to bind TCP TACACS+ proxy endpoint {address}"))?;

@@ -40,7 +40,7 @@ use self::write_loop::run_write_loop;
 /// - Concurrent packet reading and writing
 /// - Session creation and management
 /// - Single-connect mode negotiation
-/// - Graceful shutdown coordination
+/// - Connection shutdown coordination
 ///
 /// Wrap the connection in an `Arc` to share it across tasks.
 pub(crate) struct MultiplexedConnection {
@@ -163,7 +163,8 @@ impl MultiplexedConnection {
     ///
     /// Reads packets from the connection and sends them to the correct session.
     ///
-    /// This loop also handles single-connect mode negotiation.
+    /// This loop also observes the first reply that established single-connect
+    /// mode. RFC 8907 requires later packets to ignore this flag.
     ///
     /// ```text
     /// confirmed shared connection starts as Supported
@@ -171,12 +172,7 @@ impl MultiplexedConnection {
     ///     v
     /// read server packet
     ///     |
-    ///     +-- flag set -----> keep accepting shared sessions
-    ///     |
-    ///     +-- flag absent --> mark NotSupported
-    ///                         stop new sessions
-    ///                         drain active sessions
-    ///                         close shared connection
+    ///     +-- ignore single-connect flag and keep accepting shared sessions
     ///
     /// transport EOF or read error
     ///     |

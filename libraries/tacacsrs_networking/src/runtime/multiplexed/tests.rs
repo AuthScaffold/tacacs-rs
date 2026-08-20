@@ -164,7 +164,7 @@ async fn rejects_invalid_fixed_response_metadata() {
 }
 
 #[tokio::test]
-async fn delivered_fixed_reply_remains_active_until_completion() {
+async fn later_unset_flag_does_not_close_confirmed_connection() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
     let session = connection.create_session().await.unwrap();
     let receiver = connection
@@ -194,9 +194,9 @@ async fn delivered_fixed_reply_remains_active_until_completion() {
         .is_err());
 
     session.complete().await;
-    tokio::time::timeout(Duration::from_millis(250), &mut close)
+    assert!(tokio::time::timeout(Duration::from_millis(25), &mut close)
         .await
-        .unwrap();
+        .is_err());
 }
 
 #[tokio::test]

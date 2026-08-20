@@ -116,7 +116,7 @@ initial packets. It uses Tokio semaphores for operation-wide admission.
 │ TacacsClientService          │
 │ - service orchestration      │
 │ - hot reload                 │
-│ - graceful shutdown tracking │
+│ - local shutdown tracking    │
 └──────┬───────────────────────┘
   │ starts client API service
        v

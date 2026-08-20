@@ -89,17 +89,38 @@ Proxy mode preserves TACACS+ packet bodies while managing session routing:
 - Per-session input and connection reply queues are bounded to apply backpressure.
 - Packet bodies are forwarded unchanged. The proxy rewrites only session IDs and the locally advertised single-connect flag.
 - The proxy advertises single-connect support based on its own downstream multiplexer, not the selected upstream server's flag.
+- The downstream client and proxy negotiate single-connect mode in the first request and reply. Later packets can omit the flag without ending connection reuse.
 - Accounting and authorization conversations close after one reply. Authentication conversations continue across challenge replies and close when the reply status is terminal.
 - `FOLLOW` replies are forwarded to the downstream client and complete that session. Per RFC 8907, authorization and accounting `FOLLOW` use the authentication `FOLLOW` behavior. Authentication `FOLLOW` is treated like `FAIL`.
 - Authentication `RESTART` replies are forwarded and complete that session. A restarted sequence uses a new session ID and sequence number 1, as required by RFC 8907. The downstream TCP connection can remain open.
 
-Proxy TCP endpoints must be loopback addresses. Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. When `client-api` and `tacacs-proxy` run together, the proxy endpoint must be different from `--listen-endpoint`.
+Proxy TCP endpoints bind the configured address. On a host, use a loopback address to limit access to local clients.
+
+In a bridge-network container, bind a wildcard address and publish the port only on the host loopback interface:
+
+```yaml
+command: ["--proxy-endpoint", "0.0.0.0:49"]
+ports:
+    - "127.0.0.1:49:49"
+```
+
+Other containers on the same Docker network can reach the wildcard listener. Use an isolated Docker network if other containers are untrusted.
+
+Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. When both services run, their endpoints must be different.
 
 Downstream TACACS+ obfuscation is independent of the selected upstream transport. In SONiC mode, the daemon filters rows that target its loopback proxy.
 
 The daemon uses the highest-priority row's resolved `passkey` for the local hop. Outside SONiC mode, use `--proxy-shared-secret`.
 
 If neither source provides a local-hop secret, downstream clients must send unobfuscated TACACS+ packets. Upstream failover never changes the downstream shared secret.
+
+TACACS+ has no general in-band request to drain an established single-connect connection. Clearing the single-connect flag after negotiation has no effect. In this proxy, a TACACS+ `ERROR` is session-scoped and does not close the downstream connection.
+
+An explicit upstream `ERROR` on the first request is safe to replay. With `ordered-safe-retry`, the proxy closes that upstream session and tries the next eligible server. If another server succeeds, the downstream client receives that result instead of the first `ERROR`. The default `deferred-failover` strategy returns the `ERROR` for the current session and moves the next session to the fallback route. An `ERROR` after a continuing authentication session is pinned does not retry another server.
+
+To retire a downstream connection, the server must close the TCP transport. Close idle connections when possible because closing a connection with active sessions interrupts those sessions.
+
+A server can enforce its own drain by returning `ERROR` for new sessions, finishing sessions that are already active, and then closing TCP. A routing client can send those rejected new sessions to another server. The `ERROR` does not tell the client to stop creating sessions. The server must continue to reject new sessions until it closes the connection.
 
 ### Upstream Encryption
 
@@ -416,4 +437,4 @@ When `--config` is used, upstream server definitions are loaded from the `ietf-s
 
 ## Connection Reuse
 
-The daemon maintains persistent upstream connections and multiplexes TACACS+ sessions over them. This avoids TCP/TLS handshake overhead for every request. When a connection can no longer accept new sessions, for example because the server does not support single-connect mode, the daemon reconnects automatically.
+When an upstream server confirms single-connect support, the daemon maintains the connection and multiplexes TACACS+ sessions over it. This avoids TCP/TLS handshake overhead for every request. If the transport closes, active sessions fail and a later request negotiates a new connection. If the server denies single-connect during initial negotiation, the daemon uses dedicated connections instead.
