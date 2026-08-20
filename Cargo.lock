@@ -1998,6 +1998,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tacacsrs-agent-health"
+version = "2026.820.1"
+dependencies = [
+ "clap",
+ "tacacsrs-agent-client",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tonic-health",
+]
+
+[[package]]
 name = "tacacsrs-agent-ipc-emulator"
 version = "0.1.12"
 dependencies = [
@@ -2035,7 +2048,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-agentd"
-version = "2026.820.0"
+version = "2026.820.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2213,7 +2226,7 @@ dependencies = [
 
 [[package]]
 name = "tacon"
-version = "2026.820.0"
+version = "2026.820.1"
 dependencies = [
  "anyhow",
  "clap",
