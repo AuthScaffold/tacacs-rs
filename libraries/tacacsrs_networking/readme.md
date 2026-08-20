@@ -62,6 +62,25 @@ connection. Reader or writer failure stops admission and closes all routes so
 every waiter observes connection failure. Networking serializes shared
 connection recovery to avoid simultaneous reconnect probes.
 
+The single-connect flag negotiates connection reuse only in the first request
+and first reply. Later packets can omit the flag. They do not change the
+negotiated state.
+
+A TACACS+ `ERROR` status completes one protocol session. Networking does not
+interpret that status as a request to drain or close the shared connection.
+Higher-level routing code can classify an explicit `ERROR` as safe to replay on
+another server. That replay does not change this connection-level behavior.
+RFC 8907 defines no general in-band signal that asks a client to stop creating
+sessions on an established single-connect connection. To retire a connection,
+the server must close its transport. Closing an idle transport does not interrupt
+a TACACS+ session. Closing a transport with active sessions gives those sessions
+an unknown outcome.
+
+A server can enforce a local drain. It can return `ERROR` for new sessions,
+finish sessions that are already active, and then close the transport. The
+`ERROR` does not tell the client to stop creating sessions. The server must
+continue to reject new sessions until it closes the transport.
+
 Cancellation after outbound enqueue has an indeterminate distributed outcome:
 the server can process the request before the cancellation reaches it.
 Networking does not automatically replay an in-flight accounting,

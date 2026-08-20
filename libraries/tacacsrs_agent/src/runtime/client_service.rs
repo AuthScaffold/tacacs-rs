@@ -795,7 +795,8 @@ mod tests {
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or TCP listeners.
-    async fn both_listeners_bind_before_startup_serves_and_cleanup_on_shutdown() {
+    async fn both_listeners_bind_with_wildcard_proxy_before_startup_serves_and_cleanup_on_shutdown()
+    {
         let endpoint = test_endpoint("tacacs-service-both-listeners");
         let socket_path = match &endpoint {
             IpcEndpoint::Unix(path) => path.clone(),
@@ -806,7 +807,7 @@ mod tests {
         let mut config = service_config(endpoint, vec![test_server("primary:49")]);
         config.enabled_services = EnabledServices::BOTH;
         config.proxy_endpoint = Some(IpcEndpoint::Tcp(
-            "127.0.0.1:0"
+            "0.0.0.0:0"
                 .parse()
                 .expect("the proxy IPC endpoint must be valid"),
         ));

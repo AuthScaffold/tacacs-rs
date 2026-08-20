@@ -6,17 +6,12 @@
 /// TACACS+ server supports single-connection mode.
 /// Until the first response arrives, support is unknown.
 ///
-/// Graceful shutdown is signaled when a server removes the single-connect flag
-/// from response packets after previously supporting it. The client stops
-/// creating sessions on that connection, lets existing sessions drain, and then
-/// closes the connection.
-///
-/// A transport disconnect is different from a graceful single-connection
-/// shutdown. If a shared connection ends while this state is still `Supported`,
-/// the owning client clears the cached connection, returns to `Initial`, and probes the
-/// next fresh connection. This matters for load-balanced server pools: the next
-/// backend can have different single-connection support. Thus, the client asks
-/// again.
+/// RFC 8907 makes the flag relevant only to the first request and first reply
+/// on a connection. Later flag values do not change the negotiated state.
+/// If a shared connection ends, the owning client clears the cached connection,
+/// returns to `Initial`, and probes the next fresh connection. This matters for
+/// load-balanced server pools because the next backend can have different
+/// single-connection support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum SingleConnectionState {
     /// No session has been created yet. The first session can be created.
@@ -26,6 +21,6 @@ pub(crate) enum SingleConnectionState {
     Negotiating,
     /// The server supports single-connection mode.
     Supported,
-    /// The server does not support single-connection mode or requested a drain.
+    /// The server did not confirm single-connection mode in the first reply.
     NotSupported,
 }

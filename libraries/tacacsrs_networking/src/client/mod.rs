@@ -329,9 +329,8 @@ impl TacacsClient {
         &self,
         expected: Option<ExpectedResponseHeader>,
     ) -> anyhow::Result<ClientSession> {
-        // Stage 3: the failed shared attempt can change the client state. For
-        // example, a graceful server shutdown becomes NotSupported. A hard
-        // disconnect returns to Initial so the next connection can negotiate.
+        // Stage 3: a rejected shared connection returns the client to Initial
+        // after transport loss. The next connection must negotiate again.
         match self.single_connection_state().await {
             SingleConnectionState::Initial => {
                 return self.create_single_connect_negotiation_session().await;
@@ -441,7 +440,7 @@ impl TacacsClient {
     ///     +-- [NotSupported]
     ///     |       |
     ///     |       v
-    ///     |   server removed the single-connect flag
+    ///     |   first reply did not confirm single-connect support
     ///     |   mark client [NotSupported]
     ///     |   next session is dedicated without probing
     ///     |
@@ -828,17 +827,28 @@ mod tests {
         exchanges: usize,
         reply_flags: TacacsFlags,
     ) -> (mpsc::Receiver<Packet>, tokio::task::JoinHandle<()>) {
+        spawn_single_stream_accounting_server_with_reply_flags(
+            listener,
+            vec![reply_flags; exchanges],
+        )
+    }
+
+    fn spawn_single_stream_accounting_server_with_reply_flags(
+        listener: TcpListener,
+        reply_flags: Vec<TacacsFlags>,
+    ) -> (mpsc::Receiver<Packet>, tokio::task::JoinHandle<()>) {
+        let exchanges = reply_flags.len();
         let (request_sender, request_receiver) = mpsc::channel(exchanges);
         let server_task = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let reader = PacketReader::new(None);
 
-            for _ in 0..exchanges {
+            for flags in reply_flags {
                 let PacketReadResult::Success(packet) = reader.read_packet(&mut stream).await
                 else {
                     panic!("test server did not receive a valid TACACS+ packet");
                 };
-                let reply = accounting_success_reply(&packet, reply_flags);
+                let reply = accounting_success_reply(&packet, flags);
                 stream.write_all(&reply.to_bytes()).await.unwrap();
                 request_sender.send(packet).await.unwrap();
             }
@@ -1005,6 +1015,53 @@ mod tests {
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn confirmed_single_connection_ignores_later_unset_reply_flags() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener_address = listener.local_addr().unwrap();
+        let (mut request_receiver, server_task) =
+            spawn_single_stream_accounting_server_with_reply_flags(
+                listener,
+                vec![
+                    TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+                    TacacsFlags::empty(),
+                    TacacsFlags::empty(),
+                ],
+            );
+
+        let mut server = server_template();
+        server.address = listener_address.ip().to_string();
+        server.port = listener_address.port();
+        let client = TacacsClient::new(runtime(server), ConnectOptions::default());
+
+        for _ in 0..3 {
+            let reply = tokio::time::timeout(
+                Duration::from_secs(1),
+                client.execute(TestAccountingExchange(accounting_watchdog_preflight_request())),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+        }
+
+        let first_request = receive_request(&mut request_receiver).await;
+        assert!(first_request
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        for _ in 0..2 {
+            let later_request = receive_request(&mut request_receiver).await;
+            assert!(!later_request
+                .header()
+                .flags
+                .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        }
+        assert_eq!(client.single_connection_state().await, SingleConnectionState::Supported);
+
         server_task.await.unwrap();
     }
 

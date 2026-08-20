@@ -240,7 +240,7 @@ impl SessionManager {
     /// ## State transition rules
     ///
     /// - `Negotiating` → `Supported` or `NotSupported` (based on flag)
-    /// - `Supported` → `NotSupported` (server signals graceful shutdown)
+    /// - `Supported` → (terminal for this connection)
     /// - `NotSupported` → (terminal, no transitions allowed)
     /// - `Initial` → (ignored, must go through `Negotiating` first)
     ///
@@ -252,62 +252,39 @@ impl SessionManager {
     /// [Negotiating]
     ///     |
     ///     +-- server flag set ----> [Supported]
-    ///     |                            |
-    ///     |                            | server removes flag
-    ///     |                            v
-    ///     |                      [NotSupported]
     ///     |
     ///     +-- server flag absent -> [NotSupported]
     ///
-    /// [NotSupported] is terminal for this connection.
+    /// [Supported] and [NotSupported] are terminal for this connection.
     /// ```
-    ///
-    /// ## Graceful shutdown
-    ///
-    /// To start a graceful shutdown, a server removes the
-    /// `TAC_PLUS_SINGLE_CONNECT_FLAG` from response packets. This signals
-    /// clients to stop new sessions and let active sessions complete. Clients
-    /// then move traffic away from this server.
     pub(crate) async fn set_single_connection_state(
         &self,
         server_supports_single_connection: bool,
     ) {
         let mut state = self.single_connection_state.write().await;
 
-        match *state {
-            SingleConnectionState::Negotiating => {
-                let new_state = if server_supports_single_connection {
-                    SingleConnectionState::Supported
-                } else {
-                    SingleConnectionState::NotSupported
-                };
+        if *state == SingleConnectionState::Negotiating {
+            let new_state = if server_supports_single_connection {
+                SingleConnectionState::Supported
+            } else {
+                SingleConnectionState::NotSupported
+            };
 
-                *state = new_state;
-                drop(state);
+            *state = new_state;
+            drop(state);
 
-                log::info!(
-                    target: "tacacsrs_networking::session::manager::set_single_connection_state",
-                    "Set single-connection state to {new_state:?}"
-                );
-            }
-            SingleConnectionState::Supported if !server_supports_single_connection => {
-                *state = SingleConnectionState::NotSupported;
-                drop(state);
+            log::info!(
+                target: "tacacsrs_networking::session::manager::set_single_connection_state",
+                "Set single-connection state to {new_state:?}"
+            );
+        } else {
+            let current = *state;
+            drop(state);
 
-                log::info!(
-                    target: "tacacsrs_networking::session::manager::set_single_connection_state",
-                    "Server removed the single-connect flag. Set state to NotSupported for graceful shutdown"
-                );
-            }
-            _ => {
-                let current = *state;
-                drop(state);
-
-                log::debug!(
-                    target: "tacacsrs_networking::session::manager::set_single_connection_state",
-                    "Ignored single-connection update {server_supports_single_connection} because the state is {current:?}",
-                );
-            }
+            log::debug!(
+                target: "tacacsrs_networking::session::manager::set_single_connection_state",
+                "Ignored single-connection update {server_supports_single_connection} because the state is {current:?}",
+            );
         }
     }
 
@@ -738,18 +715,10 @@ mod tests {
         );
     }
 
-    /// Makes sure that flag removal starts a graceful shutdown.
-    ///
-    /// For maintenance or shutdown, a server removes
-    /// `TAC_PLUS_SINGLE_CONNECT_FLAG` from response packets. The client then:
-    /// 1. Stops new sessions on this connection.
-    /// 2. Lets active sessions complete.
-    /// 3. Closes the connection and moves traffic to other servers.
     #[tokio::test]
-    async fn test_server_can_signal_graceful_shutdown_by_removing_single_connect_flag() {
+    async fn test_supported_state_ignores_later_unset_flag() {
         let session_manager = Arc::new(SessionManager::new());
 
-        // Create a session and set the state to Supported.
         let _session1 = session_manager.create_session().await.unwrap();
         session_manager.set_single_connection_state(true).await;
         assert_eq!(
@@ -757,23 +726,14 @@ mod tests {
             SingleConnectionState::Supported
         );
 
-        // The client can create more sessions while the state is Supported.
-        assert!(session_manager.can_create_sessions().await);
-
-        // Simulate flag removal by the server.
         session_manager.set_single_connection_state(false).await;
 
-        // The state changes to NotSupported.
         assert_eq!(
             session_manager.single_connection_state().await,
-            SingleConnectionState::NotSupported
+            SingleConnectionState::Supported
         );
-
-        // The connection does not accept new sessions.
-        assert!(!session_manager.can_create_sessions().await);
-
-        // Make sure that the connection closes after the session.
-        assert!(session_manager.should_close_after_session().await);
+        assert!(session_manager.can_create_sessions().await);
+        assert!(!session_manager.should_close_after_session().await);
     }
 
     /// Makes sure that the state remains Supported while the server sends the flag.
@@ -809,50 +769,6 @@ mod tests {
     /// 1. The connection blocks new sessions after the shutdown signal.
     /// 2. Active sessions can complete.
     /// 3. The connection signals closure after the last session completes.
-    #[tokio::test]
-    async fn test_graceful_shutdown_drains_existing_sessions() {
-        use tokio::time::{timeout, Duration};
-
-        let session_manager = Arc::new(SessionManager::new());
-
-        // Establish a connection with single-connect support.
-        let session1 = session_manager.create_session().await.unwrap();
-        session_manager.set_single_connection_state(true).await;
-
-        // Create another session while the state is Supported.
-        let session2 = session_manager.create_session().await.unwrap();
-
-        // Simulate a graceful-shutdown signal.
-        session_manager.set_single_connection_state(false).await;
-
-        // Make sure that the connection blocks new sessions.
-        let result = session_manager.create_session().await;
-        assert!(result.is_err(), "new sessions must be blocked after the shutdown signal");
-
-        // Start a close waiter.
-        let sm_for_waiter = Arc::clone(&session_manager);
-        let waiter = tokio::spawn(async move {
-            timeout(Duration::from_millis(500), sm_for_waiter.wait_for_close()).await
-        });
-
-        // Complete the first session. The connection must remain open.
-        session1.complete().await;
-
-        // Wait briefly for an incorrect early close signal.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Make sure that the registry still contains session2.
-        let session_count = session_manager.duplex_channels.read().await.len();
-        assert_eq!(session_count, 1, "session2 must still be active");
-
-        // Complete the second session. The connection must now signal closure.
-        session2.complete().await;
-
-        // Make sure that the waiter receives the close signal.
-        let result = waiter.await.unwrap();
-        assert!(result.is_ok(), "the connection must close after all sessions complete");
-    }
-
     #[tokio::test]
     async fn test_cannot_create_second_session_when_negotiating() {
         let session_manager = Arc::new(SessionManager::new());
