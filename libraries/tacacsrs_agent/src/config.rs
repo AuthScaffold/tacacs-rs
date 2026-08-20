@@ -115,7 +115,10 @@ pub struct ServiceConfig {
     ///
     /// When the TACACS+ proxy service is enabled, this endpoint accepts raw
     /// TACACS+ client connections. It maps each downstream connection to one
-    /// upstream TACACS+ session. A TCP proxy endpoint must use a loopback address.
+    /// upstream TACACS+ session. Container deployments can bind a wildcard
+    /// address and publish the port only on the host loopback interface.
+    /// Deployments that bind a non-loopback address must restrict access to
+    /// trusted clients.
     pub proxy_endpoint: Option<IpcEndpoint>,
 
     /// Obfuscation policy expected from raw TACACS+ proxy clients.
