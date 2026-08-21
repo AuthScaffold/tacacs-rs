@@ -1,6 +1,6 @@
 [package]
 name = "tacacsrs-agentd"
-version = "2026.821.1"
+version = "2026.821.2"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

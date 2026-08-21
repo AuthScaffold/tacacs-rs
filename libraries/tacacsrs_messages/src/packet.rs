@@ -35,7 +35,7 @@ impl Packet {
 
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.header.length as usize);
+        let mut bytes = Vec::with_capacity(TACACS_HEADER_LENGTH + self.body.len());
         bytes.extend_from_slice(&self.header.to_bytes());
         bytes.extend_from_slice(&self.body);
         bytes
