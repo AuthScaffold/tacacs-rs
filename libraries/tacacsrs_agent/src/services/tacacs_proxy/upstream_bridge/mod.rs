@@ -11,7 +11,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use self::error::ProxyConnectionError;
-use self::packet_io::{read_downstream_packet, write_downstream_packet};
+#[cfg(test)]
+use self::packet_io::read_downstream_packet;
+use self::packet_io::{DownstreamReader, write_downstream_packet};
 use self::session::{
     ProxyConversationProvider, SessionPacket, SessionReply, UpstreamConversationProvider,
     run_proxy_session,
@@ -99,7 +101,8 @@ where
     Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     Provider: ProxyConversationProvider,
 {
-    let (mut reader, writer) = tokio::io::split(stream);
+    let (reader, writer) = tokio::io::split(stream);
+    let mut downstream = DownstreamReader::new(reader, timeout, obfuscation_key.clone());
     let (reply_sender, reply_receiver) = mpsc::channel(REPLY_QUEUE_CAPACITY);
     let mut writer_task =
         tokio::spawn(run_downstream_writer(writer, obfuscation_key.clone(), reply_receiver));
@@ -133,22 +136,18 @@ where
                     }
                 }
             }
-            packet_result = read_downstream_packet(
-                &mut reader,
-                timeout,
-                obfuscation_key.as_deref(),
-            ) => {
-                let downstream = match packet_result {
+            packet_result = downstream.next_packet() => {
+                let received = match packet_result {
                     Ok(packet) => packet,
                     Err(error) => break Err(error),
                 };
-                let session_id = downstream.packet.header().session_id;
+                let session_id = received.packet.header().session_id;
                 let packet = SessionPacket {
-                    advertise_single_connect: downstream.packet.header().flags.contains(
+                    advertise_single_connect: received.packet.header().flags.contains(
                         tacacsrs_messages::enumerations::TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
                     ),
-                    packet: downstream.packet,
-                    reply_obfuscation: downstream.reply_obfuscation,
+                    packet: received.packet,
+                    reply_obfuscation: received.reply_obfuscation,
                 };
 
                 if let Some(sender) = session_senders.get(&session_id) {
@@ -612,6 +611,80 @@ mod tests {
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+
+        proxy_task.abort();
+    }
+
+    #[tokio::test]
+    async fn multiplexed_proxy_keeps_framing_when_a_session_ends_mid_header() {
+        let first_downstream_id = 0x1111_2222;
+        let second_downstream_id = 0x3333_4444;
+        let first_upstream_id = 0x5555_6666;
+        let second_upstream_id = 0x7777_8888;
+        let reply_body = accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+        let provider = Arc::new(FakeConversationProvider::new(vec![
+            FakeProxySession::new(
+                first_upstream_id,
+                vec![test_packet(
+                    TacacsType::TacPlusAccounting,
+                    first_upstream_id,
+                    reply_body.clone(),
+                )],
+            )
+            .with_reply_delay(Duration::from_millis(150)),
+            FakeProxySession::new(
+                second_upstream_id,
+                vec![test_packet(
+                    TacacsType::TacPlusAccounting,
+                    second_upstream_id,
+                    reply_body,
+                )],
+            ),
+        ]));
+        let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
+        let proxy_task = tokio::spawn(proxy_multiplexed_connection(
+            proxy_stream,
+            Duration::from_secs(5),
+            None,
+            Arc::clone(&provider),
+        ));
+
+        write_packet(
+            &mut client_stream,
+            &test_packet_with_sequence(
+                TacacsType::TacPlusAccounting,
+                first_downstream_id,
+                1,
+                TacacsFlags::empty(),
+                b"first".to_vec(),
+            ),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Park the downstream read mid-header, then let the first session end.
+        let second_request = test_packet_with_sequence(
+            TacacsType::TacPlusAccounting,
+            second_downstream_id,
+            1,
+            TacacsFlags::empty(),
+            b"second".to_vec(),
+        )
+        .to_bytes();
+        client_stream
+            .write_all(&second_request[..6])
+            .await
+            .expect("the partial header write must succeed");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        client_stream
+            .write_all(&second_request[6..])
+            .await
+            .expect("the remaining request write must succeed");
+
+        let first_reply = read_packet(&mut client_stream).await;
+        let second_reply = read_packet(&mut client_stream).await;
+        assert_eq!(first_reply.header().session_id, first_downstream_id);
+        assert_eq!(second_reply.header().session_id, second_downstream_id);
 
         proxy_task.abort();
     }
