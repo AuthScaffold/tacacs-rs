@@ -56,8 +56,7 @@ impl PacketWriter {
         packet
     }
 
-    /// Encodes and writes one TACACS+ packet without allocating a combined
-    /// header-and-body buffer.
+    /// Encodes and writes one TACACS+ packet as one contiguous buffer.
     pub async fn write_packet<Writer>(
         &self,
         writer: &mut Writer,
@@ -67,12 +66,9 @@ impl PacketWriter {
         Writer: AsyncWrite + Unpin + ?Sized,
     {
         let packet = self.prepare_packet(packet);
-        let header = packet.header().to_bytes();
+        let bytes = packet.to_bytes();
 
-        if let Err(error) = writer.write_all(&header).await {
-            return PacketWriteResult::WriteError(error);
-        }
-        match writer.write_all(packet.body()).await {
+        match writer.write_all(&bytes).await {
             Ok(()) => PacketWriteResult::Success,
             Err(error) => PacketWriteResult::WriteError(error),
         }
@@ -82,11 +78,45 @@ impl PacketWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use tacacsrs_messages::enumerations::{
         TacacsFlags, TacacsType, TacacsMajorVersion, TacacsMinorVersion,
     };
     use tacacsrs_messages::header::Header;
+    use tokio::io::AsyncWrite;
+
+    #[derive(Default)]
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        write_count: usize,
+    }
+
+    impl AsyncWrite for CountingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.write_count += 1;
+            self.bytes.extend_from_slice(buffer);
+            Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     fn create_test_header(session_id: u32, body_length: u32, flags: TacacsFlags) -> Header {
         Header {
@@ -107,7 +137,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_packet_success() {
+    async fn test_write_packet_uses_single_write() {
         let packet = create_test_packet(
             12345,
             vec![0x01, 0x02, 0x03, 0x04],
@@ -115,12 +145,13 @@ mod tests {
         );
         let expected_bytes = packet.to_bytes();
 
-        let mut buffer = Cursor::new(Vec::new());
+        let mut writer = CountingWriter::default();
         let packet_writer = PacketWriter::new(None);
 
-        match packet_writer.write_packet(&mut buffer, packet).await {
+        match packet_writer.write_packet(&mut writer, packet).await {
             PacketWriteResult::Success => {
-                assert_eq!(buffer.into_inner(), expected_bytes);
+                assert_eq!(writer.bytes, expected_bytes);
+                assert_eq!(writer.write_count, 1);
             }
             PacketWriteResult::WriteError(error) => panic!("expected success: {error}"),
         }
