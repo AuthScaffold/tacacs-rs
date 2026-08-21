@@ -1,101 +1,101 @@
-use md5::{Md5, Digest};
 use crate::header::Header;
+use md5::{Digest, Md5};
 
 pub fn convert(header: &Header, data: &[u8], obfuscation_key: &[u8]) -> Vec<u8> {
-    let pad = generate_pad(header, obfuscation_key);
-    let output: Vec<u8> = data.iter().zip(pad.iter()).map(|(a, b)| a ^ b).collect();
+    let output_length = data.len().min(header.length as usize);
+    let mut output = data[..output_length].to_vec();
+    convert_inplace(header, &mut output, obfuscation_key);
 
     output
 }
 
 pub fn convert_inplace(header: &Header, data: &mut [u8], obfuscation_key: &[u8]) {
-    let pad = generate_pad(header, obfuscation_key);
-
-    for (i, b) in data.iter_mut().enumerate() {
-        *b ^= pad[i];
-    }
-}
-
-fn generate_pad(header: &Header, obfuscation_key: &[u8]) -> Vec<u8> {
-    let mut pad: Vec<u8> = Vec::new();
-    let pad_size = header.length as usize;
-
-    let iv = get_first_block(header, obfuscation_key);
-    let mut hashed = hash_block(&iv);
-    pad.extend(hashed);
-
-    while pad.len() < pad_size {
-        let mut rolling_hash: Vec<u8> = Vec::new();
-        rolling_hash.extend(&iv);
-        rolling_hash.extend(&hashed);
-
-        hashed = hash_block(&rolling_hash);
-        pad.extend(hashed);
+    assert!(data.len() <= header.length as usize);
+    if data.is_empty() {
+        return;
     }
 
-    pad.truncate(pad_size);
-    pad
-}
+    let mut prefix = Md5::new();
+    prefix.update(header.session_id.to_be_bytes());
+    prefix.update(obfuscation_key);
+    prefix.update([header.version(), header.seq_no]);
 
-fn hash_block(block: &[u8]) -> [u8; 16] {
-    let mut hasher = Md5::new();
-    hasher.update(block);
-    hasher.finalize().into()
-}
-
-fn get_first_block(header: &Header, obfuscation_key: &[u8]) -> Vec<u8> {
-    let mut pad: Vec<u8> = Vec::new();
-    pad.extend(header.session_id.to_be_bytes());
-    pad.extend_from_slice(obfuscation_key);
-    pad.push(header.version());
-    pad.push(header.seq_no);
-
-    pad
+    let mut previous_hash = None;
+    for chunk in data.chunks_mut(16) {
+        let mut hasher = prefix.clone();
+        if let Some(previous_hash) = previous_hash {
+            hasher.update(previous_hash);
+        }
+        let hash: [u8; 16] = hasher.finalize().into();
+        for (byte, pad_byte) in chunk.iter_mut().zip(hash) {
+            *byte ^= pad_byte;
+        }
+        previous_hash = Some(hash);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::header::Header;
     use crate::enumerations::{TacacsMajorVersion, TacacsMinorVersion, TacacsType, TacacsFlags};
+    use crate::header::Header;
     use crate::packet::{Packet, PacketTrait};
 
-    #[test]
-    fn test_generate_pad() {
-        let header = Header {
+    fn header(body_length: usize) -> Header {
+        Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
             minor_version: TacacsMinorVersion::TacacsPlusMinorVerOne,
             tacacs_type: TacacsType::TacPlusAccounting,
             seq_no: 1,
             flags: TacacsFlags::empty(),
             session_id: 0xdead_beef,
-            length: 16,
-        };
+            length: u32::try_from(body_length).unwrap(),
+        }
+    }
 
-        let obfuscation_key = b"tac_plus_key";
-        let pad = generate_pad(&header, obfuscation_key);
+    fn reference_convert(header: &Header, data: &[u8], obfuscation_key: &[u8]) -> Vec<u8> {
+        let pad_size = header.length as usize;
+        let mut pad = Vec::with_capacity(pad_size);
+        let mut prefix = Vec::with_capacity(obfuscation_key.len() + 6);
+        prefix.extend(header.session_id.to_be_bytes());
+        prefix.extend_from_slice(obfuscation_key);
+        prefix.push(header.version());
+        prefix.push(header.seq_no);
 
-        assert_eq!(pad.len(), 16);
+        let mut digest_hasher = Md5::new();
+        digest_hasher.update(&prefix);
+        let mut digest: [u8; 16] = digest_hasher.finalize().into();
+        pad.extend(digest);
+
+        while pad.len() < pad_size {
+            let mut digest_hasher = Md5::new();
+            digest_hasher.update(&prefix);
+            digest_hasher.update(digest);
+            digest = digest_hasher.finalize().into();
+            pad.extend(digest);
+        }
+
+        data.iter()
+            .zip(pad)
+            .map(|(byte, pad_byte)| byte ^ pad_byte)
+            .collect()
     }
 
     #[test]
-    fn test_convert() {
-        let header = Header {
-            major_version: TacacsMajorVersion::TacacsPlusMajor1,
-            minor_version: TacacsMinorVersion::TacacsPlusMinorVerOne,
-            tacacs_type: TacacsType::TacPlusAccounting,
-            seq_no: 1,
-            flags: TacacsFlags::empty(),
-            session_id: 0xdead_beef,
-            length: 16,
-        };
-
+    fn test_convert_matches_reference() {
         let obfuscation_key = b"tac_plus_key";
+        for body_length in [0, 1, 15, 16, 17, 62, 4096, 65536] {
+            let header = header(body_length);
+            let data: Vec<_> = (0_u8..=u8::MAX).cycle().take(body_length).collect();
 
-        let data = vec![0; 16];
-        let output = convert(&header, &data, obfuscation_key);
+            let expected = reference_convert(&header, &data, obfuscation_key);
+            let actual = convert(&header, &data, obfuscation_key);
+            assert_eq!(actual, expected, "body length {body_length}");
 
-        assert_eq!(output.len(), 16);
+            let mut in_place = data;
+            convert_inplace(&header, &mut in_place, obfuscation_key);
+            assert_eq!(in_place, expected, "in-place body length {body_length}");
+        }
     }
 
     #[test]
