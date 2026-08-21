@@ -11,8 +11,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use self::error::ProxyConnectionError;
-#[cfg(test)]
-use self::packet_io::read_downstream_packet;
 use self::packet_io::{DownstreamReader, write_downstream_packet};
 use self::session::{
     ProxyConversationProvider, SessionPacket, SessionReply, UpstreamConversationProvider,
@@ -37,7 +35,11 @@ mod session;
 mod session_mapping;
 
 const SESSION_QUEUE_CAPACITY: usize = 8;
-const REPLY_QUEUE_CAPACITY: usize = 32;
+/// Downstream reply queue depth for one proxy connection.
+///
+/// This matches the default concurrent request limit, so a full queue reflects
+/// real admission pressure instead of an unrelated bound.
+const REPLY_QUEUE_CAPACITY: usize = crate::config::DEFAULT_CONCURRENT_REQUEST_LIMIT;
 
 /// Maps raw TACACS+ proxy streams to managed server sessions.
 #[derive(Clone)]
@@ -205,7 +207,7 @@ where
 
 #[cfg(test)]
 async fn proxy_connection_with_conversation<Stream, Conversation>(
-    mut stream: Stream,
+    stream: Stream,
     timeout: Duration,
     obfuscation_key: Option<Vec<u8>>,
     upstream_conversation: &mut Conversation,
@@ -215,10 +217,12 @@ where
     Conversation: ProxyConversation + ?Sized,
 {
     let writer = PacketWriter::new(obfuscation_key.clone());
+    let (reader, mut write_half) = tokio::io::split(stream);
+    let mut downstream = DownstreamReader::new(reader, timeout, obfuscation_key);
     let result = proxy_connection_loop(
-        &mut stream,
+        &mut downstream,
+        &mut write_half,
         timeout,
-        obfuscation_key.as_deref(),
         &writer,
         upstream_conversation,
     )
@@ -229,15 +233,16 @@ where
 }
 
 #[cfg(test)]
-async fn proxy_connection_loop<Stream, Conversation>(
-    stream: &mut Stream,
+async fn proxy_connection_loop<Reader, Writer, Conversation>(
+    downstream: &mut DownstreamReader<Reader>,
+    stream: &mut Writer,
     timeout: Duration,
-    downstream_obfuscation_key: Option<&[u8]>,
     writer: &PacketWriter,
     upstream_conversation: &mut Conversation,
 ) -> Result<(), ProxyConnectionError>
 where
-    Stream: AsyncRead + AsyncWrite + Unpin + Send,
+    Reader: AsyncRead + Unpin + Send,
+    Writer: AsyncWrite + Unpin + Send,
     Conversation: ProxyConversation + ?Sized,
 {
     let mut downstream_session_id = None;
@@ -248,11 +253,10 @@ where
     })?;
 
     loop {
-        let downstream_packet =
-            match read_downstream_packet(stream, timeout, downstream_obfuscation_key).await {
-                Ok(packet) => packet,
-                Err(error) => return Err(error),
-            };
+        let downstream_packet = match downstream.next_packet().await {
+            Ok(packet) => packet,
+            Err(error) => return Err(error),
+        };
         let downstream_reply_obfuscation = downstream_packet.reply_obfuscation;
         let downstream_packet = downstream_packet.packet;
 
