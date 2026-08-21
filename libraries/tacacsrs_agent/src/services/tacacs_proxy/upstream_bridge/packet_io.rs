@@ -8,7 +8,7 @@ use tacacsrs_messages::enumerations::TacacsFlags;
 use tacacsrs_messages::header::Header;
 use tacacsrs_messages::packet::{Packet, PacketTrait};
 use tacacsrs_networking::{PacketWriteResult, PacketWriter};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::time::Instant;
 
 use super::error::ProxyConnectionError;
@@ -31,7 +31,7 @@ pub(super) struct DownstreamPacket {
 /// the returned future, so a losing `select!` branch cannot discard bytes and
 /// desynchronise the TACACS+ frame boundary.
 pub(super) struct DownstreamReader<Stream> {
-    stream: Stream,
+    stream: BufReader<Stream>,
     obfuscation_key: Option<Vec<u8>>,
     timeout: Duration,
     deadline: Option<Instant>,
@@ -46,13 +46,10 @@ impl<Stream> DownstreamReader<Stream>
 where
     Stream: AsyncRead + Unpin + Send,
 {
-    pub(super) const fn new(
-        stream: Stream,
-        timeout: Duration,
-        obfuscation_key: Option<Vec<u8>>,
-    ) -> Self {
+    pub(super) fn new(stream: Stream, timeout: Duration, obfuscation_key: Option<Vec<u8>>) -> Self {
         Self {
-            stream,
+            // Buffering lets one syscall deliver a whole small TACACS+ packet.
+            stream: BufReader::new(stream),
             obfuscation_key,
             timeout,
             deadline: None,
@@ -181,20 +178,6 @@ where
             reply_obfuscation,
         })
     }
-}
-
-#[cfg(test)]
-pub(super) async fn read_downstream_packet<Stream>(
-    stream: &mut Stream,
-    timeout: Duration,
-    obfuscation_key: Option<&[u8]>,
-) -> Result<DownstreamPacket, ProxyConnectionError>
-where
-    Stream: AsyncRead + Unpin + Send,
-{
-    DownstreamReader::new(stream, timeout, obfuscation_key.map(<[u8]>::to_vec))
-        .next_packet()
-        .await
 }
 
 pub(super) async fn write_downstream_packet<Stream>(

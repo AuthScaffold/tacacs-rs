@@ -77,8 +77,8 @@ impl ClientSession {
 
     pub(crate) async fn complete(&self) {
         match &self.inner {
-            ClientSessionInner::Shared(session) => session.complete().await,
-            ClientSessionInner::SharedFixed(session) => session.complete().await,
+            ClientSessionInner::Shared(session) => session.complete(),
+            ClientSessionInner::SharedFixed(session) => session.complete(),
             ClientSessionInner::Dedicated(session) => session.complete().await,
         }
     }

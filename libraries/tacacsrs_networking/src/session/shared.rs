@@ -1,8 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::runtime::Handle;
-
 use tacacsrs_messages::packet::Packet;
 
 use super::{DuplexChannel, SessionManager};
@@ -37,14 +35,14 @@ impl SharedSession {
         self.id
     }
 
-    pub(crate) async fn complete(&self) {
+    pub(crate) fn complete(&self) {
         if !self.mark_complete() {
             return;
         }
 
         // Tell the session manager to remove this session from the registry.
         if let Some(mgr) = &self.manager {
-            mgr.remove_session(self.id).await;
+            mgr.remove_session(self.id);
         }
     }
 
@@ -68,24 +66,8 @@ impl Drop for SharedSession {
             return;
         }
 
-        let Some(manager) = self.manager.clone() else {
-            return;
-        };
-
-        let session_id = self.id;
-
-        match Handle::try_current() {
-            Ok(handle) => {
-                handle.spawn(async move {
-                    manager.remove_session(session_id).await;
-                });
-            }
-            Err(_) => {
-                log::warn!(
-                    target: "tacacsrs_networking::session::shared::drop",
-                    "Cannot schedule registry cleanup for dropped session {session_id}: no Tokio runtime is available"
-                );
-            }
+        if let Some(manager) = &self.manager {
+            manager.remove_session(self.id);
         }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "tacacsrs-agent-health"
-version = "2026.821.2"
+version = "2026.821.3"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

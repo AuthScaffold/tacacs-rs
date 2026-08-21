@@ -321,7 +321,7 @@ impl TacacsClient {
     pub async fn stop_accepting_new_sessions(&self) {
         let connection = self.shared_connection.write().await.take();
         if let Some(connection) = connection {
-            connection.disable_new_sessions().await;
+            connection.disable_new_sessions();
         }
     }
 
@@ -462,7 +462,7 @@ impl TacacsClient {
         &self,
         connection: &Arc<MultiplexedConnection>,
     ) {
-        match connection.single_connection_state().await {
+        match connection.single_connection_state() {
             SingleConnectionState::NotSupported => {
                 self.update_single_connection_state(SingleConnectionState::NotSupported)
                     .await;
@@ -482,7 +482,7 @@ impl TacacsClient {
     ) -> Option<ClientSession> {
         let connection = self.shared_connection.read().await.clone()?;
 
-        if !connection.can_create_sessions().await {
+        if !connection.can_create_sessions() {
             self.update_state_after_shared_connection_rejection(&connection)
                 .await;
             self.clear_shared_connection(&connection).await;
@@ -492,9 +492,8 @@ impl TacacsClient {
         let session = match expected {
             Some(expected) => connection
                 .create_fixed_session(expected)
-                .await
                 .map(ClientSession::shared_fixed),
-            None => connection.create_session().await.map(ClientSession::shared),
+            None => connection.create_session().map(ClientSession::shared),
         };
 
         match session {

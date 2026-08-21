@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use tacacsrs_messages::packet::Packet;
-use tokio::runtime::Handle;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::SessionManager;
@@ -58,28 +57,17 @@ impl SharedFixedSession {
         !self.complete.swap(true, Ordering::AcqRel)
     }
 
-    pub(crate) async fn complete(&self) {
+    pub(crate) fn complete(&self) {
         if self.mark_complete() {
-            self.manager.remove_session(self.id).await;
+            self.manager.remove_session(self.id);
         }
     }
 }
 
 impl Drop for SharedFixedSession {
     fn drop(&mut self) {
-        if !self.mark_complete() {
-            return;
-        }
-        let manager = Arc::clone(&self.manager);
-        let session_id = self.id;
-        if let Ok(handle) = Handle::try_current() {
-            handle.spawn(async move {
-                manager.remove_session(session_id).await;
-            });
-        } else {
-            log::warn!(
-                "Cannot schedule registry cleanup for dropped fixed TACACS+ session {session_id:#x}: no Tokio runtime is available"
-            );
+        if self.mark_complete() {
+            self.manager.remove_session(self.id);
         }
     }
 }

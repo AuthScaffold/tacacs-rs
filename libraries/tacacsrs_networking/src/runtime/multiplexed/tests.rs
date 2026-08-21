@@ -59,8 +59,8 @@ fn test_connection_without_obfuscation() {
 #[tokio::test]
 async fn routes_out_of_order_replies_by_session_id() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
-    let first = connection.create_session().await.unwrap();
-    let second = connection.create_session().await.unwrap();
+    let first = connection.create_session().unwrap();
+    let second = connection.create_session().unwrap();
 
     connection
         .session_manager
@@ -78,17 +78,17 @@ async fn routes_out_of_order_replies_by_session_id() {
     assert_eq!(first_reply.header().session_id, first.session_id());
     assert_eq!(second_reply.header().session_id, second.session_id());
 
-    first.complete().await;
-    second.complete().await;
+    first.complete();
+    second.complete();
 }
 
 #[tokio::test]
 async fn completed_session_rejects_late_reply() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
-    let session = connection.create_session().await.unwrap();
+    let session = connection.create_session().unwrap();
     let session_id = session.session_id();
 
-    session.complete().await;
+    session.complete();
 
     let result = connection
         .session_manager
@@ -100,15 +100,14 @@ async fn completed_session_rejects_late_reply() {
 #[tokio::test]
 async fn routes_out_of_order_fixed_replies_by_session_id() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
-    let first = connection.create_session().await.unwrap();
-    let second = connection.create_session().await.unwrap();
+    let first = connection.create_session().unwrap();
+    let second = connection.create_session().unwrap();
     let first_receiver = connection
         .session_manager
         .prepare_fixed_response(
             first.session_id(),
             ExpectedResponseHeader::for_request(&request(first.session_id())),
         )
-        .await
         .unwrap();
     let second_receiver = connection
         .session_manager
@@ -116,7 +115,6 @@ async fn routes_out_of_order_fixed_replies_by_session_id() {
             second.session_id(),
             ExpectedResponseHeader::for_request(&request(second.session_id())),
         )
-        .await
         .unwrap();
 
     connection
@@ -135,21 +133,20 @@ async fn routes_out_of_order_fixed_replies_by_session_id() {
     assert_eq!(first_reply.header().session_id, first.session_id());
     assert_eq!(second_reply.header().session_id, second.session_id());
 
-    first.complete().await;
-    second.complete().await;
+    first.complete();
+    second.complete();
 }
 
 #[tokio::test]
 async fn rejects_invalid_fixed_response_metadata() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
-    let session = connection.create_session().await.unwrap();
+    let session = connection.create_session().unwrap();
     let receiver = connection
         .session_manager
         .prepare_fixed_response(
             session.session_id(),
             ExpectedResponseHeader::for_request(&request(session.session_id())),
         )
-        .await
         .unwrap();
     let invalid_reply = request(session.session_id());
 
@@ -160,26 +157,24 @@ async fn rejects_invalid_fixed_response_metadata() {
     assert!(matches!(dispatch, Err(PacketDispatchError::ProtocolViolation { .. })));
     assert!(receiver.await.unwrap().is_err());
 
-    session.complete().await;
+    session.complete();
 }
 
 #[tokio::test]
 async fn later_unset_flag_does_not_close_confirmed_connection() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
-    let session = connection.create_session().await.unwrap();
+    let session = connection.create_session().unwrap();
     let receiver = connection
         .session_manager
         .prepare_fixed_response(
             session.session_id(),
             ExpectedResponseHeader::for_request(&request(session.session_id())),
         )
-        .await
         .unwrap();
 
     connection
         .session_manager
-        .set_single_connection_state(false)
-        .await;
+        .set_single_connection_state(false);
     connection
         .session_manager
         .send_message_to_session(reply(session.session_id()))
@@ -193,7 +188,7 @@ async fn later_unset_flag_does_not_close_confirmed_connection() {
         .await
         .is_err());
 
-    session.complete().await;
+    session.complete();
     assert!(tokio::time::timeout(Duration::from_millis(25), &mut close)
         .await
         .is_err());
@@ -202,7 +197,7 @@ async fn later_unset_flag_does_not_close_confirmed_connection() {
 #[tokio::test]
 async fn conversation_enforces_multi_round_sequence_progression() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
-    let session = connection.create_session().await.unwrap();
+    let session = connection.create_session().unwrap();
     let session_id = session.session_id();
     let mut conversation = ClientConversation::new(crate::session::ClientSession::shared(session));
 
@@ -249,7 +244,7 @@ async fn conversation_enforces_multi_round_sequence_progression() {
 #[tokio::test]
 async fn invalid_conversation_reply_completes_session() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
-    let session = connection.create_session().await.unwrap();
+    let session = connection.create_session().unwrap();
     let session_id = session.session_id();
     let mut conversation = ClientConversation::new(crate::session::ClientSession::shared(session));
 
@@ -286,7 +281,7 @@ async fn shared_session_routing_burst_baseline() {
     let mut sessions = Vec::with_capacity(usize::try_from(EXCHANGE_COUNT).unwrap());
 
     for _ in 0..EXCHANGE_COUNT {
-        sessions.push(connection.create_session().await.unwrap());
+        sessions.push(connection.create_session().unwrap());
     }
     for session in sessions.iter().rev() {
         connection
@@ -297,7 +292,7 @@ async fn shared_session_routing_burst_baseline() {
     }
     for session in sessions {
         session.receive_packet().await.unwrap();
-        session.complete().await;
+        session.complete();
     }
 
     let elapsed = started.elapsed();
@@ -313,7 +308,7 @@ async fn direct_fixed_routing_burst_baseline() {
     const EXCHANGE_COUNT: u32 = 512;
 
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
-    let mut outbound = connection.session_manager.take_receiver().await.unwrap();
+    let mut outbound = connection.session_manager.take_receiver().unwrap();
     let drain_task = tokio::spawn(async move { while outbound.recv().await.is_some() {} });
     let started = Instant::now();
     let mut sessions = Vec::with_capacity(usize::try_from(EXCHANGE_COUNT).unwrap());
@@ -325,7 +320,6 @@ async fn direct_fixed_routing_burst_baseline() {
                     TacacsType::TacPlusAuthorisation,
                     TacacsMinorVersion::TacacsPlusMinorVerDefault,
                 ))
-                .await
                 .unwrap(),
         );
     }
@@ -341,7 +335,7 @@ async fn direct_fixed_routing_burst_baseline() {
             .round_trip(request(session.session_id()))
             .await
             .unwrap();
-        session.complete().await;
+        session.complete();
     }
 
     let elapsed = started.elapsed();
