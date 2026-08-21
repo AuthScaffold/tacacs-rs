@@ -108,5 +108,5 @@ async fn upgrade_reuses_stream_for_multiplexed_connection() {
         .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
 
     let connection = dedicated.upgrade();
-    assert_eq!(connection.single_connection_state().await, SingleConnectionState::Supported);
+    assert_eq!(connection.single_connection_state(), SingleConnectionState::Supported);
 }

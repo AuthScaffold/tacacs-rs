@@ -464,6 +464,6 @@ mod tests {
             .expect("single-connect response must cache the upgraded connection")
             .clone();
         assert_eq!(*single_connection_state.read().await, SingleConnectionState::Supported);
-        assert_eq!(connection.single_connection_state().await, SingleConnectionState::Supported);
+        assert_eq!(connection.single_connection_state(), SingleConnectionState::Supported);
     }
 }

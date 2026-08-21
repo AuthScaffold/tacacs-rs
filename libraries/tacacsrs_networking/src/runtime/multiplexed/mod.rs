@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::task;
 
 use crate::codec::{PacketReadResult, PacketReader, PacketWriter};
@@ -82,8 +82,9 @@ impl MultiplexedConnection {
     {
         let self_clone = Arc::clone(self);
         task::spawn(async move {
+            // Buffering lets one syscall deliver a whole small TACACS+ packet.
             self_clone
-                .handle_connection_with_halves(reader, writer)
+                .handle_connection_with_halves(BufReader::new(reader), writer)
                 .await
         });
     }
@@ -113,7 +114,6 @@ impl MultiplexedConnection {
         let receiver = self
             .session_manager
             .take_receiver()
-            .await
             .context("multiplexed TACACS+ connection runtime has already been started")?;
 
         let write_future = async {
@@ -152,8 +152,8 @@ impl MultiplexedConnection {
 
         let result = tokio::try_join!(write_future, read_future);
 
-        self.session_manager.disable_new_sessions().await;
-        self.session_manager.close_all_sessions().await;
+        self.session_manager.disable_new_sessions();
+        self.session_manager.close_all_sessions();
 
         result?;
         Ok(())
@@ -248,9 +248,7 @@ impl MultiplexedConnection {
             };
 
             let flag = SingleConnectFlag::from_packet(&packet);
-            local_state = local_state
-                .process_packet(flag, &self.session_manager)
-                .await;
+            local_state = local_state.process_packet(flag, &self.session_manager);
 
             match self.session_manager.send_message_to_session(packet).await {
                 Ok(()) => {}
@@ -269,27 +267,27 @@ impl MultiplexedConnection {
         }
     }
 
-    pub(crate) async fn can_create_sessions(self: &Arc<Self>) -> bool {
-        self.session_manager.can_create_sessions().await
+    pub(crate) fn can_create_sessions(self: &Arc<Self>) -> bool {
+        self.session_manager.can_create_sessions()
     }
 
-    pub(crate) async fn disable_new_sessions(self: &Arc<Self>) {
-        self.session_manager.disable_new_sessions().await;
+    pub(crate) fn disable_new_sessions(self: &Arc<Self>) {
+        self.session_manager.disable_new_sessions();
     }
 
-    pub(crate) async fn create_session(self: &Arc<Self>) -> anyhow::Result<SharedSession> {
-        self.session_manager.create_session().await
+    pub(crate) fn create_session(self: &Arc<Self>) -> anyhow::Result<SharedSession> {
+        self.session_manager.create_session()
     }
 
-    pub(crate) async fn create_fixed_session(
+    pub(crate) fn create_fixed_session(
         self: &Arc<Self>,
         expected: ExpectedResponseHeader,
     ) -> anyhow::Result<SharedFixedSession> {
-        self.session_manager.create_fixed_session(expected).await
+        self.session_manager.create_fixed_session(expected)
     }
 
-    pub(crate) async fn single_connection_state(self: &Arc<Self>) -> SingleConnectionState {
-        self.session_manager.single_connection_state().await
+    pub(crate) fn single_connection_state(self: &Arc<Self>) -> SingleConnectionState {
+        self.session_manager.single_connection_state()
     }
 }
 
