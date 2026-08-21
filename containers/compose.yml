@@ -1,0 +1,15 @@
+services:
+  tacacsrs-agentd:
+    build:
+      context: ..
+      dockerfile: containers/tacacsrs-agentd/Dockerfile
+    command: ["--server-addr", "localhost:4949", "-k", "tac_plus_key", "--socket-mode", "666", "--service-mode", "both", "--proxy-endpoint", "127.0.0.1:49"]
+    network_mode: host
+    healthcheck:
+      test: ["CMD", "tacacsrs-agent-health", "--check", "readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    volumes:
+      - /run/tacacs:/run/tacacs:rw
