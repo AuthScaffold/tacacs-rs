@@ -187,7 +187,9 @@ pub(super) struct SessionReply {
 struct ProxyAttempt<'session, Provider> {
     provider: &'session Provider,
     operation: OperationKind,
-    request: &'session Packet,
+    /// Held only while another attempt can still replay this packet.
+    request: Option<Packet>,
+    max_attempts: usize,
     fallback_timeout: Duration,
 }
 
@@ -226,7 +228,16 @@ where
             };
         };
 
-        let upstream_packet = rewrite_session_id(self.request.clone(), upstream_session_id);
+        let upstream_packet = if attempt_index + 1 >= self.max_attempts {
+            self.request
+                .take()
+                .expect("the proxy request is available for each attempt")
+        } else {
+            self.request
+                .clone()
+                .expect("the proxy request is available for each attempt")
+        };
+        let upstream_packet = rewrite_session_id(upstream_packet, upstream_session_id);
         let attempt_timeout = conversation.timeout().unwrap_or(self.fallback_timeout);
         let round_trip =
             tokio::time::timeout(attempt_timeout, conversation.round_trip(upstream_packet)).await;
@@ -295,16 +306,31 @@ where
             );
             let reply = local_error_reply(&first_request.packet, &error.to_string())
                 .map_err(ProxyConnectionError::Downstream)?;
-            send_proxy_reply(&replies, &first_request, reply, downstream_session_id, false).await?;
+            send_proxy_reply(
+                &replies,
+                first_request.reply_obfuscation,
+                first_request.advertise_single_connect,
+                reply,
+                downstream_session_id,
+                false,
+            )
+            .await?;
             return Ok(());
         }
     };
 
     let plan = provider.failover_plan(operation);
+    let max_attempts = plan.max_attempts();
+    let SessionPacket {
+        packet: first_packet,
+        reply_obfuscation,
+        advertise_single_connect,
+    } = first_request;
     let mut attempt = ProxyAttempt {
         provider,
         operation,
-        request: &first_request.packet,
+        request: Some(first_packet),
+        max_attempts,
         fallback_timeout: timeout,
     };
 
@@ -321,7 +347,15 @@ where
     };
 
     let action = reply_action(&first_reply);
-    send_proxy_reply(&replies, &first_request, first_reply, downstream_session_id, true).await?;
+    send_proxy_reply(
+        &replies,
+        reply_obfuscation,
+        advertise_single_connect,
+        first_reply,
+        downstream_session_id,
+        true,
+    )
+    .await?;
 
     match action {
         ReplyAction::Complete => {
@@ -371,13 +405,26 @@ where
         ))
     })?;
     while let Some(request) = packets.recv().await {
-        if let Err(error) = provider.validate_body_length(operation, request.packet.body().len()) {
-            let reply = local_error_reply(&request.packet, &error.to_string())
+        let SessionPacket {
+            packet: request_packet,
+            reply_obfuscation,
+            advertise_single_connect,
+        } = request;
+        if let Err(error) = provider.validate_body_length(operation, request_packet.body().len()) {
+            let reply = local_error_reply(&request_packet, &error.to_string())
                 .map_err(ProxyConnectionError::Downstream)?;
-            send_proxy_reply(replies, &request, reply, downstream_session_id, false).await?;
+            send_proxy_reply(
+                replies,
+                reply_obfuscation,
+                advertise_single_connect,
+                reply,
+                downstream_session_id,
+                false,
+            )
+            .await?;
             return Ok(());
         }
-        let upstream_packet = rewrite_session_id(request.packet.clone(), upstream_session_id);
+        let upstream_packet = rewrite_session_id(request_packet, upstream_session_id);
         let attempt_timeout = conversation.timeout().unwrap_or(timeout);
         let upstream_reply =
             tokio::time::timeout(attempt_timeout, conversation.round_trip(upstream_packet))
@@ -398,7 +445,15 @@ where
         } else {
             conversation.note_success().await;
         }
-        send_proxy_reply(replies, &request, upstream_reply, downstream_session_id, true).await?;
+        send_proxy_reply(
+            replies,
+            reply_obfuscation,
+            advertise_single_connect,
+            upstream_reply,
+            downstream_session_id,
+            true,
+        )
+        .await?;
 
         match action {
             ReplyAction::Continue => {}
@@ -417,7 +472,8 @@ where
 
 async fn send_proxy_reply(
     replies: &mpsc::Sender<SessionReply>,
-    request: &SessionPacket,
+    obfuscation: packet_io::DownstreamObfuscation,
+    advertise_single_connect: bool,
     reply: Packet,
     downstream_session_id: u32,
     rewrite_id: bool,
@@ -425,7 +481,7 @@ async fn send_proxy_reply(
     let mut flags = reply.header().flags;
     flags.set(
         tacacsrs_messages::enumerations::TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
-        request.advertise_single_connect,
+        advertise_single_connect,
     );
     let reply = reply.with_flags(flags);
     let packet = if rewrite_id {
@@ -436,7 +492,7 @@ async fn send_proxy_reply(
     replies
         .send(SessionReply {
             packet,
-            obfuscation: request.reply_obfuscation,
+            obfuscation,
         })
         .await
         .map_err(|_| {

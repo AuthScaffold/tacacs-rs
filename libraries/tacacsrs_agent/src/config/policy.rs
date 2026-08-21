@@ -9,7 +9,11 @@ use crate::upstream::OperationKind;
 const DEFAULT_AUTHENTICATION_BODY_LIMIT: usize = 4 * 1024;
 const DEFAULT_AUTHORIZATION_BODY_LIMIT: usize = 16 * 1024;
 const DEFAULT_ACCOUNTING_BODY_LIMIT: usize = 16 * 1024;
-const DEFAULT_CONCURRENT_REQUEST_LIMIT: usize = 64;
+/// Default admission ceiling for concurrent requests of one operation.
+///
+/// Local queue depths align with this value so that a full queue reflects real
+/// admission pressure.
+pub(crate) const DEFAULT_CONCURRENT_REQUEST_LIMIT: usize = 64;
 const DEFAULT_RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Failover behavior for one local service.
