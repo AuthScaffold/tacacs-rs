@@ -1961,7 +1961,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-agent"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1999,7 +1999,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-agent-health"
-version = "2026.821.0"
+version = "2026.821.1"
 dependencies = [
  "clap",
  "tacacsrs-agent-client",
@@ -2048,7 +2048,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-agentd"
-version = "2026.821.0"
+version = "2026.821.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2149,7 +2149,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-flows"
-version = "0.1.20"
+version = "0.1.21"
 dependencies = [
  "anyhow",
  "tacacsrs-messages",
@@ -2159,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-messages"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "bitflags 2.13.1",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "tacacsrs-networking"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "anyhow",
  "console-subscriber",
@@ -2226,7 +2226,7 @@ dependencies = [
 
 [[package]]
 name = "tacon"
-version = "2026.821.0"
+version = "2026.821.1"
 dependencies = [
  "anyhow",
  "clap",
