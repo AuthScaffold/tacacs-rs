@@ -4,6 +4,32 @@ use std::time::Duration;
 use tacacsrs_sonic::spawn_credential_change_notifier;
 
 #[tokio::test]
+async fn watcher_ignores_credential_root_and_object_reads() {
+    let temp = tempfile::tempdir().expect("temporary credential parent");
+    let root = temp.path().join("epsk");
+    fs::create_dir(&root).expect("create EPSK root");
+    let object = root.join("object-1");
+    fs::write(&object, b"credential-material").expect("seed credential object");
+    let debounce = Duration::from_millis(40);
+    let mut signals = spawn_credential_change_notifier(root.clone(), debounce)
+        .await
+        .expect("start credential watcher");
+
+    fs::read_dir(&root)
+        .expect("read EPSK root")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("enumerate EPSK root");
+    fs::read(&object).expect("read credential object");
+
+    assert!(
+        tokio::time::timeout(debounce.saturating_mul(3), signals.recv())
+            .await
+            .is_err(),
+        "credential reads must not trigger a reload"
+    );
+}
+
+#[tokio::test]
 async fn watcher_ignores_temporary_files_and_coalesces_atomic_object_events() {
     let temp = tempfile::tempdir().expect("temporary credential parent");
     let root = temp.path().join("epsk");
