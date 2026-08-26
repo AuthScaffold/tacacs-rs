@@ -61,6 +61,7 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Optional TACACS+ proxy listener on a Unix domain socket path or loopback TCP address |
 | `--service-mode <MODE>` | `client-api`, or `both` when `--proxy-endpoint` is set | Runtime services to host: `client-api`, `tacacs-proxy`, or `both` |
 | `--socket-mode <MODE>` | `660` | File permission mode for the Unix domain socket (octal) |
+| `--worker-threads <COUNT>` | `1` | Tokio worker threads. TACACS+ requests are small and I/O bound, so extra workers mainly add cross-thread task migration. |
 | `--host-integration <MODE>` | `auto` | Host adapter: `auto`, `none`, or strict `systemd` |
 
 ### Runtime Service Modes

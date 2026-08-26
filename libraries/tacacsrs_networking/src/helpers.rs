@@ -4,6 +4,8 @@
 
 use std::net::{SocketAddr, ToSocketAddrs};
 
+use anyhow::Context as _;
+
 /// Resolves a host name and optional port to a list of socket addresses.
 ///
 /// If no port is specified, the default TACACS+ port (49) is used.
@@ -39,7 +41,7 @@ pub(crate) fn get_server_addresses(hostname: &str) -> anyhow::Result<Vec<SocketA
 ///
 /// Returns an error if all connection attempts fail.
 pub(crate) async fn connect_tcp(hostname: &str) -> anyhow::Result<tokio::net::TcpStream> {
-    for server_address in get_server_addresses(hostname)? {
+    for server_address in resolve_server_addresses(hostname).await? {
         match tokio::net::TcpStream::connect(server_address).await {
             Ok(stream) => {
                 log::info!(
@@ -56,6 +58,17 @@ pub(crate) async fn connect_tcp(hostname: &str) -> anyhow::Result<tokio::net::Tc
     }
 
     Err(anyhow::Error::msg("Failed to connect to any TACACS+ server address"))
+}
+
+/// Resolves server addresses off the runtime threads.
+///
+/// `ToSocketAddrs` blocks, so resolving inline would stall every task sharing
+/// the worker thread.
+async fn resolve_server_addresses(hostname: &str) -> anyhow::Result<Vec<SocketAddr>> {
+    let hostname = hostname.to_owned();
+    tokio::task::spawn_blocking(move || get_server_addresses(&hostname))
+        .await
+        .context("The TACACS+ address resolution task failed")?
 }
 
 /// Extracts the TLS server name from a configured `host[:port]` address string.
