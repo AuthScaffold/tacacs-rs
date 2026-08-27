@@ -36,9 +36,18 @@ impl Packet {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(TACACS_HEADER_LENGTH + self.body.len());
-        bytes.extend_from_slice(&self.header.to_bytes());
-        bytes.extend_from_slice(&self.body);
+        self.extend_bytes(&mut bytes);
         bytes
+    }
+
+    /// Appends the encoded header and body to `buffer`.
+    ///
+    /// # Remarks
+    /// Lets callers pack several packets into one buffer so they can be sent with a single write.
+    pub fn extend_bytes(&self, buffer: &mut Vec<u8>) {
+        buffer.reserve(TACACS_HEADER_LENGTH + self.body.len());
+        buffer.extend_from_slice(&self.header.to_bytes());
+        buffer.extend_from_slice(&self.body);
     }
 
     /// # Errors

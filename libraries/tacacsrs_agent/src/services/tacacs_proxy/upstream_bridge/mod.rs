@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use self::error::ProxyConnectionError;
-use self::packet_io::{DownstreamReader, write_downstream_packet};
+use self::packet_io::{DownstreamReader, write_downstream_batch};
 use self::session::{
     ProxyConversationProvider, SessionPacket, SessionReply, UpstreamConversationProvider,
     run_proxy_session,
@@ -189,6 +189,8 @@ where
     result
 }
 
+// Drains rather than consumes so the batch allocation is reused, and keeps replies in order.
+#[allow(clippy::iter_with_drain)]
 async fn run_downstream_writer<Writer>(
     mut writer: Writer,
     obfuscation_key: Option<Vec<u8>>,
@@ -198,11 +200,25 @@ where
     Writer: AsyncWrite + Unpin + Send,
 {
     let packet_writer = PacketWriter::new(obfuscation_key);
-    while let Some(reply) = replies.recv().await {
-        write_downstream_packet(&packet_writer, &mut writer, reply.packet, reply.obfuscation)
-            .await?;
+    let mut batch: Vec<SessionReply> = Vec::with_capacity(REPLY_QUEUE_CAPACITY);
+    let mut buffer: Vec<u8> = Vec::new();
+
+    loop {
+        batch.clear();
+        if replies.recv_many(&mut batch, REPLY_QUEUE_CAPACITY).await == 0 {
+            return Ok(());
+        }
+
+        write_downstream_batch(
+            &packet_writer,
+            &mut writer,
+            batch
+                .drain(..)
+                .map(|reply| (reply.packet, reply.obfuscation)),
+            &mut buffer,
+        )
+        .await?;
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -293,8 +309,13 @@ where
 
         let action = reply_action(&upstream_reply);
         let downstream_reply = rewrite_session_id(upstream_reply, downstream_session_id);
-        write_downstream_packet(writer, stream, downstream_reply, downstream_reply_obfuscation)
-            .await?;
+        write_downstream_batch(
+            writer,
+            stream,
+            [(downstream_reply, downstream_reply_obfuscation)],
+            &mut Vec::new(),
+        )
+        .await?;
 
         match action {
             ReplyAction::Continue => {}

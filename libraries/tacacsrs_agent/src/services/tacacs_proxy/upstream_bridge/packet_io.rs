@@ -201,23 +201,30 @@ where
     }
 }
 
-pub(super) async fn write_downstream_packet<Stream>(
+/// Encodes several replies into `buffer` and sends them with one write.
+///
+/// Each reply keeps its own obfuscation setting, so mixed batches stay correct.
+pub(super) async fn write_downstream_batch<Stream, Replies>(
     writer: &PacketWriter,
     stream: &mut Stream,
-    packet: Packet,
-    obfuscation: DownstreamObfuscation,
+    replies: Replies,
+    buffer: &mut Vec<u8>,
 ) -> Result<(), ProxyConnectionError>
 where
     Stream: AsyncWrite + Unpin + Send,
+    Replies: IntoIterator<Item = (Packet, DownstreamObfuscation)>,
 {
-    let result = match obfuscation {
-        DownstreamObfuscation::Obfuscated => writer.write_packet(stream, packet).await,
-        DownstreamObfuscation::Unobfuscated => {
-            PacketWriter::new(None).write_packet(stream, packet).await
-        }
-    };
+    let unobfuscated = PacketWriter::new(None);
 
-    match result {
+    buffer.clear();
+    for (packet, obfuscation) in replies {
+        match obfuscation {
+            DownstreamObfuscation::Obfuscated => writer.encode_into(packet, buffer),
+            DownstreamObfuscation::Unobfuscated => unobfuscated.encode_into(packet, buffer),
+        }
+    }
+
+    match PacketWriter::write_encoded(stream, buffer).await {
         PacketWriteResult::Success => Ok(()),
         PacketWriteResult::WriteError(error) => Err(ProxyConnectionError::Downstream(
             anyhow::Error::new(error).context("Failed to write a TACACS+ proxy reply downstream"),

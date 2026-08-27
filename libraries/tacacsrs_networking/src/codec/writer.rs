@@ -56,6 +56,15 @@ impl PacketWriter {
         packet
     }
 
+    /// Encodes one TACACS+ packet, appending it to `buffer`.
+    ///
+    /// # Remarks
+    /// Callers batching several packets into one write should clear `buffer` before the first
+    /// packet and reuse its allocation across batches.
+    pub fn encode_into(&self, packet: Packet, buffer: &mut Vec<u8>) {
+        self.prepare_packet(packet).extend_bytes(buffer);
+    }
+
     /// Encodes and writes one TACACS+ packet as one contiguous buffer.
     pub async fn write_packet<Writer>(
         &self,
@@ -69,6 +78,17 @@ impl PacketWriter {
         let bytes = packet.to_bytes();
 
         match writer.write_all(&bytes).await {
+            Ok(()) => PacketWriteResult::Success,
+            Err(error) => PacketWriteResult::WriteError(error),
+        }
+    }
+
+    /// Writes an already encoded batch of packets as one contiguous buffer.
+    pub async fn write_encoded<Writer>(writer: &mut Writer, buffer: &[u8]) -> PacketWriteResult
+    where
+        Writer: AsyncWrite + Unpin + ?Sized,
+    {
+        match writer.write_all(buffer).await {
             Ok(()) => PacketWriteResult::Success,
             Err(error) => PacketWriteResult::WriteError(error),
         }
@@ -149,6 +169,31 @@ mod tests {
         let packet_writer = PacketWriter::new(None);
 
         match packet_writer.write_packet(&mut writer, packet).await {
+            PacketWriteResult::Success => {
+                assert_eq!(writer.bytes, expected_bytes);
+                assert_eq!(writer.write_count, 1);
+            }
+            PacketWriteResult::WriteError(error) => panic!("expected success: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_encoded_batch_uses_single_write() {
+        let packets = [
+            create_test_packet(1, vec![0x01, 0x02], TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG),
+            create_test_packet(2, vec![0x03], TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG),
+            create_test_packet(3, vec![0x04, 0x05, 0x06], TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG),
+        ];
+        let expected_bytes: Vec<u8> = packets.iter().flat_map(Packet::to_bytes).collect();
+
+        let packet_writer = PacketWriter::new(None);
+        let mut buffer = Vec::new();
+        for packet in packets {
+            packet_writer.encode_into(packet, &mut buffer);
+        }
+
+        let mut writer = CountingWriter::default();
+        match PacketWriter::write_encoded(&mut writer, &buffer).await {
             PacketWriteResult::Success => {
                 assert_eq!(writer.bytes, expected_bytes);
                 assert_eq!(writer.write_count, 1);
