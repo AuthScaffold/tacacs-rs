@@ -407,9 +407,18 @@ fn build_credential_provider(cli: &Cli) -> CredentialProvider {
 /// The service listens on the configured local IPC endpoint. It maintains
 /// persistent upstream TACACS+ connections with ordered failover. It stops in
 /// an orderly manner when it receives a termination signal.
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(cli.worker_threads.get())
+        .enable_all()
+        .build()
+        .context("Failed to build the Tokio runtime")?;
+
+    runtime.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
     init_logger(cli.verbose);
     let host_integration = HostIntegration::from_environment(cli.host_integration)?;
     let sonic_forwarder = sonic_forwarder_from_cli(&cli).await?;

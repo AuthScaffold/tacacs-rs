@@ -1,6 +1,6 @@
 [package]
 name = "tacon"
-version = "2026.826.0"
+version = "2026.827.0"
 edition.workspace = true
 description = "TACACS+ client CLI for authentication, authorization, and accounting"
 readme = "README.md"
@@ -25,7 +25,7 @@ tacacsrs-messages = { path = "../../libraries/tacacsrs_messages" }
 tacacsrs-flows = { path = "../../libraries/tacacsrs_flows" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
 tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
-tokio = { version = "1.52.3", features = ["full"] }
+tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }

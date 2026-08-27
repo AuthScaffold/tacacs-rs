@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use clap::{ArgGroup, Parser, ValueEnum};
@@ -144,6 +145,13 @@ pub(crate) struct Cli {
     /// Use a dedicated upstream connection per request instead of TACACS+ single-connection mode.
     #[arg(long, requires = "server_addresses", conflicts_with = "sonic")]
     pub(crate) dedicated: bool,
+
+    /// Number of Tokio worker threads.
+    ///
+    /// TACACS+ requests are small and I/O bound, so extra workers mainly add
+    /// cross-thread task migration. Raise this only for CPU-bound workloads.
+    #[arg(long, default_value = "1")]
+    pub(crate) worker_threads: NonZeroUsize,
 
     /// Increase the log level. Repeat up to four times: -v, -vv, -vvv, or -vvvv.
     #[arg(short, long, action = clap::ArgAction::Count)]

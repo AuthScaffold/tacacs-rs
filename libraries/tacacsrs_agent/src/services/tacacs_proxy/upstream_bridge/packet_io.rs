@@ -1,5 +1,8 @@
 //! TACACS+ packet I/O helpers for the raw proxy.
 
+use std::future::Future;
+use std::pin::pin;
+use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -66,6 +69,13 @@ where
     /// The read deadline covers one whole packet, so a client cannot hold the
     /// connection open by sending a frame one byte at a time.
     pub(super) async fn next_packet(&mut self) -> Result<DownstreamPacket, ProxyConnectionError> {
+        // Buffered bytes often already hold a whole packet. Completing here
+        // avoids arming and disarming a timer for every request.
+        if let Some(result) = self.poll_read_frame_once() {
+            self.deadline = None;
+            return result.map_err(ProxyConnectionError::Downstream);
+        }
+
         let deadline = *self
             .deadline
             .get_or_insert_with(|| Instant::now() + self.timeout);
@@ -80,6 +90,17 @@ where
             Err(_) => Err(ProxyConnectionError::Downstream(anyhow::anyhow!(
                 "No downstream TACACS+ packet arrived within {timeout:?}"
             ))),
+        }
+    }
+
+    /// Polls one read attempt without registering a real waker.
+    ///
+    /// Partial progress stays in `self`, so discarding the future is safe.
+    fn poll_read_frame_once(&mut self) -> Option<anyhow::Result<DownstreamPacket>> {
+        let mut context = TaskContext::from_waker(Waker::noop());
+        match pin!(self.read_frame()).poll(&mut context) {
+            Poll::Ready(result) => Some(result),
+            Poll::Pending => None,
         }
     }
 
