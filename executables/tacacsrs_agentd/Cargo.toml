@@ -28,7 +28,7 @@ tacacsrs-datastore = { path = "../../libraries/tacacsrs_datastore" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
 tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
 tacacsrs-sonic = { path = "../../libraries/tacacsrs_sonic" }
-tokio = { version = "1.52.3", features = ["full"] }
+tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = "0.1.18"
 tokio-util = "0.7.18"
 tonic-health = "0.14.6"

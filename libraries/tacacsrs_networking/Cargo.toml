@@ -9,7 +9,7 @@ description = "TACACS+ TCP and TLS connections with certificate and PSK support.
 [dependencies]
 tacacsrs-config = { path = "../tacacsrs_config" }
 anyhow = { version = "1.0.102", features = ["backtrace"] }
-tokio = { version = "1.52.3", features = ["full"] }
+tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
 tacacsrs-messages = { path = "../tacacsrs_messages" }
 rand = "0.10.1"
 log = "0.4.30"
