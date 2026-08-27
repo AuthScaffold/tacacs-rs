@@ -485,6 +485,7 @@ fn enqueue_credential_event(
 
 fn event_affects_root_watch(event: &notify::Result<Event>, root: &Path) -> bool {
     match event {
+        Ok(event) if matches!(event.kind, EventKind::Access(_)) => false,
         Ok(event) => event.paths.iter().any(|path| path == root),
         Err(_) => true,
     }
@@ -586,6 +587,29 @@ mod tests {
         reconcile.notified().await;
         assert!(lost_events.load(Ordering::Acquire));
         assert!(refresh_root_watch.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn credential_root_access_does_not_request_watch_refresh() {
+        let root = PathBuf::from("/reviewed/epsk");
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let lost_events = AtomicBool::new(false);
+        let refresh_root_watch = AtomicBool::new(false);
+        let reconcile = Notify::new();
+
+        enqueue_credential_event(
+            &event_tx,
+            &lost_events,
+            &refresh_root_watch,
+            &reconcile,
+            &root,
+            Ok(event(EventKind::Access(AccessKind::Read), "/reviewed/epsk")),
+        );
+
+        let queued = event_rx.try_recv().expect("access event queued");
+        assert_eq!(credential_change_scope(queued, &root), None);
+        assert!(!lost_events.load(Ordering::Acquire));
+        assert!(!refresh_root_watch.load(Ordering::Acquire));
     }
 
     #[test]
