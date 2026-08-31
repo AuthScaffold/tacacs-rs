@@ -22,3 +22,6 @@ pub use establish::{ConnectOptions, ConnectPreflight};
 pub use exchange::FixedExchange;
 pub use exchange_error::{FixedExchangeError, TransmissionState};
 pub use session::ClientConversation;
+pub use transport::tls_psk::{
+    LocalCapability, LocalCapabilityError, validate_server_local_capabilities,
+};
