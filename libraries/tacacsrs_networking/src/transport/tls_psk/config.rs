@@ -22,6 +22,7 @@ pub(crate) struct PskClientConfig {
 impl PskClientConfig {
     /// Prepares an OpenSSL TLS 1.3 PSK client context from EPSK configuration.
     pub(crate) fn prepare(server: std::sync::Arc<TacacsPlusServer>) -> Result<Self> {
+        super::validate_server_local_capabilities(&server)?;
         let epsk = super::tls13_epsk::config(&server)?;
         let handshake_hash = epsk.hash;
         let psk_dhe_ke_groups = PskDheKeGroups::from_config(&epsk.psk_dhe_ke_groups);
