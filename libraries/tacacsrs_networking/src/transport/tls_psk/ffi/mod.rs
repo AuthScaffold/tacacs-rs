@@ -1,6 +1,6 @@
 #![allow(unsafe_code)]
 
-use std::ffi::CStr;
+use std::ffi::{CStr, c_char, c_void};
 use std::os::raw::{c_int, c_uchar};
 use std::ptr;
 use std::sync::{Arc, OnceLock};
@@ -34,6 +34,14 @@ const SSL_OP_ALLOW_NO_DHE_KEX_BIT: u32 = 10;
 const SSL_OP_PREFER_NO_DHE_KEX_BIT: u32 = 35;
 
 extern "C" {
+    fn EVP_KDF_fetch(
+        library_context: *mut c_void,
+        algorithm: *const c_char,
+        properties: *const c_char,
+    ) -> *mut c_void;
+
+    fn EVP_KDF_free(kdf: *mut c_void);
+
     fn SSL_CTX_set_psk_use_session_callback(
         context: *mut SSL_CTX,
         callback: Option<PskUseSessionCallback>,
@@ -52,6 +60,24 @@ extern "C" {
     fn SSL_SESSION_set_protocol_version(session: *mut SSL_SESSION, version: c_int) -> c_int;
 
     fn SSL_get_ciphers(ssl: *const SSL) -> *mut stack_st_SSL_CIPHER;
+}
+
+/// Returns whether the active OpenSSL provider policy supplies `TLS13-KDF`.
+pub(super) fn has_tls13_kdf() -> bool {
+    const TLS13_KDF: &[u8] = b"TLS13-KDF\0";
+
+    // SAFETY: The name is a static NUL-terminated C string. Null library and
+    // property pointers select the active process OpenSSL provider policy.
+    let kdf =
+        unsafe { EVP_KDF_fetch(ptr::null_mut(), TLS13_KDF.as_ptr().cast::<c_char>(), ptr::null()) };
+    if kdf.is_null() {
+        let _ = openssl::error::ErrorStack::get();
+        return false;
+    }
+
+    // SAFETY: EVP_KDF_fetch returned this non-null owned pointer.
+    unsafe { EVP_KDF_free(kdf) };
+    true
 }
 
 /// Configures a TLS 1.3 PSK use-session callback on an OpenSSL context.

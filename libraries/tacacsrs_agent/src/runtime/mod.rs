@@ -13,12 +13,16 @@ mod shutdown;
 
 pub use client_service::TacacsClientService;
 pub use health::{
-    DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher,
-    RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, UpstreamAvailability,
+    DatastoreState, DegradationReason, ListenerState, LocalCapabilityExclusion,
+    RequiredLocalCapability, RuntimeHealthPublisher, RuntimeHealthSnapshot, RuntimeLifecycle,
+    RuntimeService, UpstreamAvailability,
 };
 
 #[cfg(test)]
 pub(crate) use server_catalog::REQUIRED_SERVER_TYPES;
-pub(crate) use server_catalog::enumerate_supported_servers;
+pub(crate) use server_catalog::{
+    OpenSslServerCapabilityValidator, ServerCapabilityValidator, admit_servers,
+    enumerate_supported_servers,
+};
 pub(crate) use request_tracker::{RequestGuard, RequestTracker};
 pub(crate) use shutdown::{ListenerRegistration, ShutdownCoordinator, ShutdownReceiver};

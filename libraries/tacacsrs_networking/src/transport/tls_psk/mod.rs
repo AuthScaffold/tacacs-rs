@@ -8,6 +8,7 @@
 //!
 //! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 
+mod capability;
 mod config;
 mod context;
 mod ffi;
@@ -15,5 +16,6 @@ mod from_server;
 mod tls13_epsk;
 
 pub(crate) use config::PskClientConfig;
+pub use capability::{LocalCapability, LocalCapabilityError, validate_server_local_capabilities};
 pub(crate) use context::{EpskSupportedHashExt, PskDheKeGroups};
 pub(crate) use from_server::{establish_from_server, server_has_psk};

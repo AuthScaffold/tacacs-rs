@@ -27,7 +27,8 @@ use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 use super::{
-    RequestTracker, RuntimeHealthPublisher, ShutdownCoordinator, UpstreamAvailability,
+    OpenSslServerCapabilityValidator, RequestTracker, RuntimeHealthPublisher,
+    ServerCapabilityValidator, ShutdownCoordinator, UpstreamAvailability, admit_servers,
     enumerate_supported_servers,
 };
 use crate::config::{ProxyDownstreamObfuscation, RuntimePolicy, ServiceConfig};
@@ -70,6 +71,8 @@ pub struct TacacsClientService {
     request_tracker: Arc<RequestTracker>,
     /// Shared protocol-neutral runtime health publisher.
     health: RuntimeHealthPublisher,
+    /// Validates process-local transport capabilities for each configuration generation.
+    capability_validator: Arc<dyn ServerCapabilityValidator>,
 }
 
 impl TacacsClientService {
@@ -112,6 +115,20 @@ impl TacacsClientService {
         health: RuntimeHealthPublisher,
         configuration_applied: bool,
     ) -> anyhow::Result<Self> {
+        Self::build_with_capability_validator(
+            config,
+            health,
+            configuration_applied,
+            Arc::new(OpenSslServerCapabilityValidator),
+        )
+    }
+
+    fn build_with_capability_validator(
+        config: ServiceConfig,
+        health: RuntimeHealthPublisher,
+        configuration_applied: bool,
+        capability_validator: Arc<dyn ServerCapabilityValidator>,
+    ) -> anyhow::Result<Self> {
         if config.enabled_services.client_api() {
             ClientApiService::validate_endpoint(&config.endpoint)?;
         }
@@ -120,13 +137,17 @@ impl TacacsClientService {
             anyhow::bail!("Runtime health and service configuration must enable the same services");
         }
         let servers = enumerate_supported_servers(&config.tacacs_plus)?;
-        let eligible_server_count = servers.len();
+        let admission = admit_servers(
+            servers.into_iter().map(Arc::new).collect(),
+            capability_validator.as_ref(),
+        );
+        let eligible_server_count = admission.admitted.len();
 
         let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector {
             disable_certificate_verification: config.disable_certificate_verification,
         });
         let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
-            servers.into_iter().map(Arc::new).collect(),
+            admission.admitted,
             config.proxy_downstream_obfuscation.clone(),
             config.runtime_policy.clone(),
             connector,
@@ -134,6 +155,7 @@ impl TacacsClientService {
         ));
         let request_tracker = Arc::new(RequestTracker::default());
         health.set_eligible_server_count(eligible_server_count);
+        health.set_local_capability_exclusions(admission.exclusions);
         health.set_applied_configuration(configuration_applied);
 
         Ok(Self {
@@ -142,6 +164,7 @@ impl TacacsClientService {
             reload_lock: Mutex::new(()),
             request_tracker,
             health,
+            capability_validator,
         })
     }
 
@@ -159,10 +182,16 @@ impl TacacsClientService {
             anyhow::bail!("Runtime health and service configuration must enable the same services");
         }
         let servers = enumerate_supported_servers(&config.tacacs_plus)?;
-        let eligible_server_count = servers.len();
+        let capability_validator: Arc<dyn ServerCapabilityValidator> =
+            Arc::new(OpenSslServerCapabilityValidator);
+        let admission = admit_servers(
+            servers.into_iter().map(Arc::new).collect(),
+            capability_validator.as_ref(),
+        );
+        let eligible_server_count = admission.admitted.len();
 
         let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
-            servers.into_iter().map(Arc::new).collect(),
+            admission.admitted,
             config.proxy_downstream_obfuscation.clone(),
             config.runtime_policy.clone(),
             connector,
@@ -170,6 +199,7 @@ impl TacacsClientService {
         ));
         let request_tracker = Arc::new(RequestTracker::default());
         health.set_eligible_server_count(eligible_server_count);
+        health.set_local_capability_exclusions(admission.exclusions);
         health.set_applied_configuration(true);
 
         Ok(Self {
@@ -178,6 +208,7 @@ impl TacacsClientService {
             reload_lock: Mutex::new(()),
             request_tracker,
             health,
+            capability_validator,
         })
     }
 
@@ -229,14 +260,20 @@ impl TacacsClientService {
         reload_config.tacacs_plus = tacacs_plus;
         reload_config.proxy_downstream_obfuscation = proxy_downstream_obfuscation.clone();
         let servers = enumerate_supported_servers(&reload_config.tacacs_plus)?;
-        let eligible_server_count = servers.len();
+        let admission = admit_servers(
+            servers.into_iter().map(Arc::new).collect(),
+            self.capability_validator.as_ref(),
+        );
+        let eligible_server_count = admission.admitted.len();
         self.state
             .reload_shared_servers_with_proxy_downstream_obfuscation(
-                servers.into_iter().map(Arc::new).collect(),
+                admission.admitted,
                 proxy_downstream_obfuscation,
             )
             .await?;
         self.health.set_eligible_server_count(eligible_server_count);
+        self.health
+            .set_local_capability_exclusions(admission.exclusions);
         self.health.set_applied_configuration(true);
         self.health
             .set_upstream_availability(UpstreamAvailability::Unknown);
@@ -259,14 +296,17 @@ impl TacacsClientService {
         proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
     ) -> anyhow::Result<()> {
         let _reload_guard = self.reload_lock.lock().await;
-        let eligible_server_count = servers.len();
+        let admission = admit_servers(servers, self.capability_validator.as_ref());
+        let eligible_server_count = admission.admitted.len();
         self.state
             .reload_shared_servers_with_proxy_downstream_obfuscation(
-                servers,
+                admission.admitted,
                 proxy_downstream_obfuscation,
             )
             .await?;
         self.health.set_eligible_server_count(eligible_server_count);
+        self.health
+            .set_local_capability_exclusions(admission.exclusions);
         self.health.set_applied_configuration(true);
         self.health
             .set_upstream_availability(UpstreamAvailability::Unknown);

@@ -28,7 +28,7 @@ pub use config::{
 };
 pub use upstream::OperationKind;
 pub use runtime::{
-    DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher,
-    RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, TacacsClientService,
-    UpstreamAvailability,
+    DatastoreState, DegradationReason, ListenerState, LocalCapabilityExclusion,
+    RequiredLocalCapability, RuntimeHealthPublisher, RuntimeHealthSnapshot, RuntimeLifecycle,
+    RuntimeService, TacacsClientService, UpstreamAvailability,
 };

@@ -102,12 +102,49 @@ pub enum DegradationReason {
     CandidatePolicyRejected,
     /// Credential resolution failed for candidate configuration.
     CredentialResolutionFailed,
+    /// One or more PSK servers require an unavailable process-local capability.
+    LocalPskCapabilityUnavailable,
     /// Validated listener or host-binding settings require a process restart.
     RestartRequired,
     /// Each eligible server failed an authoritative connection attempt.
     UpstreamsUnavailable,
     /// A runtime invariant or internal component failed.
     InternalFailure,
+}
+
+/// A process-local capability required by an excluded server route.
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub enum RequiredLocalCapability {
+    /// The OpenSSL `TLS13-KDF` implementation required by TLS 1.3 PSK.
+    OpenSslTls13Kdf,
+}
+
+/// Secret-free health state for one locally unsupported server route.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct LocalCapabilityExclusion {
+    server_name: String,
+    capability: RequiredLocalCapability,
+}
+
+impl LocalCapabilityExclusion {
+    pub(crate) const fn new(server_name: String, capability: RequiredLocalCapability) -> Self {
+        Self {
+            server_name,
+            capability,
+        }
+    }
+
+    /// Returns the configured server name. This value contains no credential material.
+    #[must_use]
+    pub fn server_name(&self) -> &str {
+        &self.server_name
+    }
+
+    /// Returns the unavailable process-local capability.
+    #[must_use]
+    pub const fn capability(&self) -> RequiredLocalCapability {
+        self.capability
+    }
 }
 
 /// Immutable, secret-free view of agent runtime health.
@@ -121,6 +158,7 @@ pub struct RuntimeHealthSnapshot {
     client_api_listener: ListenerState,
     tacacs_proxy_listener: ListenerState,
     eligible_server_count: usize,
+    local_capability_exclusions: Vec<LocalCapabilityExclusion>,
     upstream_availability: UpstreamAvailability,
     degradation_reasons: BTreeSet<DegradationReason>,
 }
@@ -169,6 +207,12 @@ impl RuntimeHealthSnapshot {
     #[must_use]
     pub const fn eligible_server_count(&self) -> usize {
         self.eligible_server_count
+    }
+
+    /// Returns server routes excluded by the process-local capability policy.
+    #[must_use]
+    pub fn local_capability_exclusions(&self) -> &[LocalCapabilityExclusion] {
+        &self.local_capability_exclusions
     }
 
     /// Returns aggregate observed upstream availability.
@@ -246,6 +290,7 @@ impl RuntimeHealthPublisher {
             client_api_listener,
             tacacs_proxy_listener,
             eligible_server_count: 0,
+            local_capability_exclusions: Vec::new(),
             upstream_availability: UpstreamAvailability::Unknown,
             degradation_reasons: BTreeSet::new(),
         };
@@ -307,6 +352,23 @@ impl RuntimeHealthPublisher {
     /// Publishes the count of configured servers eligible for runtime operations.
     pub fn set_eligible_server_count(&self, count: usize) {
         self.update(|snapshot| snapshot.eligible_server_count = count);
+    }
+
+    /// Publishes the server routes excluded by process-local capabilities.
+    pub fn set_local_capability_exclusions(&self, exclusions: Vec<LocalCapabilityExclusion>) {
+        let degraded = !exclusions.is_empty();
+        self.update(|snapshot| {
+            snapshot.local_capability_exclusions = exclusions;
+            if degraded {
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::LocalPskCapabilityUnavailable);
+            } else {
+                snapshot
+                    .degradation_reasons
+                    .remove(&DegradationReason::LocalPskCapabilityUnavailable);
+            }
+        });
     }
 
     /// Publishes aggregate observed server availability.
@@ -493,6 +555,33 @@ mod tests {
             .snapshot()
             .degradation_reasons()
             .contains(&DegradationReason::RestartRequired));
+    }
+
+    #[test]
+    fn local_capability_exclusions_are_typed_and_clear_on_reevaluation() {
+        let publisher = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        publisher.set_local_capability_exclusions(vec![LocalCapabilityExclusion::new(
+            "psk-primary".to_owned(),
+            RequiredLocalCapability::OpenSslTls13Kdf,
+        )]);
+
+        let snapshot = publisher.snapshot();
+        assert_eq!(snapshot.local_capability_exclusions().len(), 1);
+        assert_eq!(snapshot.local_capability_exclusions()[0].server_name(), "psk-primary");
+        assert_eq!(
+            snapshot.local_capability_exclusions()[0].capability(),
+            RequiredLocalCapability::OpenSslTls13Kdf
+        );
+        assert!(snapshot
+            .degradation_reasons()
+            .contains(&DegradationReason::LocalPskCapabilityUnavailable));
+
+        publisher.set_local_capability_exclusions(Vec::new());
+        let snapshot = publisher.snapshot();
+        assert!(snapshot.local_capability_exclusions().is_empty());
+        assert!(!snapshot
+            .degradation_reasons()
+            .contains(&DegradationReason::LocalPskCapabilityUnavailable));
     }
 
     #[test]
