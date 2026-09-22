@@ -83,7 +83,7 @@ jobs:
       new-tags: ${{ steps.compute.outputs.new_tags }}
       previous-calver-tag: ${{ steps.compute.outputs.previous_calver_tag }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -152,7 +152,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build and stage the release container
         uses: ./.github/steps/container-image
@@ -179,7 +179,7 @@ jobs:
       contents: write
       packages: write
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -299,7 +299,7 @@ jobs:
       # ── Create GitHub Release (for tacon only) ──
       - name: Create Release
         if: needs.compute-versions.outputs.calver-tag != ''
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           tag_name: ${{ needs.compute-versions.outputs.calver-tag }}
           name: "tacon ${{ needs.compute-versions.outputs.versions && fromJson(needs.compute-versions.outputs.versions).tacon || '' }}"
