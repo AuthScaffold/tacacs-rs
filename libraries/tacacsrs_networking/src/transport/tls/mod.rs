@@ -1,10 +1,8 @@
 //! TLS transport for TACACS+ connections.
 //!
-//! Connections are constructed exclusively through
-//! [`establish_from_server`], which interprets a [`TacacsPlusServer`]
-//! configuration and performs the TLS handshake. The internal
-//! `TlsConfigurationBuilder` and `connect_tls` helpers are internal. Callers
-//! must use the dispatcher in [`crate::establish`].
+//! [`prepare_from_server`] interprets a [`TacacsPlusServer`] once.
+//! The resulting context supports repeated TLS handshakes without reparsing
+//! configuration. Callers use the dispatcher in [`crate::establish`].
 //!
 //! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
 
@@ -14,7 +12,7 @@ mod from_server;
 mod tls;
 
 pub(crate) use config_builder::TlsConfigurationBuilder;
-pub(crate) use from_server::establish_from_server;
+pub(crate) use from_server::{prepare_from_server, TlsClientConfig};
 
 use anyhow::Context;
 use openssl::ssl::Ssl;

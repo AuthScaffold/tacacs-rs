@@ -7,6 +7,7 @@
 
 mod client;
 mod codec;
+mod endpoint;
 mod establish;
 mod exchange_error;
 mod helpers;
@@ -17,6 +18,7 @@ mod transport;
 
 pub use client::TacacsClient;
 pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
-pub use establish::{ConnectOptions, ConnectPreflight};
+pub use endpoint::PreparedEndpoint;
+pub use establish::{prepare_endpoint, ConnectOptions, ConnectPreflight};
 pub use exchange_error::{FixedExchangeError, TransmissionState};
 pub use session::ClientConversation;

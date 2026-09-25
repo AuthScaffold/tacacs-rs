@@ -202,6 +202,8 @@ Primary starting points:
 
 **Scope:** canonical YANG snapshots, credential materialization, and derived client connection inputs.
 
+**Status:** in progress. The [prepared endpoint checkpoint](stage-2-prepared-endpoints.md) records the implemented boundary and remaining work.
+
 1. Preserve generated YANG types and builders as the authoritative configuration APIs.
 2. Normalize CLI and SONiC inputs into YANG snapshots through the same schema and feature validation contract.
 3. Consolidate bundle expansion, credential resolution, and runtime projection under one preparation owner.

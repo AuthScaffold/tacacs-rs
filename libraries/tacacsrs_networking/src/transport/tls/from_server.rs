@@ -1,5 +1,4 @@
-//! Builds certificate-based TLS connections directly from
-//! [`TacacsPlusServer`] configuration.
+//! Prepares certificate-based TLS contexts from [`TacacsPlusServer`] configuration.
 //!
 //! This module translates the YANG-derived configuration model into OpenSSL
 //! trust stores, DER certificate chains, private keys, and SNI server names.
@@ -9,6 +8,7 @@ use anyhow::{Context, Result};
 use openssl::ec::EcKey;
 use openssl::pkey::{PKey, Private};
 use openssl::rsa::Rsa;
+use openssl::ssl::SslContext;
 use openssl::x509::X509;
 use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_config::TacacsPlusServerExt;
@@ -20,8 +20,22 @@ use super::TlsConfigurationBuilder;
 use super::connect_tls;
 use crate::helpers::{data_contains_pem_header, tls_server_name};
 
-/// Establishes a certificate-based TLS connection over an existing TCP connection
-/// using the security parameters carried in `server`.
+/// A reusable certificate-based TLS context and its server name.
+#[derive(Clone)]
+pub(crate) struct TlsClientConfig {
+    context: SslContext,
+    server_name: String,
+}
+
+impl TlsClientConfig {
+    pub(crate) async fn connect(&self, tcp_stream: TcpStream) -> Result<SslStream<TcpStream>> {
+        connect_tls(&self.context, tcp_stream, &self.server_name)
+            .await
+            .context("Failed to establish TLS connection")
+    }
+}
+
+/// Prepares a reusable TLS context from the security parameters in `server`.
 ///
 /// The TLS root store is populated from `server-authentication.ca-certs` and
 /// `ee-certs` when present. Client authentication material is loaded from
@@ -33,15 +47,13 @@ use crate::helpers::{data_contains_pem_header, tls_server_name};
 /// # Errors
 ///
 /// Returns an error if any TLS material in the configuration cannot be parsed,
-/// the resulting OpenSSL context cannot be built, or the TLS handshake fails.
-pub(crate) async fn establish_from_server(
+/// or the resulting OpenSSL context cannot be built.
+pub(crate) fn prepare_from_server(
     server: &TacacsPlusServer,
     address: &str,
-    tcp_stream: TcpStream,
     disable_certificate_verification: bool,
-) -> Result<SslStream<TcpStream>> {
+) -> Result<TlsClientConfig> {
     let sni_name = derive_sni_name(server, address);
-    log::debug!("Starting TLS handshake with {address} (SNI: {sni_name})");
 
     let mut builder = TlsConfigurationBuilder::new();
 
@@ -62,13 +74,10 @@ pub(crate) async fn establish_from_server(
         .inspect_err(|e| log::warn!("Failed to build TLS configuration for {address}: {e:#}"))
         .context("Failed to build TLS configuration")?;
 
-    let tls_stream = connect_tls(&tls_config, tcp_stream, sni_name)
-        .await
-        .inspect_err(|e| log::warn!("TLS handshake with {address} failed: {e:#}"))
-        .context("Failed to establish TLS connection")?;
-
-    log::debug!("TLS connection to {address} ready");
-    Ok(tls_stream)
+    Ok(TlsClientConfig {
+        context: tls_config,
+        server_name: sni_name.to_owned(),
+    })
 }
 
 /// Derives the TLS server name (for SNI and verification) from the server
@@ -121,9 +130,9 @@ fn build_root_cert_store(server: &TacacsPlusServer) -> Result<Option<Vec<X509>>>
     Ok(has_certs.then_some(root_store))
 }
 
-/// Extracts the inline client certificate chain and private key from `server`
-/// when both are present. Returns `Ok(None)` when no client authentication
-/// material is configured.
+/// Extracts the configured certificate chain and private key.
+/// Returns `Ok(None)` when no certificate identity is selected.
+/// Incomplete certificate identities return an error.
 fn extract_client_auth(
     server: &TacacsPlusServer,
     address: &str,
@@ -134,13 +143,18 @@ fn extract_client_auth(
     let Some(ref cert) = ci.certificate else {
         return Ok(None);
     };
-    let Some(ref inline) = cert.inline_definition else {
-        return Ok(None);
-    };
-    let (Some(cert_data), Some(key_data)) = (&inline.cert_data, &inline.cleartext_private_key)
-    else {
-        return Ok(None);
-    };
+    let inline = cert
+        .inline_definition
+        .as_ref()
+        .context("TLS client certificate requires materialized inline credentials")?;
+    let cert_data = inline
+        .cert_data
+        .as_ref()
+        .context("TLS client certificate requires cert-data")?;
+    let key_data = inline
+        .cleartext_private_key
+        .as_ref()
+        .context("TLS client certificate requires cleartext-private-key")?;
 
     let certs = parse_certificate_data(cert_data)
         .inspect_err(|e| log::warn!("Failed to parse TLS certificate for {address}: {e:#}"))

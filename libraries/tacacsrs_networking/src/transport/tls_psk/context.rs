@@ -4,10 +4,14 @@
 //! names. It then applies the names to a validated `SslContext`.
 
 use anyhow::Context;
+use openssl::hash::MessageDigest;
 use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
 use tacacsrs_config::{EpskSupportedHash, PskDheKeSupportedGroup, TacacsPlusServer};
+use tacacsrs_secrets::SecretBytes;
 
-use super::ffi::{prefer_tls13_psk_only_key_exchange, set_tls13_psk_use_session_callback};
+use super::ffi::{
+    prefer_tls13_psk_only_key_exchange, set_tls13_psk_use_session_callback, OpenSslPskCallbackState,
+};
 use super::tls13_epsk;
 
 /// OpenSSL TLS 1.3 group list derived from `psk-dhe-ke-groups`.
@@ -59,12 +63,12 @@ impl EpskSupportedHashExt for EpskSupportedHash {
 }
 
 pub(super) fn create_psk_ssl_context(
-    server: std::sync::Arc<TacacsPlusServer>,
+    server: &TacacsPlusServer,
     psk_dhe_ke_groups: Option<&PskDheKeGroups>,
 ) -> anyhow::Result<SslContext> {
-    tls13_epsk::validate(&server).context("Invalid TLS 1.3 EPSK configuration")?;
+    tls13_epsk::validate(server).context("Invalid TLS 1.3 EPSK configuration")?;
 
-    let epsk = tls13_epsk::config(&server)?;
+    let epsk = tls13_epsk::config(server)?;
     let handshake_hash = epsk.hash;
     let mut ctx_builder = SslContext::builder(SslMethod::tls_client())
         .context("OpenSSL failed to create a TLS 1.3 PSK client context builder")?;
@@ -78,7 +82,16 @@ pub(super) fn create_psk_ssl_context(
 
     ctx_builder.set_verify(SslVerifyMode::NONE);
 
-    set_tls13_psk_use_session_callback(&mut ctx_builder, server)
+    let callback_state = OpenSslPskCallbackState {
+        identity: epsk.external_identity.as_bytes().into(),
+        key: SecretBytes::new(tls13_epsk::symmetric_key(server)?.to_vec()),
+        digest: match handshake_hash {
+            EpskSupportedHash::Sha256 => MessageDigest::sha256(),
+            EpskSupportedHash::Sha384 => MessageDigest::sha384(),
+        },
+        cipher_suite: handshake_hash.tls13_ciphersuites(),
+    };
+    set_tls13_psk_use_session_callback(&mut ctx_builder, callback_state)
         .context("OpenSSL failed to register TLS 1.3 PSK session callback")?;
 
     ctx_builder
@@ -180,7 +193,7 @@ mod tests {
         ])
         .expect("configured groups");
 
-        create_psk_ssl_context(tls13_epsk::test_server(epsk), Some(&groups))
+        create_psk_ssl_context(&tls13_epsk::test_server(epsk), Some(&groups))
             .expect("OpenSSL must accept supported TLS 1.3 groups");
     }
 
@@ -188,7 +201,7 @@ mod tests {
     fn create_psk_ssl_context_accepts_sha384() {
         let epsk = epsk_with_hash(EpskSupportedHash::Sha384);
 
-        create_psk_ssl_context(tls13_epsk::test_server(epsk), None)
+        create_psk_ssl_context(&tls13_epsk::test_server(epsk), None)
             .expect("OpenSSL must accept TLS 1.3 SHA-384 PSK sessions");
     }
 
@@ -198,7 +211,7 @@ mod tests {
             let epsk = epsk_with_hash(*hash);
             let handshake_hash = *hash;
 
-            create_psk_ssl_context(tls13_epsk::test_server(epsk), None).unwrap_or_else(|error| {
+            create_psk_ssl_context(&tls13_epsk::test_server(epsk), None).unwrap_or_else(|error| {
                 panic!(
                     "OpenSSL must accept TLS 1.3 PSK hash {} with cipher suite {}: {error:#}",
                     handshake_hash.as_rfc7951_str(),
@@ -214,7 +227,7 @@ mod tests {
         let groups =
             PskDheKeGroups::from_config(PskDheKeSupportedGroup::ALL).expect("configured groups");
 
-        create_psk_ssl_context(tls13_epsk::test_server(epsk), Some(&groups)).unwrap_or_else(
+        create_psk_ssl_context(&tls13_epsk::test_server(epsk), Some(&groups)).unwrap_or_else(
             |error| {
                 panic!(
                     "OpenSSL must accept every configured TLS 1.3 PSK-DHE group ({}): {error:#}",
@@ -231,11 +244,21 @@ mod tests {
             openssl_list: "not-a-supported-tls-group".to_owned(),
         };
 
-        let error = create_psk_ssl_context(tls13_epsk::test_server(epsk), Some(&groups))
+        let error = create_psk_ssl_context(&tls13_epsk::test_server(epsk), Some(&groups))
             .expect_err("an unsupported OpenSSL group must fail");
         let message = error.to_string();
 
         assert!(message.contains("unsupported TLS PSK DHE group list"));
         assert!(message.contains("not-a-supported-tls-group"));
+    }
+
+    #[test]
+    fn prepared_context_does_not_retain_yang_configuration() {
+        let server = tls13_epsk::test_server(epsk_with_hash(EpskSupportedHash::Sha256));
+        let weak = std::sync::Arc::downgrade(&server);
+        let context = create_psk_ssl_context(&server, None).unwrap();
+        drop(server);
+        assert!(weak.upgrade().is_none());
+        openssl::ssl::Ssl::new(&context).expect("the prepared context remains usable");
     }
 }

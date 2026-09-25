@@ -1,9 +1,6 @@
-//! Builds TLS 1.3 PSK connections directly from [`TacacsPlusServer`]
-//! configuration.
+//! Prepares TLS 1.3 PSK contexts from [`TacacsPlusServer`] configuration.
 
 use anyhow::{Context, Result};
-use tokio::net::TcpStream;
-use tokio_openssl::SslStream;
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt, Tls13Epsk};
 
@@ -19,8 +16,7 @@ pub(crate) fn server_has_psk(server: &TacacsPlusServer) -> bool {
         .is_some_and(|ci| ci.tls13_epsk.is_some())
 }
 
-/// Establishes a TLS 1.3 PSK connection over an existing TCP connection using the
-/// PSK material carried in `server`.
+/// Prepares a reusable TLS 1.3 PSK context and optional SNI name.
 ///
 /// The PSK identity is taken from `client-identity.tls13-epsk.external-identity`
 /// and the symmetric key from
@@ -30,31 +26,17 @@ pub(crate) fn server_has_psk(server: &TacacsPlusServer) -> bool {
 ///
 /// Returns an error if the configured PSK material is invalid. Examples include
 /// an empty key and an identity that contains a NUL byte. The function also
-/// returns an error if the TLS-PSK handshake fails. Before calling this function,
+/// returns an error if context construction fails. Before calling this function,
 /// make sure that [`server_has_psk`] returns `true`. Without PSK configuration,
 /// the function returns an error.
-pub(crate) async fn establish_from_server(
-    server: std::sync::Arc<TacacsPlusServer>,
-    address: &str,
-    tcp_stream: TcpStream,
-) -> Result<SslStream<TcpStream>> {
-    tls13_epsk(&server)?;
-    let server_name = derive_sni_name(&server)?.map(str::to_owned);
-
-    log::debug!(
-        "Starting TLS-PSK handshake with {address} (SNI: {})",
-        server_name.as_deref().unwrap_or("disabled")
-    );
-
-    let tls_stream = PskClientConfig::prepare(server)
-        .context("Invalid OpenSSL TLS-PSK configuration")?
-        .connect(address, server_name.as_deref(), tcp_stream)
-        .await
-        .inspect_err(|e| log::warn!("TLS-PSK handshake with {address} failed: {e:#}"))
-        .context("Failed to establish TLS-PSK connection")?;
-
-    log::debug!("TLS-PSK connection to {address} ready");
-    Ok(tls_stream)
+pub(crate) fn prepare_from_server(
+    server: &TacacsPlusServer,
+) -> Result<(PskClientConfig, Option<String>)> {
+    tls13_epsk(server)?;
+    let server_name = derive_sni_name(server)?.map(str::to_owned);
+    let config =
+        PskClientConfig::prepare(server).context("Invalid OpenSSL TLS-PSK configuration")?;
+    Ok((config, server_name))
 }
 
 fn tls13_epsk(server: &TacacsPlusServer) -> Result<&Tls13Epsk> {

@@ -101,13 +101,17 @@ them to send TLS 1.3 `psk_dhe_ke` key shares. When the leaf-list is empty, the
 transport leaves the OpenSSL group list unchanged and preserves the existing
 PSK-only behaviour.
 
-At runtime, networking owns an `Arc<TacacsPlusServer>` that already passed
-credential materialization and final validation. Networking reads only
-`inline-definition.cleartext-symmetric-key`. Central references never cross
-the agent boundary. The OpenSSL context stores another clone of the server
-`Arc` in ex-data and borrows the zeroizing generated secret during the PSK
-callback. The callback state therefore remains valid for the full `SSL_CTX`
-lifetime without copying the key into separate runtime state.
+Preparation borrows a materialized YANG server without changing its fields.
+The public preparation entry point rejects unresolved central and bundle references.
+It reads `inline-definition.cleartext-symmetric-key` once and constructs a reusable OpenSSL context.
+The context stores owned identity bytes, a zeroizing `SecretBytes` key, a native digest, and a cipher name in ex-data.
+The callback does not retain or interpret the generated server model.
+OpenSSL owns this callback state for the `SSL_CTX` lifetime.
+
+`PreparedEndpoint` owns the context and derived connection values.
+`TacacsClient::connect_prepared` consumes those values without reading YANG fields.
+Endpoint clones share native contexts, but each client owns its connection and session state.
+Existing YANG client constructors forward through the same preparation path during Stage 2.
 
 ### `server-authentication/tls13-epsks` — Model Placeholder
 
@@ -201,7 +205,7 @@ tls_psk/
 ├── mod.rs              — crate-internal API surface + Transport impl
 ├── context.rs          — OpenSSL SslContext construction + hash/group projections
 ├── config.rs           — PskClientConfig: validated SslContext → SslStream
-├── from_server.rs      — TacacsPlusServer PSK selection + connection establishment
+├── from_server.rs      — TacacsPlusServer PSK selection + context preparation
 ├── tls13_epsk.rs       — validation/accessors for the YANG TLS 1.3 EPSK node
 ├── ffi/ — OpenSSL TLS 1.3 PSK callback + SSL_SESSION FFI bridge
 └── readme.md           — this file
@@ -213,10 +217,10 @@ tls_psk/
 TacacsPlusServer (YANG config)
         │
         ▼
-from_server::establish_from_server()
+from_server::prepare_from_server()
         │  selects client-identity.tls13-epsk
         ▼
-PskClientConfig::prepare(epsk)
+PskClientConfig::prepare(server)
         │  validates EPSK fields and builds the OpenSSL context before async handshake work
         │
         ▼
@@ -224,7 +228,7 @@ PskClientConfig::prepare(epsk)
         │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK use-session callback,
         │  hash-matched ciphersuite, optional psk-dhe-ke groups
         ▼
-PskClientConfig::connect(address, tcp_stream)
+PskClientConfig::connect(address, server_name, tcp_stream)
         │  OpenSSL performs TLS 1.3 PSK handshake
         ▼
 SslStream<TcpStream> implements Transport

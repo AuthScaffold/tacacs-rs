@@ -2,7 +2,7 @@ use openssl::pkey::{PKey, Private};
 use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
 use openssl::x509::X509;
 
-/// Internal builder that [`super::establish_from_server`] uses to create an
+/// Internal builder that [`super::prepare_from_server`] uses to create an
 /// [`SslContext`] from configuration data extracted
 /// from a [`tacacsrs_config::TacacsPlusServer`].
 ///

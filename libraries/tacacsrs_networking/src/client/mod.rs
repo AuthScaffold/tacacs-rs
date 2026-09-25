@@ -9,7 +9,6 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::sync::{Mutex, RwLock};
 
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_protocol::accounting::reply::AccountingReply;
 use tacacsrs_protocol::accounting::request::AccountingRequest;
 use tacacsrs_protocol::enumerations::{
@@ -20,7 +19,8 @@ use tacacsrs_protocol::header::Header;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_protocol::traits::TacacsBodyTrait;
 
-use crate::establish::{self, ConnectOptions, ConnectPreflight};
+use crate::endpoint::PreparedEndpoint;
+use crate::establish::{self, ConnectPreflight};
 use tacacsrs_protocol::exchange::FixedExchange;
 use crate::exchange_error::FixedExchangeError;
 use crate::runtime::MultiplexedConnection;
@@ -41,8 +41,7 @@ use crate::transport::BoxedTransport;
 /// unsupported by the server, future operations continue to use dedicated
 /// connections.
 pub struct TacacsClient {
-    server: Arc<TacacsPlusServer>,
-    options: ConnectOptions,
+    endpoint: PreparedEndpoint,
     shared_connection: Arc<RwLock<Option<Arc<MultiplexedConnection>>>>,
     single_connection_state: Arc<RwLock<SingleConnectionState>>,
     /// Serializes recovery when the cached shared connection is not available.
@@ -55,12 +54,10 @@ pub struct TacacsClient {
 
 impl TacacsClient {
     /// Creates a client without opening a network connection.
-    #[must_use]
-    fn new(server: Arc<TacacsPlusServer>, options: ConnectOptions) -> Self {
-        let single_connection_enabled = server.single_connection;
+    fn from_prepared(endpoint: PreparedEndpoint) -> Self {
+        let single_connection_enabled = endpoint.single_connection();
         Self {
-            server,
-            options,
+            endpoint,
             shared_connection: Arc::new(RwLock::new(None)),
             single_connection_state: Arc::new(RwLock::new(if single_connection_enabled {
                 SingleConnectionState::Initial
@@ -80,27 +77,9 @@ impl TacacsClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the TCP connection, TLS negotiation, or PSK setup fails.
-    pub async fn connect(
-        server: TacacsPlusServer,
-        options: ConnectOptions,
-    ) -> anyhow::Result<Self> {
-        Self::connect_shared(Arc::new(server), options).await
-    }
-
-    /// Creates a client from shared server configuration.
-    ///
-    /// This function runs the configured preflight when preflight is enabled.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if TCP connection, TLS negotiation, PSK setup, or
-    /// configured preflight fails.
-    pub async fn connect_shared(
-        server: Arc<TacacsPlusServer>,
-        options: ConnectOptions,
-    ) -> anyhow::Result<Self> {
-        let connection = Self::new(server, options);
+    /// Returns an error if the configured preflight fails.
+    pub async fn connect_prepared(endpoint: PreparedEndpoint) -> anyhow::Result<Self> {
+        let connection = Self::from_prepared(endpoint);
         connection.run_preflight().await?;
         Ok(connection)
     }
@@ -227,7 +206,7 @@ impl TacacsClient {
         &self,
         expected: Option<ExpectedResponseHeader>,
     ) -> anyhow::Result<ClientSession> {
-        if !self.server.single_connection {
+        if !self.endpoint.single_connection() {
             return Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?));
         }
 
@@ -501,7 +480,7 @@ impl TacacsClient {
             Err(error) => {
                 log::debug!(
                     "Cached connection to TACACS+ server {} failed to create a session: {error:#}",
-                    self.server.socket_address(),
+                    self.endpoint.address(),
                 );
                 self.update_state_after_shared_connection_rejection(&connection)
                     .await;
@@ -540,12 +519,16 @@ impl TacacsClient {
         transport: BoxedTransport,
         single_connect_promotion: Option<SingleConnectPromotion>,
     ) -> DedicatedSession {
-        let obfuscation_key = packet_obfuscation_key(&self.server);
-        DedicatedSession::new(transport, obfuscation_key.as_deref(), single_connect_promotion)
+        let obfuscation_key = self
+            .endpoint
+            .obfuscation_key
+            .as_ref()
+            .map(tacacsrs_secrets::SecretBytes::expose_secret);
+        DedicatedSession::new(transport, obfuscation_key, single_connect_promotion)
     }
 
     async fn run_preflight(&self) -> anyhow::Result<()> {
-        match self.options.preflight() {
+        match self.endpoint.options.preflight() {
             ConnectPreflight::Disabled => Ok(()),
             ConnectPreflight::AccountingWatchdog => self.send_accounting_watchdog_preflight().await,
         }
@@ -563,8 +546,8 @@ impl TacacsClient {
     }
 
     async fn establish_stream(&self) -> anyhow::Result<BoxedTransport> {
-        let address = self.server.socket_address();
-        establish::establish_stream(Arc::clone(&self.server), &self.options)
+        let address = self.endpoint.address();
+        establish::establish_stream(&self.endpoint)
             .await
             .with_context(|| format!("Failed to connect to TACACS+ server {address}"))
     }
@@ -657,10 +640,6 @@ where
         .map_err(FixedExchangeError::outcome_unknown)
 }
 
-fn packet_obfuscation_key(server: &TacacsPlusServer) -> Option<Vec<u8>> {
-    server.obfuscation_key()
-}
-
 fn accounting_watchdog_preflight_request() -> AccountingRequest {
     AccountingRequest {
         flags: TacacsAccountingFlags::WATCHDOG,
@@ -682,7 +661,23 @@ fn accounting_watchdog_preflight_request() -> AccountingRequest {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    #[tokio::test]
+    async fn invalid_psk_fails_before_client_construction() {
+        let server = tacacsrs_config::TacacsPlusServerBuilder::new(
+            "invalid-psk",
+            tacacsrs_config::TacacsPlusServerType::all(),
+            "127.0.0.1",
+            1,
+        )
+        .with_tls13_epsk_psk_only("client", b"too-short".to_vec())
+        .build();
+        let result = super::TacacsClient::connect(server, crate::ConnectOptions::default()).await;
+        let Err(error) = result else {
+            panic!("invalid material must fail before the lazy client is returned");
+        };
+        assert!(format!("{error:#}").contains("PSK key must be at least 16 bytes"));
+    }
+
     use std::time::Duration;
 
     use tokio::io::AsyncWriteExt;
@@ -700,7 +695,8 @@ mod tests {
     use tacacsrs_protocol::packet::{Packet, PacketTrait};
     use tacacsrs_protocol::traits::TacacsBodyTrait;
 
-    use super::{TacacsClient, accounting_watchdog_preflight_request, packet_obfuscation_key};
+    use super::{TacacsClient, accounting_watchdog_preflight_request};
+    use crate::prepare_endpoint;
     use crate::codec::{PacketReadResult, PacketReader};
     use crate::establish::{ConnectOptions, ConnectPreflight};
     use tacacsrs_protocol::exchange::FixedExchange;
@@ -745,10 +741,6 @@ mod tests {
             source_interface: None,
             vrf_instance: None,
         }
-    }
-
-    fn runtime(server: TacacsPlusServer) -> Arc<TacacsPlusServer> {
-        Arc::new(server)
     }
 
     fn test_packet(session_id: u32, seq_no: u8, flags: TacacsFlags) -> Packet {
@@ -893,7 +885,8 @@ mod tests {
                 .with_shared_secret_alongside_tls("legacy-secret")
                 .build();
 
-        assert_eq!(packet_obfuscation_key(&server), Some(b"legacy-secret".to_vec()));
+        let endpoint = prepare_endpoint(&server, ConnectOptions::default()).unwrap();
+        assert_eq!(endpoint.obfuscation_key.unwrap().expose_secret(), b"legacy-secret");
     }
 
     #[tokio::test]
@@ -1034,7 +1027,9 @@ mod tests {
         let mut server = server_template();
         server.address = listener_address.ip().to_string();
         server.port = listener_address.port();
-        let client = TacacsClient::new(runtime(server), ConnectOptions::default());
+        let client = TacacsClient::from_prepared(
+            prepare_endpoint(&server, ConnectOptions::default()).unwrap(),
+        );
 
         for _ in 0..3 {
             let reply = tokio::time::timeout(
@@ -1074,7 +1069,9 @@ mod tests {
         let mut server = server_template();
         server.address = listener_address.ip().to_string();
         server.port = listener_address.port();
-        let client = TacacsClient::new(runtime(server), ConnectOptions::default());
+        let client = TacacsClient::from_prepared(
+            prepare_endpoint(&server, ConnectOptions::default()).unwrap(),
+        );
 
         let first_session = client.create_session().await.unwrap();
         run_session_exchange(&first_session).await;
@@ -1110,7 +1107,9 @@ mod tests {
         let mut server = server_template();
         server.address = listener_address.ip().to_string();
         server.port = listener_address.port();
-        let client = TacacsClient::new(runtime(server), ConnectOptions::default());
+        let client = TacacsClient::from_prepared(
+            prepare_endpoint(&server, ConnectOptions::default()).unwrap(),
+        );
 
         client
             .update_single_connection_state(SingleConnectionState::NotSupported)
@@ -1141,7 +1140,9 @@ mod tests {
         let mut server = server_template();
         server.address = listener_address.ip().to_string();
         server.port = listener_address.port();
-        let client = TacacsClient::new(runtime(server), ConnectOptions::default());
+        let client = TacacsClient::from_prepared(
+            prepare_endpoint(&server, ConnectOptions::default()).unwrap(),
+        );
 
         let first_session = client.create_session().await.unwrap();
         assert_eq!(client.single_connection_state().await, SingleConnectionState::Negotiating);
