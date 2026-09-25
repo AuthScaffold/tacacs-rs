@@ -10,18 +10,18 @@ use anyhow::Context;
 use tokio::sync::{Mutex, RwLock};
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::enumerations::{
+use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::accounting::request::AccountingRequest;
+use tacacsrs_protocol::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
     TacacsAuthenticationService, TacacsAuthenticationType, TacacsFlags, TacacsMajorVersion,
 };
-use tacacsrs_messages::header::Header;
-use tacacsrs_messages::packet::{Packet, PacketTrait};
-use tacacsrs_messages::traits::TacacsBodyTrait;
+use tacacsrs_protocol::header::Header;
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
+use tacacsrs_protocol::traits::TacacsBodyTrait;
 
 use crate::establish::{self, ConnectOptions, ConnectPreflight};
-use crate::exchange::FixedExchange;
+use tacacsrs_protocol::exchange::FixedExchange;
 use crate::exchange_error::FixedExchangeError;
 use crate::runtime::MultiplexedConnection;
 use crate::single_connect::SingleConnectionState;
@@ -575,12 +575,12 @@ struct AccountingWatchdogExchange(AccountingRequest);
 impl FixedExchange for AccountingWatchdogExchange {
     type Reply = AccountingReply;
 
-    fn packet_type(&self) -> tacacsrs_messages::enumerations::TacacsType {
-        tacacsrs_messages::enumerations::TacacsType::TacPlusAccounting
+    fn packet_type(&self) -> tacacsrs_protocol::enumerations::TacacsType {
+        tacacsrs_protocol::enumerations::TacacsType::TacPlusAccounting
     }
 
-    fn minor_version(&self) -> tacacsrs_messages::enumerations::TacacsMinorVersion {
-        tacacsrs_messages::enumerations::TacacsMinorVersion::TacacsPlusMinorVerDefault
+    fn minor_version(&self) -> tacacsrs_protocol::enumerations::TacacsMinorVersion {
+        tacacsrs_protocol::enumerations::TacacsMinorVersion::TacacsPlusMinorVerDefault
     }
 
     fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
@@ -690,20 +690,20 @@ mod tests {
     use tokio::sync::mpsc;
 
     use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerType};
-    use tacacsrs_messages::accounting::reply::AccountingReply;
-    use tacacsrs_messages::accounting::request::AccountingRequest;
-    use tacacsrs_messages::enumerations::{
+    use tacacsrs_protocol::accounting::reply::AccountingReply;
+    use tacacsrs_protocol::accounting::request::AccountingRequest;
+    use tacacsrs_protocol::enumerations::{
         TacacsAccountingFlags, TacacsAccountingStatus, TacacsFlags, TacacsMajorVersion,
         TacacsMinorVersion, TacacsType,
     };
-    use tacacsrs_messages::header::Header;
-    use tacacsrs_messages::packet::{Packet, PacketTrait};
-    use tacacsrs_messages::traits::TacacsBodyTrait;
+    use tacacsrs_protocol::header::Header;
+    use tacacsrs_protocol::packet::{Packet, PacketTrait};
+    use tacacsrs_protocol::traits::TacacsBodyTrait;
 
     use super::{TacacsClient, accounting_watchdog_preflight_request, packet_obfuscation_key};
     use crate::codec::{PacketReadResult, PacketReader};
     use crate::establish::{ConnectOptions, ConnectPreflight};
-    use crate::exchange::FixedExchange;
+    use tacacsrs_protocol::exchange::FixedExchange;
     use crate::single_connect::SingleConnectionState;
 
     struct TestAccountingExchange(AccountingRequest);

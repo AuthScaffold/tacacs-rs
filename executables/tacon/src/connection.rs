@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_networking::{ConnectOptions, FixedExchange, TacacsClient};
+use tacacsrs_networking::{ConnectOptions, TacacsClient};
+use tacacsrs_protocol::exchange::FixedExchange;
 
 /// Represents an active TACACS+ connection (either plain TCP or TLS)
 #[derive(Clone)]

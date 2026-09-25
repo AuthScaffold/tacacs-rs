@@ -38,6 +38,7 @@ For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Tran
 
 | Component | Description |
 |-----------|-------------|
+| **tacacsrs-protocol** | Pure wire types, logical operations, exchange descriptions, and conversation validation |
 | **tacacsrs-agent** | TACACS+ TCP proxy and gRPC-based AAA service library |
 | **tacon** | TACACS+ test application for AAA operations and transport modes |
 | **tacacsrs-agentd** | Daemon that hosts `tacacsrs-agent`, maintains upstream connections, and manages failover |
@@ -51,8 +52,7 @@ For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Tran
 ```text
 tacon (CLI)  ──────┬──► tacacsrs-agent-client
                    ├──► tacacsrs-config
-                   ├──► tacacsrs-flows
-                   ├──► tacacsrs-messages
+                   ├──► tacacsrs-protocol
                    └──► tacacsrs-networking
 
 tacacsrs-agentd ───┬──► tacacsrs-agent
@@ -60,8 +60,7 @@ tacacsrs-agentd ───┬──► tacacsrs-agent
                    └──► tacacsrs-config
 
 tacacsrs-agent ────┬──► tacacsrs-agent-client
-                   ├──► tacacsrs-flows
-                   ├──► tacacsrs-messages
+                   ├──► tacacsrs-protocol
                    └──► tacacsrs-networking
 
 tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
@@ -70,6 +69,8 @@ tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
 tacacsrs-credential-resolution ──► tacacsrs-config
                               └──► tacacsrs-secrets
 ```
+
+`tacacsrs-protocol` owns the shared operation model for direct and IPC consumers. It has no networking, TLS, YANG, or protobuf dependency.
 
 `tacacsrs-config` is the entry point for RFC 7951 YANG JSON parsing. It owns the generated `ietf-system-tacacs-plus` Rust types and validates YANG constraints.
 

@@ -7,12 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::authorization::reply::AuthorizationReply;
-use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
-use tacacsrs_messages::header::Header;
-use tacacsrs_messages::packet::{Packet, PacketTrait};
-use tacacsrs_messages::traits::TacacsBodyTrait;
+use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
+use tacacsrs_protocol::header::Header;
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
+use tacacsrs_protocol::traits::TacacsBodyTrait;
 
 use crate::session::SharedSession;
 use super::mock_state::{MockState, ReplyConfig};

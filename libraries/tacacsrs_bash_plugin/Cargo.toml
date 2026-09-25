@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 anyhow = "1.0.102"
 libc = "0.2"
 tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
+tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 
 [lints.rust]

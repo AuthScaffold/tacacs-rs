@@ -4,7 +4,7 @@ use anyhow::Context;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
 use crate::codec::{PacketWriteResult, PacketWriter};
 

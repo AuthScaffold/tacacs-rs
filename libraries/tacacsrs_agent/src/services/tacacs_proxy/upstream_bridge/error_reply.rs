@@ -1,15 +1,15 @@
 //! Type-correct local TACACS+ error replies.
 
-use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::authentication::reply::AuthenticationReply;
-use tacacsrs_messages::authorization::reply::AuthorizationReply;
-use tacacsrs_messages::enumerations::{
+use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::enumerations::{
     TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
     TacacsAuthorizationStatus, TacacsFlags, TacacsType,
 };
-use tacacsrs_messages::header::Header;
-use tacacsrs_messages::packet::{Packet, PacketTrait};
-use tacacsrs_messages::traits::TacacsBodyTrait;
+use tacacsrs_protocol::header::Header;
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
+use tacacsrs_protocol::traits::TacacsBodyTrait;
 
 pub(super) fn local_error_reply(request: &Packet, message: &str) -> anyhow::Result<Packet> {
     let body = match request.header().tacacs_type {

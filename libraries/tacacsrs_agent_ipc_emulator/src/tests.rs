@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tacacsrs_agent_client::{
+use tacacsrs_agent_client::{ServiceClient};
+use tacacsrs_protocol::operations::{
     AccountingOperation, AuthorizationKey, AuthorizationOperation, AuthorizationResponseStatus,
-    ServiceClient,
 };
 use tonic::Code;
 
@@ -67,7 +67,7 @@ fn authorization_request(command: &str) -> AuthorizationOperation {
     AuthorizationOperation::builder(
         "admin",
         15,
-        tacacsrs_agent_client::AuthorizationAuthenticationContext::TacacsAscii,
+        tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsAscii,
     )
     .port("tty0")
     .remote_address("127.0.0.1")
@@ -296,7 +296,7 @@ async fn policy_data_drives_authorization_denylist() {
             AuthorizationOperation::builder(
                 "admin",
                 15,
-                tacacsrs_agent_client::AuthorizationAuthenticationContext::TacacsAscii,
+                tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsAscii,
             )
             .port("tty0")
             .remote_address("127.0.0.1")

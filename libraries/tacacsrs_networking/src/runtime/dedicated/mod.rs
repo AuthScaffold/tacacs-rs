@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use tacacsrs_messages::packet::Packet;
+use tacacsrs_protocol::packet::Packet;
 
 use crate::codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 use crate::transport::Transport;

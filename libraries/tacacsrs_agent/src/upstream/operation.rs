@@ -1,7 +1,7 @@
 //! TACACS+ operation identity used by routing and connection ownership.
 
 use tacacsrs_config::TacacsPlusServerType;
-use tacacsrs_messages::enumerations::TacacsType;
+use tacacsrs_protocol::enumerations::TacacsType;
 
 /// A TACACS+ service operation.
 #[derive(Debug, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]

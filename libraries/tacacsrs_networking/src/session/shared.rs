@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tacacsrs_messages::packet::Packet;
+use tacacsrs_protocol::packet::Packet;
 
 use super::{DuplexChannel, SessionManager};
 

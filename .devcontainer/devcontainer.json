@@ -1,21 +1,29 @@
 {
-    "name": "tacacs-rs Linux development",
+    "name": "tacacs-rs native-volume development",
     "build": {
         "dockerfile": "Dockerfile",
-        "context": ".."
+        "context": "."
     },
+    "workspaceMount": "source=tacacs-rs-native-source,target=/workspaces/tacacs-rs,type=volume",
+    "workspaceFolder": "/workspaces/tacacs-rs",
     "remoteUser": "vscode",
+    "updateRemoteUserUID": false,
+    "init": true,
     "containerEnv": {
         "CARGO_BUILD_JOBS": "1",
         "CARGO_PROFILE_TEST_DEBUG": "0",
         "CARGO_TARGET_DIR": "${containerWorkspaceFolder}/target"
     },
     "mounts": [
-        "source=tacacs-rs-cargo-registry,target=/usr/local/cargo/registry,type=volume",
-        "source=tacacs-rs-cargo-git,target=/usr/local/cargo/git,type=volume",
-        "source=tacacs-rs-target,target=${containerWorkspaceFolder}/target,type=volume"
+        "source=${localWorkspaceFolder},target=/mnt/tacacs-rs-seed,type=bind,readonly",
+        "source=tacacs-rs-${devcontainerId}-registry,target=/usr/local/cargo/registry,type=volume",
+        "source=tacacs-rs-${devcontainerId}-cargo-git,target=/usr/local/cargo/git,type=volume",
+        "source=tacacs-rs-${devcontainerId}-target,target=${containerWorkspaceFolder}/target,type=volume",
+        "source=tacacs-rs-${devcontainerId}-editor,target=/home/vscode/.vscode-server,type=volume"
     ],
-    "postCreateCommand": "sudo chown -R vscode:vscode /usr/local/cargo \"${containerWorkspaceFolder}/target\" && cargo fetch --locked",
+    "onCreateCommand": ["sudo", "-n", "bash", "/usr/local/share/tacacs-rs/initialize-workspace.sh"],
+    "postCreateCommand": ["bash", "/usr/local/share/tacacs-rs/post-create.sh"],
+    "waitFor": "postCreateCommand",
     "customizations": {
         "vscode": {
             "extensions": [
@@ -27,7 +35,11 @@
             ],
             "settings": {
                 "rust-analyzer.cargo.allFeatures": true,
-                "rust-analyzer.check.command": "clippy"
+                "rust-analyzer.check.command": "clippy",
+                "rust-analyzer.check.allTargets": true,
+                "files.watcherExclude": {
+                    "**/target/**": true
+                }
             }
         }
     }

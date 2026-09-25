@@ -331,26 +331,26 @@ class TestTopologicalSort:
     def test_matches_real_workspace(self) -> None:
         """The topological sort matches the actual tacacs-rs dependency graph."""
         crates = {
-            "tacacsrs-messages": Crate(
-                name="tacacsrs-messages", directory=Path("libraries/tacacsrs_messages"),
+            "tacacsrs-protocol": Crate(
+                name="tacacsrs-protocol", directory=Path("libraries/tacacsrs_protocol"),
             ),
             "tacacsrs-agent-client": Crate(
                 name="tacacsrs-agent-client", directory=Path("libraries/tacacsrs_agent_client"),
             ),
             "tacacsrs-networking": Crate(
                 name="tacacsrs-networking", directory=Path("libraries/tacacsrs_networking"),
-                workspace_deps=["tacacsrs-messages"],
+                workspace_deps=["tacacsrs-protocol"],
             ),
             "tacacsrs-agent": Crate(
                 name="tacacsrs-agent", directory=Path("libraries/tacacsrs_agent"),
-                workspace_deps=["tacacsrs-messages", "tacacsrs-networking", "tacacsrs-agent-client"],
+                workspace_deps=["tacacsrs-protocol", "tacacsrs-networking", "tacacsrs-agent-client"],
             ),
         }
         order = topological_sort(crates)
 
         # Messages and agent-client have no dependencies. They come first.
-        assert order.index("tacacsrs-messages") < order.index("tacacsrs-networking")
-        assert order.index("tacacsrs-messages") < order.index("tacacsrs-agent")
+        assert order.index("tacacsrs-protocol") < order.index("tacacsrs-networking")
+        assert order.index("tacacsrs-protocol") < order.index("tacacsrs-agent")
         assert order.index("tacacsrs-agent-client") < order.index("tacacsrs-agent")
         assert order.index("tacacsrs-networking") < order.index("tacacsrs-agent")
 

@@ -54,7 +54,7 @@ cargo cyclonedx --format xml --all --all-features
 
 # SBOM files are generated for each workspace member:
 # - executables/tacon/tacon.cdx.json
-# - libraries/tacacsrs_messages/tacacsrs-messages.cdx.json
+# - libraries/tacacsrs_protocol/tacacsrs-protocol.cdx.json
 # - libraries/tacacsrs_networking/tacacsrs-networking.cdx.json
 ```
 
@@ -64,11 +64,17 @@ The release pipeline generates SBOMs and includes them with each release.
 
 ### Development container
 
-The development container is the supported environment for complete workspace development. It includes the Linux GNU dependencies.
+The development container is the supported environment for complete workspace development.
+Source, Git metadata, build artifacts, and remote editor state use persistent Linux-native volumes.
+The original host checkout is a read-only seed for the first import, not the active source directory.
 
-On Windows, start a Podman 5 or later machine before you open the repository. A Hyper-V or WSL2 machine is supported.
+Before rebuilding, read the [container migration guide](docs/dev-container.md).
+It explains how to preserve unpushed commits and untracked files.
 
-Configure VS Code to use Podman:
+On Windows, start a Podman 5 or later machine before opening the repository.
+A Hyper-V or WSL2 machine is supported. Docker is an alternative runtime.
+
+For Podman, configure VS Code:
 
 ```json
 {
@@ -76,12 +82,13 @@ Configure VS Code to use Podman:
 }
 ```
 
-Then run **Dev Containers: Reopen in Container**. Docker is an alternative container runtime.
+After saving and committing the seed checkout, run **Dev Containers: Reopen in Container** or **Dev Containers: Rebuild Container**.
+The bootstrap imports its current named branch once and preserves the native checkout on later rebuilds.
 
 ```bash
-# Clone the repository
-git clone https://github.com/AuthScaffold/tacacs-rs
-cd tacacs-rs
+# Run inside the native-volume workspace after setup.
+cd /workspaces/tacacs-rs
+git branch --show-current
 
 # Build all crates in Linux
 cargo build --workspace
@@ -169,7 +176,7 @@ cargo test --workspace -- --nocapture
 cargo test test_name
 
 # Run tests for a specific crate
-cargo test -p tacacsrs-messages
+cargo test -p tacacsrs-protocol
 ```
 
 ### Session Wrapper Smoke Tests
@@ -426,6 +433,6 @@ tacacs-rs/
 ├── executables/
 │   └── tacon/              # CLI application
 └── libraries/
-    ├── tacacsrs_messages/  # Protocol message types
+    ├── tacacsrs_protocol/  # Protocol message types
     └── tacacsrs_networking/# Network client implementation
 ```

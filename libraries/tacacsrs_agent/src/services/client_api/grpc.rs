@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use tacacsrs_agent_client::ipc;
 use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
-use tacacsrs_agent_client::{AccountingOperation, AuthorizationOperation, PapAuthenticationOperation};
+use tacacsrs_protocol::operations::{
+    AccountingOperation, AuthorizationOperation, PapAuthenticationOperation,
+};
 use tonic::{Request, Response, Status};
 
 use crate::runtime::RequestTracker;
@@ -54,14 +56,12 @@ impl TacacsAgent for GrpcService {
             .await
         {
             Ok(response) => ipc::PapAuthenticationReply {
-                result: Some(ipc::pap_authentication_reply::Result::Response(
-                    response.into_proto(),
-                )),
+                result: Some(ipc::pap_authentication_reply::Result::Response(response.into())),
             },
             Err(error) => {
                 log::warn!("IPC PAP authentication request failed: {error:?}");
                 ipc::PapAuthenticationReply {
-                    result: Some(ipc::pap_authentication_reply::Result::Error(error.into_proto())),
+                    result: Some(ipc::pap_authentication_reply::Result::Error(error.into())),
                 }
             }
         };
@@ -100,13 +100,13 @@ impl TacacsAgent for GrpcService {
                     response.status,
                 );
                 ipc::AccountingReply {
-                    result: Some(ipc::accounting_reply::Result::Response(response.into_proto())),
+                    result: Some(ipc::accounting_reply::Result::Response(response.into())),
                 }
             }
             Err(error) => {
                 log::warn!("IPC accounting request failed: {error:?}");
                 ipc::AccountingReply {
-                    result: Some(ipc::accounting_reply::Result::Error(error.into_proto())),
+                    result: Some(ipc::accounting_reply::Result::Error(error.into())),
                 }
             }
         };
@@ -145,13 +145,13 @@ impl TacacsAgent for GrpcService {
                     response.status,
                 );
                 ipc::AuthorizationReply {
-                    result: Some(ipc::authorization_reply::Result::Response(response.into_proto())),
+                    result: Some(ipc::authorization_reply::Result::Response(response.into())),
                 }
             }
             Err(error) => {
                 log::warn!("IPC authorization request failed: {error:?}");
                 ipc::AuthorizationReply {
-                    result: Some(ipc::authorization_reply::Result::Error(error.into_proto())),
+                    result: Some(ipc::authorization_reply::Result::Error(error.into())),
                 }
             }
         };

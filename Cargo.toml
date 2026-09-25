@@ -1,10 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "libraries/tacacsrs_messages",
+    "libraries/tacacsrs_protocol",
     "libraries/tacacsrs_secrets",
     "libraries/tacacsrs_networking",
-    "libraries/tacacsrs_flows",
     "libraries/tacacsrs_agent_client",
     "libraries/tacacsrs_agent_ipc_emulator",
     "libraries/tacacsrs_agent",

@@ -5,7 +5,7 @@ inputs:
   versions:
     description: >
       JSON object mapping crate names to versions,
-      for example {"tacon":"2026.424.0","tacacsrs-messages":"0.1.3"}.
+      for example {"tacon":"2026.424.0","tacacsrs-protocol":"0.1.3"}.
       An empty object or '{}' causes no changes.
     required: false
     default: '{}'

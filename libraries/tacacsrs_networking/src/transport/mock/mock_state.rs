@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use tacacsrs_messages::packet::Packet;
+use tacacsrs_protocol::packet::Packet;
 
 /// Configuration for one predefined reply.
 ///

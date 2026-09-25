@@ -32,3 +32,9 @@ runs:
       run: |
         cargo +nightly fuzz run fuzz_accounting_request_packet_parse -- -max_total_time=30 || \
           echo "::warning::The accounting-request packet fuzz smoke test found errors. This test is advisory, so the workflow continues."
+
+    - name: Fuzz all protocol message families
+      shell: bash
+      run: |
+        cargo +nightly fuzz run fuzz_protocol_parse -- -max_total_time=30 || \
+          echo "::warning::The protocol-family fuzz smoke test found errors. This test is advisory, so the workflow continues."

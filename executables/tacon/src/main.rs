@@ -19,7 +19,7 @@ use anyhow::bail;
 use anyhow::Context;
 use clap::Parser;
 #[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
+use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
 use tacacsrs_networking::ConnectOptions;
 
@@ -121,13 +121,13 @@ async fn execute_command_via_service(endpoint: &str, command: &Command) -> anyho
             cmd_args,
         } => {
             let response = client
-                .send_accounting(AccountingOperation {
-                    user: args.user.clone(),
-                    port: args.port.clone(),
-                    remote_address: args.rem_addr.clone(),
-                    command: cmd.clone(),
-                    command_arguments: cmd_args.clone().unwrap_or_default(),
-                })
+                .send_accounting(commands::accounting::accounting_operation(
+                    &args.user,
+                    &args.port,
+                    &args.rem_addr,
+                    cmd,
+                    cmd_args.as_ref(),
+                ))
                 .await?;
 
             println!("Received accounting response: {response:#?}");

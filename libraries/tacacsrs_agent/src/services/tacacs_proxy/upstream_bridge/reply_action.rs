@@ -1,12 +1,12 @@
 //! TACACS+ reply status classes for proxy session lifetime decisions.
 
-use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::authentication::reply::AuthenticationReply;
-use tacacsrs_messages::authorization::reply::AuthorizationReply;
-use tacacsrs_messages::enumerations::{
+use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::enumerations::{
     TacacsAccountingStatus, TacacsAuthenticationStatus, TacacsAuthorizationStatus, TacacsType,
 };
-use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReplyAction {
@@ -87,20 +87,20 @@ fn authentication_reply_action(packet: &Packet) -> ReplyAction {
 
 #[cfg(test)]
 mod tests {
-    use tacacsrs_messages::accounting::reply::{ACCOUNTING_REPLY_STATUS_OFFSET, AccountingReply};
-    use tacacsrs_messages::authentication::reply::{
+    use tacacsrs_protocol::accounting::reply::{ACCOUNTING_REPLY_STATUS_OFFSET, AccountingReply};
+    use tacacsrs_protocol::authentication::reply::{
         AUTHENTICATION_REPLY_STATUS_OFFSET, AuthenticationReply,
     };
-    use tacacsrs_messages::authorization::reply::{
+    use tacacsrs_protocol::authorization::reply::{
         AUTHORIZATION_REPLY_STATUS_OFFSET, AuthorizationReply,
     };
-    use tacacsrs_messages::enumerations::{
+    use tacacsrs_protocol::enumerations::{
         TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
         TacacsAuthorizationStatus, TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
     };
-    use tacacsrs_messages::header::Header;
-    use tacacsrs_messages::packet::Packet;
-    use tacacsrs_messages::traits::TacacsBodyTrait;
+    use tacacsrs_protocol::header::Header;
+    use tacacsrs_protocol::packet::Packet;
+    use tacacsrs_protocol::traits::TacacsBodyTrait;
 
     use super::{ReplyAction, reply_action};
 

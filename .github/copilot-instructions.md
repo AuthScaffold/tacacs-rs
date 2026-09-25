@@ -16,6 +16,14 @@ local module you are changing.
 - The Rust edition is 2021. The workspace MSRV is `1.88`.
 - All workspace crates are internal. They are not published to crates.io.
 
+## Refactor Workflow
+
+- Before continuing the architectural refactor, read `docs/architecture/migration-and-decisions.md` and the relevant stage checkpoint.
+- Verify the current branch, disk state, and commit history before making changes.
+- Preserve canonical YANG configuration. Prepared runtime values are derived artifacts, not a competing configuration model.
+- Serialize editor edits and terminal rewrites of each file. Verify saves before formatting and editor refresh afterward.
+- If editor and disk content differ, compare them before recovery. Never discard all unsaved buffers automatically.
+
 ## Writing Style
 
 - Apply `.github/skills/simple-english/SKILL.md` in pragmatic mode to all prose

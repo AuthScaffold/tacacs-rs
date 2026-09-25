@@ -1,10 +1,11 @@
 [package]
-name = "tacacsrs-messages"
+name = "tacacsrs-protocol"
 version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "TACACS+ protocol message types and serialization."
+description = "Pure TACACS+ wire types, operations, and exchange contracts."
+readme = "README.md"
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
@@ -13,6 +14,7 @@ byteorder = "1.5.0"
 md-5 = "0.11.0"
 num_enum = "0.7.6"
 zeroize = "1.9.0"
+tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 
 [lints]
 workspace = true

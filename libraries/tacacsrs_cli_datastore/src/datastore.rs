@@ -21,6 +21,7 @@ use crate::model::CliDatastoreInput;
 /// The datastore rebuilds the effective [`TacacsPlus`] snapshot after each
 /// relevant file event. It publishes a successful rebuild to subscribers. If
 /// a reload fails, it logs the error and keeps the active configuration.
+/// Subscriptions install observation before publishing an initial snapshot.
 #[derive(Debug, Clone)]
 pub struct CliFileDatastore {
     input: CliDatastoreInput,
@@ -66,7 +67,6 @@ impl ConfigDatastore for CliFileDatastore {
             return Ok(Box::pin(tokio_stream::empty()));
         }
 
-        let initial = self.load().await.ok().map(Arc::new);
         let (change_tx, change_rx) = mpsc::channel(8);
         let (event_tx, mut event_rx) = mpsc::channel(32);
         let watch_dirs = watch_directories(&watched_paths);
@@ -86,11 +86,33 @@ impl ConfigDatastore for CliFileDatastore {
                 .with_context(|| format!("watch CLI datastore directory {}", dir.display()))?;
         }
 
+        let initial = self.load().await.ok().map(Arc::new);
+        let initial_event =
+            initial
+                .as_ref()
+                .map_or(ConfigChangeEvent::CandidateRejected, |snapshot| {
+                    ConfigChangeEvent::Changed(ConfigChange {
+                        delta: ConfigDelta::diff(None, snapshot),
+                        config: Arc::clone(snapshot),
+                    })
+                });
+        change_tx
+            .send(initial_event)
+            .await
+            .context("publish initial CLI datastore snapshot")?;
+
         let datastore = self.clone();
         tokio::spawn(async move {
             let _watcher = watcher;
             let mut previous = initial;
-            while let Some(event) = event_rx.recv().await {
+            loop {
+                let event = tokio::select! {
+                    () = change_tx.closed() => break,
+                    event = event_rx.recv() => match event {
+                        Some(event) => event,
+                        None => break,
+                    },
+                };
                 match event {
                     Ok(event) if event_touches_watched_path(&event, &watched_paths) => {
                         tokio::time::sleep(datastore.input.debounce).await;
@@ -132,6 +154,7 @@ impl ConfigDatastore for CliFileDatastore {
                     }
                 }
             }
+            drop(event_rx);
         });
 
         Ok(Box::pin(ReceiverStream::new(change_rx)))
@@ -246,6 +269,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subscription_recovers_change_between_load_and_watch() {
+        let path = temp_config(&config("192.0.2.10"));
+        let datastore = CliFileDatastore::new(CliDatastoreInput::new(
+            CliConfigSource::YangFile { path: path.clone() },
+            "file",
+        ));
+        assert_eq!(datastore.load().await.unwrap().server[0].address, "192.0.2.10");
+        fs::write(&path, config("192.0.2.11")).unwrap();
+
+        let mut stream = datastore.subscribe().await.unwrap();
+        let change = next_change(&mut stream).await;
+        assert_eq!(change.config.server[0].address, "192.0.2.11");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
     async fn subscribe_emits_change_after_config_file_update() {
         let path = temp_config(&config("192.0.2.10"));
         let input =
@@ -256,6 +295,7 @@ mod tests {
             .subscribe()
             .await
             .expect("subscription must succeed");
+        assert_eq!(next_change(&mut stream).await.config.server[0].address, "192.0.2.10");
 
         fs::write(&path, config("192.0.2.11")).expect("configuration file must update");
 
@@ -276,6 +316,7 @@ mod tests {
             .subscribe()
             .await
             .expect("subscription must succeed");
+        next_change(&mut stream).await;
 
         fs::write(&path, "not valid JSON").expect("configuration file must update");
 
@@ -339,6 +380,7 @@ mod tests {
             .subscribe()
             .await
             .expect("subscription must succeed");
+        next_change(&mut stream).await;
 
         fs::write(&cert_path, sample_credential("server.crt"))
             .expect("certificate file must update");

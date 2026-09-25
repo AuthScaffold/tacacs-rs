@@ -293,7 +293,7 @@ See the [examples](examples/) directory for sample batch files.
 ## Related
 
 - [tacacs-rs](../../README.md) - Parent project documentation
-- [tacacsrs-messages](../../libraries/tacacsrs_messages/) - TACACS+ message library
+- [tacacsrs-protocol](../../libraries/tacacsrs_protocol/) - TACACS+ message library
 - [tacacsrs-networking](../../libraries/tacacsrs_networking/) - TACACS+ networking library
 
 ## License

@@ -8,7 +8,6 @@
 mod client;
 mod codec;
 mod establish;
-mod exchange;
 mod exchange_error;
 mod helpers;
 mod runtime;
@@ -19,6 +18,5 @@ mod transport;
 pub use client::TacacsClient;
 pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use establish::{ConnectOptions, ConnectPreflight};
-pub use exchange::FixedExchange;
 pub use exchange_error::{FixedExchangeError, TransmissionState};
 pub use session::ClientConversation;

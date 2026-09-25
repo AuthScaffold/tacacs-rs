@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::authentication::reply::AuthenticationReply;
-use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::authorization::reply::AuthorizationReply;
-use tacacsrs_messages::authorization::request::AuthorizationRequest;
+use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::accounting::request::AccountingRequest;
+use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::authorization::request::AuthorizationRequest;
 use tacacsrs_networking::ClientConversation;
-use tacacsrs_flows::authentication::PapAuthenticationExchange;
+use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 
 use super::OperationKind;
 use super::UpstreamRequestError;

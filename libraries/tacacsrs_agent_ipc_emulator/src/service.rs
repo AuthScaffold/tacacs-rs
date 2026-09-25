@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tacacsrs_agent_client::ipc;
 use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
-use tacacsrs_agent_client::PapAuthenticationOperation;
+use tacacsrs_protocol::operations::PapAuthenticationOperation;
 use tokio::sync::{oneshot, Mutex};
 use tonic::{Request, Response, Status};
 
@@ -82,16 +82,14 @@ impl TacacsAgent for AgentService {
                 log_response(IpcRpc::Accounting, &response);
                 Ok(Response::new(ipc::AccountingReply {
                     result: Some(ipc::accounting_reply::Result::Response(
-                        accounting_response(response)?.into_proto(),
+                        accounting_response(response)?.into(),
                     )),
                 }))
             }
             EmulatorResponse::Error(error) => {
                 log_error_response(IpcRpc::Accounting, &error);
                 Ok(Response::new(ipc::AccountingReply {
-                    result: Some(ipc::accounting_reply::Result::Error(
-                        service_error(error).into_proto(),
-                    )),
+                    result: Some(ipc::accounting_reply::Result::Error(service_error(error).into())),
                 }))
             }
         }
@@ -126,7 +124,7 @@ impl TacacsAgent for AgentService {
                 log_response(IpcRpc::Authorization, &response);
                 Ok(Response::new(ipc::AuthorizationReply {
                     result: Some(ipc::authorization_reply::Result::Response(
-                        authorization_response(response)?.into_proto(),
+                        authorization_response(response)?.into(),
                     )),
                 }))
             }
@@ -134,7 +132,7 @@ impl TacacsAgent for AgentService {
                 log_error_response(IpcRpc::Authorization, &error);
                 Ok(Response::new(ipc::AuthorizationReply {
                     result: Some(ipc::authorization_reply::Result::Error(
-                        service_error(error).into_proto(),
+                        service_error(error).into(),
                     )),
                 }))
             }

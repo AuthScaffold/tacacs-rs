@@ -11,16 +11,16 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::authentication::reply::AuthenticationReply;
-use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::authorization::reply::AuthorizationReply;
-use tacacsrs_messages::authorization::request::AuthorizationRequest;
-use tacacsrs_messages::enumerations::{
+use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::accounting::request::AccountingRequest;
+use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::authorization::request::AuthorizationRequest;
+use tacacsrs_protocol::enumerations::{
     TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
     TacacsAuthorizationStatus,
 };
-use tacacsrs_flows::authentication::PapAuthenticationExchange;
+use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 use tokio::sync::Mutex;
 
 use crate::upstream::{OperationKind, UpstreamConnection, UpstreamConnector, UpstreamRequestError};

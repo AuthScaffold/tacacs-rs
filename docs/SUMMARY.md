@@ -2,6 +2,10 @@
 
 [Overview](index.md)
 
+# Development
+
+- [Native-Volume Development Container](dev-container.md)
+
 # Core Usage
 
 - [tacon CLI](tacon.md)
@@ -22,3 +26,13 @@
 
 - [Session Wrapper Deployment Guide](session-wrapper.md)
 - [Session Wrapper Testing](session-wrapper-testing.md)
+
+# Architecture Review
+
+- [Initial Assessment](architecture/initial-assessment.md)
+- [Current-State Assessment](architecture/current-state.md)
+- [Target Architecture](architecture/target-architecture.md)
+- [Runtime and Boundary Contracts](architecture/runtime-contracts.md)
+- [Migration and Decisions](architecture/migration-and-decisions.md)
+- [Stage 0 Contract Gates](architecture/stage-0-contract-gates.md)
+- [Stage 1 Protocol Ownership](architecture/stage-1-protocol-ownership.md)

@@ -1,6 +1,6 @@
 //! TACACS+ session ID mapping for the raw proxy.
 
-use tacacsrs_messages::packet::Packet;
+use tacacsrs_protocol::packet::Packet;
 
 pub(super) fn rewrite_session_id(packet: Packet, session_id: u32) -> Packet {
     packet.with_session_id(session_id)
@@ -8,11 +8,11 @@ pub(super) fn rewrite_session_id(packet: Packet, session_id: u32) -> Packet {
 
 #[cfg(test)]
 mod tests {
-    use tacacsrs_messages::enumerations::{
+    use tacacsrs_protocol::enumerations::{
         TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
     };
-    use tacacsrs_messages::header::Header;
-    use tacacsrs_messages::packet::{Packet, PacketTrait};
+    use tacacsrs_protocol::header::Header;
+    use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
     use super::rewrite_session_id;
 

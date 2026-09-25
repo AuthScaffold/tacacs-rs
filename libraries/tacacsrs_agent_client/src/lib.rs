@@ -28,20 +28,8 @@ pub mod health;
 /// > `tonic-prost-build` generates the code.
 pub mod ipc;
 
-/// Domain-level request and response types for the local TACACS+ client API.
-///
-/// Protobuf defines the local IPC transport, which gRPC serves. The rest of the
-/// crate uses operation-specific Rust types. Thus, callers do not depend
-/// directly on generated transport code.
-pub mod protocol;
+mod convert;
 
 pub use client::ServiceClient;
 pub use endpoint::IpcEndpoint;
 pub use health::HealthClient;
-pub use protocol::{
-    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus, AuthorizationArg,
-    AuthenticationResponseStatus, AuthorizationAuthenticationContext, AuthorizationKey,
-    AuthorizationOperation, AuthorizationOperationResponse, AuthorizationRequestBuilder,
-    AuthorizationResponseStatus, PapAuthenticationOperation, PapAuthenticationOperationResponse,
-    ServiceError,
-};

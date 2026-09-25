@@ -724,6 +724,71 @@ mod tests {
     }
 
     #[test]
+    fn equivalent_cli_sonic_and_yang_inputs_preserve_canonical_values() {
+        use std::collections::BTreeMap;
+
+        use tacacsrs_cli_datastore::{
+            CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
+        };
+        use tacacsrs_sonic::{SonicTacacsTables, map_sonic_tables_to_tacacs_plus};
+
+        let ordered = [("192.0.2.21", 8), ("192.0.2.20", 1)];
+        let servers = ordered
+            .iter()
+            .map(|(address, _)| {
+                CliServerInput::new(format!("sonic-server-{address}"), format!("{address}:49"))
+                    .with_timeout_seconds(7)
+                    .with_single_connection(false)
+            })
+            .collect();
+        let cli = tacacs_plus_from_cli_input(&CliDatastoreInput::new(
+            CliConfigSource::Inline {
+                servers,
+                security: CliSecurity::from_cli_inputs(CliSecurityInputs {
+                    shared_secret: Some("test-shared-secret".to_owned()),
+                    ..Default::default()
+                }),
+            },
+            "cli",
+        ))
+        .unwrap();
+        let rows = ordered
+            .iter()
+            .map(|(address, priority)| {
+                (
+                    (*address).to_string(),
+                    BTreeMap::from([
+                        ("priority".to_owned(), priority.to_string()),
+                        ("tcp_port".to_owned(), "49".to_owned()),
+                        ("timeout".to_owned(), "7".to_owned()),
+                        ("single_connection".to_owned(), "false".to_owned()),
+                        ("passkey".to_owned(), "test-shared-secret".to_owned()),
+                    ]),
+                )
+            })
+            .collect();
+        let sonic = map_sonic_tables_to_tacacs_plus(&SonicTacacsTables::new(BTreeMap::new(), rows))
+            .unwrap();
+        let yang = serde_json::json!({
+            "ietf-system-tacacs-plus:tacacs-plus": {
+                "server": ordered.iter().map(|(address, _)| serde_json::json!({
+                    "name": format!("sonic-server-{address}"),
+                    "server-type": "authentication authorization accounting",
+                    "address": address,
+                    "port": 49,
+                    "timeout": 7,
+                    "single-connection": false,
+                    "shared-secret": "test-shared-secret",
+                })).collect::<Vec<_>>()
+            }
+        });
+        let parsed = tacacsrs_config::parse_yang_json(&yang.to_string()).unwrap();
+        assert_eq!(cli, parsed);
+        assert_eq!(sonic, parsed);
+        assert_eq!(sonic.server[0].address, "192.0.2.21");
+    }
+
+    #[test]
     fn tacacs_plus_from_config_loads_all_servers() {
         let path = write_temp_config(
             r#"{

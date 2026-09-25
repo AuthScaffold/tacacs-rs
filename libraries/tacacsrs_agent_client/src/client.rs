@@ -19,7 +19,7 @@ use tonic::transport::Channel;
 
 use crate::ipc;
 use crate::ipc::tacacs_agent_client::TacacsAgentClient;
-use crate::protocol::{
+use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
     AuthorizationOperationResponse, PapAuthenticationOperation, PapAuthenticationOperationResponse,
     ServiceError,
@@ -58,9 +58,8 @@ use crate::IpcEndpoint;
 /// # Examples
 ///
 /// ```rust,no_run
-/// # use tacacsrs_agent_client::{
-/// #     AccountingOperation, IpcEndpoint, ServiceClient,
-/// # };
+/// # use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+/// # use tacacsrs_protocol::operations::AccountingOperation;
 /// # async fn example() -> anyhow::Result<()> {
 /// let client = ServiceClient::connect(IpcEndpoint::default_local()).await?;
 ///
@@ -129,10 +128,10 @@ impl ServiceClient {
 
         match reply.result.context("Accounting RPC returned no result")? {
             ipc::accounting_reply::Result::Response(response) => {
-                AccountingOperationResponse::from_proto(response)
+                AccountingOperationResponse::try_from(response)
             }
             ipc::accounting_reply::Result::Error(error) => {
-                Err(service_error_as_anyhow("Accounting", &ServiceError::from_proto(error)))
+                Err(service_error_as_anyhow("Accounting", &ServiceError::from(error)))
             }
         }
     }
@@ -159,10 +158,10 @@ impl ServiceClient {
             .context("PAP authentication RPC returned no result")?
         {
             ipc::pap_authentication_reply::Result::Response(response) => {
-                PapAuthenticationOperationResponse::from_proto(response)
+                PapAuthenticationOperationResponse::try_from(response)
             }
             ipc::pap_authentication_reply::Result::Error(error) => {
-                Err(service_error_as_anyhow("PAP authentication", &ServiceError::from_proto(error)))
+                Err(service_error_as_anyhow("PAP authentication", &ServiceError::from(error)))
             }
         }
     }
@@ -195,10 +194,10 @@ impl ServiceClient {
             .context("Authorization RPC returned no result")?
         {
             ipc::authorization_reply::Result::Response(response) => {
-                AuthorizationOperationResponse::from_proto(response)
+                AuthorizationOperationResponse::try_from(response)
             }
             ipc::authorization_reply::Result::Error(error) => {
-                Err(service_error_as_anyhow("Authorization", &ServiceError::from_proto(error)))
+                Err(service_error_as_anyhow("Authorization", &ServiceError::from(error)))
             }
         }
     }
