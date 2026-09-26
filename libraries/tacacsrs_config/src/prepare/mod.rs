@@ -5,6 +5,7 @@
 //! validates the complete candidate set without changing the source snapshot.
 
 mod formats;
+mod endpoint;
 mod materialization;
 mod planning;
 
@@ -13,3 +14,4 @@ pub use materialization::{
     MaterializationErrorKind,
 };
 pub use planning::resolution_plan;
+pub use endpoint::prepare_endpoint;

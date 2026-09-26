@@ -1,18 +1,16 @@
 //! TLS transport for TACACS+ connections.
 //!
-//! [`prepare_from_server`] interprets a [`TacacsPlusServer`] once.
-//! The resulting context supports repeated TLS handshakes without reparsing
-//! configuration. Callers use the dispatcher in [`crate::establish`].
-//!
-//! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
+//! Native contexts use borrowed DER material and explicit verification settings.
+//! Each context supports repeated handshakes without reparsing credentials.
 
 mod config_builder;
-mod from_server;
+mod config;
 #[allow(clippy::module_inception)]
 mod tls;
 
 pub(crate) use config_builder::TlsConfigurationBuilder;
-pub(crate) use from_server::{prepare_from_server, TlsClientConfig};
+pub(crate) use config::TlsClientConfig;
+pub use config::{CertificateIdentity, PrivateKeyEncoding};
 
 use anyhow::Context;
 use openssl::ssl::Ssl;

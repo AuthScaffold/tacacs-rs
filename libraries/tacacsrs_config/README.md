@@ -11,6 +11,7 @@
 - Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
 - Secret-free inspection of central keystore and truststore references on enumerated servers
 - Provider request planning and transactional materialization under `prepare`
+- YANG-to-endpoint projection with native TLS credential validation
 - A reusable `TacacsPlusServerBuilder` for constructing `TacacsPlusServer` values in code
 - A project-owned YANG augmentation for TLS 1.3 PSK DHE key exchange group selection
 
@@ -91,6 +92,17 @@ Materialization delegates secret retrieval to the supplied resolver.
 
 The SONiC integration layer supplies a resolver. It does not interpret generated fields during provider lookup.
 
+### 4) Native Endpoint Preparation
+
+Call `prepare::prepare_endpoint` with a materialized server and explicit connection options.
+Configuration maps the YANG transport choice, certificate encodings, PSK hash, ordered groups, and server name into networking inputs.
+Networking validates borrowed DER and PSK material and constructs private reusable TLS contexts.
+The resulting `PreparedEndpoint` contains no generated model or source reference.
+
+Pass this endpoint to `TacacsClient::connect_prepared`.
+With preflight disabled, construction does not open a connection. Native material errors still fail during preparation.
+The old networking `connect` and `connect_shared` constructors are removed.
+
 ### Module-oriented API (recommended for most users)
 
 This crate also exposes grouped modules so callers can choose APIs by intent:
@@ -100,7 +112,7 @@ This crate also exposes grouped modules so callers can choose APIs by intent:
 - `extensions` — helper traits layered over generated model types
 - `pipeline` — step-by-step processing
 - `runtime` — bundle enumeration (`enumerate_server`, `enumerate_servers`)
-- `prepare` — provider request planning, generated-field installation, and candidate validation
+- `prepare` — provider request planning, materialization, candidate validation, and native endpoint projection
 - `stats` — runtime stats types
 
 For simple end-to-end usage with credential bundles defined directly in the configuration:
@@ -157,7 +169,8 @@ The intended long-term split is:
 - Small derived helpers that are valid before and after secret resolution belong here, in `extensions`, on top of `TacacsPlusServer` and other generated types.
 - `tacacsrs-credential-resolution` consumes typed request plans and returns closed provider-neutral result sets. It does not depend on configuration.
 - `prepare` maps YANG references and provider metadata, then validates materialized candidates without changing authoritative snapshots.
-- Native endpoint preparation still belongs to networking pending the next Stage 2 dependency change.
+- `prepare_endpoint` projects the materialized YANG server into explicit networking inputs.
+- Networking owns native context construction and execution. It has no dependency on configuration or credential providers.
 
 This separation keeps the generated configuration model suitable for round trips and reports. Runtime code receives only the normalized fields that it needs for connections.
 
@@ -170,6 +183,8 @@ The crate includes runnable examples under `examples/`:
 - `pipeline_flow.rs` — explicit step-by-step parse/enumerate/external-resolution pipeline
 - `model_access.rs` — direct access to generated model types and flags
 - `central_resolution.rs` — YANG planning and provider-neutral resolution with a fake resolver
+- `single_transaction.rs` and `multiple_transactions.rs` — configured accounting clients
+- `tls_client.rs` and `tls_psk_client.rs` — certificate TLS and PSK clients
 
 Run examples from the workspace root:
 

@@ -1,11 +1,6 @@
 //! Establishes connections from prepared endpoint values.
 //!
-//! The dispatcher does not interpret YANG or prepare credentials. The temporary
-//! [`prepare_endpoint`] adapter performs that work before client construction.
-
-mod from_server;
-
-pub use from_server::prepare_endpoint;
+//! The dispatcher uses prepared transport values without interpreting configuration.
 
 use std::time::Duration;
 
@@ -44,11 +39,15 @@ pub struct ConnectOptions {
     /// Connection timeout. When `None`, no timeout is applied to the TCP
     /// connection phase. Callers must apply other timeouts.
     timeout: Option<Duration>,
-    /// Optional preflight operation performed by `TacacsClient::connect`.
+    /// Optional preflight operation performed by `TacacsClient::connect_prepared`.
     preflight: ConnectPreflight,
 }
 
 impl ConnectOptions {
+    pub(crate) const fn certificate_verification_disabled(&self) -> bool {
+        self.disable_certificate_verification
+    }
+
     /// Returns options with TLS certificate verification disabled when
     /// `disabled` is true.
     #[must_use]

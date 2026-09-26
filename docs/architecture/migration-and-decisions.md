@@ -215,7 +215,7 @@ Primary starting points:
 Primary starting points:
 
 - [Credential materialization](../../libraries/tacacsrs_config/src/prepare/materialization.rs)
-- [Certificate conversion](../../libraries/tacacsrs_networking/src/transport/tls/from_server.rs)
+- [Native endpoint projection](../../libraries/tacacsrs_config/src/prepare/endpoint.rs)
 - [EPSK callback state](../../libraries/tacacsrs_networking/src/transport/tls_psk/ffi/mod.rs)
 - [SONiC mapping](../../libraries/tacacsrs_sonic/src/mapping.rs)
 

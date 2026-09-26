@@ -8,11 +8,13 @@ use std::fmt;
 use tacacsrs_secrets::SecretBytes;
 
 use crate::establish::{ConnectOptions, PreparedTransport};
+use crate::transport::tls::{CertificateIdentity, TlsClientConfig};
+use crate::transport::tls_psk::{PskClientConfig, PskHash, PskDheGroup};
 
 /// An immutable endpoint with validated native transport material.
 ///
-/// Use [`crate::prepare_endpoint`] to derive this value from a materialized
-/// YANG server. Clones share native contexts but not connection or session state.
+/// Callers supply explicit runtime values and borrowed transport credentials.
+/// Clones share native contexts but not connection or session state.
 #[derive(Clone)]
 pub struct PreparedEndpoint {
     pub(crate) address: String,
@@ -23,6 +25,72 @@ pub struct PreparedEndpoint {
 }
 
 impl PreparedEndpoint {
+    /// Selects TLS 1.3 PSK with explicit hash and ordered key-exchange groups.
+    ///
+    /// An empty group list selects PSK-only key exchange. The prepared context
+    /// owns protected key bytes and does not retain the borrowed inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity, key, groups, or native context is invalid.
+    pub fn with_psk(
+        mut self,
+        identity: &str,
+        key: &[u8],
+        hash: PskHash,
+        groups: &[PskDheGroup],
+        server_name: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        self.transport = PreparedTransport::Psk(
+            PskClientConfig::prepare(identity, key, hash, groups)?,
+            server_name.map(str::to_owned),
+        );
+        Ok(self)
+    }
+
+    /// Selects certificate TLS and validates borrowed DER credentials.
+    ///
+    /// Empty roots select the platform trust store. The endpoint options control
+    /// certificate verification. No network I/O occurs during preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the DER material or native context is invalid.
+    pub fn with_certificate_tls<'a>(
+        mut self,
+        server_name: &str,
+        roots: impl IntoIterator<Item = &'a [u8]>,
+        identity: Option<CertificateIdentity<'_>>,
+    ) -> anyhow::Result<Self> {
+        self.transport = PreparedTransport::Tls(TlsClientConfig::prepare(
+            server_name,
+            roots,
+            identity,
+            self.options.certificate_verification_disabled(),
+        )?);
+        Ok(self)
+    }
+
+    /// Creates a plain TCP endpoint from explicit runtime values.
+    ///
+    /// The packet layer applies `obfuscation_key` when present. This constructor
+    /// does not resolve the address or open a connection.
+    #[must_use]
+    pub fn tcp(
+        address: impl Into<String>,
+        single_connection: bool,
+        obfuscation_key: Option<SecretBytes>,
+        options: ConnectOptions,
+    ) -> Self {
+        Self {
+            address: address.into(),
+            single_connection,
+            obfuscation_key,
+            transport: PreparedTransport::Tcp,
+            options,
+        }
+    }
+
     /// Returns the prepared host and port without resolving DNS.
     #[must_use]
     pub fn address(&self) -> &str {
@@ -52,5 +120,26 @@ impl fmt::Debug for PreparedEndpoint {
             .field("single_connection", &self.single_connection)
             .field("security", &self.security_label())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn explicit_endpoint_needs_no_source_model_or_network_io() {
+        let endpoint = PreparedEndpoint::tcp(
+            "127.0.0.1:1",
+            false,
+            Some(SecretBytes::new(b"private-key".to_vec())),
+            ConnectOptions::default(),
+        );
+        assert_eq!(endpoint.address(), "127.0.0.1:1");
+        assert!(!endpoint.single_connection());
+        assert!(!format!("{endpoint:?}").contains("private-key"));
+        crate::TacacsClient::connect_prepared(endpoint)
+            .await
+            .unwrap();
     }
 }

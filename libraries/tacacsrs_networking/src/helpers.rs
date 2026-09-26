@@ -71,34 +71,6 @@ async fn resolve_server_addresses(hostname: &str) -> anyhow::Result<Vec<SocketAd
         .context("The TACACS+ address resolution task failed")?
 }
 
-/// Extracts the TLS server name from a configured `host[:port]` address string.
-///
-/// This function accepts plain host names, IPv4 `host:port`, and bracketed IPv6
-/// `[addr]:port` formats. It returns the host portion for SNI and certificate
-/// name checks.
-#[must_use]
-pub(crate) fn tls_server_name(server_addr: &str) -> &str {
-    if let Some(stripped) = server_addr
-        .strip_prefix('[')
-        .and_then(|value| value.split_once(']').map(|(host, _)| host))
-    {
-        return stripped;
-    }
-
-    // Split host:port only when the value contains exactly one colon.
-    // A valid IPv6 literal contains at least two colons. This check prevents
-    // the function from interpreting an unbracketed IPv6 address as host:port.
-    if server_addr.matches(':').count() == 1 {
-        if let Some((host, port)) = server_addr.rsplit_once(':') {
-            if port.parse::<u16>().is_ok() {
-                return host;
-            }
-        }
-    }
-
-    server_addr
-}
-
 /// Returns whether `data` contains a PEM block marker.
 #[must_use]
 pub(crate) fn data_contains_pem_header(data: &[u8]) -> bool {
@@ -110,55 +82,7 @@ pub(crate) fn data_contains_pem_header(data: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{data_contains_pem_header, tls_server_name};
-
-    #[test]
-    fn test_tls_server_name_plain_hostname() {
-        assert_eq!(tls_server_name("example.com"), "example.com");
-    }
-
-    #[test]
-    fn test_tls_server_name_ipv4_with_port() {
-        assert_eq!(tls_server_name("192.0.2.10:49"), "192.0.2.10");
-    }
-
-    #[test]
-    fn test_tls_server_name_ipv6_with_port() {
-        assert_eq!(tls_server_name("[2001:db8::1]:49"), "2001:db8::1");
-    }
-
-    #[test]
-    fn test_tls_server_name_unbracketed_ipv6_literal_is_unchanged() {
-        assert_eq!(tls_server_name("2001:db8::1"), "2001:db8::1");
-    }
-
-    #[test]
-    fn test_tls_server_name_unbracketed_ipv6_localhost_is_unchanged() {
-        assert_eq!(tls_server_name("::1"), "::1");
-    }
-
-    #[test]
-    fn test_tls_server_name_unbracketed_ipv6_full_is_unchanged() {
-        assert_eq!(
-            tls_server_name("2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
-            "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
-        );
-    }
-
-    #[test]
-    fn test_tls_server_name_bracketed_ipv6_without_port() {
-        assert_eq!(tls_server_name("[2001:db8::1]"), "2001:db8::1");
-    }
-
-    #[test]
-    fn test_tls_server_name_hostname_with_port() {
-        assert_eq!(tls_server_name("tacacs.example.com:49"), "tacacs.example.com");
-    }
-
-    #[test]
-    fn test_tls_server_name_hostname_with_non_numeric_port_is_unchanged() {
-        assert_eq!(tls_server_name("host:notaport"), "host:notaport");
-    }
+    use super::data_contains_pem_header;
 
     #[test]
     fn test_data_contains_pem_header_accepts_plain_pem() {

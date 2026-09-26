@@ -23,7 +23,11 @@ async fn main() -> anyhow::Result<()> {
     .with_tls13_epsk("tacacs-client-01", b"my-pre-shared-key-material".to_vec())
     .build();
 
-    let connection = TacacsClient::connect(server, ConnectOptions::default()).await?;
+    let connection = TacacsClient::connect_prepared(tacacsrs_config::prepare::prepare_endpoint(
+        &server,
+        ConnectOptions::default(),
+    )?)
+    .await?;
     let response = connection
         .execute(AccountingExchange::new(AccountingRequest {
             flags: TacacsAccountingFlags::STOP,

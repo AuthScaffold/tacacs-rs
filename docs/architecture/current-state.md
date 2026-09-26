@@ -149,7 +149,7 @@ Even the OpenSSL PSK callback state retains the full generated server type.
 
 - [Materialization result type](../../libraries/tacacsrs_config/src/prepare/materialization.rs)
 - [Runtime routing inputs](../../libraries/tacacsrs_agent/src/upstream/manager/server_set.rs#L16)
-- [Certificate transport conversion](../../libraries/tacacsrs_networking/src/transport/tls/from_server.rs#L1)
+- [Certificate transport conversion](../../libraries/tacacsrs_config/src/prepare/endpoint.rs)
 - [PSK callback state](../../libraries/tacacsrs_networking/src/transport/tls_psk/ffi/mod.rs#L29)
 
 An unresolved server and a connection-ready server have the same Rust type.

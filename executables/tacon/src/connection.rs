@@ -40,7 +40,8 @@ pub async fn establish_connection(
     server: &TacacsPlusServer,
     options: &ConnectOptions,
 ) -> anyhow::Result<Connection> {
-    let connection = TacacsClient::connect(server.clone(), options.clone()).await?;
+    let endpoint = tacacsrs_config::prepare::prepare_endpoint(server, options.clone())?;
+    let connection = TacacsClient::connect_prepared(endpoint).await?;
     Ok(Connection::from_inner(Arc::new(connection)))
 }
 

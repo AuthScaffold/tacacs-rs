@@ -58,11 +58,11 @@ async fn main() -> anyhow::Result<()> {
     .with_tls_client_certificate(Some(cert_data), Some(key_data))
     .build();
 
-    let connection = TacacsClient::connect(
-        server,
+    let endpoint = tacacsrs_config::prepare::prepare_endpoint(
+        &server,
         ConnectOptions::default().with_certificate_verification_disabled(true),
-    )
-    .await?;
+    )?;
+    let connection = TacacsClient::connect_prepared(endpoint).await?;
     let response = connection
         .execute(AccountingExchange::new(AccountingRequest {
             flags: TacacsAccountingFlags::STOP,

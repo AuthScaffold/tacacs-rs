@@ -3,12 +3,12 @@
 ## Status
 
 Stage 2 is in progress. This checkpoint covers native transport preparation, single-endpoint execution, and configuration-owned credential materialization.
-Configuration now depends on the provider-neutral credential package. Networking still depends on configuration until native projection moves.
+Configuration now depends on the provider-neutral credential package and networking. Neither depends on configuration.
 The canonical YANG model, feature manifest, and defaults remain authoritative and unchanged.
 
 ## Implemented Boundary
 
-`prepare_endpoint` borrows a materialized YANG server and returns an immutable `PreparedEndpoint`.
+`tacacsrs_config::prepare::prepare_endpoint` borrows a materialized YANG server and returns an immutable `PreparedEndpoint`.
 Preparation opens no sockets and does not resolve DNS.
 It derives the host and port, single-connection setting, protected obfuscation key, TLS context, and connection options.
 It does not mutate the source server or retain that server in the live client.
@@ -22,9 +22,8 @@ With preflight disabled, client construction remains network-free.
 Dedicated connections and reconnects reuse prepared native contexts.
 Endpoint clones share those contexts, but each client owns its connection and session state.
 
-The temporary YANG constructors, `connect` and `connect_shared`, forward through this same path.
-Their implementation lives in the preparation adapter, outside client execution.
-They no longer retain the generated server value.
+The temporary YANG constructors, `connect` and `connect_shared`, are removed.
+The agent, CLI, and examples explicitly prepare endpoints through configuration before creating clients.
 
 ## Readiness Changes
 
@@ -68,19 +67,38 @@ The central-resolution example moved into the configuration package.
 
 CI now rejects configuration, networking, IPC, SONiC, native TLS, and runtime dependencies in the credential package's normal dependency tree.
 
+## Native Projection
+
+Configuration owns transport selection, source field interpretation, and mappings from generated key formats, hashes, and ordered groups.
+Networking accepts borrowed DER material and explicit `PrivateKeyEncoding`, `PskHash`, and `PskDheGroup` values.
+These types describe transport inputs, not desired configuration. They have no configuration defaults or serialization.
+OpenSSL objects remain private to networking, which owns DER validation, native context construction, and handshakes.
+
+`PreparedEndpoint::tcp` takes explicit address, single-connection, obfuscation, and connection-option values.
+`with_certificate_tls` and `with_psk` validate material before replacing the endpoint's transport.
+They return an error instead of falling back to plaintext when preparation fails.
+
+Networking no longer imports generated configuration in production code, tests, or examples.
+The YANG examples moved to configuration, where their dependencies are declared explicitly.
+The configuration projection uses the canonical address directly for certificate server names, without parsing its formatted socket address.
+Tests cover IPv4, IPv6, domain overrides, disabled SNI, and the existing protocol-specific missing-domain behavior.
+The PSK mapping covers every generated hash and group and preserves group order.
+CI now guards networking against configuration, credential-provider, IPC, and integration dependencies.
+
 ## Verification
 
 Focused regressions cover early credential rejection, unresolved references, source immutability, runtime redaction, and release of source configuration.
 Native callback tests cover SHA-256, SHA-384, repeated calls, digest mismatch, and null output guards.
 Bounded OpenSSL loopback tests cover repeated TLS, mTLS, PSK-only, and PSK-DHE connections.
-The TLS loopback tests disable client certificate verification to isolate context reuse. They do not prove hostname-verification behavior.
+The TLS loopback tests enable certificate verification with YANG-projected CA and end-entity trust stores.
+They cover certificate trust and context reuse, but do not prove hostname-verification behavior.
 SHA-384 has native callback/session coverage, not a separate peer handshake test in this checkpoint.
 
-Package Clippy passes with `--features tokio/fs`.
-Without that flag, the existing TLS example fails because its package does not enable the filesystem feature it uses.
-This checkpoint does not change that unrelated example dependency.
+Package Clippy passes without a feature override.
+The TLS example now belongs to configuration, which explicitly enables its filesystem dependency.
 
-Workspace tests pass, including 137 active networking tests and all doctests.
+The focused suites include 104 active networking tests and 25 configuration unit tests, plus the configuration integration suites.
+Projection tests moved to configuration. Native tests consolidate equivalent schema-based fixtures into transport-input tables.
 Two existing manual networking baselines remain ignored.
 The workspace build, formatting check, warnings-as-errors rustdoc build, and architecture book build pass.
 `cargo +nightly udeps --workspace --all-targets --locked` reports no unused dependencies.
@@ -91,12 +109,17 @@ No permanent lint allowance was added.
 `cargo audit` found no vulnerabilities in the resolved lockfile.
 The advisory database updated successfully, but the crates.io index refresh could not acquire the concurrent Cargo cache lock.
 External dependency versions are unchanged.
-The lockfile records the reversed configuration-to-credentials dependency and the relocation of test dependencies.
+The lockfile records the reversed configuration-to-credentials and configuration-to-networking dependencies and the relocation of test dependencies.
 
 The configuration-owned credential increment passes workspace tests, build, formatting, rustdoc, and dependency-usage checks.
 Workspace Clippy passes with the same admission-warning exception.
 The new dependency guard and the relocated central-resolution example also pass.
 No SONiC VM or Windows build ran for this increment. Linux provider and generation-coordination tests pass.
+
+The native projection increment also passes workspace tests, build, formatting, rustdoc, and dependency-usage checks.
+Networking passes its standalone package tests without configuration feature unification.
+The schema-free networking dependency guard passes. Workspace Clippy uses only the same existing admission-warning exception.
+No external dependency version changed. Native PSK callback code is unchanged, and its existing tests still pass.
 
 Miri did not run. It required the nightly `rust-src` component, whose installation failed because the shared toolchain directory was not writable.
 Native OpenSSL callback and handshake tests provide the FFI validation for this checkpoint.
@@ -104,12 +127,10 @@ They are not a substitute for Miri coverage or independent server interoperabili
 
 ## Remaining Stage 2 Work
 
-1. Move native endpoint projection under the configuration preparation owner.
-2. Remove the networking crate's configuration dependency and the temporary YANG client constructors after consumer conversion.
-3. Consolidate datastore contracts and CLI/file adapters into configuration modules.
-4. Apply common schema and feature validation before generation publication, including explicit unsupported-feature rejection.
-5. Extend CLI, SONiC, and YANG equivalence fixtures through prepared behavior and credential rotation.
-6. Move remaining product controls into documented namespaced YANG augmentations where required.
+1. Consolidate datastore contracts and CLI/file adapters into configuration modules.
+2. Apply common schema and feature validation before generation publication, including explicit unsupported-feature rejection.
+3. Extend CLI, SONiC, and YANG equivalence fixtures through prepared behavior and credential rotation.
+4. Move remaining product controls into documented namespaced YANG augmentations where required.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Routing, request leases, deadlines, and runtime retirement remain Stage 3 work.

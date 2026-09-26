@@ -39,7 +39,8 @@ impl UpstreamConnector for NetworkUpstreamConnector {
         let options = ConnectOptions::default()
             .with_certificate_verification_disabled(self.disable_certificate_verification)
             .with_timeout(server.timeout_duration());
-        let connection = TacacsClient::connect_shared(server, options).await?;
+        let endpoint = tacacsrs_config::prepare::prepare_endpoint(&server, options)?;
+        let connection = TacacsClient::connect_prepared(endpoint).await?;
 
         Ok(Arc::new(TacacsUpstreamConnection {
             server_address: address,

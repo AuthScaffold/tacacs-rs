@@ -28,7 +28,13 @@ async fn main() -> anyhow::Result<()> {
     )
     .with_shared_secret("tac_plus_key")
     .build();
-    let connection = Arc::new(TacacsClient::connect(server, ConnectOptions::default()).await?);
+    let connection = Arc::new(
+        TacacsClient::connect_prepared(tacacsrs_config::prepare::prepare_endpoint(
+            &server,
+            ConnectOptions::default(),
+        )?)
+        .await?,
+    );
     let session_count = 100_000;
 
     let handles: Vec<JoinHandle<anyhow::Result<()>>> = (0..session_count)

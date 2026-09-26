@@ -2,13 +2,7 @@ use openssl::pkey::{PKey, Private};
 use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
 use openssl::x509::X509;
 
-/// Internal builder that [`super::prepare_from_server`] uses to create an
-/// [`SslContext`] from configuration data extracted
-/// from a [`tacacsrs_config::TacacsPlusServer`].
-///
-/// This type is not part of the public API. Callers must create TLS connections
-/// through [`crate::establish::establish_stream`]. This makes the YANG
-/// configuration model the single source for transport parameters.
+/// Builds a native context from validated certificate and key objects.
 pub(crate) struct TlsConfigurationBuilder {
     root_certificates: Vec<X509>,
     certificate_chain: Option<Vec<X509>>,

@@ -663,15 +663,13 @@ fn accounting_watchdog_preflight_request() -> AccountingRequest {
 mod tests {
     #[tokio::test]
     async fn invalid_psk_fails_before_client_construction() {
-        let server = tacacsrs_config::TacacsPlusServerBuilder::new(
-            "invalid-psk",
-            tacacsrs_config::TacacsPlusServerType::all(),
-            "127.0.0.1",
-            1,
+        let result = crate::PreparedEndpoint::tcp(
+            "127.0.0.1:1",
+            false,
+            None,
+            crate::ConnectOptions::default(),
         )
-        .with_tls13_epsk_psk_only("client", b"too-short".to_vec())
-        .build();
-        let result = super::TacacsClient::connect(server, crate::ConnectOptions::default()).await;
+        .with_psk("client", b"too-short", crate::PskHash::Sha256, &[], None);
         let Err(error) = result else {
             panic!("invalid material must fail before the lazy client is returned");
         };
@@ -684,7 +682,6 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
 
-    use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerType};
     use tacacsrs_protocol::accounting::reply::AccountingReply;
     use tacacsrs_protocol::accounting::request::AccountingRequest;
     use tacacsrs_protocol::enumerations::{
@@ -696,7 +693,7 @@ mod tests {
     use tacacsrs_protocol::traits::TacacsBodyTrait;
 
     use super::{TacacsClient, accounting_watchdog_preflight_request};
-    use crate::prepare_endpoint;
+    use crate::PreparedEndpoint;
     use crate::codec::{PacketReadResult, PacketReader};
     use crate::establish::{ConnectOptions, ConnectPreflight};
     use tacacsrs_protocol::exchange::FixedExchange;
@@ -724,23 +721,8 @@ mod tests {
         }
     }
 
-    fn server_template() -> TacacsPlusServer {
-        TacacsPlusServer {
-            name: "test".to_owned(),
-            server_type: TacacsPlusServerType::all(),
-            address: "10.0.0.1".to_owned(),
-            port: 49,
-            shared_secret: None,
-            timeout: 5,
-            single_connection: true,
-            domain_name: None,
-            sni_enabled: None,
-            client_identity: None,
-            server_authentication: None,
-            source_ip: None,
-            source_interface: None,
-            vrf_instance: None,
-        }
+    fn server_template() -> PreparedEndpoint {
+        PreparedEndpoint::tcp("10.0.0.1:49", true, None, ConnectOptions::default())
     }
 
     fn test_packet(session_id: u32, seq_no: u8, flags: TacacsFlags) -> Packet {
@@ -867,25 +849,23 @@ mod tests {
     #[tokio::test]
     async fn connect_with_disabled_preflight_does_not_open_transport() {
         let mut server = server_template();
-        server.address = "127.0.0.1".to_owned();
-        server.port = 1;
+        server.address = "127.0.0.1:1".to_owned();
 
-        let client = TacacsClient::connect(server, ConnectOptions::default())
-            .await
-            .unwrap();
+        let client = TacacsClient::connect_prepared(server).await.unwrap();
 
         assert_eq!(client.single_connection_state().await, SingleConnectionState::Initial);
     }
 
     #[test]
     fn packet_obfuscation_key_uses_shared_secret_for_tls_servers() {
-        let server =
-            TacacsPlusServerBuilder::new("test", TacacsPlusServerType::all(), "10.0.0.1", 49)
-                .with_tls_server_authentication()
-                .with_shared_secret_alongside_tls("legacy-secret")
-                .build();
-
-        let endpoint = prepare_endpoint(&server, ConnectOptions::default()).unwrap();
+        let endpoint = PreparedEndpoint::tcp(
+            "10.0.0.1:49",
+            false,
+            Some(tacacsrs_secrets::SecretBytes::new(b"legacy-secret".to_vec())),
+            ConnectOptions::default(),
+        )
+        .with_certificate_tls("10.0.0.1", [], None)
+        .unwrap();
         assert_eq!(endpoint.obfuscation_key.unwrap().expose_secret(), b"legacy-secret");
     }
 
@@ -897,12 +877,9 @@ mod tests {
             spawn_accounting_server(listener, 1, TacacsFlags::empty());
 
         let mut server = server_template();
-        server.address = listener_address.ip().to_string();
-        server.port = listener_address.port();
+        server.address = listener_address.to_string();
         server.single_connection = false;
-        let client = TacacsClient::connect(server, ConnectOptions::default())
-            .await
-            .unwrap();
+        let client = TacacsClient::connect_prepared(server).await.unwrap();
 
         let reply = client
             .execute(TestAccountingExchange(accounting_watchdog_preflight_request()))
@@ -927,14 +904,10 @@ mod tests {
         );
 
         let mut server = server_template();
-        server.address = listener_address.ip().to_string();
-        server.port = listener_address.port();
-        let client = TacacsClient::connect(
-            server,
-            ConnectOptions::default().with_preflight(ConnectPreflight::AccountingWatchdog),
-        )
-        .await
-        .unwrap();
+        server.address = listener_address.to_string();
+        server.options =
+            ConnectOptions::default().with_preflight(ConnectPreflight::AccountingWatchdog);
+        let client = TacacsClient::connect_prepared(server).await.unwrap();
 
         let preflight_packet = receive_request(&mut request_receiver).await;
         let preflight_request = AccountingRequest::from_packet(&preflight_packet).unwrap();
@@ -973,14 +946,10 @@ mod tests {
             spawn_accounting_server(listener, 2, TacacsFlags::empty());
 
         let mut server = server_template();
-        server.address = listener_address.ip().to_string();
-        server.port = listener_address.port();
-        let client = TacacsClient::connect(
-            server,
-            ConnectOptions::default().with_preflight(ConnectPreflight::AccountingWatchdog),
-        )
-        .await
-        .unwrap();
+        server.address = listener_address.to_string();
+        server.options =
+            ConnectOptions::default().with_preflight(ConnectPreflight::AccountingWatchdog);
+        let client = TacacsClient::connect_prepared(server).await.unwrap();
 
         let preflight_packet = receive_request(&mut request_receiver).await;
         let preflight_request = AccountingRequest::from_packet(&preflight_packet).unwrap();
@@ -1025,11 +994,8 @@ mod tests {
             );
 
         let mut server = server_template();
-        server.address = listener_address.ip().to_string();
-        server.port = listener_address.port();
-        let client = TacacsClient::from_prepared(
-            prepare_endpoint(&server, ConnectOptions::default()).unwrap(),
-        );
+        server.address = listener_address.to_string();
+        let client = TacacsClient::from_prepared(server);
 
         for _ in 0..3 {
             let reply = tokio::time::timeout(
@@ -1067,11 +1033,8 @@ mod tests {
             spawn_accounting_server(listener, 2, TacacsFlags::empty());
 
         let mut server = server_template();
-        server.address = listener_address.ip().to_string();
-        server.port = listener_address.port();
-        let client = TacacsClient::from_prepared(
-            prepare_endpoint(&server, ConnectOptions::default()).unwrap(),
-        );
+        server.address = listener_address.to_string();
+        let client = TacacsClient::from_prepared(server);
 
         let first_session = client.create_session().await.unwrap();
         run_session_exchange(&first_session).await;
@@ -1105,11 +1068,8 @@ mod tests {
             spawn_accounting_server(listener, 1, TacacsFlags::empty());
 
         let mut server = server_template();
-        server.address = listener_address.ip().to_string();
-        server.port = listener_address.port();
-        let client = TacacsClient::from_prepared(
-            prepare_endpoint(&server, ConnectOptions::default()).unwrap(),
-        );
+        server.address = listener_address.to_string();
+        let client = TacacsClient::from_prepared(server);
 
         client
             .update_single_connection_state(SingleConnectionState::NotSupported)
@@ -1138,11 +1098,8 @@ mod tests {
             spawn_accounting_server(listener, 2, TacacsFlags::empty());
 
         let mut server = server_template();
-        server.address = listener_address.ip().to_string();
-        server.port = listener_address.port();
-        let client = TacacsClient::from_prepared(
-            prepare_endpoint(&server, ConnectOptions::default()).unwrap(),
-        );
+        server.address = listener_address.to_string();
+        let client = TacacsClient::from_prepared(server);
 
         let first_session = client.create_session().await.unwrap();
         assert_eq!(client.single_connection_state().await, SingleConnectionState::Negotiating);

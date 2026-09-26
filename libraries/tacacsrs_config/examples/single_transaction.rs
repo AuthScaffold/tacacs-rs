@@ -26,7 +26,11 @@ async fn main() -> anyhow::Result<()> {
     )
     .with_shared_secret("tac_plus_key")
     .build();
-    let connection = TacacsClient::connect(server, ConnectOptions::default()).await?;
+    let connection = TacacsClient::connect_prepared(tacacsrs_config::prepare::prepare_endpoint(
+        &server,
+        ConnectOptions::default(),
+    )?)
+    .await?;
 
     for flags in [TacacsAccountingFlags::START, TacacsAccountingFlags::STOP] {
         let response = connection

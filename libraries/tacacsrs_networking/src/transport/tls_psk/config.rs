@@ -6,11 +6,10 @@
 use anyhow::{Context, Result};
 use openssl::ssl::Ssl;
 use openssl::ssl::SslContext;
-use tacacsrs_config::TacacsPlusServer;
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
-use super::context::create_psk_ssl_context;
+use super::context::{create_psk_ssl_context, PskHash, PskDheGroup};
 use super::PskDheKeGroups;
 
 #[derive(Clone)]
@@ -22,21 +21,25 @@ pub(crate) struct PskClientConfig {
 
 impl PskClientConfig {
     /// Prepares an OpenSSL TLS 1.3 PSK client context from EPSK configuration.
-    pub(crate) fn prepare(server: &TacacsPlusServer) -> Result<Self> {
-        let epsk = super::tls13_epsk::config(server)?;
-        let handshake_hash = epsk.hash;
-        let psk_dhe_ke_groups = PskDheKeGroups::from_config(&epsk.psk_dhe_ke_groups);
+    pub(crate) fn prepare(
+        identity: &str,
+        key: &[u8],
+        handshake_hash: PskHash,
+        groups: &[PskDheGroup],
+    ) -> Result<Self> {
+        let psk_dhe_ke_groups = PskDheKeGroups::new(groups);
         let ssl_context =
-            create_psk_ssl_context(server, psk_dhe_ke_groups.as_ref()).with_context(|| {
-                format!(
-                    "Failed to prepare OpenSSL TLS 1.3 PSK context (hash: {}, groups: {})",
-                    handshake_hash.as_rfc7951_str(),
-                    format_groups(psk_dhe_ke_groups.as_ref())
-                )
-            })?;
+            create_psk_ssl_context(identity, key, handshake_hash, psk_dhe_ke_groups.as_ref())
+                .with_context(|| {
+                    format!(
+                        "Failed to prepare OpenSSL TLS 1.3 PSK context (hash: {}, groups: {})",
+                        handshake_hash.name(),
+                        format_groups(psk_dhe_ke_groups.as_ref())
+                    )
+                })?;
 
         Ok(Self {
-            hash_name: handshake_hash.as_rfc7951_str(),
+            hash_name: handshake_hash.name(),
             psk_dhe_ke_groups,
             ssl_context,
         })
@@ -99,31 +102,10 @@ fn format_groups(groups: Option<&PskDheKeGroups>) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tacacsrs_config::generated::tacacs_plus::{EpskSupportedHash, Tls13Epsk};
-    use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
-    use tacacsrs_secrets::SecretBytes;
-
-    fn epsk_with_key(key: &[u8]) -> Tls13Epsk {
-        Tls13Epsk {
-            external_identity: "client-id".to_owned(),
-            hash: EpskSupportedHash::Sha256,
-            context: None,
-            target_protocol: None,
-            target_kdf: None,
-            psk_dhe_ke_groups: vec![],
-            inline_definition: Some(SymmetricKeyInlineDefinition {
-                key_format: None,
-                cleartext_symmetric_key: Some(SecretBytes::new(key.to_vec())),
-            }),
-            central_keystore_reference: None,
-        }
-    }
 
     #[test]
     fn prepare_surfaces_context_errors_before_handshake() {
-        let epsk = epsk_with_key(b"too-short");
-
-        let Err(error) = PskClientConfig::prepare(&super::super::tls13_epsk::test_server(epsk))
+        let Err(error) = PskClientConfig::prepare("client-id", b"too-short", PskHash::Sha256, &[])
         else {
             panic!("invalid PSK credentials must fail during preparation");
         };
@@ -135,8 +117,7 @@ mod tests {
 
     #[test]
     fn prepare_accepts_materialized_inline_secret() {
-        let epsk = epsk_with_key(b"materialized-inline-secret");
-        PskClientConfig::prepare(&super::super::tls13_epsk::test_server(epsk))
+        PskClientConfig::prepare("client-id", b"materialized-inline-secret", PskHash::Sha256, &[])
             .expect("materialized inline key must create an OpenSSL context");
     }
 
@@ -148,10 +129,9 @@ mod tests {
         use openssl::ssl::{SslMethod, SslVersion};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
-        use tacacsrs_config::PskDheKeSupportedGroup;
 
         const KEY: &[u8] = b"prepared-key-for-loopback-handshakes";
-        for groups in [vec![], vec![PskDheKeSupportedGroup::X25519]] {
+        for groups in [vec![], vec![PskDheGroup::X25519]] {
             let mut context = SslContext::builder(SslMethod::tls_server()).unwrap();
             context
                 .set_min_proto_version(Some(SslVersion::TLS1_3))
@@ -171,10 +151,8 @@ mod tests {
             let context = context.build();
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap().to_string();
-            let mut epsk = epsk_with_key(KEY);
-            epsk.psk_dhe_ke_groups = groups;
             let config =
-                PskClientConfig::prepare(&super::super::tls13_epsk::test_server(epsk)).unwrap();
+                PskClientConfig::prepare("client-id", KEY, PskHash::Sha256, &groups).unwrap();
             let peer = async {
                 for _ in 0..2 {
                     let (tcp, _) = listener.accept().await?;
