@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tacacsrs_config::crypto_types::SymmetricKeyFormat;
+use tacacsrs_credential_resolution::SymmetricKeyFormat;
 use tacacsrs_credential_resolution::{
     CredentialKind, CredentialRequest, CredentialResolver, ProviderErrorKind, ResolutionError,
     ResolvedCredential,

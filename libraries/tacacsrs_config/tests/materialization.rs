@@ -1,11 +1,13 @@
 use async_trait::async_trait;
 use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
 use tacacsrs_config::{ValidationOptions, parse_yang_json};
+use tacacsrs_config::prepare::{
+    MaterializationErrorKind, enumerate_materialized_servers, materialize_servers,
+};
 use tacacsrs_credential_resolution::{
     CertificateBagMaterial, CertificateWithKeyMaterial, CredentialKind, CredentialRequest,
-    CredentialResolver, MaterializationErrorKind, NamedCertificateMaterial, ProviderErrorKind,
-    PublicBytes, ResolutionError, ResolvedCredential, SecretBytes, SymmetricKeyMaterial,
-    enumerate_materialized_servers, materialize_servers,
+    CredentialResolver, NamedCertificateMaterial, ProviderErrorKind, PublicBytes, ResolutionError,
+    ResolvedCredential, SecretBytes, SymmetricKeyMaterial,
 };
 
 struct CompleteResolver {
@@ -30,16 +32,21 @@ impl CredentialResolver for CompleteResolver {
         Ok(match request.kind() {
             CredentialKind::CertificateWithKey => {
                 ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
-                    public_key_format: Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),
+                    public_key_format: Some(
+                        tacacsrs_credential_resolution::PublicKeyFormat::SubjectPublicKeyInfoFormat,
+                    ),
                     public_key: Some(PublicBytes::new(b"resolved-public-key".to_vec())),
-                    private_key_format: PrivateKeyFormat::OneAsymmetricKeyFormat,
+                    private_key_format:
+                        tacacsrs_credential_resolution::PrivateKeyFormat::OneAsymmetricKeyFormat,
                     certificate: PublicBytes::new(b"resolved-certificate".to_vec()),
                     private_key: SecretBytes::new(b"resolved-private-key".to_vec()),
                 })
             }
             CredentialKind::SymmetricKey => {
                 ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
-                    key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
+                    key_format: Some(
+                        tacacsrs_credential_resolution::SymmetricKeyFormat::OctetStringKeyFormat,
+                    ),
                     key: SecretBytes::new(b"resolved-epsk-material".to_vec()),
                 })
             }

@@ -3,6 +3,7 @@ mod central_references;
 pub mod extensions;
 pub mod builders;
 pub mod validation;
+pub mod prepare;
 mod enumeration;
 mod mapping;
 pub(crate) mod serde_helpers;

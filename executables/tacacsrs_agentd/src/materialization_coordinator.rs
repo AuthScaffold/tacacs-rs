@@ -8,9 +8,9 @@ use tacacsrs_config::{
     TacacsPlus, TacacsPlusServer, ValidationOptions, enumerate_server, inspect_central_references,
     validation,
 };
+use tacacsrs_config::prepare::{MaterializationError, materialize_servers, resolution_plan};
 use tacacsrs_credential_resolution::{
     CredentialChangeScope, CredentialKind, CredentialReference, CredentialResolver,
-    MaterializationError, ResolutionPlan, materialize_servers,
 };
 use tokio::sync::Mutex;
 
@@ -250,7 +250,7 @@ fn dependency_index(source: &TacacsPlus) -> Option<BTreeMap<DependencyKey, BTree
     let mut dependencies = BTreeMap::<DependencyKey, BTreeSet<String>>::new();
     for source_server in &source.server {
         let server = enumerate_server(source, &source_server.name).ok()?;
-        let plan = ResolutionPlan::from_server(&server).ok()?;
+        let plan = resolution_plan(&server).ok()?;
         for request in plan.requests() {
             dependencies
                 .entry(DependencyKey {
@@ -296,7 +296,7 @@ mod tests {
         TacacsClientService,
     };
     use tacacsrs_agent_client::IpcEndpoint;
-    use tacacsrs_config::crypto_types::SymmetricKeyFormat;
+    use tacacsrs_credential_resolution::SymmetricKeyFormat;
     use tacacsrs_config::{TacacsPlus, ValidationOptions, parse_yang_json};
     use tacacsrs_credential_resolution::{
         CredentialChangeScope, CredentialReference, CredentialRequest, CredentialResolver,

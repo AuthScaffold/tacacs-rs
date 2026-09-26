@@ -211,7 +211,7 @@ Credential materialization already provides an all-or-nothing result for a serve
 These mechanisms deserve preservation or an explicit replacement contract.
 
 - [Secret ownership](../../libraries/tacacsrs_secrets/src/lib.rs#L1)
-- [Credential materialization](../../libraries/tacacsrs_credential_resolution/src/materialization.rs#L139)
+- [Credential materialization](../../libraries/tacacsrs_config/src/prepare/materialization.rs)
 
 The network client separates typed fixed exchanges from raw packet conversations.
 The target must preserve that semantic distinction even if it changes package boundaries.

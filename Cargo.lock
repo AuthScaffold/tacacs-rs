@@ -2122,12 +2122,15 @@ name = "tacacsrs-config"
 version = "0.0.0-dev"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.23.1",
  "bitflags 2.13.2",
  "serde",
  "serde_ignored",
  "serde_json",
+ "tacacsrs-credential-resolution",
  "tacacsrs-secrets",
+ "tokio",
 ]
 
 [[package]]
@@ -2137,11 +2140,8 @@ dependencies = [
  "async-trait",
  "futures-core",
  "serde",
- "serde_json",
  "static_assertions",
- "tacacsrs-config",
  "tacacsrs-secrets",
- "tokio",
 ]
 
 [[package]]

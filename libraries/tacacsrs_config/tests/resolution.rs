@@ -2,8 +2,8 @@ use tacacsrs_config::{enumerate_servers, parse_yang_json, pipeline};
 use tacacsrs_credential_resolution::{
     CertificateBagMaterial, CertificateWithKeyMaterial, CredentialKind, CredentialReference,
     FakeCredentialResolver, NamedCertificateMaterial, ProviderErrorKind, PublicBytes,
-    ResolutionErrorKind, ResolutionPlan, ResolvedCredential, ResolvedCredentialSet,
-    ResolvedResponse, SecretBytes, SymmetricKeyMaterial, resolve_plan,
+    ResolutionErrorKind, ResolvedCredential, ResolvedCredentialSet, ResolvedResponse, SecretBytes,
+    SymmetricKeyMaterial, resolve_plan,
 };
 
 fn certificate_and_trust_server() -> tacacsrs_config::TacacsPlusServer {
@@ -64,7 +64,8 @@ fn certificate_material() -> ResolvedCredential {
     ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
         public_key_format: None,
         public_key: None,
-        private_key_format: tacacsrs_config::crypto_types::PrivateKeyFormat::OneAsymmetricKeyFormat,
+        private_key_format:
+            tacacsrs_credential_resolution::PrivateKeyFormat::OneAsymmetricKeyFormat,
         certificate: PublicBytes::new(b"certificate".to_vec()),
         private_key: SecretBytes::new(b"private-key".to_vec()),
     })
@@ -90,8 +91,9 @@ fn ee_material() -> ResolvedCredential {
 
 #[tokio::test]
 async fn fake_resolver_completes_all_request_variants() {
-    let certificate_plan = ResolutionPlan::from_server(&certificate_and_trust_server())
-        .expect("certificate plan must build");
+    let certificate_plan =
+        tacacsrs_config::prepare::resolution_plan(&certificate_and_trust_server())
+            .expect("certificate plan must build");
     assert_eq!(
         certificate_plan
             .requests()
@@ -120,7 +122,8 @@ async fn fake_resolver_completes_all_request_variants() {
         CredentialKind::CertificateWithKey,
     );
 
-    let epsk_plan = ResolutionPlan::from_server(&epsk_server()).expect("EPSK plan must build");
+    let epsk_plan =
+        tacacsrs_config::prepare::resolution_plan(&epsk_server()).expect("EPSK plan must build");
     let epsk_resolver = FakeCredentialResolver::new().with_response(
         epsk_plan.requests()[0].slot(),
         ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
@@ -142,8 +145,8 @@ async fn fake_resolver_completes_all_request_variants() {
 
 #[test]
 fn request_plan_is_deterministic_explicit_and_redacted() {
-    let plan =
-        ResolutionPlan::from_server(&certificate_and_trust_server()).expect("plan must build");
+    let plan = tacacsrs_config::prepare::resolution_plan(&certificate_and_trust_server())
+        .expect("plan must build");
     let first = &plan.requests()[0];
     assert_eq!(first.context().server_name(), "certificate-server");
     assert_eq!(first.context().field_path(), "client-identity/certificate");
@@ -186,14 +189,14 @@ fn planning_requires_enumeration_and_rejects_incomplete_request() {
         }"#,
     )
     .expect("raw bundle configuration must parse");
-    let error = ResolutionPlan::from_server(&raw.tacacs_plus.server[0])
+    let error = tacacsrs_config::prepare::resolution_plan(&raw.tacacs_plus.server[0])
         .expect_err("raw local reference must fail");
     assert_eq!(error.kind(), ResolutionErrorKind::EnumerationRequired);
     assert!(error.to_string().contains("credentials-reference"));
     assert!(!error.to_string().contains("local-secret-id"));
 
     let enumerated = enumerate_servers(&raw.tacacs_plus).expect("bundle enumeration must succeed");
-    ResolutionPlan::from_server(&enumerated[0]).expect("enumerated plan must build");
+    tacacsrs_config::prepare::resolution_plan(&enumerated[0]).expect("enumerated plan must build");
 
     let incomplete = parse_yang_json(
         r#"{
@@ -211,7 +214,7 @@ fn planning_requires_enumeration_and_rejects_incomplete_request() {
         }"#,
     )
     .expect("generated central container is structurally valid");
-    let error = ResolutionPlan::from_server(&incomplete.server[0])
+    let error = tacacsrs_config::prepare::resolution_plan(&incomplete.server[0])
         .expect_err("incomplete central request must fail planning");
     assert_eq!(error.kind(), ResolutionErrorKind::IncompleteRequest);
     assert_eq!(error.expected(), Some(CredentialKind::CertificateWithKey));
@@ -267,9 +270,10 @@ fn resolution_plan_covers_all_variants_after_bundle_enumeration() {
     )
     .expect("bundle configuration must parse");
     let servers = enumerate_servers(&config).expect("bundles must enumerate");
-    let certificate_plan =
-        ResolutionPlan::from_server(&servers[0]).expect("certificate plan must build");
-    let epsk_plan = ResolutionPlan::from_server(&servers[1]).expect("EPSK plan must build");
+    let certificate_plan = tacacsrs_config::prepare::resolution_plan(&servers[0])
+        .expect("certificate plan must build");
+    let epsk_plan =
+        tacacsrs_config::prepare::resolution_plan(&servers[1]).expect("EPSK plan must build");
 
     assert_eq!(
         certificate_plan
@@ -307,8 +311,8 @@ fn resolution_plan_covers_all_variants_after_bundle_enumeration() {
 
 #[test]
 fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
-    let plan =
-        ResolutionPlan::from_server(&certificate_and_trust_server()).expect("plan must build");
+    let plan = tacacsrs_config::prepare::resolution_plan(&certificate_and_trust_server())
+        .expect("plan must build");
     let slots = plan.requests();
 
     let missing = ResolvedCredentialSet::from_responses(
@@ -364,7 +368,8 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
 
 #[tokio::test]
 async fn provider_failures_are_typed_and_sanitized() {
-    let plan = ResolutionPlan::from_server(&epsk_server()).expect("EPSK plan must build");
+    let plan =
+        tacacsrs_config::prepare::resolution_plan(&epsk_server()).expect("EPSK plan must build");
     let resolver = FakeCredentialResolver::new()
         .with_error(plan.requests()[0].slot(), ProviderErrorKind::AccessDenied);
 

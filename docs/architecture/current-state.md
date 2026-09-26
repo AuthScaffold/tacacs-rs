@@ -147,7 +147,7 @@ Credential materialization mutates that family into inline values.
 The agent stores those server values, and TLS backends interpret them again during connection establishment.
 Even the OpenSSL PSK callback state retains the full generated server type.
 
-- [Materialization result type](../../libraries/tacacsrs_credential_resolution/src/materialization.rs#L122)
+- [Materialization result type](../../libraries/tacacsrs_config/src/prepare/materialization.rs)
 - [Runtime routing inputs](../../libraries/tacacsrs_agent/src/upstream/manager/server_set.rs#L16)
 - [Certificate transport conversion](../../libraries/tacacsrs_networking/src/transport/tls/from_server.rs#L1)
 - [PSK callback state](../../libraries/tacacsrs_networking/src/transport/tls_psk/ffi/mod.rs#L29)

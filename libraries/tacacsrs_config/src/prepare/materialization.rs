@@ -3,16 +3,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use tacacsrs_config::keystore::{EndEntityCertWithKeyInlineDefinition, SymmetricKeyInlineDefinition};
-use tacacsrs_config::truststore::{CertsCertificate, CertsInlineDefinition};
-use tacacsrs_config::{
-    TacacsPlus, TacacsPlusServer, ValidationOptions, enumerate_servers, inspect_central_references,
-    validation,
+use tacacsrs_credential_resolution::{
+    CertificateBagMaterial, CertificateWithKeyMaterial, CredentialResolver, ResolutionError,
+    ResolvedCredential, SymmetricKeyMaterial, resolve_plan, RequestContext, PublicBytes,
 };
 
+use crate::keystore::{EndEntityCertWithKeyInlineDefinition, SymmetricKeyInlineDefinition};
+use crate::truststore::{CertsCertificate, CertsInlineDefinition};
 use crate::{
-    CertificateBagMaterial, CertificateWithKeyMaterial, CredentialResolver, ResolutionError,
-    ResolvedCredential, SymmetricKeyMaterial, resolve_plan,
+    TacacsPlus, TacacsPlusServer, ValidationOptions, enumerate_servers, inspect_central_references,
+    validation,
 };
 
 /// Stable materialization error category.
@@ -58,7 +58,7 @@ impl MaterializationError {
             server_name: error
                 .context()
                 .map(|context| context.server_name().to_owned()),
-            field_path: error.context().map(crate::RequestContext::field_path),
+            field_path: error.context().map(RequestContext::field_path),
             resolution: Some(error),
         }
     }
@@ -171,8 +171,7 @@ async fn materialize_server_unvalidated(
     mut server: TacacsPlusServer,
     resolver: &dyn CredentialResolver,
 ) -> Result<TacacsPlusServer, MaterializationError> {
-    let plan =
-        crate::ResolutionPlan::from_server(&server).map_err(MaterializationError::resolution)?;
+    let plan = super::resolution_plan(&server).map_err(MaterializationError::resolution)?;
     let result_set = resolve_plan(&plan, resolver)
         .await
         .map_err(MaterializationError::resolution)?;
@@ -252,9 +251,9 @@ fn install_certificate_with_key(
     }
     let certificate = server.client_identity.as_mut()?.certificate.as_mut()?;
     certificate.inline_definition = Some(EndEntityCertWithKeyInlineDefinition {
-        public_key_format: material.public_key_format,
-        public_key: material.public_key.map(crate::PublicBytes::into_bytes),
-        private_key_format: Some(material.private_key_format),
+        public_key_format: material.public_key_format.map(Into::into),
+        public_key: material.public_key.map(PublicBytes::into_bytes),
+        private_key_format: Some(material.private_key_format.into()),
         cleartext_private_key: Some(material.private_key),
         cert_data: Some(material.certificate.into_bytes()),
     });
@@ -272,7 +271,7 @@ fn install_symmetric_key(
     }
     let epsk = server.client_identity.as_mut()?.tls13_epsk.as_mut()?;
     epsk.inline_definition = Some(SymmetricKeyInlineDefinition {
-        key_format: material.key_format,
+        key_format: material.key_format.map(Into::into),
         cleartext_symmetric_key: Some(material.key),
     });
     epsk.central_keystore_reference = None;

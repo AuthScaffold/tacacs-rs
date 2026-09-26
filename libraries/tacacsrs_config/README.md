@@ -10,10 +10,12 @@
 - Configuration-local credential bundle validation
 - Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
 - Secret-free inspection of central keystore and truststore references on enumerated servers
+- Provider request planning and transactional materialization under `prepare`
 - A reusable `TacacsPlusServerBuilder` for constructing `TacacsPlusServer` values in code
 - A project-owned YANG augmentation for TLS 1.3 PSK DHE key exchange group selection
 
-`tacacsrs-credential-resolution` defines external secret resolution. Provider implementations and runtime materialization remain outside `tacacsrs-config`.
+`tacacsrs-credential-resolution` defines provider-neutral requests, material, and resolver contracts.
+This crate owns their conversion to and from canonical YANG fields. Provider implementations remain outside configuration.
 
 ## Parsing API
 
@@ -34,7 +36,8 @@ The primary entry points are:
 - `enumerate_server(&TacacsPlus, &str)` — inline shared credential bundles for one named server
 - `inspect_central_references(&TacacsPlusServer)` — inspect opaque central references without retrieving secret material
 
-Enumerate servers before passing them to `tacacsrs-credential-resolution`. Planning rejects unresolved configuration-local bundle references with an enumerate-first error.
+Enumerate servers before calling `prepare::resolution_plan`.
+Planning rejects unresolved configuration-local bundle references with an enumerate-first error.
 
 ## Multi-layer design
 
@@ -70,15 +73,23 @@ let server = enumerate_server(&config, "primary")?;
 
 ### 3) Central credential resolution
 
-Pass each enumerated server to `tacacsrs_credential_resolution::ResolutionPlan::from_server`. The resolution crate extracts deterministic typed requests for central certificate-with-key, TLS 1.3 symmetric key, CA bag, and end-entity bag references. A `CredentialResolver` returns typed material, and `resolve_plan` validates the complete slot/variant-matched result set.
+Pass each enumerated server to `prepare::resolution_plan`.
+The planner maps central references to deterministic provider requests without changing their values.
+A `CredentialResolver` returns typed material, and `resolve_plan` validates the complete slot/variant-matched result set.
+
+For complete materialization, call `prepare::enumerate_materialized_servers` with a source snapshot, resolver, and validation options.
+This function enumerates local bundles, resolves central requests, installs provider results, and validates the complete candidate set.
+It leaves the source snapshot and its references unchanged.
+`prepare::materialize_server` and `prepare::materialize_servers` accept servers whose local bundles are already expanded.
 
 Central references are opaque in both generic crates. They can contain spaces, slashes, traversal-like text, or provider-defined syntax.
 
 `tacacsrs-config` enforces the generated YANG structure and inline-versus-central choices. It does not apply SONiC identifier grammar or map references to paths.
 
-It does not inspect path existence, inspect permissions, watch files, or retrieve secrets.
+It does not inspect path existence, inspect permissions, or watch files.
+Materialization delegates secret retrieval to the supplied resolver.
 
-The SONiC integration layer provides the resolver. It projects the closed result set into networking inputs.
+The SONiC integration layer supplies a resolver. It does not interpret generated fields during provider lookup.
 
 ### Module-oriented API (recommended for most users)
 
@@ -89,6 +100,7 @@ This crate also exposes grouped modules so callers can choose APIs by intent:
 - `extensions` — helper traits layered over generated model types
 - `pipeline` — step-by-step processing
 - `runtime` — bundle enumeration (`enumerate_server`, `enumerate_servers`)
+- `prepare` — provider request planning, generated-field installation, and candidate validation
 - `stats` — runtime stats types
 
 For simple end-to-end usage with credential bundles defined directly in the configuration:
@@ -143,8 +155,9 @@ The intended long-term split is:
 
 - `tacacsrs-config` stays as the open configuration model. It owns RFC 7951 parsing, schema validation, bundle enumeration, and generated YANG types.
 - Small derived helpers that are valid before and after secret resolution belong here, in `extensions`, on top of `TacacsPlusServer` and other generated types.
-- `tacacsrs-credential-resolution` consumes enumerated `TacacsPlusServer` values and returns a closed provider-neutral result set with concrete material.
-- Provider implementations and projection into connection-ready networking types remain integration-layer responsibilities.
+- `tacacsrs-credential-resolution` consumes typed request plans and returns closed provider-neutral result sets. It does not depend on configuration.
+- `prepare` maps YANG references and provider metadata, then validates materialized candidates without changing authoritative snapshots.
+- Native endpoint preparation still belongs to networking pending the next Stage 2 dependency change.
 
 This separation keeps the generated configuration model suitable for round trips and reports. Runtime code receives only the normalized fields that it needs for connections.
 
@@ -156,7 +169,7 @@ The crate includes runnable examples under `examples/`:
 - `quick_start_credential_refs.rs` — minimal end-to-end example showing bundle validation and enumeration
 - `pipeline_flow.rs` — explicit step-by-step parse/enumerate/external-resolution pipeline
 - `model_access.rs` — direct access to generated model types and flags
-- The provider-neutral central-resolution example lives in `tacacsrs-credential-resolution`.
+- `central_resolution.rs` — YANG planning and provider-neutral resolution with a fake resolver
 
 Run examples from the workspace root:
 
@@ -165,7 +178,7 @@ cargo run -p tacacsrs-config --example quick_start
 cargo run -p tacacsrs-config --example quick_start_credential_refs
 cargo run -p tacacsrs-config --example pipeline_flow
 cargo run -p tacacsrs-config --example model_access
-cargo run -p tacacsrs-credential-resolution --example central_resolution
+cargo run -p tacacsrs-config --example central_resolution
 ```
 
 ## Public API surface

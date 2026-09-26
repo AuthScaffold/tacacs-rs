@@ -1,9 +1,8 @@
-use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat};
+use tacacsrs_credential_resolution::{PrivateKeyFormat, PublicKeyFormat};
 use tacacsrs_config::{enumerate_server, parse_yang_json};
 use tacacsrs_credential_resolution::{
     CertificateBagMaterial, CertificateWithKeyMaterial, CredentialKind, FakeCredentialResolver,
-    NamedCertificateMaterial, PublicBytes, ResolutionPlan, ResolvedCredential, SecretBytes,
-    resolve_plan,
+    NamedCertificateMaterial, PublicBytes, ResolvedCredential, SecretBytes, resolve_plan,
 };
 
 #[tokio::main(flavor = "current_thread")]
@@ -36,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }"#,
     )?;
     let server = enumerate_server(&config, "primary")?;
-    let plan = ResolutionPlan::from_server(&server)?;
+    let plan = tacacsrs_config::prepare::resolution_plan(&server)?;
 
     assert_eq!(plan.requests().len(), 2);
     assert_eq!(plan.requests()[0].kind(), CredentialKind::CertificateWithKey);
