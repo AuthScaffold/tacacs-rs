@@ -215,7 +215,10 @@ Its [completion checklist](stage-2-prepared-endpoints.md#completion-checklist) t
 The numbered plan below is the original scope, not a limit on necessary corrections.
 S2-12 is complete in `594b5be`: local listener controls now use canonical YANG and shared pre-bind validation.
 S2-13 is complete in `66c59d6`: downstream credentials now use explicit canonical source policy and immutable prepared material.
-The full SONiC mapping review, the field inventory, and final closure checks remain open as S2-14 through S2-16.
+S2-14 is complete in `64b2e4e`: SONiC preserves canonical rows and uses shared publication-time proxy loop validation.
+The field inventory and final closure checks remain open as S2-15 and S2-16.
+New item S2-17 covers connection-time loop exclusion for later DNS/interface changes and actual ephemeral listener ports.
+Stage 2 closure requires that this additional item is resolved as well.
 
 1. Preserve generated YANG types and builders as the authoritative configuration APIs.
 2. Normalize CLI and SONiC inputs into YANG snapshots through the same schema and feature validation contract.

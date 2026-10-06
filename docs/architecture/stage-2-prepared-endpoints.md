@@ -26,6 +26,7 @@ If work moves between stages, record its new owner and update both stage descrip
 - [x] S2-06: Reject unsupported runtime fields explicitly. Commit `6f2c9a7` adds capability checks and source-preservation tests. See [publication readiness](#publication-readiness).
 - [x] S2-12: Make service selection, listener endpoints, and Unix socket permissions canonical YANG controls. Commit `594b5be` removes independent runtime fields and duplicate validation. See [canonical local services](#canonical-local-services) for pre-bind rejection, input equivalence, and permission tests.
 - [x] S2-13: Derive downstream credentials from explicit canonical source policy. Commit `66c59d6` removes mutable runtime credentials and implicit row overrides. See [canonical downstream credentials](#canonical-downstream-credentials) for redaction, rotation, startup rejection, and publication rollback evidence.
+- [x] S2-14: Normalize the SONiC forwarder profile into canonical local services and consolidate publication-time loop validation. Commit `64b2e4e` preserves source rows and adds cross-source, wildcard, interface, and DNS regressions. See [SONiC mapping and loop checks](#sonic-mapping-and-loop-checks). Connection-time enforcement remains the separate S2-17 item.
 
 ### Completed Discoveries
 
@@ -458,9 +459,44 @@ Unused-dependency checks pass. The dependency audit found no vulnerabilities, wi
 The CLI build target now declares the existing secrets crate. No external dependency version, lockfile, protobuf contract, or unsafe code changed.
 Windows, live SONiC, and independent-server validation did not run for this increment.
 
+## SONiC Mapping and Loop Checks
+
+Commit `64b2e4e` completes S2-14's source normalization and publication-time loop checks.
+`SonicForwarderSettings::local_services` now owns the SONiC profile: both services, the mapped proxy endpoint, and row-derived credentials.
+Generated YANG defaults supply the IPC path and socket permissions. The daemon no longer repeats these profile choices.
+The ConfigDB listener port's default of 49 remains an explicit SONiC input rule. The canonical endpoint contains that resolved port.
+CLI, SONiC, and YANG fixtures produce equal source and prepared listener values for IPv4, IPv6, and IPv4-mapped inputs.
+
+The mapper no longer removes classic local rows or rejects TLS self-targets before producing the authoritative snapshot.
+It preserves row material and credential references for the shared runtime filter.
+An end-to-end regression failed because the earlier mapper deleted the local row required by S2-13's credential preparation.
+That regression now passes through SONiC normalization, downstream credential preparation, and removal from the applied upstream set.
+Distinct loopback addresses remain distinct hosts. Only actual IPv4-mapped aliases normalize to the same address.
+
+`ListenerEndpoint::covers_tcp_destination` owns deterministic matching against resolved destinations and supplied interface addresses.
+The daemon uses `if-addrs` to refresh local addresses for each wildcard-listener candidate check.
+Wildcard checks cover loopback and non-loopback interfaces. IPv6 wildcard matching conservatively includes dual-stack bindings.
+A regression that previously retained a loopback target under `0.0.0.0` now passes without removing a remote server on the same port.
+The shared runtime filter rejects TLS self-targets, including those supplied outside SONiC.
+
+When ports match, hostname resolution uses the canonical server timeout and checks every returned address.
+Lookup failures, empty answers, unspecified destinations, and timeouts reject the candidate instead of retaining an unchecked row.
+Deterministic tests inject resolution results and use paused time for timeout coverage.
+Interface enumeration failure also rejects the candidate. Literal addresses and different-port candidates require no DNS lookup.
+The existing supervisor retains the previous accepted generation when filtering fails.
+
+Publication checks cannot guard address changes before a later connection attempt.
+Networking resolves names again during execution, and an ephemeral listener's actual port differs from its configured zero value.
+S2-17 records the required execution guard and its no-traffic regression criteria. This increment does not claim complete runtime loop protection.
+
+Workspace tests, build, formatting, warnings-as-errors rustdoc, and the documentation book pass.
+Workspace Clippy uses only the existing admission-warning exception. Unused-dependency checks pass.
+The dependency audit found no vulnerabilities in 301 locked packages, with the existing index-refresh lock warning.
+The daemon adds `if-addrs` 0.15.0. No existing external package version, generated YANG artifact, protobuf contract, or project unsafe code changed.
+Windows, live SONiC, and independent-server validation did not run for this increment.
+
 ## Remaining Stage 2 Work
 
-- [ ] S2-14: Align SONiC forwarder input with the local-service decisions. Start at [SonicForwarderSettings](../../libraries/tacacsrs_sonic/src/mapping.rs) and daemon assembly. Remove duplicate interpretation and defaults. Test equivalent CLI, SONiC, and YANG behavior where applicable, including invalid endpoints and loop prevention.
 - [ ] S2-15: Reconcile the [field-to-behavior inventory](stage-0-contract-gates.md#field-to-behavior-inventory) with current implementation evidence. Resolve each gap as supported and tested, explicitly rejected, or assigned to a named later-stage contract. Certificate peer identity and TLS default-port behavior remain coverage questions, not proven conformance. Add separate implementation items for defects found during this review.
 - [ ] S2-16: Complete the final Stage 2 validation and status update after the open implementation items finish. Run relevant workspace, generation, source-equivalence, rotation, and native interoperability checks. Record unavailable checks and known exceptions separately. Update the migration plan and this checkpoint together.
 - [ ] S2-17: Enforce proxy loop exclusion at connection time, not only during publication. Start at [TCP establishment](../../libraries/tacacsrs_networking/src/helpers.rs) and the agent's listener binding path. Carry actual bound endpoints into execution and recheck resolved destinations before traffic, including ephemeral ports and later DNS/interface changes. Add deterministic regressions that change DNS results or listener state after publication and assert that no TACACS+ bytes reach a self-target. Keep generated YANG types outside networking.
