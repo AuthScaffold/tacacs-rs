@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_networking::{ConnectOptions, PreparedEndpoint};
+use tacacsrs_config::prepare::PrepareOptions;
+use tacacsrs_networking::{PreparedEndpoint};
 use tokio::sync::{Mutex, RwLock};
 
 use super::circuit::OperationCircuit;
@@ -49,12 +50,9 @@ pub(super) struct ServerSlot {
 impl ServerSlot {
     pub(super) fn new(
         server: Arc<TacacsPlusServer>,
-        options: &ConnectOptions,
+        options: PrepareOptions,
     ) -> anyhow::Result<Self> {
-        let endpoint = tacacsrs_config::prepare::prepare_endpoint(
-            &server,
-            options.clone().with_timeout(server.timeout_duration()),
-        )?;
+        let endpoint = tacacsrs_config::prepare::prepare_endpoint(&server, options)?;
         Ok(Self {
             server,
             endpoint,

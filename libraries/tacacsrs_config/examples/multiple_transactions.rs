@@ -8,7 +8,8 @@ use tacacsrs_protocol::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
     TacacsAuthenticationType,
 };
-use tacacsrs_networking::{ConnectOptions, TacacsClient};
+use tacacsrs_config::prepare::PrepareOptions;
+use tacacsrs_networking::{TacacsClient};
 use tokio::task::JoinHandle;
 
 #[tokio::main]
@@ -31,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
     let connection = Arc::new(
         TacacsClient::connect_prepared(tacacsrs_config::prepare::prepare_endpoint(
             &server,
-            ConnectOptions::default(),
+            PrepareOptions::default(),
         )?)
         .await?,
     );

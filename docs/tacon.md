@@ -58,6 +58,9 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | --- | --- |
 | `--dedicated` | Use a one-shot connection per request (no session multiplexing) |
 
+For direct and batch execution, the selected YANG server's `timeout` bounds TCP connection establishment.
+This timeout does not bound TLS handshakes or complete request execution.
+
 ### Debugging
 
 | Flag | Description |

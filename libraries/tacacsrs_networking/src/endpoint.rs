@@ -4,6 +4,7 @@
 //! They are not a configuration schema and do not retain the source snapshot.
 
 use std::fmt;
+use std::time::Duration;
 
 use tacacsrs_secrets::SecretBytes;
 
@@ -106,6 +107,12 @@ impl PreparedEndpoint {
         self.single_connection
     }
 
+    /// Returns the TCP connection timeout, if one was prepared.
+    #[must_use]
+    pub const fn connection_timeout(&self) -> Option<Duration> {
+        self.options.timeout()
+    }
+
     pub(crate) const fn security_label(&self) -> &'static str {
         match self.transport {
             PreparedTransport::Tls(_) | PreparedTransport::Psk(_, _) => "tls",
@@ -140,6 +147,7 @@ mod tests {
         );
         assert_eq!(endpoint.address(), "127.0.0.1:1");
         assert!(!endpoint.single_connection());
+        assert_eq!(endpoint.connection_timeout(), None);
         assert!(!format!("{endpoint:?}").contains("private-key"));
         crate::TacacsClient::connect_prepared(endpoint)
             .await

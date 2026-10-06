@@ -9,7 +9,8 @@ use tacacsrs_protocol::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
     TacacsAuthenticationType,
 };
-use tacacsrs_networking::{ConnectOptions, TacacsClient};
+use tacacsrs_config::prepare::PrepareOptions;
+use tacacsrs_networking::{TacacsClient};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -60,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
 
     let endpoint = tacacsrs_config::prepare::prepare_endpoint(
         &server,
-        ConnectOptions::default().with_certificate_verification_disabled(true),
+        PrepareOptions::default().with_certificate_verification_disabled(true),
     )?;
     let connection = TacacsClient::connect_prepared(endpoint).await?;
     let response = connection

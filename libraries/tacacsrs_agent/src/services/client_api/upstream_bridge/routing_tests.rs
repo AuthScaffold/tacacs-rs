@@ -189,7 +189,7 @@ fn bridge(connector: Arc<OperationConnector>, strategy: FailoverStrategy) -> Ups
             policy(strategy),
             connector,
             RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
-            tacacsrs_networking::ConnectOptions::default(),
+            tacacsrs_config::prepare::PrepareOptions::default(),
         )
         .expect("test endpoints must prepare"),
     );

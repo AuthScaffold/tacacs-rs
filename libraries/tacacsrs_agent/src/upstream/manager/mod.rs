@@ -19,7 +19,7 @@
 
 use std::sync::{Arc, RwLock as StdRwLock};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_networking::ConnectOptions;
+use tacacsrs_config::prepare::PrepareOptions;
 
 use self::availability::AvailabilityTracker;
 use self::server_set::{RuntimeRoutingSnapshot, ServerSet};
@@ -52,7 +52,7 @@ pub(crate) struct UpstreamManager {
     runtime: StdRwLock<Arc<RuntimeRoutingSnapshot>>,
     /// Factory for new server connections.
     connector: Arc<dyn UpstreamConnector>,
-    connect_options: ConnectOptions,
+    connect_options: PrepareOptions,
     /// Race-safe aggregate server-availability publisher.
     availability: AvailabilityTracker,
 }
@@ -83,7 +83,7 @@ impl UpstreamManager {
             .expect("test recovery interval must be nonzero"),
             connector,
             health,
-            ConnectOptions::default(),
+            PrepareOptions::default(),
         )
         .expect("test endpoints must prepare")
     }
@@ -107,7 +107,7 @@ impl UpstreamManager {
             .expect("test recovery interval must be nonzero"),
             connector,
             health,
-            ConnectOptions::default(),
+            PrepareOptions::default(),
         )
         .expect("test endpoints must prepare")
     }
@@ -118,11 +118,11 @@ impl UpstreamManager {
         runtime_policy: RuntimePolicy,
         connector: Arc<dyn UpstreamConnector>,
         health: RuntimeHealthPublisher,
-        connect_options: ConnectOptions,
+        connect_options: PrepareOptions,
     ) -> anyhow::Result<Self> {
         let servers = servers
             .into_iter()
-            .map(|server| ServerSlot::new(server, &connect_options).map(Arc::new))
+            .map(|server| ServerSlot::new(server, connect_options).map(Arc::new))
             .collect::<anyhow::Result<Vec<_>>>()?;
         let server_set = Arc::new(ServerSet::new(servers));
         Ok(Self {
@@ -322,7 +322,7 @@ impl UpstreamManager {
                 .cloned();
             let slot = match reusable {
                 Some(slot) => slot,
-                None => Arc::new(ServerSlot::new(server, &self.connect_options)?),
+                None => Arc::new(ServerSlot::new(server, self.connect_options)?),
             };
             new_server_slots.push(slot);
         }
@@ -629,7 +629,7 @@ mod tests {
                 .expect("test runtime policy"),
                 connector,
                 test_health(),
-                tacacsrs_networking::ConnectOptions::default(),
+                tacacsrs_config::prepare::PrepareOptions::default(),
             )
             .expect("test endpoints must prepare"),
         );

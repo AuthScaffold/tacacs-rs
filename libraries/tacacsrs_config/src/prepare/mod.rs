@@ -15,5 +15,5 @@ pub use materialization::{
     MaterializationErrorKind,
 };
 pub use planning::resolution_plan;
-pub use endpoint::prepare_endpoint;
+pub use endpoint::{prepare_endpoint, PrepareOptions};
 pub use readiness::validate_materialized_servers;

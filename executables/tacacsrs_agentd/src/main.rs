@@ -799,7 +799,7 @@ mod tests {
                 .map(|server| {
                     tacacsrs_config::prepare::prepare_endpoint(
                         server,
-                        tacacsrs_networking::ConnectOptions::default(),
+                        tacacsrs_config::prepare::PrepareOptions::default(),
                     )
                     .unwrap()
                 })

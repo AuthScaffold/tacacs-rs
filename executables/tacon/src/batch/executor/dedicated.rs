@@ -2,7 +2,7 @@ use anyhow::Context;
 use futures::future::join_all;
 
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_networking::ConnectOptions;
+use tacacsrs_config::prepare::PrepareOptions;
 
 use crate::connection::{
     establish_dedicated_connection as establish_dedicated_server_connection, Connection,
@@ -22,7 +22,7 @@ async fn execute_single_request_dedicated(
 
 async fn establish_dedicated_connection(
     server: &TacacsPlusServer,
-    options: &ConnectOptions,
+    options: PrepareOptions,
 ) -> anyhow::Result<Connection> {
     establish_dedicated_server_connection(server, options)
         .await
@@ -33,7 +33,7 @@ pub(super) async fn execute_requests_dedicated(
     server: &TacacsPlusServer,
     requests: &[BatchRequest],
     parallel: bool,
-    options: &ConnectOptions,
+    options: PrepareOptions,
 ) -> Vec<RequestResult> {
     let connection = match establish_dedicated_connection(server, options).await {
         Ok(connection) => connection,
@@ -85,7 +85,7 @@ pub(super) async fn run_dedicated_load_test(
     server: &TacacsPlusServer,
     requests: &[BatchRequest],
     load_config: &LoadTestConfig,
-    options: &ConnectOptions,
+    options: PrepareOptions,
 ) -> anyhow::Result<super::super::types::LoadTestResult> {
     let connection = establish_dedicated_connection(server, options).await?;
 

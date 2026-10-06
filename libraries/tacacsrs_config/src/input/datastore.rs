@@ -271,9 +271,10 @@ mod tests {
     #[tokio::test]
     async fn normalized_input_uses_shared_source_and_preparation_contract() {
         use futures_util::StreamExt;
-        use tacacsrs_networking::{ConnectOptions, TacacsClient};
+        use tacacsrs_networking::TacacsClient;
 
         use crate::input::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
+        use crate::prepare::PrepareOptions;
         use crate::source::StaticDatastore;
 
         for security in [
@@ -326,10 +327,11 @@ mod tests {
                     [9, 7]
                 );
                 let endpoint =
-                    crate::prepare::prepare_endpoint(&loaded.server[0], ConnectOptions::default())
+                    crate::prepare::prepare_endpoint(&loaded.server[0], PrepareOptions::default())
                         .unwrap();
                 assert_eq!(endpoint.address(), "192.0.2.10:49");
                 assert!(!endpoint.single_connection());
+                assert_eq!(endpoint.connection_timeout(), Some(Duration::from_secs(9)));
                 TacacsClient::connect_prepared(endpoint).await.unwrap();
                 assert_eq!(loaded, snapshot);
                 assert!(source.subscribe().await.unwrap().next().await.is_none());

@@ -15,7 +15,7 @@ use tacacsrs_config::input::{
     CliServerInput, CliPskInputs, PskKeyExchangeMode, PskKeyMaterial,
 };
 use tacacsrs_config::prepare::{
-    enumerate_materialized_servers, prepare_endpoint, validate_materialized_servers,
+    enumerate_materialized_servers, prepare_endpoint, validate_materialized_servers, PrepareOptions,
 };
 use tacacsrs_config::{
     EpskSupportedHash, PskDheKeSupportedGroup, TacacsPlus, TacacsPlusServer, ValidationOptions,
@@ -26,8 +26,7 @@ use tacacsrs_credential_resolution::{
     SymmetricKeyMaterial,
 };
 use tacacsrs_networking::{
-    ConnectOptions, PacketReadResult, PacketReader, PacketWriteResult, PacketWriter,
-    PreparedEndpoint, TacacsClient,
+    PacketReadResult, PacketReader, PacketWriteResult, PacketWriter, PreparedEndpoint, TacacsClient,
 };
 use tacacsrs_protocol::accounting::{reply::AccountingReply, request::AccountingRequest};
 use tacacsrs_protocol::enumerations::{
@@ -244,7 +243,11 @@ async fn materialized_endpoint(
     let materialized =
         enumerate_materialized_servers(source, &resolver, &ValidationOptions::default()).await?;
     validate_materialized_servers(materialized.iter(), &ValidationOptions::default())?;
-    let endpoint = prepare_endpoint(&materialized[0], ConnectOptions::default())?;
+    let endpoint = prepare_endpoint(&materialized[0], PrepareOptions::default())?;
+    assert_eq!(
+        endpoint.connection_timeout(),
+        Some(Duration::from_secs(u64::from(source.server[0].timeout)))
+    );
     Ok((endpoint, materialized[0].clone()))
 }
 
@@ -424,7 +427,8 @@ async fn equivalent_plain_sources_produce_the_same_wire_behavior() -> Result<()>
                 for source in sources {
                     let original = source.clone();
                     validate_materialized_servers(source.server.iter(), &plain_options())?;
-                    let endpoint = prepare_endpoint(&source.server[0], ConnectOptions::default())?;
+                    let endpoint = prepare_endpoint(&source.server[0], PrepareOptions::default())?;
+                    assert_eq!(endpoint.connection_timeout(), Some(Duration::from_secs(7)));
                     let peer = async {
                         let (mut stream, _) = listener.accept().await?;
                         reply_to_accounting(

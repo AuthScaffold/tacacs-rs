@@ -13,7 +13,8 @@ use tacacsrs_config::{
     EpskSupportedHash, ServerAuthenticationCaCerts, TacacsPlusServer, TacacsPlusServerBuilder,
     TacacsPlusServerType, TlsClientServerAuthentication, ValidationOptions, ValidationRelaxation,
 };
-use tacacsrs_networking::{ConnectOptions, TacacsClient};
+use tacacsrs_config::prepare::PrepareOptions;
+use tacacsrs_networking::{TacacsClient};
 use tacacsrs_protocol::enumerations::{
     TacacsAccountingStatus, TacacsAuthenticationStatus, TacacsAuthorizationStatus,
 };
@@ -44,7 +45,8 @@ fn server(variable: &str, default_port: u16) -> Result<TacacsPlusServerBuilder> 
         address.ip().to_string(),
         address.port(),
     )
-    .with_single_connection(true))
+    .with_single_connection(true)
+    .with_timeout(3))
 }
 
 fn trust_store() -> Result<TlsClientServerAuthentication> {
@@ -74,8 +76,7 @@ async fn operations_with_policy(
     policy: &ValidationOptions,
 ) -> Result<()> {
     validate_materialized_servers([&server], policy)?;
-    let endpoint =
-        prepare_endpoint(&server, ConnectOptions::default().with_timeout(Duration::from_secs(3)))?;
+    let endpoint = prepare_endpoint(&server, PrepareOptions::default())?;
     tokio::time::timeout(Duration::from_secs(10), async {
         let client = TacacsClient::connect_prepared(endpoint).await?;
         let authentication = PapAuthenticationOperation {

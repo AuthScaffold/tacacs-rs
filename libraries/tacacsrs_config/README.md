@@ -97,11 +97,21 @@ The SONiC integration layer supplies a resolver. It does not interpret generated
 
 ### 4) Native Endpoint Preparation
 
-Call `prepare::prepare_endpoint` with a materialized server and explicit connection options.
+Call `prepare::prepare_endpoint` with a materialized server and `prepare::PrepareOptions`.
 The source snapshot must first pass schema validation with its selected validation options.
 Configuration maps the YANG transport choice, certificate encodings, PSK hash, ordered groups, and server name into networking inputs.
 Networking validates borrowed DER and PSK material and constructs private reusable TLS contexts.
 The resulting `PreparedEndpoint` contains no generated model or source reference.
+
+Preparation derives the TCP connection timeout from the canonical server's `timeout` leaf, in seconds.
+`PrepareOptions` has no timeout override. It selects preflight and an explicit development-only certificate-verification override.
+These controls are not serialized configuration and do not change the source snapshot.
+The timeout bounds TCP connection establishment, not TLS handshakes or complete requests.
+`PreparedEndpoint::connection_timeout` exposes the prepared value for inspection.
+
+Callers must replace networking `ConnectOptions` with `prepare::PrepareOptions` at this API boundary.
+Set a different timeout in the canonical YANG source or with `TacacsPlusServerBuilder::with_timeout` before preparation.
+Schema-free native callers can still use networking `ConnectOptions` with `PreparedEndpoint::tcp`.
 
 Pass this endpoint to `TacacsClient::connect_prepared`.
 With preflight disabled, construction does not open a connection. Native material errors still fail during preparation.

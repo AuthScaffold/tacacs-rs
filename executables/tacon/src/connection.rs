@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_networking::{ConnectOptions, TacacsClient};
+use tacacsrs_config::prepare::PrepareOptions;
+use tacacsrs_networking::{TacacsClient};
 use tacacsrs_protocol::exchange::FixedExchange;
 
 /// Represents an active TACACS+ connection (either plain TCP or TLS)
@@ -38,9 +39,9 @@ impl Connection {
 /// - TLS handshake fails
 pub async fn establish_connection(
     server: &TacacsPlusServer,
-    options: &ConnectOptions,
+    options: PrepareOptions,
 ) -> anyhow::Result<Connection> {
-    let endpoint = tacacsrs_config::prepare::prepare_endpoint(server, options.clone())?;
+    let endpoint = tacacsrs_config::prepare::prepare_endpoint(server, options)?;
     let connection = TacacsClient::connect_prepared(endpoint).await?;
     Ok(Connection::from_inner(Arc::new(connection)))
 }
@@ -57,7 +58,7 @@ pub async fn establish_connection(
 /// Returns an error if the underlying connection cannot be established.
 pub async fn establish_dedicated_connection(
     server: &TacacsPlusServer,
-    options: &ConnectOptions,
+    options: PrepareOptions,
 ) -> anyhow::Result<Connection> {
     let mut dedicated_server = server.clone();
     dedicated_server.single_connection = false;

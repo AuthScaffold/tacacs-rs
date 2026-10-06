@@ -7,7 +7,8 @@ use tacacsrs_protocol::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
     TacacsAuthenticationType,
 };
-use tacacsrs_networking::{ConnectOptions, TacacsClient};
+use tacacsrs_config::prepare::PrepareOptions;
+use tacacsrs_networking::{TacacsClient};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     .build();
     let connection = TacacsClient::connect_prepared(tacacsrs_config::prepare::prepare_endpoint(
         &server,
-        ConnectOptions::default(),
+        PrepareOptions::default(),
     )?)
     .await?;
 

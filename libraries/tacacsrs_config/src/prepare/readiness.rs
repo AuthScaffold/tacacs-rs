@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn unsupported_fields_fail_direct_preparation_without_changing_the_source() {
-        use tacacsrs_networking::ConnectOptions;
+        use crate::prepare::PrepareOptions;
 
         for field in [
             "source-ip",
@@ -137,7 +137,7 @@ mod tests {
             }
             let original = server.clone();
             let error =
-                super::super::prepare_endpoint(&server, ConnectOptions::default()).unwrap_err();
+                super::super::prepare_endpoint(&server, PrepareOptions::default()).unwrap_err();
             let message = format!("{error:#}");
             assert!(message.contains(field));
             assert!(!message.contains("private-source"));

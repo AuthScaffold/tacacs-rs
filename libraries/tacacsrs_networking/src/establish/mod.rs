@@ -44,6 +44,10 @@ pub struct ConnectOptions {
 }
 
 impl ConnectOptions {
+    pub(crate) const fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
     pub(crate) const fn certificate_verification_disabled(&self) -> bool {
         self.disable_certificate_verification
     }

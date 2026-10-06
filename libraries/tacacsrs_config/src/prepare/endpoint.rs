@@ -3,15 +3,52 @@
 use anyhow::{Context, Result, ensure};
 
 use tacacsrs_networking::{
-    ConnectOptions, PreparedEndpoint, CertificateIdentity, PrivateKeyEncoding, PskHash, PskDheGroup,
+    ConnectOptions, ConnectPreflight, PreparedEndpoint, CertificateIdentity, PrivateKeyEncoding,
+    PskHash, PskDheGroup,
 };
 use tacacsrs_secrets::SecretBytes;
 
 use crate::{TacacsPlusServer, TacacsPlusServerExt, EpskSupportedHash, PskDheKeSupportedGroup};
 use crate::crypto_types::PrivateKeyFormat;
 
+/// Execution controls that do not replace canonical YANG configuration.
+///
+/// The server supplies its connection timeout. Preparation does not accept a
+/// timeout override. Preflight runs only when a client opens the prepared endpoint.
+///
+/// ```compile_fail
+/// use std::time::Duration;
+/// use tacacsrs_config::prepare::PrepareOptions;
+///
+/// let options = PrepareOptions::default().with_timeout(Duration::from_secs(1));
+/// ```
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PrepareOptions {
+    disable_certificate_verification: bool,
+    preflight: ConnectPreflight,
+}
+
+impl PrepareOptions {
+    /// Controls the development-only certificate-verification override.
+    ///
+    /// CAUTION: A true value permits server impersonation. Do not use it in production.
+    #[must_use]
+    pub const fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
+        self.disable_certificate_verification = disabled;
+        self
+    }
+
+    /// Selects the readiness check that client construction will run.
+    #[must_use]
+    pub const fn with_preflight(mut self, preflight: ConnectPreflight) -> Self {
+        self.preflight = preflight;
+        self
+    }
+}
+
 /// Prepares transport material without opening a connection or changing `server`.
 ///
+/// The canonical server timeout bounds TCP connection establishment.
 /// Credentials must already be materialized. TLS contexts are reusable across
 /// connection attempts. DNS resolution and handshakes occur during execution.
 ///
@@ -22,18 +59,18 @@ use crate::crypto_types::PrivateKeyFormat;
 /// # Example
 ///
 /// ```rust
-/// use tacacsrs_config::{prepare::prepare_endpoint, TacacsPlusServer};
-/// use tacacsrs_networking::{ConnectOptions, TacacsClient};
+/// use tacacsrs_config::{prepare::{prepare_endpoint, PrepareOptions}, TacacsPlusServer};
+/// use tacacsrs_networking::TacacsClient;
 ///
 /// # async fn connect(server: &TacacsPlusServer) -> anyhow::Result<()> {
-/// let endpoint = prepare_endpoint(server, ConnectOptions::default())?;
+/// let endpoint = prepare_endpoint(server, PrepareOptions::default())?;
 /// let client = TacacsClient::connect_prepared(endpoint).await?;
 /// # Ok(())
 /// # }
 /// ```
 pub fn prepare_endpoint(
     server: &TacacsPlusServer,
-    options: ConnectOptions,
+    options: PrepareOptions,
 ) -> Result<PreparedEndpoint> {
     super::readiness::validate_runtime_features(server)?;
     if let Some(identity) = &server.client_identity {
@@ -46,7 +83,10 @@ pub fn prepare_endpoint(
         server.socket_address(),
         server.single_connection,
         server.obfuscation_key().map(SecretBytes::new),
-        options,
+        ConnectOptions::default()
+            .with_timeout(server.timeout_duration())
+            .with_certificate_verification_disabled(options.disable_certificate_verification)
+            .with_preflight(options.preflight),
     );
     if let Some(epsk) = server
         .client_identity
@@ -170,6 +210,23 @@ mod tests {
     }
 
     #[test]
+    fn preparation_uses_canonical_timeout_without_changing_source() {
+        for timeout in [1, 17, u16::MAX] {
+            let server = builder().with_timeout(timeout).build();
+            let original = server.clone();
+            for options in [
+                PrepareOptions::default(),
+                PrepareOptions::default().with_preflight(ConnectPreflight::AccountingWatchdog),
+                PrepareOptions::default().with_certificate_verification_disabled(true),
+            ] {
+                let endpoint = prepare_endpoint(&server, options).unwrap();
+                assert_eq!(endpoint.connection_timeout(), Some(server.timeout_duration()));
+                assert_eq!(server, original);
+            }
+        }
+    }
+
+    #[test]
     fn server_names_preserve_protocol_specific_sni_behavior() {
         for address in ["192.0.2.1", "2001:db8::1", "::1", "tacacs.example.com"] {
             let mut server = builder().with_tls_server_authentication().build();
@@ -221,7 +278,7 @@ mod tests {
             epsk.hash = *hash;
             epsk.psk_dhe_ke_groups = PskDheKeSupportedGroup::ALL.to_vec();
             let original = server.clone();
-            prepare_endpoint(&server, ConnectOptions::default()).unwrap();
+            prepare_endpoint(&server, PrepareOptions::default()).unwrap();
             assert_eq!(server, original);
         }
     }
@@ -231,7 +288,7 @@ mod tests {
         let server = builder()
             .with_tls13_epsk_psk_only("client", b"short".to_vec())
             .build();
-        let error = prepare_endpoint(&server, ConnectOptions::default()).unwrap_err();
+        let error = prepare_endpoint(&server, PrepareOptions::default()).unwrap_err();
         assert!(format!("{error:#}").contains("PSK key must be at least 16 bytes"));
     }
 
@@ -241,7 +298,7 @@ mod tests {
             .with_shared_secret("private-obfuscation-key")
             .build();
         let original = server.clone();
-        let endpoint = prepare_endpoint(&server, ConnectOptions::default()).unwrap();
+        let endpoint = prepare_endpoint(&server, PrepareOptions::default()).unwrap();
         assert_eq!(server, original);
         assert_eq!(endpoint.address(), "127.0.0.1:1");
         assert_eq!(endpoint.single_connection(), server.single_connection);
@@ -256,7 +313,7 @@ mod tests {
         let identity = server.client_identity.as_mut().unwrap();
         identity.credentials_reference = Some("private-bundle-reference".to_owned());
         let original = server.clone();
-        let error = prepare_endpoint(&server, ConnectOptions::default()).unwrap_err();
+        let error = prepare_endpoint(&server, PrepareOptions::default()).unwrap_err();
         assert!(error.to_string().contains("Expand credential bundles"));
         assert!(!format!("{error:#}").contains("private-bundle-reference"));
         assert_eq!(server, original);
@@ -267,7 +324,7 @@ mod tests {
         epsk.inline_definition = None;
         epsk.central_keystore_reference = Some("private-central-reference".to_owned());
         let original = server.clone();
-        let error = prepare_endpoint(&server, ConnectOptions::default()).unwrap_err();
+        let error = prepare_endpoint(&server, PrepareOptions::default()).unwrap_err();
         assert!(error.to_string().contains("Resolve central credentials"));
         assert!(!format!("{error:#}").contains("private-central-reference"));
         assert_eq!(server, original);
@@ -284,7 +341,7 @@ mod tests {
             let server = builder()
                 .with_tls_client_certificate(certificate, key)
                 .build();
-            let Err(error) = prepare_endpoint(&server, ConnectOptions::default()) else {
+            let Err(error) = prepare_endpoint(&server, PrepareOptions::default()) else {
                 panic!("invalid certificate material must fail before the lazy client is returned");
             };
             assert!(!format!("{error:#}").contains("private-key-data"));
@@ -300,7 +357,7 @@ mod tests {
         );
         let weak = Arc::downgrade(&server);
         let client = TacacsClient::connect_prepared(
-            prepare_endpoint(&server, ConnectOptions::default()).unwrap(),
+            prepare_endpoint(&server, PrepareOptions::default()).unwrap(),
         )
         .await
         .unwrap();
@@ -408,7 +465,7 @@ mod tests {
             server.port = address.port();
             server.server_authentication = Some(server_trust(&certificate, end_entity_trust));
             let original = server.clone();
-            let endpoint = prepare_endpoint(&server, ConnectOptions::default()).unwrap();
+            let endpoint = prepare_endpoint(&server, PrepareOptions::default()).unwrap();
             assert_eq!(server, original);
             let peer = async {
                 for _ in 0..2 {

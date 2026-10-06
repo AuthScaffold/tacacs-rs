@@ -4,7 +4,7 @@
 
 Stage 2 is in progress. This checkpoint covers native transport preparation, single-endpoint execution, credential materialization, source consolidation, and publication readiness.
 Configuration now depends on the provider-neutral credential package and networking. Neither depends on configuration.
-The canonical YANG model, feature manifest, and defaults remain authoritative and unchanged.
+The canonical YANG model, feature manifest, and defaults remain authoritative.
 
 ## Implemented Boundary
 
@@ -324,9 +324,34 @@ The dependency audit found no vulnerabilities, with the same index-refresh lock 
 Configuration now uses its existing protocol dependency for the body-length limit. No external dependency versions or lockfile changed.
 No native transport, unsafe code, or protobuf contract changed. No Windows, live SONiC, or independent-server test ran for this increment.
 
+## Preparation Controls
+
+Endpoint preparation now derives the TCP connection timeout from the canonical server's `timeout` leaf.
+Previously, the agent projected this value while direct preparation could leave TCP establishment unbounded or accept a competing caller timeout.
+The regression observed no prepared timeout for a server whose YANG timeout was five seconds.
+The shared preparation function now owns this mapping. The duplicate agent projection is removed.
+
+`prepare_endpoint` now accepts configuration-owned `PrepareOptions`, not networking `ConnectOptions`.
+The new type selects only preflight and the explicit development-only certificate-verification override.
+It cannot override the canonical timeout. A compile-fail example checks that API restriction.
+Preflight is an execution action, not desired configuration. The verification override remains an explicit unsafe deployment choice, not a persisted default.
+Source validation options still govern schema admission and cannot enable unsupported transport features.
+
+The agent, direct CLI, batch executor, examples, and integration tests use the new API.
+The independent server fixture sets its three-second timeout in its YANG builder.
+Networking still accepts explicit native `ConnectOptions` without importing configuration.
+`PreparedEndpoint::connection_timeout` exposes the derived value without allowing mutation.
+
+Focused tests cover multiple canonical timeout values, unchanged source snapshots, and the default unbounded native constructor.
+Existing CLI, static-source, SONiC, YANG, and credential-rotation fixtures now check the prepared timeout.
+Workspace tests, build, formatting, warnings-as-errors rustdoc, and the documentation book pass.
+Clippy uses only the existing admission-warning exception. All nine native `tac_plus-ng` runner cases pass after the fixture migration.
+No dependencies, generated YANG artifacts, protobuf contract, or unsafe code changed. Windows and live SONiC validation did not run.
+This timeout bounds TCP establishment. Absolute request deadlines and TLS-handshake deadline coverage remain Stage 3 work.
+
 ## Remaining Stage 2 Work
 
-1. Complete the ownership review of host-binding controls and preparation overrides, and model additional product controls in YANG where required.
+1. Complete the ownership review of host-binding controls, and model additional product controls in YANG where required.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Routing, request leases, deadlines, and runtime retirement remain Stage 3 work.
