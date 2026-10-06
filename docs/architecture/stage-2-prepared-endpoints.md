@@ -6,6 +6,36 @@ Stage 2 is in progress. This checkpoint covers native transport preparation, sin
 Configuration now depends on the provider-neutral credential package and networking. Neither depends on configuration.
 The canonical YANG model, feature manifest, and defaults remain authoritative.
 
+## Completion Checklist
+
+On 2026-10-06, the user confirmed that Stage 2 can incorporate newly discovered issues.
+Backward compatibility does not constrain the complete refactor. Existing APIs, configuration formats, and behavior can change when the design requires it.
+Canonical YANG, protocol correctness, and security requirements still apply.
+
+Add each discovered issue as a separate unchecked item with an owner, a completion condition, and a focused validation check.
+Check off an item only after its implementation and validation finish. Record the commit and evidence in this checkpoint.
+If work moves between stages, record its new owner and update both stage descriptions. Do not silently defer defects to close the stage.
+
+### Completed Scope
+
+- [x] S2-01: Preserve canonical YANG snapshots and credential references. Source equality and rotation tests cover immutability. See [prepared source equivalence](#prepared-source-equivalence).
+- [x] S2-02: Introduce immutable prepared endpoints and remove generated-model interpretation from client execution and callbacks. Commits `b0f3eff` and `eac8b92` establish the [prepared boundary](#implemented-boundary).
+- [x] S2-03: Consolidate credential planning, materialization, and native projection under configuration. Commits `58caa4a` and `eac8b92` establish [configuration-owned credentials](#configuration-owned-credentials).
+- [x] S2-04: Merge datastore and CLI/file source plumbing into configuration. Commit `8329688` removes the old packages and updates consumers and dependency guards. See [sources and inputs](#sources-and-inputs).
+- [x] S2-05: Verify equivalent CLI, SONiC, and YANG inputs through preparation and packet exchange. Commits `acec6ef` and `8b8e686` cover [source equivalence](#prepared-source-equivalence) and credential rotation.
+- [x] S2-06: Reject unsupported runtime fields explicitly. Commit `6f2c9a7` adds capability checks and source-preservation tests. See [publication readiness](#publication-readiness).
+
+### Completed Discoveries
+
+- [x] S2-07: Prepare complete generations before publication and retain the previous generation after failure. Commit `6f2c9a7` adds the native-material rejection and rollback regressions.
+- [x] S2-08: Reject PSK mode mismatches and certificate fallback before application traffic. Commits `b7f1610` and `8b8e686` verify the [negotiated PSK contract](#negotiated-psk-contract) for both hashes.
+- [x] S2-09: Validate retained transport modes against an independent server. Commit `4dc051f` adds the native runner. All nine cases also pass after `31dedd9`. See [independent server evidence](#independent-server-evidence).
+- [x] S2-10: Replace the parallel policy schema and duplicate defaults with generated YANG policy. Commit `3400393` includes generator corrections, parser tests, and deterministic regeneration. See [canonical runtime policy](#canonical-runtime-policy).
+- [x] S2-11: Derive connection timeout from YANG for every consumer and remove caller overrides. Commit `31dedd9` verifies [preparation controls](#preparation-controls), source equivalence, and the restricted API.
+
+Open items and their completion conditions appear under [remaining Stage 2 work](#remaining-stage-2-work).
+The implementation sections below preserve the evidence and limits for completed items.
+
 ## Implemented Boundary
 
 `tacacsrs_config::prepare::prepare_endpoint` borrows a materialized YANG server and returns an immutable `PreparedEndpoint`.
@@ -351,7 +381,14 @@ This timeout bounds TCP establishment. Absolute request deadlines and TLS-handsh
 
 ## Remaining Stage 2 Work
 
-1. Complete the ownership review of host-binding controls, and model additional product controls in YANG where required.
+- [ ] S2-12: Resolve ownership of enabled services, IPC/proxy listener endpoints, and Unix socket permissions. Start at [ServiceConfig](../../libraries/tacacsrs_agent/src/config.rs) and the daemon CLI. Classify each control as canonical product configuration or an explicit host bootstrap input. Implement the decision, remove duplicate defaults, and test valid and rejected values before listener binding.
+- [ ] S2-13: Resolve downstream proxy obfuscation and credential ownership. Start at `ServiceConfig::proxy_downstream_obfuscation` and the daemon's `proxy_shared_secret` input. Implement the canonical policy and credential-source contract without a parallel authoritative schema. Verify redaction, source immutability, and rejection of invalid replacement credentials before publication.
+- [ ] S2-14: Align SONiC forwarder input with the local-service decisions. Start at [SonicForwarderSettings](../../libraries/tacacsrs_sonic/src/mapping.rs) and daemon assembly. Remove duplicate interpretation and defaults. Test equivalent CLI, SONiC, and YANG behavior where applicable, including invalid endpoints and loop prevention.
+- [ ] S2-15: Reconcile the [field-to-behavior inventory](stage-0-contract-gates.md#field-to-behavior-inventory) with current implementation evidence. Resolve each gap as supported and tested, explicitly rejected, or assigned to a named later-stage contract. Certificate peer identity and TLS default-port behavior remain coverage questions, not proven conformance. Add separate implementation items for defects found during this review.
+- [ ] S2-16: Complete the final Stage 2 validation and status update after the open implementation items finish. Run relevant workspace, generation, source-equivalence, rotation, and native interoperability checks. Record unavailable checks and known exceptions separately. Update the migration plan and this checkpoint together.
 
 The existing source-equivalence and credential-generation tests remain required gates.
-Routing, request leases, deadlines, and runtime retirement remain Stage 3 work.
+Upstream `source-ip`, `source-interface`, and `vrf-instance` already fail explicitly under S2-06. Their implementation is not an implicit local-listener requirement.
+Routing, request leases, deadlines, and runtime retirement remain assigned to Stage 3.
+Unified source observation and policy/server publication remain assigned to Stage 4. Policy schema normalization is already complete under S2-10.
+Necessary corrections can move into Stage 2 through explicit new checklist items. The stage is not closed merely to preserve its original size.

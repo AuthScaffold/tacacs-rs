@@ -7,6 +7,13 @@ Each stage produces a deployable set of applications and removes the superseded 
 Old Rust APIs and old IPC schemas do not require compatibility.
 Temporary internal adapters are acceptable only with a named removal stage.
 
+The user reaffirmed the complete-refactor scope on 2026-10-06.
+Backward compatibility is not a constraint on Rust APIs, IPC schemas, CLI flags, configuration formats, or existing behavior.
+Canonical YANG remains authoritative. Compatibility freedom does not remove protocol, security, or validation requirements.
+Stage 2 can incorporate newly discovered issues instead of deferring them only to preserve the original stage size.
+Each added issue receives a separate checklist item with its implementation owner, completion criteria, and validation evidence.
+Completed items remain visible. A generic remaining-work item must not hide completed work or new scope.
+
 The target remains one coordinated toolkit and its adapters.
 It does not become a collection of independently deployed services.
 
@@ -204,6 +211,9 @@ Primary starting points:
 
 **Status:** in progress. The [prepared endpoint checkpoint](stage-2-prepared-endpoints.md) records the implemented boundary and remaining work.
 
+Its [completion checklist](stage-2-prepared-endpoints.md#completion-checklist) tracks both the original scope and issues discovered during implementation.
+The numbered plan below is the original scope, not a limit on necessary corrections.
+
 1. Preserve generated YANG types and builders as the authoritative configuration APIs.
 2. Normalize CLI and SONiC inputs into YANG snapshots through the same schema and feature validation contract.
 3. Consolidate bundle expansion, credential resolution, and runtime projection under one preparation owner.
@@ -261,7 +271,7 @@ Routing observations cannot silently override canonical policy or cause TLS-to-p
 4. Keep global admission independent of generation replacement.
 5. Accept explicit cancellation from the host and remove process signal handling from libraries.
 6. Add stale-material, expiry, revocation, and bounded drain policies.
-7. Normalize existing policy-file inputs into documented YANG augmentations instead of a parallel policy schema.
+7. Integrate the canonical YANG policy resource into the shared controller. Schema normalization is complete in Stage 2 item S2-10.
 
 Primary starting points:
 
