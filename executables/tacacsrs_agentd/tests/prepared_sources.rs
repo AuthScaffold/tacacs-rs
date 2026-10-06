@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use openssl::nid::Nid;
-use openssl::ssl::{NameType, Ssl, SslContext, SslMethod, SslOptions, SslVersion};
+use openssl::ssl::{NameType, Ssl, SslContext, SslContextBuilder, SslMethod, SslOptions, SslVersion};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio_openssl::SslStream;
@@ -18,7 +18,8 @@ use tacacsrs_config::prepare::{
     enumerate_materialized_servers, prepare_endpoint, validate_materialized_servers,
 };
 use tacacsrs_config::{
-    PskDheKeSupportedGroup, TacacsPlus, TacacsPlusServer, ValidationOptions, ValidationRelaxation,
+    EpskSupportedHash, PskDheKeSupportedGroup, TacacsPlus, TacacsPlusServer, ValidationOptions,
+    ValidationRelaxation,
 };
 use tacacsrs_credential_resolution::{
     FakeCredentialResolver, ProviderErrorKind, RequestSlot, ResolvedCredential, SecretBytes,
@@ -37,6 +38,9 @@ use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_protocol::traits::TacacsBodyTrait;
 use tacacsrs_sonic::{map_sonic_tables_to_tacacs_plus, SonicTacacsTables};
+
+#[path = "prepared_sources/psk_peer.rs"]
+mod psk_peer;
 
 /// OpenSSL option bit 10 permits TLS 1.3 PSK exchange without DHE.
 const ALLOW_NO_DHE_KEX: SslOptions = SslOptions::from_bits_retain(1 << 10);
@@ -156,6 +160,17 @@ fn psk_sources(address: SocketAddr, key: &[u8], dhe: bool) -> Result<[TacacsPlus
         },
         "cli",
     ))?;
+    let [sonic, yang] = referenced_psk_sources(address, dhe, EpskSupportedHash::Sha256)?;
+    Ok([cli, sonic, yang])
+}
+
+fn referenced_psk_sources(
+    address: SocketAddr,
+    dhe: bool,
+    hash: EpskSupportedHash,
+) -> Result<[TacacsPlus; 2]> {
+    let host = address.ip().to_string();
+    let name = format!("sonic-server-{host}");
     let mut fields = BTreeMap::from([
         ("tcp_port".to_owned(), address.port().to_string()),
         ("timeout".to_owned(), "7".to_owned()),
@@ -164,6 +179,14 @@ fn psk_sources(address: SocketAddr, key: &[u8], dhe: bool) -> Result<[TacacsPlus
         ("sni_enabled".to_owned(), "true".to_owned()),
         ("psk_identity".to_owned(), PSK_IDENTITY.to_owned()),
         ("psk_secret_ref".to_owned(), PSK_REFERENCE.to_owned()),
+        (
+            "psk_hash".to_owned(),
+            match hash {
+                EpskSupportedHash::Sha256 => "sha-256",
+                EpskSupportedHash::Sha384 => "sha-384",
+            }
+            .to_owned(),
+        ),
         (
             "psk_key_exchange".to_owned(),
             if dhe {
@@ -196,6 +219,7 @@ fn psk_sources(address: SocketAddr, key: &[u8], dhe: bool) -> Result<[TacacsPlus
                 "domain-name": SERVER_NAME, "sni-enabled": true,
                 "client-identity": {"tls13-epsk": {
                     "central-keystore-reference": PSK_REFERENCE, "external-identity": PSK_IDENTITY,
+                    "hash": hash,
                     "tacacsrs:psk-dhe-ke-groups": group_names,
                 }},
             }]}
@@ -203,7 +227,7 @@ fn psk_sources(address: SocketAddr, key: &[u8], dhe: bool) -> Result<[TacacsPlus
         .to_string(),
     )?;
     assert_eq!(sonic, yang);
-    Ok([cli, sonic, yang])
+    Ok([sonic, yang])
 }
 
 async fn materialized_endpoint(
@@ -224,7 +248,7 @@ async fn materialized_endpoint(
     Ok((endpoint, materialized[0].clone()))
 }
 
-fn psk_peer_context(key: &[u8], dhe: bool) -> Result<SslContext> {
+fn psk_peer_builder(dhe: bool) -> Result<SslContextBuilder> {
     let mut builder = SslContext::builder(SslMethod::tls_server())?;
     builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
     builder.set_max_proto_version(Some(SslVersion::TLS1_3))?;
@@ -235,6 +259,11 @@ fn psk_peer_context(key: &[u8], dhe: bool) -> Result<SslContext> {
         builder.set_options(ALLOW_NO_DHE_KEX);
         builder.set_groups_list(NO_SHARED_GROUP)?;
     }
+    Ok(builder)
+}
+
+fn psk_peer_context(key: &[u8], dhe: bool) -> Result<SslContext> {
+    let mut builder = psk_peer_builder(dhe)?;
     let key = SecretBytes::new(key.to_vec());
     builder.set_psk_server_callback(move |_, identity, output| {
         let key = key.expose_secret();
@@ -247,6 +276,13 @@ fn psk_peer_context(key: &[u8], dhe: bool) -> Result<SslContext> {
     Ok(builder.build())
 }
 
+fn hash_bound_peer_context(key: &[u8], dhe: bool, hash: EpskSupportedHash) -> Result<SslContext> {
+    let mut builder = psk_peer_builder(dhe)?;
+    builder.set_ciphersuites("TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384")?;
+    psk_peer::install(&mut builder, PSK_IDENTITY, key, hash)?;
+    Ok(builder.build())
+}
+
 async fn psk_exchange(
     listener: &TcpListener,
     endpoint: PreparedEndpoint,
@@ -255,13 +291,25 @@ async fn psk_exchange(
     accepted: bool,
 ) -> Result<()> {
     let context = psk_peer_context(key, dhe)?;
+    exchange_with_peer(listener, endpoint, &context, EpskSupportedHash::Sha256, dhe, accepted).await
+}
+
+async fn exchange_with_peer(
+    listener: &TcpListener,
+    endpoint: PreparedEndpoint,
+    context: &SslContext,
+    hash: EpskSupportedHash,
+    dhe: bool,
+    accepted: bool,
+) -> Result<()> {
     let peer = async {
         let (tcp, _) = listener.accept().await?;
-        let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
+        let mut stream = SslStream::new(Ssl::new(context)?, tcp)?;
         Pin::new(&mut stream).accept().await?;
         assert_eq!(stream.ssl().version2(), Some(SslVersion::TLS1_3));
         assert_eq!(stream.ssl().servername(NameType::HOST_NAME), Some(SERVER_NAME));
-        assert_eq!(stream.ssl().current_cipher().unwrap().name(), "TLS_AES_128_GCM_SHA256");
+        assert!(stream.ssl().session_reused());
+        assert_eq!(stream.ssl().current_cipher().unwrap().name(), psk_peer::cipher_suite(hash));
         if dhe {
             assert_eq!(
                 stream.ssl().peer_tmp_key()?.ec_key()?.group().curve_name(),
@@ -330,6 +378,40 @@ async fn execute(endpoint: PreparedEndpoint) -> Result<()> {
     assert_eq!(reply.server_msg, "accepted");
     client.stop_accepting_new_sessions().await;
     Ok(())
+}
+
+#[tokio::test]
+async fn hash_bound_psk_sources_preserve_rotated_handshake_behavior() -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        for hash in EpskSupportedHash::ALL {
+            let other_hash = match hash {
+                EpskSupportedHash::Sha256 => EpskSupportedHash::Sha384,
+                EpskSupportedHash::Sha384 => EpskSupportedHash::Sha256,
+            };
+            for dhe in [false, true] {
+                let listener = TcpListener::bind("127.0.0.1:0").await?;
+                for source in referenced_psk_sources(listener.local_addr()?, dhe, *hash)? {
+                    let original = source.clone();
+                    let (old, _) = materialized_endpoint(&source, ORIGINAL_KEY).await?;
+                    let (new, _) = materialized_endpoint(&source, ROTATED_KEY).await?;
+                    let old_peer = hash_bound_peer_context(ORIGINAL_KEY, dhe, *hash)?;
+                    let new_peer = hash_bound_peer_context(ROTATED_KEY, dhe, *hash)?;
+                    let wrong_hash_peer = hash_bound_peer_context(ORIGINAL_KEY, dhe, other_hash)?;
+                    exchange_with_peer(&listener, old.clone(), &old_peer, *hash, dhe, true).await?;
+                    exchange_with_peer(&listener, new.clone(), &new_peer, *hash, dhe, true).await?;
+                    exchange_with_peer(&listener, old.clone(), &new_peer, *hash, dhe, false)
+                        .await?;
+                    exchange_with_peer(&listener, new, &old_peer, *hash, dhe, false).await?;
+                    exchange_with_peer(&listener, old.clone(), &wrong_hash_peer, *hash, dhe, false)
+                        .await?;
+                    exchange_with_peer(&listener, old, &old_peer, *hash, dhe, true).await?;
+                    assert_eq!(source, original);
+                }
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
 }
 
 #[tokio::test]

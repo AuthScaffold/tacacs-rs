@@ -185,18 +185,33 @@ Peers that previously selected DHE with an empty group list now need matching PS
 
 ## Verification
 
+The [hash-bound test peer](../../executables/tacacsrs_agentd/tests/prepared_sources/psk_peer.rs) uses OpenSSL's TLS 1.3 server PSK session callback.
+Unlike the legacy server callback, this interface binds each external PSK to the cipher's SHA-256 or SHA-384 hash.
+The peer accepts both cipher suites, so hash-mismatch tests do not fail merely because there is no common cipher suite.
+The production callback and transport implementation are unchanged.
+
+The native peer owns protected key bytes in context ex-data and creates a fresh session for each recognized identity.
+It transfers successful sessions to OpenSSL and frees sessions when a native setter fails.
+Tests cover null arguments, unknown identities, repeated handshakes, wrong hashes, wrong keys, and retained old endpoints after key rotation.
+
+SONiC and YANG sources now pass materialization and accounting exchange with SHA-256 and SHA-384 in both no-DHE and PSK-DHE modes.
+The peer checks TLS version, cipher, PSK authentication, SNI, negotiated group, and accounting body bytes.
+The source snapshots and central references remain unchanged across re-preparation.
+Direct CLI PSK flags still select SHA-256; the SHA-384 fixtures do not claim support for a CLI flag that does not exist.
+This is native OpenSSL peer evidence, not evidence from a separate TLS implementation or deployed TACACS+ server.
+
 Focused regressions cover early credential rejection, unresolved references, source immutability, runtime redaction, and release of source configuration.
 Native callback tests cover SHA-256, SHA-384, repeated calls, digest mismatch, and null output guards.
 Bounded OpenSSL loopback tests cover repeated TLS, mTLS, PSK-only, and PSK-DHE connections.
 The TLS loopback tests enable certificate verification with YANG-projected CA and end-entity trust stores.
 They cover certificate trust and context reuse, but do not prove hostname-verification behavior.
-SHA-384 has native callback/session coverage, not a separate peer handshake test in this checkpoint.
+Both supported PSK hashes now have native peer handshake and accounting coverage.
 
 Package Clippy passes without a feature override.
 The TLS example now belongs to configuration, which explicitly enables its filesystem dependency.
 
 The focused suites include 104 active networking tests, 47 configuration unit tests, 100 agent tests, and 75 daemon tests, plus integration suites.
-Four prepared-source integration tests cover wire behavior, PSK generation isolation, mode rejection, and certificate fallback with bounded local peers.
+Five prepared-source integration tests and two peer-callback guard tests cover wire behavior, both hashes, key rotation, mode rejection, and certificate fallback.
 Projection tests moved to configuration. Native tests consolidate equivalent schema-based fixtures into transport-input tables.
 Two existing manual networking baselines remain ignored.
 The workspace build, formatting check, warnings-as-errors rustdoc build, and architecture book build pass.
@@ -247,6 +262,12 @@ They also retain the source-equivalence, wrong-key, and prepared-key rotation co
 No dependency or lockfile changed. Only OpenSSL 3.0 was exercised locally; Windows and live SONiC validation remain unrun.
 Miri's nightly `rust-src` prerequisite is still absent. The native callback and negotiated-group checks ran against real OpenSSL instead.
 
+The hash-bound peer increment passes all seven prepared-source tests and the full workspace test suite.
+Workspace build, formatting, warnings-as-errors rustdoc, and unused-dependency checks pass.
+Workspace Clippy uses only the existing admission-warning exception. The dependency audit found no vulnerabilities, with the same index-refresh lock warning.
+The new callback uses test-only declarations of existing native dependencies. No external dependency versions or production transport files changed.
+Miri remains unavailable without nightly `rust-src`. No Windows, live SONiC, or independent-server tests ran in this increment.
+
 Miri did not run. It required the nightly `rust-src` component, whose installation failed because the shared toolchain directory was not writable.
 Native OpenSSL callback and handshake tests provide the FFI validation for this checkpoint.
 They are not a substitute for Miri coverage or independent server interoperability tests.
@@ -254,7 +275,7 @@ They are not a substitute for Miri coverage or independent server interoperabili
 ## Remaining Stage 2 Work
 
 1. Move remaining product controls into documented namespaced YANG augmentations where required.
-2. Close the remaining interoperability gaps, including a SHA-384 peer handshake and independent-server evidence.
+2. Obtain independent-server interoperability evidence for the retained transport modes.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Routing, request leases, deadlines, and runtime retirement remain Stage 3 work.

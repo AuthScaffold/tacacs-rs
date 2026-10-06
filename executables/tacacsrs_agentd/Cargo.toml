@@ -36,7 +36,9 @@ default = []
 console = ["console-subscriber"]
 
 [dev-dependencies]
+foreign-types = "0.3.2"
 openssl = "0.10.80"
+openssl-sys = "0.9.116"
 tokio-openssl = "0.6.5"
 tacacsrs-protocol = { path = "../../libraries/tacacsrs_protocol" }
 tokio = { version = "1.52.3", features = ["test-util"] }
