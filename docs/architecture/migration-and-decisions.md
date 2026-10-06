@@ -214,7 +214,8 @@ Primary starting points:
 Its [completion checklist](stage-2-prepared-endpoints.md#completion-checklist) tracks both the original scope and issues discovered during implementation.
 The numbered plan below is the original scope, not a limit on necessary corrections.
 S2-12 is complete in `594b5be`: local listener controls now use canonical YANG and shared pre-bind validation.
-Downstream credential ownership, the full SONiC mapping review, the field inventory, and final closure checks remain open as S2-13 through S2-16.
+S2-13 is complete in `66c59d6`: downstream credentials now use explicit canonical source policy and immutable prepared material.
+The full SONiC mapping review, the field inventory, and final closure checks remain open as S2-14 through S2-16.
 
 1. Preserve generated YANG types and builders as the authoritative configuration APIs.
 2. Normalize CLI and SONiC inputs into YANG snapshots through the same schema and feature validation contract.

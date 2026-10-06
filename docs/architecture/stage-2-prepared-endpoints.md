@@ -25,6 +25,7 @@ If work moves between stages, record its new owner and update both stage descrip
 - [x] S2-05: Verify equivalent CLI, SONiC, and YANG inputs through preparation and packet exchange. Commits `acec6ef` and `8b8e686` cover [source equivalence](#prepared-source-equivalence) and credential rotation.
 - [x] S2-06: Reject unsupported runtime fields explicitly. Commit `6f2c9a7` adds capability checks and source-preservation tests. See [publication readiness](#publication-readiness).
 - [x] S2-12: Make service selection, listener endpoints, and Unix socket permissions canonical YANG controls. Commit `594b5be` removes independent runtime fields and duplicate validation. See [canonical local services](#canonical-local-services) for pre-bind rejection, input equivalence, and permission tests.
+- [x] S2-13: Derive downstream credentials from explicit canonical source policy. Commit `66c59d6` removes mutable runtime credentials and implicit row overrides. See [canonical downstream credentials](#canonical-downstream-credentials) for redaction, rotation, startup rejection, and publication rollback evidence.
 
 ### Completed Discoveries
 
@@ -408,7 +409,7 @@ Unix listener paths must be absolute, contain no NUL or parent traversal, and fi
 Preparation normalizes repeated separators and current-directory components without resolving symlinks.
 Invalid client API endpoint values fail even when that service is disabled.
 Proxy TCP targets remain numeric and can use wildcard addresses or port zero. Deployment access controls remain necessary.
-Downstream credentials retain their existing paths until S2-13. The new file does not configure a downstream secret.
+At this checkpoint, downstream credentials retained their existing paths until S2-13. The following increment adds their canonical source contract.
 
 Workspace tests, build, formatting, warnings-as-errors rustdoc, and the documentation book pass.
 Workspace Clippy uses only the existing admission-warning exception.
@@ -418,9 +419,47 @@ All fifteen agent runtime tests pass, including the collision regression and bou
 No dependency, lockfile, protobuf contract, unsafe code, or native transport changed.
 Windows, live SONiC, and independent-server validation did not run for this listener-only increment.
 
+## Canonical Downstream Credentials
+
+Commit `66c59d6` completes S2-13.
+The generated `LocalServices` source now includes `proxy-credential-source` and the protected `proxy-shared-secret` leaf.
+Its modes are `unobfuscated`, `inline`, and `local-proxy-row`. The YANG default is explicit unobfuscated behavior.
+The CLI normalizes its secret into inline policy. SONiC selects row-derived policy unless the operator explicitly selects another mode.
+The resource file can configure inline credentials. File changes still require a restart.
+
+The loop filter previously let a matching upstream row override an explicit downstream secret.
+The new precedence regression failed against that behavior and now passes.
+Filtering now identifies the first matching row in canonical order, while configuration owns credential preparation.
+Only row-derived mode uses that row's material. Filtering cannot override inline or unobfuscated policy.
+Missing rows, missing secrets, and empty secrets reject row-derived candidates rather than select plaintext or lower-priority credentials.
+
+`proxy_policy::prepare_proxy_policy` returns immutable `PreparedProxyPolicy` with private state.
+The old `ProxyDownstreamObfuscation` enum and independent `ServiceConfig` credential field are removed.
+Preparation borrows canonical values and leaves the source and selected row unchanged.
+Generated fields, runtime material, and the CLI secret use redacted, zeroizing `SecretString` values.
+The secret-field manifest and deterministic-generation hashes include the new leaf.
+Serialization still contains configured inline material. Resource files require appropriate access controls and must not be logged as reports.
+
+A waiting row-derived service starts with unavailable credentials, not an unobfuscated fallback.
+The proxy rejects those connections before packet I/O. Publication also rejects unavailable policy before changing routes or health.
+Valid credential and upstream changes publish together. Rejected candidates retain the previous complete generation.
+Tests preserve the old prepared key across replacement and verify that invalid preparation and unavailable publication leave active state unchanged.
+Established downstream connections retain their captured keys until closure. Forced revocation remains later lifecycle work.
+
+This increment uses inline material and mapped source-row secrets. It does not add a central provider or change upstream EPSK resolution.
+Removing the required local row now rejects the candidate, including its upstream changes.
+SONiC deployments that require plaintext downstream traffic must select `--proxy-credential-source unobfuscated` explicitly.
+The full SONiC default and loop-prevention review remains S2-14.
+
+Workspace tests, build, formatting, warnings-as-errors rustdoc, and the documentation book pass.
+Workspace Clippy uses only the existing admission-warning exception.
+All twelve generator tests and deterministic artifact verification pass.
+Unused-dependency checks pass. The dependency audit found no vulnerabilities, with the existing index-refresh lock warning.
+The CLI build target now declares the existing secrets crate. No external dependency version, lockfile, protobuf contract, or unsafe code changed.
+Windows, live SONiC, and independent-server validation did not run for this increment.
+
 ## Remaining Stage 2 Work
 
-- [ ] S2-13: Resolve downstream proxy obfuscation and credential ownership. Start at `ServiceConfig::proxy_downstream_obfuscation` and the daemon's `proxy_shared_secret` input. Implement the canonical policy and credential-source contract without a parallel authoritative schema. Verify redaction, source immutability, and rejection of invalid replacement credentials before publication.
 - [ ] S2-14: Align SONiC forwarder input with the local-service decisions. Start at [SonicForwarderSettings](../../libraries/tacacsrs_sonic/src/mapping.rs) and daemon assembly. Remove duplicate interpretation and defaults. Test equivalent CLI, SONiC, and YANG behavior where applicable, including invalid endpoints and loop prevention.
 - [ ] S2-15: Reconcile the [field-to-behavior inventory](stage-0-contract-gates.md#field-to-behavior-inventory) with current implementation evidence. Resolve each gap as supported and tested, explicitly rejected, or assigned to a named later-stage contract. Certificate peer identity and TLS default-port behavior remain coverage questions, not proven conformance. Add separate implementation items for defects found during this review.
 - [ ] S2-16: Complete the final Stage 2 validation and status update after the open implementation items finish. Run relevant workspace, generation, source-equivalence, rotation, and native interoperability checks. Record unavailable checks and known exceptions separately. Update the migration plan and this checkpoint together.
