@@ -31,7 +31,7 @@ use super::{
     RequestTracker, RuntimeHealthPublisher, ShutdownCoordinator, UpstreamAvailability,
     enumerate_supported_servers,
 };
-use crate::config::{ProxyDownstreamObfuscation, RuntimePolicy, ServiceConfig};
+use crate::config::{PreparedProxyPolicy, RuntimePolicy, ServiceConfig};
 use crate::services::client_api::ClientApiService;
 use crate::services::tacacs_proxy::TacacsProxyService;
 use crate::services::ListenerOptions;
@@ -123,9 +123,17 @@ impl TacacsClientService {
         let eligible_server_count = servers.len();
 
         let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector);
+        let proxy_policy = if !configuration_applied
+            && config.local_services.proxy_credential_source
+                == tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow
+        {
+            PreparedProxyPolicy::unavailable()
+        } else {
+            tacacsrs_config::proxy_policy::prepare_proxy_policy(&config.local_services, None)?
+        };
         let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
             servers.into_iter().map(Arc::new).collect(),
-            config.proxy_downstream_obfuscation.clone(),
+            proxy_policy,
             config.runtime_policy.clone(),
             connector,
             health.clone(),
@@ -161,7 +169,7 @@ impl TacacsClientService {
 
         let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
             servers.into_iter().map(Arc::new).collect(),
-            config.proxy_downstream_obfuscation.clone(),
+            tacacsrs_config::proxy_policy::prepare_proxy_policy(&config.local_services, None)?,
             config.runtime_policy.clone(),
             connector,
             health.clone(),
@@ -214,7 +222,7 @@ impl TacacsClientService {
     pub async fn reload_tacacs_plus_with_proxy_downstream_obfuscation(
         &self,
         tacacs_plus: TacacsPlus,
-        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
         let _reload_guard = self.reload_lock.lock().await;
         self.reload_tacacs_plus_inner(tacacs_plus, proxy_downstream_obfuscation)
@@ -224,15 +232,10 @@ impl TacacsClientService {
     async fn reload_tacacs_plus_inner(
         &self,
         tacacs_plus: TacacsPlus,
-        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
-        let mut reload_config = self.config.clone();
-        reload_config.tacacs_plus = tacacs_plus;
-        reload_config.proxy_downstream_obfuscation = proxy_downstream_obfuscation.clone();
-        let servers = enumerate_supported_servers(
-            &reload_config.tacacs_plus,
-            &self.config.validation_options,
-        )?;
+        proxy_downstream_obfuscation.shared_secret()?;
+        let servers = enumerate_supported_servers(&tacacs_plus, &self.config.validation_options)?;
         let eligible_server_count = servers.len();
         self.state
             .reload_shared_servers_with_proxy_downstream_obfuscation(
@@ -260,8 +263,9 @@ impl TacacsClientService {
     pub async fn reload_materialized_servers_with_proxy_downstream_obfuscation(
         &self,
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
-        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
+        proxy_downstream_obfuscation.shared_secret()?;
         tacacsrs_config::prepare::validate_materialized_servers(
             servers.iter().map(AsRef::as_ref),
             &self.config.validation_options,
@@ -391,8 +395,7 @@ mod tests {
     use tonic::Request;
 
     use crate::config::{
-        EnabledServices, FailoverStrategy, OperationPolicies, ProxyDownstreamObfuscation,
-        RuntimePolicy,
+        EnabledServices, FailoverStrategy, OperationPolicies, PreparedProxyPolicy, RuntimePolicy,
     };
     use super::TacacsClientService;
     use crate::runtime::{
@@ -447,7 +450,6 @@ mod tests {
                 },
                 ..Default::default()
             },
-            proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
             tacacs_plus,
             validation_options: tacacsrs_config::ValidationOptions::default(),
             runtime_policy: RuntimePolicy::new(
@@ -478,6 +480,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn downstream_credential_preparation_and_publication_preserve_active_generation() {
+        use tacacsrs_config::proxy_policy::prepare_proxy_policy;
+        use tacacsrs_config::tacacsrs::ProxyCredentialSource;
+        use tacacsrs_secrets::SecretString;
+
+        let mut config =
+            service_config(test_endpoint("proxy-policy"), vec![test_server("primary:49")]);
+        config.local_services.tacacs_proxy_enabled = true;
+        config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:9050".to_owned());
+        config.local_services.proxy_credential_source = ProxyCredentialSource::Inline;
+        config.local_services.proxy_shared_secret =
+            Some(SecretString::new("old-downstream-key".to_owned()));
+        let source = config.local_services.clone();
+        let service = test_service(config).unwrap();
+        let old = service
+            .state
+            .proxy_transport_settings()
+            .downstream_obfuscation()
+            .clone();
+        let health_before = format!("{:?}", service.health.snapshot());
+        let mut invalid = source.clone();
+        invalid.proxy_shared_secret = Some(SecretString::new(String::new()));
+        assert!(prepare_proxy_policy(&invalid, None).is_err());
+        assert!(service
+            .reload_materialized_servers_with_proxy_downstream_obfuscation(
+                Vec::new(),
+                PreparedProxyPolicy::unavailable(),
+            )
+            .await
+            .is_err());
+        assert_eq!(service.server_count(), 1);
+        assert_eq!(
+            service
+                .state
+                .proxy_transport_settings()
+                .downstream_obfuscation(),
+            &old
+        );
+        assert_eq!(format!("{:?}", service.health.snapshot()), health_before);
+
+        let mut replacement = source.clone();
+        replacement.proxy_shared_secret = Some(SecretString::new("new-downstream-key".to_owned()));
+        let prepared = prepare_proxy_policy(&replacement, None).unwrap();
+        service
+            .reload_materialized_servers_with_proxy_downstream_obfuscation(
+                vec![Arc::new(test_server("primary:49"))],
+                prepared.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .state
+                .proxy_transport_settings()
+                .downstream_obfuscation(),
+            &prepared
+        );
+        assert_eq!(old.shared_secret().unwrap(), source.proxy_shared_secret.as_ref());
+        assert_eq!(service.config.local_services, source);
+    }
+
+    #[test]
+    fn waiting_proxy_cannot_treat_unresolved_row_credentials_as_plaintext() {
+        let mut config =
+            service_config(test_endpoint("pending-proxy"), vec![test_server("primary:49")]);
+        config.tacacs_plus = tacacsrs_config::TacacsPlus::empty();
+        config.local_services.tacacs_proxy_enabled = true;
+        config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:49".to_owned());
+        config.local_services.proxy_credential_source =
+            tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow;
+        let health = RuntimeHealthPublisher::new(config.enabled_services());
+        let service = TacacsClientService::waiting_for_configuration(config, health).unwrap();
+        assert!(service
+            .state
+            .proxy_transport_settings()
+            .downstream_obfuscation()
+            .shared_secret()
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn service_publication_preserves_explicit_source_validation_policy() {
         let mut plain = test_server("primary:49");
         plain.shared_secret = None;
@@ -494,7 +577,7 @@ mod tests {
             let result = service
                 .reload_materialized_servers_with_proxy_downstream_obfuscation(
                     vec![Arc::new(plain.clone())],
-                    ProxyDownstreamObfuscation::default(),
+                    PreparedProxyPolicy::unobfuscated(),
                 )
                 .await;
             assert_eq!(result.is_ok(), allow_plain);

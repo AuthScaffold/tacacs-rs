@@ -10,10 +10,9 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::Parser;
 use tacacsrs_agent::{
-    EnabledServices, ProxyDownstreamObfuscation, RuntimeHealthPublisher, RuntimeLifecycle,
-    RuntimePolicy, ServiceConfig, TacacsClientService,
+    EnabledServices, RuntimeHealthPublisher, RuntimeLifecycle, RuntimePolicy, ServiceConfig,
+    TacacsClientService,
 };
-use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::input::{
     CliConfigSource, CliDatastoreInput, CliFileDatastore, CliSecurity, CliSecurityInputs,
     CliServerInput,
@@ -38,7 +37,7 @@ mod policy_supervisor;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
-use crate::config_filter::{TacacsPlusFilter, config_filter_from_runtime_options};
+use crate::config_filter::{TacacsPlusFilter, config_filter_from_local_services};
 use crate::config_supervisor::ConfigSupervisor;
 use crate::host_integration::HostIntegration;
 use crate::policy_file::PolicyFile;
@@ -406,19 +405,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let enabled_services =
         EnabledServices::new(prepared.client_api().is_some(), prepared.tacacs_proxy().is_some());
     log::info!("Local service listeners: {prepared:?}");
-    let proxy_endpoint = prepared.tacacs_proxy().map(|target| match target {
-        tacacsrs_config::local_services::ListenerEndpoint::Unix(path) => {
-            IpcEndpoint::Unix(path.clone())
-        }
-        tacacsrs_config::local_services::ListenerEndpoint::Tcp(address) => {
-            IpcEndpoint::Tcp(*address)
-        }
-    });
-    let config_filter = config_filter_from_runtime_options(
-        enabled_services,
-        proxy_endpoint.as_ref(),
-        cli.proxy_shared_secret.clone(),
-    );
+    let config_filter = config_filter_from_local_services(&local_services)?;
 
     let datastore = build_datastore(&cli, sonic_forwarder);
     let policy_file = cli.runtime_policy.clone().map(PolicyFile::new);
@@ -436,7 +423,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         TacacsClientService::waiting_for_configuration(
             ServiceConfig {
                 local_services,
-                proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                 tacacs_plus: empty_tacacs_plus,
                 validation_options: datastore.validation_options(),
                 runtime_policy,

@@ -48,6 +48,7 @@ tonic = "0.14.6"
 clap = { version = "4.6.1", features = ["derive"] }
 clap_mangen = "0.3.0"
 tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
+tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
 
 [package.metadata.cargo-udeps.ignore]
 normal = ["env_logger"]

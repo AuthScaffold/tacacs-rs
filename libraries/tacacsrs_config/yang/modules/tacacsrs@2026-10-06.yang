@@ -57,6 +57,23 @@ module tacacsrs {
       "Failover behavior for a local TACACS+ service.";
   }
 
+  typedef proxy-credential-source {
+    type enumeration {
+      enum unobfuscated {
+        description "Require unobfuscated downstream packets.";
+      }
+      enum inline {
+        description "Use the configured proxy shared secret.";
+      }
+      enum local-proxy-row {
+        description
+          "Use the highest-priority upstream row matching the local proxy endpoint.
+           A missing row or missing secret rejects the candidate configuration.";
+      }
+    }
+    description "Authoritative source of downstream proxy obfuscation credentials.";
+  }
+
   grouping request-limits {
     description
       "Admission limits shared by all callers of one operation.";
@@ -84,6 +101,9 @@ module tacacsrs {
       must "client-api-enabled = 'true' or tacacs-proxy-enabled = 'true'";
       must "(tacacs-proxy-enabled = 'true' and tacacs-proxy-endpoint) or
             (tacacs-proxy-enabled = 'false' and not(tacacs-proxy-endpoint))";
+      must "tacacs-proxy-enabled = 'true' or proxy-credential-source = 'unobfuscated'";
+      must "(proxy-credential-source = 'inline' and proxy-shared-secret) or
+        (proxy-credential-source != 'inline' and not(proxy-shared-secret))";
       leaf client-api-enabled {
         type boolean;
         default true;
@@ -113,6 +133,15 @@ module tacacsrs {
         default 432;
         description
           "Unix socket permission bits as a decimal integer. The default is octal 660.";
+      }
+      leaf proxy-credential-source {
+        type proxy-credential-source;
+        default unobfuscated;
+        description "Selects downstream credentials independently of loop prevention.";
+      }
+      leaf proxy-shared-secret {
+        type string { length "1..max"; }
+        description "Downstream shared secret for the inline credential source.";
       }
     }
     container runtime-policy {

@@ -24,7 +24,7 @@ use tacacsrs_config::prepare::PrepareOptions;
 use self::availability::AvailabilityTracker;
 use self::server_set::{RuntimeRoutingSnapshot, ServerSet};
 use self::server_slot::ServerSlot;
-use crate::config::{ProxyDownstreamObfuscation, RuntimePolicy};
+use crate::config::{PreparedProxyPolicy, RuntimePolicy};
 #[cfg(test)]
 use crate::config::{FailoverStrategy, OperationPolicies};
 use crate::runtime::RuntimeHealthPublisher;
@@ -73,7 +73,7 @@ impl UpstreamManager {
         let servers = servers.into_iter().map(Arc::new).collect();
         Self::new_shared_with_proxy_downstream_obfuscation(
             servers,
-            ProxyDownstreamObfuscation::default(),
+            PreparedProxyPolicy::unobfuscated(),
             RuntimePolicy::new(
                 FailoverStrategy::default(),
                 FailoverStrategy::default(),
@@ -97,7 +97,7 @@ impl UpstreamManager {
     ) -> Self {
         Self::new_shared_with_proxy_downstream_obfuscation(
             servers,
-            ProxyDownstreamObfuscation::default(),
+            PreparedProxyPolicy::unobfuscated(),
             RuntimePolicy::new(
                 FailoverStrategy::default(),
                 FailoverStrategy::default(),
@@ -114,7 +114,7 @@ impl UpstreamManager {
 
     pub(crate) fn new_shared_with_proxy_downstream_obfuscation(
         servers: Vec<Arc<TacacsPlusServer>>,
-        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
         runtime_policy: RuntimePolicy,
         connector: Arc<dyn UpstreamConnector>,
         health: RuntimeHealthPublisher,
@@ -294,7 +294,7 @@ impl UpstreamManager {
     pub(crate) async fn reload_shared_servers_with_proxy_downstream_obfuscation(
         &self,
         servers: Vec<Arc<TacacsPlusServer>>,
-        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
         let previous = self.current_server_set();
         let materially_changed = previous.server_count() != servers.len()
@@ -386,9 +386,7 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::{BoundServer, UpstreamManager};
-    use crate::config::{
-        FailoverStrategy, OperationPolicies, ProxyDownstreamObfuscation, RuntimePolicy,
-    };
+    use crate::config::{FailoverStrategy, OperationPolicies, PreparedProxyPolicy, RuntimePolicy};
     use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
     use crate::EnabledServices;
     use crate::test_support::{FakeConnection, FakeConnector};
@@ -514,7 +512,7 @@ mod tests {
         assert!(state
             .reload_shared_servers_with_proxy_downstream_obfuscation(
                 vec![Arc::new(changed), Arc::new(invalid)],
-                ProxyDownstreamObfuscation::Unobfuscated,
+                PreparedProxyPolicy::unobfuscated(),
             )
             .await
             .is_err());
@@ -610,12 +608,23 @@ mod tests {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
         });
-        let first_policy = ProxyDownstreamObfuscation::SharedSecret(
-            tacacsrs_secrets::SecretString::new("first-proxy-secret".to_owned()),
-        );
-        let second_policy = ProxyDownstreamObfuscation::SharedSecret(
-            tacacsrs_secrets::SecretString::new("second-proxy-secret".to_owned()),
-        );
+        let prepare = |secret: &str| {
+            tacacsrs_config::proxy_policy::prepare_proxy_policy(
+                &tacacsrs_config::tacacsrs::LocalServices {
+                    tacacs_proxy_enabled: true,
+                    proxy_credential_source:
+                        tacacsrs_config::tacacsrs::ProxyCredentialSource::Inline,
+                    proxy_shared_secret: Some(tacacsrs_secrets::SecretString::new(
+                        secret.to_owned(),
+                    )),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+        };
+        let first_policy = prepare("first-proxy-secret");
+        let second_policy = prepare("second-proxy-secret");
         let state = Arc::new(
             UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
                 vec![first],

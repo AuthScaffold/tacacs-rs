@@ -121,7 +121,7 @@ mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use tacacsrs_agent::{EnabledServices, ProxyDownstreamObfuscation, RuntimePolicy, ServiceConfig};
+    use tacacsrs_agent::{EnabledServices, RuntimePolicy, ServiceConfig};
     use tacacsrs_config::TacacsPlus;
 
     use super::*;
@@ -141,7 +141,6 @@ mod tests {
             TacacsClientService::waiting_for_configuration(
                 ServiceConfig {
                     local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-                    proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                     tacacs_plus: TacacsPlus::empty(),
                     validation_options: tacacsrs_config::ValidationOptions::default(),
                     runtime_policy: RuntimePolicy::default(),

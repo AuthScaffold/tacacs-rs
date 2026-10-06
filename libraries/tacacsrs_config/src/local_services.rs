@@ -86,6 +86,7 @@ pub fn parse_local_services(bytes: &[u8]) -> anyhow::Result<LocalServices> {
 /// Returns an error for disabled services, invalid endpoints or permissions,
 /// conflicting Unix paths, or a proxy endpoint inconsistent with service selection.
 pub fn prepare_local_services(source: &LocalServices) -> anyhow::Result<PreparedLocalServices> {
+    crate::proxy_policy::validate_proxy_source(source)?;
     ensure!(
         source.client_api_enabled || source.tacacs_proxy_enabled,
         "Enable at least one runtime service"

@@ -1113,9 +1113,85 @@ pub mod tacacsrs {
         }
     }
 
+    /// Authoritative source of downstream proxy obfuscation credentials.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ProxyCredentialSource {
+        /// Require unobfuscated downstream packets.
+        Unobfuscated,
+        /// Use the configured proxy shared secret.
+        Inline,
+        /// Use the highest-priority upstream row matching the local proxy endpoint.
+        /// A missing row or missing secret rejects the candidate configuration.
+        LocalProxyRow,
+    }
+
+    impl ProxyCredentialSource {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::Unobfuscated,
+            Self::Inline,
+            Self::LocalProxyRow,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "unobfuscated",
+            "inline",
+            "local-proxy-row",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::Unobfuscated => "unobfuscated",
+                Self::Inline => "inline",
+                Self::LocalProxyRow => "local-proxy-row",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "unobfuscated" => Some(Self::Unobfuscated),
+                "inline" => Some(Self::Inline),
+                "local-proxy-row" => Some(Self::LocalProxyRow),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for ProxyCredentialSource {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for ProxyCredentialSource {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
     fn default_local_services_client_api_enabled() -> bool { true }
     fn default_local_services_client_api_endpoint() -> String { "/run/tacacs/tacacs.sock".to_owned() }
     fn default_local_services_unix_socket_mode() -> u16 { 432 }
+    fn default_local_services_proxy_credential_source() -> ProxyCredentialSource { ProxyCredentialSource::Unobfuscated }
 
     /// Startup listener configuration. Changes require a service restart.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1143,6 +1219,15 @@ pub mod tacacsrs {
         #[serde(rename = "unix-socket-mode")]
         #[serde(default = "default_local_services_unix_socket_mode")]
         pub unix_socket_mode: u16,
+        /// Selects downstream credentials independently of loop prevention.
+        #[serde(rename = "proxy-credential-source")]
+        #[serde(default = "default_local_services_proxy_credential_source")]
+        pub proxy_credential_source: ProxyCredentialSource,
+        /// Downstream shared secret for the inline credential source.
+        #[serde(rename = "proxy-shared-secret")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub proxy_shared_secret: Option<tacacsrs_secrets::SecretString>,
     }
 
     impl Default for LocalServices {
@@ -1153,6 +1238,8 @@ pub mod tacacsrs {
                 tacacs_proxy_enabled: Default::default(),
                 tacacs_proxy_endpoint: None,
                 unix_socket_mode: default_local_services_unix_socket_mode(),
+                proxy_credential_source: default_local_services_proxy_credential_source(),
+                proxy_shared_secret: None,
             }
         }
     }

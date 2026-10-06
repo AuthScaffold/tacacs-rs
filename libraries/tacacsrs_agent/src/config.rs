@@ -13,7 +13,7 @@
 //! [`serve`](crate::TacacsClientService::serve) to start the runtime.
 
 use tacacsrs_config::TacacsPlus;
-use tacacsrs_secrets::SecretString;
+pub use tacacsrs_config::proxy_policy::PreparedProxyPolicy;
 
 pub use self::policy::{
     FailoverStrategy, OperationPolicies, PolicyService, RequestLimits, RuntimePolicy,
@@ -75,18 +75,6 @@ impl EnabledServices {
     }
 }
 
-/// Downstream obfuscation policy for raw TACACS+ proxy clients.
-#[derive(Debug, Clone, Default, Eq, PartialEq)]
-pub enum ProxyDownstreamObfuscation {
-    /// Requires downstream proxy clients to send unobfuscated TACACS+ packets.
-    #[default]
-    Unobfuscated,
-
-    /// Requires downstream proxy clients to use this shared secret for TACACS+
-    /// message obfuscation.
-    SharedSecret(SecretString),
-}
-
 /// Configuration for the long-lived TACACS+ client service process.
 ///
 /// The service reads this configuration at startup. It validates related
@@ -103,14 +91,6 @@ pub enum ProxyDownstreamObfuscation {
 pub struct ServiceConfig {
     /// Canonical startup listener controls. Preparation validates these before binding.
     pub local_services: tacacsrs_config::tacacsrs::LocalServices,
-
-    /// Obfuscation policy expected from raw TACACS+ proxy clients.
-    ///
-    /// This policy is separate from the shared secrets for servers. The proxy
-    /// deobfuscates and reobfuscates packets when it rewrites TACACS+ session
-    /// IDs. A downstream client sends either unobfuscated packets or packets
-    /// obfuscated with the local proxy shared secret.
-    pub proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
 
     /// Root TACACS+ configuration that contains servers and shared
     /// credential bundles.

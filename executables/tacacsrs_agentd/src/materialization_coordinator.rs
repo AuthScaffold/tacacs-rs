@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use tacacsrs_agent::{ProxyDownstreamObfuscation, TacacsClientService};
+use tacacsrs_agent::{PreparedProxyPolicy, TacacsClientService};
 use tacacsrs_config::{TacacsPlus, TacacsPlusServer, ValidationOptions, enumerate_server};
 use tacacsrs_config::prepare::{MaterializationError, materialize_servers, resolution_plan};
 use tacacsrs_credential_resolution::{
@@ -20,7 +20,7 @@ struct DependencyKey {
 struct CoordinatorState {
     desired_source: Option<Arc<TacacsPlus>>,
     desired_runtime_source: Option<Arc<TacacsPlus>>,
-    desired_proxy_policy: Option<ProxyDownstreamObfuscation>,
+    desired_proxy_policy: Option<PreparedProxyPolicy>,
     desired_dependencies: Option<BTreeMap<DependencyKey, BTreeSet<String>>>,
     active_servers: Vec<Arc<TacacsPlusServer>>,
     source_generation: u64,
@@ -54,7 +54,7 @@ pub(crate) struct MaterializationAttempt {
     attempt_id: u64,
     source_generation: u64,
     runtime_source: Arc<TacacsPlus>,
-    proxy_policy: ProxyDownstreamObfuscation,
+    proxy_policy: PreparedProxyPolicy,
     selected_servers: BTreeSet<String>,
 }
 
@@ -85,7 +85,7 @@ impl MaterializationCoordinator {
         &self,
         desired_source: TacacsPlus,
         runtime_source: TacacsPlus,
-        proxy_policy: ProxyDownstreamObfuscation,
+        proxy_policy: PreparedProxyPolicy,
     ) -> MaterializationAttempt {
         let dependencies = dependency_index(&runtime_source);
         let runtime_source = Arc::new(runtime_source);
@@ -267,7 +267,7 @@ mod tests {
 
     use async_trait::async_trait;
     use tacacsrs_agent::{
-        EnabledServices, ProxyDownstreamObfuscation, RuntimeHealthPublisher, ServiceConfig,
+        EnabledServices, PreparedProxyPolicy, RuntimeHealthPublisher, ServiceConfig,
         TacacsClientService,
     };
     use tacacsrs_credential_resolution::SymmetricKeyFormat;
@@ -378,7 +378,6 @@ mod tests {
         TacacsClientService::waiting_for_configuration(
             ServiceConfig {
                 local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-                proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                 tacacs_plus: TacacsPlus::empty(),
                 validation_options: ValidationOptions::default(),
                 runtime_policy: tacacsrs_agent::RuntimePolicy::new(
@@ -411,7 +410,7 @@ mod tests {
         let service = service();
         let baseline = source("object-a", "192.0.2.20");
         let attempt = coordinator
-            .accept_source(baseline.clone(), baseline, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(baseline.clone(), baseline, PreparedProxyPolicy::unobfuscated())
             .await;
         let prepared = coordinator.materialize(attempt).await.unwrap();
         coordinator.publish(prepared, &service).await.unwrap();
@@ -433,7 +432,7 @@ mod tests {
             .build()],
         };
         let attempt = coordinator
-            .accept_source(invalid.clone(), invalid, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(invalid.clone(), invalid, PreparedProxyPolicy::unobfuscated())
             .await;
         let result = match coordinator.materialize(attempt).await {
             Ok(prepared) => coordinator.publish(prepared, &service).await,
@@ -489,7 +488,7 @@ mod tests {
         );
         let service = service();
         let baseline = coordinator
-            .accept_source(source.clone(), source, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(source.clone(), source, PreparedProxyPolicy::unobfuscated())
             .await;
         let prepared = coordinator.materialize(baseline).await.expect("baseline");
         coordinator
@@ -527,7 +526,7 @@ mod tests {
         let service = service();
         let desired = source("object-a", "192.0.2.20");
         let attempt = coordinator
-            .accept_source(desired.clone(), desired, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(desired.clone(), desired, PreparedProxyPolicy::unobfuscated())
             .await;
         let prepared = coordinator.materialize(attempt).await.expect("materialize");
         coordinator
@@ -566,11 +565,7 @@ mod tests {
         let service = service();
         let first_source = source("object-a", "192.0.2.25");
         let first_attempt = coordinator
-            .accept_source(
-                first_source.clone(),
-                first_source,
-                ProxyDownstreamObfuscation::Unobfuscated,
-            )
+            .accept_source(first_source.clone(), first_source, PreparedProxyPolicy::unobfuscated())
             .await;
         let first_prepared = coordinator.materialize(first_attempt).await.expect("first");
         coordinator
@@ -584,7 +579,7 @@ mod tests {
             .accept_source(
                 second_source.clone(),
                 second_source,
-                ProxyDownstreamObfuscation::Unobfuscated,
+                PreparedProxyPolicy::unobfuscated(),
             )
             .await;
         let second_prepared = coordinator
@@ -629,7 +624,7 @@ mod tests {
         let service = service();
         let first = source("object-a", "192.0.2.30");
         let first_attempt = coordinator
-            .accept_source(first.clone(), first, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(first.clone(), first, PreparedProxyPolicy::unobfuscated())
             .await;
         let preparing = Arc::clone(&coordinator);
         let old_task = tokio::spawn(async move { preparing.materialize(first_attempt).await });
@@ -642,7 +637,7 @@ mod tests {
             .accept_source(
                 current_source.clone(),
                 current_source.clone(),
-                ProxyDownstreamObfuscation::Unobfuscated,
+                PreparedProxyPolicy::unobfuscated(),
             )
             .await;
         let prepared = coordinator.materialize(current_attempt).await.unwrap();
@@ -676,11 +671,7 @@ mod tests {
         let service = service();
         let desired = source("object-a", "192.0.2.20");
         let attempt = coordinator
-            .accept_source(
-                desired.clone(),
-                desired.clone(),
-                ProxyDownstreamObfuscation::Unobfuscated,
-            )
+            .accept_source(desired.clone(), desired.clone(), PreparedProxyPolicy::unobfuscated())
             .await;
         let prepared = coordinator.materialize(attempt).await.unwrap();
         coordinator.publish(prepared, &service).await.unwrap();
@@ -729,12 +720,12 @@ mod tests {
         let service = service();
         let first = source("object-a", "192.0.2.30");
         let first_attempt = coordinator
-            .accept_source(first.clone(), first, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(first.clone(), first, PreparedProxyPolicy::unobfuscated())
             .await;
         let first_prepared = coordinator.materialize(first_attempt).await.expect("first");
         let second = source("object-b", "192.0.2.31");
         let second_attempt = coordinator
-            .accept_source(second.clone(), second, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(second.clone(), second, PreparedProxyPolicy::unobfuscated())
             .await;
 
         assert_eq!(
@@ -768,18 +759,14 @@ mod tests {
         let coordinator = MaterializationCoordinator::new(resolver, ValidationOptions::default());
         let first_source = source("first", "192.0.2.10");
         let first = coordinator
-            .accept_source(
-                first_source.clone(),
-                first_source,
-                ProxyDownstreamObfuscation::default(),
-            )
+            .accept_source(first_source.clone(), first_source, PreparedProxyPolicy::unobfuscated())
             .await;
         let second_source = source("second", "192.0.2.11");
         let second = coordinator
             .accept_source(
                 second_source.clone(),
                 second_source,
-                ProxyDownstreamObfuscation::default(),
+                PreparedProxyPolicy::unobfuscated(),
             )
             .await;
 
@@ -800,7 +787,7 @@ mod tests {
         let service = service();
         let first = source("object-a", "192.0.2.40");
         let first_attempt = coordinator
-            .accept_source(first.clone(), first, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(first.clone(), first, PreparedProxyPolicy::unobfuscated())
             .await;
         let first_prepared = coordinator.materialize(first_attempt).await.expect("first");
         coordinator
@@ -816,7 +803,7 @@ mod tests {
             .insert("object-b".to_owned());
         let second = source("object-b", "192.0.2.41");
         let second_attempt = coordinator
-            .accept_source(second.clone(), second, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(second.clone(), second, PreparedProxyPolicy::unobfuscated())
             .await;
         assert!(coordinator.materialize(second_attempt).await.is_err());
         assert!(Arc::ptr_eq(&known_good, &coordinator.active_servers().await[0],));

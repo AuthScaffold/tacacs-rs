@@ -3,7 +3,7 @@
 use anyhow::{Context, ensure};
 
 use tacacsrs_config::local_services::{parse_local_services, prepare_local_services};
-use tacacsrs_config::tacacsrs::LocalServices;
+use tacacsrs_config::tacacsrs::{LocalServices, ProxyCredentialSource};
 use tacacsrs_sonic::SonicForwarderSettings;
 
 use crate::cli::{Cli, ServiceMode};
@@ -30,6 +30,10 @@ pub(crate) fn from_cli(
         source.client_api_endpoint.clone_from(endpoint);
     }
     source.tacacs_proxy_endpoint.clone_from(&cli.proxy_endpoint);
+    if let Some(secret) = &cli.proxy_shared_secret {
+        source.proxy_credential_source = ProxyCredentialSource::Inline;
+        source.proxy_shared_secret = Some(secret.clone());
+    }
     if let Some(mode) = &cli.socket_mode {
         source.unix_socket_mode = u16::from_str_radix(mode, 8)
             .context("socket mode must be an octal permission value")?;
@@ -52,11 +56,15 @@ pub(crate) fn from_cli(
         );
         source.client_api_enabled = true;
         source.tacacs_proxy_enabled = true;
+        source.proxy_credential_source = ProxyCredentialSource::LocalProxyRow;
     } else if let Some(mode) = cli.service_mode {
         source.client_api_enabled = mode != ServiceMode::TacacsProxy;
         source.tacacs_proxy_enabled = mode != ServiceMode::ClientApi;
     } else if source.tacacs_proxy_endpoint.is_some() {
         source.tacacs_proxy_enabled = true;
+    }
+    if let Some(selection) = cli.proxy_credential_source {
+        source.proxy_credential_source = selection;
     }
     prepare_local_services(&source)?;
     Ok(source)
@@ -66,6 +74,36 @@ pub(crate) fn from_cli(
 mod tests {
     use clap::Parser;
     use super::*;
+
+    #[test]
+    fn inline_cli_and_file_credentials_match_without_debug_disclosure() {
+        let cli = Cli::parse_from([
+            "agentd",
+            "--server-addr",
+            "192.0.2.1:49",
+            "--proxy-endpoint",
+            "127.0.0.1:49",
+            "--proxy-shared-secret",
+            "private-downstream-key",
+        ]);
+        let source = from_cli(&cli, None).unwrap();
+        let file = parse_local_services(
+            br#"{"tacacsrs:local-services":{
+            "tacacs-proxy-enabled":true, "tacacs-proxy-endpoint":"127.0.0.1:49",
+            "proxy-credential-source":"inline", "proxy-shared-secret":"private-downstream-key"
+        }}"#,
+        )
+        .unwrap();
+        assert_eq!(source, file);
+        assert!(!format!("{cli:?} {source:?}").contains("private-downstream-key"));
+        for document in [
+            br#"{"tacacsrs:local-services":{"proxy-shared-secret":"private-downstream-key"}}"#.as_slice(),
+            br#"{"tacacsrs:local-services":{"tacacs-proxy-enabled":true,"tacacs-proxy-endpoint":"127.0.0.1:49","proxy-credential-source":"inline","proxy-shared-secret":""}}"#.as_slice(),
+        ] {
+            let error = parse_local_services(document).unwrap_err();
+            assert!(!format!("{error:#}").contains("private-downstream-key"));
+        }
+    }
 
     #[test]
     fn cli_and_yang_have_equal_canonical_and_prepared_values() {
@@ -183,5 +221,14 @@ mod tests {
         assert!(source.client_api_enabled);
         assert!(source.tacacs_proxy_enabled);
         assert_eq!(source.tacacs_proxy_endpoint.as_deref(), Some("127.0.0.1:49"));
+        assert_eq!(source.proxy_credential_source, ProxyCredentialSource::LocalProxyRow);
+        let plain = Cli::parse_from([
+            "agentd",
+            "--sonic",
+            "--proxy-credential-source",
+            "unobfuscated",
+        ]);
+        let source = from_cli(&plain, forwarder).unwrap();
+        assert_eq!(source.proxy_credential_source, ProxyCredentialSource::Unobfuscated);
     }
 }

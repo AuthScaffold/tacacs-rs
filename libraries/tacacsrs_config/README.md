@@ -181,7 +181,24 @@ Runtime listeners still report filesystem permissions, occupied addresses, and o
 
 Agent callers now supply `ServiceConfig::local_services`, not independent service flags, IPC endpoints, or socket modes.
 The agent prepares this source before startup and stores the resulting targets privately.
-Process runtime settings and downstream credential policy are separate from this resource.
+Process runtime settings remain separate from this resource.
+
+### Downstream Credentials
+
+`LocalServices::proxy_credential_source` selects `unobfuscated`, `inline`, or `local-proxy-row` behavior.
+Inline mode requires `proxy_shared_secret`. Generated code uses a redacted, zeroizing `SecretString` for that leaf.
+Other modes reject the inline field. Credential-bearing modes require an enabled proxy.
+
+`proxy_policy::prepare_proxy_policy` derives immutable `PreparedProxyPolicy` material without changing the source.
+For row-derived mode, the adapter supplies the first matching row in canonical server order before removing self-looping upstreams.
+Preparation rejects missing or empty credentials. Inline and unobfuscated modes ignore row credentials, so filtering cannot override explicit policy.
+The runtime type has private state and no serialization. Its unavailable state rejects access rather than returning a plaintext policy.
+
+The agent no longer accepts an independent `ServiceConfig::proxy_downstream_obfuscation` field or the old mutable credential enum.
+Startup derives inline or unobfuscated policy directly from the canonical source.
+Row-derived startup uses `waiting_for_configuration`, followed by publication of the adapter's prepared policy and upstream set.
+Publication rejects unavailable policy and retains the previous generation on failure.
+This contract uses existing inline and source-row material. It does not add a new central credential provider or change upstream EPSK resolution.
 
 ## Configuration Sources
 

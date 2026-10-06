@@ -62,6 +62,8 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Absolute Unix socket path or numeric IP socket address |
 | `--service-mode <MODE>` | `client-api`, or `both` when `--proxy-endpoint` is set | Runtime services to host: `client-api`, `tacacs-proxy`, or `both` |
 | `--socket-mode <MODE>` | `660` | File permission mode for the Unix domain socket (octal) |
+| `--proxy-credential-source <SOURCE>` | `unobfuscated`, `inline` with a CLI secret, or `local-proxy-row` in SONiC mode | Canonical downstream credential source |
+| `--proxy-shared-secret <SECRET>` | none | Nonempty inline downstream secret. Requires a proxy endpoint and conflicts with SONiC mode. |
 | `--worker-threads <COUNT>` | `1` | Tokio worker threads. TACACS+ requests are small and I/O bound, so extra workers mainly add cross-thread task migration. |
 | `--host-integration <MODE>` | `auto` | Host adapter: `auto`, `none`, or strict `systemd` |
 
@@ -101,7 +103,7 @@ Example resource for `--local-services`:
 The default document is `{"tacacsrs:local-services":{}}`. It enables only the client API with permissions `0660`.
 YANG JSON encodes permission bits as a decimal number from 0 through 511. The CLI `--socket-mode` input remains octal.
 The resource file loads once at startup. Listener changes require a restart.
-It cannot be combined with `--listen-endpoint`, `--proxy-endpoint`, `--service-mode`, `--socket-mode`, or `--sonic`.
+It cannot be combined with listener flags, `--proxy-credential-source`, or `--sonic`.
 SONiC mode still loads its forwarder row and normalizes the result into the canonical resource.
 
 All endpoint paths must be absolute. Unix paths cannot contain NUL, parent traversal, or more than 107 bytes.
@@ -110,8 +112,32 @@ Preparation normalizes repeated separators and current-directory components to d
 Proxy TCP targets must use numeric addresses. IPv6 addresses require brackets. Port zero requests an ephemeral port.
 Wildcard proxy addresses remain supported. Deployments must restrict access to trusted clients.
 
-This resource does not contain downstream credentials. With a resource file, the proxy currently requires unobfuscated downstream packets.
-The CLI shared-secret input and SONiC local-hop credentials retain their existing paths pending the separate credential refactor.
+The resource also selects downstream credentials through `proxy-credential-source`:
+
+| Value | Credential contract |
+| --- | --- |
+| `unobfuscated` | No secret is configured or inferred from upstream rows. This is the YANG default. |
+| `inline` | `proxy-shared-secret` must contain a nonempty string. Matching upstream rows cannot override it. |
+| `local-proxy-row` | A numeric TCP endpoint is required. The highest-priority matching upstream row must exist and contain a nonempty shared secret. |
+
+An inline resource can contain these fields alongside its listener controls:
+
+```json
+{
+    "tacacsrs:local-services": {
+        "tacacs-proxy-enabled": true,
+        "tacacs-proxy-endpoint": "127.0.0.1:49",
+        "proxy-credential-source": "inline",
+        "proxy-shared-secret": "replace-with-local-secret"
+    }
+}
+```
+
+CAUTION: Restrict access to files containing inline secrets. JSON serialization contains the configured secret, even though debug output is redacted.
+CLI arguments can also appear in process listings. A protected resource file avoids placing the secret in the command line.
+Changes to this startup resource, including inline secret rotation, require a restart.
+With `local-proxy-row`, accepted upstream source updates can rotate the derived secret without changing the credential-source selection.
+Existing downstream connections retain their captured credentials until they close. This change does not force credential revocation on established connections.
 
 ### TACACS+ Proxy Mode
 
@@ -148,9 +174,15 @@ Unix domain socket endpoints use the same `--socket-mode` value as the IPC liste
 
 Downstream TACACS+ obfuscation is independent of the selected upstream transport. In SONiC mode, the daemon filters rows that target its loopback proxy.
 
-The daemon uses the highest-priority row's resolved `passkey` for the local hop. Outside SONiC mode, use `--proxy-shared-secret`.
+SONiC mode selects `local-proxy-row` by default. The selected row's mapped `passkey` supplies downstream material.
+For intentional plaintext downstream traffic, select `--proxy-credential-source unobfuscated` explicitly.
+Outside SONiC mode, `--proxy-shared-secret` selects inline policy unless an explicit source selector conflicts with it.
 
-If neither source provides a local-hop secret, downstream clients must send unobfuscated TACACS+ packets. Upstream failover never changes the downstream shared secret.
+This replaces the previous implicit local-row override and missing-secret fallback.
+A missing row, missing secret, or empty secret rejects the candidate generation in row-derived mode.
+Rejected updates retain the previous upstream set and downstream credentials, even if the candidate removed the local row.
+Before the first valid generation, the proxy rejects connections without reading packets. It never substitutes unobfuscated traffic for unresolved credentials.
+Upstream failover does not change downstream credentials. Source preparation publishes valid credential and upstream changes together.
 
 TACACS+ has no general in-band request to drain an established single-connect connection. Clearing the single-connect flag after negotiation has no effect. In this proxy, a TACACS+ `ERROR` is session-scoped and does not close the downstream connection.
 

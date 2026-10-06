@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Parser, ValueEnum};
 use clap::builder::TypedValueParser as _;
 use tacacsrs_config::PskDheKeSupportedGroup;
+use tacacsrs_config::tacacsrs::ProxyCredentialSource;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub(crate) enum ServiceMode {
@@ -50,6 +51,15 @@ fn psk_dhe_ke_supported_group_parser(
         })
 }
 
+fn proxy_credential_source_parser(
+) -> impl clap::builder::TypedValueParser<Value = ProxyCredentialSource> {
+    clap::builder::PossibleValuesParser::new(ProxyCredentialSource::ALLOWED_VALUES.iter().copied())
+        .map(|value| {
+            ProxyCredentialSource::from_rfc7951_str(&value)
+                .expect("clap accepted only generated proxy credential-source values")
+        })
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
@@ -81,7 +91,7 @@ pub(crate) struct Cli {
 
     /// Startup YANG JSON file containing a tacacsrs:local-services resource.
     #[arg(long, value_name = "FILE", conflicts_with_all = [
-        "listen_endpoint", "proxy_endpoint", "service_mode", "socket_mode", "sonic",
+        "listen_endpoint", "proxy_endpoint", "service_mode", "socket_mode", "sonic", "proxy_credential_source",
     ])]
     pub(crate) local_services: Option<PathBuf>,
 
@@ -112,8 +122,13 @@ pub(crate) struct Cli {
     pub(crate) proxy_endpoint: Option<String>,
 
     /// Shared secret expected from raw TACACS+ proxy clients.
-    #[arg(long, value_name = "SECRET", requires = "proxy_endpoint", conflicts_with = "sonic")]
-    pub(crate) proxy_shared_secret: Option<String>,
+    #[arg(long, value_name = "SECRET", requires = "proxy_endpoint", conflicts_with = "sonic",
+        value_parser = clap::builder::NonEmptyStringValueParser::new().map(tacacsrs_secrets::SecretString::new))]
+    pub(crate) proxy_shared_secret: Option<tacacsrs_secrets::SecretString>,
+
+    /// Downstream credential source. `SONiC` defaults to `local-proxy-row`.
+    #[arg(long, value_parser = proxy_credential_source_parser())]
+    pub(crate) proxy_credential_source: Option<ProxyCredentialSource>,
 
     /// Runtime service mode. `SONiC` mode requires both services.
     #[arg(long, value_enum)]

@@ -158,11 +158,13 @@ module: tacacsrs
 
   augment /sys:system:
     +--rw local-services
-    |  +--rw client-api-enabled?      boolean
-    |  +--rw client-api-endpoint?     string
-    |  +--rw tacacs-proxy-enabled?    boolean
-    |  +--rw tacacs-proxy-endpoint?   string
-    |  +--rw unix-socket-mode?        uint16
+    |  +--rw client-api-enabled?        boolean
+    |  +--rw client-api-endpoint?       string
+    |  +--rw tacacs-proxy-enabled?      boolean
+    |  +--rw tacacs-proxy-endpoint?     string
+    |  +--rw unix-socket-mode?          uint16
+    |  +--rw proxy-credential-source?   proxy-credential-source
+    |  +--rw proxy-shared-secret?       string
     +--rw runtime-policy
        +--rw failover-recovery-interval-seconds?   uint32
        +--rw client-api-failover-strategy?         failover-strategy

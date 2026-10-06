@@ -559,7 +559,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use tacacsrs_agent::{EnabledServices, ProxyDownstreamObfuscation, ServiceConfig};
+    use tacacsrs_agent::{EnabledServices, ServiceConfig};
     use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
     use tacacsrs_config::{EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity};
     use tacacsrs_credential_resolution::{
@@ -849,7 +849,6 @@ mod tests {
             TacacsClientService::waiting_for_configuration(
                 ServiceConfig {
                     local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-                    proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                     tacacs_plus: TacacsPlus::empty(),
                     validation_options: datastore.validation_options(),
                     runtime_policy: tacacsrs_agent::RuntimePolicy::new(

@@ -22,7 +22,7 @@ use self::reply_action::{ReplyAction, reply_action};
 use self::session::ProxyConversation;
 #[cfg(test)]
 use self::session_mapping::rewrite_session_id;
-use crate::config::{PolicyService, ProxyDownstreamObfuscation};
+use crate::config::{PolicyService, PreparedProxyPolicy};
 use crate::runtime::RequestGuard;
 use crate::upstream::OperationRouter;
 use crate::upstream::manager::UpstreamManager;
@@ -64,7 +64,7 @@ impl UpstreamBridge {
         proxy_multiplexed_connection(
             stream,
             transport.read_timeout(),
-            downstream_obfuscation_key(transport.downstream_obfuscation()),
+            downstream_obfuscation_key(transport.downstream_obfuscation())?,
             Arc::new(UpstreamConversationProvider::new(router)),
         )
         .await
@@ -77,15 +77,11 @@ impl UpstreamBridge {
 }
 
 fn downstream_obfuscation_key(
-    downstream_obfuscation: &ProxyDownstreamObfuscation,
-) -> Option<Vec<u8>> {
-    match downstream_obfuscation {
-        ProxyDownstreamObfuscation::Unobfuscated => None,
-        ProxyDownstreamObfuscation::SharedSecret(shared_secret) => {
-            Some(shared_secret.expose_secret())
-        }
-    }
-    .map(|secret| secret.as_bytes().to_vec())
+    downstream_obfuscation: &PreparedProxyPolicy,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    Ok(downstream_obfuscation
+        .shared_secret()?
+        .map(|secret| secret.expose_secret().as_bytes().to_vec()))
 }
 
 async fn proxy_multiplexed_connection<Stream, Provider>(
@@ -537,16 +533,26 @@ mod tests {
 
     #[test]
     fn downstream_obfuscation_uses_no_key_for_unobfuscated_clients() {
-        assert_eq!(downstream_obfuscation_key(&ProxyDownstreamObfuscation::Unobfuscated), None);
+        assert_eq!(downstream_obfuscation_key(&PreparedProxyPolicy::unobfuscated()).unwrap(), None);
+        assert!(downstream_obfuscation_key(&PreparedProxyPolicy::unavailable()).is_err());
     }
 
     #[test]
     fn downstream_obfuscation_uses_configured_proxy_secret() {
+        let policy = tacacsrs_config::proxy_policy::prepare_proxy_policy(
+            &tacacsrs_config::tacacsrs::LocalServices {
+                tacacs_proxy_enabled: true,
+                proxy_credential_source: tacacsrs_config::tacacsrs::ProxyCredentialSource::Inline,
+                proxy_shared_secret: Some(tacacsrs_secrets::SecretString::new(
+                    "local-proxy-secret".to_owned(),
+                )),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
         assert_eq!(
-            downstream_obfuscation_key(&ProxyDownstreamObfuscation::SharedSecret(
-                tacacsrs_secrets::SecretString::new("local-proxy-secret".to_owned()),
-            ),)
-            .as_deref(),
+            downstream_obfuscation_key(&policy).unwrap().as_deref(),
             Some(b"local-proxy-secret".as_slice())
         );
     }

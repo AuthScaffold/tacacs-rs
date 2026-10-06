@@ -5,17 +5,17 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use futures_util::future::{BoxFuture, FutureExt};
-use tacacsrs_agent::{EnabledServices, ProxyDownstreamObfuscation};
-use tacacsrs_agent_client::IpcEndpoint;
+use tacacsrs_config::local_services::{prepare_local_services, ListenerEndpoint};
+use tacacsrs_config::proxy_policy::{prepare_proxy_policy, PreparedProxyPolicy};
+use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_config::{TacacsPlus, TacacsPlusServer};
-use tacacsrs_secrets::SecretString;
 
 /// Filtered daemon configuration plus local proxy-only metadata derived from it.
 pub(crate) struct FilteredTacacsPlus {
     /// TACACS+ configuration to apply to the upstream runtime state.
     pub(crate) tacacs_plus: TacacsPlus,
     /// Obfuscation policy expected on downstream raw TACACS+ proxy traffic.
-    pub(crate) proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+    pub(crate) proxy_downstream_obfuscation: PreparedProxyPolicy,
 }
 
 /// Filters a validated TACACS+ configuration before it is applied to runtime state.
@@ -27,21 +27,19 @@ pub(crate) trait TacacsPlusFilter: Send + Sync {
 /// Filter implementation that preserves every server unchanged.
 #[derive(Debug, Default)]
 pub(crate) struct NoopTacacsPlusFilter {
-    proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+    source: LocalServices,
 }
 
 impl NoopTacacsPlusFilter {
-    fn new(proxy_downstream_obfuscation: ProxyDownstreamObfuscation) -> Self {
-        Self {
-            proxy_downstream_obfuscation,
-        }
+    fn new(source: LocalServices) -> Self {
+        Self { source }
     }
 }
 
 impl TacacsPlusFilter for NoopTacacsPlusFilter {
     fn filter(&self, tacacs_plus: TacacsPlus) -> BoxFuture<'_, anyhow::Result<FilteredTacacsPlus>> {
-        let proxy_downstream_obfuscation = self.proxy_downstream_obfuscation.clone();
         async move {
+            let proxy_downstream_obfuscation = prepare_proxy_policy(&self.source, None)?;
             Ok(FilteredTacacsPlus {
                 tacacs_plus,
                 proxy_downstream_obfuscation,
@@ -55,7 +53,7 @@ impl TacacsPlusFilter for NoopTacacsPlusFilter {
 #[derive(Debug, Clone)]
 pub(crate) struct ProxySelfLoopFilter {
     proxy_endpoint: SocketAddr,
-    fallback_proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+    source: LocalServices,
 }
 
 impl ProxySelfLoopFilter {
@@ -63,17 +61,23 @@ impl ProxySelfLoopFilter {
     #[cfg(test)]
     #[must_use]
     pub(crate) fn new(proxy_endpoint: SocketAddr) -> Self {
-        Self::new_with_fallback(proxy_endpoint, ProxyDownstreamObfuscation::Unobfuscated)
+        Self::new_with_policy(
+            proxy_endpoint,
+            LocalServices {
+                tacacs_proxy_enabled: true,
+                tacacs_proxy_endpoint: Some(proxy_endpoint.to_string()),
+                proxy_credential_source:
+                    tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow,
+                ..LocalServices::default()
+            },
+        )
     }
 
     #[must_use]
-    pub(crate) fn new_with_fallback(
-        proxy_endpoint: SocketAddr,
-        fallback_proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
-    ) -> Self {
+    pub(crate) fn new_with_policy(proxy_endpoint: SocketAddr, source: LocalServices) -> Self {
         Self {
             proxy_endpoint,
-            fallback_proxy_downstream_obfuscation,
+            source,
         }
     }
 
@@ -96,24 +100,14 @@ impl ProxySelfLoopFilter {
                     self.proxy_endpoint,
                 );
                 filtered_names.insert(server.name.clone());
-                if let Some(selected) = selected_proxy_server.as_ref() {
-                    if selected.shared_secret != server.shared_secret {
-                        log::warn!(
-                            "Multiple upstream TACACS+ server rows resolve to local proxy endpoint {}. The daemon uses the highest-priority row '{}' for downstream proxy obfuscation configuration.",
-                            self.proxy_endpoint,
-                            selected.name,
-                        );
-                    }
-                } else {
+                if selected_proxy_server.is_none() {
                     selected_proxy_server = Some(server.clone());
                 }
             }
         }
 
-        let proxy_downstream_obfuscation = selected_proxy_server.as_ref().map_or_else(
-            || self.fallback_proxy_downstream_obfuscation.clone(),
-            |server| proxy_downstream_obfuscation_from_secret(server.shared_secret.clone()),
-        );
+        let proxy_downstream_obfuscation =
+            prepare_proxy_policy(&self.source, selected_proxy_server.as_ref())?;
 
         tacacs_plus
             .server
@@ -133,20 +127,6 @@ impl ProxySelfLoopFilter {
                 self.proxy_endpoint,
             );
         }
-        if let Some(server) = selected_proxy_server.as_ref() {
-            if server.shared_secret.is_some() {
-                log::info!(
-                    "Using shared secret from highest-priority filtered local proxy endpoint row '{}' for downstream TACACS+ proxy obfuscation",
-                    server.name,
-                );
-            } else {
-                log::info!(
-                    "The highest-priority filtered local proxy endpoint row '{}' has no shared secret. The daemon expects unobfuscated downstream TACACS+ proxy traffic.",
-                    server.name,
-                );
-            }
-        }
-
         Ok(FilteredTacacsPlus {
             tacacs_plus,
             proxy_downstream_obfuscation,
@@ -161,33 +141,16 @@ impl TacacsPlusFilter for ProxySelfLoopFilter {
 }
 
 /// Composes the runtime configuration filter for the selected daemon services.
-#[must_use]
-pub(crate) fn config_filter_from_runtime_options(
-    enabled_services: EnabledServices,
-    proxy_endpoint: Option<&IpcEndpoint>,
-    proxy_shared_secret: Option<String>,
-) -> Arc<dyn TacacsPlusFilter> {
-    let proxy_downstream_obfuscation = proxy_shared_secret
-        .map(SecretString::new)
-        .map_or(ProxyDownstreamObfuscation::Unobfuscated, ProxyDownstreamObfuscation::SharedSecret);
-
-    if !enabled_services.tacacs_proxy() {
-        return Arc::new(NoopTacacsPlusFilter::new(proxy_downstream_obfuscation));
-    }
-
-    match proxy_endpoint {
-        Some(IpcEndpoint::Tcp(address)) => {
-            Arc::new(ProxySelfLoopFilter::new_with_fallback(*address, proxy_downstream_obfuscation))
+pub(crate) fn config_filter_from_local_services(
+    source: &LocalServices,
+) -> anyhow::Result<Arc<dyn TacacsPlusFilter>> {
+    let prepared = prepare_local_services(source)?;
+    match prepared.tacacs_proxy() {
+        Some(ListenerEndpoint::Tcp(address)) => {
+            Ok(Arc::new(ProxySelfLoopFilter::new_with_policy(*address, source.clone())))
         }
-        _ => Arc::new(NoopTacacsPlusFilter::new(proxy_downstream_obfuscation)),
+        _ => Ok(Arc::new(NoopTacacsPlusFilter::new(source.clone()))),
     }
-}
-
-fn proxy_downstream_obfuscation_from_secret(
-    shared_secret: Option<SecretString>,
-) -> ProxyDownstreamObfuscation {
-    shared_secret
-        .map_or(ProxyDownstreamObfuscation::Unobfuscated, ProxyDownstreamObfuscation::SharedSecret)
 }
 
 async fn upstream_server_targets_proxy_endpoint(
@@ -219,10 +182,13 @@ async fn upstream_server_targets_proxy_endpoint(
 #[cfg(test)]
 mod tests {
     use super::{
-        config_filter_from_runtime_options, NoopTacacsPlusFilter, ProxySelfLoopFilter,
+        config_filter_from_local_services, NoopTacacsPlusFilter, ProxySelfLoopFilter,
         TacacsPlusFilter,
     };
-    use tacacsrs_agent::{EnabledServices, ProxyDownstreamObfuscation};
+    use std::sync::Arc;
+    use tacacsrs_config::tacacsrs::{LocalServices, ProxyCredentialSource};
+    use tacacsrs_config::proxy_policy::prepare_proxy_policy;
+    use tacacsrs_agent::{EnabledServices, PreparedProxyPolicy};
     use tacacsrs_agent_client::IpcEndpoint;
     use tacacsrs_config::TacacsPlusServerType;
     use tacacsrs_config::{
@@ -269,10 +235,37 @@ mod tests {
             .expect("test configuration must be valid")
     }
 
-    fn proxy_obfuscation(secret: Option<&str>) -> ProxyDownstreamObfuscation {
-        secret.map_or(ProxyDownstreamObfuscation::Unobfuscated, |secret| {
-            ProxyDownstreamObfuscation::SharedSecret(SecretString::new(secret.to_owned()))
-        })
+    fn proxy_obfuscation(secret: Option<&str>) -> PreparedProxyPolicy {
+        let source = credential_source(secret);
+        prepare_proxy_policy(&source, None).unwrap()
+    }
+
+    fn credential_source(secret: Option<&str>) -> LocalServices {
+        LocalServices {
+            tacacs_proxy_enabled: true,
+            proxy_credential_source: if secret.is_some() {
+                ProxyCredentialSource::Inline
+            } else {
+                ProxyCredentialSource::Unobfuscated
+            },
+            proxy_shared_secret: secret.map(|value| SecretString::new(value.to_owned())),
+            ..LocalServices::default()
+        }
+    }
+
+    fn config_filter_from_runtime_options(
+        enabled: EnabledServices,
+        endpoint: Option<&IpcEndpoint>,
+        secret: Option<&str>,
+    ) -> Arc<dyn TacacsPlusFilter> {
+        let mut source = credential_source(secret);
+        source.client_api_enabled = enabled.client_api();
+        source.tacacs_proxy_enabled = enabled.tacacs_proxy();
+        source.tacacs_proxy_endpoint = enabled.tacacs_proxy().then(|| match endpoint.unwrap() {
+            IpcEndpoint::Tcp(address) => address.to_string(),
+            IpcEndpoint::Unix(path) => path.to_str().unwrap().to_owned(),
+        });
+        config_filter_from_local_services(&source).unwrap()
     }
 
     #[tokio::test]
@@ -293,7 +286,7 @@ mod tests {
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
-        assert_eq!(filtered.proxy_downstream_obfuscation, proxy_obfuscation(Some("test-secret")));
+        assert_eq!(filtered.proxy_downstream_obfuscation, proxy_obfuscation(None));
     }
 
     #[tokio::test]
@@ -314,7 +307,7 @@ mod tests {
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "127.0.0.1");
-        assert_eq!(filtered.proxy_downstream_obfuscation, ProxyDownstreamObfuscation::Unobfuscated);
+        assert_eq!(filtered.proxy_downstream_obfuscation, PreparedProxyPolicy::unobfuscated());
     }
 
     #[tokio::test]
@@ -335,7 +328,7 @@ mod tests {
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "127.0.0.1");
-        assert_eq!(filtered.proxy_downstream_obfuscation, ProxyDownstreamObfuscation::Unobfuscated);
+        assert_eq!(filtered.proxy_downstream_obfuscation, PreparedProxyPolicy::unobfuscated());
     }
 
     #[tokio::test]
@@ -349,7 +342,7 @@ mod tests {
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "127.0.0.1");
-        assert_eq!(filtered.proxy_downstream_obfuscation, ProxyDownstreamObfuscation::Unobfuscated);
+        assert_eq!(filtered.proxy_downstream_obfuscation, PreparedProxyPolicy::unobfuscated());
     }
 
     #[tokio::test]
@@ -396,24 +389,30 @@ mod tests {
     #[tokio::test]
     async fn proxy_filter_preserves_different_loopback_port() {
         let config = test_config_from_host_ports(&[("127.0.0.1", 9051), ("192.0.2.20", 49)]);
-        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
+        let filter = ProxySelfLoopFilter::new_with_policy(
+            "127.0.0.1:9050".parse().unwrap(),
+            credential_source(None),
+        );
 
         let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 2);
-        assert_eq!(filtered.proxy_downstream_obfuscation, ProxyDownstreamObfuscation::Unobfuscated);
+        assert_eq!(filtered.proxy_downstream_obfuscation, PreparedProxyPolicy::unobfuscated());
     }
 
     #[tokio::test]
     async fn proxy_filter_preserves_non_loopback_same_port() {
         let config = test_config_from_host_ports(&[("192.0.2.20", 9050)]);
-        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
+        let filter = ProxySelfLoopFilter::new_with_policy(
+            "127.0.0.1:9050".parse().unwrap(),
+            credential_source(None),
+        );
 
         let filtered = filter.filter(config).await.expect("filter must succeed");
 
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
-        assert_eq!(filtered.proxy_downstream_obfuscation, ProxyDownstreamObfuscation::Unobfuscated);
+        assert_eq!(filtered.proxy_downstream_obfuscation, PreparedProxyPolicy::unobfuscated());
     }
 
     #[tokio::test]
@@ -427,7 +426,7 @@ mod tests {
         let filter = config_filter_from_runtime_options(
             EnabledServices::TACACS_PROXY,
             endpoint.as_ref(),
-            Some("cli-proxy-secret".to_owned()),
+            Some("cli-proxy-secret"),
         );
 
         let filtered = filter.filter(config).await.expect("filter must succeed");
@@ -440,14 +439,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn proxy_filter_prefers_matching_local_row_secret_over_cli_proxy_secret() {
+    async fn proxy_filter_preserves_explicit_secret_despite_matching_local_row() {
         let config = test_config_from_host_ports_and_secrets(&[
             ("127.0.0.1", 9050, Some("local-row-secret")),
             ("192.0.2.20", 49, Some("upstream-secret")),
         ]);
-        let filter = ProxySelfLoopFilter::new_with_fallback(
+        let filter = ProxySelfLoopFilter::new_with_policy(
             "127.0.0.1:9050".parse().expect("socket must parse"),
-            proxy_obfuscation(Some("cli-proxy-secret")),
+            credential_source(Some("cli-proxy-secret")),
         );
 
         let filtered = filter.filter(config).await.expect("filter must succeed");
@@ -455,7 +454,7 @@ mod tests {
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(
             filtered.proxy_downstream_obfuscation,
-            proxy_obfuscation(Some("local-row-secret"))
+            proxy_obfuscation(Some("cli-proxy-secret"))
         );
     }
 
@@ -479,7 +478,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn proxy_filter_does_not_use_lower_priority_secret_when_highest_has_none() {
+    async fn proxy_filter_rejects_missing_highest_priority_secret_without_downgrade() {
         let config = test_config_from_host_ports_and_secrets(&[
             ("127.0.0.1", 9050, None),
             ("localhost", 9050, Some("lower-priority-secret")),
@@ -487,10 +486,30 @@ mod tests {
         ]);
         let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
 
-        let filtered = filter.filter(config).await.expect("filter must succeed");
+        assert!(filter.filter(config).await.is_err());
+    }
 
-        assert_eq!(filtered.tacacs_plus.server.len(), 1);
-        assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
-        assert_eq!(filtered.proxy_downstream_obfuscation, proxy_obfuscation(None));
+    #[tokio::test]
+    async fn row_policy_rejects_missing_and_empty_replacements_without_mutating_source() {
+        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().unwrap());
+        let source = test_config_from_host_ports_and_secrets(&[
+            ("127.0.0.1", 9050, Some("original-local-key")),
+            ("192.0.2.20", 49, Some("upstream-key")),
+        ]);
+        let original = source.clone();
+        let accepted = filter.filter(source.clone()).await.unwrap();
+        let mut invalid = source.clone();
+        invalid.server[0].shared_secret = Some(SecretString::new(String::new()));
+        assert!(filter.filter(invalid).await.is_err());
+        let missing = test_config_from_host_ports(&[("192.0.2.20", 49)]);
+        assert!(filter.filter(missing).await.is_err());
+        assert_eq!(source, original);
+        assert_eq!(
+            accepted
+                .proxy_downstream_obfuscation
+                .shared_secret()
+                .unwrap(),
+            source.server[0].shared_secret.as_ref()
+        );
     }
 }
