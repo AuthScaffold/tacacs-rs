@@ -1,4 +1,7 @@
-#![doc = include_str!("../README.md")]
+//! Canonical YANG configuration sources, snapshot deltas, and change streams.
+//!
+//! Sources supply complete snapshots. Deltas describe changes but do not replace
+//! the authoritative snapshot. Static sources never emit change events.
 #![allow(clippy::doc_markdown)]
 
 use std::pin::Pin;
@@ -6,10 +9,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_core::Stream;
-use tacacsrs_config::{TacacsPlus, ValidationOptions};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::StreamExt;
+
+use crate::{TacacsPlus, ValidationOptions};
 
 /// Description of how the configuration changed between two snapshots.
 ///
@@ -43,7 +47,7 @@ impl ConfigDelta {
     /// Computes the delta between the previous and new snapshots.
     ///
     /// Structural inequality of matching
-    /// [`tacacsrs_config::TacacsPlusServer`] values means that a server changed.
+    /// [`crate::TacacsPlusServer`] values means that a server changed.
     /// A backend can construct [`ConfigDelta`] directly for a finer delta.
     #[must_use]
     pub fn diff(previous: Option<&TacacsPlus>, new: &TacacsPlus) -> Self {
@@ -301,8 +305,8 @@ pub fn watch_to_change_stream(
 mod tests {
     use std::time::Duration;
 
+    use crate::{TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
     use super::*;
-    use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
 
     fn sample_config(addr: &str) -> TacacsPlus {
         TacacsPlusBuilder::new()
@@ -384,7 +388,7 @@ mod tests {
 
     #[test]
     fn delta_detects_inline_epsk_key_only_change_without_serialization() {
-        let previous = tacacsrs_config::parse_yang_json(
+        let previous = crate::parse_yang_json(
             r#"{
                 "ietf-system-tacacs-plus:tacacs-plus": {
                     "server": [{

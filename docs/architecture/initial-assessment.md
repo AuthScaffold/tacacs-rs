@@ -86,7 +86,7 @@ The networking transport dispatcher also accepts `TacacsPlusServer`.
 
 Evidence:
 
-- [Datastore contract](../../libraries/tacacsrs_datastore/src/lib.rs#L183)
+- [Datastore contract](../../libraries/tacacsrs_config/src/source.rs)
 - [Runtime construction and reload](../../libraries/tacacsrs_agent/src/runtime/client_service.rs#L113)
 - [Transport establishment](../../libraries/tacacsrs_networking/src/establish/mod.rs#L100)
 

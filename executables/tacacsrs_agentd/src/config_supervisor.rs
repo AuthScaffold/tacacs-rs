@@ -23,7 +23,7 @@ use tacacsrs_config::TacacsPlus;
 use tacacsrs_credential_resolution::{
     CredentialChangeEvent, CredentialChangeScope, CredentialChangeSource, CredentialResolver,
 };
-use tacacsrs_datastore::{
+use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChangeEvent, ConfigDatastore, InitialLoadPolicy,
 };
 use tokio_util::sync::CancellationToken;
@@ -568,7 +568,7 @@ mod tests {
         CredentialChangeSource, CredentialChangeStream, CredentialKind, CredentialReference,
         CredentialRequest, ProviderErrorKind, ResolutionError, ResolvedCredential, SecretBytes,
     };
-    use tacacsrs_datastore::{ConfigChangeStream, DatastoreRuntimePolicy};
+    use tacacsrs_config::source::{ConfigChangeStream, DatastoreRuntimePolicy};
     use tokio::time::timeout;
 
     use super::*;

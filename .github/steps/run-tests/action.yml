@@ -51,6 +51,16 @@ runs:
           }
           END { exit failed }'
 
+    - name: Check configuration adapter dependencies
+      shell: bash
+      run: |
+        cargo tree --package tacacsrs-config --edges normal --prefix none |
+          awk '/^(clap|tonic|prost|redis|tacacsrs-agent|tacacsrs-sonic)[ -]/ {
+            print "Forbidden configuration dependency: " $0
+            failed = 1
+          }
+          END { exit failed }'
+
     - name: Run unit tests
       shell: bash
       run: |

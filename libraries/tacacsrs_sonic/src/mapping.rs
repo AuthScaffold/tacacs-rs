@@ -828,7 +828,7 @@ fn parse_server_type(value: &str) -> anyhow::Result<TacacsPlusServerType> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tacacsrs_datastore::ConfigDelta;
+    use tacacsrs_config::source::ConfigDelta;
 
     fn h(pairs: &[(&str, &str)]) -> SonicHash {
         pairs

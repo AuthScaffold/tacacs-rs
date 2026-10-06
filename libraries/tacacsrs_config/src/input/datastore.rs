@@ -5,16 +5,16 @@ use std::sync::Arc;
 use anyhow::Context;
 use async_trait::async_trait;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
-use tacacsrs_config::TacacsPlus;
-use tacacsrs_datastore::{
-    ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigChangeStream, ConfigDatastore,
-    ConfigDelta, DatastoreRuntimePolicy, InitialLoadPolicy,
-};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::builder::tacacs_plus_from_cli_input;
-use crate::model::CliDatastoreInput;
+use crate::TacacsPlus;
+use crate::source::{
+    ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigChangeStream, ConfigDatastore,
+    ConfigDelta, DatastoreRuntimePolicy, InitialLoadPolicy,
+};
+use super::builder::tacacs_plus_from_cli_input;
+use super::model::CliDatastoreInput;
 
 /// File-backed datastore for CLI-supplied TACACS+ configuration inputs.
 ///
@@ -53,7 +53,7 @@ impl ConfigDatastore for CliFileDatastore {
         DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, change_notifications)
     }
 
-    fn validation_options(&self) -> tacacsrs_config::ValidationOptions {
+    fn validation_options(&self) -> crate::ValidationOptions {
         self.input.validation_options()
     }
 
@@ -200,13 +200,13 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use futures_core::Stream;
-    use tacacsrs_datastore::ConfigDatastore;
     use tokio::time::{timeout, Duration};
 
-    use super::*;
-    use crate::model::{
+    use crate::source::ConfigDatastore;
+    use super::super::model::{
         CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
     };
+    use super::*;
 
     fn temp_config(contents: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -254,18 +254,87 @@ mod tests {
         )
     }
 
-    async fn next_change<S>(stream: &mut S) -> tacacsrs_datastore::ConfigChange
+    async fn next_change<S>(stream: &mut S) -> crate::source::ConfigChange
     where
-        S: Stream<Item = tacacsrs_datastore::ConfigChangeEvent> + Unpin,
+        S: Stream<Item = crate::source::ConfigChangeEvent> + Unpin,
     {
         let event = timeout(Duration::from_secs(5), futures_util::StreamExt::next(stream))
             .await
             .expect("change must arrive")
             .expect("stream must yield a change");
-        let tacacsrs_datastore::ConfigChangeEvent::Changed(change) = event else {
+        let crate::source::ConfigChangeEvent::Changed(change) = event else {
             panic!("expected changed event");
         };
         change
+    }
+
+    #[tokio::test]
+    async fn normalized_input_uses_shared_source_and_preparation_contract() {
+        use futures_util::StreamExt;
+        use tacacsrs_networking::{ConnectOptions, TacacsClient};
+
+        use crate::input::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
+        use crate::source::StaticDatastore;
+
+        for security in [
+            CliSecurityInputs {
+                shared_secret: Some("test-secret".to_owned()),
+                ..Default::default()
+            },
+            CliSecurityInputs {
+                use_tls: true,
+                psk: Some(CliPskInputs {
+                    identity: "client".to_owned(),
+                    key: PskKeyMaterial::Raw(b"test-psk-with-enough-bytes".to_vec()),
+                    exchange: PskKeyExchangeMode::PskOnly,
+                    groups: Vec::new(),
+                }),
+                ..Default::default()
+            },
+        ] {
+            let datastore = CliFileDatastore::new(CliDatastoreInput::new(
+                CliConfigSource::Inline {
+                    servers: vec![
+                        CliServerInput::new("first", "192.0.2.10:49")
+                            .with_timeout_seconds(9)
+                            .with_single_connection(false),
+                        CliServerInput::new("second", "[2001:db8::2]:49").with_timeout_seconds(7),
+                    ],
+                    security: CliSecurity::from_cli_inputs(security),
+                },
+                "cli",
+            ));
+            let snapshot = datastore.load().await.unwrap();
+            let static_source = StaticDatastore::new(snapshot.clone());
+            for source in [&datastore as &dyn ConfigDatastore, &static_source] {
+                let loaded = source.load().await.unwrap();
+                assert_eq!(loaded, snapshot);
+                assert_eq!(
+                    loaded
+                        .server
+                        .iter()
+                        .map(|server| server.name.as_str())
+                        .collect::<Vec<_>>(),
+                    ["first", "second"]
+                );
+                assert_eq!(
+                    loaded
+                        .server
+                        .iter()
+                        .map(|server| server.timeout)
+                        .collect::<Vec<_>>(),
+                    [9, 7]
+                );
+                let endpoint =
+                    crate::prepare::prepare_endpoint(&loaded.server[0], ConnectOptions::default())
+                        .unwrap();
+                assert_eq!(endpoint.address(), "192.0.2.10:49");
+                assert!(!endpoint.single_connection());
+                TacacsClient::connect_prepared(endpoint).await.unwrap();
+                assert_eq!(loaded, snapshot);
+                assert!(source.subscribe().await.unwrap().next().await.is_none());
+            }
+        }
     }
 
     #[tokio::test]

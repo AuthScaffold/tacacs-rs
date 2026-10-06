@@ -168,7 +168,7 @@ Primary starting points:
 
 - [Packet constructors](../../libraries/tacacsrs_protocol/src/packet.rs)
 - [Client retirement](../../libraries/tacacsrs_networking/src/client/mod.rs)
-- [Source subscription](../../libraries/tacacsrs_cli_datastore/src/datastore.rs)
+- [Source subscription](../../libraries/tacacsrs_config/src/input/datastore.rs)
 - [IPC failure conversion](../../libraries/tacacsrs_agent/src/services/client_api/upstream_bridge/routed.rs)
 - [Bash authorization](../../libraries/tacacsrs_bash_plugin/src/authorization.rs)
 

@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use base64::Engine as _;
-use tacacsrs_config::PskDheKeSupportedGroup;
-use tacacsrs_config::{TacacsPlusServerType, ValidationOptions};
+use crate::PskDheKeSupportedGroup;
+use crate::{TacacsPlusServerType, ValidationOptions};
 
 /// Parsed CLI inputs for TACACS+ configuration.
 ///
@@ -12,10 +12,10 @@ use tacacsrs_config::{TacacsPlusServerType, ValidationOptions};
 /// methods. Private fields keep these methods as the source of defaults.
 #[derive(Debug, Clone)]
 pub struct CliDatastoreInput {
-    pub(crate) source: CliConfigSource,
-    pub(crate) validation_options: ValidationOptions,
-    pub(crate) label: &'static str,
-    pub(crate) debounce: Duration,
+    pub(super) source: CliConfigSource,
+    pub(super) validation_options: ValidationOptions,
+    pub(super) label: &'static str,
+    pub(super) debounce: Duration,
 }
 
 impl CliDatastoreInput {
@@ -178,7 +178,7 @@ impl CliSecurity {
         }
     }
 
-    pub(crate) fn extend_watched_paths(&self, paths: &mut Vec<PathBuf>) {
+    pub(super) fn extend_watched_paths(&self, paths: &mut Vec<PathBuf>) {
         if let CliSecurityMode::TlsClientCertificate { identity } = &self.mode {
             identity.extend_watched_paths(paths);
         }
@@ -240,7 +240,7 @@ impl CertKeyIdentity {
         }
     }
 
-    pub(crate) fn extend_watched_paths(&self, paths: &mut Vec<PathBuf>) {
+    pub(super) fn extend_watched_paths(&self, paths: &mut Vec<PathBuf>) {
         paths.push(self.certificate_path.clone());
         paths.push(self.private_key_path.clone());
     }
@@ -260,7 +260,7 @@ pub enum PskKeyMaterial {
 }
 
 impl PskKeyMaterial {
-    pub(crate) fn into_bytes(self) -> anyhow::Result<Vec<u8>> {
+    pub(super) fn into_bytes(self) -> anyhow::Result<Vec<u8>> {
         match self {
             Self::Raw(bytes) => Ok(bytes),
             Self::StandardBase64(value) => base64::engine::general_purpose::STANDARD

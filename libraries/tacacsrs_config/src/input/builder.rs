@@ -1,13 +1,13 @@
 use std::path::Path;
 
 use anyhow::Context;
-use tacacsrs_config::{
+use crate::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, ValidationOptions,
 };
 
-use crate::address::parse_host_port;
-use crate::files::{load_client_certificate, load_client_private_key};
-use crate::model::{
+use super::address::parse_host_port;
+use super::files::{load_client_certificate, load_client_private_key};
+use super::model::{
     CertKeyIdentity, CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityMode,
     CliServerInput, PskKeyExchangeMode, PskKeyMaterial,
 };
@@ -21,7 +21,7 @@ pub fn tacacs_plus_from_str(
     contents: &str,
     options: &ValidationOptions,
 ) -> anyhow::Result<TacacsPlus> {
-    tacacsrs_config::parse_yang_json_with_options(contents, options)
+    crate::parse_yang_json_with_options(contents, options)
         .context("failed to load configuration from the supplied YANG JSON")
 }
 
@@ -122,7 +122,7 @@ fn tls_builder_with_optional_shared_secret(
     shared_secret: Option<&String>,
     options: &ValidationOptions,
 ) -> TacacsPlusServerBuilder {
-    use tacacsrs_config::ValidationRelaxation;
+    use crate::ValidationRelaxation;
 
     if options.allows(&ValidationRelaxation::AllowTlsWithSharedSecret) {
         if let Some(shared_secret) = shared_secret {
@@ -151,7 +151,7 @@ fn psk_builder(
     identity: String,
     key: PskKeyMaterial,
     exchange: PskKeyExchangeMode,
-    groups: &[tacacsrs_config::PskDheKeSupportedGroup],
+    groups: &[crate::PskDheKeSupportedGroup],
 ) -> anyhow::Result<TacacsPlusServerBuilder> {
     if exchange == PskKeyExchangeMode::PskOnly && !groups.is_empty() {
         anyhow::bail!(

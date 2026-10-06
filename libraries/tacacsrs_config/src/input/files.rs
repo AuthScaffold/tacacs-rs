@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
-use tacacsrs_config::crypto_types::PrivateKeyFormat;
+use crate::crypto_types::PrivateKeyFormat;
 
 fn data_contains_pem_header(data: &[u8]) -> bool {
     const PEM_HEADER: &[u8] = b"-----BEGIN";

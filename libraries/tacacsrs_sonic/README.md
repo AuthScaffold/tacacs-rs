@@ -4,7 +4,7 @@ SONiC ConfigDB datastore backend for the central TACACS+ client service
 (`tacacsrs-agentd`).
 
 This crate is one concrete implementation of the
-[`tacacsrs_datastore::ConfigDatastore`] trait. It bridges between SONiC's
+[`tacacsrs_config::source::ConfigDatastore`] trait. It bridges between SONiC's
 Redis-backed Configuration Database (`CONFIG_DB`, database index `4`) and the
 shared `ietf-system-tacacs-plus` YANG configuration consumed by the agent.
 
@@ -19,7 +19,7 @@ shared `ietf-system-tacacs-plus` YANG configuration consumed by the agent.
    name/endpoint tie-breaker.
 4. Maps compatibility rows into [`tacacsrs_config::TacacsPlusServer`] values.
 5. Subscribes to Redis keyspace notifications (`__keyspace@4__:TACPLUS*`) and
-   re-emits a [`tacacsrs_datastore::ConfigChange`] when relevant keys change.
+   re-emits a [`tacacsrs_config::source::ConfigChange`] when relevant keys change.
 
 The [`mapping`] module implements parsing and field mapping as pure functions
 and fully unit-tests them without a live Redis. The Redis client only handles

@@ -78,9 +78,9 @@ The supervisor loads and applies configuration before it subscribes.
 The CLI datastore takes its own baseline snapshot before it installs its file watcher.
 It does not publish that baseline as an initial change event.
 
-- [Source interface](../../libraries/tacacsrs_datastore/src/lib.rs#L183)
+- [Source interface](../../libraries/tacacsrs_config/src/source.rs)
 - [Supervisor subscription](../../executables/tacacsrs_agentd/src/config_supervisor.rs#L268)
-- [File watcher setup](../../libraries/tacacsrs_cli_datastore/src/datastore.rs#L63)
+- [File watcher setup](../../libraries/tacacsrs_config/src/input/datastore.rs)
 
 A file change between the applied load and watcher setup can become the watcher's baseline without reaching the runtime.
 A later event can repair the state, but the contract does not guarantee that event.

@@ -8,6 +8,13 @@ repository.workspace = true
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
+futures-core = "0.3"
+log = "0.4.30"
+notify = "8.2.0"
+rustls-pki-types = "1.14.1"
+tokio = { version = "1.52.3", features = ["sync", "macros", "rt", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 base64 = "0.23"
 bitflags = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -18,8 +25,7 @@ tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
 tacacsrs-networking = { path = "../tacacsrs_networking" }
 
 [dev-dependencies]
-async-trait = "0.1"
-log = "0.4.30"
+futures-util = "0.3"
 tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread", "fs"] }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 openssl = "0.10.80"

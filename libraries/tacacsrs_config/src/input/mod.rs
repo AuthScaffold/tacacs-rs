@@ -1,4 +1,7 @@
-#![doc = include_str!("../README.md")]
+//! Normalizes parsed CLI inputs and credential files into canonical YANG snapshots.
+//!
+//! This module has no clap dependency. Its file datastore observes referenced
+//! paths and publishes validated snapshots through the source contract.
 #![allow(clippy::doc_markdown)]
 
 mod address;

@@ -12,7 +12,7 @@ host is covered in [Running tacacsrs-agentd as a SONiC Docker container](sonic-a
 
 ## Architecture
 
-The agent does not depend directly on Redis. The `tacacsrs-datastore::ConfigDatastore`
+The agent does not depend directly on Redis. The `tacacsrs_config::source::ConfigDatastore`
 trait abstracts configuration sources, and the SONiC bridge
 (`tacacsrs-sonic::SonicConfigDb`) is one concrete backend.
 Any future vendor datastore (for example a different NOS, a YAML configuration
@@ -32,7 +32,7 @@ same trait.
               +------------------+                   +-----------------------+
 ```
 
-`CliFileDatastore` handles file-based and CLI-based configuration. CLI-only
+`tacacsrs_config::input::CliFileDatastore` handles file-based and CLI-based configuration. CLI-only
 input returns one snapshot. Watched YANG, certificate, and key files emit
 change events. `SonicConfigDb` reads `TACPLUS|global`,
 `TACPLUS_SERVER|*`, `TACPLUS_SERVER_TLS|*`, and

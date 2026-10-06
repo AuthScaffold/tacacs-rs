@@ -12,6 +12,8 @@
 - Secret-free inspection of central keystore and truststore references on enumerated servers
 - Provider request planning and transactional materialization under `prepare`
 - YANG-to-endpoint projection with native TLS credential validation
+- Source contracts, snapshot deltas, and static configuration under `source`
+- CLI input normalization, credential-file loading, and file watching under `input`
 - A reusable `TacacsPlusServerBuilder` for constructing `TacacsPlusServer` values in code
 - A project-owned YANG augmentation for TLS 1.3 PSK DHE key exchange group selection
 
@@ -87,8 +89,8 @@ Central references are opaque in both generic crates. They can contain spaces, s
 
 `tacacsrs-config` enforces the generated YANG structure and inline-versus-central choices. It does not apply SONiC identifier grammar or map references to paths.
 
-It does not inspect path existence, inspect permissions, or watch files.
-Materialization delegates secret retrieval to the supplied resolver.
+Materialization does not inspect provider paths or permissions. It delegates secret retrieval to the supplied resolver.
+The separate `input` module loads CLI credential files and observes file-backed configuration.
 
 The SONiC integration layer supplies a resolver. It does not interpret generated fields during provider lookup.
 
@@ -113,6 +115,8 @@ This crate also exposes grouped modules so callers can choose APIs by intent:
 - `pipeline` — step-by-step processing
 - `runtime` — bundle enumeration (`enumerate_server`, `enumerate_servers`)
 - `prepare` — provider request planning, materialization, candidate validation, and native endpoint projection
+- `source` — configuration source contract, snapshot deltas, runtime policy, and change streams
+- `input` — parsed CLI inputs, PEM/DER normalization, YANG file loading, and file-backed sources
 - `stats` — runtime stats types
 
 For simple end-to-end usage with credential bundles defined directly in the configuration:
@@ -125,6 +129,42 @@ let servers = runtime::enumerate_servers(&config)?;
 ```
 
 The existing flat root exports remain available for compatibility.
+
+## Configuration Sources
+
+`source::ConfigDatastore` supplies canonical YANG snapshots through `load` and change events through `subscribe`.
+Every accepted change contains the complete snapshot. Consumers can use its delta, but the delta does not replace authoritative configuration.
+`source::StaticDatastore` holds one caller-validated snapshot and returns an empty subscription stream.
+The source contract also carries validation options and initial-load and subscription policies.
+
+`input::CliDatastoreInput` accepts parsed executable inputs without depending on clap.
+`input::tacacs_plus_from_cli_input` converts those inputs into a validated YANG snapshot through the canonical builders and validation rules.
+These input values are adapters, not a second desired-configuration schema.
+
+`input::CliFileDatastore` implements the same source contract for CLI and file inputs.
+It watches a YANG file or referenced CLI certificate and key files when applicable.
+Subscriptions install observation before loading and publishing their baseline snapshot.
+Rejected reloads emit `CandidateRejected` without replacing the previous accepted snapshot.
+When a subscriber disappears, the idle watcher task stops.
+Inputs with no watched paths have an empty subscription stream.
+
+```rust
+use tacacsrs_config::input::{CliConfigSource, CliDatastoreInput, CliFileDatastore};
+use tacacsrs_config::source::ConfigDatastore;
+
+# async fn load() -> anyhow::Result<()> {
+let source = CliFileDatastore::new(CliDatastoreInput::new(
+  CliConfigSource::YangFile { path: "tacacs.json".into() },
+  "file",
+));
+let snapshot = source.load().await?;
+# Ok(())
+# }
+```
+
+The separate `tacacsrs-datastore` and `tacacsrs-cli-datastore` packages are removed.
+Consumers import `tacacsrs_config::source` and `tacacsrs_config::input` directly.
+This consolidation preserves the current load/subscribe contract. Owned observation sessions remain later lifecycle work.
 
 ## Programmatic builder API
 

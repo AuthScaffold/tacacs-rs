@@ -2,7 +2,7 @@
 
 ## Status
 
-Stage 2 is in progress. This checkpoint covers native transport preparation, single-endpoint execution, and configuration-owned credential materialization.
+Stage 2 is in progress. This checkpoint covers native transport preparation, single-endpoint execution, credential materialization, and configuration-source consolidation.
 Configuration now depends on the provider-neutral credential package and networking. Neither depends on configuration.
 The canonical YANG model, feature manifest, and defaults remain authoritative and unchanged.
 
@@ -85,6 +85,28 @@ Tests cover IPv4, IPv6, domain overrides, disabled SNI, and the existing protoco
 The PSK mapping covers every generated hash and group and preserves group order.
 CI now guards networking against configuration, credential-provider, IPC, and integration dependencies.
 
+## Sources and Inputs
+
+`tacacsrs_config::source` owns `ConfigDatastore`, snapshot deltas, change events, runtime policy, static sources, and watch-channel conversion.
+`tacacsrs_config::input` owns parsed CLI inputs, YANG file loading, PEM/DER normalization, and `CliFileDatastore`.
+The separate datastore and CLI/file packages are removed without forwarding APIs.
+The workspace now contains 15 packages. The CLI, daemon, and SONiC consumers import the configuration modules directly.
+Windows CI selections and the local check matrix no longer name the removed packages.
+
+Sources still return complete canonical YANG snapshots with their original references.
+The delta remains advisory. Structural equality detects secret-only changes without serializing protected material.
+Input normalization still uses the canonical builders and validation options. It introduces no alternative configuration model or clap dependency.
+
+File subscriptions still register observation before loading and publishing the baseline.
+Rejected reloads leave the previous accepted snapshot intact, and subscriber cancellation stops the idle watcher task.
+The existing source and file-watcher tests moved with their owners.
+A new regression passes TCP and PSK inputs through file and static source contracts into endpoint preparation without network I/O.
+It checks snapshot equality, server order, timeout values, and single-connection behavior.
+
+This increment does not redesign source sessions, supervisor lifetimes, or generation publication.
+Those existing contracts remain in place for the later validation and lifecycle work.
+CI now rejects clap, IPC, Redis, agent, and SONiC dependencies in configuration's normal dependency tree.
+
 ## Verification
 
 Focused regressions cover early credential rejection, unresolved references, source immutability, runtime redaction, and release of source configuration.
@@ -97,7 +119,7 @@ SHA-384 has native callback/session coverage, not a separate peer handshake test
 Package Clippy passes without a feature override.
 The TLS example now belongs to configuration, which explicitly enables its filesystem dependency.
 
-The focused suites include 104 active networking tests and 25 configuration unit tests, plus the configuration integration suites.
+The focused suites include 104 active networking tests and 43 configuration unit tests, plus the configuration integration suites.
 Projection tests moved to configuration. Native tests consolidate equivalent schema-based fixtures into transport-input tables.
 Two existing manual networking baselines remain ignored.
 The workspace build, formatting check, warnings-as-errors rustdoc build, and architecture book build pass.
@@ -121,16 +143,23 @@ Networking passes its standalone package tests without configuration feature uni
 The schema-free networking dependency guard passes. Workspace Clippy uses only the same existing admission-warning exception.
 No external dependency version changed. Native PSK callback code is unchanged, and its existing tests still pass.
 
+The source/input consolidation passes workspace tests, build, formatting, rustdoc, and dependency-usage checks.
+All 51 release-version computation and hydration fixtures pass.
+The configuration dependency guard passes, and Cargo metadata contains neither removed package.
+Workspace Clippy uses only the same existing admission-warning exception.
+The audit found no vulnerabilities in the 300 remaining lockfile packages. External dependency versions are unchanged.
+No Windows build, PowerShell execution, or SONiC VM validation ran for this increment. PowerShell is not installed in this Linux container.
+The updated package selections resolve through Cargo, and Linux source, watcher, CLI, and daemon tests pass.
+
 Miri did not run. It required the nightly `rust-src` component, whose installation failed because the shared toolchain directory was not writable.
 Native OpenSSL callback and handshake tests provide the FFI validation for this checkpoint.
 They are not a substitute for Miri coverage or independent server interoperability tests.
 
 ## Remaining Stage 2 Work
 
-1. Consolidate datastore contracts and CLI/file adapters into configuration modules.
-2. Apply common schema and feature validation before generation publication, including explicit unsupported-feature rejection.
-3. Extend CLI, SONiC, and YANG equivalence fixtures through prepared behavior and credential rotation.
-4. Move remaining product controls into documented namespaced YANG augmentations where required.
+1. Apply common schema and feature validation before generation publication, including explicit unsupported-feature rejection.
+2. Extend CLI, SONiC, and YANG equivalence fixtures through prepared behavior and credential rotation.
+3. Move remaining product controls into documented namespaced YANG augmentations where required.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Routing, request leases, deadlines, and runtime retirement remain Stage 3 work.

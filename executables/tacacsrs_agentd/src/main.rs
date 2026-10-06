@@ -15,12 +15,12 @@ use tacacsrs_agent::{
     RuntimePolicy, ServiceConfig, TacacsClientService,
 };
 use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_cli_datastore::{
+use tacacsrs_config::input::{
     CliConfigSource, CliDatastoreInput, CliFileDatastore, CliSecurity, CliSecurityInputs,
     CliServerInput,
 };
-use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
-use tacacsrs_datastore::{ConfigDatastore, InitialLoadPolicy};
+use tacacsrs_config::input::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
+use tacacsrs_config::source::{ConfigDatastore, InitialLoadPolicy};
 use tacacsrs_credential_resolution::{CredentialChangeSource, CredentialResolver};
 use tacacsrs_sonic::{
     SonicConfigDb, SonicConnection, SonicCredentialChangeSource, SonicCredentialPolicy,
@@ -704,7 +704,7 @@ mod tests {
     use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::crypto_types::PrivateKeyFormat;
     use tacacsrs_config::ValidationOptions;
-    use tacacsrs_cli_datastore::{tacacs_plus_from_cli_input, tacacs_plus_from_file};
+    use tacacsrs_config::input::{tacacs_plus_from_cli_input, tacacs_plus_from_file};
 
     fn sample_path(file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -727,7 +727,7 @@ mod tests {
     fn equivalent_cli_sonic_and_yang_inputs_preserve_canonical_values() {
         use std::collections::BTreeMap;
 
-        use tacacsrs_cli_datastore::{
+        use tacacsrs_config::input::{
             CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
         };
         use tacacsrs_sonic::{SonicTacacsTables, map_sonic_tables_to_tacacs_plus};

@@ -2074,10 +2074,8 @@ dependencies = [
  "serde_json",
  "tacacsrs-agent",
  "tacacsrs-agent-client",
- "tacacsrs-cli-datastore",
  "tacacsrs-config",
  "tacacsrs-credential-resolution",
- "tacacsrs-datastore",
  "tacacsrs-networking",
  "tacacsrs-secrets",
  "tacacsrs-sonic",
@@ -2100,24 +2098,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tacacsrs-cli-datastore"
-version = "0.0.0-dev"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.23.1",
- "futures-core",
- "futures-util",
- "log",
- "notify",
- "rustls-pki-types",
- "tacacsrs-config",
- "tacacsrs-datastore",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
 name = "tacacsrs-config"
 version = "0.0.0-dev"
 dependencies = [
@@ -2127,8 +2107,12 @@ dependencies = [
  "bitflags 2.13.2",
  "console-subscriber",
  "env_logger",
+ "futures-core",
+ "futures-util",
  "log",
+ "notify",
  "openssl",
+ "rustls-pki-types",
  "serde",
  "serde_ignored",
  "serde_json",
@@ -2138,6 +2122,7 @@ dependencies = [
  "tacacsrs-secrets",
  "tokio",
  "tokio-openssl",
+ "tokio-stream",
 ]
 
 [[package]]
@@ -2149,19 +2134,6 @@ dependencies = [
  "serde",
  "static_assertions",
  "tacacsrs-secrets",
-]
-
-[[package]]
-name = "tacacsrs-datastore"
-version = "0.0.0-dev"
-dependencies = [
- "anyhow",
- "async-trait",
- "futures-core",
- "tacacsrs-config",
- "tacacsrs-secrets",
- "tokio",
- "tokio-stream",
 ]
 
 [[package]]
@@ -2221,7 +2193,6 @@ dependencies = [
  "serde_json",
  "tacacsrs-config",
  "tacacsrs-credential-resolution",
- "tacacsrs-datastore",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2243,7 +2214,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tacacsrs-agent-client",
- "tacacsrs-cli-datastore",
  "tacacsrs-config",
  "tacacsrs-networking",
  "tacacsrs-protocol",
