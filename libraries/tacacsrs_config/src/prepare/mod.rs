@@ -8,6 +8,7 @@ mod formats;
 mod endpoint;
 mod materialization;
 mod planning;
+mod readiness;
 
 pub use materialization::{
     enumerate_materialized_servers, materialize_server, materialize_servers, MaterializationError,
@@ -15,3 +16,4 @@ pub use materialization::{
 };
 pub use planning::resolution_plan;
 pub use endpoint::prepare_endpoint;
+pub use readiness::validate_materialized_servers;

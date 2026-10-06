@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
+use tacacsrs_networking::{ConnectOptions, PreparedEndpoint};
 use tokio::sync::{Mutex, RwLock};
 
 use super::circuit::OperationCircuit;
@@ -40,16 +41,25 @@ impl OperationSlot {
 pub(super) struct ServerSlot {
     /// Connection configuration for this server.
     pub(super) server: Arc<TacacsPlusServer>,
+    pub(super) endpoint: PreparedEndpoint,
     /// Independent connection state for each TACACS+ operation.
     operations: [OperationSlot; 3],
 }
 
 impl ServerSlot {
-    pub(super) fn new(server: Arc<TacacsPlusServer>) -> Self {
-        Self {
+    pub(super) fn new(
+        server: Arc<TacacsPlusServer>,
+        options: &ConnectOptions,
+    ) -> anyhow::Result<Self> {
+        let endpoint = tacacsrs_config::prepare::prepare_endpoint(
+            &server,
+            options.clone().with_timeout(server.timeout_duration()),
+        )?;
+        Ok(Self {
             server,
+            endpoint,
             operations: std::array::from_fn(|_| OperationSlot::new()),
-        }
+        })
     }
 
     pub(super) fn config(&self) -> &TacacsPlusServer {

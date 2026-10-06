@@ -97,6 +97,7 @@ The SONiC integration layer supplies a resolver. It does not interpret generated
 ### 4) Native Endpoint Preparation
 
 Call `prepare::prepare_endpoint` with a materialized server and explicit connection options.
+The source snapshot must first pass schema validation with its selected validation options.
 Configuration maps the YANG transport choice, certificate encodings, PSK hash, ordered groups, and server name into networking inputs.
 Networking validates borrowed DER and PSK material and constructs private reusable TLS contexts.
 The resulting `PreparedEndpoint` contains no generated model or source reference.
@@ -104,6 +105,15 @@ The resulting `PreparedEndpoint` contains no generated model or source reference
 Pass this endpoint to `TacacsClient::connect_prepared`.
 With preflight disabled, construction does not open a connection. Native material errors still fail during preparation.
 The old networking `connect` and `connect_shared` constructors are removed.
+
+Before publishing a complete materialized server set, call `prepare::validate_materialized_servers` with the source's validation options.
+This shared check rejects invalid choices, duplicate names or endpoints, unresolved credentials, and unsupported runtime fields.
+An empty runtime set is permitted so a service can wait for configuration. Parsed YANG documents still require a nonempty server list.
+Each changed endpoint must also finish native context construction before the generation becomes active.
+
+Runtime preparation rejects `source-ip`, `source-interface`, and `vrf-instance` because the transport does not implement binding through those fields.
+It also rejects PSK derivation fields and `one-symmetric-key-format`, which the native PSK path does not implement.
+Schema-valid source values remain available for reports and round trips. Validation relaxations do not enable these unsupported transport capabilities.
 
 ### Module-oriented API (recommended for most users)
 

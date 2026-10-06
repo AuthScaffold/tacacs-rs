@@ -2,7 +2,7 @@
 
 ## Status
 
-Stage 2 is in progress. This checkpoint covers native transport preparation, single-endpoint execution, credential materialization, and configuration-source consolidation.
+Stage 2 is in progress. This checkpoint covers native transport preparation, single-endpoint execution, credential materialization, source consolidation, and publication readiness.
 Configuration now depends on the provider-neutral credential package and networking. Neither depends on configuration.
 The canonical YANG model, feature manifest, and defaults remain authoritative and unchanged.
 
@@ -107,6 +107,35 @@ This increment does not redesign source sessions, supervisor lifetimes, or gener
 Those existing contracts remain in place for the later validation and lifecycle work.
 CI now rejects clap, IPC, Redis, agent, and SONiC dependencies in configuration's normal dependency tree.
 
+## Publication Readiness
+
+Configuration owns `validate_materialized_servers`, the shared schema and capability check for a complete runtime server set.
+Source parsing and runtime validation share server-set validation, including duplicate endpoint and duplicate server-name rejection.
+The runtime check also rejects unresolved references and unsupported transport fields.
+An empty runtime set remains valid. This does not relax the nonempty server-list requirement for parsed YANG documents.
+
+`ServiceConfig::validation_options` carries the source's explicit validation policy into construction and reloads.
+The daemon obtains this policy from the datastore. Migration relaxations remain explicit and cannot enable unsupported transport features.
+The daemon coordinator no longer has a separate publication validator or builds an extra generated snapshot for that check.
+
+The service now stages native endpoints before replacing the active routing snapshot.
+Each server slot owns a prepared endpoint, and connectors accept that endpoint instead of a generated server.
+Operation-specific clients and reconnects share its prepared native contexts.
+Unchanged materialized servers reuse their slots. Changed material creates new slots without changing bound requests or authoritative source references.
+
+A failed staged endpoint leaves the entire previous generation active, including routes, proxy policy, cached connections, and applied health state.
+Preparation opens no sockets. Socket and handshake failures remain execution-time errors.
+The new malformed-certificate reload regression failed before this change and now passes.
+Existing coordinator fixtures with short placeholder PSKs now use valid-length material so they exercise generation behavior rather than invalid transport inputs.
+
+Direct endpoint preparation and service publication reject `source-ip`, `source-interface`, and `vrf-instance` instead of silently ignoring them.
+They also reject PSK derivation fields and `one-symmetric-key-format`.
+These checks report unsupported field names without displaying their values or secret material.
+Canonical YANG snapshots still preserve schema-valid values for reporting. The change affects whether the client can apply them.
+
+The coordinator still owns source tickets and the known-good credential transaction.
+This increment does not extract routing or redesign cancellation and publication-lock lifetimes.
+
 ## Verification
 
 Focused regressions cover early credential rejection, unresolved references, source immutability, runtime redaction, and release of source configuration.
@@ -119,7 +148,7 @@ SHA-384 has native callback/session coverage, not a separate peer handshake test
 Package Clippy passes without a feature override.
 The TLS example now belongs to configuration, which explicitly enables its filesystem dependency.
 
-The focused suites include 104 active networking tests and 43 configuration unit tests, plus the configuration integration suites.
+The focused suites include 104 active networking tests, 47 configuration unit tests, 100 agent tests, and 75 daemon tests, plus integration suites.
 Projection tests moved to configuration. Native tests consolidate equivalent schema-based fixtures into transport-input tables.
 Two existing manual networking baselines remain ignored.
 The workspace build, formatting check, warnings-as-errors rustdoc build, and architecture book build pass.
@@ -151,15 +180,20 @@ The audit found no vulnerabilities in the 300 remaining lockfile packages. Exter
 No Windows build, PowerShell execution, or SONiC VM validation ran for this increment. PowerShell is not installed in this Linux container.
 The updated package selections resolve through Cargo, and Linux source, watcher, CLI, and daemon tests pass.
 
+The publication-readiness increment passes workspace tests, build, formatting, and warnings-as-errors rustdoc.
+Workspace Clippy uses only the same existing admission-warning exception.
+Focused tests verify native failure before publication, complete rollback, prepared-slot reuse, explicit validation policy, and sanitized unsupported-field errors.
+The authoritative-source and credential-rotation regressions still pass with valid transport fixtures.
+No dependencies, lockfiles, or native FFI code changed. No Windows or SONiC VM validation ran for this increment.
+
 Miri did not run. It required the nightly `rust-src` component, whose installation failed because the shared toolchain directory was not writable.
 Native OpenSSL callback and handshake tests provide the FFI validation for this checkpoint.
 They are not a substitute for Miri coverage or independent server interoperability tests.
 
 ## Remaining Stage 2 Work
 
-1. Apply common schema and feature validation before generation publication, including explicit unsupported-feature rejection.
-2. Extend CLI, SONiC, and YANG equivalence fixtures through prepared behavior and credential rotation.
-3. Move remaining product controls into documented namespaced YANG augmentations where required.
+1. Extend CLI, SONiC, and YANG equivalence fixtures through prepared behavior and credential rotation.
+2. Move remaining product controls into documented namespaced YANG augmentations where required.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Routing, request leases, deadlines, and runtime retirement remain Stage 3 work.

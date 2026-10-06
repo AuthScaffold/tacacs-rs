@@ -139,6 +139,9 @@ pub struct ServiceConfig {
     /// directly in each server. In this case, the credential bundles are empty.
     pub tacacs_plus: TacacsPlus,
 
+    /// Schema validation policy used by the source and every runtime generation.
+    pub validation_options: tacacsrs_config::ValidationOptions,
+
     /// Live failover and request-admission policy.
     pub runtime_policy: RuntimePolicy,
 

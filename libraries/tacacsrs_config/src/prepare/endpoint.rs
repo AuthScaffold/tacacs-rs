@@ -35,9 +35,7 @@ pub fn prepare_endpoint(
     server: &TacacsPlusServer,
     options: ConnectOptions,
 ) -> Result<PreparedEndpoint> {
-    let references = crate::inspect_central_references(server)
-        .context("Expand credential bundles before endpoint preparation")?;
-    ensure!(references.is_empty(), "Resolve central credentials before endpoint preparation");
+    super::readiness::validate_runtime_features(server)?;
     if let Some(identity) = &server.client_identity {
         ensure!(
             identity.certificate.is_none() || identity.tls13_epsk.is_none(),

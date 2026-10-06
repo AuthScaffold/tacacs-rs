@@ -201,7 +201,7 @@ impl UpstreamManager {
         );
         match self
             .connector
-            .connect(Arc::clone(&server_slot.server), operation)
+            .connect(server_slot.endpoint.clone(), operation)
             .await
         {
             Ok(connection) => {

@@ -854,6 +854,7 @@ mod tests {
                     proxy_endpoint: None,
                     proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                     tacacs_plus: TacacsPlus::empty(),
+                    validation_options: datastore.validation_options(),
                     runtime_policy: tacacsrs_agent::RuntimePolicy::new(
                         tacacsrs_agent::FailoverStrategy::default(),
                         tacacsrs_agent::FailoverStrategy::default(),

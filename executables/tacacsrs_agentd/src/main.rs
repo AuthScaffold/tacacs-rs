@@ -502,6 +502,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 proxy_endpoint,
                 proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                 tacacs_plus: empty_tacacs_plus,
+                validation_options: datastore.validation_options(),
                 runtime_policy,
                 socket_mode: parse_socket_mode(&cli.socket_mode)?,
                 disable_certificate_verification: cli.insecure_disable_certificate_verification,

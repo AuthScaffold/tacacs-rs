@@ -146,6 +146,7 @@ mod tests {
                     proxy_endpoint: None,
                     proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                     tacacs_plus: TacacsPlus::empty(),
+                    validation_options: tacacsrs_config::ValidationOptions::default(),
                     runtime_policy: RuntimePolicy::default(),
                     socket_mode: 0o660,
                     disable_certificate_verification: false,

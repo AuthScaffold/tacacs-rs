@@ -78,7 +78,8 @@ impl TacacsClientService {
     ///
     /// # Errors
     ///
-    /// Returns an error if credential-reference resolution fails.
+    /// Returns an error if schema validation, credential-reference expansion,
+    /// capability checks, or native transport preparation fails.
     pub fn new(config: ServiceConfig, health: RuntimeHealthPublisher) -> anyhow::Result<Self> {
         Self::build(config, health, true)
     }
@@ -119,19 +120,19 @@ impl TacacsClientService {
         if health.snapshot().enabled_services() != config.enabled_services {
             anyhow::bail!("Runtime health and service configuration must enable the same services");
         }
-        let servers = enumerate_supported_servers(&config.tacacs_plus)?;
+        let servers = enumerate_supported_servers(&config.tacacs_plus, &config.validation_options)?;
         let eligible_server_count = servers.len();
 
-        let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector {
-            disable_certificate_verification: config.disable_certificate_verification,
-        });
+        let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector);
         let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
             servers.into_iter().map(Arc::new).collect(),
             config.proxy_downstream_obfuscation.clone(),
             config.runtime_policy.clone(),
             connector,
             health.clone(),
-        ));
+            tacacsrs_networking::ConnectOptions::default()
+                .with_certificate_verification_disabled(config.disable_certificate_verification),
+        )?);
         let request_tracker = Arc::new(RequestTracker::default());
         health.set_eligible_server_count(eligible_server_count);
         health.set_applied_configuration(configuration_applied);
@@ -158,7 +159,7 @@ impl TacacsClientService {
         if health.snapshot().enabled_services() != config.enabled_services {
             anyhow::bail!("Runtime health and service configuration must enable the same services");
         }
-        let servers = enumerate_supported_servers(&config.tacacs_plus)?;
+        let servers = enumerate_supported_servers(&config.tacacs_plus, &config.validation_options)?;
         let eligible_server_count = servers.len();
 
         let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
@@ -167,7 +168,9 @@ impl TacacsClientService {
             config.runtime_policy.clone(),
             connector,
             health.clone(),
-        ));
+            tacacsrs_networking::ConnectOptions::default()
+                .with_certificate_verification_disabled(config.disable_certificate_verification),
+        )?);
         let request_tracker = Arc::new(RequestTracker::default());
         health.set_eligible_server_count(eligible_server_count);
         health.set_applied_configuration(true);
@@ -185,8 +188,8 @@ impl TacacsClientService {
     ///
     /// # Errors
     ///
-    /// Returns an error if credential-reference resolution fails. If it fails,
-    /// the method does not change the runtime state.
+    /// Returns an error if validation, reference expansion, or native preparation
+    /// fails. Failure leaves the active runtime generation unchanged.
     pub async fn reload_tacacs_plus(&self, tacacs_plus: TacacsPlus) -> anyhow::Result<()> {
         let _reload_guard = self.reload_lock.lock().await;
         let proxy_downstream_obfuscation = self
@@ -208,8 +211,8 @@ impl TacacsClientService {
     ///
     /// # Errors
     ///
-    /// Returns an error if credential-reference resolution fails. If it fails,
-    /// the method does not change the runtime state.
+    /// Returns an error if validation, reference expansion, or native preparation
+    /// fails. Failure leaves the active runtime generation unchanged.
     pub async fn reload_tacacs_plus_with_proxy_downstream_obfuscation(
         &self,
         tacacs_plus: TacacsPlus,
@@ -228,7 +231,10 @@ impl TacacsClientService {
         let mut reload_config = self.config.clone();
         reload_config.tacacs_plus = tacacs_plus;
         reload_config.proxy_downstream_obfuscation = proxy_downstream_obfuscation.clone();
-        let servers = enumerate_supported_servers(&reload_config.tacacs_plus)?;
+        let servers = enumerate_supported_servers(
+            &reload_config.tacacs_plus,
+            &self.config.validation_options,
+        )?;
         let eligible_server_count = servers.len();
         self.state
             .reload_shared_servers_with_proxy_downstream_obfuscation(
@@ -245,9 +251,9 @@ impl TacacsClientService {
 
     /// Atomically applies materialized servers and the proxy policy.
     ///
-    /// The caller must validate and resolve each server first. New requests see
-    /// only the complete replacement. Bound requests continue to use the
-    /// previous immutable server set.
+    /// The caller must resolve credentials first. The service validates the full
+    /// set and prepares native contexts before publication. New requests see only
+    /// the complete replacement. Bound requests retain their previous server set.
     ///
     /// # Errors
     ///
@@ -258,6 +264,10 @@ impl TacacsClientService {
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
     ) -> anyhow::Result<()> {
+        tacacsrs_config::prepare::validate_materialized_servers(
+            servers.iter().map(AsRef::as_ref),
+            &self.config.validation_options,
+        )?;
         let _reload_guard = self.reload_lock.lock().await;
         let eligible_server_count = servers.len();
         self.state
@@ -457,6 +467,7 @@ mod tests {
             proxy_endpoint: None,
             proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
             tacacs_plus,
+            validation_options: tacacsrs_config::ValidationOptions::default(),
             runtime_policy: RuntimePolicy::new(
                 FailoverStrategy::default(),
                 FailoverStrategy::default(),
@@ -472,6 +483,39 @@ mod tests {
     fn test_service(config: ServiceConfig) -> anyhow::Result<TacacsClientService> {
         let health = RuntimeHealthPublisher::new(config.enabled_services);
         TacacsClientService::new(config, health)
+    }
+
+    #[tokio::test]
+    async fn service_publication_preserves_explicit_source_validation_policy() {
+        let mut plain = test_server("primary:49");
+        plain.shared_secret = None;
+        for allow_plain in [false, true] {
+            let mut config =
+                service_config(test_endpoint("validation-policy"), vec![test_server("primary:49")]);
+            if allow_plain {
+                config.validation_options = tacacsrs_config::ValidationOptions::new()
+                    .with_relaxation(
+                        tacacsrs_config::ValidationRelaxation::AllowPlainTcpWithoutSharedSecret,
+                    );
+            }
+            let service = test_service(config.clone()).unwrap();
+            let result = service
+                .reload_materialized_servers_with_proxy_downstream_obfuscation(
+                    vec![Arc::new(plain.clone())],
+                    ProxyDownstreamObfuscation::default(),
+                )
+                .await;
+            assert_eq!(result.is_ok(), allow_plain);
+            config.tacacs_plus.server = vec![plain.clone()];
+            assert_eq!(
+                service
+                    .reload_tacacs_plus(config.tacacs_plus.clone())
+                    .await
+                    .is_ok(),
+                allow_plain
+            );
+            assert_eq!(test_service(config).is_ok(), allow_plain);
+        }
     }
 
     fn test_service_with_connector(

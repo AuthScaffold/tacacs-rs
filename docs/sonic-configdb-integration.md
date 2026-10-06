@@ -77,6 +77,11 @@ Compatibility rows accept these project extension keys:
 | `src_intf`          | `source-interface` | Falls back to the global `TACPLUS` row |
 | `server_type`       | `server-type`      | Defaults to `all` |
 
+The mapper preserves `vrf_name`, `src_ip`, and `src_intf` in canonical YANG for reporting.
+The client transport does not implement these binding controls, so runtime preparation rejects configurations that select them.
+This also applies when `src_intf` comes from `TACPLUS|global`.
+The daemon keeps the previous active generation instead of silently ignoring the requested binding.
+
 The bridge tolerates unknown compatibility fields and logs their names. It
 does not log their values. Compatibility rows reject `use_tls`, `domain_name`,
 and `sni_enabled`. Put TLS configuration in `TACPLUS_SERVER_TLS`.
@@ -228,7 +233,7 @@ done
 redis-cli -n 4 HSET 'TACPLUS_FORWARDER|global' \
     local_listen_address 127.0.0.1 local_listen_port 49
 redis-cli -n 4 HSET 'TACPLUS|global' \
-    timeout 5 passkey shared-secret auth_type pap src_intf Management0
+    timeout 5 passkey shared-secret auth_type pap
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' \
     priority 64 tcp_port 49 timeout 10 passkey server-secret \
     single_connection true
