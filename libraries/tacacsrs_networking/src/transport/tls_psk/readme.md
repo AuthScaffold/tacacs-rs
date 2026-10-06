@@ -173,10 +173,13 @@ Adding `key_share` alongside `pre_shared_key` means traffic keys incorporate an
 ephemeral Diffie-Hellman exchange. If the PSK later leaks, past sessions with
 unique DH keys remain protected. The authentication mechanism stays unchanged.
 
-By default, the implementation preserves PSK-only mode for existing
-configurations. To request forward secrecy, configure one or more
-`tacacsrs:psk-dhe-ke-groups` values under `client-identity/tls13-epsk`. The
-client passes those groups to OpenSSL in the same order. Supported mappings are:
+An empty group list permits PSK exchange without DHE.
+The client also requests OpenSSL's no-DHE preference where the native library supports that option.
+OpenSSL 3.0 lacks this preference and can negotiate DHE when the peer selects a shared group.
+Thus, the current PSK-only setting permits no-DHE exchange but does not enforce it exclusively.
+
+To require forward secrecy, configure one or more `tacacsrs:psk-dhe-ke-groups` values under `client-identity/tls13-epsk`.
+The client passes those groups to OpenSSL in the same order. Supported mappings are:
 
 | YANG value | OpenSSL group name |
 |------------|--------------------|

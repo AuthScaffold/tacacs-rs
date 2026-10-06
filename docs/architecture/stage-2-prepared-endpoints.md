@@ -136,6 +136,31 @@ Canonical YANG snapshots still preserve schema-valid values for reporting. The c
 The coordinator still owns source tickets and the known-good credential transaction.
 This increment does not extract routing or redesign cancellation and publication-lock lifetimes.
 
+## Prepared Source Equivalence
+
+The existing CLI, SONiC, and YANG fixture now checks the shared readiness gate and prepared endpoint order and connection mode.
+The [prepared-source integration tests](../../executables/tacacsrs_agentd/tests/prepared_sources.rs) extend that comparison through native connections and TACACS+ packet exchange.
+
+The TCP fixture uses each source with and without obfuscation and with single-connection mode enabled and disabled.
+The peer checks request sequence and flags, deobfuscates bodies, and compares accounting body bytes across sources.
+The client checks the corresponding reply. All source snapshots remain unchanged.
+
+The PSK fixture compares inline CLI credentials with SONiC and YANG central references after provider resolution.
+It checks equal materialized server values, TLS 1.3, the SHA-256 cipher, SNI, and successful accounting exchange.
+Its no-DHE peer selects a disjoint group list and verifies that no ephemeral key was negotiated.
+Its PSK-DHE peer requires P-384 and checks the negotiated key. A DHE-configured client rejects the no-DHE peer.
+
+Re-preparation with a new key retains the same authoritative SONiC and YANG references.
+Old and new prepared endpoints authenticate only with their respective keys, and the old endpoint still works after the replacement is prepared.
+Failed provider resolution and invalid replacement key material do not change the source or prevent use of the existing endpoint.
+These tests complement the coordinator's separate stale-publication and known-good-generation regressions. They do not run a live daemon reload.
+
+The stronger peer check exposed an OpenSSL-version limitation without requiring production changes.
+OpenSSL 3.0 supports the no-DHE allowance but not the no-DHE preference option.
+The current PSK-only setting therefore permits no-DHE exchange, but a capable peer can select DHE.
+The fixture forces a genuine no-DHE path instead of assuming that the setting guarantees exclusive mode selection.
+Strict no-DHE exclusivity remains a policy and transport-capability decision before Stage 2 closes.
+
 ## Verification
 
 Focused regressions cover early credential rejection, unresolved references, source immutability, runtime redaction, and release of source configuration.
@@ -149,6 +174,7 @@ Package Clippy passes without a feature override.
 The TLS example now belongs to configuration, which explicitly enables its filesystem dependency.
 
 The focused suites include 104 active networking tests, 47 configuration unit tests, 100 agent tests, and 75 daemon tests, plus integration suites.
+Two prepared-source integration tests cover wire behavior and PSK generation isolation with bounded local peers.
 Projection tests moved to configuration. Native tests consolidate equivalent schema-based fixtures into transport-input tables.
 Two existing manual networking baselines remain ignored.
 The workspace build, formatting check, warnings-as-errors rustdoc build, and architecture book build pass.
@@ -186,14 +212,21 @@ Focused tests verify native failure before publication, complete rollback, prepa
 The authoritative-source and credential-rotation regressions still pass with valid transport fixtures.
 No dependencies, lockfiles, or native FFI code changed. No Windows or SONiC VM validation ran for this increment.
 
+The prepared-equivalence increment passes workspace tests, build, formatting, rustdoc, and unused-dependency checks.
+Workspace Clippy uses only the existing admission-warning exception. The dependency audit found no vulnerabilities.
+The daemon declares existing protocol and OpenSSL packages as dev-dependencies for the native peer fixtures. No external package versions changed.
+All peer connections use bounded local listeners. No live SONiC VM, external server, Windows test, or Miri run was part of this increment.
+Production transport and publication code is unchanged.
+
 Miri did not run. It required the nightly `rust-src` component, whose installation failed because the shared toolchain directory was not writable.
 Native OpenSSL callback and handshake tests provide the FFI validation for this checkpoint.
 They are not a substitute for Miri coverage or independent server interoperability tests.
 
 ## Remaining Stage 2 Work
 
-1. Extend CLI, SONiC, and YANG equivalence fixtures through prepared behavior and credential rotation.
-2. Move remaining product controls into documented namespaced YANG augmentations where required.
+1. Move remaining product controls into documented namespaced YANG augmentations where required.
+2. Resolve the PSK-only exclusivity contract across supported OpenSSL versions.
+3. Close the remaining interoperability gaps, including a SHA-384 peer handshake and independent-server evidence.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Routing, request leases, deadlines, and runtime retirement remain Stage 3 work.

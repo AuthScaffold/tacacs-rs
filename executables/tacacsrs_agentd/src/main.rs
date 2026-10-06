@@ -787,6 +787,35 @@ mod tests {
         assert_eq!(cli, parsed);
         assert_eq!(sonic, parsed);
         assert_eq!(sonic.server[0].address, "192.0.2.21");
+        for source in [&cli, &sonic, &parsed] {
+            tacacsrs_config::prepare::validate_materialized_servers(
+                source.server.iter(),
+                &ValidationOptions::default(),
+            )
+            .unwrap();
+            let endpoints = source
+                .server
+                .iter()
+                .map(|server| {
+                    tacacsrs_config::prepare::prepare_endpoint(
+                        server,
+                        tacacsrs_networking::ConnectOptions::default(),
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                endpoints
+                    .iter()
+                    .map(tacacsrs_networking::PreparedEndpoint::address)
+                    .collect::<Vec<_>>(),
+                ["192.0.2.21:49", "192.0.2.20:49"]
+            );
+            assert!(endpoints
+                .iter()
+                .all(|endpoint| !endpoint.single_connection()));
+            assert_eq!(source, &parsed);
+        }
     }
 
     #[test]

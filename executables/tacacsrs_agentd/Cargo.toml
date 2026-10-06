@@ -36,6 +36,9 @@ default = []
 console = ["console-subscriber"]
 
 [dev-dependencies]
+openssl = "0.10.80"
+tokio-openssl = "0.6.5"
+tacacsrs-protocol = { path = "../../libraries/tacacsrs_protocol" }
 tokio = { version = "1.52.3", features = ["test-util"] }
 tonic = "0.14.6"
 
