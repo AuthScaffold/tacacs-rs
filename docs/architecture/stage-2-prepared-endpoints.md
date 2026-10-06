@@ -272,10 +272,31 @@ Miri did not run. It required the nightly `rust-src` component, whose installati
 Native OpenSSL callback and handshake tests provide the FFI validation for this checkpoint.
 They are not a substitute for Miri coverage or independent server interoperability tests.
 
+## Independent Server Evidence
+
+The [native interoperability runbook](../tacplus-interop.md) records tests against unmodified `tac_plus-ng` revision `70bf938b542d63bca00d50be0874a38a290319e0`.
+This is the independent server implementation used by the repository's Compose image recipe.
+It was built in a temporary directory with OpenSSL 3.0.20, without Docker or privileged installation.
+
+PAP, authorization, and repeated accounting pass over TCP with and without obfuscation, verified certificate TLS, client-certificate TLS, and both PSK exchange modes.
+SHA-256 and SHA-384 PSK-DHE pass against hash-specific server settings.
+A strict mutual-TLS variant accepts the fixture client certificate and rejects a client without a certificate.
+The client keeps certificate verification enabled. Hostname-mismatch behavior is not covered by this matrix.
+
+The fixture needed realm-level `tls psk = yes` in addition to its PSK listener setting.
+Without it, the server used certificate fallback and the client's PSK authentication check rejected the connection.
+That fixture fix is now checked in. Production Rust transport behavior is unchanged.
+The opt-in tests and runner retain the server setup and cleanup procedure for future checks.
+
+All nine runner cases passed on 2026-10-06. The ordinary workspace suite passes with the eight external tests ignored by default.
+Workspace build, formatting, warnings-as-errors rustdoc, Python syntax, and the architecture book build pass.
+Workspace Clippy uses only the existing admission-warning exception.
+No dependency, lockfile, production Rust transport, or dev-container configuration changed. All test peer processes were stopped.
+The native tests do not validate Docker/Compose execution, Windows, or SONiC deployment.
+
 ## Remaining Stage 2 Work
 
 1. Move remaining product controls into documented namespaced YANG augmentations where required.
-2. Obtain independent-server interoperability evidence for the retained transport modes.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Routing, request leases, deadlines, and runtime retirement remain Stage 3 work.
