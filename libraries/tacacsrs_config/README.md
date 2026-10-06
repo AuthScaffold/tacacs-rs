@@ -11,6 +11,7 @@
 - Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
 - Secret-free inspection of central keystore and truststore references on enumerated servers
 - Provider request planning and transactional materialization under `prepare`
+- Canonical local-service policy parsing and validation under `policy`
 - YANG-to-endpoint projection with native TLS credential validation
 - Source contracts, snapshot deltas, and static configuration under `source`
 - CLI input normalization, credential-file loading, and file watching under `input`
@@ -139,6 +140,21 @@ let servers = runtime::enumerate_servers(&config)?;
 ```
 
 The existing flat root exports remain available for compatibility.
+
+## Runtime Policy Resource
+
+The project module defines `tacacsrs:runtime-policy` as a system-level YANG augmentation.
+It specifies local-service failover strategies, recovery seconds, and per-operation body and concurrency limits.
+It is separate from the ordered upstream server resource.
+
+`policy::parse_runtime_policy` parses the module-qualified RFC 7951 resource and rejects unknown fields and invalid ranges.
+The generated `tacacsrs::RuntimePolicy` retains absent operation containers as `None`.
+Consumers use their generated defaults when preparing runtime behavior without changing the source value.
+`policy::validate_runtime_policy` also validates programmatically constructed generated values.
+
+The YANG defaults are 30 recovery seconds, deferred failover, and 64 concurrent requests per operation.
+Authentication defaults to a 4096-byte body limit. Authorization and accounting default to 16384 bytes.
+The runtime derives these defaults from generated types rather than independent constants.
 
 ## Configuration Sources
 

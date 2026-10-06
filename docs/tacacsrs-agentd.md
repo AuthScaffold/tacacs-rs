@@ -224,32 +224,44 @@ accounting watchdog to test authentication or authorization routes.
 
 ## Runtime Policy
 
-The optional policy file contains no credentials. The daemon watches the file
+The optional policy file contains a `tacacsrs:runtime-policy` YANG resource with no credentials. The daemon watches the file
 and atomically applies each valid update. An invalid update leaves the
 last-known-good policy active and marks runtime health as degraded.
 
-An omitted field uses its safe default. This example enables same-request
+An omitted field uses its generated YANG default. This example enables same-request
 failover for both local services:
 
 ```json
 {
-  "failover-recovery-interval-seconds": 30,
-  "client-api-failover-strategy": "ordered-safe-retry",
-  "tacacs-proxy-failover-strategy": "ordered-safe-retry",
-  "authentication": {
-    "max-body-length": 4096,
-    "max-concurrent-requests": 64
-  },
-  "authorization": {
-    "max-body-length": 16384,
-    "max-concurrent-requests": 64
-  },
-  "accounting": {
-    "max-body-length": 16384,
-    "max-concurrent-requests": 64
+    "tacacsrs:runtime-policy": {
+        "failover-recovery-interval-seconds": 30,
+        "client-api-failover-strategy": "ordered-safe-retry",
+        "tacacs-proxy-failover-strategy": "ordered-safe-retry",
+        "authentication": {
+            "max-body-length": 4096,
+            "max-concurrent-requests": 64
+        },
+        "authorization": {
+            "max-body-length": 16384,
+            "max-concurrent-requests": 64
+        },
+        "accounting": {
+            "max-body-length": 16384,
+            "max-concurrent-requests": 64
+        }
   }
 }
 ```
+
+This replaces the old flat policy JSON format. Wrap existing fields in `tacacsrs:runtime-policy` before upgrading.
+The default document is `{"tacacsrs:runtime-policy":{}}`; a bare `{}` is no longer accepted.
+Unknown fields, trailing JSON, zero intervals, and zero concurrency limits are rejected.
+Body limits range from 1 through 65536 bytes. Recovery seconds and concurrent-request limits are unsigned 32-bit values.
+An omitted operation or field uses the corresponding YANG default, including authentication's smaller body limit.
+
+The resource is defined by the [project YANG augmentation](../libraries/tacacsrs_config/yang/modules/tacacsrs@2026-10-06.yang) under `ietf-system:system`.
+It is a sibling of the upstream `tacacs-plus` resource, not a field inside the server list.
+The policy file remains an independently watched resource. This change does not combine its publication with server-generation publication.
 
 Each operation has one packet-size limit and one concurrency limit. IPC and
 proxy clients share that capacity. A request waits for capacity for no longer

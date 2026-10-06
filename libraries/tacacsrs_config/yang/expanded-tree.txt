@@ -154,3 +154,19 @@ module: ietf-system-tacacs-plus
              +--ro sessions?              yang:counter64
              +--ro cert-errors?           yang:counter64
 
+module: tacacsrs
+
+  augment /sys:system:
+    +--rw runtime-policy
+       +--rw failover-recovery-interval-seconds?   uint32
+       +--rw client-api-failover-strategy?         failover-strategy
+       +--rw tacacs-proxy-failover-strategy?       failover-strategy
+       +--rw authentication
+       |  +--rw max-body-length?           uint32
+       |  +--rw max-concurrent-requests?   uint32
+       +--rw authorization
+       |  +--rw max-body-length?           uint32
+       |  +--rw max-concurrent-requests?   uint32
+       +--rw accounting
+          +--rw max-body-length?           uint32
+          +--rw max-concurrent-requests?   uint32

@@ -6,15 +6,13 @@ use tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH;
 
 use crate::upstream::OperationKind;
 
-const DEFAULT_AUTHENTICATION_BODY_LIMIT: usize = 4 * 1024;
-const DEFAULT_AUTHORIZATION_BODY_LIMIT: usize = 16 * 1024;
-const DEFAULT_ACCOUNTING_BODY_LIMIT: usize = 16 * 1024;
 /// Default admission ceiling for concurrent requests of one operation.
 ///
 /// Local queue depths align with this value so that a full queue reflects real
 /// admission pressure.
-pub(crate) const DEFAULT_CONCURRENT_REQUEST_LIMIT: usize = 64;
-const DEFAULT_RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
+pub(crate) fn default_concurrent_request_limit() -> usize {
+    tacacsrs_config::tacacsrs::Authentication::default().max_concurrent_requests as usize
+}
 
 /// Failover behavior for one local service.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -116,20 +114,7 @@ impl OperationPolicies {
 
 impl Default for OperationPolicies {
     fn default() -> Self {
-        Self::new(
-            RequestLimits {
-                max_body_length: DEFAULT_AUTHENTICATION_BODY_LIMIT,
-                max_concurrent_requests: DEFAULT_CONCURRENT_REQUEST_LIMIT,
-            },
-            RequestLimits {
-                max_body_length: DEFAULT_AUTHORIZATION_BODY_LIMIT,
-                max_concurrent_requests: DEFAULT_CONCURRENT_REQUEST_LIMIT,
-            },
-            RequestLimits {
-                max_body_length: DEFAULT_ACCOUNTING_BODY_LIMIT,
-                max_concurrent_requests: DEFAULT_CONCURRENT_REQUEST_LIMIT,
-            },
-        )
+        RuntimePolicy::default().operations
     }
 }
 
@@ -143,6 +128,35 @@ pub struct RuntimePolicy {
 }
 
 impl RuntimePolicy {
+    fn from_validated_yang(policy: &tacacsrs_config::tacacsrs::RuntimePolicy) -> Self {
+        let authentication = policy.authentication.clone().unwrap_or_default();
+        let authorization = policy.authorization.clone().unwrap_or_default();
+        let accounting = policy.accounting.clone().unwrap_or_default();
+        Self {
+            client_api_failover_strategy: strategy_from_yang(policy.client_api_failover_strategy),
+            tacacs_proxy_failover_strategy: strategy_from_yang(
+                policy.tacacs_proxy_failover_strategy,
+            ),
+            operations: OperationPolicies::new(
+                RequestLimits {
+                    max_body_length: authentication.max_body_length as usize,
+                    max_concurrent_requests: authentication.max_concurrent_requests as usize,
+                },
+                RequestLimits {
+                    max_body_length: authorization.max_body_length as usize,
+                    max_concurrent_requests: authorization.max_concurrent_requests as usize,
+                },
+                RequestLimits {
+                    max_body_length: accounting.max_body_length as usize,
+                    max_concurrent_requests: accounting.max_concurrent_requests as usize,
+                },
+            ),
+            failover_recovery_interval: Duration::from_secs(u64::from(
+                policy.failover_recovery_interval_seconds,
+            )),
+        }
+    }
+
     /// Creates a validated runtime policy.
     ///
     /// # Errors
@@ -189,11 +203,28 @@ impl RuntimePolicy {
 
 impl Default for RuntimePolicy {
     fn default() -> Self {
-        Self {
-            client_api_failover_strategy: FailoverStrategy::default(),
-            tacacs_proxy_failover_strategy: FailoverStrategy::default(),
-            operations: OperationPolicies::default(),
-            failover_recovery_interval: DEFAULT_RECOVERY_INTERVAL,
+        Self::from_validated_yang(&tacacsrs_config::tacacsrs::RuntimePolicy::default())
+    }
+}
+
+impl TryFrom<&tacacsrs_config::tacacsrs::RuntimePolicy> for RuntimePolicy {
+    type Error = anyhow::Error;
+
+    fn try_from(policy: &tacacsrs_config::tacacsrs::RuntimePolicy) -> Result<Self, Self::Error> {
+        tacacsrs_config::policy::validate_runtime_policy(policy)?;
+        Ok(Self::from_validated_yang(policy))
+    }
+}
+
+const fn strategy_from_yang(
+    strategy: tacacsrs_config::tacacsrs::FailoverStrategy,
+) -> FailoverStrategy {
+    match strategy {
+        tacacsrs_config::tacacsrs::FailoverStrategy::DeferredFailover => {
+            FailoverStrategy::DeferredFailover
+        }
+        tacacsrs_config::tacacsrs::FailoverStrategy::OrderedSafeRetry => {
+            FailoverStrategy::OrderedSafeRetry
         }
     }
 }
@@ -246,5 +277,45 @@ mod tests {
             Duration::ZERO,
         )
         .is_err());
+    }
+
+    #[test]
+    fn canonical_policy_preparation_preserves_source_and_generated_defaults() {
+        let source = tacacsrs_config::policy::parse_runtime_policy(
+            br#"{
+            "tacacsrs:runtime-policy": {
+                "client-api-failover-strategy": "ordered-safe-retry",
+                "authentication": {},
+                "authorization": {"max-body-length":8192,"max-concurrent-requests":16}
+            }
+        }"#,
+        )
+        .unwrap();
+        let original = source.clone();
+        let prepared = RuntimePolicy::try_from(&source).unwrap();
+        assert_eq!(source, original);
+        assert_eq!(
+            prepared.failover_strategy(PolicyService::ClientApi),
+            FailoverStrategy::OrderedSafeRetry
+        );
+        assert_eq!(
+            prepared.failover_strategy(PolicyService::TacacsProxy),
+            FailoverStrategy::DeferredFailover
+        );
+        assert_eq!(prepared.failover_recovery_interval(), Duration::from_secs(30));
+        assert_eq!(
+            prepared
+                .limits(OperationKind::Authentication)
+                .max_body_length(),
+            4096
+        );
+        assert_eq!(
+            prepared.limits(OperationKind::Authorization),
+            RequestLimits::new(8192, 16).unwrap()
+        );
+        assert_eq!(prepared.limits(OperationKind::Accounting).max_body_length(), 16384);
+        let mut invalid = source;
+        invalid.failover_recovery_interval_seconds = 0;
+        assert!(RuntimePolicy::try_from(&invalid).is_err());
     }
 }

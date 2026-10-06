@@ -97,7 +97,7 @@ This checkpoint records:
 - Pinned commit: `97ca2414920c0de09171327b84aa11395f79e284`.
 - Generator dependency: `pyang` 2.7.1.
 - Feature selection: [feature-flags.ini](../../libraries/tacacsrs_config/yang/feature-flags.ini).
-- Project augmentation: [tacacsrs@2026-05-20.yang](../../libraries/tacacsrs_config/yang/modules/tacacsrs@2026-05-20.yang).
+- Project augmentation, including its original revision: [tacacsrs@2026-10-06.yang](../../libraries/tacacsrs_config/yang/modules/tacacsrs@2026-10-06.yang).
 
 Enabled features cover credential bundles, cleartext protected key inputs, inline and central keystore/truststore references, TLS 1.3, and EPSK.
 The project augmentation enables ordered `psk-dhe-ke-groups` on reusable and per-server EPSK identities.

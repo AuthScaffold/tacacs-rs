@@ -19,7 +19,7 @@ use tacacsrs_secrets::SecretString;
 pub use self::policy::{
     FailoverStrategy, OperationPolicies, PolicyService, RequestLimits, RuntimePolicy,
 };
-pub(crate) use self::policy::DEFAULT_CONCURRENT_REQUEST_LIMIT;
+pub(crate) use self::policy::default_concurrent_request_limit;
 
 mod policy;
 

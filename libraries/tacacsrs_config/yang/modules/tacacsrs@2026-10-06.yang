@@ -23,6 +23,11 @@ module tacacsrs {
   description
     "Project-owned TACACS+ configuration extensions for tacacs-rs.";
 
+  revision 2026-10-06 {
+    description
+      "Adds local TACACS+ service failover and request-admission policy.";
+  }
+
   revision 2026-05-20 {
     description
       "Adds TLS 1.3 PSK psk_dhe_ke supported group configuration.";
@@ -35,6 +40,84 @@ module tacacsrs {
     description
       "Indicates that TLS 1.3 PSK psk_dhe_ke ClientHello supported
        group and key share parameters are configurable.";
+  }
+
+  typedef failover-strategy {
+    type enumeration {
+      enum deferred-failover {
+        description
+          "Record a failed attempt and let the next request select the next server.";
+      }
+      enum ordered-safe-retry {
+        description
+          "Try the next eligible server during the current request when replay is safe.";
+      }
+    }
+    description
+      "Failover behavior for a local TACACS+ service.";
+  }
+
+  grouping request-limits {
+    description
+      "Admission limits shared by all callers of one operation.";
+    leaf max-body-length {
+      type uint32 { range "1..65536"; }
+      units "bytes";
+      default 16384;
+      description
+        "Maximum encoded TACACS+ request body length.";
+    }
+    leaf max-concurrent-requests {
+      type uint32 { range "1..max"; }
+      default 64;
+      description
+        "Maximum concurrent requests for one operation.";
+    }
+  }
+
+  augment "/sys:system" {
+    description
+      "Local TACACS+ service policy, separate from the ordered upstream server list.";
+    container runtime-policy {
+      description
+        "Failover and admission controls for local client API and proxy services.";
+      leaf failover-recovery-interval-seconds {
+        type uint32 { range "1..max"; }
+        units "seconds";
+        default 30;
+        description
+          "Interval before a failed route receives one recovery trial.";
+      }
+      leaf client-api-failover-strategy {
+        type failover-strategy;
+        default deferred-failover;
+        description
+          "Failover policy for requests received through the local client API.";
+      }
+      leaf tacacs-proxy-failover-strategy {
+        type failover-strategy;
+        default deferred-failover;
+        description
+          "Failover policy for initial requests received through the TACACS+ proxy.";
+      }
+      container authentication {
+        description
+          "Shared authentication admission limits.";
+        uses request-limits {
+          refine max-body-length { default 4096; }
+        }
+      }
+      container authorization {
+        description
+          "Shared authorization admission limits.";
+        uses request-limits;
+      }
+      container accounting {
+        description
+          "Shared accounting admission limits.";
+        uses request-limits;
+      }
+    }
   }
 
   typedef psk-dhe-ke-supported-group {

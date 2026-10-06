@@ -294,9 +294,39 @@ Workspace Clippy uses only the existing admission-warning exception.
 No dependency, lockfile, production Rust transport, or dev-container configuration changed. All test peer processes were stopped.
 The native tests do not validate Docker/Compose execution, Windows, or SONiC deployment.
 
+## Canonical Runtime Policy
+
+The project module revision `2026-10-06` defines `tacacsrs:runtime-policy` under `ietf-system:system`.
+It covers local client API and proxy failover strategies, recovery seconds, and per-operation body and concurrency limits.
+The IETF upstream module, feature selection, server model, and credential references are unchanged.
+The project module and regenerated artifacts are recorded in the generation manifest.
+
+The daemon's `--runtime-policy` file now contains a module-qualified YANG resource.
+Its independent document structs and duplicate defaults are removed.
+Configuration parses and validates the generated policy, and the agent derives runtime values without changing that source.
+Default runtime policy and default queue sizing use generated YANG defaults.
+
+The old flat JSON format is not retained. Existing files must wrap their fields in `tacacsrs:runtime-policy`.
+The default resource is `{"tacacsrs:runtime-policy":{}}`.
+Partial operation containers use the operation's own defaults. Unknown fields and invalid ranges fail before policy publication.
+The existing watcher still retains the previous valid policy on rejected updates.
+Policy observation remains separate from server observation until the planned controller work.
+
+The generator now distinguishes structures whose leaf defaults or mandatory constraints differ.
+It emits `Default` only when every field has a YANG default or an optional/empty representation.
+Mandatory leaves do not receive invented defaults. Authentication and accounting retain their different default body limits.
+The original canonical-policy regression failed against the old parser and now passes.
+
+The policy increment passes workspace tests, build, formatting, warnings-as-errors rustdoc, and unused-dependency checks.
+All twelve YANG generator tests pass. Deterministic regeneration matches the pinned source, manifest hashes, and checked-in artifacts.
+The documentation book builds. Workspace Clippy uses only the existing admission-warning exception.
+The dependency audit found no vulnerabilities, with the same index-refresh lock warning.
+Configuration now uses its existing protocol dependency for the body-length limit. No external dependency versions or lockfile changed.
+No native transport, unsafe code, or protobuf contract changed. No Windows, live SONiC, or independent-server test ran for this increment.
+
 ## Remaining Stage 2 Work
 
-1. Move remaining product controls into documented namespaced YANG augmentations where required.
+1. Complete the ownership review of host-binding controls and preparation overrides, and model additional product controls in YANG where required.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Routing, request leases, deadlines, and runtime retirement remain Stage 3 work.

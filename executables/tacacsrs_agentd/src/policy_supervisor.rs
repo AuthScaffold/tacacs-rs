@@ -176,7 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_update_keeps_policy_and_valid_update_clears_degradation() {
-        let path = temp_policy("{}");
+        let path = temp_policy(r#"{"tacacsrs:runtime-policy":{}}"#);
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         let cancellation = CancellationToken::new();
         let supervisor = PolicySupervisor::new(
@@ -192,7 +192,7 @@ mod tests {
 
         fs::write(&path, r#"{"unknown":true}"#).expect("write invalid policy");
         wait_for_rejection(&health, true).await;
-        fs::write(&path, "{}").expect("write valid policy");
+        fs::write(&path, r#"{"tacacsrs:runtime-policy":{}}"#).expect("write valid policy");
         wait_for_rejection(&health, false).await;
 
         cancellation.cancel();

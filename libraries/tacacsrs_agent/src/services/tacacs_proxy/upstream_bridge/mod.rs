@@ -35,11 +35,6 @@ mod session;
 mod session_mapping;
 
 const SESSION_QUEUE_CAPACITY: usize = 8;
-/// Downstream reply queue depth for one proxy connection.
-///
-/// This matches the default concurrent request limit, so a full queue reflects
-/// real admission pressure instead of an unrelated bound.
-const REPLY_QUEUE_CAPACITY: usize = crate::config::DEFAULT_CONCURRENT_REQUEST_LIMIT;
 
 /// Maps raw TACACS+ proxy streams to managed server sessions.
 #[derive(Clone)]
@@ -105,7 +100,8 @@ where
 {
     let (reader, writer) = tokio::io::split(stream);
     let mut downstream = DownstreamReader::new(reader, timeout, obfuscation_key.clone());
-    let (reply_sender, reply_receiver) = mpsc::channel(REPLY_QUEUE_CAPACITY);
+    let (reply_sender, reply_receiver) =
+        mpsc::channel(crate::config::default_concurrent_request_limit());
     let mut writer_task =
         tokio::spawn(run_downstream_writer(writer, obfuscation_key.clone(), reply_receiver));
     let mut session_senders = HashMap::<u32, mpsc::Sender<SessionPacket>>::new();

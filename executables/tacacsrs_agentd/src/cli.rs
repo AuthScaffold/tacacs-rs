@@ -75,7 +75,7 @@ pub(crate) struct Cli {
     ])]
     pub(crate) config: Option<PathBuf>,
 
-    /// Optional live runtime-policy JSON file.
+    /// Optional live YANG JSON file containing a tacacsrs:runtime-policy resource.
     #[arg(long, value_name = "FILE")]
     pub(crate) runtime_policy: Option<PathBuf>,
 
