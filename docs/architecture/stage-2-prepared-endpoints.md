@@ -24,6 +24,7 @@ If work moves between stages, record its new owner and update both stage descrip
 - [x] S2-04: Merge datastore and CLI/file source plumbing into configuration. Commit `8329688` removes the old packages and updates consumers and dependency guards. See [sources and inputs](#sources-and-inputs).
 - [x] S2-05: Verify equivalent CLI, SONiC, and YANG inputs through preparation and packet exchange. Commits `acec6ef` and `8b8e686` cover [source equivalence](#prepared-source-equivalence) and credential rotation.
 - [x] S2-06: Reject unsupported runtime fields explicitly. Commit `6f2c9a7` adds capability checks and source-preservation tests. See [publication readiness](#publication-readiness).
+- [x] S2-12: Make service selection, listener endpoints, and Unix socket permissions canonical YANG controls. Commit `594b5be` removes independent runtime fields and duplicate validation. See [canonical local services](#canonical-local-services) for pre-bind rejection, input equivalence, and permission tests.
 
 ### Completed Discoveries
 
@@ -379,9 +380,46 @@ Clippy uses only the existing admission-warning exception. All nine native `tac_
 No dependencies, generated YANG artifacts, protobuf contract, or unsafe code changed. Windows and live SONiC validation did not run.
 This timeout bounds TCP establishment. Absolute request deadlines and TLS-handshake deadline coverage remain Stage 3 work.
 
+## Canonical Local Services
+
+Commit `594b5be` completes S2-12 with the system-level `tacacsrs:local-services` resource.
+Enabled services, IPC/proxy listener endpoints, and Unix socket permissions are product configuration, not independent host defaults.
+Worker threads, verbosity, and systemd integration remain process bootstrap inputs.
+The existing project module revision contains the new resource. The pinned IETF module and feature selection are unchanged.
+
+Configuration owns `parse_local_services` and `prepare_local_services`.
+Preparation produces private, immutable bind targets without filesystem or network I/O and leaves the generated source unchanged.
+It rejects disabled service sets, inconsistent proxy selection, invalid endpoints, invalid permission bits, and lexical Unix path collisions.
+The new collision regression failed against the previous service constructor before the shared validation fix.
+The daemon previously rejected that conflict, but library callers could reach listener startup with it.
+
+`ServiceConfig::local_services` replaces its independent service flags, IPC endpoints, and socket mode.
+The service prepares this source before runtime construction and retains the resulting targets privately.
+Both production and test constructors use the shared validation path. Obsolete validation wrappers are removed.
+Existing listener tests verify the configured socket permissions, startup health, and shutdown cleanup.
+
+The daemon normalizes listener flags into generated YANG values and obtains omitted defaults from those types.
+`--local-services` loads a module-qualified resource once at startup. Listener changes require a restart.
+The file is exclusive with parallel listener flags and SONiC mode, so it cannot silently override another listener source.
+SONiC's existing forwarder result enters the canonical resource in the daemon adapter.
+Its full mapping, default ownership, and loop-prevention review remain S2-14.
+
+Unix listener paths must be absolute, contain no NUL or parent traversal, and fit the Linux 107-byte pathname limit.
+Preparation normalizes repeated separators and current-directory components without resolving symlinks.
+Invalid client API endpoint values fail even when that service is disabled.
+Proxy TCP targets remain numeric and can use wildcard addresses or port zero. Deployment access controls remain necessary.
+Downstream credentials retain their existing paths until S2-13. The new file does not configure a downstream secret.
+
+Workspace tests, build, formatting, warnings-as-errors rustdoc, and the documentation book pass.
+Workspace Clippy uses only the existing admission-warning exception.
+All twelve generator tests pass, and deterministic regeneration matches the updated artifact hashes.
+Four configuration tests and five daemon adapter tests cover defaults, immutability, invalid values, file loading, and CLI/YANG equivalence.
+All fifteen agent runtime tests pass, including the collision regression and bound-socket permission assertion.
+No dependency, lockfile, protobuf contract, unsafe code, or native transport changed.
+Windows, live SONiC, and independent-server validation did not run for this listener-only increment.
+
 ## Remaining Stage 2 Work
 
-- [ ] S2-12: Resolve ownership of enabled services, IPC/proxy listener endpoints, and Unix socket permissions. Start at [ServiceConfig](../../libraries/tacacsrs_agent/src/config.rs) and the daemon CLI. Classify each control as canonical product configuration or an explicit host bootstrap input. Implement the decision, remove duplicate defaults, and test valid and rejected values before listener binding.
 - [ ] S2-13: Resolve downstream proxy obfuscation and credential ownership. Start at `ServiceConfig::proxy_downstream_obfuscation` and the daemon's `proxy_shared_secret` input. Implement the canonical policy and credential-source contract without a parallel authoritative schema. Verify redaction, source immutability, and rejection of invalid replacement credentials before publication.
 - [ ] S2-14: Align SONiC forwarder input with the local-service decisions. Start at [SonicForwarderSettings](../../libraries/tacacsrs_sonic/src/mapping.rs) and daemon assembly. Remove duplicate interpretation and defaults. Test equivalent CLI, SONiC, and YANG behavior where applicable, including invalid endpoints and loop prevention.
 - [ ] S2-15: Reconcile the [field-to-behavior inventory](stage-0-contract-gates.md#field-to-behavior-inventory) with current implementation evidence. Resolve each gap as supported and tested, explicitly rejected, or assigned to a named later-stage contract. Certificate peer identity and TLS default-port behavior remain coverage questions, not proven conformance. Add separate implementation items for defects found during this review.
