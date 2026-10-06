@@ -270,7 +270,6 @@ mod tests {
         EnabledServices, ProxyDownstreamObfuscation, RuntimeHealthPublisher, ServiceConfig,
         TacacsClientService,
     };
-    use tacacsrs_agent_client::IpcEndpoint;
     use tacacsrs_credential_resolution::SymmetricKeyFormat;
     use tacacsrs_config::{TacacsPlus, ValidationOptions, parse_yang_json};
     use tacacsrs_credential_resolution::{
@@ -378,9 +377,7 @@ mod tests {
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         TacacsClientService::waiting_for_configuration(
             ServiceConfig {
-                enabled_services: EnabledServices::CLIENT_API,
-                endpoint: IpcEndpoint::default_local(),
-                proxy_endpoint: None,
+                local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
                 proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                 tacacs_plus: TacacsPlus::empty(),
                 validation_options: ValidationOptions::default(),
@@ -391,7 +388,6 @@ mod tests {
                     Duration::from_secs(1),
                 )
                 .expect("test runtime policy"),
-                socket_mode: 0o660,
                 disable_certificate_verification: false,
             },
             health,

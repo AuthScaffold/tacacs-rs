@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
+use tacacsrs_config::local_services::{prepare_local_services, PreparedLocalServices, ListenerEndpoint};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
@@ -62,6 +63,7 @@ use crate::upstream::manager::UpstreamManager;
 pub struct TacacsClientService {
     /// Validated operator configuration.
     config: ServiceConfig,
+    listeners: PreparedLocalServices,
     /// Shared failover state for all IPC request handlers.
     state: Arc<UpstreamManager>,
     /// Serializes publication of a complete runtime generation.
@@ -113,11 +115,8 @@ impl TacacsClientService {
         health: RuntimeHealthPublisher,
         configuration_applied: bool,
     ) -> anyhow::Result<Self> {
-        if config.enabled_services.client_api() {
-            ClientApiService::validate_endpoint(&config.endpoint)?;
-        }
-        validate_enabled_services(&config)?;
-        if health.snapshot().enabled_services() != config.enabled_services {
+        let listeners = prepare_local_services(&config.local_services)?;
+        if health.snapshot().enabled_services() != config.enabled_services() {
             anyhow::bail!("Runtime health and service configuration must enable the same services");
         }
         let servers = enumerate_supported_servers(&config.tacacs_plus, &config.validation_options)?;
@@ -139,6 +138,7 @@ impl TacacsClientService {
 
         Ok(Self {
             config,
+            listeners,
             state,
             reload_lock: Mutex::new(()),
             request_tracker,
@@ -152,11 +152,8 @@ impl TacacsClientService {
         connector: Arc<dyn UpstreamConnector>,
         health: RuntimeHealthPublisher,
     ) -> anyhow::Result<Self> {
-        if config.enabled_services.client_api() {
-            ClientApiService::validate_endpoint(&config.endpoint)?;
-        }
-        validate_enabled_services(&config)?;
-        if health.snapshot().enabled_services() != config.enabled_services {
+        let listeners = prepare_local_services(&config.local_services)?;
+        if health.snapshot().enabled_services() != config.enabled_services() {
             anyhow::bail!("Runtime health and service configuration must enable the same services");
         }
         let servers = enumerate_supported_servers(&config.tacacs_plus, &config.validation_options)?;
@@ -177,6 +174,7 @@ impl TacacsClientService {
 
         Ok(Self {
             config,
+            listeners,
             state,
             reload_lock: Mutex::new(()),
             request_tracker,
@@ -320,14 +318,14 @@ impl TacacsClientService {
     }
 
     async fn serve_enabled_services(&self, shutdown: &ShutdownCoordinator) -> anyhow::Result<()> {
-        let listener_options = ListenerOptions::from_config(&self.config);
+        let listener_options = ListenerOptions::new(self.listeners.unix_socket_mode());
         let mut tasks = JoinSet::new();
         let mut service_count = 0;
 
-        if self.config.enabled_services.client_api() {
+        if let Some(path) = self.listeners.client_api() {
             let service =
                 ClientApiService::new(Arc::clone(&self.state), Arc::clone(&self.request_tracker));
-            let endpoint = self.config.endpoint.clone();
+            let endpoint = IpcEndpoint::Unix(path.to_owned());
             let shutdown = shutdown.subscribe();
             let health = self.health.clone();
             tasks.spawn(async move {
@@ -338,10 +336,13 @@ impl TacacsClientService {
             service_count += 1;
         }
 
-        if self.config.enabled_services.tacacs_proxy() {
+        if let Some(target) = self.listeners.tacacs_proxy() {
             let service =
                 TacacsProxyService::new(Arc::clone(&self.state), Arc::clone(&self.request_tracker));
-            let endpoint = proxy_endpoint(&self.config)?.clone();
+            let endpoint = match target {
+                ListenerEndpoint::Unix(path) => IpcEndpoint::Unix(path.clone()),
+                ListenerEndpoint::Tcp(address) => IpcEndpoint::Tcp(*address),
+            };
             let shutdown = shutdown.subscribe();
             let health = self.health.clone();
             tasks.spawn(async move {
@@ -374,29 +375,6 @@ impl TacacsClientService {
 
         Ok(())
     }
-}
-
-fn proxy_endpoint(config: &ServiceConfig) -> anyhow::Result<&IpcEndpoint> {
-    config
-        .proxy_endpoint
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("The TACACS+ proxy service requires an IPC endpoint"))
-}
-
-fn validate_enabled_services(config: &ServiceConfig) -> anyhow::Result<()> {
-    if config.enabled_services.is_empty() {
-        anyhow::bail!("Enable at least one runtime service");
-    }
-
-    if config.enabled_services.tacacs_proxy() && config.proxy_endpoint.is_none() {
-        anyhow::bail!("The TACACS+ proxy service requires an IPC endpoint");
-    }
-
-    if !config.enabled_services.tacacs_proxy() && config.proxy_endpoint.is_some() {
-        anyhow::bail!("Remove the proxy IPC endpoint or enable the TACACS+ proxy service");
-    }
-
-    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -462,9 +440,13 @@ mod tests {
             .build()
             .expect("the test configuration must be valid");
         ServiceConfig {
-            enabled_services: EnabledServices::CLIENT_API,
-            endpoint,
-            proxy_endpoint: None,
+            local_services: tacacsrs_config::tacacsrs::LocalServices {
+                client_api_endpoint: match endpoint {
+                    IpcEndpoint::Unix(path) => path.to_str().unwrap().to_owned(),
+                    IpcEndpoint::Tcp(address) => address.to_string(),
+                },
+                ..Default::default()
+            },
             proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
             tacacs_plus,
             validation_options: tacacsrs_config::ValidationOptions::default(),
@@ -475,14 +457,24 @@ mod tests {
                 Duration::from_millis(50),
             )
             .expect("test runtime policy"),
-            socket_mode: 0o660,
             disable_certificate_verification: false,
         }
     }
 
     fn test_service(config: ServiceConfig) -> anyhow::Result<TacacsClientService> {
-        let health = RuntimeHealthPublisher::new(config.enabled_services);
+        let health = RuntimeHealthPublisher::new(config.enabled_services());
         TacacsClientService::new(config, health)
+    }
+
+    #[test]
+    fn conflicting_listener_endpoints_fail_before_binding() {
+        let endpoint = test_endpoint("conflicting-listeners");
+        let mut config = service_config(endpoint, vec![test_server("primary:49")]);
+        config.local_services.client_api_enabled = true;
+        config.local_services.tacacs_proxy_enabled = true;
+        config.local_services.tacacs_proxy_endpoint =
+            Some(config.local_services.client_api_endpoint.clone());
+        assert!(test_service(config).is_err());
     }
 
     #[tokio::test]
@@ -522,7 +514,7 @@ mod tests {
         config: ServiceConfig,
         connector: Arc<dyn crate::upstream::UpstreamConnector>,
     ) -> anyhow::Result<TacacsClientService> {
-        let health = RuntimeHealthPublisher::new(config.enabled_services);
+        let health = RuntimeHealthPublisher::new(config.enabled_services());
         TacacsClientService::new_with_connector(config, connector, health)
     }
 
@@ -595,19 +587,16 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("Unix client API endpoints must use a Unix domain socket"));
+            .contains("invalid local-services/client-api-endpoint"));
     }
 
     #[test]
     fn service_accepts_tcp_proxy_endpoint_on_unix() {
         let endpoint = test_endpoint("tacacs-service-proxy-tcp-client-api");
         let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-        config.enabled_services = EnabledServices::BOTH;
-        config.proxy_endpoint = Some(IpcEndpoint::Tcp(
-            "127.0.0.1:0"
-                .parse()
-                .expect("the test IPC endpoint must be valid"),
-        ));
+        config.local_services.client_api_enabled = true;
+        config.local_services.tacacs_proxy_enabled = true;
+        config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:0".to_owned());
 
         let service =
             test_service(config).expect("the service must accept TCP proxy endpoints on Unix");
@@ -616,31 +605,26 @@ mod tests {
     }
 
     #[test]
-    fn service_accepts_proxy_only_with_tcp_client_api_endpoint_on_unix() {
+    fn service_rejects_invalid_disabled_client_api_endpoint() {
         let endpoint = IpcEndpoint::Tcp(
             "127.0.0.1:0"
                 .parse()
                 .expect("the test IPC endpoint must be valid"),
         );
         let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-        config.enabled_services = EnabledServices::TACACS_PROXY;
-        config.proxy_endpoint = Some(IpcEndpoint::Tcp(
-            "127.0.0.1:1"
-                .parse()
-                .expect("the test IPC endpoint must be valid"),
-        ));
+        config.local_services.client_api_enabled = false;
+        config.local_services.tacacs_proxy_enabled = true;
+        config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:1".to_owned());
 
-        let service = test_service(config)
-            .expect("proxy-only mode must not validate the disabled client API endpoint");
-
-        assert_eq!(service.state.server_count(), 1);
+        assert!(test_service(config).is_err());
     }
 
     #[test]
     fn service_rejects_no_enabled_runtime_services() {
         let endpoint = test_endpoint("tacacs-service-no-services");
         let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-        config.enabled_services = EnabledServices::NONE;
+        config.local_services.client_api_enabled = false;
+        config.local_services.tacacs_proxy_enabled = false;
 
         let Err(error) = test_service(config) else {
             panic!("the service must reject configuration with no enabled services");
@@ -655,7 +639,8 @@ mod tests {
     fn service_rejects_proxy_service_without_proxy_endpoint() {
         let endpoint = test_endpoint("tacacs-service-proxy-without-endpoint");
         let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-        config.enabled_services = EnabledServices::TACACS_PROXY;
+        config.local_services.client_api_enabled = false;
+        config.local_services.tacacs_proxy_enabled = true;
 
         let Err(error) = test_service(config) else {
             panic!("the service must reject proxy mode without an IPC endpoint");
@@ -663,7 +648,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("The TACACS+ proxy service requires an IPC endpoint"));
+            .contains("The proxy endpoint must be present exactly when"));
     }
 
     fn test_endpoint(socket_name: &str) -> IpcEndpoint {
@@ -840,6 +825,8 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or TCP listeners.
     async fn both_listeners_bind_with_wildcard_proxy_before_startup_serves_and_cleanup_on_shutdown()
     {
+        use std::os::unix::fs::PermissionsExt;
+
         let endpoint = test_endpoint("tacacs-service-both-listeners");
         let socket_path = match &endpoint {
             IpcEndpoint::Unix(path) => path.clone(),
@@ -848,12 +835,10 @@ mod tests {
             }
         };
         let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-        config.enabled_services = EnabledServices::BOTH;
-        config.proxy_endpoint = Some(IpcEndpoint::Tcp(
-            "0.0.0.0:0"
-                .parse()
-                .expect("the proxy IPC endpoint must be valid"),
-        ));
+        config.local_services.client_api_enabled = true;
+        config.local_services.tacacs_proxy_enabled = true;
+        config.local_services.tacacs_proxy_endpoint = Some("0.0.0.0:0".to_owned());
+        config.local_services.unix_socket_mode = 0o600;
         let health = RuntimeHealthPublisher::new(EnabledServices::BOTH);
         let upstream = Arc::new(FakeConnection {
             address: "primary:49".to_owned(),
@@ -883,6 +868,15 @@ mod tests {
         assert!(health.snapshot().is_startup_serving());
         assert_eq!(health.snapshot().listener(RuntimeService::ClientApi), ListenerState::Bound,);
         assert_eq!(health.snapshot().listener(RuntimeService::TacacsProxy), ListenerState::Bound,);
+        assert_eq!(
+            tokio::fs::metadata(&socket_path)
+                .await
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
 
         shutdown.initiate_shutdown();
         task.await
@@ -914,8 +908,9 @@ mod tests {
             }
         };
         let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-        config.enabled_services = EnabledServices::BOTH;
-        config.proxy_endpoint = Some(IpcEndpoint::Tcp(occupied_address));
+        config.local_services.client_api_enabled = true;
+        config.local_services.tacacs_proxy_enabled = true;
+        config.local_services.tacacs_proxy_endpoint = Some(occupied_address.to_string());
         let health = RuntimeHealthPublisher::new(EnabledServices::BOTH);
         let upstream = Arc::new(FakeConnection {
             address: "primary:49".to_owned(),

@@ -25,7 +25,7 @@ module tacacsrs {
 
   revision 2026-10-06 {
     description
-      "Adds local TACACS+ service failover and request-admission policy.";
+      "Adds local service listeners, failover, and request-admission policy.";
   }
 
   revision 2026-05-20 {
@@ -78,6 +78,43 @@ module tacacsrs {
   augment "/sys:system" {
     description
       "Local TACACS+ service policy, separate from the ordered upstream server list.";
+    container local-services {
+      description
+        "Startup listener configuration. Changes require a service restart.";
+      must "client-api-enabled = 'true' or tacacs-proxy-enabled = 'true'";
+      must "(tacacs-proxy-enabled = 'true' and tacacs-proxy-endpoint) or
+            (tacacs-proxy-enabled = 'false' and not(tacacs-proxy-endpoint))";
+      leaf client-api-enabled {
+        type boolean;
+        default true;
+        description
+          "Enables the local client API.";
+      }
+      leaf client-api-endpoint {
+        type string { length "1..107"; }
+        default "/run/tacacs/tacacs.sock";
+        description
+          "Absolute Unix socket path for the client API.";
+      }
+      leaf tacacs-proxy-enabled {
+        type boolean;
+        default false;
+        description
+          "Enables the raw TACACS+ proxy.";
+      }
+      leaf tacacs-proxy-endpoint {
+        type string { length "1..max"; }
+        description
+          "Absolute Unix socket path or numeric IP socket address for the proxy.
+           IPv6 addresses use brackets. TCP port zero requests an ephemeral port.";
+      }
+      leaf unix-socket-mode {
+        type uint16 { range "0..511"; }
+        default 432;
+        description
+          "Unix socket permission bits as a decimal integer. The default is octal 660.";
+      }
+    }
     container runtime-policy {
       description
         "Failover and admission controls for local client API and proxy services.";

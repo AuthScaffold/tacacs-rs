@@ -12,7 +12,6 @@
 //! validation. It then calls
 //! [`serve`](crate::TacacsClientService::serve) to start the runtime.
 
-use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
 use tacacsrs_secrets::SecretString;
 
@@ -96,31 +95,14 @@ pub enum ProxyDownstreamObfuscation {
 ///
 /// # Required fields
 ///
-/// - **`enabled_services`** — the local runtime services to host. At least one
+/// - **`local_services`** — canonical listener configuration. At least one
 ///   service must be enabled.
 /// - **`tacacs_plus`** — the YANG-modelled root configuration. The order of
 ///   `tacacs_plus.server` sets the failover priority. Index 0 is preferred.
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
-    /// Runtime services to host in this process.
-    pub enabled_services: EnabledServices,
-
-    /// Local IPC endpoint exposed to local consumers when the client API
-    /// service is enabled.
-    ///
-    /// The client API must use a filesystem path such as
-    /// `/run/tacacs/tacacs.sock`. An empty string is invalid.
-    pub endpoint: IpcEndpoint,
-
-    /// Optional local TACACS+ proxy endpoint.
-    ///
-    /// When the TACACS+ proxy service is enabled, this endpoint accepts raw
-    /// TACACS+ client connections. It maps each downstream connection to one
-    /// upstream TACACS+ session. Container deployments can bind a wildcard
-    /// address and publish the port only on the host loopback interface.
-    /// Deployments that bind a non-loopback address must restrict access to
-    /// trusted clients.
-    pub proxy_endpoint: Option<IpcEndpoint>,
+    /// Canonical startup listener controls. Preparation validates these before binding.
+    pub local_services: tacacsrs_config::tacacsrs::LocalServices,
 
     /// Obfuscation policy expected from raw TACACS+ proxy clients.
     ///
@@ -145,15 +127,21 @@ pub struct ServiceConfig {
     /// Live failover and request-admission policy.
     pub runtime_policy: RuntimePolicy,
 
-    /// File mode for the bound Unix domain socket.
-    ///
-    /// Typical values: `0o660` (owner + group) or `0o666` (world-accessible).
-    pub socket_mode: u32,
-
     /// Disables TLS certificate verification for server connections.
     ///
     /// This option is dangerous. Use it only for development and tests. Always
     /// enable certificate verification in production.
     #[doc(hidden)]
     pub disable_certificate_verification: bool,
+}
+
+impl ServiceConfig {
+    /// Returns the service selection from the canonical listener source.
+    #[must_use]
+    pub const fn enabled_services(&self) -> EnabledServices {
+        EnabledServices::new(
+            self.local_services.client_api_enabled,
+            self.local_services.tacacs_proxy_enabled,
+        )
+    }
 }

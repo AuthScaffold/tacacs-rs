@@ -166,6 +166,23 @@ The YANG defaults are 30 recovery seconds, deferred failover, and 64 concurrent 
 Authentication defaults to a 4096-byte body limit. Authorization and accounting default to 16384 bytes.
 The runtime derives these defaults from generated types rather than independent constants.
 
+## Local Service Resource
+
+`tacacsrs:local-services` defines startup service selection, listener endpoints, and Unix socket permissions under `ietf-system:system`.
+`local_services::parse_local_services` parses its module-qualified RFC 7951 resource and rejects unknown fields and invalid values.
+`local_services::prepare_local_services` borrows the generated source and returns immutable `PreparedLocalServices` bind targets.
+It performs no network or filesystem I/O. The source remains unchanged.
+
+The default enables the client API at `/run/tacacs/tacacs.sock` with mode `0660` and disables the raw proxy.
+Permissions use decimal numbers in JSON. Unix listener paths use absolute Linux syntax and at most 107 bytes.
+Preparation rejects inconsistent service selection, invalid permissions, and lexical endpoint collisions before binding.
+It does not resolve symlink aliases. TCP proxy targets accept numeric addresses, including wildcard and ephemeral-port bindings.
+Runtime listeners still report filesystem permissions, occupied addresses, and other bind-time failures.
+
+Agent callers now supply `ServiceConfig::local_services`, not independent service flags, IPC endpoints, or socket modes.
+The agent prepares this source before startup and stores the resulting targets privately.
+Process runtime settings and downstream credential policy are separate from this resource.
+
 ## Configuration Sources
 
 `source::ConfigDatastore` supplies canonical YANG snapshots through `load` and change events through `subscribe`.

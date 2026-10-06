@@ -7,6 +7,7 @@ pub mod builders;
 pub mod validation;
 pub mod prepare;
 pub mod policy;
+pub mod local_services;
 mod enumeration;
 mod mapping;
 pub(crate) mod serde_helpers;

@@ -1113,6 +1113,50 @@ pub mod tacacsrs {
         }
     }
 
+    fn default_local_services_client_api_enabled() -> bool { true }
+    fn default_local_services_client_api_endpoint() -> String { "/run/tacacs/tacacs.sock".to_owned() }
+    fn default_local_services_unix_socket_mode() -> u16 { 432 }
+
+    /// Startup listener configuration. Changes require a service restart.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct LocalServices {
+        /// Enables the local client API.
+        #[serde(rename = "client-api-enabled")]
+        #[serde(default = "default_local_services_client_api_enabled")]
+        pub client_api_enabled: bool,
+        /// Absolute Unix socket path for the client API.
+        #[serde(rename = "client-api-endpoint")]
+        #[serde(default = "default_local_services_client_api_endpoint")]
+        pub client_api_endpoint: String,
+        /// Enables the raw TACACS+ proxy.
+        #[serde(rename = "tacacs-proxy-enabled")]
+        #[serde(default)]
+        pub tacacs_proxy_enabled: bool,
+        /// Absolute Unix socket path or numeric IP socket address for the proxy.
+        /// IPv6 addresses use brackets. TCP port zero requests an ephemeral port.
+        #[serde(rename = "tacacs-proxy-endpoint")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub tacacs_proxy_endpoint: Option<String>,
+        /// Unix socket permission bits as a decimal integer. The default is octal 660.
+        #[serde(rename = "unix-socket-mode")]
+        #[serde(default = "default_local_services_unix_socket_mode")]
+        pub unix_socket_mode: u16,
+    }
+
+    impl Default for LocalServices {
+        fn default() -> Self {
+            Self {
+                client_api_enabled: default_local_services_client_api_enabled(),
+                client_api_endpoint: default_local_services_client_api_endpoint(),
+                tacacs_proxy_enabled: Default::default(),
+                tacacs_proxy_endpoint: None,
+                unix_socket_mode: default_local_services_unix_socket_mode(),
+            }
+        }
+    }
+
     fn default_authentication_max_body_length() -> u32 { 4096 }
     fn default_authentication_max_concurrent_requests() -> u32 { 64 }
 

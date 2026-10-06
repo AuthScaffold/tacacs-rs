@@ -79,6 +79,12 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "FILE")]
     pub(crate) runtime_policy: Option<PathBuf>,
 
+    /// Startup YANG JSON file containing a tacacsrs:local-services resource.
+    #[arg(long, value_name = "FILE", conflicts_with_all = [
+        "listen_endpoint", "proxy_endpoint", "service_mode", "socket_mode", "sonic",
+    ])]
+    pub(crate) local_services: Option<PathBuf>,
+
     /// Ordered list of TACACS+ upstream servers. The first server is preferred.
     #[arg(long = "server-addr", conflicts_with_all = ["sonic", "sonic_redis_url", "sonic_redis_db"])]
     pub(crate) server_addresses: Vec<String>,
@@ -114,8 +120,8 @@ pub(crate) struct Cli {
     pub(crate) service_mode: Option<ServiceMode>,
 
     /// File mode applied to the Unix domain socket path (octal string, for example 660).
-    #[arg(long, default_value = "660")]
-    pub(crate) socket_mode: String,
+    #[arg(long)]
+    pub(crate) socket_mode: Option<String>,
 
     /// Shared secret for TACACS+ message obfuscation.
     #[arg(short = 'k', long)]

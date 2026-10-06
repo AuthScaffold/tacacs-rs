@@ -37,14 +37,4 @@ pub(crate) async fn serve(
     }
 }
 
-pub(crate) fn validate_endpoint(endpoint: &IpcEndpoint) -> anyhow::Result<()> {
-    if let IpcEndpoint::Tcp(address) = endpoint {
-        bail!(
-            "Unix client API endpoints must use a Unix domain socket; TCP endpoint {address} is only supported for the TACACS+ proxy on Unix"
-        );
-    }
-
-    Ok(())
-}
-
 pub(crate) use unix::prepare_unix_listener;

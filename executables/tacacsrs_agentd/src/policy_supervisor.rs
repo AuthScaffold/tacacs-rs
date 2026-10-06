@@ -122,7 +122,6 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use tacacsrs_agent::{EnabledServices, ProxyDownstreamObfuscation, RuntimePolicy, ServiceConfig};
-    use tacacsrs_agent_client::IpcEndpoint;
     use tacacsrs_config::TacacsPlus;
 
     use super::*;
@@ -141,14 +140,11 @@ mod tests {
         Arc::new(
             TacacsClientService::waiting_for_configuration(
                 ServiceConfig {
-                    enabled_services: EnabledServices::CLIENT_API,
-                    endpoint: IpcEndpoint::default_local(),
-                    proxy_endpoint: None,
+                    local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
                     proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
                     tacacs_plus: TacacsPlus::empty(),
                     validation_options: tacacsrs_config::ValidationOptions::default(),
                     runtime_policy: RuntimePolicy::default(),
-                    socket_mode: 0o660,
                     disable_certificate_verification: false,
                 },
                 health,

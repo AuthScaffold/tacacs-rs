@@ -57,8 +57,9 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--listen-endpoint <ENDPOINT>` | `/run/tacacs/tacacs.sock` | Unix domain socket path (Linux) or TCP address (other platforms) |
-| `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Optional TACACS+ proxy listener on a Unix domain socket path or loopback TCP address |
+| `--local-services <FILE>` | none | Startup YANG listener resource, exclusive with listener flags and SONiC mode |
+| `--listen-endpoint <ENDPOINT>` | `/run/tacacs/tacacs.sock` | Absolute Unix domain socket path |
+| `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Absolute Unix socket path or numeric IP socket address |
 | `--service-mode <MODE>` | `client-api`, or `both` when `--proxy-endpoint` is set | Runtime services to host: `client-api`, `tacacs-proxy`, or `both` |
 | `--socket-mode <MODE>` | `660` | File permission mode for the Unix domain socket (octal) |
 | `--worker-threads <COUNT>` | `1` | Tokio worker threads. TACACS+ requests are small and I/O bound, so extra workers mainly add cross-thread task migration. |
@@ -75,6 +76,42 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | `both` | client API and raw TACACS+ proxy | `--proxy-endpoint` required, `--listen-endpoint` optional |
 
 If `--service-mode` is omitted, the daemon preserves the old behavior: it runs `client-api` by default, and switches to `both` when `--proxy-endpoint` is supplied. Configurations with no hosted services are rejected.
+
+### Canonical Listener Resource
+
+Service selection, listener endpoints, and Unix socket permissions belong to `tacacsrs:local-services` under `ietf-system:system`.
+The daemon normalizes listener flags into this generated YANG resource. It derives omitted values from the YANG defaults.
+The service validates the same source for library callers before binding sockets.
+Worker threads, verbosity, and host integration remain process bootstrap inputs, not listener configuration.
+
+Example resource for `--local-services`:
+
+```json
+{
+    "tacacsrs:local-services": {
+        "client-api-enabled": true,
+        "client-api-endpoint": "/run/tacacs/tacacs.sock",
+        "tacacs-proxy-enabled": true,
+        "tacacs-proxy-endpoint": "127.0.0.1:49",
+        "unix-socket-mode": 432
+    }
+}
+```
+
+The default document is `{"tacacsrs:local-services":{}}`. It enables only the client API with permissions `0660`.
+YANG JSON encodes permission bits as a decimal number from 0 through 511. The CLI `--socket-mode` input remains octal.
+The resource file loads once at startup. Listener changes require a restart.
+It cannot be combined with `--listen-endpoint`, `--proxy-endpoint`, `--service-mode`, `--socket-mode`, or `--sonic`.
+SONiC mode still loads its forwarder row and normalizes the result into the canonical resource.
+
+All endpoint paths must be absolute. Unix paths cannot contain NUL, parent traversal, or more than 107 bytes.
+These rules apply even to a disabled client API endpoint. Relative paths previously accepted by the IPC parser are no longer valid listener inputs.
+Preparation normalizes repeated separators and current-directory components to detect lexical Unix path collisions. It does not resolve filesystem symlinks.
+Proxy TCP targets must use numeric addresses. IPv6 addresses require brackets. Port zero requests an ephemeral port.
+Wildcard proxy addresses remain supported. Deployments must restrict access to trusted clients.
+
+This resource does not contain downstream credentials. With a resource file, the proxy currently requires unobfuscated downstream packets.
+The CLI shared-secret input and SONiC local-hop credentials retain their existing paths pending the separate credential refactor.
 
 ### TACACS+ Proxy Mode
 
