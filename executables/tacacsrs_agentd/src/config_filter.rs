@@ -4,11 +4,12 @@ use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
+use anyhow::{Context, ensure};
 use futures_util::future::{BoxFuture, FutureExt};
 use tacacsrs_config::local_services::{prepare_local_services, ListenerEndpoint};
 use tacacsrs_config::proxy_policy::{prepare_proxy_policy, PreparedProxyPolicy};
 use tacacsrs_config::tacacsrs::LocalServices;
-use tacacsrs_config::{TacacsPlus, TacacsPlusServer};
+use tacacsrs_config::{TacacsPlus, TacacsPlusServer, TacacsPlusServerExt};
 
 /// Filtered daemon configuration plus local proxy-only metadata derived from it.
 pub(crate) struct FilteredTacacsPlus {
@@ -87,11 +88,36 @@ impl ProxySelfLoopFilter {
     ) -> anyhow::Result<FilteredTacacsPlus> {
         let original_server_count = tacacs_plus.server.len();
         let enumerated_servers = tacacsrs_config::enumerate_servers(&tacacs_plus)?;
+        let local_addresses = if self.proxy_endpoint.ip().to_canonical().is_unspecified() {
+            if_addrs::get_if_addrs()
+                .context("read local interfaces for proxy loop validation")?
+                .into_iter()
+                .map(|interface| interface.ip())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         let mut filtered_names = HashSet::new();
         let mut selected_proxy_server: Option<TacacsPlusServer> = None;
 
         for server in &enumerated_servers {
-            if upstream_server_targets_proxy_endpoint(server, self.proxy_endpoint).await {
+            let resolution = async {
+                tokio::net::lookup_host((server.address.as_str(), server.port))
+                    .await
+                    .map(Iterator::collect::<Vec<_>>)
+            };
+            if upstream_server_targets_proxy_endpoint(
+                server,
+                self.proxy_endpoint,
+                &local_addresses,
+                resolution,
+            )
+            .await?
+            {
+                ensure!(
+                    !server.is_tls(),
+                    "TLS upstream targets the local raw TACACS+ proxy endpoint"
+                );
                 log::warn!(
                     "The daemon ignores upstream TACACS+ server '{}' at {}:{} because it resolves to the local TACACS+ proxy endpoint {}. If retained, this server sends client traffic back into the daemon.",
                     server.name,
@@ -156,27 +182,38 @@ pub(crate) fn config_filter_from_local_services(
 async fn upstream_server_targets_proxy_endpoint(
     server: &TacacsPlusServer,
     proxy_endpoint: SocketAddr,
-) -> bool {
+    local_addresses: &[IpAddr],
+    resolution: impl std::future::Future<Output = std::io::Result<Vec<SocketAddr>>> + Send,
+) -> anyhow::Result<bool> {
     if server.port != proxy_endpoint.port() {
-        return false;
+        return Ok(false);
     }
 
+    let listener = ListenerEndpoint::Tcp(proxy_endpoint);
     if let Ok(address) = server.address.parse::<IpAddr>() {
-        return SocketAddr::new(address, server.port) == proxy_endpoint;
+        ensure!(
+            !address.to_canonical().is_unspecified(),
+            "Upstream address must be specified during proxy loop validation"
+        );
+        return Ok(
+            listener.covers_tcp_destination(SocketAddr::new(address, server.port), local_addresses)
+        );
     }
 
-    match tokio::net::lookup_host((server.address.as_str(), server.port)).await {
-        Ok(mut addresses) => addresses.any(|address| address == proxy_endpoint),
-        Err(error) => {
-            log::warn!(
-                "The daemon failed to resolve upstream TACACS+ server '{}' at {}:{} during local proxy self-loop detection: {error}. The daemon keeps the server.",
-                server.name,
-                server.address,
-                server.port,
-            );
-            false
-        }
-    }
+    let addresses = tokio::time::timeout(server.timeout_duration(), resolution)
+        .await
+        .context("DNS lookup timed out during proxy loop validation")?
+        .context("DNS lookup failed during proxy loop validation")?;
+    ensure!(!addresses.is_empty(), "DNS returned no addresses during proxy loop validation");
+    ensure!(
+        addresses
+            .iter()
+            .all(|address| !address.ip().to_canonical().is_unspecified()),
+        "DNS returned an unspecified address during proxy loop validation"
+    );
+    Ok(addresses
+        .into_iter()
+        .any(|address| listener.covers_tcp_destination(address, local_addresses)))
 }
 
 #[cfg(test)]
@@ -287,6 +324,173 @@ mod tests {
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
         assert_eq!(filtered.proxy_downstream_obfuscation, proxy_obfuscation(None));
+    }
+
+    #[tokio::test]
+    async fn wildcard_proxy_filters_loopback_without_removing_remote_servers() {
+        let source = LocalServices {
+            tacacs_proxy_enabled: true,
+            tacacs_proxy_endpoint: Some("0.0.0.0:9050".to_owned()),
+            ..LocalServices::default()
+        };
+        let filter = config_filter_from_local_services(&source).unwrap();
+        let upstream = test_config_from_host_ports(&[("127.0.0.1", 9050), ("192.0.2.20", 9050)]);
+        let filtered = filter.filter(upstream).await.unwrap();
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
+    }
+
+    #[tokio::test]
+    async fn sonic_local_row_survives_mapping_until_runtime_credential_preparation() {
+        use std::collections::BTreeMap;
+        use tacacsrs_sonic::{SonicTacacsTables, map_sonic_tables_to_tacacs_plus};
+
+        let hash = |values: &[(&str, &str)]| {
+            values
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect()
+        };
+        let tables = SonicTacacsTables::with_extended_tables(
+            BTreeMap::new(),
+            BTreeMap::from([
+                (
+                    "127.0.0.1".to_owned(),
+                    hash(&[("priority", "64"), ("passkey", "local-test-key")]),
+                ),
+                (
+                    "192.0.2.20".to_owned(),
+                    hash(&[("priority", "16"), ("passkey", "remote-test-key")]),
+                ),
+            ]),
+            BTreeMap::new(),
+            hash(&[
+                ("local_listen_address", "127.0.0.1"),
+                ("local_listen_port", "49"),
+            ]),
+        );
+        let canonical = map_sonic_tables_to_tacacs_plus(&tables).unwrap();
+        assert_eq!(canonical.server.len(), 2);
+        let original = canonical.clone();
+        let filter = ProxySelfLoopFilter::new("127.0.0.1:49".parse().unwrap());
+        let filtered = filter.filter(canonical.clone()).await.unwrap();
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
+        assert_eq!(
+            filtered.proxy_downstream_obfuscation,
+            proxy_obfuscation(Some("local-test-key"))
+        );
+        assert_eq!(canonical, original);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn loop_validation_rejects_failed_empty_and_timed_out_dns() {
+        use super::upstream_server_targets_proxy_endpoint;
+        use futures_util::future::{ready, pending};
+
+        let source = test_config_from_host_ports(&[("upstream.example", 49)]);
+        let server = &source.server[0];
+        let endpoint = "127.0.0.1:49".parse().unwrap();
+        assert!(upstream_server_targets_proxy_endpoint(
+            server,
+            endpoint,
+            &[],
+            ready(Err(std::io::Error::other("unavailable")))
+        )
+        .await
+        .is_err());
+        assert!(upstream_server_targets_proxy_endpoint(
+            server,
+            endpoint,
+            &[],
+            ready(Ok(Vec::new()))
+        )
+        .await
+        .is_err());
+        assert!(upstream_server_targets_proxy_endpoint(
+            server,
+            endpoint,
+            &[],
+            ready(Ok(vec!["0.0.0.0:49".parse().unwrap()]))
+        )
+        .await
+        .is_err());
+        assert!(upstream_server_targets_proxy_endpoint(server, endpoint, &[], pending())
+            .await
+            .is_err());
+        assert!(!upstream_server_targets_proxy_endpoint(
+            server,
+            "127.0.0.1:50".parse().unwrap(),
+            &[],
+            pending()
+        )
+        .await
+        .unwrap());
+        for address in ["0.0.0.0", "::", "::ffff:0.0.0.0"] {
+            let source = test_config_from_host_ports(&[(address, 49)]);
+            assert!(upstream_server_targets_proxy_endpoint(
+                &source.server[0],
+                endpoint,
+                &[],
+                pending()
+            )
+            .await
+            .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn loop_validation_checks_every_resolved_address_and_local_interface() {
+        use super::upstream_server_targets_proxy_endpoint;
+        use futures_util::future::ready;
+
+        let source = test_config_from_host_ports(&[("upstream.example", 49)]);
+        let server = &source.server[0];
+        let local = "192.0.2.10:49".parse::<std::net::SocketAddr>().unwrap();
+        let remote = "192.0.2.20:49".parse().unwrap();
+        let endpoint = "0.0.0.0:49".parse().unwrap();
+        assert!(upstream_server_targets_proxy_endpoint(
+            server,
+            endpoint,
+            &[local.ip()],
+            ready(Ok(vec![remote, local]))
+        )
+        .await
+        .unwrap());
+        assert!(!upstream_server_targets_proxy_endpoint(
+            server,
+            endpoint,
+            &[local.ip()],
+            ready(Ok(vec![remote]))
+        )
+        .await
+        .unwrap());
+        let mapped = "[::ffff:127.0.0.1]:49".parse().unwrap();
+        assert!(upstream_server_targets_proxy_endpoint(
+            server,
+            "127.0.0.1:49".parse().unwrap(),
+            &[],
+            ready(Ok(vec![remote, mapped]))
+        )
+        .await
+        .unwrap());
+    }
+
+    #[tokio::test]
+    async fn tls_self_target_is_rejected_by_the_shared_runtime_filter() {
+        let mut source = test_config_from_host_ports(&[("127.0.0.1", 49)]);
+        source.server[0] =
+            TacacsPlusServerBuilder::new("self", TacacsPlusServerType::all(), "127.0.0.1", 49)
+                .with_tls_server_authentication()
+                .build();
+        let canonical = source.clone();
+        let filter = ProxySelfLoopFilter::new_with_policy(
+            "127.0.0.1:49".parse().unwrap(),
+            credential_source(None),
+        );
+        assert!(filter.filter(source).await.is_err());
+        assert!(canonical.server[0].client_identity.is_none());
+        assert!(canonical.server[0].server_authentication.is_some());
     }
 
     #[tokio::test]

@@ -120,6 +120,16 @@ the ownership, permission, link-count, and size checks in
 `local_listen_port` is optional and defaults to `49`. The TLS and forwarder
 tables reject unknown fields.
 
+`SonicForwarderSettings::local_services` produces the canonical `tacacsrs:local-services` resource.
+It enables both services and selects downstream credentials from the local proxy row.
+The generated YANG model supplies default IPC paths and socket permissions. The daemon no longer duplicates these SONiC profile choices.
+Equivalent CLI, SONiC, and YANG inputs use the same listener preparation checks.
+
+Canonical server snapshots now retain rows that target the local forwarder, including their mapped shared secrets.
+The runtime filter removes classic self-targets only after downstream credential preparation. It rejects TLS self-targets before publication.
+Previously, mapper-side deletion could remove the row needed by `local-proxy-row` policy.
+The mapper no longer treats all loopback addresses as aliases. `127.0.0.1`, `127.0.0.2`, and `::1` can identify different destinations.
+
 ## Running on SONiC
 
 ### 1. Enable Redis keyspace notifications
@@ -302,6 +312,14 @@ When a TACPLUS-prefixed key changes in CONFIG_DB, the runtime:
 4. If the server configuration changed, emits `Changed`.
 5. Filters proxy self-loops and atomically applies a valid changed server set.
 6. Emits `RestartRequired` when the forwarder row differs from the bound listener.
+
+Loop validation checks every DNS answer when the upstream port matches the proxy port.
+Lookup failure, empty answers, unspecified destinations, and timeout reject the candidate while the previous runtime generation remains active.
+The lookup deadline uses the canonical server timeout.
+Wildcard listeners also check current interface addresses. IPv4-mapped addresses compare as IPv4, and IPv6 wildcard checks conservatively include dual-stack binding.
+
+The check uses a publication-time snapshot. Later DNS/interface changes and ports selected through an ephemeral bind need a connection-time guard.
+This remaining requirement is tracked as S2-17 in the [Stage 2 checkpoint](architecture/stage-2-prepared-endpoints.md#remaining-stage-2-work).
 
 A forwarder-only change does not replace the server set. After a rejected
 reload, the datastore waits for the next ConfigDB notification.

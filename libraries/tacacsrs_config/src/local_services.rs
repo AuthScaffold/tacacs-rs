@@ -4,7 +4,7 @@
 //! Unix paths use Linux syntax, including when configuration is inspected elsewhere.
 
 use std::collections::BTreeSet;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, ensure};
@@ -19,6 +19,33 @@ pub enum ListenerEndpoint {
     Unix(PathBuf),
     /// Numeric IP socket address. Port zero requests an ephemeral port.
     Tcp(SocketAddr),
+}
+
+impl ListenerEndpoint {
+    /// Reports whether a resolved destination can reach this TCP listener.
+    ///
+    /// The host supplies its current interface addresses. IPv4-mapped addresses
+    /// compare as IPv4. An IPv6 wildcard conservatively includes dual-stack binding.
+    /// This check describes the supplied snapshot, not future DNS or interface changes.
+    #[must_use]
+    pub fn covers_tcp_destination(&self, target: SocketAddr, local_addresses: &[IpAddr]) -> bool {
+        let Self::Tcp(listener) = self else {
+            return false;
+        };
+        if listener.port() == 0 || listener.port() != target.port() {
+            return false;
+        }
+        let target = target.ip().to_canonical();
+        let listener = listener.ip().to_canonical();
+        target == listener
+            || (listener.is_unspecified()
+                && (listener.is_ipv6() || target.is_ipv4())
+                && (target.is_loopback()
+                    || target.is_unspecified()
+                    || local_addresses
+                        .iter()
+                        .any(|address| address.to_canonical() == target)))
+    }
 }
 
 /// Immutable bind targets derived from canonical local-service configuration.
@@ -151,6 +178,36 @@ fn unix_path(value: &str) -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tcp_listener_matching_preserves_host_port_and_address_family() {
+        let local_addresses = [
+            "192.0.2.10".parse().unwrap(),
+            "2001:db8::10".parse().unwrap(),
+        ];
+        for (listener, destination, expected) in [
+            ("0.0.0.0:49", "127.0.0.1:49", true),
+            ("0.0.0.0:49", "192.0.2.10:49", true),
+            ("[::ffff:0.0.0.0]:49", "192.0.2.10:49", true),
+            ("0.0.0.0:49", "192.0.2.20:49", false),
+            ("0.0.0.0:49", "[::1]:49", false),
+            ("[::]:49", "127.0.0.1:49", true),
+            ("[::]:49", "[2001:db8::10]:49", true),
+            ("[::]:49", "[2001:db8::20]:49", false),
+            ("127.0.0.1:49", "[::ffff:127.0.0.1]:49", true),
+            ("127.0.0.1:49", "127.0.0.2:49", false),
+            ("127.0.0.1:49", "[::1]:49", false),
+            ("127.0.0.1:49", "127.0.0.1:50", false),
+            ("127.0.0.1:0", "127.0.0.1:49", false),
+        ] {
+            let listener = ListenerEndpoint::Tcp(listener.parse().unwrap());
+            assert_eq!(
+                listener.covers_tcp_destination(destination.parse().unwrap(), &local_addresses),
+                expected,
+                "{listener:?} -> {destination}"
+            );
+        }
+    }
 
     #[test]
     fn generated_defaults_prepare_without_source_mutation() {

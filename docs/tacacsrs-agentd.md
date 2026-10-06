@@ -172,6 +172,13 @@ Other containers on the same Docker network can reach the wildcard listener. Use
 
 Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. When both services run, their endpoints must be different.
 
+Before publication, the shared loop filter checks upstreams on the proxy's configured TCP port.
+It removes matching classic rows after downstream credential preparation and rejects matching TLS rows.
+Wildcard listeners include current interface addresses and loopback destinations. IPv6 wildcard checks conservatively include dual-stack binding.
+DNS failures, empty answers, unspecified destinations, and lookup timeouts reject the candidate instead of retaining an unchecked upstream.
+This snapshot check does not guard later DNS/interface changes or the actual port assigned to an ephemeral listener.
+Connection-time enforcement remains S2-17 in the [Stage 2 checkpoint](architecture/stage-2-prepared-endpoints.md#remaining-stage-2-work).
+
 Downstream TACACS+ obfuscation is independent of the selected upstream transport. In SONiC mode, the daemon filters rows that target its loopback proxy.
 
 SONiC mode selects `local-proxy-row` by default. The selected row's mapped `passkey` supplies downstream material.

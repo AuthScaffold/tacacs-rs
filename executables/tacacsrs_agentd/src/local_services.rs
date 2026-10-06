@@ -25,11 +25,14 @@ pub(crate) fn from_cli(
     cli: &Cli,
     forwarder: Option<SonicForwarderSettings>,
 ) -> anyhow::Result<LocalServices> {
-    let mut source = LocalServices::default();
+    let mut source =
+        forwarder.map_or_else(LocalServices::default, SonicForwarderSettings::local_services);
     if let Some(endpoint) = &cli.listen_endpoint {
         source.client_api_endpoint.clone_from(endpoint);
     }
-    source.tacacs_proxy_endpoint.clone_from(&cli.proxy_endpoint);
+    if let Some(endpoint) = &cli.proxy_endpoint {
+        source.tacacs_proxy_endpoint = Some(endpoint.clone());
+    }
     if let Some(secret) = &cli.proxy_shared_secret {
         source.proxy_credential_source = ProxyCredentialSource::Inline;
         source.proxy_shared_secret = Some(secret.clone());
@@ -54,9 +57,7 @@ pub(crate) fn from_cli(
                 .is_none_or(|mode| mode == ServiceMode::Both),
             "SONiC central-agent mode requires --service-mode both"
         );
-        source.client_api_enabled = true;
-        source.tacacs_proxy_enabled = true;
-        source.proxy_credential_source = ProxyCredentialSource::LocalProxyRow;
+        ensure!(forwarder.is_some(), "SONiC listener configuration requires a forwarder row");
     } else if let Some(mode) = cli.service_mode {
         source.client_api_enabled = mode != ServiceMode::TacacsProxy;
         source.tacacs_proxy_enabled = mode != ServiceMode::ClientApi;
@@ -230,5 +231,62 @@ mod tests {
         ]);
         let source = from_cli(&plain, forwarder).unwrap();
         assert_eq!(source.proxy_credential_source, ProxyCredentialSource::Unobfuscated);
+    }
+
+    #[test]
+    fn sonic_cli_and_yang_share_local_service_defaults_and_prepared_behavior() {
+        for address in ["127.0.0.1", "127.0.0.2", "::1", "::ffff:127.0.0.1"] {
+            let hash = tacacsrs_sonic::SonicHash::from([(
+                "local_listen_address".to_owned(),
+                address.to_owned(),
+            )]);
+            let forwarder = SonicForwarderSettings::from_hash(&hash).unwrap().unwrap();
+            let socket = forwarder.socket_address().to_string();
+            let sonic = Cli::parse_from(["agentd", "--sonic"]);
+            let inline = Cli::parse_from([
+                "agentd",
+                "--server-addr",
+                "192.0.2.20:49",
+                "--proxy-endpoint",
+                &socket,
+                "--proxy-credential-source",
+                "local-proxy-row",
+            ]);
+            let document = serde_json::json!({"tacacsrs:local-services": {
+                "tacacs-proxy-enabled": true, "tacacs-proxy-endpoint": socket,
+                "proxy-credential-source": "local-proxy-row"
+            }});
+            let sources = [
+                from_cli(&sonic, Some(forwarder)).unwrap(),
+                from_cli(&inline, None).unwrap(),
+                parse_local_services(&serde_json::to_vec(&document).unwrap()).unwrap(),
+            ];
+            assert_eq!(sources[0], forwarder.local_services());
+            assert_eq!(sources[0], sources[1]);
+            assert_eq!(sources[1], sources[2]);
+            for source in &sources {
+                assert_eq!(
+                    prepare_local_services(source).unwrap(),
+                    prepare_local_services(&sources[0]).unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sonic_listener_conflicts_fail_before_binding() {
+        let hash = tacacsrs_sonic::SonicHash::from([(
+            "local_listen_address".to_owned(),
+            "127.0.0.1".to_owned(),
+        )]);
+        let forwarder = SonicForwarderSettings::from_hash(&hash).unwrap();
+        for flags in [
+            vec!["--proxy-endpoint", "127.0.0.2:49"],
+            vec!["--service-mode", "client-api"],
+            vec!["--socket-mode", "1000"],
+        ] {
+            let cli = Cli::parse_from(["agentd", "--sonic"].into_iter().chain(flags));
+            assert!(from_cli(&cli, forwarder).is_err());
+        }
     }
 }
