@@ -29,6 +29,9 @@ impl PreparedEndpoint {
     ///
     /// An empty group list selects PSK-only key exchange. The prepared context
     /// owns protected key bytes and does not retain the borrowed inputs.
+    /// Connections must authenticate with the PSK and negotiate the selected
+    /// mode before the client sends TACACS+ data. Certificate fallback is rejected.
+    /// This PSK path requires OpenSSL 3.0 or newer for negotiated-group inspection.
     ///
     /// # Errors
     ///

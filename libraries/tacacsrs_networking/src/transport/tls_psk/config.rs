@@ -47,10 +47,14 @@ impl PskClientConfig {
 
     /// Establishes a TLS 1.3 PSK connection over the provided TCP connection.
     ///
+    /// OpenSSL reports external-PSK authentication as session reuse. The client
+    /// verifies that result and the negotiated key exchange before packet I/O.
+    ///
     /// # Errors
     ///
     /// Returns an error if the OpenSSL `SslContext` or `Ssl` object cannot be
-    /// created, or if the TLS handshake fails.
+    /// created, if the TLS handshake fails, or if the negotiated authentication
+    /// or key-exchange mode does not match the prepared PSK inputs.
     pub(crate) async fn connect(
         &self,
         address: &str,
@@ -83,6 +87,26 @@ impl PskClientConfig {
                     format_groups(self.psk_dhe_ke_groups.as_ref())
                 )
             })?;
+
+        anyhow::ensure!(
+            tls_stream.ssl().session_reused(),
+            "TLS 1.3 peer did not authenticate with the configured PSK"
+        );
+        let negotiated_dhe = super::ffi::negotiated_key_exchange_uses_dhe(tls_stream.ssl())?;
+        anyhow::ensure!(
+            negotiated_dhe == self.psk_dhe_ke_groups.is_some(),
+            "TLS 1.3 PSK key-exchange mode mismatch: expected {}, negotiated {}",
+            if self.psk_dhe_ke_groups.is_some() {
+                "PSK-DHE"
+            } else {
+                "PSK-only"
+            },
+            if negotiated_dhe {
+                "PSK-DHE"
+            } else {
+                "PSK-only"
+            },
+        );
 
         log::info!(
             target: module_path!(),
@@ -140,7 +164,10 @@ mod tests {
                 .set_max_proto_version(Some(SslVersion::TLS1_3))
                 .unwrap();
             context.set_ciphersuites("TLS_AES_128_GCM_SHA256").unwrap();
-            super::super::ffi::prefer_tls13_psk_only_key_exchange(&mut context);
+            if groups.is_empty() {
+                context.set_options(super::super::context::ALLOW_NO_DHE_KEX);
+                context.set_groups_list("P-224").unwrap();
+            }
             context.set_psk_server_callback(|_, identity, key| {
                 if identity != Some(b"client-id".as_slice()) || key.len() < KEY.len() {
                     return Ok(0);
@@ -159,6 +186,7 @@ mod tests {
                     let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
                     Pin::new(&mut stream).accept().await?;
                     assert_eq!(stream.ssl().version2(), Some(SslVersion::TLS1_3));
+                    assert_eq!(stream.ssl().peer_tmp_key().is_ok(), !groups.is_empty());
                     let mut byte = [0];
                     stream.read_exact(&mut byte).await?;
                     stream.write_all(&byte).await?;

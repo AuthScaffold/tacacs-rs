@@ -12,8 +12,8 @@ use openssl::hash::MessageDigest;
 use openssl::ssl::{SslContext, SslContextBuilder, SslRef};
 use openssl_sys::{
     stack_st_SSL_CIPHER, EVP_MD, EVP_MD_get_type, OPENSSL_STACK, OPENSSL_sk_num, OPENSSL_sk_value,
-    SSL, SSL_CIPHER, SSL_CIPHER_standard_name, SSL_CTX, SSL_CTX_set_options, SSL_SESSION,
-    SSL_SESSION_free, TLS1_3_VERSION,
+    SSL, SSL_CIPHER, SSL_CIPHER_standard_name, SSL_CTX, SSL_ctrl, SSL_SESSION, SSL_SESSION_free,
+    TLS1_3_VERSION,
 };
 use tacacsrs_secrets::SecretBytes;
 
@@ -32,8 +32,18 @@ pub(super) struct OpenSslPskCallbackState {
     pub(super) cipher_suite: &'static str,
 }
 
-const SSL_OP_ALLOW_NO_DHE_KEX_BIT: u32 = 10;
-const SSL_OP_PREFER_NO_DHE_KEX_BIT: u32 = 35;
+/// OpenSSL 3.0 control used by the public `SSL_get_negotiated_group` macro.
+const SSL_CTRL_GET_NEGOTIATED_GROUP: c_int = 134;
+
+/// Reads the negotiated group after a completed TLS 1.3 handshake.
+pub(super) fn negotiated_key_exchange_uses_dhe(ssl: &SslRef) -> Result<bool> {
+    // SAFETY: The borrowed SSL object is live. This read-only OpenSSL 3.0 control
+    // takes no pointer argument and returns zero for no group or a group NID.
+    let group =
+        unsafe { SSL_ctrl(ssl.as_ptr(), SSL_CTRL_GET_NEGOTIATED_GROUP, 0, ptr::null_mut()) };
+    anyhow::ensure!(group >= 0, "OpenSSL could not report the negotiated key-exchange group");
+    Ok(group != 0)
+}
 
 extern "C" {
     fn SSL_CTX_set_psk_use_session_callback(
@@ -80,18 +90,6 @@ pub(crate) fn set_tls13_psk_use_session_callback(
     }
 
     Ok(())
-}
-
-/// Configures OpenSSL to offer and prefer TLS 1.3 PSK-only key exchange.
-pub(crate) fn prefer_tls13_psk_only_key_exchange(builder: &mut SslContextBuilder) {
-    let options = (1 << SSL_OP_ALLOW_NO_DHE_KEX_BIT) | (1 << SSL_OP_PREFER_NO_DHE_KEX_BIT);
-
-    // SAFETY: The builder owns the live `SSL_CTX` from `builder.as_ptr()`. The
-    // option bit values are OpenSSL public ABI constants for allowing and
-    // preferring TLS 1.3 PSK key exchange without DHE.
-    unsafe {
-        SSL_CTX_set_options(builder.as_ptr(), options);
-    }
 }
 
 fn psk_config_index(

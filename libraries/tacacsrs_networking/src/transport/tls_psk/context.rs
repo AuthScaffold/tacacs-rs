@@ -2,15 +2,19 @@
 
 use anyhow::{Context, ensure};
 use openssl::hash::MessageDigest;
-use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
+use openssl::ssl::{SslContext, SslMethod, SslOptions, SslVerifyMode, SslVersion};
 use tacacsrs_secrets::SecretBytes;
 
-use super::ffi::{
-    prefer_tls13_psk_only_key_exchange, set_tls13_psk_use_session_callback, OpenSslPskCallbackState,
-};
+use super::ffi::{set_tls13_psk_use_session_callback, OpenSslPskCallbackState};
 
 /// RFC 9257 section 6 requires at least 128 bits of PSK material.
 const MIN_PSK_KEY_LENGTH: usize = 16;
+
+/// OpenSSL 3.0 added the negotiated-group query needed to enforce PSK modes.
+const MIN_OPENSSL_PSK_VERSION: i64 = 0x3000_0000;
+
+/// OpenSSL option bit 10 permits TLS 1.3 PSK exchange without DHE.
+pub(super) const ALLOW_NO_DHE_KEX: SslOptions = SslOptions::from_bits_retain(1 << 10);
 
 /// Hash bound to a TLS 1.3 external PSK.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +111,10 @@ pub(super) fn create_psk_ssl_context(
     handshake_hash: PskHash,
     psk_dhe_ke_groups: Option<&PskDheKeGroups>,
 ) -> anyhow::Result<SslContext> {
+    ensure!(
+        openssl::version::number() >= MIN_OPENSSL_PSK_VERSION,
+        "OpenSSL 3.0 or newer is required to enforce TLS 1.3 PSK key-exchange modes"
+    );
     ensure!(!identity.is_empty(), "PSK identity must not be empty");
     ensure!(
         !identity.contains('\0'),
@@ -141,7 +149,7 @@ pub(super) fn create_psk_ssl_context(
                 format!("unsupported TLS PSK DHE group list `{}`", groups.as_openssl_list())
             })?;
     } else {
-        prefer_tls13_psk_only_key_exchange(&mut builder);
+        builder.set_options(ALLOW_NO_DHE_KEX);
     }
     Ok(builder.build())
 }

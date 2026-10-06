@@ -157,9 +157,31 @@ These tests complement the coordinator's separate stale-publication and known-go
 
 The stronger peer check exposed an OpenSSL-version limitation without requiring production changes.
 OpenSSL 3.0 supports the no-DHE allowance but not the no-DHE preference option.
-The current PSK-only setting therefore permits no-DHE exchange, but a capable peer can select DHE.
-The fixture forces a genuine no-DHE path instead of assuming that the setting guarantees exclusive mode selection.
-Strict no-DHE exclusivity remains a policy and transport-capability decision before Stage 2 closes.
+At that checkpoint, PSK-only permitted no-DHE exchange but accepted a peer-selected DHE connection too.
+The fixture forced a genuine no-DHE path instead of assuming that the setting guaranteed exclusive mode selection.
+The negotiated-acceptance rule below closes that gap without relying on the missing preference option.
+
+## Negotiated PSK Contract
+
+An empty PSK group list now requires an accepted connection to use no-DHE exchange.
+A nonempty list requires PSK-DHE. After the native TLS handshake, the client checks the negotiated mode before returning the stream to packet I/O.
+Mismatch closes the connection before any TACACS+ bytes are written.
+The three-source fixtures exercise both mismatches alongside successful exchanges and credential rotation.
+
+This contract governs accepted connections, not exclusive ClientHello offers.
+OpenSSL can offer both modes for an empty group list. A peer that selects DHE is now rejected, even if the native handshake completes.
+No unsupported preference bit is set. The no-DHE allowance uses the safe OpenSSL wrapper, and the old raw option-setting helper is removed.
+One read-only FFI helper queries OpenSSL's negotiated group directly. A failed query is not treated as absence of DHE.
+PSK preparation requires OpenSSL 3.0 or newer so the query cannot silently become an unsupported control operation.
+The configured YANG model and its generated types are unchanged.
+
+The client also rejects certificate-authenticated fallback from the PSK path.
+OpenSSL's TLS 1.3 session-reuse result identifies the successful PSK authentication.
+Tests complete a native certificate handshake and verify that the client rejects it without sending an accounting byte.
+The earlier PSK-only mismatch regression observed an application byte before the fix and observes none afterward.
+
+Operators must pair PSK-only configuration with a peer that negotiates no-DHE exchange.
+Peers that previously selected DHE with an empty group list now need matching PSK-DHE configuration or a compatible server mode.
 
 ## Verification
 
@@ -174,7 +196,7 @@ Package Clippy passes without a feature override.
 The TLS example now belongs to configuration, which explicitly enables its filesystem dependency.
 
 The focused suites include 104 active networking tests, 47 configuration unit tests, 100 agent tests, and 75 daemon tests, plus integration suites.
-Two prepared-source integration tests cover wire behavior and PSK generation isolation with bounded local peers.
+Four prepared-source integration tests cover wire behavior, PSK generation isolation, mode rejection, and certificate fallback with bounded local peers.
 Projection tests moved to configuration. Native tests consolidate equivalent schema-based fixtures into transport-input tables.
 Two existing manual networking baselines remain ignored.
 The workspace build, formatting check, warnings-as-errors rustdoc build, and architecture book build pass.
@@ -218,6 +240,13 @@ The daemon declares existing protocol and OpenSSL packages as dev-dependencies f
 All peer connections use bounded local listeners. No live SONiC VM, external server, Windows test, or Miri run was part of this increment.
 Production transport and publication code is unchanged.
 
+The negotiated-PSK increment passes workspace tests, build, formatting, and warnings-as-errors rustdoc.
+Workspace Clippy uses only the existing admission-warning exception.
+Native tests exercise successful no-DHE and DHE handshakes, both mode mismatches, and certificate fallback before application data.
+They also retain the source-equivalence, wrong-key, and prepared-key rotation coverage.
+No dependency or lockfile changed. Only OpenSSL 3.0 was exercised locally; Windows and live SONiC validation remain unrun.
+Miri's nightly `rust-src` prerequisite is still absent. The native callback and negotiated-group checks ran against real OpenSSL instead.
+
 Miri did not run. It required the nightly `rust-src` component, whose installation failed because the shared toolchain directory was not writable.
 Native OpenSSL callback and handshake tests provide the FFI validation for this checkpoint.
 They are not a substitute for Miri coverage or independent server interoperability tests.
@@ -225,8 +254,7 @@ They are not a substitute for Miri coverage or independent server interoperabili
 ## Remaining Stage 2 Work
 
 1. Move remaining product controls into documented namespaced YANG augmentations where required.
-2. Resolve the PSK-only exclusivity contract across supported OpenSSL versions.
-3. Close the remaining interoperability gaps, including a SHA-384 peer handshake and independent-server evidence.
+2. Close the remaining interoperability gaps, including a SHA-384 peer handshake and independent-server evidence.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Routing, request leases, deadlines, and runtime retirement remain Stage 3 work.

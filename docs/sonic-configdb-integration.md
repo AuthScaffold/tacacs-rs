@@ -105,6 +105,11 @@ server:
 | `psk_key_exchange` | `psk-dhe` or `psk-only`; default `psk-dhe` |
 | `psk_key_exchange_groups` | Optional colon-separated groups for `psk-dhe` |
 
+The client accepts a connection only when the negotiated PSK key exchange matches `psk_key_exchange`.
+A `psk-only` row rejects a peer-selected DHE exchange, even if the native TLS handshake succeeds.
+Both modes reject certificate-authenticated fallback before sending TACACS+ data.
+The ClientHello can still advertise both modes, so a PSK-only peer must select no-DHE exchange.
+
 The production resolver reads `psk_secret_ref` from
 `/etc/sonic/tacacs/credentials/epsk/<id>`. The credential file must satisfy
 the ownership, permission, link-count, and size checks in

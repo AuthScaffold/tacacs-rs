@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use openssl::nid::Nid;
 use openssl::ssl::{NameType, Ssl, SslContext, SslMethod, SslOptions, SslVersion};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio_openssl::SslStream;
 
@@ -397,6 +397,9 @@ async fn equivalent_psk_sources_keep_prepared_generations_independent() -> Resul
                 if dhe {
                     psk_exchange(&listener, old_endpoint.clone(), ORIGINAL_KEY, false, false)
                         .await?;
+                } else {
+                    psk_exchange(&listener, old_endpoint.clone(), ORIGINAL_KEY, true, false)
+                        .await?;
                 }
                 psk_exchange(&listener, old_endpoint.clone(), ORIGINAL_KEY, dhe, true).await?;
                 psk_exchange(&listener, new_endpoint.clone(), ROTATED_KEY, dhe, true).await?;
@@ -406,6 +409,69 @@ async fn equivalent_psk_sources_keep_prepared_generations_independent() -> Resul
                 assert_eq!(initial[index], original);
                 assert_eq!(rotated[index], rotated_original);
             }
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn psk_only_rejects_dhe_before_sending_application_data() -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let sources = psk_sources(listener.local_addr()?, ORIGINAL_KEY, false)?;
+        let (endpoint, _) = materialized_endpoint(&sources[0], ORIGINAL_KEY).await?;
+        let context = psk_peer_context(ORIGINAL_KEY, true)?;
+        let peer = async {
+            let (tcp, _) = listener.accept().await?;
+            let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
+            Pin::new(&mut stream).accept().await?;
+            assert!(stream.ssl().peer_tmp_key().is_ok());
+            let mut byte = [0];
+            Ok::<_, anyhow::Error>(stream.read(&mut byte).await.unwrap_or(0))
+        };
+        let (received, client) = tokio::join!(peer, execute(endpoint));
+        assert_eq!(received?, 0, "a mismatched PSK mode must not carry application data");
+        let error = client.expect_err("PSK-only must reject a DHE connection");
+        assert!(format!("{error:#}").contains("expected PSK-only, negotiated PSK-DHE"));
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn psk_rejects_certificate_fallback_before_sending_application_data() -> Result<()> {
+    use openssl::pkey::PKey;
+    use openssl::x509::X509;
+
+    let samples = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../lde/containers/config/certificates");
+    let certificate = X509::from_pem(&std::fs::read(samples.join("server.crt"))?)?;
+    let key = PKey::private_key_from_pem(&std::fs::read(samples.join("server.key"))?)?;
+    let mut context = SslContext::builder(SslMethod::tls_server())?;
+    context.set_min_proto_version(Some(SslVersion::TLS1_3))?;
+    context.set_max_proto_version(Some(SslVersion::TLS1_3))?;
+    context.set_ciphersuites("TLS_AES_128_GCM_SHA256")?;
+    context.set_certificate(&certificate)?;
+    context.set_private_key(&key)?;
+    let context = context.build();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for dhe in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let sources = psk_sources(listener.local_addr()?, ORIGINAL_KEY, dhe)?;
+            let (endpoint, _) = materialized_endpoint(&sources[0], ORIGINAL_KEY).await?;
+            let peer = async {
+                let (tcp, _) = listener.accept().await?;
+                let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
+                Pin::new(&mut stream).accept().await?;
+                assert!(!stream.ssl().session_reused());
+                let mut byte = [0];
+                Ok::<_, anyhow::Error>(stream.read(&mut byte).await.unwrap_or(0))
+            };
+            let (received, client) = tokio::join!(peer, execute(endpoint));
+            assert_eq!(received?, 0, "certificate fallback must not carry application data");
+            let error = client.expect_err("PSK transport must reject certificate authentication");
+            assert!(format!("{error:#}").contains("did not authenticate with the configured PSK"));
         }
         Ok::<_, anyhow::Error>(())
     })
