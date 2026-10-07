@@ -1,10 +1,13 @@
 use openssl::pkey::{PKey, Private};
-use openssl::ssl::{SslContext, SslMethod, SslVerifyMode, SslVersion};
-use openssl::x509::X509;
+use openssl::ssl::{SslContext, SslContextBuilder, SslMethod, SslVerifyMode, SslVersion};
+use openssl::x509::{X509, X509VerifyResult, X509StoreContext, X509PurposeId};
+use openssl::x509::store::X509StoreBuilder;
+use openssl::x509::verify::X509VerifyFlags;
 
 /// Builds a native context from validated certificate and key objects.
 pub(crate) struct TlsConfigurationBuilder {
-    root_certificates: Vec<X509>,
+    root_certificates: Option<Vec<X509>>,
+    end_entity_certificates: Vec<X509>,
     certificate_chain: Option<Vec<X509>>,
     private_key: Option<PKey<Private>>,
     disable_certificate_verification: bool,
@@ -15,16 +18,22 @@ impl TlsConfigurationBuilder {
     /// client authentication.
     pub(crate) fn new() -> Self {
         Self {
-            root_certificates: Vec::new(),
+            root_certificates: None,
+            end_entity_certificates: Vec::new(),
             certificate_chain: None,
             private_key: None,
             disable_certificate_verification: false,
         }
     }
 
-    /// Replaces the trust anchors used to verify the server certificate.
-    pub(crate) fn with_root_certificates(mut self, root_certificates: Vec<X509>) -> Self {
-        self.root_certificates = root_certificates;
+    /// Selects explicit trust anchors and exact peer certificates.
+    pub(crate) fn with_certificate_trust(
+        mut self,
+        authorities: Vec<X509>,
+        end_entities: Vec<X509>,
+    ) -> Self {
+        self.root_certificates = Some(authorities);
+        self.end_entity_certificates = end_entities;
         self
     }
 
@@ -65,13 +74,14 @@ impl TlsConfigurationBuilder {
             builder.set_verify(SslVerifyMode::NONE);
         } else {
             builder.set_verify(SslVerifyMode::PEER);
-            if self.root_certificates.is_empty() {
-                builder.set_default_verify_paths()?;
+            if let Some(authorities) = self.root_certificates {
+                configure_certificate_trust(
+                    &mut builder,
+                    authorities,
+                    self.end_entity_certificates,
+                )?;
             } else {
-                let store = builder.cert_store_mut();
-                for cert in self.root_certificates {
-                    store.add_cert(cert)?;
-                }
+                builder.set_default_verify_paths()?;
             }
         }
 
@@ -94,6 +104,93 @@ impl TlsConfigurationBuilder {
 
         Ok(builder.build())
     }
+}
+
+fn configure_certificate_trust(
+    builder: &mut SslContextBuilder,
+    authorities: Vec<X509>,
+    end_entities: Vec<X509>,
+) -> anyhow::Result<()> {
+    let authority_der = authorities
+        .iter()
+        .map(|certificate| certificate.to_der())
+        .collect::<Result<Vec<_>, _>>()?;
+    let peer_der = end_entities
+        .iter()
+        .map(|certificate| certificate.to_der())
+        .collect::<Result<Vec<_>, _>>()?;
+    anyhow::ensure!(
+        !authority_der.is_empty() || !peer_der.is_empty(),
+        "Explicit certificate trust must contain certificates"
+    );
+    let authority_store = if !authorities.is_empty() && !peer_der.is_empty() {
+        let mut store = X509StoreBuilder::new()?;
+        store.set_flags(X509VerifyFlags::PARTIAL_CHAIN)?;
+        store.set_purpose(X509PurposeId::SSL_SERVER)?;
+        for authority in &authorities {
+            store.add_cert(authority.clone())?;
+        }
+        Some(store.build())
+    } else {
+        None
+    };
+    let store = builder.cert_store_mut();
+    store.set_flags(X509VerifyFlags::PARTIAL_CHAIN)?;
+    for cert in authorities.into_iter().chain(end_entities) {
+        store.add_cert(cert)?;
+    }
+    let ssl_index = X509StoreContext::ssl_idx()?;
+    builder.set_verify_callback(SslVerifyMode::PEER, move |verified, context| {
+        if !verified {
+            return false;
+        }
+        if context.error_depth() != 0 {
+            return true;
+        }
+        let exact_peer = context.current_cert().is_some_and(|certificate| {
+            certificate
+                .to_der()
+                .is_ok_and(|der| peer_der.contains(&der))
+        });
+        let authority_path = context
+            .chain()
+            .and_then(|chain| chain.iter().next_back())
+            .is_some_and(|anchor| {
+                anchor
+                    .to_der()
+                    .is_ok_and(|der| authority_der.contains(&der))
+            });
+        if exact_peer || authority_path {
+            return true;
+        }
+        let alternate_authority_path = authority_store.as_ref().is_some_and(|store| {
+            let Some(certificate) = context.current_cert() else {
+                return false;
+            };
+            let Some(ssl) = context.ex_data(ssl_index) else {
+                return false;
+            };
+            let Some(chain) = ssl.peer_cert_chain() else {
+                return false;
+            };
+            X509StoreContext::new()
+                .and_then(|mut verification| {
+                    verification.init(
+                        store,
+                        certificate,
+                        chain,
+                        openssl::x509::X509StoreContextRef::verify_cert,
+                    )
+                })
+                .unwrap_or(false)
+        });
+        if alternate_authority_path {
+            return true;
+        }
+        context.set_error(X509VerifyResult::APPLICATION_VERIFICATION);
+        false
+    });
+    Ok(())
 }
 
 #[cfg(test)]

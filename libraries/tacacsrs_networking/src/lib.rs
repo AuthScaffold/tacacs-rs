@@ -24,7 +24,7 @@ mod transport;
 pub use client::TacacsClient;
 pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use endpoint::{ConnectionGuard, PreparedEndpoint};
-pub use transport::tls::{CertificateIdentity, PrivateKeyEncoding};
+pub use transport::tls::{CertificateIdentity, CertificateTrust, PrivateKeyEncoding};
 pub use transport::tls_psk::{PskHash, PskDheGroup};
 pub use establish::{ConnectOptions, ConnectPreflight};
 pub use exchange_error::{FixedExchangeError, TransmissionState};

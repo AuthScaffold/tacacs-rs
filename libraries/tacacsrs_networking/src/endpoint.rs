@@ -11,7 +11,7 @@ use std::time::Duration;
 use tacacsrs_secrets::SecretBytes;
 
 use crate::establish::{ConnectOptions, PreparedTransport};
-use crate::transport::tls::{CertificateIdentity, TlsClientConfig};
+use crate::transport::tls::{CertificateIdentity, CertificateTrust, TlsClientConfig};
 use crate::transport::tls_psk::{PskClientConfig, PskHash, PskDheGroup};
 
 /// Host-owned checks for resolved and connected TCP destinations.
@@ -77,25 +77,25 @@ impl PreparedEndpoint {
 
     /// Selects certificate TLS and validates borrowed DER credentials.
     ///
-    /// Empty roots select the platform trust store. The endpoint options control
-    /// certificate verification. No network I/O occurs during preparation.
+    /// Trust roles and platform trust are explicit. The endpoint options control
+    /// certificate verification. Empty explicit trust is rejected before I/O.
     /// `peer_identity` is the expected DNS/IP SAN. `sni_name` independently selects
     /// an optional DNS name for the `ClientHello`. IP addresses are not sent as SNI.
     ///
     /// # Errors
     ///
     /// Returns an error if the DER material or native context is invalid.
-    pub fn with_certificate_tls<'a>(
+    pub fn with_certificate_tls(
         mut self,
         peer_identity: &str,
         sni_name: Option<&str>,
-        roots: impl IntoIterator<Item = &'a [u8]>,
+        trust: CertificateTrust<'_>,
         identity: Option<CertificateIdentity<'_>>,
     ) -> anyhow::Result<Self> {
         self.transport = PreparedTransport::Tls(TlsClientConfig::prepare(
             peer_identity,
             sni_name,
-            roots,
+            trust,
             identity,
             self.options.certificate_verification_disabled(),
         )?);
@@ -227,7 +227,7 @@ mod tests {
             .with_connection_guard(RejectConnected);
             let endpoint = match security {
                 "tls" => endpoint
-                    .with_certificate_tls("localhost", None, std::iter::empty(), None)
+                    .with_certificate_tls("localhost", None, CertificateTrust::Platform, None)
                     .unwrap(),
                 "psk" => endpoint
                     .with_psk("client", b"valid-test-psk-material", PskHash::Sha256, &[], None)

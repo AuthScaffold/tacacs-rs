@@ -3,8 +3,8 @@
 use anyhow::{Context, Result, ensure};
 
 use tacacsrs_networking::{
-    ConnectOptions, ConnectPreflight, PreparedEndpoint, CertificateIdentity, PrivateKeyEncoding,
-    PskHash, PskDheGroup,
+    ConnectOptions, ConnectPreflight, PreparedEndpoint, CertificateIdentity, CertificateTrust,
+    PrivateKeyEncoding, PskHash, PskDheGroup,
 };
 use tacacsrs_secrets::SecretBytes;
 
@@ -119,18 +119,47 @@ pub fn prepare_endpoint(
     if !server.is_tls() {
         return Ok(endpoint);
     }
-    let roots = server
+    for bag in server
         .server_authentication
         .iter()
         .flat_map(|auth| auth.ca_certs.iter().chain(auth.ee_certs.iter()))
-        .filter_map(|certs| certs.inline_definition.as_ref())
-        .flat_map(|inline| {
-            inline
-                .certificate
-                .iter()
-                .map(|cert| cert.cert_data.as_slice())
-        });
-    let identity = server
+    {
+        ensure!(
+            bag.inline_definition
+                .as_ref()
+                .is_some_and(|inline| !inline.certificate.is_empty()),
+            "Configured certificate trust bags must contain materialized certificates"
+        );
+    }
+    let authority_bag = server
+        .server_authentication
+        .as_ref()
+        .and_then(|auth| auth.ca_certs.as_ref());
+    let peer_bag = server
+        .server_authentication
+        .as_ref()
+        .and_then(|auth| auth.ee_certs.as_ref());
+    let authorities = trust_certificates(authority_bag);
+    let peers = trust_certificates(peer_bag);
+    let trust = if authority_bag.is_none() && peer_bag.is_none() {
+        CertificateTrust::Platform
+    } else {
+        CertificateTrust::Certificates {
+            authorities: &authorities,
+            end_entities: &peers,
+        }
+    };
+    let identity = certificate_identity(server)?;
+    endpoint.with_certificate_tls(
+        certificate_peer_identity(server),
+        tls_sni_name(server)?,
+        trust,
+        identity,
+    )
+}
+
+fn certificate_identity(server: &TacacsPlusServer) -> Result<Option<CertificateIdentity<'_>>> {
+    server
         .client_identity
         .as_ref()
         .and_then(|identity| identity.certificate.as_ref())
@@ -158,13 +187,19 @@ pub fn prepare_endpoint(
                 },
             })
         })
-        .transpose()?;
-    endpoint.with_certificate_tls(
-        certificate_peer_identity(server),
-        tls_sni_name(server)?,
-        roots,
-        identity,
-    )
+        .transpose()
+}
+
+fn trust_certificates(bag: Option<&crate::ServerAuthenticationCaCerts>) -> Vec<&[u8]> {
+    bag.into_iter()
+        .filter_map(|bag| bag.inline_definition.as_ref())
+        .flat_map(|inline| {
+            inline
+                .certificate
+                .iter()
+                .map(|certificate| certificate.cert_data.as_slice())
+        })
+        .collect()
 }
 
 fn certificate_peer_identity(server: &TacacsPlusServer) -> &str {
@@ -291,6 +326,31 @@ mod tests {
             .build();
         let error = prepare_endpoint(&server, PrepareOptions::default()).unwrap_err();
         assert!(format!("{error:#}").contains("PSK key must be at least 16 bytes"));
+    }
+
+    #[test]
+    fn empty_explicit_trust_bag_cannot_select_platform_trust() {
+        for end_entity in [false, true] {
+            let mut server = builder().with_tls_server_authentication().build();
+            let bag = crate::ServerAuthenticationCaCerts {
+                inline_definition: Some(crate::truststore::CertsInlineDefinition {
+                    certificate: Vec::new(),
+                }),
+                central_truststore_reference: None,
+            };
+            server.server_authentication = Some(crate::TlsClientServerAuthentication {
+                ca_certs: (!end_entity).then(|| bag.clone()),
+                ee_certs: end_entity.then_some(bag),
+                credentials_reference: None,
+                tls13_epsks: None,
+            });
+            let original = server.clone();
+            assert!(
+                prepare_endpoint(&server, PrepareOptions::default()).is_err(),
+                "empty explicit trust must fail"
+            );
+            assert_eq!(server, original);
+        }
     }
 
     #[test]
@@ -428,6 +488,265 @@ mod tests {
             ee_certs: end_entity.then_some(trust),
             tls13_epsks: None,
         }
+    }
+
+    #[tokio::test]
+    async fn configured_end_entity_authenticates_an_exact_ca_signed_leaf() {
+        let (certificate, key) = fixture_certificate("server");
+        assert_ne!(
+            certificate.issuer_name().to_der().unwrap(),
+            certificate.subject_name().to_der().unwrap()
+        );
+        assert!(
+            probe_certificate_trust(
+                &certificate,
+                &key,
+                server_trust(&certificate, true),
+                None,
+                &[]
+            )
+            .await,
+            "an exact end-entity match must not require its issuer as a CA anchor"
+        );
+    }
+
+    fn fixture_certificate(
+        name: &str,
+    ) -> (openssl::x509::X509, openssl::pkey::PKey<openssl::pkey::Private>) {
+        let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../lde/containers/config/certificates");
+        let certificate = openssl::x509::X509::from_pem(
+            &std::fs::read(fixtures.join(format!("{name}.crt"))).unwrap(),
+        )
+        .unwrap();
+        let key = openssl::pkey::PKey::private_key_from_pem(
+            &std::fs::read(fixtures.join(format!("{name}.key"))).unwrap(),
+        )
+        .unwrap();
+        (certificate, key)
+    }
+
+    fn signed_peer(
+        authority: &openssl::x509::X509,
+        authority_key: &openssl::pkey::PKey<openssl::pkey::Private>,
+        peer_key: &openssl::pkey::PKey<openssl::pkey::Private>,
+        validity: (i64, i64),
+        client_only: bool,
+        is_ca: bool,
+    ) -> openssl::x509::X509 {
+        use openssl::asn1::Asn1Time;
+        use openssl::x509::{X509, X509NameBuilder};
+        use openssl::x509::extension::{BasicConstraints, ExtendedKeyUsage, SubjectAlternativeName};
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text(
+            "CN",
+            if is_ca {
+                "Trust Intermediate"
+            } else {
+                "localhost"
+            },
+        )
+        .unwrap();
+        let mut certificate = X509::builder().unwrap();
+        certificate.set_version(2).unwrap();
+        certificate
+            .set_serial_number(
+                &openssl::bn::BigNum::from_u32(42)
+                    .unwrap()
+                    .to_asn1_integer()
+                    .unwrap(),
+            )
+            .unwrap();
+        certificate.set_subject_name(&name.build()).unwrap();
+        certificate
+            .set_issuer_name(authority.subject_name())
+            .unwrap();
+        certificate.set_pubkey(peer_key).unwrap();
+        certificate
+            .set_not_before(&Asn1Time::from_unix(validity.0).unwrap())
+            .unwrap();
+        certificate
+            .set_not_after(&Asn1Time::from_unix(validity.1).unwrap())
+            .unwrap();
+        let mut constraints = BasicConstraints::new();
+        if is_ca {
+            constraints.ca();
+        }
+        certificate
+            .append_extension(constraints.build().unwrap())
+            .unwrap();
+        if !is_ca {
+            let mut usage = ExtendedKeyUsage::new();
+            if client_only {
+                usage.client_auth();
+            } else {
+                usage.server_auth();
+            }
+            certificate
+                .append_extension(usage.build().unwrap())
+                .unwrap();
+        }
+        let san = SubjectAlternativeName::new()
+            .dns("localhost")
+            .ip("127.0.0.1")
+            .build(&certificate.x509v3_context(Some(authority), None))
+            .unwrap();
+        certificate.append_extension(san).unwrap();
+        certificate
+            .sign(authority_key, openssl::hash::MessageDigest::sha256())
+            .unwrap();
+        certificate.build()
+    }
+
+    #[tokio::test]
+    async fn certificate_trust_roles_are_additive_without_delegating_peer_pins() {
+        let (authority, authority_key) = fixture_certificate("ca");
+        let (leaf, leaf_key) = fixture_certificate("server");
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        let renewed = signed_peer(
+            &authority,
+            &authority_key,
+            &leaf_key,
+            (now - 60, now + 3600),
+            false,
+            false,
+        );
+        let expired = signed_peer(&authority, &authority_key, &leaf_key, (0, 1), false, false);
+        let future = signed_peer(
+            &authority,
+            &authority_key,
+            &leaf_key,
+            (now + 3600, now + 7200),
+            false,
+            false,
+        );
+        let wrong_usage =
+            signed_peer(&authority, &authority_key, &leaf_key, (now - 60, now + 3600), true, false);
+        assert_ne!(leaf.to_der().unwrap(), renewed.to_der().unwrap());
+        assert_eq!(
+            leaf.public_key().unwrap().public_key_to_der().unwrap(),
+            renewed.public_key().unwrap().public_key_to_der().unwrap()
+        );
+        let mut combined = server_trust(&authority, false);
+        combined.ee_certs = server_trust(&leaf, true).ee_certs;
+        for (label, peer, policy, identity, expected) in [
+            ("CA anchor", &leaf, server_trust(&authority, false), None, true),
+            ("exact signed pin", &leaf, server_trust(&leaf, true), None, true),
+            ("renewed certificate is not exact", &renewed, server_trust(&leaf, true), None, false),
+            ("peer pin is not an authority", &leaf, server_trust(&authority, true), None, false),
+            ("CA and pins are additive", &renewed, combined, None, true),
+            ("wrong identity", &leaf, server_trust(&leaf, true), Some("wrong.example.test"), false),
+            ("expired pin", &expired, server_trust(&expired, true), None, false),
+            ("not-yet-valid pin", &future, server_trust(&future, true), None, false),
+            ("client-only pin", &wrong_usage, server_trust(&wrong_usage, true), None, false),
+        ] {
+            assert_eq!(
+                probe_certificate_trust(peer, &leaf_key, policy, identity, &[]).await,
+                expected,
+                "{label}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_peer_pin_does_not_hide_an_independent_authority_path() {
+        let (authority, authority_key) = fixture_certificate("ca");
+        let (_, leaf_key) = fixture_certificate("server");
+        let intermediate_key =
+            openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        let intermediate = signed_peer(
+            &authority,
+            &authority_key,
+            &intermediate_key,
+            (now - 60, now + 3600),
+            false,
+            true,
+        );
+        let leaf = signed_peer(
+            &intermediate,
+            &intermediate_key,
+            &leaf_key,
+            (now - 60, now + 3600),
+            false,
+            false,
+        );
+        let mut policy = server_trust(&authority, false);
+        policy.ee_certs = server_trust(&intermediate, true).ee_certs;
+        assert!(probe_certificate_trust(&leaf, &leaf_key, policy, None, &[intermediate]).await);
+    }
+
+    async fn probe_certificate_trust(
+        certificate: &openssl::x509::X509,
+        key: &openssl::pkey::PKey<openssl::pkey::Private>,
+        policy: crate::TlsClientServerAuthentication,
+        peer_identity: Option<&str>,
+        chain: &[openssl::x509::X509],
+    ) -> bool {
+        use std::pin::Pin;
+        use std::time::Duration;
+        use openssl::ssl::{Ssl, SslContext, SslMethod};
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+        use tokio_openssl::SslStream;
+        use tacacsrs_protocol::operations::AccountingOperation;
+
+        let mut context = SslContext::builder(SslMethod::tls_server()).unwrap();
+        context.set_certificate(certificate).unwrap();
+        context.set_private_key(key).unwrap();
+        for certificate in chain {
+            context.add_extra_chain_cert(certificate.clone()).unwrap();
+        }
+        let context = context.build();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut server = builder().with_tls_server_authentication().build();
+        server.port = listener.local_addr().unwrap().port();
+        server.domain_name = peer_identity.map(str::to_owned);
+        server.server_authentication = Some(policy);
+        let original = server.clone();
+        let endpoint = prepare_endpoint(&server, PrepareOptions::default()).unwrap();
+        let peer = async {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut stream = SslStream::new(Ssl::new(&context).unwrap(), tcp).unwrap();
+            if Pin::new(&mut stream).accept().await.is_err() {
+                return false;
+            }
+            let mut byte = [0];
+            stream.read(&mut byte).await.unwrap_or(0) != 0
+        };
+        let client = async {
+            let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+            let _ = client
+                .execute(
+                    AccountingOperation {
+                        user: "test".to_owned(),
+                        port: "test".to_owned(),
+                        remote_address: "127.0.0.1".to_owned(),
+                        command: "show".to_owned(),
+                        command_arguments: Vec::new(),
+                    }
+                    .exchange(),
+                )
+                .await;
+        };
+        let (received, ()) =
+            tokio::time::timeout(Duration::from_secs(3), async { tokio::join!(peer, client) })
+                .await
+                .unwrap();
+        assert_eq!(server, original);
+        received
     }
 
     #[tokio::test]

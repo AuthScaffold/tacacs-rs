@@ -64,6 +64,8 @@ The client requests single-connection mode. The fixture allows it; these tests d
 
 Certificate verification stays enabled on the client, including the configured IP identity check.
 The configuration crate's native identity matrix separately covers mismatched SANs, SNI selection, CN-only rejection, and wildcard rules.
+Its trust matrix also covers exact CA-signed certificates without issuer trust, unrelated leaves, additive CA paths, expiry, and server-purpose rejection.
+The independent server matrix continues to use configured CA trust and does not establish full revocation or provisioning conformance.
 The fixture permits the test user's password and command. It is not a production identity-policy test.
 The plain-TCP variant needs `AllowPlainTcpWithoutSharedSecret` on the client and the server's explicit un-obfuscated compatibility bit.
 It does not change the default fixture's security policy.

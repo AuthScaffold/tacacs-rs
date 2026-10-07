@@ -33,6 +33,21 @@ pub struct CertificateIdentity<'a> {
     pub private_key_encoding: PrivateKeyEncoding,
 }
 
+/// Borrowed certificate trust inputs with explicit authority and peer roles.
+#[derive(Clone, Copy)]
+pub enum CertificateTrust<'a> {
+    /// Use the platform trust store when no explicit trust was selected.
+    Platform,
+    /// Trust chains to `authorities` or exact certificates in `end_entities`.
+    /// At least one collection must be nonempty. Platform roots are not added.
+    Certificates {
+        /// DER-encoded trust anchors.
+        authorities: &'a [&'a [u8]],
+        /// DER-encoded certificates authorized only as exact peer matches.
+        end_entities: &'a [&'a [u8]],
+    },
+}
+
 #[derive(Clone)]
 pub(crate) struct TlsClientConfig {
     context: SslContext,
@@ -41,10 +56,10 @@ pub(crate) struct TlsClientConfig {
 }
 
 impl TlsClientConfig {
-    pub(crate) fn prepare<'a>(
+    pub(crate) fn prepare(
         peer_identity: &str,
         sni_name: Option<&str>,
-        roots: impl IntoIterator<Item = &'a [u8]>,
+        trust: CertificateTrust<'_>,
         identity: Option<CertificateIdentity<'_>>,
         disable_verification: bool,
     ) -> Result<Self> {
@@ -60,13 +75,27 @@ impl TlsClientConfig {
                 "TLS SNI must be a nonempty DNS name, not an IP address"
             );
         }
-        let roots = roots
-            .into_iter()
-            .map(parse_certificate_data)
-            .collect::<Result<Vec<_>>>()?;
         let mut builder = TlsConfigurationBuilder::new()
-            .with_root_certificates(roots)
             .with_certificate_verification_disabled(disable_verification);
+        if let CertificateTrust::Certificates {
+            authorities,
+            end_entities,
+        } = trust
+        {
+            anyhow::ensure!(
+                !authorities.is_empty() || !end_entities.is_empty(),
+                "Explicit certificate trust must contain certificates"
+            );
+            let authorities = authorities
+                .iter()
+                .map(|data| parse_certificate_data(data))
+                .collect::<Result<Vec<_>>>()?;
+            let end_entities = end_entities
+                .iter()
+                .map(|data| parse_certificate_data(data))
+                .collect::<Result<Vec<_>>>()?;
+            builder = builder.with_certificate_trust(authorities, end_entities);
+        }
         if let Some(identity) = identity {
             let certificate = parse_certificate_data(identity.certificate)
                 .context("Failed to parse TLS certificate")?;
@@ -125,6 +154,25 @@ fn parse_private_key_data(data: &[u8], encoding: PrivateKeyEncoding) -> Result<P
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_empty_trust_is_rejected_even_with_verification_disabled() {
+        for disabled in [false, true] {
+            let trust = CertificateTrust::Certificates {
+                authorities: &[],
+                end_entities: &[],
+            };
+            assert!(TlsClientConfig::prepare("localhost", None, trust, None, disabled).is_err());
+        }
+        assert!(TlsClientConfig::prepare(
+            "localhost",
+            None,
+            CertificateTrust::Platform,
+            None,
+            false
+        )
+        .is_ok());
+    }
 
     #[test]
     fn parse_certificate_data_der_bytes() {

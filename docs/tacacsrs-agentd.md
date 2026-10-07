@@ -234,6 +234,10 @@ The expected identity is `domain-name` when configured, otherwise `address`. SNI
 Previously accepted CN-only or mismatched certificates now fail before TACACS+ traffic.
 See [certificate peer identity](yang-config-guide.md#certificate-peer-identity) for the full identity-selection contract.
 
+Configured CA trust and exact end-entity trust are now separate. Empty explicit trust bags fail before publication instead of selecting platform roots.
+A rejected replacement leaves the previous prepared generation active.
+See [certificate trust](yang-config-guide.md#certificate-trust) for exact-match renewal behavior and additive trust rules.
+
 ### Timeouts and Failover
 
 | Flag | Default | Description |

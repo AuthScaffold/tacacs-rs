@@ -121,6 +121,20 @@ Native callers pass the expected peer identity and optional SNI name separately 
 This replaces the earlier chain-only check and can reject previously accepted certificates that lack a matching SAN.
 The explicit development verification override still disables certificate verification. It does not change SNI selection.
 
+Certificate trust roles remain distinct during preparation:
+
+- `ca-certs` permits a valid certificate path to a configured authority.
+- `ee-certs` permits an exact DER certificate match, not another certificate with the same key or issuer.
+- Both sets are additive. An exact peer entry cannot authorize certificates that it issued, but an independent CA path can still succeed.
+- Explicit bags must contain materialized certificates. Empty bags fail even when the development verification override is selected.
+- If neither bag is selected, the existing server-authentication-only API uses platform trust. Selecting either bag excludes platform roots.
+
+Native callers now pass `CertificateTrust::Platform` or `CertificateTrust::Certificates` to `PreparedEndpoint::with_certificate_tls` instead of an undifferentiated root iterator.
+The explicit variant separates authority DER from exact peer DER. Its collections cannot both be empty.
+OpenSSL still enforces peer identity, validity, purpose, and path checks. The trust-role callback never changes failed native verification into success.
+Direct trust accepts a CA-signed leaf without requiring its issuer. A renewed certificate with the same key needs a new exact entry or CA trust.
+These changes do not add revocation retrieval or client certificate-chain provisioning.
+
 Pass this endpoint to `TacacsClient::connect_prepared`.
 With preflight disabled, construction does not open a connection. Native material errors still fail during preparation.
 The old networking `connect` and `connect_shared` constructors are removed.

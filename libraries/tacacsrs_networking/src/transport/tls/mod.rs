@@ -10,7 +10,7 @@ mod tls;
 
 pub(crate) use config_builder::TlsConfigurationBuilder;
 pub(crate) use config::TlsClientConfig;
-pub use config::{CertificateIdentity, PrivateKeyEncoding};
+pub use config::{CertificateIdentity, CertificateTrust, PrivateKeyEncoding};
 
 use anyhow::Context;
 use openssl::ssl::Ssl;

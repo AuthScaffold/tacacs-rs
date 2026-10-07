@@ -567,6 +567,7 @@ Windows and live SONiC validation did not run for this increment.
 
 - [ ] S2-15: Finish reconciliation of the [field-to-behavior inventory](stage-0-contract-gates.md#field-to-behavior-inventory). Identity/SNI and port defaults are resolved under S2-18 and S2-19. Review CA versus end-entity trust handling, empty trust selections, and chain/provider constraints. Complete the remaining field cross-references and explicit operational-statistics and revocation dispositions. Resolve each gap as supported and tested, explicitly rejected, or assigned to a named later-stage contract.
 - [ ] S2-16: Complete the final Stage 2 validation and status update after the open implementation items finish. Run relevant workspace, generation, source-equivalence, rotation, and native interoperability checks. Record unavailable checks and known exceptions separately. Update the migration plan and this checkpoint together.
+- [ ] S2-20: Preserve certificate trust roles during preparation. Explicit empty bags must not select platform trust. Separate CA anchors from exact end-entity matches in native inputs. Verify CA-signed pins without their issuer, unrelated leaves, additive CA/pin policies, identity and validity failures, and unchanged source snapshots.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Upstream `source-ip`, `source-interface`, and `vrf-instance` already fail explicitly under S2-06. Their implementation is not an implicit local-listener requirement.

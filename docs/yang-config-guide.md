@@ -89,6 +89,28 @@ It does not establish full RFC 9887 conformance, including revocation, certifica
 Migration can require certificates with matching SAN entries. Chain trust alone no longer permits a certificate for a different identity.
 The explicit development-only verification override still bypasses certificate verification and permits server impersonation.
 
+## Certificate Trust
+
+The pinned TLS YANG model gives CA and end-entity bags different meanings:
+
+| Selection | Accepted certificate |
+| --- | --- |
+| `server-authentication/ca-certs` | A peer with a valid path to a configured authority |
+| `server-authentication/ee-certs` | A peer whose DER certificate exactly matches a configured entry |
+| Both | A peer accepted by either trust rule |
+
+An end-entity entry is not a CA grant. It cannot authorize another leaf, including a renewed certificate with the same public key.
+A CA-signed exact entry works without its issuer in the authority bag. Identity, time validity, and server-purpose checks still apply.
+When both bags are configured, a separate valid authority path remains sufficient even if an exact entry shortens OpenSSL's initial path.
+
+Explicitly selected bags must contain materialized certificates. Empty selections fail during preparation and cannot silently enable platform trust.
+With neither bag selected, the existing server-authentication-only API retains its platform-trust behavior.
+Configured trust excludes platform roots. Preparation does not modify the authoritative bags or their references.
+
+This replaces the old combined-root behavior. Certificate renewal can require updating an exact `ee-certs` entry.
+Use CA trust only when authorizing other valid certificates issued by that authority is intended.
+Certificate revocation retrieval and client-chain provisioning are not implemented by this change. Full RFC 9887 conformance remains unclaimed.
+
 ## Three-layer processing model
 
 The crate separates parsing and runtime preparation into three layers.
