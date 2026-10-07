@@ -26,7 +26,8 @@ If work moves between stages, record its new owner and update both stage descrip
 - [x] S2-06: Reject unsupported runtime fields explicitly. Commit `6f2c9a7` adds capability checks and source-preservation tests. See [publication readiness](#publication-readiness).
 - [x] S2-12: Make service selection, listener endpoints, and Unix socket permissions canonical YANG controls. Commit `594b5be` removes independent runtime fields and duplicate validation. See [canonical local services](#canonical-local-services) for pre-bind rejection, input equivalence, and permission tests.
 - [x] S2-13: Derive downstream credentials from explicit canonical source policy. Commit `66c59d6` removes mutable runtime credentials and implicit row overrides. See [canonical downstream credentials](#canonical-downstream-credentials) for redaction, rotation, startup rejection, and publication rollback evidence.
-- [x] S2-14: Normalize the SONiC forwarder profile into canonical local services and consolidate publication-time loop validation. Commit `64b2e4e` preserves source rows and adds cross-source, wildcard, interface, and DNS regressions. See [SONiC mapping and loop checks](#sonic-mapping-and-loop-checks). Connection-time enforcement remains the separate S2-17 item.
+- [x] S2-14: Normalize the SONiC forwarder profile into canonical local services and consolidate publication-time loop validation. Commit `64b2e4e` preserves source rows and adds cross-source, wildcard, interface, and DNS regressions. See [SONiC mapping and loop checks](#sonic-mapping-and-loop-checks). Connection-time enforcement is recorded under completed item S2-17.
+- [x] S2-17: Enforce loop exclusion at connection time using actual bound listener addresses. Commit `031eb3a` adds a schema-free guard and agent-owned listener state. See [connection-time loop exclusion](#connection-time-loop-exclusion) for changed-resolution, zero-byte, ephemeral-port, and shutdown regressions.
 
 ### Completed Discoveries
 
@@ -495,11 +496,41 @@ The dependency audit found no vulnerabilities in 301 locked packages, with the e
 The daemon adds `if-addrs` 0.15.0. No existing external package version, generated YANG artifact, protobuf contract, or project unsafe code changed.
 Windows, live SONiC, and independent-server validation did not run for this increment.
 
+## Connection-Time Loop Exclusion
+
+Commit `031eb3a` completes S2-17 on 2026-10-07.
+Networking exposes `ConnectionGuard` through `PreparedEndpoint::with_connection_guard` without importing generated YANG types or agent configuration.
+TCP establishment checks each freshly resolved destination before connecting and checks the connected socket before TLS or TACACS+ I/O.
+A rejected destination stops the attempt. The new pre-connect rejection test failed before enforcement and now passes.
+
+The agent owns `ProxyLoopGuard` and attaches it through the production upstream connector.
+The TCP listener registers its actual bound address before publishing bound health or accepting clients.
+This includes the kernel-selected port when configuration requests port zero. Canonical listener configuration remains unchanged.
+Endpoint clones and cached clients share live guard state across reloads and reconnects.
+
+Pending and closed TCP listener states reject new upstream connections.
+A listener-owned registration closes the guard on normal return, failure after binding, or task cancellation.
+Disabled and Unix-only proxy services do not apply TCP listener exclusions.
+Wildcard checks refresh local interfaces and inspect the connected socket's local address in addition to its peer address.
+No lock remains held across network awaits. These checks supplement publication-time validation rather than replacing it.
+
+Deterministic resolution tests change the returned destination and verify that the excluded listener receives no connection.
+Native post-connect rejection tests observe zero bytes for plain TCP, certificate TLS, and PSK endpoints.
+Guard tests cover pending/bound/closed states, mapped addresses, and changed interface snapshots.
+A real ephemeral listener test reloads an upstream self-target, exercises the production cached client, and verifies rejection before and after shutdown.
+The test also verifies that runtime binding does not rewrite the canonical endpoint.
+
+Workspace tests, build, formatting, warnings-as-errors rustdoc, and the documentation book pass.
+Workspace Clippy uses only the existing admission-warning exception. Unused-dependency checks pass.
+All nine independent `tac_plus-ng` runner cases pass after the shared establishment change.
+The audit found no vulnerabilities in 301 locked packages, with the existing index-refresh lock warning.
+The agent declares the existing `if-addrs` dependency. No external version, generated YANG artifact, protobuf contract, or project unsafe code changed.
+Windows and live SONiC validation did not run for this increment.
+
 ## Remaining Stage 2 Work
 
 - [ ] S2-15: Reconcile the [field-to-behavior inventory](stage-0-contract-gates.md#field-to-behavior-inventory) with current implementation evidence. Resolve each gap as supported and tested, explicitly rejected, or assigned to a named later-stage contract. Certificate peer identity and TLS default-port behavior remain coverage questions, not proven conformance. Add separate implementation items for defects found during this review.
 - [ ] S2-16: Complete the final Stage 2 validation and status update after the open implementation items finish. Run relevant workspace, generation, source-equivalence, rotation, and native interoperability checks. Record unavailable checks and known exceptions separately. Update the migration plan and this checkpoint together.
-- [ ] S2-17: Enforce proxy loop exclusion at connection time, not only during publication. Start at [TCP establishment](../../libraries/tacacsrs_networking/src/helpers.rs) and the agent's listener binding path. Carry actual bound endpoints into execution and recheck resolved destinations before traffic, including ephemeral ports and later DNS/interface changes. Add deterministic regressions that change DNS results or listener state after publication and assert that no TACACS+ bytes reach a self-target. Keep generated YANG types outside networking.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Upstream `source-ip`, `source-interface`, and `vrf-instance` already fail explicitly under S2-06. Their implementation is not an implicit local-listener requirement.
