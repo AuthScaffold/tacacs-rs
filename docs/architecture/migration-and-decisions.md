@@ -220,7 +220,9 @@ The field inventory and final closure checks remain open as S2-15 and S2-16.
 S2-17 is complete in `031eb3a`: connection-time guards use actual bound ports and recheck resolved destinations before transport I/O.
 Only S2-15 and S2-16 remain open in the current Stage 2 checklist.
 The inventory review added and completed S2-18 and S2-19 in `8e6243e`: SAN identity verification, independent SNI, and standard TLS input ports.
-S2-15 still owns the remaining trust-material review and field dispositions. These corrections do not establish full certificate-profile conformance.
+S2-20 is complete in `bdbec25`: CA and exact-peer trust remain distinct, additive policies work, and empty explicit bags cannot select platform roots.
+S2-15 still owns remaining client-chain/provider constraints and field dispositions, including operational statistics and revocation.
+These corrections do not establish full certificate-profile conformance.
 
 1. Preserve generated YANG types and builders as the authoritative configuration APIs.
 2. Normalize CLI and SONiC inputs into YANG snapshots through the same schema and feature validation contract.

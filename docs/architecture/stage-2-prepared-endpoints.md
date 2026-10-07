@@ -38,6 +38,7 @@ If work moves between stages, record its new owner and update both stage descrip
 - [x] S2-11: Derive connection timeout from YANG for every consumer and remove caller overrides. Commit `31dedd9` verifies [preparation controls](#preparation-controls), source equivalence, and the restricted API.
 - [x] S2-18: Verify certificate peer identity independently of SNI. Commit `8e6243e` rejects mismatched SANs before application data, disables CN fallback and partial wildcards, and separates native identity/SNI inputs. See [peer identity and standard ports](#peer-identity-and-standard-ports).
 - [x] S2-19: Use TLS port 300 for omitted CLI and SONiC ports while preserving explicit ports. Commit `8e6243e` also rejects malformed explicit port syntax instead of selecting a default. See [peer identity and standard ports](#peer-identity-and-standard-ports).
+- [x] S2-20: Preserve CA, exact peer, and platform trust roles during preparation. Commit `bdbec25` rejects empty explicit bags and verifies exact signed leaves and additive CA paths without weakening native checks. See [certificate trust roles](#certificate-trust-roles).
 
 Open items and their completion conditions appear under [remaining Stage 2 work](#remaining-stage-2-work).
 The implementation sections below preserve the evidence and limits for completed items.
@@ -563,11 +564,45 @@ Networking and configuration pass strict package Clippy. Workspace Clippy uses o
 No dependency, lockfile, generated YANG, protobuf, or unsafe-code change was required.
 Windows and live SONiC validation did not run for this increment.
 
+## Certificate Trust Roles
+
+Commit `bdbec25` completes S2-20 on 2026-10-07.
+The pinned `ietf-tls-client` module defines CA trust as a valid path to a configured authority and end-entity trust as an exact certificate match.
+Their contributions are additive. The previous projection combined both bags into one root list and lost those roles.
+It also selected platform trust when a configured bag was empty.
+
+The empty-bag preparation regression failed before the fix and now passes.
+Explicit CA and end-entity bags must each contain materialized certificates. Preparation does not change the source.
+When neither bag is selected, the existing server-authentication-only API retains platform trust.
+Explicit trust never adds platform roots, and empty explicit trust remains an error even with the development verification override enabled.
+
+Networking now accepts `CertificateTrust::Platform` or `CertificateTrust::Certificates` with separate borrowed authority and exact-peer DER collections.
+The native endpoint API no longer accepts an undifferentiated root iterator.
+OpenSSL partial-chain validation allows an exact configured CA-signed leaf without requiring its issuer as a trust anchor.
+A native regression demonstrated that the previous root-list path rejected this legitimate exact match.
+
+The verification callback never converts a failed native check into success.
+After normal verification succeeds, it requires an exact peer match or a path to a configured authority.
+A peer-only entry cannot authorize another certificate issued by that entry.
+When an exact entry shortens the initial native path, a separate CA-only verification preserves any independent valid authority path.
+The alternate path uses server-purpose validation and only runs after the initial identity, validity, purpose, and native path checks succeed.
+
+The native matrix covers signed exact pins, CA anchors, renewed certificates with the same key, and additive authority/pin policies.
+It also covers a peer entry that is not authorized as a CA and a shortened path with an independent configured CA.
+Mismatched identity, expired, not-yet-valid, and client-only peer certificates receive no TACACS+ application data.
+Tests verify unchanged canonical sources. Existing repeated TLS/mTLS and SNI tests still pass.
+Revocation retrieval and client-chain provisioning are not added by this increment and remain explicit inventory questions.
+
+Workspace tests, build, formatting, warnings-as-errors rustdoc, and the documentation book pass.
+Networking and configuration pass strict package Clippy. Workspace Clippy uses only the existing admission-warning exception.
+All nine independent `tac_plus-ng` runner cases pass with the updated verifier.
+No dependency, lockfile, generated YANG, protobuf contract, or project unsafe code changed.
+Windows and live SONiC validation did not run. These checks do not establish full RFC 9887 conformance.
+
 ## Remaining Stage 2 Work
 
-- [ ] S2-15: Finish reconciliation of the [field-to-behavior inventory](stage-0-contract-gates.md#field-to-behavior-inventory). Identity/SNI and port defaults are resolved under S2-18 and S2-19. Review CA versus end-entity trust handling, empty trust selections, and chain/provider constraints. Complete the remaining field cross-references and explicit operational-statistics and revocation dispositions. Resolve each gap as supported and tested, explicitly rejected, or assigned to a named later-stage contract.
+- [ ] S2-15: Finish reconciliation of the [field-to-behavior inventory](stage-0-contract-gates.md#field-to-behavior-inventory). Identity/SNI, port defaults, CA versus exact-peer trust, and empty selections are resolved under S2-18 through S2-20. Review remaining client-chain/provider constraints. Complete the field cross-references and explicit operational-statistics and revocation dispositions. Resolve each remaining gap as supported and tested, explicitly rejected, or assigned to a named later-stage contract.
 - [ ] S2-16: Complete the final Stage 2 validation and status update after the open implementation items finish. Run relevant workspace, generation, source-equivalence, rotation, and native interoperability checks. Record unavailable checks and known exceptions separately. Update the migration plan and this checkpoint together.
-- [ ] S2-20: Preserve certificate trust roles during preparation. Explicit empty bags must not select platform trust. Separate CA anchors from exact end-entity matches in native inputs. Verify CA-signed pins without their issuer, unrelated leaves, additive CA/pin policies, identity and validity failures, and unchanged source snapshots.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Upstream `source-ip`, `source-interface`, and `vrf-instance` already fail explicitly under S2-06. Their implementation is not an implicit local-listener requirement.
