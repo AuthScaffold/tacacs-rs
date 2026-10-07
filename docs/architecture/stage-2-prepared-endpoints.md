@@ -36,6 +36,8 @@ If work moves between stages, record its new owner and update both stage descrip
 - [x] S2-09: Validate retained transport modes against an independent server. Commit `4dc051f` adds the native runner. All nine cases also pass after `31dedd9`. See [independent server evidence](#independent-server-evidence).
 - [x] S2-10: Replace the parallel policy schema and duplicate defaults with generated YANG policy. Commit `3400393` includes generator corrections, parser tests, and deterministic regeneration. See [canonical runtime policy](#canonical-runtime-policy).
 - [x] S2-11: Derive connection timeout from YANG for every consumer and remove caller overrides. Commit `31dedd9` verifies [preparation controls](#preparation-controls), source equivalence, and the restricted API.
+- [x] S2-18: Verify certificate peer identity independently of SNI. Commit `8e6243e` rejects mismatched SANs before application data, disables CN fallback and partial wildcards, and separates native identity/SNI inputs. See [peer identity and standard ports](#peer-identity-and-standard-ports).
+- [x] S2-19: Use TLS port 300 for omitted CLI and SONiC ports while preserving explicit ports. Commit `8e6243e` also rejects malformed explicit port syntax instead of selecting a default. See [peer identity and standard ports](#peer-identity-and-standard-ports).
 
 Open items and their completion conditions appear under [remaining Stage 2 work](#remaining-stage-2-work).
 The implementation sections below preserve the evidence and limits for completed items.
@@ -527,12 +529,44 @@ The audit found no vulnerabilities in 301 locked packages, with the existing ind
 The agent declares the existing `if-addrs` dependency. No external version, generated YANG artifact, protobuf contract, or project unsafe code changed.
 Windows and live SONiC validation did not run for this increment.
 
+## Peer Identity and Standard Ports
+
+The S2-15 inventory review found two defects, recorded and corrected as S2-18 and S2-19 in commit `8e6243e`.
+The original certificate path verified trust but only set SNI. It did not configure DNS/IP identity verification.
+A native regression observed TACACS+ application data at a trusted peer with the wrong identity before the fix.
+That regression now rejects the peer before application data.
+
+Certificate preparation now derives the expected identity from `domain-name`, or from `address` when no domain is configured.
+This identity is independent of `sni-enabled`. Only a true value sends the configured DNS name in the TLS `ClientHello`.
+The native endpoint API accepts expected identity and optional SNI separately.
+OpenSSL verifies DNS or IP SANs, with CN fallback and partial-label wildcard matching disabled.
+The explicit development verification override still bypasses certificate checks without changing SNI selection.
+
+The native matrix covers correct and mismatched DNS/IP identities, address-based identity, SNI on/off, CN-only certificates, and wildcard boundaries.
+It observes actual SNI and application bytes, and verifies unchanged source values.
+Repeated TLS/mTLS preparation tests and all nine independent `tac_plus-ng` cases pass with identity verification enabled.
+This evidence does not establish certificate revocation, full chain provisioning, end-entity pinning, or complete RFC 9887 conformance.
+
+The pinned YANG module requires explicit ports and documents port 300 for TLS, consistent with RFC 9887 Sections 3.1 and 5.2.
+Shared CLI normalization previously selected 49 for TLS, while SONiC selected 449. Both omitted-port regressions failed before the correction.
+Configuration now owns the common input constants: 49 for legacy TCP and 300 for certificate or PSK TLS.
+SONiC reuses those constants. Explicit ports, including 449 and nonstandard fixture ports, remain unchanged.
+Canonical YANG port requirements and generated artifacts are unchanged.
+
+Address parsing now returns `Result` and uses a default only when the port is absent.
+A regression demonstrated that `[::1]:bad` previously selected a default silently.
+Malformed brackets, malformed explicit ports, and out-of-range explicit ports now fail before normalization succeeds.
+Tests cover hostnames, IPv4, bracketed IPv6, bare IPv6, every CLI TLS mode, and explicit-port preservation.
+
+Workspace tests, build, formatting, warnings-as-errors rustdoc, and the documentation book pass.
+Networking and configuration pass strict package Clippy. Workspace Clippy uses only the existing admission-warning exception.
+No dependency, lockfile, generated YANG, protobuf, or unsafe-code change was required.
+Windows and live SONiC validation did not run for this increment.
+
 ## Remaining Stage 2 Work
 
-- [ ] S2-15: Reconcile the [field-to-behavior inventory](stage-0-contract-gates.md#field-to-behavior-inventory) with current implementation evidence. Resolve each gap as supported and tested, explicitly rejected, or assigned to a named later-stage contract. Certificate peer identity and TLS default-port behavior remain coverage questions, not proven conformance. Add separate implementation items for defects found during this review.
+- [ ] S2-15: Finish reconciliation of the [field-to-behavior inventory](stage-0-contract-gates.md#field-to-behavior-inventory). Identity/SNI and port defaults are resolved under S2-18 and S2-19. Review CA versus end-entity trust handling, empty trust selections, and chain/provider constraints. Complete the remaining field cross-references and explicit operational-statistics and revocation dispositions. Resolve each gap as supported and tested, explicitly rejected, or assigned to a named later-stage contract.
 - [ ] S2-16: Complete the final Stage 2 validation and status update after the open implementation items finish. Run relevant workspace, generation, source-equivalence, rotation, and native interoperability checks. Record unavailable checks and known exceptions separately. Update the migration plan and this checkpoint together.
-- [ ] S2-18: Enforce certificate peer identity independently of SNI. The native TLS path currently sets SNI without hostname/IP verification, and a trusted mismatched certificate receives application bytes. Fix [TLS establishment](../../libraries/tacacsrs_networking/src/transport/tls/mod.rs) and [YANG projection](../../libraries/tacacsrs_config/src/prepare/endpoint.rs). Test correct and mismatched DNS/IP identities, SNI enabled/disabled, and zero application data on rejected peers.
-- [ ] S2-19: Align implicit TLS ports with RFC 9887 and the pinned YANG module, which specifies port 300. Review CLI and SONiC defaults and generated helpers. Preserve explicit configured ports. Add omitted-port regressions and document the migration from the existing 449 default.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Upstream `source-ip`, `source-interface`, and `vrf-instance` already fail explicitly under S2-06. Their implementation is not an implicit local-listener requirement.

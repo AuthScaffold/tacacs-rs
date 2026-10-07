@@ -219,6 +219,8 @@ S2-14 is complete in `64b2e4e`: SONiC preserves canonical rows and uses shared p
 The field inventory and final closure checks remain open as S2-15 and S2-16.
 S2-17 is complete in `031eb3a`: connection-time guards use actual bound ports and recheck resolved destinations before transport I/O.
 Only S2-15 and S2-16 remain open in the current Stage 2 checklist.
+The inventory review added and completed S2-18 and S2-19 in `8e6243e`: SAN identity verification, independent SNI, and standard TLS input ports.
+S2-15 still owns the remaining trust-material review and field dispositions. These corrections do not establish full certificate-profile conformance.
 
 1. Preserve generated YANG types and builders as the authoritative configuration APIs.
 2. Normalize CLI and SONiC inputs into YANG snapshots through the same schema and feature validation contract.

@@ -111,6 +111,7 @@ The SONiC provider's implemented material source remains EPSK. Other provider ca
 
 This is a baseline inventory, not a claim of complete implementation.
 Stage 2 must preserve implemented semantics and explicitly resolve or reject the listed gaps.
+The current [Stage 2 inventory review](stage-2-prepared-endpoints.md#peer-identity-and-standard-ports) records the subsequent peer-identity, SNI, and TLS-port corrections.
 
 | YANG field family | Current owner and evidence | Baseline status |
 | --- | --- | --- |
