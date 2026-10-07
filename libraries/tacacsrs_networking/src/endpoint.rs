@@ -4,6 +4,8 @@
 //! They are not a configuration schema and do not retain the source snapshot.
 
 use std::fmt;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tacacsrs_secrets::SecretBytes;
@@ -11,6 +13,26 @@ use tacacsrs_secrets::SecretBytes;
 use crate::establish::{ConnectOptions, PreparedTransport};
 use crate::transport::tls::{CertificateIdentity, TlsClientConfig};
 use crate::transport::tls_psk::{PskClientConfig, PskHash, PskDheGroup};
+
+/// Host-owned checks for resolved and connected TCP destinations.
+///
+/// Guards must be thread-safe and must not perform network I/O. Endpoint clones
+/// share the guard so listener state can change without rewriting configuration.
+pub trait ConnectionGuard: Send + Sync {
+    /// Checks one resolved destination immediately before a connection attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the destination or current host state is not permitted.
+    fn check_destination(&self, destination: SocketAddr) -> anyhow::Result<()>;
+
+    /// Checks the connected socket before TLS or TACACS+ I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket or current host state is not permitted.
+    fn check_connected(&self, peer: SocketAddr, local: SocketAddr) -> anyhow::Result<()>;
+}
 
 /// An immutable endpoint with validated native transport material.
 ///
@@ -23,6 +45,7 @@ pub struct PreparedEndpoint {
     pub(crate) obfuscation_key: Option<SecretBytes>,
     pub(crate) transport: PreparedTransport,
     pub(crate) options: ConnectOptions,
+    pub(crate) connection_guard: Option<Arc<dyn ConnectionGuard>>,
 }
 
 impl PreparedEndpoint {
@@ -92,7 +115,15 @@ impl PreparedEndpoint {
             obfuscation_key,
             transport: PreparedTransport::Tcp,
             options,
+            connection_guard: None,
         }
+    }
+
+    /// Attaches execution-time host checks without changing the source configuration.
+    #[must_use]
+    pub fn with_connection_guard(mut self, guard: impl ConnectionGuard + 'static) -> Self {
+        self.connection_guard = Some(Arc::new(guard));
+        self
     }
 
     /// Returns the prepared host and port without resolving DNS.
@@ -136,6 +167,85 @@ impl fmt::Debug for PreparedEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct DenyConnection;
+
+    impl ConnectionGuard for DenyConnection {
+        fn check_destination(&self, _: SocketAddr) -> anyhow::Result<()> {
+            anyhow::bail!("blocked test destination")
+        }
+
+        fn check_connected(&self, _: SocketAddr, _: SocketAddr) -> anyhow::Result<()> {
+            anyhow::bail!("blocked test connection")
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_destination_never_connects() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = PreparedEndpoint::tcp(
+            listener.local_addr().unwrap().to_string(),
+            false,
+            None,
+            ConnectOptions::default(),
+        )
+        .with_connection_guard(DenyConnection);
+        let result = crate::establish::establish_stream(&endpoint).await;
+        assert!(result.is_err(), "execution must enforce the destination guard");
+        assert!(tokio::time::timeout(Duration::from_millis(25), listener.accept())
+            .await
+            .is_err());
+    }
+
+    struct RejectConnected;
+
+    impl ConnectionGuard for RejectConnected {
+        fn check_destination(&self, _: SocketAddr) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn check_connected(&self, _: SocketAddr, _: SocketAddr) -> anyhow::Result<()> {
+            anyhow::bail!("host state changed before the connection completed")
+        }
+    }
+
+    #[tokio::test]
+    async fn post_connect_rejection_sends_no_plain_tls_or_psk_bytes() {
+        use tokio::io::AsyncReadExt;
+
+        for security in ["plain", "tls", "psk"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = PreparedEndpoint::tcp(
+                listener.local_addr().unwrap().to_string(),
+                false,
+                None,
+                ConnectOptions::default(),
+            )
+            .with_connection_guard(RejectConnected);
+            let endpoint = match security {
+                "tls" => endpoint
+                    .with_certificate_tls("localhost", std::iter::empty(), None)
+                    .unwrap(),
+                "psk" => endpoint
+                    .with_psk("client", b"valid-test-psk-material", PskHash::Sha256, &[], None)
+                    .unwrap(),
+                _ => endpoint,
+            };
+            tokio::time::timeout(Duration::from_secs(2), async {
+                let (accepted, opened) =
+                    tokio::join!(listener.accept(), crate::establish::establish_stream(&endpoint));
+                assert!(opened.is_err(), "guard must reject {security}");
+                let (mut stream, _) = accepted.unwrap();
+                let mut byte = [0];
+                assert_eq!(
+                    stream.read(&mut byte).await.unwrap(),
+                    0,
+                    "{security} must send no bytes"
+                );
+            })
+            .await
+            .unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn explicit_endpoint_needs_no_source_model_or_network_io() {

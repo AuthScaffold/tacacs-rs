@@ -38,7 +38,9 @@ Distinct loopback addresses remain distinct hosts. IPv4-mapped addresses normali
 
 The daemon checks resolved destinations against the bound listener configuration and current local interfaces.
 Uncertain DNS results reject the candidate instead of bypassing loop validation.
-These are publication-time checks. Connection-time protection against later DNS/interface changes and ephemeral listener ports remains tracked refactor work.
+The agent also applies a connection-time guard using the actual bound proxy address, refreshed interfaces, and connected socket addresses.
+Every resolved destination is checked before TCP connect. The connected socket is checked again before TLS or TACACS+ I/O.
+These runtime checks supplement publication-time validation without changing the canonical SONiC snapshot.
 
 ## Version-1 TLS boundary
 

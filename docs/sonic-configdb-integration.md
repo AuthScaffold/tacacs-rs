@@ -318,8 +318,10 @@ Lookup failure, empty answers, unspecified destinations, and timeout reject the 
 The lookup deadline uses the canonical server timeout.
 Wildcard listeners also check current interface addresses. IPv4-mapped addresses compare as IPv4, and IPv6 wildcard checks conservatively include dual-stack binding.
 
-The check uses a publication-time snapshot. Later DNS/interface changes and ports selected through an ephemeral bind need a connection-time guard.
-This remaining requirement is tracked as S2-17 in the [Stage 2 checkpoint](architecture/stage-2-prepared-endpoints.md#remaining-stage-2-work).
+The agent supplements this publication-time snapshot with a live connection guard.
+The guard checks each resolved destination before TCP connect and the resulting socket before TLS or TACACS+ traffic.
+It uses actual listener ports, refreshed interface addresses, and connected socket addresses. DNS changes after publication cannot bypass the connection check.
+Unbound or closed TCP proxies block new upstream connections. Listener shutdown and task cancellation retire the guard registration.
 
 A forwarder-only change does not replace the server set. After a rejected
 reload, the datastore waits for the next ConfigDB notification.

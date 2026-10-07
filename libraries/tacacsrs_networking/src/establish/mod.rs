@@ -97,11 +97,13 @@ pub(crate) async fn establish_stream(endpoint: &PreparedEndpoint) -> Result<Boxe
     );
 
     let tcp_stream = match options.timeout {
-        Some(dur) => tokio::time::timeout(dur, connect_tcp(address))
-            .await
-            .with_context(|| format!("Connection to TACACS+ server {address} timed out"))?
-            .with_context(|| format!("Failed to establish TCP connection to {address}"))?,
-        None => connect_tcp(address)
+        Some(dur) => {
+            tokio::time::timeout(dur, connect_tcp(address, endpoint.connection_guard.as_deref()))
+                .await
+                .with_context(|| format!("Connection to TACACS+ server {address} timed out"))?
+                .with_context(|| format!("Failed to establish TCP connection to {address}"))?
+        }
+        None => connect_tcp(address, endpoint.connection_guard.as_deref())
             .await
             .with_context(|| format!("Failed to establish TCP connection to {address}"))?,
     };

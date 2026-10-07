@@ -1983,6 +1983,7 @@ version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
+ "if-addrs",
  "log",
  "rustix",
  "tacacsrs-agent-client",

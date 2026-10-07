@@ -29,7 +29,7 @@ use tokio::task::JoinSet;
 
 use super::{
     RequestTracker, RuntimeHealthPublisher, ShutdownCoordinator, UpstreamAvailability,
-    enumerate_supported_servers,
+    enumerate_supported_servers, ProxyLoopGuard,
 };
 use crate::config::{PreparedProxyPolicy, RuntimePolicy, ServiceConfig};
 use crate::services::client_api::ClientApiService;
@@ -64,6 +64,7 @@ pub struct TacacsClientService {
     /// Validated operator configuration.
     config: ServiceConfig,
     listeners: PreparedLocalServices,
+    proxy_loop_guard: ProxyLoopGuard,
     /// Shared failover state for all IPC request handlers.
     state: Arc<UpstreamManager>,
     /// Serializes publication of a complete runtime generation.
@@ -116,13 +117,15 @@ impl TacacsClientService {
         configuration_applied: bool,
     ) -> anyhow::Result<Self> {
         let listeners = prepare_local_services(&config.local_services)?;
+        let proxy_loop_guard = ProxyLoopGuard::new(listeners.tacacs_proxy());
         if health.snapshot().enabled_services() != config.enabled_services() {
             anyhow::bail!("Runtime health and service configuration must enable the same services");
         }
         let servers = enumerate_supported_servers(&config.tacacs_plus, &config.validation_options)?;
         let eligible_server_count = servers.len();
 
-        let connector: Arc<dyn UpstreamConnector> = Arc::new(NetworkUpstreamConnector);
+        let connector: Arc<dyn UpstreamConnector> =
+            Arc::new(NetworkUpstreamConnector::new(proxy_loop_guard.clone()));
         let proxy_policy = if !configuration_applied
             && config.local_services.proxy_credential_source
                 == tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow
@@ -147,6 +150,7 @@ impl TacacsClientService {
         Ok(Self {
             config,
             listeners,
+            proxy_loop_guard,
             state,
             reload_lock: Mutex::new(()),
             request_tracker,
@@ -161,6 +165,7 @@ impl TacacsClientService {
         health: RuntimeHealthPublisher,
     ) -> anyhow::Result<Self> {
         let listeners = prepare_local_services(&config.local_services)?;
+        let proxy_loop_guard = ProxyLoopGuard::new(listeners.tacacs_proxy());
         if health.snapshot().enabled_services() != config.enabled_services() {
             anyhow::bail!("Runtime health and service configuration must enable the same services");
         }
@@ -183,6 +188,7 @@ impl TacacsClientService {
         Ok(Self {
             config,
             listeners,
+            proxy_loop_guard,
             state,
             reload_lock: Mutex::new(()),
             request_tracker,
@@ -341,8 +347,11 @@ impl TacacsClientService {
         }
 
         if let Some(target) = self.listeners.tacacs_proxy() {
-            let service =
-                TacacsProxyService::new(Arc::clone(&self.state), Arc::clone(&self.request_tracker));
+            let service = TacacsProxyService::new(
+                Arc::clone(&self.state),
+                Arc::clone(&self.request_tracker),
+                self.proxy_loop_guard.clone(),
+            );
             let endpoint = match target {
                 ListenerEndpoint::Unix(path) => IpcEndpoint::Unix(path.clone()),
                 ListenerEndpoint::Tcp(address) => IpcEndpoint::Tcp(*address),
@@ -972,6 +981,68 @@ mod tests {
         assert!(!tokio::fs::try_exists(socket_path)
             .await
             .expect("the socket inspection must succeed"));
+    }
+
+    #[tokio::test]
+    async fn ephemeral_proxy_binding_guards_production_clients_after_reload_and_shutdown() {
+        use tacacsrs_networking::ConnectionGuard;
+
+        let mut config =
+            service_config(test_endpoint("ephemeral-guard"), vec![test_server("192.0.2.20:49")]);
+        config.local_services.client_api_enabled = false;
+        config.local_services.tacacs_proxy_enabled = true;
+        config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:0".to_owned());
+        let canonical = config.local_services.clone();
+        let service = Arc::new(test_service(config).unwrap());
+        let shutdown = ShutdownCoordinator::new(service.health.clone());
+        let task = {
+            let service = Arc::clone(&service);
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move { service.serve_with_shutdown(&shutdown).await })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while service
+                .health
+                .snapshot()
+                .listener(RuntimeService::TacacsProxy)
+                != ListenerState::Bound
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let bound_address = service.proxy_loop_guard.bound_endpoint().unwrap().unwrap();
+        assert_ne!(bound_address.port(), 0);
+        service
+            .reload_materialized_servers_with_proxy_downstream_obfuscation(
+                vec![Arc::new(test_server(&bound_address.to_string()))],
+                PreparedProxyPolicy::unobfuscated(),
+            )
+            .await
+            .unwrap();
+        let bound = service.state.bind_server_for_new_session().await.unwrap();
+        let result =
+            tokio::time::timeout(Duration::from_secs(2), bound.connection.open_conversation())
+                .await
+                .unwrap();
+        let error = match result {
+            Ok(_) => panic!("production client connected to its proxy"),
+            Err(error) => error,
+        };
+        assert!(format!("{error:#}").contains("targets the local TACACS+ proxy"));
+        assert_eq!(service.config.local_services, canonical);
+        shutdown.initiate_shutdown();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(service
+            .proxy_loop_guard
+            .check_destination(bound_address)
+            .is_err());
+        assert!(bound.connection.open_conversation().await.is_err());
     }
 
     #[tokio::test]

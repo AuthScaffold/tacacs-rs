@@ -176,8 +176,12 @@ Before publication, the shared loop filter checks upstreams on the proxy's confi
 It removes matching classic rows after downstream credential preparation and rejects matching TLS rows.
 Wildcard listeners include current interface addresses and loopback destinations. IPv6 wildcard checks conservatively include dual-stack binding.
 DNS failures, empty answers, unspecified destinations, and lookup timeouts reject the candidate instead of retaining an unchecked upstream.
-This snapshot check does not guard later DNS/interface changes or the actual port assigned to an ephemeral listener.
-Connection-time enforcement remains S2-17 in the [Stage 2 checkpoint](architecture/stage-2-prepared-endpoints.md#remaining-stage-2-work).
+The agent also guards each upstream connection after DNS resolution and before TCP connect.
+It checks the connected socket again before any TLS handshake or TACACS+ bytes.
+The TCP proxy registers its actual bound address before accepting clients, including the port selected by an ephemeral bind.
+Wildcard checks refresh interface addresses and inspect the connected socket's local address.
+While the TCP proxy is unbound or closed, new upstream connections fail closed. Disabled and Unix-only proxies do not restrict upstream TCP targets.
+Cached clients retain the same live guard across reconnects and configuration reloads. These checks do not rewrite canonical configuration.
 
 Downstream TACACS+ obfuscation is independent of the selected upstream transport. In SONiC mode, the daemon filters rows that target its loopback proxy.
 

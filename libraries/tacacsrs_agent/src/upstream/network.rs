@@ -14,12 +14,21 @@ use tacacsrs_networking::{PreparedEndpoint, TacacsClient};
 
 use super::connection::{UpstreamConnection, UpstreamConnector};
 use super::{OperationKind, UpstreamRequestError};
+use crate::runtime::ProxyLoopGuard;
 
 /// Production connector backed by [`tacacsrs_networking`].
 ///
 /// Reuses the native transport context prepared before generation publication.
 #[derive(Debug, Clone)]
-pub(crate) struct NetworkUpstreamConnector;
+pub(crate) struct NetworkUpstreamConnector {
+    proxy_loop_guard: ProxyLoopGuard,
+}
+
+impl NetworkUpstreamConnector {
+    pub(crate) const fn new(proxy_loop_guard: ProxyLoopGuard) -> Self {
+        Self { proxy_loop_guard }
+    }
+}
 
 #[async_trait]
 impl UpstreamConnector for NetworkUpstreamConnector {
@@ -29,7 +38,10 @@ impl UpstreamConnector for NetworkUpstreamConnector {
         operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
         let address = endpoint.address().to_owned();
-        let connection = TacacsClient::connect_prepared(endpoint).await?;
+        let connection = TacacsClient::connect_prepared(
+            endpoint.with_connection_guard(self.proxy_loop_guard.clone()),
+        )
+        .await?;
 
         Ok(Arc::new(TacacsUpstreamConnection {
             server_address: address,
