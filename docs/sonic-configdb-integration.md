@@ -96,7 +96,7 @@ server:
 | `psk_identity` | Required external identity |
 | `psk_secret_ref` | Required opaque EPSK object ID |
 | `priority` | Optional value from `1` through `64`; default `1` |
-| `tcp_port` | Optional TLS port; default `449` |
+| `tcp_port` | Optional TLS port; default `300` |
 | `timeout` | Optional timeout from `1` through `60` seconds; default `5` |
 | `domain_name` | Optional SNI name |
 | `sni_enabled` | Optional boolean; requires `domain_name` when true |
@@ -109,6 +109,10 @@ The client accepts a connection only when the negotiated PSK key exchange matche
 A `psk-only` row rejects a peer-selected DHE exchange, even if the native TLS handshake succeeds.
 Both modes reject certificate-authenticated fallback before sending TACACS+ data.
 The ClientHello can still advertise both modes, so a PSK-only peer must select no-DHE exchange.
+
+The omitted TLS port now defaults to 300, as specified by RFC 9887 and the pinned YANG module.
+This replaces the previous SONiC TLS default of 449. An explicit `tcp_port` remains unchanged.
+Compatibility server rows and the local forwarder still default to legacy TCP port 49.
 
 The production resolver reads `psk_secret_ref` from
 `/etc/sonic/tacacs/credentials/epsk/<id>`. The credential file must satisfy

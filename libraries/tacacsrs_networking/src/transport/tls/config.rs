@@ -36,16 +36,30 @@ pub struct CertificateIdentity<'a> {
 #[derive(Clone)]
 pub(crate) struct TlsClientConfig {
     context: SslContext,
-    server_name: String,
+    peer_identity: String,
+    sni_name: Option<String>,
 }
 
 impl TlsClientConfig {
     pub(crate) fn prepare<'a>(
-        server_name: &str,
+        peer_identity: &str,
+        sni_name: Option<&str>,
         roots: impl IntoIterator<Item = &'a [u8]>,
         identity: Option<CertificateIdentity<'_>>,
         disable_verification: bool,
     ) -> Result<Self> {
+        anyhow::ensure!(
+            !peer_identity.is_empty() && !peer_identity.contains(['\0', '*']),
+            "TLS peer identity must be a nonempty DNS name or IP address without wildcards"
+        );
+        if let Some(name) = sni_name {
+            anyhow::ensure!(
+                !name.is_empty()
+                    && !name.contains(['\0', '*'])
+                    && name.parse::<std::net::IpAddr>().is_err(),
+                "TLS SNI must be a nonempty DNS name, not an IP address"
+            );
+        }
         let roots = roots
             .into_iter()
             .map(parse_certificate_data)
@@ -64,12 +78,13 @@ impl TlsClientConfig {
             context: builder
                 .build()
                 .context("Failed to build TLS configuration")?,
-            server_name: server_name.to_owned(),
+            peer_identity: peer_identity.to_owned(),
+            sni_name: sni_name.map(str::to_owned),
         })
     }
 
     pub(crate) async fn connect(&self, tcp_stream: TcpStream) -> Result<SslStream<TcpStream>> {
-        connect_tls(&self.context, tcp_stream, &self.server_name)
+        connect_tls(&self.context, tcp_stream, &self.peer_identity, self.sni_name.as_deref())
             .await
             .context("Failed to establish TLS connection")
     }

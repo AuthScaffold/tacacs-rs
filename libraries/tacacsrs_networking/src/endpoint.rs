@@ -79,18 +79,22 @@ impl PreparedEndpoint {
     ///
     /// Empty roots select the platform trust store. The endpoint options control
     /// certificate verification. No network I/O occurs during preparation.
+    /// `peer_identity` is the expected DNS/IP SAN. `sni_name` independently selects
+    /// an optional DNS name for the `ClientHello`. IP addresses are not sent as SNI.
     ///
     /// # Errors
     ///
     /// Returns an error if the DER material or native context is invalid.
     pub fn with_certificate_tls<'a>(
         mut self,
-        server_name: &str,
+        peer_identity: &str,
+        sni_name: Option<&str>,
         roots: impl IntoIterator<Item = &'a [u8]>,
         identity: Option<CertificateIdentity<'_>>,
     ) -> anyhow::Result<Self> {
         self.transport = PreparedTransport::Tls(TlsClientConfig::prepare(
-            server_name,
+            peer_identity,
+            sni_name,
             roots,
             identity,
             self.options.certificate_verification_disabled(),
@@ -223,7 +227,7 @@ mod tests {
             .with_connection_guard(RejectConnected);
             let endpoint = match security {
                 "tls" => endpoint
-                    .with_certificate_tls("localhost", std::iter::empty(), None)
+                    .with_certificate_tls("localhost", None, std::iter::empty(), None)
                     .unwrap(),
                 "psk" => endpoint
                     .with_psk("client", b"valid-test-psk-material", PskHash::Sha256, &[], None)

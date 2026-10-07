@@ -219,12 +219,20 @@ A server can enforce its own drain by returning `ERROR` for new sessions, finish
 
 ### TLS Client Certificates and Keys
 
+Without an explicit server port, TLS inputs now select port 300 instead of the previous CLI default of 49.
+Legacy TCP still defaults to 49. Explicit configured ports are preserved.
+
 When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemon present a TLS client identity to upstream TACACS+ servers.
 
 - Provide both flags together.
 - Both files can be PEM or DER. The daemon detects PEM input and converts it to DER before it builds the runtime connection configuration.
 - Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags. Provide PEM or DER certificate and private-key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If upstream TLS material is loaded through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
+
+Certificate verification now checks the peer's DNS/IP SAN as well as certificate trust.
+The expected identity is `domain-name` when configured, otherwise `address`. SNI selection is independent of that check.
+Previously accepted CN-only or mismatched certificates now fail before TACACS+ traffic.
+See [certificate peer identity](yang-config-guide.md#certificate-peer-identity) for the full identity-selection contract.
 
 ### Timeouts and Failover
 

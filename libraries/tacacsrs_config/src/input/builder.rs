@@ -4,6 +4,7 @@ use anyhow::Context;
 use crate::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, ValidationOptions,
 };
+use crate::builders::{DEFAULT_TACACS_TCP_PORT, DEFAULT_TACACS_TLS_PORT};
 
 use super::address::parse_host_port;
 use super::files::{load_client_certificate, load_client_private_key};
@@ -76,7 +77,11 @@ fn server_from_cli_input(
     security: &CliSecurity,
     options: &ValidationOptions,
 ) -> anyhow::Result<TacacsPlusServer> {
-    let (host, port) = parse_host_port(&input.address, 49);
+    let default_port = match security.mode {
+        CliSecurityMode::PlainTcp => DEFAULT_TACACS_TCP_PORT,
+        _ => DEFAULT_TACACS_TLS_PORT,
+    };
+    let (host, port) = parse_host_port(&input.address, default_port)?;
     let builder = TacacsPlusServerBuilder::new(&input.name, input.server_type, host, port)
         .with_timeout(input.timeout_seconds)
         .with_single_connection(input.single_connection);
@@ -167,4 +172,85 @@ fn psk_builder(
         }
         PskKeyExchangeMode::PskDhe => builder.with_tls13_epsk(identity, key),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_explicit_ports_cannot_select_a_default() {
+        let security = CliSecurity {
+            mode: CliSecurityMode::TlsServerAuthentication,
+            shared_secret: None,
+        };
+        for address in [
+            "[::1]:bad",
+            "[::1]:65536",
+            "[::1]:",
+            "[::1]ignored",
+            "[::1",
+            "server.example.test:bad",
+        ] {
+            assert!(
+                server_from_cli_input(
+                    &CliServerInput::new("test", address),
+                    &security,
+                    &ValidationOptions::default()
+                )
+                .is_err(),
+                "accepted {address}"
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_ports_follow_transport_and_explicit_ports_are_preserved() {
+        let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../lde/containers/config/certificates");
+        for (mode, expected_port) in [
+            (CliSecurityMode::PlainTcp, 49),
+            (CliSecurityMode::TlsServerAuthentication, 300),
+            (
+                CliSecurityMode::TlsClientCertificate {
+                    identity: CertKeyIdentity::new(
+                        fixtures.join("client.crt"),
+                        fixtures.join("client.key"),
+                    ),
+                },
+                300,
+            ),
+            (
+                CliSecurityMode::TlsPsk {
+                    identity: "test-client".to_owned(),
+                    key: PskKeyMaterial::Raw(b"valid-test-psk-material".to_vec()),
+                    exchange: PskKeyExchangeMode::PskOnly,
+                    groups: Vec::new(),
+                },
+                300,
+            ),
+        ] {
+            let security = CliSecurity {
+                mode,
+                shared_secret: None,
+            };
+            for (address, port) in [
+                ("server.example.test", expected_port),
+                ("192.0.2.20", expected_port),
+                ("[2001:db8::1]", expected_port),
+                ("2001:db8::1", expected_port),
+                ("server.example.test:449", 449),
+                ("192.0.2.20:9449", 9449),
+                ("[2001:db8::1]:9449", 9449),
+            ] {
+                let server = server_from_cli_input(
+                    &CliServerInput::new("test", address),
+                    &security,
+                    &ValidationOptions::default(),
+                )
+                .unwrap();
+                assert_eq!(server.port, port, "{address}, {:?}", security.mode);
+            }
+        }
+    }
 }

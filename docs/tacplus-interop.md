@@ -62,7 +62,8 @@ The client requests single-connection mode. The fixture allows it; these tests d
 | SHA-256 PSK-only | Server `auto` mode with disjoint P-224 group list | All operations pass without DHE |
 | SHA-384 PSK-DHE | Server cipher list restricted to `TLS_AES_256_GCM_SHA384` | All operations pass |
 
-Certificate verification stays enabled on the client. This confirms certificate-chain trust, not a separate hostname-mismatch test.
+Certificate verification stays enabled on the client, including the configured IP identity check.
+The configuration crate's native identity matrix separately covers mismatched SANs, SNI selection, CN-only rejection, and wildcard rules.
 The fixture permits the test user's password and command. It is not a production identity-policy test.
 The plain-TCP variant needs `AllowPlainTcpWithoutSharedSecret` on the client and the server's explicit un-obfuscated compatibility bit.
 It does not change the default fixture's security policy.

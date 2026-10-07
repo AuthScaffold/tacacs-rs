@@ -113,7 +113,7 @@ pub fn prepare_endpoint(
             key.expose_secret(),
             hash,
             &groups,
-            psk_server_name(server)?,
+            tls_sni_name(server)?,
         );
     }
     if !server.is_tls() {
@@ -159,18 +159,19 @@ pub fn prepare_endpoint(
             })
         })
         .transpose()?;
-    endpoint.with_certificate_tls(certificate_server_name(server), roots, identity)
+    endpoint.with_certificate_tls(
+        certificate_peer_identity(server),
+        tls_sni_name(server)?,
+        roots,
+        identity,
+    )
 }
 
-fn certificate_server_name(server: &TacacsPlusServer) -> &str {
-    if server.sni_enabled() {
-        server.domain_name.as_deref().unwrap_or(&server.address)
-    } else {
-        &server.address
-    }
+fn certificate_peer_identity(server: &TacacsPlusServer) -> &str {
+    server.domain_name.as_deref().unwrap_or(&server.address)
 }
 
-fn psk_server_name(server: &TacacsPlusServer) -> Result<Option<&str>> {
+fn tls_sni_name(server: &TacacsPlusServer) -> Result<Option<&str>> {
     if server.sni_enabled() {
         Ok(Some(
             server
@@ -232,14 +233,14 @@ mod tests {
             let mut server = builder().with_tls_server_authentication().build();
             server.address = address.to_owned();
             server.domain_name = Some("configured.example.com".to_owned());
-            assert_eq!(certificate_server_name(&server), address);
-            assert_eq!(psk_server_name(&server).unwrap(), None);
+            assert_eq!(certificate_peer_identity(&server), "configured.example.com");
+            assert_eq!(tls_sni_name(&server).unwrap(), None);
             server.sni_enabled = Some(true);
-            assert_eq!(certificate_server_name(&server), "configured.example.com");
-            assert_eq!(psk_server_name(&server).unwrap(), Some("configured.example.com"));
+            assert_eq!(certificate_peer_identity(&server), "configured.example.com");
+            assert_eq!(tls_sni_name(&server).unwrap(), Some("configured.example.com"));
             server.domain_name = None;
-            assert_eq!(certificate_server_name(&server), address);
-            assert!(psk_server_name(&server).is_err());
+            assert_eq!(certificate_peer_identity(&server), address);
+            assert!(tls_sni_name(&server).is_err());
         }
     }
 
@@ -367,6 +368,12 @@ mod tests {
     }
 
     fn certificate() -> (openssl::x509::X509, openssl::pkey::PKey<openssl::pkey::Private>) {
+        certificate_with_names(Some("server.example.test"))
+    }
+
+    fn certificate_with_names(
+        dns_san: Option<&str>,
+    ) -> (openssl::x509::X509, openssl::pkey::PKey<openssl::pkey::Private>) {
         use openssl::asn1::Asn1Time;
         use openssl::hash::MessageDigest;
         use openssl::pkey::PKey;
@@ -388,6 +395,16 @@ mod tests {
         certificate
             .set_not_after(&Asn1Time::days_from_now(1).unwrap())
             .unwrap();
+        if let Some(dns_san) = dns_san {
+            let san = openssl::x509::extension::SubjectAlternativeName::new()
+                .dns("localhost")
+                .dns(dns_san)
+                .ip("127.0.0.1")
+                .ip("::1")
+                .build(&certificate.x509v3_context(None, None))
+                .unwrap();
+            certificate.append_extension(san).unwrap();
+        }
         certificate.sign(&key, MessageDigest::sha256()).unwrap();
         (certificate.build(), key)
     }
@@ -411,6 +428,166 @@ mod tests {
             ee_certs: end_entity.then_some(trust),
             tls13_epsks: None,
         }
+    }
+
+    #[tokio::test]
+    async fn trusted_certificate_with_wrong_identity_receives_no_tacacs_bytes() {
+        probe_certificate_identity(
+            Some("server.example.test"),
+            "127.0.0.1",
+            Some("wrong.example.test"),
+            true,
+            false,
+            false,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn certificate_identity_and_sni_are_independent() {
+        for (san, address, domain, sni, insecure, allowed) in [
+            (
+                Some("server.example.test"),
+                "127.0.0.1",
+                Some("server.example.test"),
+                true,
+                false,
+                true,
+            ),
+            (
+                Some("server.example.test"),
+                "127.0.0.1",
+                Some("server.example.test"),
+                false,
+                false,
+                true,
+            ),
+            (
+                Some("server.example.test"),
+                "127.0.0.1",
+                Some("wrong.example.test"),
+                false,
+                false,
+                false,
+            ),
+            (Some("server.example.test"), "127.0.0.1", None, false, false, true),
+            (Some("server.example.test"), "localhost", None, false, false, true),
+            (Some("server.example.test"), "127.0.0.1", Some("127.0.0.2"), false, false, false),
+            (None, "127.0.0.1", Some("localhost"), true, false, false),
+            (Some("*.example.test"), "127.0.0.1", Some("server.example.test"), true, false, true),
+            (
+                Some("*.example.test"),
+                "127.0.0.1",
+                Some("nested.server.example.test"),
+                true,
+                false,
+                false,
+            ),
+            (
+                Some("serv*.example.test"),
+                "127.0.0.1",
+                Some("server.example.test"),
+                true,
+                false,
+                false,
+            ),
+            (
+                Some("server.example.test"),
+                "127.0.0.1",
+                Some("wrong.example.test"),
+                false,
+                true,
+                true,
+            ),
+        ] {
+            probe_certificate_identity(san, address, domain, sni, insecure, allowed).await;
+        }
+    }
+
+    async fn probe_certificate_identity(
+        dns_san: Option<&str>,
+        address: &str,
+        domain: Option<&str>,
+        sni: bool,
+        insecure: bool,
+        allowed: bool,
+    ) {
+        use std::pin::Pin;
+        use std::time::Duration;
+
+        use openssl::ssl::{Ssl, SslContext, SslMethod, NameType};
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+        use tokio_openssl::SslStream;
+        use tacacsrs_protocol::operations::AccountingOperation;
+
+        let (certificate, key) = certificate_with_names(dns_san);
+        let mut context = SslContext::builder(SslMethod::tls_server()).unwrap();
+        context.set_certificate(&certificate).unwrap();
+        context.set_private_key(&key).unwrap();
+        let context = context.build();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut server = builder().with_tls_server_authentication().build();
+        server.port = listener.local_addr().unwrap().port();
+        server.address = address.to_owned();
+        server.domain_name = domain.map(str::to_owned);
+        server.sni_enabled = domain.map(|_| sni);
+        server.server_authentication = Some(server_trust(&certificate, false));
+        let original = server.clone();
+        let endpoint = prepare_endpoint(
+            &server,
+            PrepareOptions::default().with_certificate_verification_disabled(insecure),
+        )
+        .unwrap();
+        let peer = async {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut stream = SslStream::new(Ssl::new(&context).unwrap(), tcp).unwrap();
+            let handshake = Pin::new(&mut stream).accept().await;
+            let observed_sni = stream
+                .ssl()
+                .servername(NameType::HOST_NAME)
+                .map(str::to_owned);
+            if handshake.is_err() {
+                return (false, observed_sni);
+            }
+            let mut byte = [0];
+            (stream.read(&mut byte).await.unwrap_or(0) != 0, observed_sni)
+        };
+        let client = async {
+            let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+            client
+                .execute(
+                    AccountingOperation {
+                        user: "test".to_owned(),
+                        port: "test".to_owned(),
+                        remote_address: "127.0.0.1".to_owned(),
+                        command: "show".to_owned(),
+                        command_arguments: Vec::new(),
+                    }
+                    .exchange(),
+                )
+                .await
+        };
+        let ((received_data, observed_sni), result) =
+            tokio::time::timeout(Duration::from_secs(3), async { tokio::join!(peer, client) })
+                .await
+                .unwrap();
+        assert_eq!(
+            received_data, allowed,
+            "SAN {dns_san:?}, address {address}, domain {domain:?}, SNI {sni}, insecure {insecure}"
+        );
+        assert_eq!(
+            observed_sni.as_deref(),
+            if sni {
+                domain
+            } else {
+                None
+            }
+        );
+        if !allowed {
+            assert!(result.is_err());
+        }
+        assert_eq!(server, original);
     }
 
     #[tokio::test]

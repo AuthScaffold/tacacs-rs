@@ -99,7 +99,7 @@ The SONiC integration layer supplies a resolver. It does not interpret generated
 
 Call `prepare::prepare_endpoint` with a materialized server and `prepare::PrepareOptions`.
 The source snapshot must first pass schema validation with its selected validation options.
-Configuration maps the YANG transport choice, certificate encodings, PSK hash, ordered groups, and server name into networking inputs.
+Configuration maps the YANG transport choice, certificate encodings, PSK hash, ordered groups, expected peer identity, and optional SNI into networking inputs.
 Networking validates borrowed DER and PSK material and constructs private reusable TLS contexts.
 The resulting `PreparedEndpoint` contains no generated model or source reference.
 
@@ -112,6 +112,14 @@ The timeout bounds TCP connection establishment, not TLS handshakes or complete 
 Callers must replace networking `ConnectOptions` with `prepare::PrepareOptions` at this API boundary.
 Set a different timeout in the canonical YANG source or with `TacacsPlusServerBuilder::with_timeout` before preparation.
 Schema-free native callers can still use networking `ConnectOptions` with `PreparedEndpoint::tcp`.
+
+Certificate TLS verifies the configured `domain-name`, or `address` when no domain is configured, against the peer's DNS or IP subject alternative name.
+Verification remains active when SNI is disabled. CN fallback and partial-label wildcard matches are disabled.
+The `sni-enabled` field controls only the optional DNS name sent in the TLS `ClientHello`.
+An omitted or false value sends no SNI. A true value requires `domain-name`.
+Native callers pass the expected peer identity and optional SNI name separately to `PreparedEndpoint::with_certificate_tls`.
+This replaces the earlier chain-only check and can reject previously accepted certificates that lack a matching SAN.
+The explicit development verification override still disables certificate verification. It does not change SNI selection.
 
 Pass this endpoint to `TacacsClient::connect_prepared`.
 With preflight disabled, construction does not open a connection. Native material errors still fail during preparation.
@@ -210,6 +218,10 @@ The source contract also carries validation options and initial-load and subscri
 `input::CliDatastoreInput` accepts parsed executable inputs without depending on clap.
 `input::tacacs_plus_from_cli_input` converts those inputs into a validated YANG snapshot through the canonical builders and validation rules.
 These input values are adapters, not a second desired-configuration schema.
+
+For an omitted input port, shared configuration defaults select 49 for legacy TCP and 300 for certificate or PSK TLS.
+Explicit ports remain unchanged. Malformed explicit ports fail instead of selecting a default.
+The pinned YANG model requires a port, so canonical snapshots and programmatic server builders retain explicit port values.
 
 `input::CliFileDatastore` implements the same source contract for CLI and file inputs.
 It watches a YANG file or referenced CLI certificate and key files when applicable.

@@ -71,6 +71,24 @@ The module-oriented API is also available for callers that want grouped imports:
 - `runtime` - bundle enumeration helpers.
 - `stats` - runtime statistics types.
 
+## Certificate Peer Identity
+
+For certificate TLS, `domain-name` selects the expected peer identity when configured. Otherwise, verification uses `address`.
+DNS names match certificate DNS SANs, and numeric addresses match IP SANs.
+The client also performs its existing certificate trust verification. Setting SNI alone is not identity verification.
+
+`sni-enabled` controls the DNS name sent in the TLS `ClientHello`, not whether the peer identity is verified.
+When it is true, `domain-name` is required and sent as SNI. An omitted or false value sends no SNI.
+A configured domain remains the verification identity even when SNI is disabled.
+IP addresses are not sent as certificate-TLS SNI names.
+
+The implementation disables CN fallback and partial-label wildcards. A complete leftmost-label wildcard can match one label, not multiple nested labels.
+This follows the DNS/IP identity rules referenced by RFC 9887 Section 3.4.2 and RFC 9525.
+It does not establish full RFC 9887 conformance, including revocation, certificate-chain provisioning, or other profile requirements.
+
+Migration can require certificates with matching SAN entries. Chain trust alone no longer permits a certificate for a different identity.
+The explicit development-only verification override still bypasses certificate verification and permits server impersonation.
+
 ## Three-layer processing model
 
 The crate separates parsing and runtime preparation into three layers.

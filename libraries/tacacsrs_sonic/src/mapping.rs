@@ -38,15 +38,11 @@ use tacacsrs_config::{
     ValidationOptions, ValidationRelaxation,
 };
 
-/// Default TACACS+ TCP port when `tcp_port` is missing.
-pub const DEFAULT_TACACS_TCP_PORT: u16 = 49;
+pub use tacacsrs_config::builders::{DEFAULT_TACACS_TCP_PORT, DEFAULT_TACACS_TLS_PORT};
 
 /// Default per-server timeout (seconds) when neither the global nor per-server
 /// `timeout` field is set.
 pub const DEFAULT_TIMEOUT_SECONDS: u16 = 5;
-
-/// Default TCP port for TACACS+ over TLS.
-pub const DEFAULT_TACACS_TLS_PORT: u16 = 449;
 
 /// Hash table keyed by ConfigDB column name.
 ///
@@ -1039,7 +1035,7 @@ mod tests {
             tls,
             h(&[
                 ("local_listen_address", "127.0.0.1"),
-                ("local_listen_port", "449"),
+                ("local_listen_port", "300"),
             ]),
         ))
         .expect("runtime filtering owns TLS self-target rejection");
@@ -1067,7 +1063,9 @@ mod tests {
         compatibility
             .insert("192.0.2.10".to_owned(), h(&[("priority", "16"), ("tcp_port", "449")]));
         let mut tls = BTreeMap::new();
-        tls.insert("::ffff:192.0.2.10".to_owned(), tls_fields("48"));
+        let mut matching_tls = tls_fields("48");
+        matching_tls.insert("tcp_port".to_owned(), "449".to_owned());
+        tls.insert("::ffff:192.0.2.10".to_owned(), matching_tls);
         let error = ParsedSonicTables::from_tables(&SonicTacacsTables::with_extended_tables(
             SonicHash::new(),
             compatibility,
@@ -1254,6 +1252,25 @@ mod tests {
                 PskDheKeSupportedGroup::Secp384r1
             ]
         );
+    }
+
+    #[test]
+    fn tls_port_defaults_to_rfc9887_and_preserves_explicit_ports() {
+        for (configured, expected) in [(None, 300), (Some("449"), 449), (Some("9449"), 9449)] {
+            let mut fields = tls_fields("48");
+            if let Some(port) = configured {
+                fields.insert("tcp_port".to_owned(), port.to_owned());
+            }
+            let tables = SonicTacacsTables::with_extended_tables(
+                SonicHash::new(),
+                BTreeMap::from([("192.0.2.10".to_owned(), h(&[("priority", "16")]))]),
+                BTreeMap::from([("192.0.2.20".to_owned(), fields)]),
+                SonicHash::new(),
+            );
+            let canonical = map_sonic_tables_to_tacacs_plus(&tables).unwrap();
+            assert_eq!(canonical.server[0].port, expected);
+            assert_eq!(canonical.server[1].port, 49);
+        }
     }
 
     #[test]

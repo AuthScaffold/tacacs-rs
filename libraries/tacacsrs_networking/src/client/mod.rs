@@ -864,7 +864,7 @@ mod tests {
             Some(tacacsrs_secrets::SecretBytes::new(b"legacy-secret".to_vec())),
             ConnectOptions::default(),
         )
-        .with_certificate_tls("10.0.0.1", [], None)
+        .with_certificate_tls("10.0.0.1", None, [], None)
         .unwrap();
         assert_eq!(endpoint.obfuscation_key.unwrap().expose_secret(), b"legacy-secret");
     }
