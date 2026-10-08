@@ -9,6 +9,7 @@ description = "TACACS+ TCP and TLS connections with certificate and PSK support.
 [dependencies]
 tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 anyhow = { version = "1.0.102", features = ["backtrace"] }
+async-trait = "0.1.89"
 tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 rand = "0.10.1"

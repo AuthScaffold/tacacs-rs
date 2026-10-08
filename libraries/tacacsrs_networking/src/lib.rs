@@ -16,6 +16,7 @@ mod endpoint;
 mod establish;
 mod exchange_error;
 mod helpers;
+pub mod retry;
 mod runtime;
 mod session;
 mod single_connect;

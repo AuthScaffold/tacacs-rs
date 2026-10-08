@@ -27,8 +27,6 @@
 mod admission;
 mod attempt;
 mod connection;
-mod executor;
-mod failover;
 mod operation;
 pub(crate) mod manager;
 mod network;
@@ -38,8 +36,6 @@ mod router;
 pub(crate) use connection::{UpstreamConnection, UpstreamConnector};
 pub(crate) use attempt::{AttemptFailureKind, UpstreamRequestError};
 pub(crate) use admission::{AdmissionError, AdmissionPermit};
-pub(crate) use executor::{Attempt, FailoverAttempt, FailoverOutcome, run_with_failover};
-pub(crate) use failover::{AttemptDisposition, FailoverPlan};
 pub(crate) use network::NetworkUpstreamConnector;
 pub(crate) use proxy_transport::ProxyTransportSettings;
 pub(crate) use router::OperationRouter;

@@ -323,7 +323,8 @@ mod tests {
 
     use super::*;
     use crate::config::{FailoverStrategy, OperationPolicies, PolicyService, RuntimePolicy};
-    use crate::upstream::{AdmissionError, AdmissionPermit, FailoverPlan, OperationKind};
+    use crate::upstream::{AdmissionError, AdmissionPermit, OperationKind};
+    use tacacsrs_networking::retry::FailoverPlan;
 
     #[derive(Default)]
     struct FakeProxySession {
@@ -452,7 +453,7 @@ mod tests {
             Ok(())
         }
 
-        fn failover_plan(&self, operation: OperationKind) -> FailoverPlan {
+        fn failover_plan(&self, _operation: OperationKind) -> FailoverPlan {
             let policy = RuntimePolicy::new(
                 FailoverStrategy::default(),
                 self.strategy,
@@ -460,12 +461,7 @@ mod tests {
                 Duration::from_secs(30),
             )
             .expect("test policy");
-            FailoverPlan::new(
-                &policy,
-                PolicyService::TacacsProxy,
-                operation,
-                self.eligible_server_count,
-            )
+            policy.failover_plan(PolicyService::TacacsProxy, self.eligible_server_count)
         }
     }
 
@@ -872,43 +868,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ordered_proxy_does_not_replay_uncertain_accounting_request() {
-        let downstream_id = 0x1111_2222;
-        let first_upstream_id = 0x3333_4444;
-        let second_upstream_id = 0x5555_6666;
-        let provider = Arc::new(FakeConversationProvider::ordered(vec![
-            FakeProxySession::new(first_upstream_id, Vec::new()),
-            FakeProxySession::new(
-                second_upstream_id,
-                vec![test_packet(
-                    TacacsType::TacPlusAccounting,
-                    second_upstream_id,
-                    accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess),
-                )],
-            ),
-        ]));
-        let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
-        let proxy_task = tokio::spawn(proxy_multiplexed_connection(
-            proxy_stream,
-            Duration::from_secs(1),
-            None,
-            Arc::clone(&provider),
-        ));
+    async fn ordered_proxy_does_not_replay_uncertain_requests() {
+        for packet_type in [
+            TacacsType::TacPlusAuthentication,
+            TacacsType::TacPlusAuthorisation,
+            TacacsType::TacPlusAccounting,
+        ] {
+            let downstream_id = 0x1111_2222;
+            let first_upstream_id = 0x3333_4444;
+            let second_upstream_id = 0x5555_6666;
+            let provider = Arc::new(FakeConversationProvider::ordered(vec![
+                FakeProxySession::new(first_upstream_id, Vec::new()),
+                FakeProxySession::new(second_upstream_id, Vec::new()),
+            ]));
+            let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
+            let proxy_task = tokio::spawn(proxy_multiplexed_connection(
+                proxy_stream,
+                Duration::from_secs(1),
+                None,
+                Arc::clone(&provider),
+            ));
 
-        write_packet(
-            &mut client_stream,
-            &test_packet_with_sequence(
-                TacacsType::TacPlusAccounting,
-                downstream_id,
-                1,
-                TacacsFlags::empty(),
-                b"record".to_vec(),
-            ),
-        )
-        .await;
+            write_packet(
+                &mut client_stream,
+                &test_packet_with_sequence(
+                    packet_type,
+                    downstream_id,
+                    1,
+                    TacacsFlags::empty(),
+                    b"record".to_vec(),
+                ),
+            )
+            .await;
 
-        assert!(proxy_task.await.expect("proxy task joins").is_err());
-        assert_eq!(provider.opened(), 1);
+            assert!(tokio::time::timeout(Duration::from_secs(2), proxy_task)
+                .await
+                .unwrap()
+                .expect("proxy task joins")
+                .is_err());
+            assert_eq!(provider.opened(), 1);
+        }
     }
 
     #[tokio::test]

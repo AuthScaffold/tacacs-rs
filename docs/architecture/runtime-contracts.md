@@ -113,7 +113,7 @@ Explicit close remains necessary when the caller needs proof that transport reso
 ### Retry matrix
 
 The default policy is conservative across all operation kinds.
-This intentionally changes the current policy that can retry unknown authentication and authorization outcomes.
+The first [Stage 3 increment](stage-3-routed-client.md#retry-ownership) implements this rule, replacing implicit retries of unknown authentication and authorization outcomes.
 
 | Result | Default action | Optional policy |
 | --- | --- | --- |

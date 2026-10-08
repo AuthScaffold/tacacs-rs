@@ -5,7 +5,7 @@
 //! exchange cannot move to another server without losing protocol state.
 //!
 //! This module does not read the failover strategy. It builds one
-//! [`crate::upstream::FailoverPlan`] and gives one [`ProxyAttempt`] to the
+//! [`tacacsrs_networking::retry::FailoverPlan`] and gives one [`ProxyAttempt`] to the
 //! shared failover executor.
 
 use std::time::Duration;
@@ -13,6 +13,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_networking::ClientConversation;
+use tacacsrs_networking::retry::{
+    Attempt, AttemptDisposition, FailoverAttempt, FailoverOutcome, FailoverPlan, run_with_failover,
+};
 use tokio::sync::mpsc;
 
 use super::error::ProxyConnectionError;
@@ -20,10 +23,7 @@ use super::error_reply::local_error_reply;
 use super::packet_io;
 use super::reply_action::{ReplyAction, is_error_reply, reply_action};
 use super::session_mapping::rewrite_session_id;
-use crate::upstream::{
-    AdmissionError, AdmissionPermit, Attempt, AttemptDisposition, FailoverAttempt, FailoverOutcome,
-    FailoverPlan, OperationKind, OperationRouter, run_with_failover,
-};
+use crate::upstream::{AdmissionError, AdmissionPermit, OperationKind, OperationRouter};
 use crate::upstream::manager::BoundServer;
 
 /// One TACACS+ conversation with a selected upstream server.

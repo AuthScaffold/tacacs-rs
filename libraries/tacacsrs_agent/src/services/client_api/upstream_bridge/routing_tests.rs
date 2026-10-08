@@ -33,6 +33,7 @@ struct ScriptedConnection {
     address: String,
     fail_authentication: AtomicBool,
     fail_accounting: AtomicBool,
+    fail_authorization: AtomicBool,
     authentication_status: TacacsAuthenticationStatus,
     accounting_status: TacacsAccountingStatus,
 }
@@ -43,6 +44,7 @@ impl ScriptedConnection {
             address: address.to_owned(),
             fail_authentication: AtomicBool::new(false),
             fail_accounting: AtomicBool::new(false),
+            fail_authorization: AtomicBool::new(false),
             authentication_status: TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
             accounting_status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
         }
@@ -98,6 +100,11 @@ impl UpstreamConnection for ScriptedConnection {
         &self,
         _request: AuthorizationRequest,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
+        if self.fail_authorization.swap(false, Ordering::AcqRel) {
+            return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
+                "injected authorization transport failure"
+            )));
+        }
         Ok(AuthorizationReply {
             status: TacacsAuthorizationStatus::TacPlusPassAdd,
             server_msg: String::new(),
@@ -228,7 +235,7 @@ fn operation_map(
 }
 
 #[tokio::test]
-async fn ordered_retry_moves_authentication_to_the_next_server() {
+async fn ordered_retry_stops_on_unknown_authentication_outcome() {
     let mut primary = ScriptedConnection::successful("primary:49");
     primary.fail_authentication = AtomicBool::new(true);
     let primary = Arc::new(primary);
@@ -240,17 +247,18 @@ async fn ordered_retry_moves_authentication_to_the_next_server() {
     )));
     let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
 
-    let response = bridge
+    let error = bridge
         .execute_pap_authentication_request(authentication())
         .await
-        .expect("the backup must authenticate");
+        .expect_err("uncertain authentication must not be replayed");
 
-    assert_eq!(response.server, "backup:49");
+    assert_eq!(error.server.as_deref(), Some("primary:49"));
+    assert!(!error.retriable);
     assert_eq!(
         connector
             .attempts("backup:49", OperationKind::Authentication)
             .await,
-        1
+        0
     );
 }
 
@@ -314,7 +322,7 @@ async fn uncertain_accounting_failure_does_not_retry() {
 }
 
 #[tokio::test]
-async fn later_bind_failure_preserves_unknown_delivery_advice() {
+async fn uncertain_failure_stops_before_binding_a_missing_backup() {
     let primary = Arc::new(ScriptedConnection {
         fail_authentication: AtomicBool::new(true),
         ..ScriptedConnection::successful("primary:49")
@@ -323,12 +331,80 @@ async fn later_bind_failure_preserves_unknown_delivery_advice() {
         ("primary:49".to_owned(), OperationKind::Authentication),
         primary,
     )])));
-    let bridge = bridge(connector, FailoverStrategy::OrderedSafeRetry);
+    let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
     let error = bridge
         .execute_pap_authentication_request(authentication())
         .await
         .unwrap_err();
-    assert!(!error.retriable, "a later bind error must not erase an uncertain attempt");
+    assert!(!error.retriable, "IPC must not recommend replay of an uncertain attempt");
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Authentication)
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn ordered_retry_stops_on_unknown_authorization_outcome() {
+    let primary = Arc::new(ScriptedConnection {
+        fail_authorization: AtomicBool::new(true),
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary,
+        backup,
+        OperationKind::Authorization,
+    )));
+    let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
+    let request = tacacsrs_protocol::operations::AuthorizationOperation::builder(
+        "admin",
+        15,
+        tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsPap,
+    )
+    .service("shell")
+    .command("show")
+    .build()
+    .unwrap();
+    let error = bridge
+        .execute_authorization_request(request)
+        .await
+        .unwrap_err();
+    assert!(!error.retriable);
+    assert_eq!(error.server.as_deref(), Some("primary:49"));
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Authorization)
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn ordered_retry_preserves_explicit_authentication_error_failover() {
+    let primary = Arc::new(ScriptedConnection {
+        authentication_status: TacacsAuthenticationStatus::TacPlusAuthenStatusError,
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary,
+        backup,
+        OperationKind::Authentication,
+    )));
+    let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
+    let response = bridge
+        .execute_pap_authentication_request(authentication())
+        .await
+        .unwrap();
+    assert_eq!(response.server, "backup:49");
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Authentication)
+            .await,
+        1
+    );
 }
 
 #[tokio::test]

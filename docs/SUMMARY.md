@@ -38,3 +38,4 @@
 - [Stage 0 Contract Gates](architecture/stage-0-contract-gates.md)
 - [Stage 1 Protocol Ownership](architecture/stage-1-protocol-ownership.md)
 - [Stage 2 Prepared Endpoints](architecture/stage-2-prepared-endpoints.md)
+- [Stage 3 Routed Client](architecture/stage-3-routed-client.md)

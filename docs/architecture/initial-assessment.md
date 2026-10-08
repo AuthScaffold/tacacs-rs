@@ -195,7 +195,7 @@ The failover executor already centralizes retry control for different service br
 Its tests distinguish accepted results, server rejection, transport failure, and aborted requests.
 A redesign must account for this existing separation before it proposes another policy engine.
 
-- [Shared failover executor](../../libraries/tacacsrs_agent/src/upstream/executor.rs#L1)
+- [Shared failover executor](../../libraries/tacacsrs_networking/src/retry/executor.rs)
 
 The runtime already documents complete replacement of materialized server sets.
 Bound requests retain the previous immutable server set.

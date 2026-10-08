@@ -103,7 +103,7 @@ The shared failover plan uses that distinction to avoid replaying accounting wit
 The client API bridge converts both failure classes to a `ServiceError` with `retriable: true`.
 
 - [Transmission classification](../../libraries/tacacsrs_networking/src/exchange_error.rs#L1)
-- [Accounting replay rule](../../libraries/tacacsrs_agent/src/upstream/failover.rs#L26)
+- [Replay rule](../../libraries/tacacsrs_networking/src/retry/plan.rs)
 - [IPC error conversion](../../libraries/tacacsrs_agent/src/services/client_api/upstream_bridge/routed.rs#L86)
 - [Service error shape](../../libraries/tacacsrs_protocol/src/operations.rs#L797)
 
@@ -272,7 +272,7 @@ Several mechanisms already support the desired architecture:
 
 | Mechanism | Evidence | Design value |
 | --- | --- | --- |
-| Shared failover executor | [Executor](../../libraries/tacacsrs_agent/src/upstream/executor.rs#L1) | One retry control path for typed operations and proxy attempts |
+| Shared failover executor | [Executor](../../libraries/tacacsrs_networking/src/retry/executor.rs) | One retry control path for typed operations and proxy attempts |
 | Conservative delivery classification | [Exchange errors](../../libraries/tacacsrs_networking/src/exchange_error.rs#L1) | Foundation for safe retry advice |
 | Proxy conversation pinning | [Proxy session](../../libraries/tacacsrs_agent/src/services/tacacs_proxy/upstream_bridge/session.rs#L1) | Preserves upstream state after a valid reply |
 | Stale result rejection | [Materialization coordinator](../../executables/tacacsrs_agentd/src/materialization_coordinator.rs#L181) | Prevents old credential work from replacing new desired state |

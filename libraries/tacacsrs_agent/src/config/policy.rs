@@ -21,6 +21,7 @@ pub enum FailoverStrategy {
     #[default]
     DeferredFailover,
     /// Try the next eligible server during the current request when replay is safe.
+    /// Unknown outcomes stop immediately for every operation kind.
     OrderedSafeRetry,
 }
 
@@ -186,6 +187,19 @@ impl RuntimePolicy {
             PolicyService::ClientApi => self.client_api_failover_strategy,
             PolicyService::TacacsProxy => self.tacacs_proxy_failover_strategy,
         }
+    }
+
+    /// Projects the service strategy into an execution-only attempt budget.
+    pub(crate) fn failover_plan(
+        &self,
+        service: PolicyService,
+        eligible_servers: usize,
+    ) -> tacacsrs_networking::retry::FailoverPlan {
+        let attempts = match self.failover_strategy(service) {
+            FailoverStrategy::DeferredFailover => 1,
+            FailoverStrategy::OrderedSafeRetry => eligible_servers.max(1),
+        };
+        tacacsrs_networking::retry::FailoverPlan::new(attempts)
     }
 
     /// Returns the shared admission limits for an operation.

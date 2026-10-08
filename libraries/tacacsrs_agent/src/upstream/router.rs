@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::config::PolicyService;
 
 use super::admission::{AdmissionError, AdmissionPermit};
-use super::failover::FailoverPlan;
+use tacacsrs_networking::retry::FailoverPlan;
 use super::manager::{BoundServer, UpstreamManager};
 use super::operation::OperationKind;
 

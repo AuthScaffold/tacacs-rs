@@ -255,6 +255,8 @@ Client execution has no generated-model dependency, and all retained transport m
 
 **Scope:** endpoint routing, failover, sessions, and resource lifetime.
 
+**Status:** in progress. The [Stage 3 checkpoint](stage-3-routed-client.md) records completed increments and remaining acceptance gates.
+
 1. Move operation routing, circuits, and reconnect serialization from the agent to the client.
 2. Retain the shared retry executor and adapt it to neutral operation/failure types.
 3. Add request leases, absolute deadlines, bounded queues, and explicit client close/join behavior.
@@ -265,7 +267,7 @@ Client execution has no generated-model dependency, and all retained transport m
 Primary starting points:
 
 - [Upstream manager](../../libraries/tacacsrs_agent/src/upstream/manager/mod.rs)
-- [Shared executor](../../libraries/tacacsrs_agent/src/upstream/executor.rs)
+- [Shared executor](../../libraries/tacacsrs_networking/src/retry/executor.rs)
 - [Connection driver](../../libraries/tacacsrs_networking/src/runtime/multiplexed/mod.rs)
 - [Session routes](../../libraries/tacacsrs_networking/src/session/manager.rs)
 

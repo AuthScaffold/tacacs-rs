@@ -2,11 +2,13 @@
 
 use async_trait::async_trait;
 use tacacsrs_protocol::operations::ServiceError;
+use tacacsrs_networking::retry::{
+    Attempt, AttemptDisposition, FailoverAttempt, FailoverOutcome, run_with_failover,
+};
 
 use super::UpstreamBridge;
 use crate::upstream::{
-    Attempt, AttemptDisposition, AttemptFailureKind, FailoverAttempt, FailoverOutcome,
-    OperationKind, OperationRouter, UpstreamConnection, UpstreamRequestError, run_with_failover,
+    AttemptFailureKind, OperationKind, OperationRouter, UpstreamConnection, UpstreamRequestError,
 };
 
 /// Operation-specific hooks used by the client API upstream bridge.

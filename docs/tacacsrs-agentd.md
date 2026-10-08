@@ -294,9 +294,13 @@ current request. These replay rules always apply:
 
 - A denial is a valid response and does not cause failover.
 - A server `ERROR` reply can use the next server.
-- Authentication and authorization can use the next server after an uncertain transport failure.
-- Accounting does not retry after an uncertain transport failure.
+- Unknown authentication, authorization, and accounting outcomes stop the current request without another attempt.
+- Proven-unsent failures can use the next server within the configured attempt budget.
 - A continuing authentication session stays on the server that sent its first valid reply.
+
+This changes earlier `ordered-safe-retry` behavior, which could replay uncertain authentication and authorization requests.
+Those operations can affect audit or lockout state, so their unknown outcomes now remain failures with no automatic replay.
+The default deferred strategy is unchanged. No uncertain-outcome replay opt-in is currently exposed.
 
 ### Preferred Server Recovery
 

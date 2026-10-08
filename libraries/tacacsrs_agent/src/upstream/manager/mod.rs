@@ -214,13 +214,9 @@ impl UpstreamManager {
         &self,
         service: crate::config::PolicyService,
         operation: OperationKind,
-    ) -> crate::upstream::FailoverPlan {
-        crate::upstream::FailoverPlan::new(
-            &self.runtime_policy(),
-            service,
-            operation,
-            self.eligible_server_count(operation),
-        )
+    ) -> tacacsrs_networking::retry::FailoverPlan {
+        self.runtime_policy()
+            .failover_plan(service, self.eligible_server_count(operation))
     }
 
     /// Waits for service-operation capacity from the current policy generation.
