@@ -211,21 +211,21 @@ Primary starting points:
 
 **Scope:** canonical YANG snapshots, credential materialization, and derived client connection inputs.
 
-**Status:** in progress. The [prepared endpoint checkpoint](stage-2-prepared-endpoints.md) records the implemented boundary and remaining work.
+**Status:** complete as of 2026-10-08. The [prepared endpoint checkpoint](stage-2-prepared-endpoints.md) records implemented behavior, validation exceptions, and named later-stage obligations.
 
 Its [completion checklist](stage-2-prepared-endpoints.md#completion-checklist) tracks both the original scope and issues discovered during implementation.
 The numbered plan below is the original scope, not a limit on necessary corrections.
 S2-12 is complete in `594b5be`: local listener controls now use canonical YANG and shared pre-bind validation.
 S2-13 is complete in `66c59d6`: downstream credentials now use explicit canonical source policy and immutable prepared material.
 S2-14 is complete in `64b2e4e`: SONiC preserves canonical rows and uses shared publication-time proxy loop validation.
-The field inventory and final closure checks remain open as S2-15 and S2-16.
+The field inventory and final closure checks are complete as S2-15 and S2-16.
 S2-17 is complete in `031eb3a`: connection-time guards use actual bound ports and recheck resolved destinations before transport I/O.
-S2-15 and S2-16 remain open. Their remaining implementation gates are S2-22 and S2-23 in the reconciled inventory.
+S2-22 and S2-23 are complete in `3b0dc30`, closing the reconciled inventory's final implementation gates.
 The inventory review added and completed S2-18 and S2-19 in `8e6243e`: SAN identity verification, independent SNI, and standard TLS input ports.
 S2-20 is complete in `bdbec25`: CA and exact-peer trust remain distinct, additive policies work, and empty explicit bags cannot select platform roots.
 S2-21 is complete in `158f7f7`: native preparation rejects concatenated certificates and trailing DER material.
 The reconciled inventory assigns client-chain provisioning, revocation retrieval, and operational-statistics publication to explicit Stage 4 contracts.
-S2-22 owns RFC 7951 empty-leaf encoding and EPSK selection semantics. S2-23 owns explicit certificate public-key metadata validation.
+S2-22 corrects RFC 7951 empty-leaf encoding and EPSK selection semantics. S2-23 validates explicit certificate public-key metadata.
 These corrections do not establish full certificate-profile conformance.
 
 1. Preserve generated YANG types and builders as the authoritative configuration APIs.

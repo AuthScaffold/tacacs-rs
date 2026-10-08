@@ -2,9 +2,10 @@
 
 ## Status
 
-Stage 2 is in progress. This checkpoint covers native transport preparation, single-endpoint execution, credential materialization, source consolidation, and publication readiness.
+Stage 2 is complete as of 2026-10-08. This checkpoint covers native transport preparation, single-endpoint execution, credential materialization, source consolidation, and publication readiness.
 Configuration now depends on the provider-neutral credential package and networking. Neither depends on configuration.
 The canonical YANG model, feature manifest, and defaults remain authoritative.
+All listed implementation items and the field inventory are resolved. The [closure record](#stage-2-closure) lists verification limits and later-stage obligations.
 
 ## Completion Checklist
 
@@ -29,6 +30,8 @@ If work moves between stages, record its new owner and update both stage descrip
 - [x] S2-13: Derive downstream credentials from explicit canonical source policy. Commit `66c59d6` removes mutable runtime credentials and implicit row overrides. See [canonical downstream credentials](#canonical-downstream-credentials) for redaction, rotation, startup rejection, and publication rollback evidence.
 - [x] S2-14: Normalize the SONiC forwarder profile into canonical local services and consolidate publication-time loop validation. Commit `64b2e4e` preserves source rows and adds cross-source, wildcard, interface, and DNS regressions. See [SONiC mapping and loop checks](#sonic-mapping-and-loop-checks). Connection-time enforcement is recorded under completed item S2-17.
 - [x] S2-17: Enforce loop exclusion at connection time using actual bound listener addresses. Commit `031eb3a` adds a schema-free guard and agent-owned listener state. See [connection-time loop exclusion](#connection-time-loop-exclusion) for changed-resolution, zero-byte, ephemeral-port, and shutdown regressions.
+- [x] S2-15: Reconcile every baseline field with implemented evidence, explicit rejection, or a named later-stage contract. The final corrections are in `3b0dc30`. See the [reconciled inventory](#reconciled-field-inventory).
+- [x] S2-16: Complete the relevant final workspace, generation, dependency-boundary, source-equivalence, rotation, and native interoperability checks after `3b0dc30`'s changes. See [Stage 2 closure](#stage-2-closure) for results and exceptions.
 
 ### Completed Discoveries
 
@@ -41,8 +44,10 @@ If work moves between stages, record its new owner and update both stage descrip
 - [x] S2-19: Use TLS port 300 for omitted CLI and SONiC ports while preserving explicit ports. Commit `8e6243e` also rejects malformed explicit port syntax instead of selecting a default. See [peer identity and standard ports](#peer-identity-and-standard-ports).
 - [x] S2-20: Preserve CA, exact peer, and platform trust roles during preparation. Commit `bdbec25` rejects empty explicit bags and verifies exact signed leaves and additive CA paths without weakening native checks. See [certificate trust roles](#certificate-trust-roles).
 - [x] S2-21: Reject concatenated DER certificates and trailing data instead of decoding only the first certificate. Commit `158f7f7` verifies native trust and client identity inputs, the development override, and PEM chain rejection. See [certificate input framing](#certificate-input-framing).
+- [x] S2-22: Generate RFC 7951 empty-leaf presence values and enforce applicable EPSK server authentication. Commit `3b0dc30` covers direct and bundled `[null]` encoding, malformed values, runtime readiness, and source preservation.
+- [x] S2-23: Validate explicit client public-key metadata before runtime publication. Commit `3b0dc30` covers SPKI RSA/EC agreement, incomplete metadata, unsupported SSH encoding, trailing bytes, private-key mismatch, and the development override.
 
-Open items and their completion conditions appear under [remaining Stage 2 work](#remaining-stage-2-work).
+There are no open Stage 2 checklist items. Later-stage obligations appear under [remaining Stage 2 work](#remaining-stage-2-work).
 The implementation sections below preserve the evidence and limits for completed items.
 
 ## Implemented Boundary
@@ -623,11 +628,30 @@ Workspace Clippy uses only the existing admission-warning exception. All nine in
 No dependency, lockfile, generated YANG, protobuf contract, or unsafe code changed.
 Windows and live SONiC validation did not run for this increment.
 
+## Final Field Corrections
+
+Commit `3b0dc30` completes S2-22 and S2-23 on 2026-10-08.
+The generator now maps YANG `empty` to `YangEmpty`, not a boolean. Present optional fields encode as `[null]`, while absent fields are omitted.
+Direct and bundled parsing rejects booleans, bare null, and incorrectly shaped arrays.
+The runtime rejects a server EPSK selector without a client EPSK identity after bundle expansion.
+The current PSK-only transport also rejects certificate trust bags that it cannot apply. An absent server selector still permits configured client EPSK authentication.
+These checks run in shared readiness validation before direct preparation or generation publication.
+
+Explicit certificate public-key metadata must include both bytes and format.
+Supported SPKI input must contain exactly one DER value matching the certificate's public key. The private key must also match the certificate.
+SSH encoding, incomplete metadata, malformed input, and trailing bytes are rejected, including with the development verification override.
+The native `CertificateIdentity::public_key_info` field carries borrowed SPKI input without exposing generated YANG types to networking.
+Tests cover RSA and EC identities, conflicting material, sanitized errors, and source immutability.
+
+During this work, a nearby root-parser regression demonstrated that trailing JSON was silently ignored.
+The parser now requires end-of-input after decoding the root. This correction stays in the current work rather than creating another checklist item.
+Generated artifact hashes are updated. The pinned schema source, feature selection, dependency declarations, and lockfile are unchanged.
+
 ## Reconciled Field Inventory
 
 This table updates the Stage 0 baseline using the current owners and verification evidence.
-It separates implemented behavior, explicit rejection, named later-stage contracts, and remaining Stage 2 corrections.
-S2-15 cannot close until S2-22 and S2-23 have executable evidence for their corrected behavior.
+It separates implemented behavior, explicit rejection, and named later-stage contracts.
+S2-22 and S2-23 have executable evidence in `3b0dc30`, completing S2-15's remaining field corrections.
 
 | Field or capability | Current disposition and evidence |
 | --- | --- |
@@ -639,13 +663,13 @@ S2-15 cannot close until S2-22 and S2-23 have executable evidence for their corr
 | Local credential bundles | [Enumeration tests](../../libraries/tacacsrs_config/tests/enumeration_integration.rs) cover expansion without changing authoritative references. |
 | Central credential references | [Resolution](../../libraries/tacacsrs_config/tests/resolution.rs) and [materialization](../../libraries/tacacsrs_config/tests/materialization.rs) preserve opaque references and validate complete typed result sets. |
 | Client certificate and private key | One DER leaf and its matching private key are supported. Native tests cover key encodings, mismatches, and mTLS. Client-chain input is currently rejected rather than truncated under S2-21. |
-| Separate public-key metadata | Materialization preserves the fields, but native projection does not verify them. S2-23 owns encoding and certificate/key agreement checks or explicit rejection. |
+| Separate public-key metadata | S2-23 validates paired SPKI bytes/format and certificate/private-key agreement. SSH format and malformed, incomplete, or trailing input are explicitly rejected. RSA/EC and source-preservation tests pass. |
 | CA and end-entity trust bags | S2-20 verifies additive CA paths and exact peer matches. Empty explicit bags are rejected. Platform trust remains the existing no-bag API behavior. |
 | Certificate providers | Generic provider contracts return a leaf/key pair or named trust bags. The [SONiC provider](../../libraries/tacacsrs_sonic/src/provider.rs) accepts only symmetric-key requests and rejects other kinds. No certificate provider capability is implied by enabled schema features. |
 | Client-chain provisioning | Not supported by the current one-leaf input contract. Stage 4 owns canonical chain inputs, provider material, and complete/missing/incorrect intermediate-chain acceptance tests. |
 | Revocation | Current TLS preparation does not obtain CRL/OCSP status. Stage 4 owns evidence retrieval, freshness and unavailable-status policy, and pre-use rejection. No full RFC 9887 conformance claim is made. |
 | EPSK identity, key, and hash | Typed materialization and native/independent peers cover both hashes, wrong keys, and rotation. Derivation context, target protocol/KDF, and `one-symmetric-key-format` are explicitly rejected before runtime publication. |
-| Server `tls13-epsks` presence leaf | The pinned type is YANG `empty`, but generated storage/JSON currently uses a boolean and preparation does not inspect it. S2-22 owns RFC 7951 encoding and runtime selection checks. |
+| Server `tls13-epsks` presence leaf | S2-22 uses `Option<YangEmpty>` with RFC 7951 `[null]` encoding. Direct and bundled selectors require client EPSK credentials. Unsupported mixed certificate trust is rejected before runtime. |
 | PSK-DHE groups | Ordered projection and negotiated-mode checks have native coverage. S2-08 rejects mode mismatch and certificate fallback before application traffic. |
 | Source IP, source interface, and VRF | Preserved in canonical input but explicitly rejected by [runtime readiness](../../libraries/tacacsrs_config/src/prepare/readiness.rs). No unsupported bind behavior is silently accepted. |
 | Read-only statistics | [ServerStatistics](../../libraries/tacacsrs_config/src/statistics.rs) is a reserved type, not a populated exporter. Stage 4 owns event counters and generation-associated operational-data publication. |
@@ -655,15 +679,32 @@ S2-15 cannot close until S2-22 and S2-23 have executable evidence for their corr
 The [Stage 4 acceptance contracts](migration-and-decisions.md#stage-4-create-one-configuration-controller-and-lifecycle-api) name the owners and tests for provisioning, revocation, and operational data.
 These assignments do not convert unimplemented behavior into supported features or relax the current preparation gates.
 
+## Stage 2 Closure
+
+Final validation on 2026-10-08 passes for the implementation recorded in `3b0dc30`:
+
+- Workspace tests with all features, including source equivalence, credential rotation, publication rollback, and listener lifecycle regressions.
+- Workspace build and nightly formatting check.
+- Warnings-as-errors workspace rustdoc and the HTML documentation book.
+- All thirteen YANG generator tests and deterministic regeneration against the pinned source and recorded hashes.
+- All four CI dependency-boundary checks for protocol, credentials, networking, and configuration.
+- All nine independent native `tac_plus-ng` runner cases. The runner cleans up its peer processes.
+- Dependency audit with no reported vulnerabilities in the resolved 301-package lockfile.
+
+Workspace Clippy passes only with the previously recorded `comparison_chain` exception in the admission module.
+The unmodified strict Clippy gate is not claimed as passing. No permanent lint allowance was added.
+The audit updated its advisory database but could not refresh the crates.io index because of the existing Cargo cache-lock warning.
+Windows and live SONiC validation did not run. Native loopback and offline SONiC source tests are not deployment certification.
+Miri remains unavailable because its nightly `rust-src` prerequisite could not be installed in the shared toolchain. No new unsafe code was added here.
+Coverage, sanitizer fuzzing, and the complete release pipeline are not claimed as part of this closure run.
+No protobuf schema changed. The field inventory records unsupported and deferred capabilities rather than claiming full RFC 9887 conformance.
+
 ## Remaining Stage 2 Work
 
-- [ ] S2-15: Close the [reconciled field inventory](#reconciled-field-inventory) after the S2-22 and S2-23 corrections pass their checks. Client-chain/provider limits and statistics/revocation owners are now recorded. Identity/SNI, ports, and trust-role corrections are complete under S2-18 through S2-20.
-- [ ] S2-16: Complete the final Stage 2 validation and status update after the open implementation items finish. Run relevant workspace, generation, source-equivalence, rotation, and native interoperability checks. Record unavailable checks and known exceptions separately. Update the migration plan and this checkpoint together.
-- [ ] S2-22: Correct `server-authentication/tls13-epsks` representation and runtime semantics. The pinned tree declares an `empty` leaf, but generated code uses `Option<bool>` and preparation does not inspect it. Implement RFC 7951 `[null]` encoding and validate selection against the client EPSK identity. Test direct and bundled sources, malformed values, and rejection before publication.
-- [ ] S2-23: Validate explicit client certificate public-key metadata. Materialization preserves `public-key` and `public-key-format`, but endpoint projection currently ignores them. Verify supported encodings and agreement with certificate/private-key material, or explicitly reject unsupported forms. Test mismatches, sanitized errors, and unchanged source snapshots.
+None in the current checklist. The next planned implementation stage is Stage 3, routed-client and connection-lifetime ownership.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Upstream `source-ip`, `source-interface`, and `vrf-instance` already fail explicitly under S2-06. Their implementation is not an implicit local-listener requirement.
 Routing, request leases, deadlines, and runtime retirement remain assigned to Stage 3.
 Unified source observation and policy/server publication remain assigned to Stage 4. Policy schema normalization is already complete under S2-10.
-Necessary corrections can move into Stage 2 through explicit new checklist items. The stage is not closed merely to preserve its original size.
+Client-chain provisioning, revocation retrieval, and operational-statistics publication retain their named Stage 4 acceptance contracts.
