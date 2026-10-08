@@ -93,6 +93,11 @@ Proxy continuations use the captured size limit. Global concurrency remains shar
 Availability observations use the captured server-set epoch, so old retries cannot report health for replacement endpoints.
 Absolute deadlines and bounded retirement remain S3-04 and S3-05 work.
 
+The [S3-03 implementation](stage-3-routed-client.md#routed-client) moves catalogs, operation cursors, circuits, and reconnect serialization into networking.
+Cloned routed clients retain their catalog. Bindings report outcomes against their captured connection generation.
+Recovery permits also carry a circuit revision, so obsolete results cannot change a newer recovery trial.
+The agent retains source projection, admission, policy publication, and health; it has no duplicate routing cache or circuit state.
+
 ### Deadline and cancellation
 
 One absolute deadline bounds admission, DNS, connection setup, TLS, transmission, and response wait.

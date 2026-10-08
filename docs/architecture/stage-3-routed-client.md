@@ -5,7 +5,8 @@
 Stage 3 is in progress. Stage 2's canonical configuration and prepared-endpoint boundaries remain in place.
 The first increment transfers retry decisions and execution into networking and makes ordered retries conservative for every operation.
 The second increment captures routing inputs before admission and retains them across retries and proxy continuations.
-It does not yet provide an agent-free routed client or a public close/join API.
+The third increment extracts an agent-free routed client into networking and migrates both ingress paths.
+Absolute deadlines and a public close/join API remain open.
 
 Fix nearby issues within the current increment when practical. Add a new item only when the work needs a distinct implementation step.
 Keep completed items visible with verification evidence. Preserve canonical YANG and do not retain obsolete APIs only for compatibility.
@@ -14,7 +15,7 @@ Keep completed items visible with verification evidence. Preserve canonical YANG
 
 - [x] S3-01: Move the retry plan and executor into networking and migrate both IPC and proxy callers. Commit `10058a5` stops uncertain-outcome replay for every operation and verifies bounded attempts, reply cleanup, cancellation, and adapter behavior. See [retry ownership](#retry-ownership).
 - [x] S3-02: Capture one routing generation and retry policy before admission. Commit `c3b6fd3` retains endpoints, body limits, and recovery policy across reloads. IPC and TCP-backed proxy regressions verify retries and continuations. See [request generations](#request-generations).
-- [ ] S3-03: Extract endpoint catalogs, circuits, and reconnect serialization into a routed client over prepared endpoints and neutral failures. Migrate both ingress paths, remove duplicate agent routing state, and run an agent-free routed-client example.
+- [x] S3-03: Extract endpoint catalogs, circuits, and reconnect serialization into networking. Commit `861a40b` migrates both ingress paths, removes duplicate agent routing state, fixes stale recovery and connection-failure races, and runs an agent-free example. See [routed client](#routed-client).
 - [ ] S3-04: Apply one absolute request deadline to admission, resolution, connection/TLS setup, attempts, and response waits. Keep global capacity shared across generations and bound pending work. Verify cancellation cleanup and exhausted budgets.
 - [ ] S3-05: Add explicit connection/runtime close and join ownership with bounded drain. Verify resource release after idle/active retirement, cancellation, repeated reload, and embedded shutdown.
 - [ ] S3-06: Complete Stage 3 integration gates, remove temporary adapters, and update this checkpoint and the migration plan together. Preserve ordering, operation eligibility, prepared credentials, timeout semantics, and loop exclusion.
@@ -47,7 +48,7 @@ IPC tests verify no backup attempt and non-retriable errors for uncertain authen
 The proxy regression covers uncertain first requests of all three operation kinds.
 Explicit authentication and accounting server-error failover and networking's not-sent retry tests remain passing.
 
-Absolute deadlines, routing extraction, and explicit runtime ownership remain open above.
+Absolute deadlines and explicit runtime ownership remain open above.
 
 ## Request Generations
 
@@ -82,6 +83,50 @@ Further tests cover admission waits, capacity reductions, captured recovery timi
 The TCP-backed proxy test reloads after the first request, retries the original backup, and completes a continuation under the old size limit.
 Its next independent request uses the replacement endpoint.
 
+## Routed Client
+
+Commit `861a40b` adds `tacacsrs_networking::routed` with `RoutedClient`, `Endpoint`, `BoundEndpoint`, `EndpointConnector`, `NativeConnector`, and `OperationKind`.
+Networking owns ordered eligible catalogs, operation cursors, circuits, connection caches, reconnect serialization, and binding outcome handling.
+Its inputs contain prepared endpoints and explicit operation eligibility. No generated configuration, credential provider, IPC, listener, or health publisher enters this boundary.
+`NativeConnector` creates adaptive `TacacsClient` connections. A host can supply another connector for testing or exchange adaptation.
+Bindings expose their selected endpoint and connection. They record outcomes against the catalog and connection that the request used.
+The existing neutral retry executor and transmission-state classification remain unchanged.
+
+Cloning a routed client retains its catalog. `with_endpoints` creates a replacement without changing existing clients or requests.
+Cloning an `Endpoint` preserves its cache identity; a newly constructed endpoint gets independent connection and circuit state.
+The agent compares materialized source values before it reuses an endpoint identity. Credential changes therefore produce fresh identities and caches.
+Replacement catalogs retain eligible active-server preference by endpoint name.
+After publication, `retire_replaced` drains caches for removed identities. Existing bindings and captured clients retain their allowed work.
+The S3-02 cache-owner cleanup still handles connections opened by old requests after reload.
+
+The agent now pairs source metadata with networking endpoints in `PreparedServer`.
+Its manager retains configuration preparation, policy publication, admission, proxy settings, and generation-aware health.
+`ServiceConnector` adapts existing exchange interfaces without retaining routing state.
+Both IPC and proxy bindings delegate to the same networking client.
+The old agent circuit, operation identity, routing implementation, and server-cache modules are removed rather than copied behind compatibility wrappers.
+The empty-catalog waiting response remains in the agent because it describes service configuration state.
+
+Two local concurrency fixes accompany the extraction:
+
+- Recovery permits carry a circuit revision. Stale success, failure, and cancellation cannot resolve a newer failure or release a newer trial. Both new regressions failed before the correction.
+- Cached handles retain their connection generation as one value. Failed connection attempts also retain their generation, so delayed failure handling cannot evict a replacement connection.
+
+Recovery success and failure serialize through the endpoint reconnect lock before changing the preferred route.
+Direct networking tests cover reconnect sharing, cancellation, eligibility, identity reuse, catalog replacement, and stale failure isolation.
+The existing agent tests continue to cover service policy, source reload, health, and proxy continuations.
+
+The [routed accounting example](../../libraries/tacacsrs_networking/examples/routed_accounting.rs) starts two local TCP peers and uses only networking and protocol APIs.
+The primary returns a valid accounting `ERROR`; the conservative retry executor completes the request on the backup.
+The example needs no agent process or configuration source:
+
+```bash
+cargo run -p tacacsrs-networking --example routed_accounting --locked --quiet
+```
+
+It prints `Accounting accepted by backup; no agent or configuration source was required.`
+The example has a five-second outer test bound. That bound does not implement the per-request deadline contract.
+S3-04 owns absolute deadlines, shared capacity, and bounded pending work. S3-05 owns public close/join and bounded retirement.
+
 ## Verification
 
 ### S3-01
@@ -106,4 +151,17 @@ The documentation book and whitespace checks pass.
 All nine independent `tac_plus-ng` runner cases pass: TCP, certificate TLS, mTLS, required-client-certificate rejection, and PSK variants.
 The package suites also cover final-owner cleanup for idle connections, active sessions, and late single-connect promotion.
 No dependency version, generated YANG artifact, protobuf contract, or native credential policy changed.
+Windows, live SONiC, and Miri were not run for this increment.
+
+### S3-03
+
+All nine direct routed-client tests pass. Networking passes 131 library tests, with two existing ignored tests.
+All 103 agent library tests pass. The two circuit tests moved from the agent into networking.
+The full all-features workspace suite, strict workspace Clippy, workspace build, nightly formatting, and warnings-as-errors rustdoc pass.
+The agent-free example and all nine independent `tac_plus-ng` runner cases pass.
+The documentation book, editor diagnostics, and whitespace checks pass.
+
+CI's networking dependency guard confirms no configuration, provider, IPC, agent, or SONiC dependency in normal builds.
+Workspace unused-dependency checks pass. The audit found no vulnerabilities in 301 locked packages, with the known crates.io index-lock warning.
+Networking enables Tokio `test-util` only for development tests. No external version, lockfile, generated YANG artifact, protobuf contract, or native credential policy changed.
 Windows, live SONiC, and Miri were not run for this increment.
