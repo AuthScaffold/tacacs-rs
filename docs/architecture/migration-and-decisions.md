@@ -283,6 +283,12 @@ Routing observations cannot silently override canonical policy or cause TLS-to-p
 6. Add stale-material, expiry, revocation, and bounded drain policies.
 7. Integrate the canonical YANG policy resource into the shared controller. Schema normalization is complete in Stage 2 item S2-10.
 
+Certificate provisioning and operational data have explicit Stage 4 acceptance contracts:
+
+- Client-chain provisioning belongs to configuration preparation and credential providers. Add canonical chain inputs before accepting multi-certificate client material. Native mTLS tests must cover complete, missing, and incorrect intermediate chains without changing source references.
+- Revocation policy belongs to the controller/provider lifecycle and TLS verifier integration. Define freshness and unavailable-status behavior, obtain revocation evidence, and reject revoked credentials before use. Current certificate verification does not implement revocation retrieval or claim full RFC 9887 conformance.
+- YANG operational statistics belong to the controller's health/publication boundary. Populate and export `ServerStatistics` from runtime events without putting read-only counters into desired configuration. Verify counter updates and generation association across reloads.
+
 Primary starting points:
 
 - [Configuration supervisor](../../executables/tacacsrs_agentd/src/config_supervisor.rs)

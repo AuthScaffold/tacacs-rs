@@ -599,10 +599,45 @@ All nine independent `tac_plus-ng` runner cases pass with the updated verifier.
 No dependency, lockfile, generated YANG, protobuf contract, or project unsafe code changed.
 Windows and live SONiC validation did not run. These checks do not establish full RFC 9887 conformance.
 
+## Reconciled Field Inventory
+
+This table updates the Stage 0 baseline using the current owners and verification evidence.
+It separates implemented behavior, explicit rejection, named later-stage contracts, and remaining Stage 2 corrections.
+S2-15 cannot close until S2-22 and S2-23 have executable evidence for their corrected behavior.
+
+| Field or capability | Current disposition and evidence |
+| --- | --- |
+| Server names, operation types, and order | Supported by [builders](../../libraries/tacacsrs_config/src/builders.rs), source-equivalence fixtures, and operation-specific agent catalogs. Routing extraction remains Stage 3. |
+| Address and port | Explicit values survive preparation. S2-19 verifies omitted legacy/TLS defaults and rejects malformed explicit ports. S2-14 and S2-17 cover local-loop exclusion. |
+| Timeout and single connection | S2-11 projects the canonical TCP timeout. Networking tests cover negotiated shared and dedicated behavior. Absolute request and handshake deadlines remain Stage 3. |
+| Shared secret and transport choice | Canonical validation and codec tests preserve obfuscation and transport selection. TLS obfuscation remains an explicit migration relaxation, not RFC 9887 conformance. |
+| Domain name and SNI | S2-18 verifies DNS/IP SAN identity independently of SNI, with native zero-application-data rejection tests. |
+| Local credential bundles | [Enumeration tests](../../libraries/tacacsrs_config/tests/enumeration_integration.rs) cover expansion without changing authoritative references. |
+| Central credential references | [Resolution](../../libraries/tacacsrs_config/tests/resolution.rs) and [materialization](../../libraries/tacacsrs_config/tests/materialization.rs) preserve opaque references and validate complete typed result sets. |
+| Client certificate and private key | One DER leaf and its matching private key are supported. Native tests cover key encodings, mismatches, and mTLS. Client-chain input is currently rejected rather than truncated under S2-21. |
+| Separate public-key metadata | Materialization preserves the fields, but native projection does not verify them. S2-23 owns encoding and certificate/key agreement checks or explicit rejection. |
+| CA and end-entity trust bags | S2-20 verifies additive CA paths and exact peer matches. Empty explicit bags are rejected. Platform trust remains the existing no-bag API behavior. |
+| Certificate providers | Generic provider contracts return a leaf/key pair or named trust bags. The [SONiC provider](../../libraries/tacacsrs_sonic/src/provider.rs) accepts only symmetric-key requests and rejects other kinds. No certificate provider capability is implied by enabled schema features. |
+| Client-chain provisioning | Not supported by the current one-leaf input contract. Stage 4 owns canonical chain inputs, provider material, and complete/missing/incorrect intermediate-chain acceptance tests. |
+| Revocation | Current TLS preparation does not obtain CRL/OCSP status. Stage 4 owns evidence retrieval, freshness and unavailable-status policy, and pre-use rejection. No full RFC 9887 conformance claim is made. |
+| EPSK identity, key, and hash | Typed materialization and native/independent peers cover both hashes, wrong keys, and rotation. Derivation context, target protocol/KDF, and `one-symmetric-key-format` are explicitly rejected before runtime publication. |
+| Server `tls13-epsks` presence leaf | The pinned type is YANG `empty`, but generated storage/JSON currently uses a boolean and preparation does not inspect it. S2-22 owns RFC 7951 encoding and runtime selection checks. |
+| PSK-DHE groups | Ordered projection and negotiated-mode checks have native coverage. S2-08 rejects mode mismatch and certificate fallback before application traffic. |
+| Source IP, source interface, and VRF | Preserved in canonical input but explicitly rejected by [runtime readiness](../../libraries/tacacsrs_config/src/prepare/readiness.rs). No unsupported bind behavior is silently accepted. |
+| Read-only statistics | [ServerStatistics](../../libraries/tacacsrs_config/src/statistics.rs) is a reserved type, not a populated exporter. Stage 4 owns event counters and generation-associated operational-data publication. |
+| Disabled schema features | The pinned [feature manifest](../../libraries/tacacsrs_config/yang/feature-flags.ini) disables raw-key TLS, general hello parameters, encrypted/hidden keys, CSR, and expiry notifications. Unknown input fields are rejected. |
+| Local service and runtime policy augmentations | S2-10 through S2-14 cover generated defaults, validation, normalization, and prepared values. Unified observation and publication remain Stage 4. |
+
+The [Stage 4 acceptance contracts](migration-and-decisions.md#stage-4-create-one-configuration-controller-and-lifecycle-api) name the owners and tests for provisioning, revocation, and operational data.
+These assignments do not convert unimplemented behavior into supported features or relax the current preparation gates.
+
 ## Remaining Stage 2 Work
 
-- [ ] S2-15: Finish reconciliation of the [field-to-behavior inventory](stage-0-contract-gates.md#field-to-behavior-inventory). Identity/SNI, port defaults, CA versus exact-peer trust, and empty selections are resolved under S2-18 through S2-20. Review remaining client-chain/provider constraints. Complete the field cross-references and explicit operational-statistics and revocation dispositions. Resolve each remaining gap as supported and tested, explicitly rejected, or assigned to a named later-stage contract.
+- [ ] S2-15: Close the [reconciled field inventory](#reconciled-field-inventory) after the S2-22 and S2-23 corrections pass their checks. Client-chain/provider limits and statistics/revocation owners are now recorded. Identity/SNI, ports, and trust-role corrections are complete under S2-18 through S2-20.
 - [ ] S2-16: Complete the final Stage 2 validation and status update after the open implementation items finish. Run relevant workspace, generation, source-equivalence, rotation, and native interoperability checks. Record unavailable checks and known exceptions separately. Update the migration plan and this checkpoint together.
+- [ ] S2-21: Reject concatenated DER certificates and trailing data instead of silently decoding only the first certificate. Verify the single-certificate contract for native trust and client identity inputs, including the development override. Document that client-chain provisioning is not currently represented by this input.
+- [ ] S2-22: Correct `server-authentication/tls13-epsks` representation and runtime semantics. The pinned tree declares an `empty` leaf, but generated code uses `Option<bool>` and preparation does not inspect it. Implement RFC 7951 `[null]` encoding and validate selection against the client EPSK identity. Test direct and bundled sources, malformed values, and rejection before publication.
+- [ ] S2-23: Validate explicit client certificate public-key metadata. Materialization preserves `public-key` and `public-key-format`, but endpoint projection currently ignores them. Verify supported encodings and agreement with certificate/private-key material, or explicitly reject unsupported forms. Test mismatches, sanitized errors, and unchanged source snapshots.
 
 The existing source-equivalence and credential-generation tests remain required gates.
 Upstream `source-ip`, `source-interface`, and `vrf-instance` already fail explicitly under S2-06. Their implementation is not an implicit local-listener requirement.

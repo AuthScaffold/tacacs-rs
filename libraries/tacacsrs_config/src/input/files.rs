@@ -107,4 +107,15 @@ mod tests {
     fn der_certificate_passthrough() {
         assert_eq!(normalize_cli_certificate_data(b"der").unwrap(), b"der");
     }
+
+    #[test]
+    fn client_pem_input_rejects_certificate_chains() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../lde/containers/config/certificates/client.crt");
+        let certificate = std::fs::read(path).unwrap();
+        assert!(normalize_cli_certificate_data(&certificate).is_ok());
+        let chain = [certificate.as_slice(), b"\n", certificate.as_slice()].concat();
+        let error = normalize_cli_certificate_data(&chain).unwrap_err();
+        assert!(error.to_string().contains("exactly one PEM certificate"));
+    }
 }

@@ -135,6 +135,11 @@ OpenSSL still enforces peer identity, validity, purpose, and path checks. The tr
 Direct trust accepts a CA-signed leaf without requiring its issuer. A renewed certificate with the same key needs a new exact entry or CA trust.
 These changes do not add revocation retrieval or client certificate-chain provisioning.
 
+Each certificate field contains exactly one DER certificate. Native preparation rejects concatenated certificates and trailing bytes, including with verification disabled.
+CLI PEM input likewise requires exactly one certificate. DER input is normalized without modification, then checked during native preparation.
+The generic certificate-with-key provider result contains one end-entity certificate. Trust bags can contain multiple individually encoded certificates with distinct names.
+Provisioning a client chain needs a separate canonical/provider contract. It is not supported by concatenating certificates into `cert-data`.
+
 Pass this endpoint to `TacacsClient::connect_prepared`.
 With preflight disabled, construction does not open a connection. Native material errors still fail during preparation.
 The old networking `connect` and `connect_shared` constructors are removed.

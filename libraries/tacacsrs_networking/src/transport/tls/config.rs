@@ -125,7 +125,12 @@ fn parse_certificate_data(data: &[u8]) -> Result<X509> {
         !data_contains_pem_header(data),
         "PEM-encoded certificates are not supported; provide DER bytes"
     );
-    X509::from_der(data).context("failed to parse DER certificate")
+    let certificate = X509::from_der(data).context("failed to parse DER certificate")?;
+    anyhow::ensure!(
+        certificate.to_der()?.as_slice() == data,
+        "certificate input must contain exactly one DER certificate without trailing data"
+    );
+    Ok(certificate)
 }
 
 fn parse_private_key_data(data: &[u8], encoding: PrivateKeyEncoding) -> Result<PKey<Private>> {
@@ -175,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_certificate_data_der_bytes() {
+    fn der_certificate_parser_requires_exactly_one_certificate() {
         let pem = std::fs::read(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../lde/containers/config/certificates/client.crt"),
@@ -183,6 +188,65 @@ mod tests {
         .unwrap();
         let der = X509::from_pem(&pem).unwrap().to_der().unwrap();
         assert!(parse_certificate_data(&der).is_ok());
+        let key_pem = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../lde/containers/config/certificates/client.key"),
+        )
+        .unwrap();
+        let key = PKey::private_key_from_pem(&key_pem)
+            .unwrap()
+            .private_key_to_pkcs8()
+            .unwrap();
+        assert!(TlsClientConfig::prepare(
+            "localhost",
+            None,
+            CertificateTrust::Platform,
+            Some(CertificateIdentity {
+                certificate: &der,
+                private_key: &key,
+                private_key_encoding: PrivateKeyEncoding::Pkcs8,
+            }),
+            false
+        )
+        .is_ok());
+        for suffix in [der.as_slice(), b"trailing-data".as_slice()] {
+            let mut combined = der.clone();
+            combined.extend_from_slice(suffix);
+            assert!(
+                parse_certificate_data(&combined).is_err(),
+                "trailing certificate data must not be ignored"
+            );
+            let certificates = [combined.as_slice()];
+            for disabled in [false, true] {
+                for trust in [
+                    CertificateTrust::Certificates {
+                        authorities: &certificates,
+                        end_entities: &[],
+                    },
+                    CertificateTrust::Certificates {
+                        authorities: &[],
+                        end_entities: &certificates,
+                    },
+                ] {
+                    assert!(
+                        TlsClientConfig::prepare("localhost", None, trust, None, disabled).is_err()
+                    );
+                }
+                let identity = CertificateIdentity {
+                    certificate: &combined,
+                    private_key: &key,
+                    private_key_encoding: PrivateKeyEncoding::Pkcs8,
+                };
+                assert!(TlsClientConfig::prepare(
+                    "localhost",
+                    None,
+                    CertificateTrust::Platform,
+                    Some(identity),
+                    disabled
+                )
+                .is_err());
+            }
+        }
     }
 
     #[test]

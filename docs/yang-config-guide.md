@@ -111,6 +111,17 @@ This replaces the old combined-root behavior. Certificate renewal can require up
 Use CA trust only when authorizing other valid certificates issued by that authority is intended.
 Certificate revocation retrieval and client-chain provisioning are not implemented by this change. Full RFC 9887 conformance remains unclaimed.
 
+## Certificate Input Boundary
+
+Each `cert-data` value must contain exactly one DER certificate. Concatenated certificates and trailing bytes fail before runtime publication.
+This rule also applies to each CA or end-entity trust-bag entry. Multiple entries remain supported.
+CLI client certificate PEM files must contain exactly one certificate. The native decoder no longer silently ignores trailing DER material.
+The development verification override does not relax certificate framing.
+
+The current client-identity contract supports one leaf certificate and its matching private key, not a supplied intermediate chain.
+Stage 4 owns a canonical chain-provisioning contract and its provider and mTLS acceptance tests.
+Until that contract exists, multi-certificate client inputs are rejected. Revocation retrieval is also a named Stage 4 requirement, not a current capability.
+
 ## Three-layer processing model
 
 The crate separates parsing and runtime preparation into three layers.
