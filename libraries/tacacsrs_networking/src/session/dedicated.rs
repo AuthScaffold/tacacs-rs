@@ -211,12 +211,16 @@ impl DedicatedSession {
 
     pub(crate) async fn receive_packet(&self) -> anyhow::Result<Packet> {
         let mut connection = self.connection.lock().await;
-        let connection = connection
+        let packet = connection
             .as_mut()
-            .context("dedicated TACACS+ session is already complete")?;
-        let packet = connection.read_packet().await?;
+            .context("dedicated TACACS+ session is already complete")?
+            .read_packet()
+            .await?;
 
-        self.validate_response_header(&packet).await?;
+        if let Err(error) = self.validate_response_header(&packet).await {
+            connection.take();
+            return Err(error);
+        }
         if let Some(promotion) = &self.single_connect_promotion {
             promotion.observe_server_response(&packet);
         }
@@ -233,7 +237,6 @@ impl DedicatedSession {
         let header = packet.header();
 
         if header.session_id != self.session_id || header.seq_no != expected_sequence {
-            self.connection.lock().await.take();
             anyhow::bail!(
                 "unexpected TACACS+ response header: session_id={:#x}, seq_no={}, expected_session_id={:#x}, expected_seq_no={}",
                 header.session_id,
@@ -313,6 +316,50 @@ mod tests {
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
         assert_eq!(updated.body(), packet.body());
+    }
+
+    #[tokio::test]
+    async fn invalid_reply_header_releases_transport_without_deadlocking() {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use crate::{PacketReader, PacketReadResult};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (transport, peer) = tokio::join!(
+            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept(),
+        );
+        let mut peer = peer.unwrap().0;
+        let session = DedicatedSession::new(BoxedTransport::new(transport.unwrap()), None, None);
+        let session_id = session.session_id();
+        session
+            .send_packet(test_packet(
+                session_id,
+                1,
+                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                b"request",
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            PacketReader::new(None).read_packet(&mut peer).await,
+            PacketReadResult::Success(_)
+        ));
+        peer.write_all(
+            &test_packet(session_id, 4, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, b"wrong sequence")
+                .to_bytes(),
+        )
+        .await
+        .unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(1), session.receive_packet())
+            .await
+            .expect("invalid headers must not deadlock the connection lock")
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unexpected TACACS+ response header"));
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+        session.complete().await;
     }
 
     #[tokio::test]
