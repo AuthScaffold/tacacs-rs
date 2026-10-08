@@ -1246,6 +1246,7 @@ pub mod tacacsrs {
         }
     }
 
+    fn default_authentication_request_timeout_seconds() -> u32 { 30 }
     fn default_authentication_max_body_length() -> u32 { 4096 }
     fn default_authentication_max_concurrent_requests() -> u32 { 64 }
 
@@ -1253,6 +1254,13 @@ pub mod tacacsrs {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct Authentication {
+        /// Total request budget from capture before admission through completion.
+        /// Includes admission, connection setup, retries, and proxy continuations.
+        /// Server timeouts can shorten individual stages but cannot extend this budget.
+        /// Reload does not change the deadline of an existing request.
+        #[serde(rename = "request-timeout-seconds")]
+        #[serde(default = "default_authentication_request_timeout_seconds")]
+        pub request_timeout_seconds: u32,
         /// Maximum encoded TACACS+ request body length.
         #[serde(rename = "max-body-length")]
         #[serde(default = "default_authentication_max_body_length")]
@@ -1266,12 +1274,14 @@ pub mod tacacsrs {
     impl Default for Authentication {
         fn default() -> Self {
             Self {
+                request_timeout_seconds: default_authentication_request_timeout_seconds(),
                 max_body_length: default_authentication_max_body_length(),
                 max_concurrent_requests: default_authentication_max_concurrent_requests(),
             }
         }
     }
 
+    fn default_authorization_request_timeout_seconds() -> u32 { 30 }
     fn default_authorization_max_body_length() -> u32 { 16384 }
     fn default_authorization_max_concurrent_requests() -> u32 { 64 }
 
@@ -1279,6 +1289,13 @@ pub mod tacacsrs {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct Authorization {
+        /// Total request budget from capture before admission through completion.
+        /// Includes admission, connection setup, retries, and proxy continuations.
+        /// Server timeouts can shorten individual stages but cannot extend this budget.
+        /// Reload does not change the deadline of an existing request.
+        #[serde(rename = "request-timeout-seconds")]
+        #[serde(default = "default_authorization_request_timeout_seconds")]
+        pub request_timeout_seconds: u32,
         /// Maximum encoded TACACS+ request body length.
         #[serde(rename = "max-body-length")]
         #[serde(default = "default_authorization_max_body_length")]
@@ -1292,6 +1309,7 @@ pub mod tacacsrs {
     impl Default for Authorization {
         fn default() -> Self {
             Self {
+                request_timeout_seconds: default_authorization_request_timeout_seconds(),
                 max_body_length: default_authorization_max_body_length(),
                 max_concurrent_requests: default_authorization_max_concurrent_requests(),
             }

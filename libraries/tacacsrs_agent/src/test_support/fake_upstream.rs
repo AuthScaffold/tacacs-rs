@@ -48,6 +48,7 @@ impl UpstreamConnection for FakeConnection {
     async fn send_accounting(
         &self,
         _request: AccountingRequest,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
@@ -67,6 +68,7 @@ impl UpstreamConnection for FakeConnection {
     async fn authenticate_pap(
         &self,
         _exchange: PapAuthenticationExchange,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
@@ -86,6 +88,7 @@ impl UpstreamConnection for FakeConnection {
     async fn send_authorization(
         &self,
         _request: AuthorizationRequest,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);

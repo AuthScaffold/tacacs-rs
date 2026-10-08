@@ -31,6 +31,7 @@ impl AdmissionRegistry {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn acquire(
         &self,
         operation: OperationKind,
@@ -38,8 +39,17 @@ impl AdmissionRegistry {
     ) -> Result<AdmissionPermit, AdmissionError> {
         let deadline = RequestDeadline::after(wait_timeout)
             .map_err(|_| AdmissionError::CapacityTimeout { wait_timeout })?;
+        self.acquire_until(operation, deadline, wait_timeout).await
+    }
+
+    pub(crate) async fn acquire_until(
+        &self,
+        operation: OperationKind,
+        deadline: RequestDeadline,
+        wait_timeout: Duration,
+    ) -> Result<AdmissionPermit, AdmissionError> {
         self.operations[operation.index()]
-            .acquire(deadline)
+            .acquire(deadline.capped(wait_timeout))
             .await
             .map_err(|error| match error {
                 PoolError::Full => AdmissionError::Full,

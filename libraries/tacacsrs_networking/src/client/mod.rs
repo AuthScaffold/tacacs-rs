@@ -296,6 +296,36 @@ impl TacacsClient {
         result
     }
 
+    /// Executes a fixed exchange within one absolute request deadline.
+    ///
+    /// # Errors
+    /// Returns a classified expiry before transmission or an unknown outcome
+    /// after the exchange starts. The deadline includes session establishment.
+    pub async fn execute_classified_until<Exchange>(
+        &self,
+        exchange: Exchange,
+        deadline: crate::RequestDeadline,
+    ) -> Result<Exchange::Reply, FixedExchangeError>
+    where
+        Exchange: FixedExchange,
+    {
+        let expected =
+            ExpectedResponseHeader::fixed(exchange.packet_type(), exchange.minor_version());
+        let session = deadline
+            .run(self.create_fixed_session(expected))
+            .await
+            .map_err(FixedExchangeError::not_sent)?
+            .map_err(FixedExchangeError::not_sent)?;
+        deadline.check().map_err(FixedExchangeError::not_sent)?;
+        let result = deadline
+            .run(execute_on_session(&session, exchange))
+            .await
+            .map_err(FixedExchangeError::outcome_unknown)
+            .and_then(std::convert::identity);
+        let _completed = deadline.run(session.complete()).await;
+        result
+    }
+
     /// Opens a sequential packet conversation for transparent proxying and
     /// interactive TACACS+ authentication.
     ///
@@ -965,6 +995,79 @@ mod tests {
         assert_eq!(request.header().seq_no, 1);
         assert_eq!(request.header().tacacs_type, TacacsType::TacPlusAccounting);
         server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn expired_exchange_does_not_open_a_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut endpoint = server_template();
+        endpoint.address = listener.local_addr().unwrap().to_string();
+        endpoint.single_connection = false;
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let error = client
+            .execute_classified_until(
+                TestAccountingExchange(accounting_watchdog_preflight_request()),
+                crate::RequestDeadline::after(Duration::ZERO).unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.transmission_state(), crate::TransmissionState::NotSent);
+        let accept = listener.accept();
+        tokio::pin!(accept);
+        assert!(futures::poll!(&mut accept).is_pending());
+    }
+
+    #[tokio::test]
+    async fn deadline_classifies_stalled_tls_and_sent_requests() {
+        use tokio::io::AsyncReadExt;
+        use crate::{
+            CertificateTrust, PacketReader, PacketReadResult, RequestDeadline, TransmissionState,
+        };
+
+        for tls in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut endpoint = server_template();
+            endpoint.address = listener.local_addr().unwrap().to_string();
+            endpoint.single_connection = false;
+            if tls {
+                endpoint = endpoint
+                    .with_certificate_tls("localhost", None, CertificateTrust::Platform, None)
+                    .unwrap();
+            }
+            let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+            let deadline = RequestDeadline::after(Duration::from_millis(200)).unwrap();
+            let exchange = client.execute_classified_until(
+                TestAccountingExchange(accounting_watchdog_preflight_request()),
+                deadline,
+            );
+            let peer = async {
+                let (mut peer, _) = listener.accept().await.unwrap();
+                if !tls {
+                    assert!(matches!(
+                        PacketReader::new(None).read_packet(&mut peer).await,
+                        PacketReadResult::Success(_)
+                    ));
+                }
+                let mut remaining = Vec::new();
+                peer.read_to_end(&mut remaining).await.unwrap();
+                if tls {
+                    assert!(!remaining.is_empty(), "the client must start its TLS handshake");
+                }
+            };
+            let (result, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+                tokio::join!(exchange, peer)
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                result.unwrap_err().transmission_state(),
+                if tls {
+                    TransmissionState::NotSent
+                } else {
+                    TransmissionState::OutcomeUnknown
+                }
+            );
+        }
     }
 
     #[tokio::test]

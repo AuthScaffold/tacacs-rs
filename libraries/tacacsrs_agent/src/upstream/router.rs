@@ -31,6 +31,10 @@ pub(crate) struct RequestRouting {
 }
 
 impl RequestRouting {
+    pub(crate) fn deadline(&self) -> tacacsrs_networking::RequestDeadline {
+        self.lease.deadline()
+    }
+
     pub(crate) fn failover_plan(&self) -> FailoverPlan {
         self.lease.failover_plan()
     }

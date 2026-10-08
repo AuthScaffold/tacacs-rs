@@ -49,9 +49,12 @@ impl UpstreamManager {
         let observation = self
             .availability
             .begin_attempt(runtime.availability_generation);
-        match client
-            .bind(lease.operation, runtime.runtime_policy.failover_recovery_interval())
+        match lease
+            .deadline()
+            .run(client.bind(lease.operation, runtime.runtime_policy.failover_recovery_interval()))
             .await
+            .map_err(anyhow::Error::from)
+            .and_then(std::convert::identity)
         {
             Ok(binding) => {
                 self.availability.available(observation);
@@ -63,7 +66,9 @@ impl UpstreamManager {
                 })
             }
             Err(error) => {
-                self.availability.unavailable(observation);
+                if !error.is::<tacacsrs_networking::DeadlineElapsed>() {
+                    self.availability.unavailable(observation);
+                }
                 Err(error)
             }
         }

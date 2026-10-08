@@ -25,9 +25,10 @@ impl RoutedOperation for PapAuthenticationRoute {
     async fn send(
         connection: &dyn UpstreamConnection,
         request: &Self::Request,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError> {
         let exchange = pap_exchange(request)?;
-        let reply = connection.authenticate_pap(exchange).await?;
+        let reply = connection.authenticate_pap(exchange, deadline).await?;
         PapAuthenticationOperationResponse::from_reply(connection.server_address(), reply)
             .map_err(UpstreamRequestError::outcome_unknown)
     }

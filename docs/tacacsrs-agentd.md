@@ -335,15 +335,18 @@ failover for both local services:
         "tacacs-proxy-failover-strategy": "ordered-safe-retry",
         "authentication": {
             "max-body-length": 4096,
-            "max-concurrent-requests": 64
+            "max-concurrent-requests": 64,
+            "request-timeout-seconds": 30
         },
         "authorization": {
             "max-body-length": 16384,
-            "max-concurrent-requests": 64
+            "max-concurrent-requests": 64,
+            "request-timeout-seconds": 30
         },
         "accounting": {
             "max-body-length": 16384,
-            "max-concurrent-requests": 64
+            "max-concurrent-requests": 64,
+            "request-timeout-seconds": 30
         }
   }
 }
@@ -359,9 +362,19 @@ The resource is defined by the [project YANG augmentation](../libraries/tacacsrs
 It is a sibling of the upstream `tacacs-plus` resource, not a field inside the server list.
 The policy file remains an independently watched resource. This change does not combine its publication with server-generation publication.
 
-Each operation has one packet-size limit and one concurrency limit. IPC and
-proxy clients share that capacity. A request waits for capacity for no longer
-than the active server timeout.
+IPC and proxy clients share each operation's active capacity and bounded FIFO admission queue.
+The pending limit equals `max-concurrent-requests`. A full queue returns an immediate overload error without upstream I/O.
+Reducing the limit retains existing work and waiters but does not admit work above the new active limit.
+
+Each operation also has a total `request-timeout-seconds` budget, with a generated default of 30 seconds and a minimum of one second.
+The request captures its deadline before admission. Admission, connection setup, retries, and proxy continuations consume that same budget.
+The active server timeout can shorten the admission wait. The selected server timeout can shorten an exchange attempt.
+Neither a retry nor a policy reload extends an existing request's deadline.
+Set a longer authentication budget when an interactive conversation needs more than 30 seconds.
+
+Expiry before transmission is classified as not sent. An expired exchange with an unknown outcome does not retry automatically.
+Proxy expiry terminates the conversation and releases admission capacity.
+The deadline covers upstream execution and proxy reply queueing, not physical downstream socket delivery after a reply leaves the session queue.
 
 SONiC ConfigDB is supervised differently from local CLI or file input. Before constructing the service, the daemon waits for a valid `TACPLUS_FORWARDER|global` row and uses its loopback address and port for the raw TACACS+ proxy listener. SONiC mode always hosts both the Client API and proxy. A conflicting `--proxy-endpoint` or non-`both` service mode is rejected. Ctrl-C or SIGTERM cancels this pre-bind retry.
 

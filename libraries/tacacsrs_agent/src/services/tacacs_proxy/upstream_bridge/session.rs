@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
-use tacacsrs_networking::ClientConversation;
+use tacacsrs_networking::{ClientConversation, RequestDeadline};
 use tacacsrs_networking::retry::{
     Attempt, AttemptDisposition, FailoverAttempt, FailoverOutcome, FailoverPlan, run_with_failover,
 };
@@ -64,6 +64,8 @@ pub(super) trait ProxyConversationProvider: Send + Sync + 'static {
 
     fn capture_request(&self, operation: OperationKind) -> Self::Request;
 
+    fn deadline(&self, request: &Self::Request) -> RequestDeadline;
+
     /// Selects a server and opens a conversation for one operation.
     async fn open_conversation(
         &self,
@@ -113,6 +115,10 @@ impl ProxyConversationProvider for UpstreamConversationProvider {
 
     fn capture_request(&self, operation: OperationKind) -> Self::Request {
         self.router.capture_request(operation)
+    }
+
+    fn deadline(&self, request: &Self::Request) -> RequestDeadline {
+        request.deadline()
     }
 
     async fn open_conversation(
@@ -305,6 +311,32 @@ where
     let operation = OperationKind::try_from(first_request.packet.header().tacacs_type)
         .expect("each TACACS+ packet type maps to an operation");
     let routing = provider.capture_request(operation);
+    provider
+        .deadline(&routing)
+        .run(run_captured_proxy_session(
+            downstream_session_id,
+            timeout,
+            provider,
+            routing,
+            first_request,
+            packets,
+            replies,
+        ))
+        .await
+        .map_err(|error| ProxyConnectionError::Upstream(error.into()))?
+}
+
+async fn run_captured_proxy_session<Provider: ProxyConversationProvider>(
+    downstream_session_id: u32,
+    timeout: Duration,
+    provider: &Provider,
+    routing: Provider::Request,
+    first_request: SessionPacket,
+    mut packets: mpsc::Receiver<SessionPacket>,
+    replies: mpsc::Sender<SessionReply>,
+) -> Result<(), ProxyConnectionError> {
+    let operation = OperationKind::try_from(first_request.packet.header().tacacs_type)
+        .expect("each TACACS+ packet type maps to an operation");
     let _admission_permit = match provider
         .admit(&routing, first_request.packet.body().len())
         .await

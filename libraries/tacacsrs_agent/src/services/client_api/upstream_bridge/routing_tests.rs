@@ -37,6 +37,7 @@ struct ScriptedConnection {
     authentication_status: TacacsAuthenticationStatus,
     accounting_status: TacacsAccountingStatus,
     accounting_barrier: Option<(Arc<Notify>, Arc<Notify>)>,
+    accounting_delay: Duration,
 }
 
 impl ScriptedConnection {
@@ -49,6 +50,7 @@ impl ScriptedConnection {
             authentication_status: TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
             accounting_status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             accounting_barrier: None,
+            accounting_delay: Duration::ZERO,
         }
     }
 }
@@ -68,7 +70,11 @@ impl UpstreamConnection for ScriptedConnection {
     async fn send_accounting(
         &self,
         _request: AccountingRequest,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
+        if !self.accounting_delay.is_zero() {
+            tokio::time::sleep(self.accounting_delay).await;
+        }
         if let Some((entered, release)) = &self.accounting_barrier {
             entered.notify_one();
             release.notified().await;
@@ -88,6 +94,7 @@ impl UpstreamConnection for ScriptedConnection {
     async fn authenticate_pap(
         &self,
         _exchange: PapAuthenticationExchange,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
         if self.fail_authentication.swap(false, Ordering::AcqRel) {
             return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
@@ -105,6 +112,7 @@ impl UpstreamConnection for ScriptedConnection {
     async fn send_authorization(
         &self,
         _request: AuthorizationRequest,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
         if self.fail_authorization.swap(false, Ordering::AcqRel) {
             return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
@@ -385,6 +393,102 @@ async fn request_retry_keeps_original_servers_and_policy_across_reload() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn deadline_includes_admission_and_retry_and_survives_policy_reload() {
+    use crate::config::{PolicyService, RequestLimits};
+    use crate::upstream::OperationRouter;
+
+    let primary = Arc::new(ScriptedConnection {
+        accounting_status: TacacsAccountingStatus::TacPlusAcctStatusError,
+        accounting_delay: Duration::from_secs(2),
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let backup = Arc::new(ScriptedConnection {
+        accounting_delay: Duration::from_secs(4),
+        ..ScriptedConnection::successful("backup:49")
+    });
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary,
+        backup,
+        OperationKind::Accounting,
+    )));
+    let policy = |seconds| {
+        let limits = RequestLimits::new(1024, 1)
+            .unwrap()
+            .with_request_timeout(Duration::from_secs(seconds))
+            .unwrap();
+        RuntimePolicy::new(
+            FailoverStrategy::OrderedSafeRetry,
+            FailoverStrategy::default(),
+            OperationPolicies::new(limits, limits, limits),
+            Duration::from_secs(30),
+        )
+        .unwrap()
+    };
+    let manager = Arc::new(
+        UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+            vec![server("primary"), server("backup")],
+            PreparedProxyPolicy::unobfuscated(),
+            policy(5),
+            connector.clone(),
+            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+            tacacsrs_config::prepare::PrepareOptions::default(),
+        )
+        .unwrap(),
+    );
+    let occupied = OperationRouter::new(manager.clone(), PolicyService::TacacsProxy)
+        .capture_request(OperationKind::Accounting)
+        .admit(1)
+        .await
+        .unwrap();
+    let bridge = UpstreamBridge::new(manager.clone());
+    let started = tokio::time::Instant::now();
+    let request = bridge.execute_accounting_request(accounting());
+    tokio::pin!(request);
+    std::future::poll_fn(|context| {
+        assert!(std::future::Future::poll(request.as_mut(), context).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    tokio::time::advance(Duration::from_secs(2)).await;
+    manager.reload_runtime_policy(policy(30));
+    drop(occupied);
+    std::future::poll_fn(|context| {
+        assert!(std::future::Future::poll(request.as_mut(), context).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    tokio::time::advance(Duration::from_secs(2)).await;
+    std::future::poll_fn(|context| {
+        assert!(std::future::Future::poll(request.as_mut(), context).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    let error = request.await.unwrap_err();
+    assert!(!error.retriable, "a sent request with no reply must not retry");
+    assert_eq!(started.elapsed(), Duration::from_secs(5));
+    assert_eq!(
+        connector
+            .attempts("primary:49", OperationKind::Accounting)
+            .await,
+        1
+    );
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Accounting)
+            .await,
+        1
+    );
+    assert_eq!(
+        bridge
+            .execute_accounting_request(accounting())
+            .await
+            .unwrap()
+            .server,
+        "backup:49"
+    );
 }
 
 #[tokio::test]

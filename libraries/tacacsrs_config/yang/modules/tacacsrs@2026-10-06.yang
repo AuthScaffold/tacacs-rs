@@ -76,7 +76,17 @@ module tacacsrs {
 
   grouping request-limits {
     description
-      "Admission limits shared by all callers of one operation.";
+      "Admission and execution limits shared by all callers of one operation.";
+    leaf request-timeout-seconds {
+      type uint32 { range "1..max"; }
+      units "seconds";
+      default 30;
+      description
+        "Total request budget from capture before admission through completion.
+         Includes admission, connection setup, retries, and proxy continuations.
+         Server timeouts can shorten individual stages but cannot extend this budget.
+         Reload does not change the deadline of an existing request.";
+    }
     leaf max-body-length {
       type uint32 { range "1..65536"; }
       units "bytes";

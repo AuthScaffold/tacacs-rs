@@ -47,12 +47,14 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     async fn send_accounting(
         &self,
         request: AccountingRequest,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError>;
 
     /// Runs one fixed PAP authentication exchange.
     async fn authenticate_pap(
         &self,
         exchange: PapAuthenticationExchange,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError>;
 
     /// Sends one authorization request and returns the server's reply.
@@ -64,6 +66,7 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     async fn send_authorization(
         &self,
         request: AuthorizationRequest,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError>;
 }
 

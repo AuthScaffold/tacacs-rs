@@ -39,6 +39,16 @@ impl RequestDeadline {
         self.0.saturating_duration_since(Instant::now())
     }
 
+    /// Shortens a stage budget without extending the absolute request expiry.
+    #[must_use]
+    pub fn capped(self, budget: Duration) -> Self {
+        Self(
+            Instant::now()
+                .checked_add(budget)
+                .map_or(self.0, |stage| stage.min(self.0)),
+        )
+    }
+
     /// Checks expiry before work starts.
     ///
     /// # Errors

@@ -170,11 +170,14 @@ module: tacacsrs
        +--rw client-api-failover-strategy?         failover-strategy
        +--rw tacacs-proxy-failover-strategy?       failover-strategy
        +--rw authentication
+       |  +--rw request-timeout-seconds?   uint32
        |  +--rw max-body-length?           uint32
        |  +--rw max-concurrent-requests?   uint32
        +--rw authorization
+       |  +--rw request-timeout-seconds?   uint32
        |  +--rw max-body-length?           uint32
        |  +--rw max-concurrent-requests?   uint32
        +--rw accounting
+          +--rw request-timeout-seconds?   uint32
           +--rw max-body-length?           uint32
           +--rw max-concurrent-requests?   uint32

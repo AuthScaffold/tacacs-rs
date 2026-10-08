@@ -24,11 +24,12 @@ impl RoutedOperation for AuthorizationRoute {
     async fn send(
         connection: &dyn UpstreamConnection,
         request: &Self::Request,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError> {
         let request = request
             .to_request()
             .map_err(UpstreamRequestError::invalid_request)?;
-        let reply = connection.send_authorization(request).await?;
+        let reply = connection.send_authorization(request, deadline).await?;
         AuthorizationOperationResponse::from_reply(connection.server_address(), reply)
             .map_err(UpstreamRequestError::outcome_unknown)
     }

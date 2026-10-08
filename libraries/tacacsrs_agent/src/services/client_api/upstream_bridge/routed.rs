@@ -34,6 +34,7 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
     async fn send(
         connection: &dyn UpstreamConnection,
         request: &Self::Request,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError>;
 
     /// Returns whether a valid response reports an operational server error.
@@ -81,13 +82,23 @@ where
             attempt_index + 1,
         );
 
-        match Operation::send(&*bound_server.connection, self.request).await {
+        let deadline = self.routing.deadline();
+        if let Err(error) = deadline.check() {
+            return Attempt::Aborted(ServiceError::new(error.to_string()).retriable(true));
+        }
+        let attempt_deadline = deadline.capped(bound_server.timeout_duration());
+        let response = attempt_deadline
+            .run(Operation::send(&*bound_server.connection, self.request, attempt_deadline))
+            .await
+            .map_err(UpstreamRequestError::outcome_unknown)
+            .and_then(std::convert::identity);
+        match response {
             Ok(response) if Operation::is_server_error(&response) => {
-                self.router.note_failure(&bound_server).await;
+                let _reported = deadline.run(self.router.note_failure(&bound_server)).await;
                 Attempt::Rejected(response)
             }
             Ok(response) => {
-                self.router.note_success(&bound_server).await;
+                let _reported = deadline.run(self.router.note_success(&bound_server)).await;
                 Attempt::Accepted(response)
             }
             Err(error) if error.kind() == AttemptFailureKind::InvalidRequest => {
@@ -112,7 +123,7 @@ where
                     .retriable(
                         !self.outcome_unknown && error.kind() == AttemptFailureKind::NotSent,
                     );
-                self.router.note_failure(&bound_server).await;
+                let _reported = deadline.run(self.router.note_failure(&bound_server)).await;
                 Attempt::Failed {
                     error: service_error,
                     disposition,

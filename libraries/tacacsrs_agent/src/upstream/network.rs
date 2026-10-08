@@ -85,6 +85,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
     async fn send_accounting(
         &self,
         request: AccountingRequest,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
         debug_assert_eq!(self.operation, OperationKind::Accounting);
         log_session_start(
@@ -95,7 +96,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
         let response = self
             .connection
-            .execute_classified(AccountingExchange::new(request))
+            .execute_classified_until(AccountingExchange::new(request), deadline)
             .await;
 
         match &response {
@@ -123,10 +124,11 @@ impl UpstreamConnection for TacacsUpstreamConnection {
     async fn authenticate_pap(
         &self,
         exchange: PapAuthenticationExchange,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
         debug_assert_eq!(self.operation, OperationKind::Authentication);
         self.connection
-            .execute_classified(exchange)
+            .execute_classified_until(exchange, deadline)
             .await
             .map_err(|error| {
                 UpstreamRequestError::from_fixed(
@@ -139,6 +141,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
     async fn send_authorization(
         &self,
         request: AuthorizationRequest,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
         debug_assert_eq!(self.operation, OperationKind::Authorization);
         log_session_start(
@@ -149,7 +152,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
         let response = self
             .connection
-            .execute_classified(AuthorizationExchange::new(request))
+            .execute_classified_until(AuthorizationExchange::new(request), deadline)
             .await;
 
         match &response {

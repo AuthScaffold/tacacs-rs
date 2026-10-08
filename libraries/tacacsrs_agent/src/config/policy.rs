@@ -39,6 +39,7 @@ pub enum PolicyService {
 pub struct RequestLimits {
     max_body_length: usize,
     max_concurrent_requests: usize,
+    request_timeout: Duration,
 }
 
 impl RequestLimits {
@@ -63,7 +64,27 @@ impl RequestLimits {
         Ok(Self {
             max_body_length,
             max_concurrent_requests,
+            request_timeout: Duration::from_secs(u64::from(
+                tacacsrs_config::tacacsrs::Authentication::default().request_timeout_seconds,
+            )),
         })
+    }
+
+    /// Overrides the total request budget on a prepared policy.
+    ///
+    /// # Errors
+    /// Returns an error for a zero budget or an unsupported clock range.
+    pub fn with_request_timeout(mut self, timeout: Duration) -> anyhow::Result<Self> {
+        anyhow::ensure!(!timeout.is_zero(), "The request timeout must be greater than zero");
+        tacacsrs_networking::RequestDeadline::after(timeout)?;
+        self.request_timeout = timeout;
+        Ok(self)
+    }
+
+    /// Returns the total budget captured before admission.
+    #[must_use]
+    pub const fn request_timeout(self) -> Duration {
+        self.request_timeout
     }
 
     /// Returns the maximum encoded TACACS+ body length.
@@ -142,14 +163,23 @@ impl RuntimePolicy {
                 RequestLimits {
                     max_body_length: authentication.max_body_length as usize,
                     max_concurrent_requests: authentication.max_concurrent_requests as usize,
+                    request_timeout: Duration::from_secs(u64::from(
+                        authentication.request_timeout_seconds,
+                    )),
                 },
                 RequestLimits {
                     max_body_length: authorization.max_body_length as usize,
                     max_concurrent_requests: authorization.max_concurrent_requests as usize,
+                    request_timeout: Duration::from_secs(u64::from(
+                        authorization.request_timeout_seconds,
+                    )),
                 },
                 RequestLimits {
                     max_body_length: accounting.max_body_length as usize,
                     max_concurrent_requests: accounting.max_concurrent_requests as usize,
+                    request_timeout: Duration::from_secs(u64::from(
+                        accounting.request_timeout_seconds,
+                    )),
                 },
             ),
             failover_recovery_interval: Duration::from_secs(u64::from(
@@ -280,6 +310,10 @@ mod tests {
         assert!(RequestLimits::new(0, 1).is_err());
         assert!(RequestLimits::new(1, 0).is_err());
         assert!(RequestLimits::new(TACACS_MAX_BODY_LENGTH as usize + 1, 1).is_err());
+        assert!(RequestLimits::new(1, 1)
+            .unwrap()
+            .with_request_timeout(Duration::ZERO)
+            .is_err());
     }
 
     #[test]
@@ -300,7 +334,7 @@ mod tests {
             "tacacsrs:runtime-policy": {
                 "client-api-failover-strategy": "ordered-safe-retry",
                 "authentication": {},
-                "authorization": {"max-body-length":8192,"max-concurrent-requests":16}
+                "authorization": {"max-body-length":8192,"max-concurrent-requests":16,"request-timeout-seconds":12}
             }
         }"#,
         )
@@ -308,6 +342,18 @@ mod tests {
         let original = source.clone();
         let prepared = RuntimePolicy::try_from(&source).unwrap();
         assert_eq!(source, original);
+        assert_eq!(
+            prepared
+                .limits(OperationKind::Authorization)
+                .request_timeout(),
+            Duration::from_secs(12)
+        );
+        assert_eq!(
+            prepared
+                .limits(OperationKind::Authentication)
+                .request_timeout(),
+            Duration::from_secs(30)
+        );
         assert_eq!(
             prepared.failover_strategy(PolicyService::ClientApi),
             FailoverStrategy::OrderedSafeRetry
@@ -325,7 +371,10 @@ mod tests {
         );
         assert_eq!(
             prepared.limits(OperationKind::Authorization),
-            RequestLimits::new(8192, 16).unwrap()
+            RequestLimits::new(8192, 16)
+                .unwrap()
+                .with_request_timeout(Duration::from_secs(12))
+                .unwrap()
         );
         assert_eq!(prepared.limits(OperationKind::Accounting).max_body_length(), 16384);
         let mut invalid = source;

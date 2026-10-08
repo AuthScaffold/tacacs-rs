@@ -23,8 +23,11 @@ impl RoutedOperation for AccountingRoute {
     async fn send(
         connection: &dyn UpstreamConnection,
         request: &Self::Request,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError> {
-        let reply = connection.send_accounting(request.to_request()).await?;
+        let reply = connection
+            .send_accounting(request.to_request(), deadline)
+            .await?;
         Ok(AccountingOperationResponse::from_reply(connection.server_address(), reply))
     }
 

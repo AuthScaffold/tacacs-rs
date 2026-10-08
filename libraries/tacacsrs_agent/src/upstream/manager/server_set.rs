@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_networking::routed::{BoundEndpoint, EndpointConnector, RoutedClient};
 use tacacsrs_networking::retry::FailoverPlan;
+use tacacsrs_networking::RequestDeadline;
 
 use super::prepared_server::PreparedServer;
 use crate::config::{PolicyService, PreparedProxyPolicy, RuntimePolicy};
@@ -30,6 +31,7 @@ pub(crate) struct RoutingLease {
     pub(super) runtime: Arc<RuntimeRoutingSnapshot>,
     pub(super) operation: OperationKind,
     plan: FailoverPlan,
+    deadline: RequestDeadline,
 }
 
 impl RoutingLease {
@@ -41,15 +43,23 @@ impl RoutingLease {
         let plan = runtime
             .runtime_policy
             .failover_plan(service, runtime.server_set.client.eligible_count(operation));
+        let deadline =
+            RequestDeadline::after(runtime.runtime_policy.limits(operation).request_timeout())
+                .unwrap_or_else(|_| RequestDeadline::at(tokio::time::Instant::now()));
         Self {
             runtime,
             operation,
             plan,
+            deadline,
         }
     }
 
     pub(crate) const fn failover_plan(&self) -> FailoverPlan {
         self.plan
+    }
+
+    pub(crate) const fn deadline(&self) -> RequestDeadline {
+        self.deadline
     }
 
     pub(crate) fn generation(&self) -> u64 {

@@ -8,7 +8,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
 use tacacsrs_networking::{
-    ConnectOptions, PacketReader, PacketReadResult, PreparedEndpoint, TransmissionState,
+    ConnectOptions, PacketReader, PacketReadResult, PreparedEndpoint, RequestDeadline,
+    TransmissionState,
 };
 use tacacsrs_networking::retry::{
     Attempt, AttemptDisposition, FailoverAttempt, FailoverOutcome, FailoverPlan, run_with_failover,
@@ -25,6 +26,7 @@ use tacacsrs_protocol::traits::TacacsBodyTrait;
 
 struct AccountingAttempt {
     client: RoutedClient,
+    deadline: RequestDeadline,
 }
 
 #[async_trait]
@@ -34,24 +36,29 @@ impl FailoverAttempt for AccountingAttempt {
 
     async fn attempt(&mut self, _attempt_index: usize) -> Attempt<Self::Value, Self::Error> {
         let binding = match self
-            .client
-            .bind(OperationKind::Accounting, Duration::from_secs(30))
+            .deadline
+            .run(
+                self.client
+                    .bind(OperationKind::Accounting, Duration::from_secs(30)),
+            )
             .await
+            .map_err(anyhow::Error::from)
+            .and_then(std::convert::identity)
         {
             Ok(binding) => binding,
             Err(error) => return Attempt::Aborted(error),
         };
         match binding
             .connection()
-            .execute_classified(AccountingExchange::new(request()))
+            .execute_classified_until(AccountingExchange::new(request()), self.deadline)
             .await
         {
             Ok(reply) if reply.status == TacacsAccountingStatus::TacPlusAcctStatusError => {
-                binding.note_failure().await;
+                let _reported = self.deadline.run(binding.note_failure()).await;
                 Attempt::Rejected((binding.endpoint().name().to_owned(), reply))
             }
             Ok(reply) => {
-                binding.note_success().await;
+                let _reported = self.deadline.run(binding.note_success()).await;
                 Attempt::Accepted((binding.endpoint().name().to_owned(), reply))
             }
             Err(error) => {
@@ -59,7 +66,7 @@ impl FailoverAttempt for AccountingAttempt {
                     TransmissionState::NotSent => AttemptDisposition::NotSent,
                     TransmissionState::OutcomeUnknown => AttemptDisposition::OutcomeUnknown,
                 };
-                binding.note_failure().await;
+                let _reported = self.deadline.run(binding.note_failure()).await;
                 Attempt::Failed {
                     error: error.into_error(),
                     disposition,
@@ -107,7 +114,10 @@ async fn peer(listener: TcpListener, status: TacacsAccountingStatus) -> anyhow::
 
 async fn accounting(client: RoutedClient) -> anyhow::Result<()> {
     let plan = FailoverPlan::new(client.eligible_count(OperationKind::Accounting));
-    let mut attempt = AccountingAttempt { client };
+    let mut attempt = AccountingAttempt {
+        client,
+        deadline: RequestDeadline::after(Duration::from_secs(2))?,
+    };
     match run_with_failover(plan, &mut attempt).await {
         FailoverOutcome::Accepted((name, reply)) => {
             ensure!(

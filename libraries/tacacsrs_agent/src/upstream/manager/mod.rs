@@ -219,7 +219,10 @@ impl UpstreamManager {
             .await
             .and_then(|endpoint| endpoint.prepared().connection_timeout())
             .unwrap_or(std::time::Duration::ZERO);
-        runtime.admission.acquire(operation, wait_timeout).await
+        runtime
+            .admission
+            .acquire_until(operation, lease.deadline(), wait_timeout)
+            .await
     }
 
     /// Atomically replaces the configured TACACS+ server set.
@@ -755,6 +758,52 @@ mod tests {
 
         assert_eq!(authorization.connection.server_address(), primary.address);
         assert_eq!(failed_over_authentication.connection.server_address(), backup.address);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deadline_cancels_connection_setup_and_releases_reconnect_lock() {
+        use crate::config::RequestLimits;
+
+        let release = Arc::new(Notify::new());
+        let connector = Arc::new(BlockingConnector {
+            connection: Arc::new(FakeConnection {
+                address: "server-a:49".to_owned(),
+                usable: AtomicBool::new(true),
+                fail_next_request: AtomicBool::new(false),
+            }),
+            started: Arc::new(Notify::new()),
+            release: release.clone(),
+        });
+        let health = test_health();
+        let state = UpstreamManager::new(
+            vec![test_server("server-a:49")],
+            connector,
+            Duration::from_secs(30),
+            health.clone(),
+        );
+        let limits = RequestLimits::new(1024, 1)
+            .unwrap()
+            .with_request_timeout(Duration::from_secs(1))
+            .unwrap();
+        state.reload_runtime_policy(
+            RuntimePolicy::new(
+                FailoverStrategy::default(),
+                FailoverStrategy::default(),
+                OperationPolicies::new(limits, limits, limits),
+                Duration::from_secs(30),
+            )
+            .unwrap(),
+        );
+        let started = tokio::time::Instant::now();
+        let error = state.bind_server_for_new_session().await.err().unwrap();
+        assert!(error.is::<tacacsrs_networking::DeadlineElapsed>());
+        assert_eq!(started.elapsed(), Duration::from_secs(1));
+        assert_eq!(
+            health.snapshot().upstream_availability(),
+            crate::runtime::UpstreamAvailability::Unknown
+        );
+        release.notify_one();
+        state.bind_server_for_new_session().await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]

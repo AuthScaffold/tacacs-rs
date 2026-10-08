@@ -424,7 +424,7 @@ mod tests {
     #[async_trait]
     impl ProxyConversationProvider for FakeConversationProvider {
         type Conversation = FakeProxySession;
-        type Request = FailoverPlan;
+        type Request = (FailoverPlan, tacacsrs_networking::RequestDeadline);
 
         fn capture_request(&self, _operation: OperationKind) -> Self::Request {
             let policy = RuntimePolicy::new(
@@ -434,7 +434,14 @@ mod tests {
                 Duration::from_secs(30),
             )
             .expect("test policy");
-            policy.failover_plan(PolicyService::TacacsProxy, self.eligible_server_count)
+            (
+                policy.failover_plan(PolicyService::TacacsProxy, self.eligible_server_count),
+                tacacsrs_networking::RequestDeadline::after(Duration::from_secs(30)).unwrap(),
+            )
+        }
+
+        fn deadline(&self, request: &Self::Request) -> tacacsrs_networking::RequestDeadline {
+            request.1
         }
 
         async fn open_conversation(
@@ -466,7 +473,7 @@ mod tests {
         }
 
         fn failover_plan(&self, request: &Self::Request) -> FailoverPlan {
-            *request
+            request.0
         }
     }
 
@@ -574,6 +581,80 @@ mod tests {
     fn downstream_obfuscation_uses_no_key_for_unobfuscated_clients() {
         assert_eq!(downstream_obfuscation_key(&PreparedProxyPolicy::unobfuscated()).unwrap(), None);
         assert!(downstream_obfuscation_key(&PreparedProxyPolicy::unavailable()).is_err());
+    }
+
+    #[tokio::test]
+    async fn proxy_continuation_deadline_survives_reload_and_releases_capacity() {
+        use tokio::io::AsyncReadExt;
+        use crate::config::RequestLimits;
+        use crate::runtime::{ProxyLoopGuard, RuntimeHealthPublisher};
+        use crate::upstream::NetworkUpstreamConnector;
+        use crate::EnabledServices;
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let manager = Arc::new(UpstreamManager::new(
+                vec![native_server(&listener)],
+                Arc::new(NetworkUpstreamConnector::new(ProxyLoopGuard::new(None))),
+                Duration::from_secs(30),
+                RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
+            ));
+            let policy = |duration| {
+                let limits = RequestLimits::new(1024, 1)
+                    .unwrap()
+                    .with_request_timeout(duration)
+                    .unwrap();
+                RuntimePolicy::new(
+                    FailoverStrategy::default(),
+                    FailoverStrategy::default(),
+                    OperationPolicies::new(limits, limits, limits),
+                    Duration::from_secs(30),
+                )
+                .unwrap()
+            };
+            manager.reload_runtime_policy(policy(Duration::from_millis(500)));
+            let provider = Arc::new(UpstreamConversationProvider::new(OperationRouter::new(
+                manager.clone(),
+                PolicyService::TacacsProxy,
+            )));
+            let (mut downstream, stream) = tokio::io::duplex(4096);
+            let proxy = tokio::spawn(proxy_multiplexed_connection(
+                stream,
+                Duration::from_secs(10),
+                None,
+                provider.clone(),
+            ));
+            write_packet(
+                &mut downstream,
+                &test_packet_with_sequence(
+                    TacacsType::TacPlusAuthentication,
+                    1,
+                    1,
+                    TacacsFlags::empty(),
+                    vec![1],
+                ),
+            )
+            .await;
+            let (mut upstream, _) = listener.accept().await.unwrap();
+            let request = read_packet(&mut upstream).await;
+            write_authentication_reply(
+                &mut upstream,
+                &request,
+                TacacsAuthenticationStatus::TacPlusAuthenStatusGetdata,
+            )
+            .await;
+            read_packet(&mut downstream).await;
+            manager.reload_runtime_policy(policy(Duration::from_secs(10)));
+            assert!(
+                proxy.await.unwrap().is_err(),
+                "waiting for a continuation must consume the captured budget"
+            );
+            assert_eq!(upstream.read(&mut [0; 1]).await.unwrap(), 0);
+            let next = provider.capture_request(OperationKind::Authentication);
+            provider.admit(&next, 1).await.unwrap();
+        })
+        .await
+        .expect("expired proxy conversation must release its transport and capacity");
     }
 
     #[tokio::test]
