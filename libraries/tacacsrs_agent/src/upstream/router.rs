@@ -15,7 +15,7 @@ use crate::config::PolicyService;
 use super::admission::{AdmissionError, AdmissionPermit};
 use tacacsrs_networking::retry::FailoverPlan;
 use super::manager::{BoundServer, RoutingLease, UpstreamManager};
-use super::operation::OperationKind;
+use super::OperationKind;
 
 /// Routing and admission entry point for one local service.
 #[derive(Clone)]

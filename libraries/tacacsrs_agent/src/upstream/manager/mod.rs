@@ -1,21 +1,7 @@
-//! Internal service for upstream TACACS+ server selection and failover.
+//! Publishes prepared catalogs with service policy, admission, and health.
 //!
-//! All listener tasks share `UpstreamManager`. It owns operation-specific
-//! server cursors, circuits, and cached connections.
-//!
-//! # Concurrency model
-//!
-//! Multiple IPC handlers can call `UpstreamManager` at the same time. The
-//! manager uses small lock scopes to reduce contention.
-//!
-//! | Lock | Scope | Purpose |
-//! |------|-------|---------|
-//! | operation cursor (`RwLock`) | Per-operation | Current preferred server |
-//! | connection (`RwLock`) | Per-server-operation | Cached connection |
-//! | connect lock (`Mutex`) | Per-server-operation | Serializes reconnects |
-//!
-//! The `connect_lock` makes concurrent IPC handlers share one reconnect
-//! attempt. It prevents duplicate TLS handshakes to one TACACS+ server.
+//! Networking owns route selection, circuits, cached connections, and reconnect
+//! serialization. The manager retains source metadata and projects YANG inputs.
 
 use std::sync::{Arc, RwLock as StdRwLock};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
@@ -23,7 +9,7 @@ use tacacsrs_config::prepare::PrepareOptions;
 
 use self::availability::AvailabilityTracker;
 use self::server_set::{RuntimeRoutingSnapshot, ServerSet};
-use self::server_slot::ServerSlot;
+use self::prepared_server::PreparedServer;
 use crate::config::{PreparedProxyPolicy, RuntimePolicy};
 #[cfg(test)]
 use crate::config::{FailoverStrategy, OperationPolicies};
@@ -34,24 +20,17 @@ use crate::upstream::{AdmissionError, OperationKind, ProxyTransportSettings, Ups
 pub(crate) use self::server_set::{BoundServer, RoutingLease};
 
 mod server_set;
-mod server_slot;
+mod prepared_server;
 mod availability;
-mod circuit;
-mod routing;
+mod binding;
 
-/// Shared server state for all IPC request handlers.
+/// Publishes catalogs and captures request policy for both local services.
 ///
-/// Each IPC request uses this type to select a TACACS+ server. The request
-/// handler runs the operation and records failures for later requests.
-///
-/// Each operation walks its eligible server list from its active cursor. A
-/// failure moves only that operation. One real request tests recovery after the
-/// configured interval.
+/// Networking supplies the binding and records routing outcomes. This adapter
+/// associates that binding with source metadata and generation-aware health.
 pub(crate) struct UpstreamManager {
     /// Current immutable routing generation for new requests.
     runtime: StdRwLock<Arc<RuntimeRoutingSnapshot>>,
-    /// Factory for new server connections.
-    connector: Arc<dyn UpstreamConnector>,
     connect_options: PrepareOptions,
     /// Race-safe aggregate server-availability publisher.
     availability: AvailabilityTracker,
@@ -122,9 +101,9 @@ impl UpstreamManager {
     ) -> anyhow::Result<Self> {
         let servers = servers
             .into_iter()
-            .map(|server| ServerSlot::new(server, connect_options).map(Arc::new))
+            .map(|server| PreparedServer::new(server, connect_options).map(Arc::new))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let server_set = Arc::new(ServerSet::new(servers));
+        let server_set = Arc::new(ServerSet::new(servers, connector));
         Ok(Self {
             runtime: StdRwLock::new(Arc::new(RuntimeRoutingSnapshot {
                 generation: 0,
@@ -134,7 +113,6 @@ impl UpstreamManager {
                 admission: Arc::new(AdmissionRegistry::new(&runtime_policy)),
                 runtime_policy: Arc::new(runtime_policy),
             })),
-            connector,
             connect_options,
             availability: AvailabilityTracker::new(health),
         })
@@ -217,7 +195,7 @@ impl UpstreamManager {
     /// Returns the number of servers eligible for one operation.
     #[cfg(test)]
     pub(crate) fn eligible_server_count(&self, operation: OperationKind) -> usize {
-        self.current_server_set().route(operation).server_count()
+        self.current_server_set().client.eligible_count(operation)
     }
 
     /// Waits for shared operation capacity with the captured request inputs.
@@ -231,15 +209,13 @@ impl UpstreamManager {
         lease.validate_body_length(body_length)?;
         let runtime = &lease.runtime;
         let operation = lease.operation;
-        let route = runtime.server_set.route(operation);
-        let wait_timeout = if route.server_count() == 0 {
-            std::time::Duration::ZERO
-        } else {
-            let position = route.active_position().await;
-            runtime.server_set.servers[route.server_index(position)]
-                .config()
-                .timeout_duration()
-        };
+        let wait_timeout = runtime
+            .server_set
+            .client
+            .active_endpoint(operation)
+            .await
+            .and_then(|endpoint| endpoint.prepared().connection_timeout())
+            .unwrap_or(std::time::Duration::ZERO);
         runtime.admission.acquire(operation, wait_timeout).await
     }
 
@@ -286,16 +262,6 @@ impl UpstreamManager {
                 .iter()
                 .zip(&servers)
                 .any(|(old, new)| old.server.as_ref() != new.as_ref());
-        let mut previous_active_names = Vec::with_capacity(OperationKind::ALL.len());
-        for operation in OperationKind::ALL {
-            previous_active_names.push(
-                previous
-                    .route(operation)
-                    .active_server_name(&previous.servers)
-                    .await,
-            );
-        }
-
         let mut new_server_slots = Vec::with_capacity(servers.len());
         for server in servers {
             let reusable = previous
@@ -305,21 +271,24 @@ impl UpstreamManager {
                 .cloned();
             let slot = match reusable {
                 Some(slot) => slot,
-                None => Arc::new(ServerSlot::new(server, self.connect_options)?),
+                None => Arc::new(PreparedServer::new(server, self.connect_options)?),
             };
             new_server_slots.push(slot);
         }
 
-        let new_set = Arc::new(ServerSet::new(new_server_slots));
-        for (operation, previous_name) in OperationKind::ALL
-            .into_iter()
-            .zip(previous_active_names.iter())
-        {
-            new_set
-                .route(operation)
-                .preserve_active_server(previous_name.as_deref(), &new_set.servers)
-                .await;
-        }
+        let client = previous
+            .client
+            .with_endpoints(
+                new_server_slots
+                    .iter()
+                    .map(|server| server.endpoint.clone())
+                    .collect(),
+            )
+            .await;
+        let new_set = Arc::new(ServerSet {
+            servers: new_server_slots,
+            client,
+        });
 
         {
             let mut current = self
@@ -347,13 +316,7 @@ impl UpstreamManager {
             log::info!("Reloaded the TACACS+ server set: {} server(s)", new_set.server_count());
         }
 
-        for stale in previous
-            .servers
-            .iter()
-            .filter(|old| !new_set.servers.iter().any(|new| Arc::ptr_eq(old, new)))
-        {
-            stale.drain_cached_connection().await;
-        }
+        previous.client.retire_replaced(&new_set.client).await;
 
         Ok(())
     }
@@ -976,7 +939,10 @@ mod tests {
             .await
             .expect("current connection remains available");
 
-        assert_eq!(current.connection_generation, recovered.connection_generation);
+        assert_eq!(
+            current.binding.connection_generation(),
+            recovered.binding.connection_generation()
+        );
         assert_eq!(connector.connect_attempts_for(&primary.address).await, 2);
     }
 

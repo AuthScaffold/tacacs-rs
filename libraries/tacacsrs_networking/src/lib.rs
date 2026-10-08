@@ -4,6 +4,8 @@
 //! [`ClientConversation`] for transparent proxy and interactive use cases. Raw
 //! packet codecs are available only to adapter layers that bridge TACACS+
 //! connections.
+//! Use [`routed::RoutedClient`] to select operation-eligible endpoints and share
+//! circuit and reconnect state without an agent or configuration source.
 //!
 //! Hosts can attach a [`ConnectionGuard`] through [`PreparedEndpoint::with_connection_guard`].
 //! Establishment checks each resolved destination before TCP connect and checks the
@@ -17,6 +19,7 @@ mod establish;
 mod exchange_error;
 mod helpers;
 pub mod retry;
+pub mod routed;
 mod runtime;
 mod session;
 mod single_connect;
