@@ -6,6 +6,7 @@ Stage 3 is in progress. Stage 2's canonical configuration and prepared-endpoint 
 The first increment transfers retry decisions and execution into networking and makes ordered retries conservative for every operation.
 The second increment captures routing inputs before admission and retains them across retries and proxy continuations.
 The third increment extracts an agent-free routed client into networking and migrates both ingress paths.
+S3-04 now provides bounded shared admission. Deadline propagation and ingress-task bounds remain open within that item.
 Absolute deadlines and a public close/join API remain open.
 
 Fix nearby issues within the current increment when practical. Add a new item only when the work needs a distinct implementation step.
@@ -16,7 +17,7 @@ Keep completed items visible with verification evidence. Preserve canonical YANG
 - [x] S3-01: Move the retry plan and executor into networking and migrate both IPC and proxy callers. Commit `10058a5` stops uncertain-outcome replay for every operation and verifies bounded attempts, reply cleanup, cancellation, and adapter behavior. See [retry ownership](#retry-ownership).
 - [x] S3-02: Capture one routing generation and retry policy before admission. Commit `c3b6fd3` retains endpoints, body limits, and recovery policy across reloads. IPC and TCP-backed proxy regressions verify retries and continuations. See [request generations](#request-generations).
 - [x] S3-03: Extract endpoint catalogs, circuits, and reconnect serialization into networking. Commit `861a40b` migrates both ingress paths, removes duplicate agent routing state, fixes stale recovery and connection-failure races, and runs an agent-free example. See [routed client](#routed-client).
-- [ ] S3-04: Apply one absolute request deadline to admission, resolution, connection/TLS setup, attempts, and response waits. Keep global capacity shared across generations and bound pending work. Verify cancellation cleanup and exhausted budgets.
+- [ ] S3-04: Apply one absolute request deadline across execution and bound pending work. Commit `97db77a` completes shared bounded admission and its cancellation tests. End-to-end deadline policy, propagation, and ingress-task bounds remain open. See [admission progress](#admission-progress).
 - [ ] S3-05: Add explicit connection/runtime close and join ownership with bounded drain. Verify resource release after idle/active retirement, cancellation, repeated reload, and embedded shutdown.
 - [ ] S3-06: Complete Stage 3 integration gates, remove temporary adapters, and update this checkpoint and the migration plan together. Preserve ordering, operation eligibility, prepared credentials, timeout semantics, and loop exclusion.
 
@@ -127,6 +128,43 @@ It prints `Accounting accepted by backup; no agent or configuration source was r
 The example has a five-second outer test bound. That bound does not implement the per-request deadline contract.
 S3-04 owns absolute deadlines, shared capacity, and bounded pending work. S3-05 owns public close/join and bounded retirement.
 
+## Admission Progress
+
+S3-04 is split at the admission boundary because end-to-end deadline policy affects server timeouts, retries, and proxy conversations together.
+The existing server timeout does not define a distinct total request budget. This increment does not silently reinterpret it.
+Commit `97db77a` completes the admission part without changing transport or replay behavior.
+
+- [x] Shared bounded admission: networking owns FIFO waiters, active capacity, live-limit updates, and cancellation-safe release. Both service paths use the same operation pools across generations.
+- [ ] Canonical deadline policy and propagation: define the total budget in canonical configuration, capture it before admission, and carry it through DNS, connect/TLS, retries, and continuations. Verify expiry before and after transmission without unsafe replay.
+- [ ] Ingress bounds: limit work before session-task creation and during slow reply delivery. Verify that admission rejection cannot leave unbounded tasks outside the admission pool.
+
+`tacacsrs_networking::admission::AdmissionPool` is reusable without the agent.
+The agent derives both active and pending limits from the operation's canonical `max-concurrent-requests` value.
+For limit `C`, the pool permits at most `C` active requests and accepts at most `C` pending waiters.
+New arrivals cannot pass existing waiters. Once the queue is full, admission returns an immediate overload error without upstream I/O.
+IPC reports overload as retriable. The proxy uses its existing local admission-error reply path.
+
+Lowering the limit retains already-active requests and existing waiters, even if either count exceeds the new limit.
+It accepts no extra waiters until the pending count is below the new limit.
+It admits no waiting request until the active count is below that limit.
+Increasing the limit wakes waiters. Pool clones and old routing generations never create independent capacity.
+
+A single short-held mutex protects the live limit, active count, and FIFO queue.
+This replaces the semaphore and separate permit-debt atomics, whose reduction and release steps could interleave.
+Cancelling or expiring a waiter removes its queue entry. Dropping an active permit releases capacity synchronously.
+The pool starts no cleanup task and observes notifications without holding its state lock across an await.
+An empty eligible catalog keeps the agent's existing waiting-for-configuration response before capacity allocation.
+
+The new `RequestDeadline` value represents one absolute expiry. Copying it does not extend its budget.
+Admission converts the existing selected-server wait timeout once and reuses that expiry for all wakeups.
+The primitive rejects expired work before polling it; direct tests verify that sequential stages share the same budget.
+It is not yet threaded through the complete typed or proxy request path. S3-04 remains unchecked for that reason.
+
+The overload regression failed before the implementation: an excess request waited instead of returning an error.
+Direct tests cover FIFO order, shared clones, cancellation, expiry, zero capacity, and limit reductions with retained waiters.
+The service test holds an IPC request and a proxy waiter, verifies retriable overload without extra upstream I/O, and then cancels both.
+The next IPC request succeeds, which verifies that both active and pending capacity were released.
+
 ## Verification
 
 ### S3-01
@@ -165,3 +203,14 @@ CI's networking dependency guard confirms no configuration, provider, IPC, agent
 Workspace unused-dependency checks pass. The audit found no vulnerabilities in 301 locked packages, with the known crates.io index-lock warning.
 Networking enables Tokio `test-util` only for development tests. No external version, lockfile, generated YANG artifact, protobuf contract, or native credential policy changed.
 Windows, live SONiC, and Miri were not run for this increment.
+
+### S3-04 Admission Increment
+
+All four direct admission tests and the absolute-deadline primitive test pass.
+Networking passes 136 library tests, with two existing ignored tests. All 105 agent library tests pass.
+The complete all-features workspace suite, strict workspace Clippy, nightly formatting, workspace build, and warnings-as-errors rustdoc pass.
+The documentation book, editor diagnostics, and whitespace checks pass.
+
+No dependency, lockfile, generated YANG artifact, protobuf contract, or native transport changed.
+The external-server matrix, Windows, live SONiC, and Miri were not rerun for this admission-only increment.
+The ordinary workspace suite still runs local transport and prepared-source fixtures.

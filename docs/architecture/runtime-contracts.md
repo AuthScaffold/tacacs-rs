@@ -153,6 +153,13 @@ New admissions wait until outstanding work falls below the new limit.
 Increasing a limit makes only the added capacity available.
 Waiters have deadlines and a documented fairness rule.
 
+The [S3-04 admission increment](stage-3-routed-client.md#admission-progress) implements shared FIFO pools in networking.
+The agent uses each canonical `max-concurrent-requests` value for both active capacity and the maximum number of pending admission waiters.
+Full queues return overload before upstream I/O. Active permits and pending queue entries release synchronously on cancellation.
+Limit reductions retain existing requests and waiters but reject new waiters at or above the new pending limit.
+They admit no waiting request until the active count is below the new limit.
+This bounds the admission pool only. Total-budget propagation and work outside that pool remain open S3-04 acceptance checks.
+
 The design separately bounds:
 
 - Active local operations.

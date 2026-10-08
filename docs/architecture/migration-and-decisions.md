@@ -257,7 +257,8 @@ Client execution has no generated-model dependency, and all retained transport m
 
 **Status:** in progress. The [Stage 3 checkpoint](stage-3-routed-client.md) records completed increments and remaining acceptance gates.
 S3-01 through S3-03 are complete. Both ingress paths retain one request generation and delegate routing state to networking.
-An agent-free routed accounting example passes. The next increment adds absolute deadlines and bounded admission; explicit close/join ownership remains open.
+An agent-free routed accounting example passes. S3-04 now has bounded shared admission and a reusable absolute-deadline primitive.
+Canonical total-budget policy, end-to-end deadline propagation, and ingress-task bounds remain open within S3-04. Explicit close/join ownership remains S3-05 work.
 
 1. Move operation routing, circuits, and reconnect serialization from the agent to the client.
 2. Retain the shared retry executor and adapt it to neutral operation/failure types.
