@@ -11,7 +11,7 @@ Keep completed items visible with verification evidence. Preserve canonical YANG
 
 ## Checklist
 
-- [x] S3-01: Move the retry plan and executor into networking and migrate both IPC and proxy callers. Stop uncertain-outcome replay for every operation. Verify bounded attempts, reply cleanup, cancellation, and adapter behavior. See [retry ownership](#retry-ownership).
+- [x] S3-01: Move the retry plan and executor into networking and migrate both IPC and proxy callers. Commit `10058a5` stops uncertain-outcome replay for every operation and verifies bounded attempts, reply cleanup, cancellation, and adapter behavior. See [retry ownership](#retry-ownership).
 - [ ] S3-02: Capture one routing generation and retry policy per admitted request. Start at the operation router and server-set owner. Force reload between attempts and verify that a request cannot switch to a new endpoint set.
 - [ ] S3-03: Extract endpoint catalogs, circuits, and reconnect serialization into a routed client over prepared endpoints and neutral failures. Migrate both ingress paths, remove duplicate agent routing state, and run an agent-free routed-client example.
 - [ ] S3-04: Apply one absolute request deadline to admission, resolution, connection/TLS setup, attempts, and response waits. Keep global capacity shared across generations and bound pending work. Verify cancellation cleanup and exhausted budgets.
@@ -21,6 +21,7 @@ Keep completed items visible with verification evidence. Preserve canonical YANG
 ## Retry Ownership
 
 `tacacsrs_networking::retry` now owns `FailoverPlan`, `AttemptDisposition`, `Attempt`, `FailoverAttempt`, `FailoverOutcome`, and `run_with_failover`.
+Commit `10058a5` implements this boundary on 2026-10-08.
 The existing executor moved from the agent rather than gaining a parallel implementation.
 Its inputs contain no generated configuration, IPC types, health publishers, or agent routing state.
 Callers supply attempt results and endpoint selection. The executor alone decides whether another attempt is permitted.
