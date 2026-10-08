@@ -140,6 +140,15 @@ CLI PEM input likewise requires exactly one certificate. DER input is normalized
 The generic certificate-with-key provider result contains one end-entity certificate. Trust bags can contain multiple individually encoded certificates with distinct names.
 Provisioning a client chain needs a separate canonical/provider contract. It is not supported by concatenating certificates into `cert-data`.
 
+Separate client public-key metadata must include both its bytes and format.
+Preparation supports one DER SPKI value matching the certificate key and rejects SSH encoding, missing metadata, mismatches, and trailing data.
+The certificate and private key must also agree. The development verification override does not bypass material validation.
+Native `CertificateIdentity` now includes optional `public_key_info` for this validated metadata path.
+
+The optional server `tls13-epsks` selector uses `Option<YangEmpty>` and RFC 7951 `[null]` encoding, not `Option<bool>`.
+Presence requires a client EPSK identity after enumeration. Certificate trust bags alongside client EPSK are explicitly rejected by runtime readiness.
+The canonical root parser consumes the complete JSON document and rejects trailing input.
+
 Pass this endpoint to `TacacsClient::connect_prepared`.
 With preflight disabled, construction does not open a connection. Native material errors still fail during preparation.
 The old networking `connect` and `connect_shared` constructors are removed.

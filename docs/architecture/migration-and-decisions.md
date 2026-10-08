@@ -11,7 +11,9 @@ The user reaffirmed the complete-refactor scope on 2026-10-06.
 Backward compatibility is not a constraint on Rust APIs, IPC schemas, CLI flags, configuration formats, or existing behavior.
 Canonical YANG remains authoritative. Compatibility freedom does not remove protocol, security, or validation requirements.
 Stage 2 can incorporate newly discovered issues instead of deferring them only to preserve the original stage size.
-Each added issue receives a separate checklist item with its implementation owner, completion criteria, and validation evidence.
+The user clarified on 2026-10-08 that nearby issues should be fixed within the current work when practical.
+Add a separate checklist item only when the work needs a distinct implementation step.
+Record its owner, completion criteria, and validation evidence. Small local corrections remain part of the current item.
 Completed items remain visible. A generic remaining-work item must not hide completed work or new scope.
 
 The target remains one coordinated toolkit and its adapters.

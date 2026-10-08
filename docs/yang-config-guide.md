@@ -118,9 +118,34 @@ This rule also applies to each CA or end-entity trust-bag entry. Multiple entrie
 CLI client certificate PEM files must contain exactly one certificate. The native decoder no longer silently ignores trailing DER material.
 The development verification override does not relax certificate framing.
 
+If separate `public-key` metadata is supplied, `public-key-format` must also be present, and vice versa.
+TLS preparation supports `ietf-crypto-types:subject-public-key-info-format` with exactly one DER SPKI value that matches the certificate's public key.
+The private key must still match the certificate. SSH public-key encoding is explicitly unsupported for TLS certificate metadata.
+Malformed, incomplete, mismatched, and trailing public-key data fail before publication, including when certificate verification is disabled for development.
+
 The current client-identity contract supports one leaf certificate and its matching private key, not a supplied intermediate chain.
 Stage 4 owns a canonical chain-provisioning contract and its provider and mTLS acceptance tests.
 Until that contract exists, multi-certificate client inputs are rejected. Revocation retrieval is also a named Stage 4 requirement, not a current capability.
+
+## EPSK Presence
+
+`server-authentication/tls13-epsks` is a YANG `empty` leaf, not a boolean.
+A present leaf uses RFC 7951 JSON `[null]`. Omit the field when it is absent.
+Boolean values, bare `null`, and arrays with the wrong shape are rejected for direct fields and server-credential bundles.
+Rust callers use `Some(YangEmpty::default())` for presence.
+
+```json
+{
+  "server-authentication": {
+    "tls13-epsks": [null]
+  }
+}
+```
+
+This selector requires a client EPSK identity after credential-bundle expansion. It cannot select certificate TLS implicitly.
+Client EPSK configuration still works without the optional server selector.
+The current PSK transport cannot apply CA or end-entity trust bags alongside a client EPSK identity, so preparation rejects that combination.
+Root configuration parsing also rejects trailing JSON after the first complete document.
 
 ## Three-layer processing model
 

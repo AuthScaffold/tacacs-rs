@@ -337,9 +337,10 @@ pub mod tacacs_plus {
         /// Indicates that a TLS client can authenticate TLS servers
         /// using configured EPSKs.
         #[serde(rename = "tls13-epsks")]
+        #[serde(deserialize_with = "crate::serde_helpers::deserialize_present_empty")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub tls13_epsks: Option<bool>,
+        pub tls13_epsks: Option<crate::YangEmpty>,
     }
 
     /// Identity credentials that a TLS client may present when
@@ -404,9 +405,10 @@ pub mod tacacs_plus {
         /// Indicates that a TLS client can authenticate TLS servers
         /// using configured EPSKs.
         #[serde(rename = "tls13-epsks")]
+        #[serde(deserialize_with = "crate::serde_helpers::deserialize_present_empty")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub tls13_epsks: Option<bool>,
+        pub tls13_epsks: Option<crate::YangEmpty>,
     }
 
     /// Choice constraints for [`TlsClientServerAuthentication`].

@@ -12,7 +12,8 @@ On 2026-10-06, the user confirmed that Stage 2 can incorporate newly discovered 
 Backward compatibility does not constrain the complete refactor. Existing APIs, configuration formats, and behavior can change when the design requires it.
 Canonical YANG, protocol correctness, and security requirements still apply.
 
-Add each discovered issue as a separate unchecked item with an owner, a completion condition, and a focused validation check.
+Fix nearby issues within the current item when practical, as clarified by the user on 2026-10-08.
+Add a separate unchecked item only when a distinct implementation step is needed, with an owner, completion condition, and focused check.
 Check off an item only after its implementation and validation finish. Record the commit and evidence in this checkpoint.
 If work moves between stages, record its new owner and update both stage descriptions. Do not silently defer defects to close the stage.
 

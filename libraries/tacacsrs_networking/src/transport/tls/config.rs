@@ -27,6 +27,8 @@ pub enum PrivateKeyEncoding {
 pub struct CertificateIdentity<'a> {
     /// End-entity certificate in DER format.
     pub certificate: &'a [u8],
+    /// Optional DER `SubjectPublicKeyInfo` that must match the certificate's key.
+    pub public_key_info: Option<&'a [u8]>,
     /// Private key corresponding to the certificate.
     pub private_key: &'a [u8],
     /// Encoding of the private key.
@@ -99,6 +101,21 @@ impl TlsClientConfig {
         if let Some(identity) = identity {
             let certificate = parse_certificate_data(identity.certificate)
                 .context("Failed to parse TLS certificate")?;
+            if let Some(public_key_info) = identity.public_key_info {
+                let public_key = PKey::public_key_from_der(public_key_info)
+                    .context("failed to parse DER client public key information")?;
+                anyhow::ensure!(
+                    public_key.public_key_to_der()?.as_slice() == public_key_info,
+                    "Client public key must contain exactly one DER SubjectPublicKeyInfo value"
+                );
+                let certificate_key = certificate
+                    .public_key()
+                    .context("read certificate public key")?;
+                anyhow::ensure!(
+                    certificate_key.public_eq(&public_key),
+                    "Explicit client public key does not match the certificate"
+                );
+            }
             let key = parse_private_key_data(identity.private_key, identity.private_key_encoding)
                 .context("Failed to parse TLS private key")?;
             builder = builder.with_client_auth_der(vec![certificate], key);
@@ -203,6 +220,7 @@ mod tests {
             CertificateTrust::Platform,
             Some(CertificateIdentity {
                 certificate: &der,
+                public_key_info: None,
                 private_key: &key,
                 private_key_encoding: PrivateKeyEncoding::Pkcs8,
             }),
@@ -234,6 +252,7 @@ mod tests {
                 }
                 let identity = CertificateIdentity {
                     certificate: &combined,
+                    public_key_info: None,
                     private_key: &key,
                     private_key_encoding: PrivateKeyEncoding::Pkcs8,
                 };

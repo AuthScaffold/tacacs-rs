@@ -35,7 +35,7 @@ _BINARY_SENTINEL = "__BINARY__"
 _YANG_TO_RUST = {
     "string": "String",
     "boolean": "bool",
-    "empty": "bool",
+    "empty": "crate::YangEmpty",
     "uint8": "u8",
     "uint16": "u16",
     "uint32": "u32",
@@ -1168,7 +1168,7 @@ class RustEmitter:
             for f in st.fields:
                 if "::" in f.rust_type:
                     foreign_mod = f.rust_type.split("::")[0]
-                    if foreign_mod != mod.rust_name and foreign_mod != "tacacsrs_secrets":
+                    if foreign_mod != mod.rust_name and foreign_mod not in ("tacacsrs_secrets", "crate"):
                         imports.add(foreign_mod)
         for imp in sorted(imports):
             w(f"    use super::{imp};\n")
@@ -1475,6 +1475,9 @@ class RustEmitter:
 
         if f.serde_name != f.rust_name or _needs_rename(f.serde_name):
             w(f'        #[serde(rename = "{f.serde_name}")]\n')
+
+        if f.rust_type == "crate::YangEmpty" and f.optional:
+            w('        #[serde(deserialize_with = "crate::serde_helpers::deserialize_present_empty")]\n')
 
         if f.rust_type == "Vec<u8>" and f.secret_kind is None:
             if f.is_vec:

@@ -9,7 +9,7 @@ use tacacsrs_networking::{
 use tacacsrs_secrets::SecretBytes;
 
 use crate::{TacacsPlusServer, TacacsPlusServerExt, EpskSupportedHash, PskDheKeSupportedGroup};
-use crate::crypto_types::PrivateKeyFormat;
+use crate::crypto_types::{PrivateKeyFormat, PublicKeyFormat};
 
 /// Execution controls that do not replace canonical YANG configuration.
 ///
@@ -169,6 +169,12 @@ fn certificate_identity(server: &TacacsPlusServer) -> Result<Option<CertificateI
                 .as_ref()
                 .context("TLS client certificate requires materialized inline credentials")?;
             Ok::<_, anyhow::Error>(CertificateIdentity {
+                public_key_info: match (inline.public_key_format, inline.public_key.as_deref()) {
+                    (None, None) => None,
+                    (Some(PublicKeyFormat::SubjectPublicKeyInfoFormat), Some(bytes)) => Some(bytes),
+                    (Some(PublicKeyFormat::SshPublicKeyFormat), _) => anyhow::bail!("SSH public-key format is not supported for TLS client certificate metadata"),
+                    _ => anyhow::bail!("TLS client certificate public-key and public-key-format must be supplied together"),
+                },
                 certificate: inline
                     .cert_data
                     .as_deref()
@@ -350,6 +356,119 @@ mod tests {
                 "empty explicit trust must fail"
             );
             assert_eq!(server, original);
+        }
+    }
+
+    #[test]
+    fn mismatched_explicit_public_key_is_rejected_before_runtime() {
+        let (certificate, key) = fixture_certificate("client");
+        let (_, other_key) = fixture_certificate("server");
+        let mut server = builder()
+            .with_tls_client_certificate(
+                Some(certificate.to_der().unwrap()),
+                Some(key.private_key_to_pkcs8().unwrap()),
+            )
+            .build();
+        let inline = server
+            .client_identity
+            .as_mut()
+            .unwrap()
+            .certificate
+            .as_mut()
+            .unwrap()
+            .inline_definition
+            .as_mut()
+            .unwrap();
+        inline.public_key_format =
+            Some(crate::crypto_types::PublicKeyFormat::SubjectPublicKeyInfoFormat);
+        inline.public_key = Some(other_key.public_key_to_der().unwrap());
+        let original = server.clone();
+        assert!(prepare_endpoint(&server, PrepareOptions::default()).is_err());
+        assert_eq!(server, original);
+    }
+
+    #[test]
+    fn explicit_public_key_metadata_is_checked_for_rsa_and_ec_identities() {
+        use openssl::ec::{EcGroup, EcKey};
+        use openssl::nid::Nid;
+        use openssl::pkey::PKey;
+        let (authority, authority_key) = fixture_certificate("ca");
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let ec_key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        let ec_certificate =
+            signed_peer(&authority, &authority_key, &ec_key, (now - 60, now + 3600), false, false);
+        for (certificate, key) in [fixture_certificate("client"), (ec_certificate, ec_key)] {
+            let server = builder()
+                .with_tls_client_certificate(
+                    Some(certificate.to_der().unwrap()),
+                    Some(key.private_key_to_pkcs8().unwrap()),
+                )
+                .build();
+            let public = key.public_key_to_der().unwrap();
+            let mut trailing = public.clone();
+            trailing.extend_from_slice(b"sensitive-trailing-data");
+            for (format, bytes, expected) in [
+                (None, None, true),
+                (Some(PublicKeyFormat::SubjectPublicKeyInfoFormat), Some(public.clone()), true),
+                (None, Some(public.clone()), false),
+                (Some(PublicKeyFormat::SubjectPublicKeyInfoFormat), None, false),
+                (Some(PublicKeyFormat::SshPublicKeyFormat), Some(public.clone()), false),
+                (Some(PublicKeyFormat::SubjectPublicKeyInfoFormat), Some(Vec::new()), false),
+                (Some(PublicKeyFormat::SubjectPublicKeyInfoFormat), Some(trailing), false),
+            ] {
+                let mut source = server.clone();
+                let inline = source
+                    .client_identity
+                    .as_mut()
+                    .unwrap()
+                    .certificate
+                    .as_mut()
+                    .unwrap()
+                    .inline_definition
+                    .as_mut()
+                    .unwrap();
+                inline.public_key_format = format;
+                inline.public_key = bytes;
+                let original = source.clone();
+                for disabled in [false, true] {
+                    let result = prepare_endpoint(
+                        &source,
+                        PrepareOptions::default().with_certificate_verification_disabled(disabled),
+                    );
+                    assert_eq!(
+                        result.is_ok(),
+                        expected,
+                        "format {format:?}, verification disabled {disabled}"
+                    );
+                    if let Err(error) = result {
+                        assert!(!format!("{error:#}").contains("sensitive-trailing-data"));
+                    }
+                }
+                assert_eq!(source, original);
+            }
+            let mut mismatched = server;
+            let inline = mismatched
+                .client_identity
+                .as_mut()
+                .unwrap()
+                .certificate
+                .as_mut()
+                .unwrap()
+                .inline_definition
+                .as_mut()
+                .unwrap();
+            inline.public_key_format = Some(PublicKeyFormat::SubjectPublicKeyInfoFormat);
+            inline.public_key = Some(public);
+            inline.cleartext_private_key =
+                Some(SecretBytes::new(authority_key.private_key_to_pkcs8().unwrap()));
+            assert!(prepare_endpoint(&mismatched, PrepareOptions::default()).is_err());
         }
     }
 

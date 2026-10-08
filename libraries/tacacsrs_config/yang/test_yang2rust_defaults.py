@@ -9,6 +9,12 @@ from plugins.yang2rust import Collector, RustEmitter
 
 
 class GeneratedDefaultsTests(unittest.TestCase):
+    def test_empty_leaves_use_presence_type_without_sibling_import(self):
+        output = self.generate("container auth { leaf present { type empty; } }")
+        self.assertIn("Option<crate::YangEmpty>", output)
+        self.assertIn("deserialize_present_empty", output)
+        self.assertNotIn("use super::crate;", output)
+
     def generate(self, body):
         with tempfile.TemporaryDirectory() as directory:
             ctx = context.Context(repository.FileRepository(directory))
