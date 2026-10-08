@@ -91,7 +91,7 @@ A retryable first `ERROR` reply can trigger another attempt only before any repl
 The [S3-02 implementation](stage-3-routed-client.md#request-generations) captures routing and size policy before admission.
 Proxy continuations use the captured size limit. Global concurrency remains shared and follows live limit updates.
 Availability observations use the captured server-set epoch, so old retries cannot report health for replacement endpoints.
-Absolute deadlines and bounded retirement remain S3-04 and S3-05 work.
+S3-04 now supplies captured absolute deadlines. Bounded retirement remains S3-05 work.
 
 The [S3-03 implementation](stage-3-routed-client.md#routed-client) moves catalogs, operation cursors, circuits, and reconnect serialization into networking.
 Cloned routed clients retain their catalog. Bindings report outcomes against their captured connection generation.
@@ -103,6 +103,13 @@ The agent retains source projection, admission, policy publication, and health; 
 One absolute deadline bounds admission, DNS, connection setup, TLS, transmission, and response wait.
 Each stage receives the remaining budget instead of resetting the timeout.
 Attempt-specific limits can shorten that budget but cannot extend it.
+
+The [S3-04 deadline increment](stage-3-routed-client.md#deadline-progress) derives this budget from each operation's canonical `request-timeout-seconds` leaf.
+The generated default is 30 seconds. Both ingress paths capture the deadline before admission, and reload cannot change it.
+Typed attempts also use the selected server timeout as a shorter cap.
+Native setup expiry is `NotSent`; expiry after transmission is conservatively `OutcomeUnknown` and stops replay.
+Proxy continuations and reply queueing consume the original conversation budget.
+Task creation before request capture and physical downstream delivery remain part of the open ingress-bounds item.
 
 Cancellation means that the caller no longer waits or authorizes further work.
 It does not prove that a transmitted operation did not execute remotely.
@@ -158,7 +165,7 @@ The agent uses each canonical `max-concurrent-requests` value for both active ca
 Full queues return overload before upstream I/O. Active permits and pending queue entries release synchronously on cancellation.
 Limit reductions retain existing requests and waiters but reject new waiters at or above the new pending limit.
 They admit no waiting request until the active count is below the new limit.
-This bounds the admission pool only. Total-budget propagation and work outside that pool remain open S3-04 acceptance checks.
+This bounds the admission pool only. Deadline propagation is complete; work outside the request execution boundary remains an open S3-04 acceptance check.
 
 The design separately bounds:
 

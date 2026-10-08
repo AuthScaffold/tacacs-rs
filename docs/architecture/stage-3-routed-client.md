@@ -6,8 +6,8 @@ Stage 3 is in progress. Stage 2's canonical configuration and prepared-endpoint 
 The first increment transfers retry decisions and execution into networking and makes ordered retries conservative for every operation.
 The second increment captures routing inputs before admission and retains them across retries and proxy continuations.
 The third increment extracts an agent-free routed client into networking and migrates both ingress paths.
-S3-04 now provides bounded shared admission. Deadline propagation and ingress-task bounds remain open within that item.
-Absolute deadlines and a public close/join API remain open.
+S3-04 now provides bounded shared admission and canonical total request deadlines across both ingress paths.
+Ingress-task and downstream delivery bounds remain open within S3-04. A public close/join API remains S3-05 work.
 
 Fix nearby issues within the current increment when practical. Add a new item only when the work needs a distinct implementation step.
 Keep completed items visible with verification evidence. Preserve canonical YANG and do not retain obsolete APIs only for compatibility.
@@ -17,7 +17,7 @@ Keep completed items visible with verification evidence. Preserve canonical YANG
 - [x] S3-01: Move the retry plan and executor into networking and migrate both IPC and proxy callers. Commit `10058a5` stops uncertain-outcome replay for every operation and verifies bounded attempts, reply cleanup, cancellation, and adapter behavior. See [retry ownership](#retry-ownership).
 - [x] S3-02: Capture one routing generation and retry policy before admission. Commit `c3b6fd3` retains endpoints, body limits, and recovery policy across reloads. IPC and TCP-backed proxy regressions verify retries and continuations. See [request generations](#request-generations).
 - [x] S3-03: Extract endpoint catalogs, circuits, and reconnect serialization into networking. Commit `861a40b` migrates both ingress paths, removes duplicate agent routing state, fixes stale recovery and connection-failure races, and runs an agent-free example. See [routed client](#routed-client).
-- [ ] S3-04: Apply one absolute request deadline across execution and bound pending work. Commit `97db77a` completes shared bounded admission and its cancellation tests. End-to-end deadline policy, propagation, and ingress-task bounds remain open. See [admission progress](#admission-progress).
+- [ ] S3-04: Apply one absolute request deadline across execution and bound pending work. Commit `97db77a` completes shared bounded admission; `5e0f1e3` completes canonical deadline policy and propagation. Ingress-task and downstream delivery bounds remain open. See [admission progress](#admission-progress) and [deadline progress](#deadline-progress).
 - [ ] S3-05: Add explicit connection/runtime close and join ownership with bounded drain. Verify resource release after idle/active retirement, cancellation, repeated reload, and embedded shutdown.
 - [ ] S3-06: Complete Stage 3 integration gates, remove temporary adapters, and update this checkpoint and the migration plan together. Preserve ordering, operation eligibility, prepared credentials, timeout semantics, and loop exclusion.
 
@@ -49,7 +49,7 @@ IPC tests verify no backup attempt and non-retriable errors for uncertain authen
 The proxy regression covers uncertain first requests of all three operation kinds.
 Explicit authentication and accounting server-error failover and networking's not-sent retry tests remain passing.
 
-Absolute deadlines and explicit runtime ownership remain open above.
+Ingress bounds and explicit runtime ownership remain open above.
 
 ## Request Generations
 
@@ -125,8 +125,8 @@ cargo run -p tacacsrs-networking --example routed_accounting --locked --quiet
 ```
 
 It prints `Accounting accepted by backup; no agent or configuration source was required.`
-The example has a five-second outer test bound. That bound does not implement the per-request deadline contract.
-S3-04 owns absolute deadlines, shared capacity, and bounded pending work. S3-05 owns public close/join and bounded retirement.
+The example has a five-second outer test bound. Commit `5e0f1e3` also gives its accounting request one two-second deadline across binding and retries.
+S3-04 owns the remaining ingress bounds. S3-05 owns public close/join and bounded retirement.
 
 ## Admission Progress
 
@@ -135,7 +135,7 @@ The existing server timeout does not define a distinct total request budget. Thi
 Commit `97db77a` completes the admission part without changing transport or replay behavior.
 
 - [x] Shared bounded admission: networking owns FIFO waiters, active capacity, live-limit updates, and cancellation-safe release. Both service paths use the same operation pools across generations.
-- [ ] Canonical deadline policy and propagation: define the total budget in canonical configuration, capture it before admission, and carry it through DNS, connect/TLS, retries, and continuations. Verify expiry before and after transmission without unsafe replay.
+- [x] Canonical deadline policy and propagation: commit `5e0f1e3` adds the generated total-budget leaf, captures it before admission, and bounds binding, exchanges, retries, and continuations. Tests cover expiry before and after transmission, policy reload, and cancellation cleanup.
 - [ ] Ingress bounds: limit work before session-task creation and during slow reply delivery. Verify that admission rejection cannot leave unbounded tasks outside the admission pool.
 
 `tacacsrs_networking::admission::AdmissionPool` is reusable without the agent.
@@ -155,15 +155,50 @@ Cancelling or expiring a waiter removes its queue entry. Dropping an active perm
 The pool starts no cleanup task and observes notifications without holding its state lock across an await.
 An empty eligible catalog keeps the agent's existing waiting-for-configuration response before capacity allocation.
 
-The new `RequestDeadline` value represents one absolute expiry. Copying it does not extend its budget.
-Admission converts the existing selected-server wait timeout once and reuses that expiry for all wakeups.
+Commit `97db77a` introduced `RequestDeadline` as one absolute expiry. Copying it does not extend its budget.
+That increment used it only for admission. Commit `5e0f1e3` extends it through typed and proxy execution, as described below.
 The primitive rejects expired work before polling it; direct tests verify that sequential stages share the same budget.
-It is not yet threaded through the complete typed or proxy request path. S3-04 remains unchecked for that reason.
+S3-04 remains unchecked because ingress-task and downstream delivery bounds are not complete.
 
 The overload regression failed before the implementation: an excess request waited instead of returning an error.
 Direct tests cover FIFO order, shared clones, cancellation, expiry, zero capacity, and limit reductions with retained waiters.
 The service test holds an IPC request and a proxy waiter, verifies retriable overload without extra upstream I/O, and then cancels both.
 The next IPC request succeeds, which verifies that both active and pending capacity were released.
+
+## Deadline Progress
+
+Commit `5e0f1e3` adds `request-timeout-seconds` to the canonical operation-limit grouping.
+The generated default is 30 seconds for authentication, authorization, and accounting. Zero is rejected.
+This field is a total request budget, separate from each server's timeout.
+The [operator guide](../tacacsrs-agentd.md#runtime-policy) describes configuration and the interactive-authentication implications.
+Generated Rust, the expanded tree, and the generation manifest are updated together. Pinned upstream modules remain unchanged.
+
+`RoutingLease` captures one absolute deadline with its policy and endpoint snapshot before admission.
+Admission retains the selected-server wait cap but cannot exceed the remaining total budget.
+Binding runs inside the captured deadline, which bounds reconnect waits and asynchronous connection, DNS, TLS, and preflight work.
+An expired bind does not mark servers unavailable because local budget exhaustion is not proof of server failure.
+Typed attempts use the earlier of the total deadline and the selected server timeout.
+Retries and policy reloads cannot renew an existing request's budget.
+
+`TacacsClient::execute_classified_until` bounds session establishment and the fixed exchange.
+An already-expired request opens no connection. Expiry during native session or TLS setup is `NotSent`.
+After transmission starts, an expired exchange has `OutcomeUnknown` and cannot replay automatically.
+Outcome reporting and session completion use the remaining budget. Cancellation still releases routes and permits through their existing drop ownership.
+
+The proxy captures the deadline at its first packet and bounds the complete conversation future.
+This includes admission, first-packet retries, upstream session setup, continuation waits, and reply queueing.
+Server timeouts can shorten round trips but cannot extend the conversation deadline.
+Expiry drops the conversation and releases admission capacity, even while it waits for a downstream continuation.
+
+The typed regression spends two seconds in admission and two seconds on a primary `ERROR` response.
+The backup receives only the last second of a five-second budget, even after policy reload raises the configured budget to 30 seconds.
+Further tests cover a stalled TLS handshake, a sent request with no reply, connection-setup cancellation, and proxy continuation expiry after reload.
+Native peer EOF checks verify transport release. Follow-up requests verify admission and reconnect-lock release.
+
+The deadline starts when the request is captured, not when a listener accepts the connection.
+It bounds proxy reply queueing, not physical downstream delivery after the session hands a reply to the connection writer.
+The existing ingress-bounds item remains responsible for task creation before capture and slow downstream writers.
+This increment does not claim completion of S3-04, forced retirement, or public close/join ownership.
 
 ## Verification
 
@@ -214,3 +249,17 @@ The documentation book, editor diagnostics, and whitespace checks pass.
 No dependency, lockfile, generated YANG artifact, protobuf contract, or native transport changed.
 The external-server matrix, Windows, live SONiC, and Miri were not rerun for this admission-only increment.
 The ordinary workspace suite still runs local transport and prepared-source fixtures.
+
+### S3-04 Deadline Increment
+
+All 108 agent library tests pass. Networking passes 138 library tests, with two existing ignored tests.
+The full all-features workspace suite, strict workspace Clippy, nightly formatting, workspace build, and warnings-as-errors rustdoc pass.
+The deadline-aware agent-free example and all nine independent `tac_plus-ng` runner cases pass.
+All 13 generator tests and deterministic regeneration pass against the updated manifest.
+The documentation book and whitespace checks pass.
+Rust Analyzer reports `async-trait` type errors in `test_support/fake_upstream.rs`, but the compiler does not reproduce them.
+A separate all-features test-target check passes. No source workaround was added for these editor-only diagnostics.
+
+The generated Rust SHA-256 value is `03d3bccb1ea63c55056a873d3887c9224f0a7eaf4de23eaaadb87159fbf8f84e`.
+No dependency, lockfile, protobuf contract, or native credential policy changed.
+Windows, live SONiC, and Miri were not run for this increment.
