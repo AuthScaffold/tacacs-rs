@@ -8,7 +8,7 @@ The second increment captures routing inputs before admission and retains them a
 The third increment extracts an agent-free routed client into networking and migrates both ingress paths.
 S3-04 now provides bounded shared admission and canonical total request deadlines across both ingress paths.
 Commit `41d29d5` completes ingress-task and downstream delivery bounds. S3-04 is complete.
-A public close/join API and bounded runtime retirement remain S3-05 work.
+S3-05 now owns and joins shared drivers. Full terminal client shutdown and service-wide bounded retirement remain open within that item.
 
 Fix nearby issues within the current increment when practical. Add a new item only when the work needs a distinct implementation step.
 Keep completed items visible with verification evidence. Preserve canonical YANG and do not retain obsolete APIs only for compatibility.
@@ -19,7 +19,7 @@ Keep completed items visible with verification evidence. Preserve canonical YANG
 - [x] S3-02: Capture one routing generation and retry policy before admission. Commit `c3b6fd3` retains endpoints, body limits, and recovery policy across reloads. IPC and TCP-backed proxy regressions verify retries and continuations. See [request generations](#request-generations).
 - [x] S3-03: Extract endpoint catalogs, circuits, and reconnect serialization into networking. Commit `861a40b` migrates both ingress paths, removes duplicate agent routing state, fixes stale recovery and connection-failure races, and runs an agent-free example. See [routed client](#routed-client).
 - [x] S3-04: Apply one absolute request deadline across execution and bound pending work. Commits `97db77a`, `5e0f1e3`, and `41d29d5` complete shared admission, canonical deadlines, and ingress/delivery bounds. See [admission progress](#admission-progress), [deadline progress](#deadline-progress), and [ingress bounds](#ingress-bounds).
-- [ ] S3-05: Add explicit connection/runtime close and join ownership with bounded drain. Verify resource release after idle/active retirement, cancellation, repeated reload, and embedded shutdown.
+- [ ] S3-05: Complete terminal client/runtime shutdown and bounded retirement. Commit `d93c584` owns shared drivers and adds explicit bounded shared retirement; `1928c29` fixes a dedicated invalid-header cleanup deadlock. Dedicated/setup shutdown and routed/service integration remain open. See [shared-driver progress](#shared-driver-progress).
 - [ ] S3-06: Complete Stage 3 integration gates, remove temporary adapters, and update this checkpoint and the migration plan together. Preserve ordering, operation eligibility, prepared credentials, timeout semantics, and loop exclusion.
 
 ## Retry Ownership
@@ -242,6 +242,40 @@ Further tests verify pre-spawn flood rejection, final-reply capacity retention, 
 IPC transport tests verify accept capacity and both read/write expiry. The proxy listener test verifies capacity reuse after connection expiry and task reaping.
 All prior deadline, reload, safe-retry, and source-preservation regressions remain passing.
 
+## Shared-Driver Progress
+
+Commit `d93c584` replaces detached multiplexed driver tasks with explicit task owners.
+The driver holds its I/O runtime state, not the connection handle that owns its join handle. This avoids a self-retaining task cycle.
+Active shared sessions retain the connection owner so ordinary cache retirement does not cancel sessions that can still finish.
+Final driver-owner drop requests cancellation. An explicit join, not drop alone, confirms task completion.
+
+`DriverTask` retains its join handle across cancelled join futures.
+A shorter concurrent join can abort a driver while another caller waits with a longer deadline.
+At expiry, the owner aborts the driver and awaits task cleanup before returning.
+Driver cleanup disables new sessions, closes reply routes, and wakes active readers even if the task is cancelled before its first poll.
+Completed joins are repeatable. No extra cleanup task is spawned.
+
+`TacacsClient::retire_shared_until(deadline)` drains and joins the cached and retained retired shared drivers.
+The cache retains retiring handles so cancelling this call does not lose the completion path.
+One absolute deadline applies to all tracked drivers; expiry forces remaining driver cleanup.
+Retirement advances a cache generation, which prevents an older dedicated negotiation from restoring the shared cache after retirement.
+This method does not close the client or stop dedicated sessions. Callers must quiesce new operations when using it as a shutdown step.
+
+Commit `1928c29` fixes a related dedicated-session deadlock found during the ownership review.
+The packet reader held the transport mutex while invalid-header handling tried to acquire the same mutex again.
+The regression failed before the fix. The reader now removes the invalid transport through its existing guard, and the peer receives EOF promptly.
+This local correction does not complete dedicated-session shutdown ownership.
+
+S3-05 acceptance remains split at that ownership boundary:
+
+- [x] Own shared driver tasks, support bounded explicit drain/join, retain handles across cancelled waits, and reject stale promotion. Verify idle, active, forced, repeated, and final-owner cleanup.
+- [ ] Add terminal client shutdown covering dedicated transports, in-progress connection setup, and shared sessions. Reject new work after close and prove transport release without relying on caller completion.
+- [ ] Integrate close/join with routed catalog retirement and agent shutdown. Apply one explicit retirement budget across removed endpoints, repeated reload, and embedded runtime shutdown.
+
+Tests cover graceful active-session drain, forced shutdown with an active reader, final-owner abort, concurrent deadlines, and cancelled retirement retried across eight cycles.
+Native peer EOF checks prove transport release. The late-promotion test verifies that an old negotiation cannot repopulate a retired cache.
+S3-05 remains unchecked; this increment does not claim full client or embedded-service shutdown.
+
 ## Verification
 
 ### S3-01
@@ -314,4 +348,14 @@ All 13 generator tests, deterministic regeneration, and all nine independent nat
 The documentation book and whitespace checks pass. No dependency version, lockfile, protobuf schema, or native credential policy changed.
 The generated Rust SHA-256 value is `ca5afc9ae88960ebdf10f1d1cfe082a555b51c162fad908abb1664ca9d6b78d7`.
 The known Rust Analyzer `async-trait` diagnostics remain in test support; Cargo does not reproduce them.
+Windows, live SONiC, and Miri were not run for this increment.
+
+### S3-05 Shared-Driver Increment
+
+The driver extraction passes the complete workspace suite, strict workspace Clippy, nightly formatting, workspace build, and warnings-as-errors rustdoc.
+All nine independent native peer cases pass. Agent library coverage remains 114 passing tests.
+After the dedicated cleanup correction, networking passes 149 library tests, with two existing ignored tests, and strict package Clippy.
+The invalid-header regression failed before that correction and now verifies immediate error and peer EOF.
+The documentation book and whitespace checks pass. The touched networking files have no editor diagnostics.
+No dependency, lockfile, generated YANG artifact, protobuf schema, or native credential policy changed.
 Windows, live SONiC, and Miri were not run for this increment.

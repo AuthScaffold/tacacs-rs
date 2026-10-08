@@ -31,6 +31,11 @@ An owner can delegate work without transferring its lifetime obligation.
 A detached task is not a completed resource-management design.
 Every long-lived task must have a termination signal and an observable completion path.
 
+The [first S3-05 increment](stage-3-routed-client.md#shared-driver-progress) implements this ownership for multiplexed connection drivers.
+Active shared sessions retain the driver owner. Final owner drop requests abort; explicit join waits for cleanup.
+`TacacsClient::retire_shared_until` supports deadline-bound shared retirement and retry after a cancelled join.
+It is not terminal client shutdown: dedicated transports, in-progress setup, and service-wide close/join integration remain S3-05 work.
+
 ## Protocol Boundaries
 
 ### Packet construction and decoding
