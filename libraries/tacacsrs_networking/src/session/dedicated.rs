@@ -56,6 +56,7 @@ const SINGLE_CONNECT_RESPONSE_SUPPORTED: u8 = 2;
 /// ```
 pub(crate) struct SingleConnectPromotion {
     shared_connection: Arc<SharedConnectionCache>,
+    cache_generation: u64,
     state: Arc<RwLock<SingleConnectionState>>,
     response: AtomicU8,
 }
@@ -66,6 +67,7 @@ impl SingleConnectPromotion {
         state: Arc<RwLock<SingleConnectionState>>,
     ) -> Self {
         Self {
+            cache_generation: shared_connection.generation.load(Ordering::Acquire),
             shared_connection,
             state,
             response: AtomicU8::new(SINGLE_CONNECT_RESPONSE_PENDING),
@@ -90,7 +92,12 @@ impl SingleConnectPromotion {
         match self.response.load(Ordering::Acquire) {
             SINGLE_CONNECT_RESPONSE_SUPPORTED => {
                 if self.record_server_result(true).await {
-                    *self.shared_connection.slot.write().await = Some(connection.upgrade());
+                    let mut slot = self.shared_connection.slot.write().await;
+                    if self.cache_generation
+                        == self.shared_connection.generation.load(Ordering::Acquire)
+                    {
+                        *slot = Some(connection.upgrade());
+                    }
                 }
             }
             SINGLE_CONNECT_RESPONSE_UNSUPPORTED => {

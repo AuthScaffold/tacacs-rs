@@ -6,6 +6,7 @@
 //! single-connection transport.
 
 mod dedicated;
+pub(crate) mod task;
 mod multiplexed;
 
 pub(crate) use dedicated::DedicatedConnection;

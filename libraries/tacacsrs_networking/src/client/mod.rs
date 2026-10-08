@@ -35,6 +35,20 @@ use crate::transport::BoxedTransport;
 #[derive(Default)]
 pub(crate) struct SharedConnectionCache {
     pub(crate) slot: RwLock<Option<Arc<MultiplexedConnection>>>,
+    pub(crate) generation: std::sync::atomic::AtomicU64,
+    retiring: std::sync::Mutex<Vec<Arc<MultiplexedConnection>>>,
+}
+
+impl SharedConnectionCache {
+    fn retain_retiring(&self, connection: Arc<MultiplexedConnection>) {
+        let mut retiring = self
+            .retiring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        retiring.retain(|connection| !connection.driver_finished());
+        connection.disable_new_sessions();
+        retiring.push(connection);
+    }
 }
 
 impl Drop for SharedConnectionCache {
@@ -342,10 +356,53 @@ impl TacacsClient {
     /// drain. If a shared connection exists, it is removed from the cache and told
     /// to reject future session creation while already-created sessions finish.
     pub async fn stop_accepting_new_sessions(&self) {
-        let connection = self.shared_connection.slot.write().await.take();
-        if let Some(connection) = connection {
-            connection.disable_new_sessions();
+        let mut slot = self.shared_connection.slot.write().await;
+        self.shared_connection
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if let Some(connection) = slot.take() {
+            self.shared_connection.retain_retiring(connection);
         }
+    }
+
+    /// Retires and joins the currently cached and previously retired shared drivers.
+    ///
+    /// New sessions on those connections are disabled. Active sessions can drain
+    /// until `deadline`; expiry aborts the drivers and waits for their cleanup.
+    /// Cancellation retains the driver handles, so this method can be retried.
+    ///
+    /// This is shared-connection retirement, not client shutdown. Dedicated
+    /// sessions and new session creation through this client remain permitted.
+    /// The caller must quiesce new operations when using this as a shutdown step.
+    /// Negotiations captured before retirement cannot repopulate the shared cache.
+    ///
+    /// # Errors
+    /// Returns a driver I/O error or task failure after joining its task.
+    pub async fn retire_shared_until(
+        &self,
+        deadline: crate::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        self.stop_accepting_new_sessions().await;
+        let retiring = self
+            .shared_connection
+            .retiring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut failure = None;
+        for connection in retiring {
+            if let Err(error) = connection.close_and_join(deadline).await {
+                if failure.is_none() {
+                    failure = Some(error);
+                }
+            }
+        }
+        self.shared_connection
+            .retiring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|connection| !connection.driver_finished());
+        failure.map_or(Ok(()), Err)
     }
 
     async fn create_session_after_shared_miss(
@@ -911,6 +968,85 @@ mod tests {
         .with_certificate_tls("10.0.0.1", None, crate::CertificateTrust::Platform, None)
         .unwrap();
         assert_eq!(endpoint.obfuscation_key.unwrap().expose_secret(), b"legacy-secret");
+    }
+
+    #[tokio::test]
+    async fn shared_retirement_drains_active_session_and_releases_driver() {
+        use std::sync::Arc;
+        use tokio::io::AsyncReadExt;
+        use crate::runtime::MultiplexedConnection;
+
+        let client = TacacsClient::from_prepared(server_template());
+        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+        let session = connection.create_session().unwrap();
+        let (transport, mut peer) = tokio::io::duplex(256);
+        let (reader, writer) = tokio::io::split(transport);
+        connection.run_with_halves(reader, writer);
+        *client.shared_connection.slot.write().await = Some(connection.clone());
+        let retirement = client
+            .retire_shared_until(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap());
+        tokio::pin!(retirement);
+        assert!(futures::poll!(&mut retirement).is_pending());
+        assert!(connection.create_session().is_err());
+        session.complete();
+        retirement.await.unwrap();
+        assert!(connection.driver_finished());
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_shared_retirement_can_be_retried_without_losing_drivers() {
+        use std::sync::Arc;
+        use tokio::io::AsyncReadExt;
+        use crate::runtime::MultiplexedConnection;
+
+        let client = TacacsClient::from_prepared(server_template());
+        for _cycle in 0..8 {
+            let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+            let session = connection.create_session().unwrap();
+            let (transport, mut peer) = tokio::io::duplex(256);
+            let (reader, writer) = tokio::io::split(transport);
+            connection.run_with_halves(reader, writer);
+            *client.shared_connection.slot.write().await = Some(connection.clone());
+            {
+                let retirement = client.retire_shared_until(
+                    crate::RequestDeadline::after(Duration::from_secs(10)).unwrap(),
+                );
+                tokio::pin!(retirement);
+                assert!(futures::poll!(&mut retirement).is_pending());
+            }
+            client
+                .retire_shared_until(crate::RequestDeadline::after(Duration::ZERO).unwrap())
+                .await
+                .unwrap();
+            assert!(connection.driver_finished());
+            assert!(session.receive_packet().await.is_err());
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+            assert!(client.shared_connection.retiring.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_retirement_prevents_late_promotion() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_requests, server_task) = spawn_single_stream_accounting_server(
+            listener,
+            1,
+            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+        );
+        let mut endpoint = server_template();
+        endpoint.address = address.to_string();
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let session = client.create_session().await.unwrap();
+        run_session_exchange(&session).await;
+        client
+            .retire_shared_until(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+            .await
+            .unwrap();
+        session.complete().await;
+        assert!(client.shared_connection.slot.read().await.is_none());
+        server_task.await.unwrap();
     }
 
     #[tokio::test]
