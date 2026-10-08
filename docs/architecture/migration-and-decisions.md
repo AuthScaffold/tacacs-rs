@@ -218,10 +218,12 @@ S2-13 is complete in `66c59d6`: downstream credentials now use explicit canonica
 S2-14 is complete in `64b2e4e`: SONiC preserves canonical rows and uses shared publication-time proxy loop validation.
 The field inventory and final closure checks remain open as S2-15 and S2-16.
 S2-17 is complete in `031eb3a`: connection-time guards use actual bound ports and recheck resolved destinations before transport I/O.
-Only S2-15 and S2-16 remain open in the current Stage 2 checklist.
+S2-15 and S2-16 remain open. Their remaining implementation gates are S2-22 and S2-23 in the reconciled inventory.
 The inventory review added and completed S2-18 and S2-19 in `8e6243e`: SAN identity verification, independent SNI, and standard TLS input ports.
 S2-20 is complete in `bdbec25`: CA and exact-peer trust remain distinct, additive policies work, and empty explicit bags cannot select platform roots.
-S2-15 still owns remaining client-chain/provider constraints and field dispositions, including operational statistics and revocation.
+S2-21 is complete in `158f7f7`: native preparation rejects concatenated certificates and trailing DER material.
+The reconciled inventory assigns client-chain provisioning, revocation retrieval, and operational-statistics publication to explicit Stage 4 contracts.
+S2-22 owns RFC 7951 empty-leaf encoding and EPSK selection semantics. S2-23 owns explicit certificate public-key metadata validation.
 These corrections do not establish full certificate-profile conformance.
 
 1. Preserve generated YANG types and builders as the authoritative configuration APIs.

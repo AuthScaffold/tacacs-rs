@@ -39,6 +39,7 @@ If work moves between stages, record its new owner and update both stage descrip
 - [x] S2-18: Verify certificate peer identity independently of SNI. Commit `8e6243e` rejects mismatched SANs before application data, disables CN fallback and partial wildcards, and separates native identity/SNI inputs. See [peer identity and standard ports](#peer-identity-and-standard-ports).
 - [x] S2-19: Use TLS port 300 for omitted CLI and SONiC ports while preserving explicit ports. Commit `8e6243e` also rejects malformed explicit port syntax instead of selecting a default. See [peer identity and standard ports](#peer-identity-and-standard-ports).
 - [x] S2-20: Preserve CA, exact peer, and platform trust roles during preparation. Commit `bdbec25` rejects empty explicit bags and verifies exact signed leaves and additive CA paths without weakening native checks. See [certificate trust roles](#certificate-trust-roles).
+- [x] S2-21: Reject concatenated DER certificates and trailing data instead of decoding only the first certificate. Commit `158f7f7` verifies native trust and client identity inputs, the development override, and PEM chain rejection. See [certificate input framing](#certificate-input-framing).
 
 Open items and their completion conditions appear under [remaining Stage 2 work](#remaining-stage-2-work).
 The implementation sections below preserve the evidence and limits for completed items.
@@ -599,6 +600,28 @@ All nine independent `tac_plus-ng` runner cases pass with the updated verifier.
 No dependency, lockfile, generated YANG, protobuf contract, or project unsafe code changed.
 Windows and live SONiC validation did not run. These checks do not establish full RFC 9887 conformance.
 
+## Certificate Input Framing
+
+Commit `158f7f7` completes S2-21 on 2026-10-07.
+The single-certificate OpenSSL decoder previously accepted a certificate followed by another certificate or trailing bytes.
+A regression demonstrated that behavior before the fix.
+Preparation now requires the decoded certificate's DER to match the complete input, so unsupported material cannot be silently truncated.
+
+Tests cover exact certificate DER, concatenated certificates, and trailing data through CA, end-entity, and client-identity inputs.
+The client-identity regression uses the matching private key and proves that the unmodified identity prepares successfully.
+The development verification override does not relax this input boundary.
+CLI PEM normalization continues to reject files containing more than one certificate, with a focused regression for that contract.
+
+The reconciled inventory records one-leaf client identity support and separate multi-entry trust bags.
+Client-chain provisioning, revocation retrieval, and YANG operational-statistics publication have explicit Stage 4 owners and acceptance contracts.
+Two remaining fields need Stage 2 corrections: the server EPSK presence leaf and separate public-key metadata.
+Those defects are tracked as S2-22 and S2-23 and still block S2-15 closure.
+
+Workspace tests, build, formatting, warnings-as-errors rustdoc, and the documentation book pass.
+Workspace Clippy uses only the existing admission-warning exception. All nine independent `tac_plus-ng` cases pass.
+No dependency, lockfile, generated YANG, protobuf contract, or unsafe code changed.
+Windows and live SONiC validation did not run for this increment.
+
 ## Reconciled Field Inventory
 
 This table updates the Stage 0 baseline using the current owners and verification evidence.
@@ -635,7 +658,6 @@ These assignments do not convert unimplemented behavior into supported features 
 
 - [ ] S2-15: Close the [reconciled field inventory](#reconciled-field-inventory) after the S2-22 and S2-23 corrections pass their checks. Client-chain/provider limits and statistics/revocation owners are now recorded. Identity/SNI, ports, and trust-role corrections are complete under S2-18 through S2-20.
 - [ ] S2-16: Complete the final Stage 2 validation and status update after the open implementation items finish. Run relevant workspace, generation, source-equivalence, rotation, and native interoperability checks. Record unavailable checks and known exceptions separately. Update the migration plan and this checkpoint together.
-- [ ] S2-21: Reject concatenated DER certificates and trailing data instead of silently decoding only the first certificate. Verify the single-certificate contract for native trust and client identity inputs, including the development override. Document that client-chain provisioning is not currently represented by this input.
 - [ ] S2-22: Correct `server-authentication/tls13-epsks` representation and runtime semantics. The pinned tree declares an `empty` leaf, but generated code uses `Option<bool>` and preparation does not inspect it. Implement RFC 7951 `[null]` encoding and validate selection against the client EPSK identity. Test direct and bundled sources, malformed values, and rejection before publication.
 - [ ] S2-23: Validate explicit client certificate public-key metadata. Materialization preserves `public-key` and `public-key-format`, but endpoint projection currently ignores them. Verify supported encodings and agreement with certificate/private-key material, or explicitly reject unsupported forms. Test mismatches, sanitized errors, and unchanged source snapshots.
 
