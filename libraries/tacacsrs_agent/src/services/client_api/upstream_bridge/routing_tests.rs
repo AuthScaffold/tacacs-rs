@@ -241,6 +241,90 @@ fn operation_map(
 }
 
 #[tokio::test]
+async fn overload_is_retriable_without_upstream_io_and_cancellation_releases_capacity() {
+    use crate::config::{PolicyService, RequestLimits};
+    use crate::upstream::OperationRouter;
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let release = Arc::new(Notify::new());
+        let primary = Arc::new(ScriptedConnection {
+            accounting_barrier: Some((Arc::new(Notify::new()), Arc::clone(&release))),
+            ..ScriptedConnection::successful("primary:49")
+        });
+        let connector = Arc::new(OperationConnector::new(HashMap::from([(
+            ("primary:49".to_owned(), OperationKind::Accounting),
+            primary,
+        )])));
+        let limits = RequestLimits::new(1024, 1).unwrap();
+        let manager = Arc::new(
+            UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+                vec![server("primary")],
+                PreparedProxyPolicy::unobfuscated(),
+                RuntimePolicy::new(
+                    FailoverStrategy::default(),
+                    FailoverStrategy::default(),
+                    OperationPolicies::new(limits, limits, limits),
+                    Duration::from_secs(30),
+                )
+                .unwrap(),
+                connector.clone(),
+                RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+                tacacsrs_config::prepare::PrepareOptions::default(),
+            )
+            .unwrap(),
+        );
+        let bridge = UpstreamBridge::new(Arc::clone(&manager));
+        let proxy = OperationRouter::new(manager, PolicyService::TacacsProxy)
+            .capture_request(OperationKind::Accounting);
+        {
+            let active = bridge.execute_accounting_request(accounting());
+            tokio::pin!(active);
+            std::future::poll_fn(|context| {
+                assert!(std::future::Future::poll(active.as_mut(), context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let pending = proxy.admit(1);
+            tokio::pin!(pending);
+            std::future::poll_fn(|context| {
+                assert!(std::future::Future::poll(pending.as_mut(), context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let error = bridge
+                .execute_accounting_request(accounting())
+                .await
+                .unwrap_err();
+            assert!(error.retriable);
+            assert!(error.message.contains("admission queue is full"));
+            assert_eq!(
+                connector
+                    .attempts("primary:49", OperationKind::Accounting)
+                    .await,
+                1
+            );
+        }
+        release.notify_one();
+        assert_eq!(
+            bridge
+                .execute_accounting_request(accounting())
+                .await
+                .unwrap()
+                .server,
+            "primary:49"
+        );
+        assert_eq!(
+            connector
+                .attempts("primary:49", OperationKind::Accounting)
+                .await,
+            1
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn request_retry_keeps_original_servers_and_policy_across_reload() {
     tokio::time::timeout(Duration::from_secs(3), async {
         let entered = Arc::new(Notify::new());

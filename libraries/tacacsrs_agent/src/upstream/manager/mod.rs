@@ -209,6 +209,9 @@ impl UpstreamManager {
         lease.validate_body_length(body_length)?;
         let runtime = &lease.runtime;
         let operation = lease.operation;
+        if runtime.server_set.client.eligible_count(operation) == 0 {
+            return Err(AdmissionError::NoEligibleServer { operation });
+        }
         let wait_timeout = runtime
             .server_set
             .client

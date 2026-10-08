@@ -13,6 +13,8 @@
 //! The host owns listener state and interface discovery. Networking does not interpret YANG.
 
 mod client;
+pub mod admission;
+mod deadline;
 mod codec;
 mod endpoint;
 mod establish;
@@ -26,6 +28,7 @@ mod single_connect;
 mod transport;
 
 pub use client::TacacsClient;
+pub use deadline::{DeadlineElapsed, RequestDeadline};
 pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use endpoint::{ConnectionGuard, PreparedEndpoint};
 pub use transport::tls::{CertificateIdentity, CertificateTrust, PrivateKeyEncoding};
