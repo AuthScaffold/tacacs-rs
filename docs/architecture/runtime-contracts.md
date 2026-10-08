@@ -74,6 +74,7 @@ A request lease captures these immutable inputs once:
 - Operation kind and validated request.
 - Routing generation ID and ordered eligible endpoint set.
 - Retry policy and replay permissions.
+- Request body-size limits and endpoint-recovery interval.
 - Absolute request deadline.
 - Credential/context references needed by its eligible endpoints.
 
@@ -86,6 +87,11 @@ For a raw proxy, the first packet creates the lease.
 After the proxy forwards an accepted reply, the conversation remains pinned to its upstream endpoint and session.
 Continuation packets cannot fail over.
 A retryable first `ERROR` reply can trigger another attempt only before any reply reaches the downstream caller.
+
+The [S3-02 implementation](stage-3-routed-client.md#request-generations) captures routing and size policy before admission.
+Proxy continuations use the captured size limit. Global concurrency remains shared and follows live limit updates.
+Availability observations use the captured server-set epoch, so old retries cannot report health for replacement endpoints.
+Absolute deadlines and bounded retirement remain S3-04 and S3-05 work.
 
 ### Deadline and cancellation
 

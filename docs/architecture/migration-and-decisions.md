@@ -256,6 +256,8 @@ Client execution has no generated-model dependency, and all retained transport m
 **Scope:** endpoint routing, failover, sessions, and resource lifetime.
 
 **Status:** in progress. The [Stage 3 checkpoint](stage-3-routed-client.md) records completed increments and remaining acceptance gates.
+S3-01 and S3-02 are complete. Both ingress paths retain one request generation across admission, retries, and reloads.
+The next increment extracts the routed client. Absolute deadlines and explicit close/join ownership remain open.
 
 1. Move operation routing, circuits, and reconnect serialization from the agent to the client.
 2. Retain the shared retry executor and adapt it to neutral operation/failure types.
