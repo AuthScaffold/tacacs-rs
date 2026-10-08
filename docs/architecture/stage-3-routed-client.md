@@ -7,7 +7,8 @@ The first increment transfers retry decisions and execution into networking and 
 The second increment captures routing inputs before admission and retains them across retries and proxy continuations.
 The third increment extracts an agent-free routed client into networking and migrates both ingress paths.
 S3-04 now provides bounded shared admission and canonical total request deadlines across both ingress paths.
-Ingress-task and downstream delivery bounds remain open within S3-04. A public close/join API remains S3-05 work.
+Commit `41d29d5` completes ingress-task and downstream delivery bounds. S3-04 is complete.
+A public close/join API and bounded runtime retirement remain S3-05 work.
 
 Fix nearby issues within the current increment when practical. Add a new item only when the work needs a distinct implementation step.
 Keep completed items visible with verification evidence. Preserve canonical YANG and do not retain obsolete APIs only for compatibility.
@@ -17,7 +18,7 @@ Keep completed items visible with verification evidence. Preserve canonical YANG
 - [x] S3-01: Move the retry plan and executor into networking and migrate both IPC and proxy callers. Commit `10058a5` stops uncertain-outcome replay for every operation and verifies bounded attempts, reply cleanup, cancellation, and adapter behavior. See [retry ownership](#retry-ownership).
 - [x] S3-02: Capture one routing generation and retry policy before admission. Commit `c3b6fd3` retains endpoints, body limits, and recovery policy across reloads. IPC and TCP-backed proxy regressions verify retries and continuations. See [request generations](#request-generations).
 - [x] S3-03: Extract endpoint catalogs, circuits, and reconnect serialization into networking. Commit `861a40b` migrates both ingress paths, removes duplicate agent routing state, fixes stale recovery and connection-failure races, and runs an agent-free example. See [routed client](#routed-client).
-- [ ] S3-04: Apply one absolute request deadline across execution and bound pending work. Commit `97db77a` completes shared bounded admission; `5e0f1e3` completes canonical deadline policy and propagation. Ingress-task and downstream delivery bounds remain open. See [admission progress](#admission-progress) and [deadline progress](#deadline-progress).
+- [x] S3-04: Apply one absolute request deadline across execution and bound pending work. Commits `97db77a`, `5e0f1e3`, and `41d29d5` complete shared admission, canonical deadlines, and ingress/delivery bounds. See [admission progress](#admission-progress), [deadline progress](#deadline-progress), and [ingress bounds](#ingress-bounds).
 - [ ] S3-05: Add explicit connection/runtime close and join ownership with bounded drain. Verify resource release after idle/active retirement, cancellation, repeated reload, and embedded shutdown.
 - [ ] S3-06: Complete Stage 3 integration gates, remove temporary adapters, and update this checkpoint and the migration plan together. Preserve ordering, operation eligibility, prepared credentials, timeout semantics, and loop exclusion.
 
@@ -49,7 +50,7 @@ IPC tests verify no backup attempt and non-retriable errors for uncertain authen
 The proxy regression covers uncertain first requests of all three operation kinds.
 Explicit authentication and accounting server-error failover and networking's not-sent retry tests remain passing.
 
-Ingress bounds and explicit runtime ownership remain open above.
+Explicit runtime ownership remains open above.
 
 ## Request Generations
 
@@ -126,7 +127,7 @@ cargo run -p tacacsrs-networking --example routed_accounting --locked --quiet
 
 It prints `Accounting accepted by backup; no agent or configuration source was required.`
 The example has a five-second outer test bound. Commit `5e0f1e3` also gives its accounting request one two-second deadline across binding and retries.
-S3-04 owns the remaining ingress bounds. S3-05 owns public close/join and bounded retirement.
+S3-04's ingress bounds are complete. S3-05 owns public close/join and bounded retirement.
 
 ## Admission Progress
 
@@ -136,7 +137,7 @@ Commit `97db77a` completes the admission part without changing transport or repl
 
 - [x] Shared bounded admission: networking owns FIFO waiters, active capacity, live-limit updates, and cancellation-safe release. Both service paths use the same operation pools across generations.
 - [x] Canonical deadline policy and propagation: commit `5e0f1e3` adds the generated total-budget leaf, captures it before admission, and bounds binding, exchanges, retries, and continuations. Tests cover expiry before and after transmission, policy reload, and cancellation cleanup.
-- [ ] Ingress bounds: limit work before session-task creation and during slow reply delivery. Verify that admission rejection cannot leave unbounded tasks outside the admission pool.
+- [x] Ingress bounds: commit `41d29d5` reserves capacity before proxy session-task creation, bounds accepted transports and HTTP/2 streams, and retains proxy admission through physical reply delivery. Flood, expiry, and capacity-release tests pass.
 
 `tacacsrs_networking::admission::AdmissionPool` is reusable without the agent.
 The agent derives both active and pending limits from the operation's canonical `max-concurrent-requests` value.
@@ -158,7 +159,7 @@ An empty eligible catalog keeps the agent's existing waiting-for-configuration r
 Commit `97db77a` introduced `RequestDeadline` as one absolute expiry. Copying it does not extend its budget.
 That increment used it only for admission. Commit `5e0f1e3` extends it through typed and proxy execution, as described below.
 The primitive rejects expired work before polling it; direct tests verify that sequential stages share the same budget.
-S3-04 remains unchecked because ingress-task and downstream delivery bounds are not complete.
+Commit `41d29d5` completes the remaining ingress-task and downstream delivery bounds described below.
 
 The overload regression failed before the implementation: an excess request waited instead of returning an error.
 Direct tests cover FIFO order, shared clones, cancellation, expiry, zero capacity, and limit reductions with retained waiters.
@@ -196,9 +197,50 @@ Further tests cover a stalled TLS handshake, a sent request with no reply, conne
 Native peer EOF checks verify transport release. Follow-up requests verify admission and reconnect-lock release.
 
 The deadline starts when the request is captured, not when a listener accepts the connection.
-It bounds proxy reply queueing, not physical downstream delivery after the session hands a reply to the connection writer.
-The existing ingress-bounds item remains responsible for task creation before capture and slow downstream writers.
-This increment does not claim completion of S3-04, forced retirement, or public close/join ownership.
+At `5e0f1e3`, it bounded proxy reply queueing but not physical delivery. Commit `41d29d5` closes that gap and bounds listener transports.
+The deadline increment alone did not complete S3-04. Forced retirement and public close/join remain separate S3-05 obligations.
+
+## Ingress Bounds
+
+Commit `41d29d5` completes S3-04 without adding parallel admission or routing state.
+Networking's `AdmissionPool::reserve` synchronously returns an `AdmissionReservation` that owns an active slot or bounded pending entry.
+Its `wait` and `wait_until` methods convert that reservation into an active permit without renewing its deadline.
+Dropping an unpolled reservation, cancelled waiter, or active permit releases capacity through the same pool.
+
+The proxy captures routing inputs and reserves capacity in the connection reader before it creates a session task.
+Overload and size rejection produce a local error in the bounded reply queue, without creating a session task or starting upstream I/O.
+A full reply queue closes the connection. A full or closed continuation queue also closes the connection instead of blocking other sessions.
+Completed session tasks are reaped before more packets are dispatched. Completed connection tasks are reaped during normal listener operation, not only during shutdown.
+
+Each proxy reply carries its request deadline and a delivery acknowledgement.
+The session keeps its admission permit until the connection writer acknowledges the physical write.
+Expired queued replies emit no bytes. A partial write that expires closes the connection because resuming a partial frame is not safe.
+The writer is owned by the connection future rather than detached in a spawned task.
+Normal connection exits cancel and join session tasks. Dropping the connection also drops the writer and aborts its session task set.
+This does not replace S3-05's explicit runtime close/join contract.
+
+Canonical `local-services` now defines startup ingress controls:
+
+| Leaf | Default | Scope |
+| --- | --- | --- |
+| `max-connections` | 64 | Maximum served connections per enabled listener |
+| `max-client-api-streams` | 64 | Maximum HTTP/2 streams and concurrent handlers per client API connection |
+| `connection-lifetime-seconds` | 300 | Maximum served transport lifetime, including setup, requests, and physical reply delivery |
+
+All three values must be nonzero. Changes require restart, like other listener settings.
+The proxy pauses accept at capacity and applies the lifetime to each connection task.
+The client API reserves a connection permit before accept. Its transport owns that permit and separate read/write expiry timers.
+Tonic enforces the configured HTTP/2 stream and handler limits. TACACS+ IPC request and response protobuf messages have a 128 KiB ceiling.
+Unaccepted connections remain in the operating system's bounded listen backlog; no unbounded application accept queue is created.
+The limits are global to each listener, not separate per peer. These are capacity bounds, not per-peer fairness guarantees.
+
+Proxy physical replies use the request deadline. Client API physical delivery uses the connection lifetime, independently of upstream operation deadlines.
+Connection lifetime expiry can interrupt active requests; clients must reconnect. The [operator guide](../tacacsrs-agentd.md#canonical-listener-resource) documents this behavior.
+
+The stalled proxy writer regression failed before deadline enforcement.
+Further tests verify pre-spawn flood rejection, final-reply capacity retention, zero-byte expired replies, cancelled reservations, and FIFO capacity recovery.
+IPC transport tests verify accept capacity and both read/write expiry. The proxy listener test verifies capacity reuse after connection expiry and task reaping.
+All prior deadline, reload, safe-retry, and source-preservation regressions remain passing.
 
 ## Verification
 
@@ -262,4 +304,14 @@ A separate all-features test-target check passes. No source workaround was added
 
 The generated Rust SHA-256 value is `03d3bccb1ea63c55056a873d3887c9224f0a7eaf4de23eaaadb87159fbf8f84e`.
 No dependency, lockfile, protobuf contract, or native credential policy changed.
+Windows, live SONiC, and Miri were not run for this increment.
+
+### S3-04 Closure
+
+All 114 agent library tests pass. Networking passes 139 library tests, with two existing ignored tests; configuration passes 73 library tests.
+The full all-features workspace suite, strict workspace Clippy, nightly formatting, workspace build, and warnings-as-errors rustdoc pass.
+All 13 generator tests, deterministic regeneration, and all nine independent native peer cases pass.
+The documentation book and whitespace checks pass. No dependency version, lockfile, protobuf schema, or native credential policy changed.
+The generated Rust SHA-256 value is `ca5afc9ae88960ebdf10f1d1cfe082a555b51c162fad908abb1664ca9d6b78d7`.
+The known Rust Analyzer `async-trait` diagnostics remain in test support; Cargo does not reproduce them.
 Windows, live SONiC, and Miri were not run for this increment.

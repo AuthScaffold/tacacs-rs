@@ -109,7 +109,9 @@ The generated default is 30 seconds. Both ingress paths capture the deadline bef
 Typed attempts also use the selected server timeout as a shorter cap.
 Native setup expiry is `NotSent`; expiry after transmission is conservatively `OutcomeUnknown` and stops replay.
 Proxy continuations and reply queueing consume the original conversation budget.
-Task creation before request capture and physical downstream delivery remain part of the open ingress-bounds item.
+The [S3-04 ingress closure](stage-3-routed-client.md#ingress-bounds) bounds listener connections and HTTP/2 streams before request execution.
+Proxy tasks require synchronous admission reservations before spawn. Physical proxy writes retain the captured request deadline and acknowledge delivery before releasing session capacity.
+Client API physical delivery is bounded by the canonical connection lifetime. This transport lifetime also bounds setup before a request can be captured.
 
 Cancellation means that the caller no longer waits or authorizes further work.
 It does not prove that a transmitted operation did not execute remotely.
@@ -165,7 +167,11 @@ The agent uses each canonical `max-concurrent-requests` value for both active ca
 Full queues return overload before upstream I/O. Active permits and pending queue entries release synchronously on cancellation.
 Limit reductions retain existing requests and waiters but reject new waiters at or above the new pending limit.
 They admit no waiting request until the active count is below the new limit.
-This bounds the admission pool only. Deadline propagation is complete; work outside the request execution boundary remains an open S3-04 acceptance check.
+Networking also exposes reservations that consume bounded capacity before an async task is created or polled.
+The proxy uses those reservations in its connection reader and retains active permits through final physical delivery.
+Canonical startup settings cap served connections per listener, streams per client API connection, and connection lifetime.
+Expired or full proxy write/continuation queues close the connection; completed tasks are reaped during normal operation.
+S3-04's admission and ingress bounds are complete. Explicit runtime close/join and bounded retirement remain S3-05 work.
 
 The design separately bounds:
 
