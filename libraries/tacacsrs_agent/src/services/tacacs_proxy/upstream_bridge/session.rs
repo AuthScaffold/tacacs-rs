@@ -23,7 +23,7 @@ use super::error_reply::local_error_reply;
 use super::packet_io;
 use super::reply_action::{ReplyAction, is_error_reply, reply_action};
 use super::session_mapping::rewrite_session_id;
-use crate::upstream::{AdmissionError, AdmissionPermit, OperationKind, OperationRouter};
+use crate::upstream::{AdmissionError, AdmissionPermit, OperationKind, OperationRouter, RequestRouting};
 use crate::upstream::manager::BoundServer;
 
 /// One TACACS+ conversation with a selected upstream server.
@@ -59,29 +59,33 @@ pub(super) trait ProxyConversation: Send + Sync {
 pub(super) trait ProxyConversationProvider: Send + Sync + 'static {
     /// Conversation type produced by this provider.
     type Conversation: ProxyConversation;
+    /// Immutable routing inputs captured for the first packet and its continuations.
+    type Request: Send + Sync;
+
+    fn capture_request(&self, operation: OperationKind) -> Self::Request;
 
     /// Selects a server and opens a conversation for one operation.
     async fn open_conversation(
         &self,
-        operation: OperationKind,
+        request: &Self::Request,
     ) -> anyhow::Result<Self::Conversation>;
 
     /// Waits for shared operation capacity and validates the request size.
     async fn admit(
         &self,
-        operation: OperationKind,
+        request: &Self::Request,
         body_length: usize,
     ) -> Result<Option<AdmissionPermit>, AdmissionError>;
 
     /// Validates one continuing packet without acquiring another permit.
     fn validate_body_length(
         &self,
-        operation: OperationKind,
+        request: &Self::Request,
         body_length: usize,
     ) -> Result<(), AdmissionError>;
 
     /// Builds the retry plan for one proxy request.
-    fn failover_plan(&self, operation: OperationKind) -> FailoverPlan;
+    fn failover_plan(&self, request: &Self::Request) -> FailoverPlan;
 }
 
 /// Provides proxy conversations through the shared upstream router.
@@ -105,12 +109,17 @@ pub(super) struct ManagedProxyConversation {
 #[async_trait]
 impl ProxyConversationProvider for UpstreamConversationProvider {
     type Conversation = ManagedProxyConversation;
+    type Request = RequestRouting;
+
+    fn capture_request(&self, operation: OperationKind) -> Self::Request {
+        self.router.capture_request(operation)
+    }
 
     async fn open_conversation(
         &self,
-        operation: OperationKind,
+        request: &Self::Request,
     ) -> anyhow::Result<Self::Conversation> {
-        let bound_server = self.router.bind(operation).await?;
+        let bound_server = request.bind().await?;
         match bound_server.connection.open_conversation().await {
             Ok(conversation) => Ok(ManagedProxyConversation {
                 router: self.router.clone(),
@@ -126,22 +135,22 @@ impl ProxyConversationProvider for UpstreamConversationProvider {
 
     async fn admit(
         &self,
-        operation: OperationKind,
+        request: &Self::Request,
         body_length: usize,
     ) -> Result<Option<AdmissionPermit>, AdmissionError> {
-        self.router.admit(operation, body_length).await.map(Some)
+        request.admit(body_length).await.map(Some)
     }
 
     fn validate_body_length(
         &self,
-        operation: OperationKind,
+        request: &Self::Request,
         body_length: usize,
     ) -> Result<(), AdmissionError> {
-        self.router.validate_body_length(operation, body_length)
+        request.validate_body_length(body_length)
     }
 
-    fn failover_plan(&self, operation: OperationKind) -> FailoverPlan {
-        self.router.failover_plan(operation)
+    fn failover_plan(&self, request: &Self::Request) -> FailoverPlan {
+        request.failover_plan()
     }
 }
 
@@ -184,8 +193,9 @@ pub(super) struct SessionReply {
 }
 
 /// The first proxy packet, which is the only packet failover can replay.
-struct ProxyAttempt<'session, Provider> {
+struct ProxyAttempt<'session, Provider: ProxyConversationProvider> {
     provider: &'session Provider,
+    routing: &'session Provider::Request,
     operation: OperationKind,
     /// Held only while another attempt can still replay this packet.
     request: Option<Packet>,
@@ -207,7 +217,7 @@ where
             self.operation.name(),
             attempt_index + 1,
         );
-        let mut conversation = match self.provider.open_conversation(self.operation).await {
+        let mut conversation = match self.provider.open_conversation(self.routing).await {
             Ok(conversation) => conversation,
             Err(error) => {
                 return Attempt::Failed {
@@ -294,8 +304,9 @@ where
     };
     let operation = OperationKind::try_from(first_request.packet.header().tacacs_type)
         .expect("each TACACS+ packet type maps to an operation");
+    let routing = provider.capture_request(operation);
     let _admission_permit = match provider
-        .admit(operation, first_request.packet.body().len())
+        .admit(&routing, first_request.packet.body().len())
         .await
     {
         Ok(permit) => permit,
@@ -319,7 +330,7 @@ where
         }
     };
 
-    let plan = provider.failover_plan(operation);
+    let plan = provider.failover_plan(&routing);
     let max_attempts = plan.max_attempts();
     let SessionPacket {
         packet: first_packet,
@@ -328,6 +339,7 @@ where
     } = first_request;
     let mut attempt = ProxyAttempt {
         provider,
+        routing: &routing,
         operation,
         request: Some(first_packet),
         max_attempts,
@@ -374,7 +386,7 @@ where
             let result = run_pinned_proxy_session(
                 downstream_session_id,
                 timeout,
-                operation,
+                &routing,
                 provider,
                 &mut conversation,
                 &mut packets,
@@ -387,17 +399,18 @@ where
     }
 }
 
-async fn run_pinned_proxy_session<Conversation>(
+async fn run_pinned_proxy_session<Conversation, Provider>(
     downstream_session_id: u32,
     timeout: Duration,
-    operation: OperationKind,
-    provider: &impl ProxyConversationProvider,
+    routing: &Provider::Request,
+    provider: &Provider,
     conversation: &mut Conversation,
     packets: &mut mpsc::Receiver<SessionPacket>,
     replies: &mpsc::Sender<SessionReply>,
 ) -> Result<(), ProxyConnectionError>
 where
     Conversation: ProxyConversation,
+    Provider: ProxyConversationProvider,
 {
     let upstream_session_id = conversation.session_id().ok_or_else(|| {
         ProxyConnectionError::Upstream(anyhow::anyhow!(
@@ -410,7 +423,7 @@ where
             reply_obfuscation,
             advertise_single_connect,
         } = request;
-        if let Err(error) = provider.validate_body_length(operation, request_packet.body().len()) {
+        if let Err(error) = provider.validate_body_length(routing, request_packet.body().len()) {
             let reply = local_error_reply(&request_packet, &error.to_string())
                 .map_err(ProxyConnectionError::Downstream)?;
             send_proxy_reply(

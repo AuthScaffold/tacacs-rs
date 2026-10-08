@@ -8,7 +8,8 @@ use tacacsrs_networking::retry::{
 
 use super::UpstreamBridge;
 use crate::upstream::{
-    AttemptFailureKind, OperationKind, OperationRouter, UpstreamConnection, UpstreamRequestError,
+    AttemptFailureKind, OperationKind, OperationRouter, RequestRouting, UpstreamConnection,
+    UpstreamRequestError,
 };
 
 /// Operation-specific hooks used by the client API upstream bridge.
@@ -48,6 +49,7 @@ where
     Operation: RoutedOperation,
 {
     router: &'request OperationRouter,
+    routing: RequestRouting,
     request: &'request Operation::Request,
     outcome_unknown: bool,
 }
@@ -61,7 +63,7 @@ where
     type Error = ServiceError;
 
     async fn attempt(&mut self, attempt_index: usize) -> Attempt<Self::Value, Self::Error> {
-        let bound_server = match self.router.bind(Operation::OPERATION).await {
+        let bound_server = match self.routing.bind().await {
             Ok(bound_server) => bound_server,
             Err(error) => {
                 log::warn!("Failed to bind a client API request to a TACACS+ server: {error:#}");
@@ -135,18 +137,16 @@ impl UpstreamBridge {
     {
         let body_length = Operation::request_body_length(&request)
             .map_err(|error| ServiceError::new(error.to_string()).retriable(false))?;
-        let _admission_permit = self
-            .router
-            .admit(Operation::OPERATION, body_length)
-            .await
-            .map_err(|error| {
-                let retriable = error.is_retriable();
-                ServiceError::new(error.to_string()).retriable(retriable)
-            })?;
+        let routing = self.router.capture_request(Operation::OPERATION);
+        let _admission_permit = routing.admit(body_length).await.map_err(|error| {
+            let retriable = error.is_retriable();
+            ServiceError::new(error.to_string()).retriable(retriable)
+        })?;
 
-        let plan = self.router.failover_plan(Operation::OPERATION);
+        let plan = routing.failover_plan();
         let mut attempt = RoutedAttempt::<Operation> {
             router: &self.router,
+            routing,
             request: &request,
             outcome_unknown: false,
         };

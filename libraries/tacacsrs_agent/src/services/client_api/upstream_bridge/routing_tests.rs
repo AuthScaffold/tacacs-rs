@@ -20,7 +20,7 @@ use tacacsrs_protocol::enumerations::{
     TacacsAuthorizationStatus,
 };
 use tacacsrs_secrets::SecretBytes;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use super::UpstreamBridge;
 use crate::config::{FailoverStrategy, OperationPolicies, PreparedProxyPolicy, RuntimePolicy};
@@ -36,6 +36,7 @@ struct ScriptedConnection {
     fail_authorization: AtomicBool,
     authentication_status: TacacsAuthenticationStatus,
     accounting_status: TacacsAccountingStatus,
+    accounting_barrier: Option<(Arc<Notify>, Arc<Notify>)>,
 }
 
 impl ScriptedConnection {
@@ -47,6 +48,7 @@ impl ScriptedConnection {
             fail_authorization: AtomicBool::new(false),
             authentication_status: TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
             accounting_status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            accounting_barrier: None,
         }
     }
 }
@@ -67,6 +69,10 @@ impl UpstreamConnection for ScriptedConnection {
         &self,
         _request: AccountingRequest,
     ) -> Result<AccountingReply, UpstreamRequestError> {
+        if let Some((entered, release)) = &self.accounting_barrier {
+            entered.notify_one();
+            release.notified().await;
+        }
         if self.fail_accounting.swap(false, Ordering::AcqRel) {
             return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
                 "injected accounting transport failure"
@@ -232,6 +238,69 @@ fn operation_map(
         (("primary:49".to_owned(), operation), primary),
         (("backup:49".to_owned(), operation), backup),
     ])
+}
+
+#[tokio::test]
+async fn request_retry_keeps_original_servers_and_policy_across_reload() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let primary = Arc::new(ScriptedConnection {
+            accounting_status: TacacsAccountingStatus::TacPlusAcctStatusError,
+            accounting_barrier: Some((Arc::clone(&entered), Arc::clone(&release))),
+            ..ScriptedConnection::successful("primary:49")
+        });
+        let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+        let mut connections = operation_map(primary, backup, OperationKind::Accounting);
+        connections.insert(
+            ("replacement:49".to_owned(), OperationKind::Accounting),
+            Arc::new(ScriptedConnection::successful("replacement:49")),
+        );
+        let connector = Arc::new(OperationConnector::new(connections));
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let manager = Arc::new(
+            UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+                vec![server("primary"), server("backup")],
+                PreparedProxyPolicy::unobfuscated(),
+                policy(FailoverStrategy::OrderedSafeRetry),
+                connector.clone(),
+                health.clone(),
+                tacacsrs_config::prepare::PrepareOptions::default(),
+            )
+            .unwrap(),
+        );
+        let request = {
+            let bridge = UpstreamBridge::new(Arc::clone(&manager));
+            tokio::spawn(async move { bridge.execute_accounting_request(accounting()).await })
+        };
+        entered.notified().await;
+        manager
+            .reload_shared_servers(vec![server("replacement")])
+            .await
+            .unwrap();
+        manager.reload_runtime_policy(policy(FailoverStrategy::DeferredFailover));
+        release.notify_one();
+        let response = request.await.unwrap().unwrap();
+        assert_eq!(response.server, "backup:49");
+        assert_eq!(
+            connector
+                .attempts("replacement:49", OperationKind::Accounting)
+                .await,
+            0
+        );
+        assert_eq!(
+            health.snapshot().upstream_availability(),
+            crate::runtime::UpstreamAvailability::Unknown,
+            "an old request must not report availability for the replacement generation"
+        );
+        let next = UpstreamBridge::new(manager)
+            .execute_accounting_request(accounting())
+            .await
+            .unwrap();
+        assert_eq!(next.server, "replacement:49");
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

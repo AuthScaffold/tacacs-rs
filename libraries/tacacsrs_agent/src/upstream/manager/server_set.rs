@@ -8,16 +8,67 @@ use tokio::sync::RwLock;
 
 use super::server_slot::ServerSlot;
 use super::circuit::RecoveryPermit;
-use crate::config::{PreparedProxyPolicy, RuntimePolicy};
+use crate::config::{PolicyService, PreparedProxyPolicy, RuntimePolicy};
+use tacacsrs_networking::retry::FailoverPlan;
 use crate::upstream::admission::AdmissionRegistry;
+use crate::upstream::admission::AdmissionError;
 use crate::upstream::{OperationKind, UpstreamConnection};
 
 /// Immutable routing inputs published as one generation.
 pub(super) struct RuntimeRoutingSnapshot {
+    pub(super) generation: u64,
+    pub(super) availability_generation: u64,
     pub(super) server_set: Arc<ServerSet>,
     pub(super) proxy_downstream_obfuscation: PreparedProxyPolicy,
     pub(super) runtime_policy: Arc<RuntimePolicy>,
     pub(super) admission: Arc<AdmissionRegistry>,
+}
+
+/// One request's immutable routing and retry-policy inputs.
+pub(crate) struct RoutingLease {
+    pub(super) runtime: Arc<RuntimeRoutingSnapshot>,
+    pub(super) operation: OperationKind,
+    plan: FailoverPlan,
+}
+
+impl RoutingLease {
+    pub(super) fn new(
+        runtime: Arc<RuntimeRoutingSnapshot>,
+        service: PolicyService,
+        operation: OperationKind,
+    ) -> Self {
+        let plan = runtime
+            .runtime_policy
+            .failover_plan(service, runtime.server_set.route(operation).server_count());
+        Self {
+            runtime,
+            operation,
+            plan,
+        }
+    }
+
+    pub(crate) const fn failover_plan(&self) -> FailoverPlan {
+        self.plan
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.runtime.generation
+    }
+
+    pub(crate) fn validate_body_length(&self, body_length: usize) -> Result<(), AdmissionError> {
+        let maximum = self
+            .runtime
+            .runtime_policy
+            .limits(self.operation)
+            .max_body_length();
+        if body_length > maximum {
+            return Err(AdmissionError::BodyTooLarge {
+                actual: body_length,
+                maximum,
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Immutable server set and its mutable failover cursor.

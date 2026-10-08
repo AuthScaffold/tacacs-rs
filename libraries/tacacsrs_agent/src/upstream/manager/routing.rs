@@ -7,7 +7,8 @@ use anyhow::bail;
 
 use super::server_set::ServerSet;
 use super::server_slot::ServerSlot;
-use super::{BoundServer, UpstreamManager};
+use super::availability::AvailabilityAttempt;
+use super::{BoundServer, RoutingLease, UpstreamManager};
 #[cfg(test)]
 use crate::config::PreparedProxyPolicy;
 use crate::upstream::{OperationKind, UpstreamConnection};
@@ -21,13 +22,21 @@ impl UpstreamManager {
 
     /// Selects an eligible server and operation-scoped connection.
     ///
-    /// Services reach this through [`crate::upstream::OperationRouter`].
+    /// Convenience entry point for tests without a multi-attempt request.
+    #[cfg(test)]
     pub(in crate::upstream) async fn bind_server_for_operation(
         &self,
         operation: OperationKind,
     ) -> anyhow::Result<BoundServer> {
-        let server_set = self.current_server_set();
-        self.bind_server_from_set(server_set, operation).await
+        let runtime = self.current_runtime();
+        self.bind_server_from_set(
+            Arc::clone(&runtime.server_set),
+            operation,
+            runtime.runtime_policy.failover_recovery_interval(),
+            self.availability
+                .begin_attempt(runtime.availability_generation),
+        )
+        .await
     }
 
     #[cfg(test)]
@@ -37,15 +46,37 @@ impl UpstreamManager {
     ) -> anyhow::Result<(BoundServer, PreparedProxyPolicy)> {
         let runtime = self.current_runtime();
         let bound_server = self
-            .bind_server_from_set(Arc::clone(&runtime.server_set), operation)
+            .bind_server_from_set(
+                Arc::clone(&runtime.server_set),
+                operation,
+                runtime.runtime_policy.failover_recovery_interval(),
+                self.availability
+                    .begin_attempt(runtime.availability_generation),
+            )
             .await?;
         Ok((bound_server, runtime.proxy_downstream_obfuscation.clone()))
+    }
+
+    pub(in crate::upstream) async fn bind_request(
+        &self,
+        lease: &RoutingLease,
+    ) -> anyhow::Result<BoundServer> {
+        self.bind_server_from_set(
+            Arc::clone(&lease.runtime.server_set),
+            lease.operation,
+            lease.runtime.runtime_policy.failover_recovery_interval(),
+            self.availability
+                .begin_attempt(lease.runtime.availability_generation),
+        )
+        .await
     }
 
     async fn bind_server_from_set(
         &self,
         server_set: Arc<ServerSet>,
         operation: OperationKind,
+        recovery_interval: std::time::Duration,
+        availability_attempt: AvailabilityAttempt,
     ) -> anyhow::Result<BoundServer> {
         let route = server_set.route(operation);
         if route.server_count() == 0 {
@@ -54,9 +85,7 @@ impl UpstreamManager {
                 operation.name()
             );
         }
-        let availability_attempt = self.availability.begin_attempt();
         let start_position = route.active_position().await;
-        let recovery_interval = self.runtime_policy().failover_recovery_interval();
 
         for position in 0..route.server_count() {
             let index = route.server_index(position);

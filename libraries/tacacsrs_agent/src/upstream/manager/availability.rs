@@ -34,14 +34,14 @@ impl AvailabilityTracker {
         }
     }
 
-    pub(super) fn begin_attempt(&self) -> AvailabilityAttempt {
+    pub(super) fn begin_attempt(&self, generation: u64) -> AvailabilityAttempt {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.next_sequence = state.next_sequence.saturating_add(1);
         AvailabilityAttempt {
-            generation: state.generation,
+            generation,
             sequence: state.next_sequence,
         }
     }
@@ -54,7 +54,7 @@ impl AvailabilityTracker {
         self.observe(attempt, UpstreamAvailability::Unavailable);
     }
 
-    pub(super) fn reset(&self) {
+    pub(super) fn reset(&self) -> u64 {
         let mut state = self
             .state
             .lock()
@@ -66,6 +66,7 @@ impl AvailabilityTracker {
             .set_upstream_availability(UpstreamAvailability::Unknown);
         self.health
             .set_degraded(DegradationReason::UpstreamsUnavailable, false);
+        state.generation
     }
 
     fn observe(&self, attempt: AvailabilityAttempt, availability: UpstreamAvailability) {
@@ -99,8 +100,8 @@ mod tests {
     fn newer_success_cannot_be_overwritten_by_older_failure() {
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         let tracker = AvailabilityTracker::new(health.clone());
-        let older = tracker.begin_attempt();
-        let newer = tracker.begin_attempt();
+        let older = tracker.begin_attempt(0);
+        let newer = tracker.begin_attempt(0);
 
         tracker.available(newer);
         tracker.unavailable(older);
@@ -112,7 +113,7 @@ mod tests {
     fn server_set_reset_invalidates_in_flight_attempts() {
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         let tracker = AvailabilityTracker::new(health.clone());
-        let old_generation = tracker.begin_attempt();
+        let old_generation = tracker.begin_attempt(0);
         tracker.unavailable(old_generation);
 
         tracker.reset();

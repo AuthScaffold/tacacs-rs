@@ -15,7 +15,8 @@ use tokio::sync::{Mutex, RwLock};
 use tacacsrs_protocol::enumerations::TacacsFlags;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
-use crate::runtime::{DedicatedConnection, MultiplexedConnection};
+use crate::client::SharedConnectionCache;
+use crate::runtime::DedicatedConnection;
 use crate::single_connect::SingleConnectionState;
 use crate::session::random_nonzero_session_id;
 use crate::transport::BoxedTransport;
@@ -54,14 +55,14 @@ const SINGLE_CONNECT_RESPONSE_SUPPORTED: u8 = 2;
 ///                            mark NotSupported and drop connection
 /// ```
 pub(crate) struct SingleConnectPromotion {
-    shared_connection: Arc<RwLock<Option<Arc<MultiplexedConnection>>>>,
+    shared_connection: Arc<SharedConnectionCache>,
     state: Arc<RwLock<SingleConnectionState>>,
     response: AtomicU8,
 }
 
 impl SingleConnectPromotion {
     pub(crate) fn new(
-        shared_connection: Arc<RwLock<Option<Arc<MultiplexedConnection>>>>,
+        shared_connection: Arc<SharedConnectionCache>,
         state: Arc<RwLock<SingleConnectionState>>,
     ) -> Self {
         Self {
@@ -89,7 +90,7 @@ impl SingleConnectPromotion {
         match self.response.load(Ordering::Acquire) {
             SINGLE_CONNECT_RESPONSE_SUPPORTED => {
                 if self.record_server_result(true).await {
-                    *self.shared_connection.write().await = Some(connection.upgrade());
+                    *self.shared_connection.slot.write().await = Some(connection.upgrade());
                 }
             }
             SINGLE_CONNECT_RESPONSE_UNSUPPORTED => {
@@ -347,7 +348,7 @@ mod tests {
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
-        assert!(shared_connection.read().await.is_none());
+        assert!(shared_connection.slot.read().await.is_none());
         assert_eq!(*single_connection_state.read().await, SingleConnectionState::NotSupported);
     }
 
@@ -421,6 +422,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn late_promotion_retires_after_last_cache_owner_drops() {
+        use std::time::Duration;
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        use crate::{PacketReader, PacketReadResult};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (transport, peer) = tokio::join!(
+            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept(),
+        );
+        let mut peer = peer.unwrap().0;
+        let shared_connection = Arc::default();
+        let session = DedicatedSession::new(
+            BoxedTransport::new(transport.unwrap()),
+            None,
+            Some(SingleConnectPromotion::new(
+                Arc::clone(&shared_connection),
+                Arc::new(RwLock::new(SingleConnectionState::Initial)),
+            )),
+        );
+        drop(shared_connection);
+        let session_id = session.session_id();
+        session
+            .send_packet(test_packet(
+                session_id,
+                1,
+                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                b"request",
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            PacketReader::new(None).read_packet(&mut peer).await,
+            PacketReadResult::Success(_)
+        ));
+        let reply = test_packet(
+            session_id,
+            2,
+            TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+            b"reply",
+        );
+        peer.write_all(&reply.to_bytes()).await.unwrap();
+        session.receive_packet().await.unwrap();
+        session.complete().await;
+        drop(session);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer.read(&mut [0; 1]))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn dedicated_session_upgrades_and_caches_when_single_connect_is_echoed() {
         let mock = MockTransport::new();
         let coordinator = mock.coordinator();
@@ -458,6 +516,7 @@ mod tests {
         session.complete().await;
 
         let connection = shared_connection
+            .slot
             .read()
             .await
             .as_ref()

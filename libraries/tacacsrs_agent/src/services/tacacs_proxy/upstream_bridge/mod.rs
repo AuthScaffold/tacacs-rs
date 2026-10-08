@@ -424,10 +424,22 @@ mod tests {
     #[async_trait]
     impl ProxyConversationProvider for FakeConversationProvider {
         type Conversation = FakeProxySession;
+        type Request = FailoverPlan;
+
+        fn capture_request(&self, _operation: OperationKind) -> Self::Request {
+            let policy = RuntimePolicy::new(
+                FailoverStrategy::default(),
+                self.strategy,
+                OperationPolicies::default(),
+                Duration::from_secs(30),
+            )
+            .expect("test policy");
+            policy.failover_plan(PolicyService::TacacsProxy, self.eligible_server_count)
+        }
 
         async fn open_conversation(
             &self,
-            _operation: OperationKind,
+            _request: &Self::Request,
         ) -> anyhow::Result<Self::Conversation> {
             self.opened.fetch_add(1, Ordering::AcqRel);
             self.conversations
@@ -439,7 +451,7 @@ mod tests {
 
         async fn admit(
             &self,
-            _operation: OperationKind,
+            _request: &Self::Request,
             _body_length: usize,
         ) -> Result<Option<AdmissionPermit>, AdmissionError> {
             Ok(None)
@@ -447,32 +459,25 @@ mod tests {
 
         fn validate_body_length(
             &self,
-            _operation: OperationKind,
+            _request: &Self::Request,
             _body_length: usize,
         ) -> Result<(), AdmissionError> {
             Ok(())
         }
 
-        fn failover_plan(&self, _operation: OperationKind) -> FailoverPlan {
-            let policy = RuntimePolicy::new(
-                FailoverStrategy::default(),
-                self.strategy,
-                OperationPolicies::default(),
-                Duration::from_secs(30),
-            )
-            .expect("test policy");
-            policy.failover_plan(PolicyService::TacacsProxy, self.eligible_server_count)
+        fn failover_plan(&self, request: &Self::Request) -> FailoverPlan {
+            *request
         }
     }
 
-    async fn write_packet(stream: &mut tokio::io::DuplexStream, packet: &Packet) {
+    async fn write_packet(stream: &mut (impl AsyncWrite + Unpin), packet: &Packet) {
         stream
             .write_all(&packet.to_bytes())
             .await
             .expect("the packet write must succeed");
     }
 
-    async fn read_packet(stream: &mut tokio::io::DuplexStream) -> Packet {
+    async fn read_packet(stream: &mut (impl AsyncRead + Unpin)) -> Packet {
         let reader = PacketReader::new(None);
         match reader.read_packet(stream).await {
             PacketReadResult::Success(packet) => packet,
@@ -527,10 +532,156 @@ mod tests {
         .unwrap()
     }
 
+    fn native_server(listener: &tokio::net::TcpListener) -> tacacsrs_config::TacacsPlusServer {
+        let address = listener.local_addr().unwrap();
+        tacacsrs_config::TacacsPlusServer {
+            name: address.to_string(),
+            server_type: crate::runtime::REQUIRED_SERVER_TYPES,
+            address: address.ip().to_string(),
+            port: address.port(),
+            timeout: 5,
+            single_connection: false,
+            shared_secret: None,
+            domain_name: None,
+            sni_enabled: None,
+            client_identity: None,
+            server_authentication: None,
+            source_ip: None,
+            source_interface: None,
+            vrf_instance: None,
+        }
+    }
+
+    async fn write_authentication_reply(
+        stream: &mut (impl AsyncWrite + Unpin),
+        request: &Packet,
+        status: TacacsAuthenticationStatus,
+    ) {
+        write_packet(
+            stream,
+            &test_packet_with_sequence(
+                TacacsType::TacPlusAuthentication,
+                request.header().session_id,
+                request.header().seq_no + 1,
+                TacacsFlags::empty(),
+                authentication_reply_body(status),
+            ),
+        )
+        .await;
+    }
+
     #[test]
     fn downstream_obfuscation_uses_no_key_for_unobfuscated_clients() {
         assert_eq!(downstream_obfuscation_key(&PreparedProxyPolicy::unobfuscated()).unwrap(), None);
         assert!(downstream_obfuscation_key(&PreparedProxyPolicy::unavailable()).is_err());
+    }
+
+    #[tokio::test]
+    async fn proxy_retry_and_continuation_keep_captured_generation() {
+        use crate::config::RequestLimits;
+        use crate::runtime::{ProxyLoopGuard, RuntimeHealthPublisher};
+        use crate::upstream::NetworkUpstreamConnector;
+        use crate::EnabledServices;
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let primary = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let backup = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let replacement = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let policy = |strategy, maximum| {
+                let limits = RequestLimits::new(maximum, 2).unwrap();
+                RuntimePolicy::new(
+                    FailoverStrategy::default(),
+                    strategy,
+                    OperationPolicies::new(limits, limits, limits),
+                    Duration::from_secs(30),
+                )
+                .unwrap()
+            };
+            let manager = Arc::new(UpstreamManager::new(
+                vec![native_server(&primary), native_server(&backup)],
+                Arc::new(NetworkUpstreamConnector::new(ProxyLoopGuard::new(None))),
+                Duration::from_secs(30),
+                RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
+            ));
+            manager.reload_runtime_policy(policy(FailoverStrategy::OrderedSafeRetry, 1024));
+            let provider = Arc::new(UpstreamConversationProvider::new(OperationRouter::new(
+                Arc::clone(&manager),
+                PolicyService::TacacsProxy,
+            )));
+            let (mut client, downstream) = tokio::io::duplex(4096);
+            let proxy = tokio::spawn(proxy_multiplexed_connection(
+                downstream,
+                Duration::from_secs(5),
+                None,
+                provider,
+            ));
+            let packet_type = TacacsType::TacPlusAuthentication;
+            write_packet(
+                &mut client,
+                &test_packet_with_sequence(packet_type, 1, 1, TacacsFlags::empty(), vec![1]),
+            )
+            .await;
+            let (mut primary_peer, _) = primary.accept().await.unwrap();
+            let first = read_packet(&mut primary_peer).await;
+
+            manager
+                .reload_servers(vec![native_server(&replacement)])
+                .await
+                .unwrap();
+            manager.reload_runtime_policy(policy(FailoverStrategy::DeferredFailover, 128));
+            write_authentication_reply(
+                &mut primary_peer,
+                &first,
+                TacacsAuthenticationStatus::TacPlusAuthenStatusError,
+            )
+            .await;
+
+            let (mut backup_peer, _) = backup.accept().await.unwrap();
+            let retried = read_packet(&mut backup_peer).await;
+            assert_eq!(retried.body(), first.body());
+            write_authentication_reply(
+                &mut backup_peer,
+                &retried,
+                TacacsAuthenticationStatus::TacPlusAuthenStatusGetdata,
+            )
+            .await;
+            let challenge = read_packet(&mut client).await;
+            assert_eq!(challenge.header().session_id, 1);
+            write_packet(
+                &mut client,
+                &test_packet_with_sequence(packet_type, 1, 3, TacacsFlags::empty(), vec![1; 512]),
+            )
+            .await;
+            let continued = read_packet(&mut backup_peer).await;
+            assert_eq!(continued.header().session_id, retried.header().session_id);
+            assert_eq!(continued.body().len(), 512);
+            write_authentication_reply(
+                &mut backup_peer,
+                &continued,
+                TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
+            )
+            .await;
+            assert_eq!(read_packet(&mut client).await.header().seq_no, 4);
+
+            write_packet(
+                &mut client,
+                &test_packet_with_sequence(packet_type, 2, 1, TacacsFlags::empty(), vec![1]),
+            )
+            .await;
+            let (mut replacement_peer, _) = replacement.accept().await.unwrap();
+            let next = read_packet(&mut replacement_peer).await;
+            write_authentication_reply(
+                &mut replacement_peer,
+                &next,
+                TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
+            )
+            .await;
+            assert_eq!(read_packet(&mut client).await.header().session_id, 2);
+            drop(client);
+            let _closed = proxy.await.unwrap();
+        })
+        .await
+        .expect("proxy reload scenario must finish");
     }
 
     #[test]

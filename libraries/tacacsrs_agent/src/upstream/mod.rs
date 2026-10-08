@@ -38,5 +38,5 @@ pub(crate) use attempt::{AttemptFailureKind, UpstreamRequestError};
 pub(crate) use admission::{AdmissionError, AdmissionPermit};
 pub(crate) use network::NetworkUpstreamConnector;
 pub(crate) use proxy_transport::ProxyTransportSettings;
-pub(crate) use router::OperationRouter;
+pub(crate) use router::{OperationRouter, RequestRouting};
 pub use operation::OperationKind;

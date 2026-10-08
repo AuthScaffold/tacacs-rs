@@ -31,7 +31,7 @@ use crate::runtime::RuntimeHealthPublisher;
 use crate::upstream::admission::AdmissionRegistry;
 use crate::upstream::{AdmissionError, OperationKind, ProxyTransportSettings, UpstreamConnector};
 
-pub(crate) use self::server_set::BoundServer;
+pub(crate) use self::server_set::{BoundServer, RoutingLease};
 
 mod server_set;
 mod server_slot;
@@ -127,6 +127,8 @@ impl UpstreamManager {
         let server_set = Arc::new(ServerSet::new(servers));
         Ok(Self {
             runtime: StdRwLock::new(Arc::new(RuntimeRoutingSnapshot {
+                generation: 0,
+                availability_generation: 0,
                 server_set,
                 proxy_downstream_obfuscation,
                 admission: Arc::new(AdmissionRegistry::new(&runtime_policy)),
@@ -151,6 +153,20 @@ impl UpstreamManager {
         Arc::clone(&self.current_runtime().server_set)
     }
 
+    pub(in crate::upstream) fn capture_request(
+        &self,
+        service: crate::config::PolicyService,
+        operation: OperationKind,
+    ) -> RoutingLease {
+        let lease = RoutingLease::new(self.current_runtime(), service, operation);
+        log::debug!(
+            "Captured {} request routing generation {}",
+            operation.name(),
+            lease.generation()
+        );
+        lease
+    }
+
     pub(crate) fn proxy_transport_settings(&self) -> ProxyTransportSettings {
         let runtime = self.current_runtime();
         let read_timeout = runtime
@@ -163,23 +179,19 @@ impl UpstreamManager {
         ProxyTransportSettings::new(read_timeout, runtime.proxy_downstream_obfuscation.clone())
     }
 
-    /// Returns the current immutable runtime policy.
-    pub(crate) fn runtime_policy(&self) -> Arc<RuntimePolicy> {
-        Arc::clone(&self.current_runtime().runtime_policy)
-    }
-
     /// Atomically replaces the runtime policy for new requests.
     pub(crate) fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) {
-        let previous = self.current_runtime();
-        previous.admission.update(&runtime_policy);
         let mut current = self
             .runtime
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        current.admission.update(&runtime_policy);
         *current = Arc::new(RuntimeRoutingSnapshot {
-            server_set: Arc::clone(&previous.server_set),
-            proxy_downstream_obfuscation: previous.proxy_downstream_obfuscation.clone(),
-            admission: Arc::clone(&previous.admission),
+            generation: current.generation.wrapping_add(1),
+            availability_generation: current.availability_generation,
+            server_set: Arc::clone(&current.server_set),
+            proxy_downstream_obfuscation: current.proxy_downstream_obfuscation.clone(),
+            admission: Arc::clone(&current.admission),
             runtime_policy: Arc::new(runtime_policy),
         });
     }
@@ -203,31 +215,22 @@ impl UpstreamManager {
     }
 
     /// Returns the number of servers eligible for one operation.
+    #[cfg(test)]
     pub(crate) fn eligible_server_count(&self, operation: OperationKind) -> usize {
         self.current_server_set().route(operation).server_count()
     }
 
-    /// Builds the retry plan for one local operation request.
-    ///
-    /// Services reach this through [`crate::upstream::OperationRouter`].
-    pub(in crate::upstream) fn failover_plan(
-        &self,
-        service: crate::config::PolicyService,
-        operation: OperationKind,
-    ) -> tacacsrs_networking::retry::FailoverPlan {
-        self.runtime_policy()
-            .failover_plan(service, self.eligible_server_count(operation))
-    }
-
-    /// Waits for service-operation capacity from the current policy generation.
+    /// Waits for shared operation capacity with the captured request inputs.
     ///
     /// Services reach this through [`crate::upstream::OperationRouter`].
     pub(in crate::upstream) async fn admit_request(
         &self,
-        operation: OperationKind,
+        lease: &RoutingLease,
         body_length: usize,
     ) -> Result<crate::upstream::AdmissionPermit, AdmissionError> {
-        let runtime = self.current_runtime();
+        lease.validate_body_length(body_length)?;
+        let runtime = &lease.runtime;
+        let operation = lease.operation;
         let route = runtime.server_set.route(operation);
         let wait_timeout = if route.server_count() == 0 {
             std::time::Duration::ZERO
@@ -237,23 +240,7 @@ impl UpstreamManager {
                 .config()
                 .timeout_duration()
         };
-        runtime
-            .admission
-            .acquire(operation, body_length, wait_timeout)
-            .await
-    }
-
-    /// Validates one packet body without acquiring another concurrency permit.
-    ///
-    /// Services reach this through [`crate::upstream::OperationRouter`].
-    pub(in crate::upstream) fn validate_request_size(
-        &self,
-        operation: OperationKind,
-        body_length: usize,
-    ) -> Result<(), AdmissionError> {
-        self.current_runtime()
-            .admission
-            .validate_body_length(operation, body_length)
+        runtime.admission.acquire(operation, wait_timeout).await
     }
 
     /// Atomically replaces the configured TACACS+ server set.
@@ -335,20 +322,23 @@ impl UpstreamManager {
         }
 
         {
-            let runtime_policy = self.runtime_policy();
             let mut current = self
                 .runtime
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let availability_generation = if materially_changed {
+                self.availability.reset()
+            } else {
+                current.availability_generation
+            };
             *current = Arc::new(RuntimeRoutingSnapshot {
+                generation: current.generation.wrapping_add(1),
+                availability_generation,
                 server_set: Arc::clone(&new_set),
                 proxy_downstream_obfuscation,
                 admission: Arc::clone(&current.admission),
-                runtime_policy,
+                runtime_policy: Arc::clone(&current.runtime_policy),
             });
-        }
-        if materially_changed {
-            self.availability.reset();
         }
 
         if new_set.server_count() == 0 {
@@ -802,6 +792,89 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn captured_request_keeps_policy_while_admission_waits() {
+        use crate::config::{PolicyService, RequestLimits};
+        use crate::upstream::AdmissionError;
+
+        for service in [PolicyService::ClientApi, PolicyService::TacacsProxy] {
+            let connector = Arc::new(FakeConnector::new(
+                ["server-a:49", "server-b:49"]
+                    .into_iter()
+                    .map(|address| {
+                        (
+                            address.to_owned(),
+                            Arc::new(FakeConnection {
+                                address: address.to_owned(),
+                                usable: AtomicBool::new(true),
+                                fail_next_request: AtomicBool::new(false),
+                            }),
+                        )
+                    })
+                    .collect(),
+            ));
+            let state = UpstreamManager::new(
+                vec![test_server("server-a:49")],
+                connector,
+                Duration::from_secs(30),
+                test_health(),
+            );
+            let policy = |body, capacity| {
+                let limits = RequestLimits::new(body, capacity).unwrap();
+                RuntimePolicy::new(
+                    FailoverStrategy::default(),
+                    FailoverStrategy::default(),
+                    OperationPolicies::new(limits, limits, limits),
+                    Duration::from_secs(30),
+                )
+                .unwrap()
+            };
+            state.reload_runtime_policy(policy(1024, 2));
+            let captured = state.capture_request(service, OperationKind::Authentication);
+            let first = state.admit_request(&captured, 1).await.unwrap();
+            let second = state.admit_request(&captured, 1).await.unwrap();
+            let waiting = state.admit_request(&captured, 768);
+            tokio::pin!(waiting);
+            std::future::poll_fn(|context| {
+                assert!(std::future::Future::poll(waiting.as_mut(), context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+
+            state
+                .reload_servers(vec![test_server("server-b:49")])
+                .await
+                .unwrap();
+            state.reload_runtime_policy(policy(512, 1));
+            let current = state.capture_request(service, OperationKind::Authentication);
+            assert_ne!(captured.generation(), current.generation());
+            assert!(matches!(
+                current.validate_body_length(768),
+                Err(AdmissionError::BodyTooLarge { maximum: 512, .. })
+            ));
+            captured.validate_body_length(768).unwrap();
+
+            drop(first);
+            std::future::poll_fn(|context| {
+                assert!(std::future::Future::poll(waiting.as_mut(), context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            drop(second);
+            let retained_permit = waiting.await.unwrap();
+            let retained = state.bind_request(&captured).await.unwrap();
+            assert_eq!(retained.connection.server_address(), "server-a:49");
+            let replacement = state.bind_request(&current).await.unwrap();
+            assert_eq!(replacement.connection.server_address(), "server-b:49");
+            assert!(matches!(
+                state.admit_request(&current, 1).await,
+                Err(AdmissionError::CapacityTimeout { .. })
+            ));
+            drop(retained_permit);
+            state.admit_request(&current, 1).await.unwrap();
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn real_request_recovers_a_higher_priority_operation_route() {
         let primary = Arc::new(FakeConnection {
             address: "server-a:49".to_owned(),
@@ -836,11 +909,26 @@ mod tests {
             .expect("fallback route");
         assert_eq!(fallback.connection.server_address(), backup.address);
 
+        let captured = state.capture_request(
+            crate::config::PolicyService::ClientApi,
+            OperationKind::Authentication,
+        );
+        state.reload_runtime_policy(
+            RuntimePolicy::new(
+                FailoverStrategy::default(),
+                FailoverStrategy::default(),
+                OperationPolicies::default(),
+                Duration::from_secs(60),
+            )
+            .unwrap(),
+        );
         tokio::time::advance(Duration::from_secs(5)).await;
-        let recovery = state
+        let current = state
             .bind_server_for_operation(OperationKind::Authentication)
             .await
-            .expect("recovery trial");
+            .unwrap();
+        assert_eq!(current.connection.server_address(), backup.address);
+        let recovery = state.bind_request(&captured).await.expect("recovery trial");
         assert_eq!(recovery.connection.server_address(), primary.address);
         state.note_bound_server_success(&recovery).await;
 

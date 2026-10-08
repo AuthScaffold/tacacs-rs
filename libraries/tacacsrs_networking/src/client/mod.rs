@@ -31,6 +31,20 @@ use crate::session::{
 };
 use crate::transport::BoxedTransport;
 
+/// Retires the shared connection when the last client or promotion owner drops.
+#[derive(Default)]
+pub(crate) struct SharedConnectionCache {
+    pub(crate) slot: RwLock<Option<Arc<MultiplexedConnection>>>,
+}
+
+impl Drop for SharedConnectionCache {
+    fn drop(&mut self) {
+        if let Some(connection) = self.slot.get_mut().take() {
+            connection.disable_new_sessions();
+        }
+    }
+}
+
 /// A configured TACACS+ client that selects a dedicated or shared connection.
 ///
 /// When the server configuration enables single-connection mode, the first
@@ -42,7 +56,7 @@ use crate::transport::BoxedTransport;
 /// connections.
 pub struct TacacsClient {
     endpoint: PreparedEndpoint,
-    shared_connection: Arc<RwLock<Option<Arc<MultiplexedConnection>>>>,
+    shared_connection: Arc<SharedConnectionCache>,
     single_connection_state: Arc<RwLock<SingleConnectionState>>,
     /// Serializes recovery when the cached shared connection is not available.
     ///
@@ -58,7 +72,7 @@ impl TacacsClient {
         let single_connection_enabled = endpoint.single_connection();
         Self {
             endpoint,
-            shared_connection: Arc::new(RwLock::new(None)),
+            shared_connection: Arc::default(),
             single_connection_state: Arc::new(RwLock::new(if single_connection_enabled {
                 SingleConnectionState::Initial
             } else {
@@ -298,7 +312,7 @@ impl TacacsClient {
     /// drain. If a shared connection exists, it is removed from the cache and told
     /// to reject future session creation while already-created sessions finish.
     pub async fn stop_accepting_new_sessions(&self) {
-        let connection = self.shared_connection.write().await.take();
+        let connection = self.shared_connection.slot.write().await.take();
         if let Some(connection) = connection {
             connection.disable_new_sessions();
         }
@@ -459,7 +473,7 @@ impl TacacsClient {
         &self,
         expected: Option<ExpectedResponseHeader>,
     ) -> Option<ClientSession> {
-        let connection = self.shared_connection.read().await.clone()?;
+        let connection = self.shared_connection.slot.read().await.clone()?;
 
         if !connection.can_create_sessions() {
             self.update_state_after_shared_connection_rejection(&connection)
@@ -491,7 +505,7 @@ impl TacacsClient {
     }
 
     async fn clear_shared_connection(&self, connection: &Arc<MultiplexedConnection>) {
-        let mut cached = self.shared_connection.write().await;
+        let mut cached = self.shared_connection.slot.write().await;
         if cached
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, connection))
@@ -870,6 +884,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_client_retires_idle_cached_transport() {
+        use std::sync::Arc;
+
+        use tokio::io::AsyncReadExt;
+
+        use crate::runtime::MultiplexedConnection;
+
+        let client = TacacsClient::from_prepared(server_template());
+        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+        let (transport, mut peer) = tokio::io::duplex(256);
+        let (reader, writer) = tokio::io::split(transport);
+        connection.run_with_halves(reader, writer);
+        *client.shared_connection.slot.write().await = Some(connection);
+
+        drop(client);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer.read(&mut [0; 1]))
+                .await
+                .expect("the last cache owner must retire the transport")
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_client_preserves_active_session_until_completion() {
+        use std::sync::Arc;
+
+        use tokio::io::AsyncReadExt;
+
+        use crate::runtime::MultiplexedConnection;
+
+        let client = TacacsClient::from_prepared(server_template());
+        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+        let session = connection.create_session().unwrap();
+        let (transport, mut peer) = tokio::io::duplex(256);
+        let (reader, writer) = tokio::io::split(transport);
+        connection.run_with_halves(reader, writer);
+        *client.shared_connection.slot.write().await = Some(Arc::clone(&connection));
+        drop(client);
+        assert!(connection.create_session().is_err());
+        let mut byte = [0; 1];
+        let read = peer.read(&mut byte);
+        tokio::pin!(read);
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(read.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(session);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), read)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn executes_fixed_exchange_over_dedicated_transport() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let listener_address = listener.local_addr().unwrap();
@@ -919,7 +993,7 @@ mod tests {
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
         assert_eq!(client.single_connection_state().await, SingleConnectionState::Supported);
-        assert!(client.shared_connection.read().await.is_some());
+        assert!(client.shared_connection.slot.read().await.is_some());
 
         let reply = tokio::time::timeout(
             Duration::from_secs(1),
@@ -965,7 +1039,7 @@ mod tests {
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
         assert_eq!(client.single_connection_state().await, SingleConnectionState::NotSupported);
-        assert!(client.shared_connection.read().await.is_none());
+        assert!(client.shared_connection.slot.read().await.is_none());
 
         let session = client.create_session().await.unwrap();
         run_session_exchange(&session).await;
