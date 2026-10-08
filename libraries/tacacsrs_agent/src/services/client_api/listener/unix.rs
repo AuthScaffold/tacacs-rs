@@ -7,11 +7,16 @@ use anyhow::{Context, bail};
 use rustix::fs::{FlockOperation, flock};
 use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgentServer;
 use tokio::sync::watch;
-use tokio_stream::wrappers::UnixListenerStream;
+use super::incoming::LimitedIncoming;
+use crate::services::ListenerOptions;
 
 use crate::runtime::{ListenerRegistration, RuntimeHealthSnapshot, ShutdownReceiver};
 use crate::services::client_api::health::StandardHealth;
 use crate::services::client_api::ClientApiService;
+
+/// Allows protobuf framing overhead while rejecting multi-megabyte envelopes.
+const MAX_IPC_MESSAGE_BYTES: usize =
+    2 * tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH as usize;
 
 /// Runs the Unix domain socket IPC listener until shutdown starts.
 ///
@@ -20,13 +25,14 @@ use crate::services::client_api::ClientApiService;
 pub(crate) async fn serve(
     path: &Path,
     service: ClientApiService,
-    socket_mode: u32,
+    options: ListenerOptions,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
     health: watch::Receiver<RuntimeHealthSnapshot>,
 ) -> anyhow::Result<()> {
-    let (listener, socket_guard) = prepare_unix_listener(path, socket_mode).await?;
-    let incoming = UnixListenerStream::new(listener);
+    let (listener, socket_guard) = prepare_unix_listener(path, options.socket_mode()).await?;
+    let incoming =
+        LimitedIncoming::new(listener, options.max_connections, options.connection_lifetime);
     let (standard_health, health_service) = StandardHealth::new(health).await;
     let health_task = tokio::spawn(standard_health.run(shutdown.clone()));
     registration.mark_bound();
@@ -34,7 +40,14 @@ pub(crate) async fn serve(
     log::info!("The IPC listener accepts clients on Unix domain socket {}", path.display());
 
     tonic::transport::Server::builder()
-        .add_service(TacacsAgentServer::new(service.grpc_service()))
+        .max_concurrent_streams(Some(options.max_client_api_streams))
+        .concurrency_limit_per_connection(options.max_client_api_streams as usize)
+        .timeout(options.connection_lifetime)
+        .add_service(
+            TacacsAgentServer::new(service.grpc_service())
+                .max_decoding_message_size(MAX_IPC_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_IPC_MESSAGE_BYTES),
+        )
         .add_service(health_service)
         .serve_with_incoming_shutdown(incoming, shutdown.wait())
         .await
@@ -305,6 +318,38 @@ mod tests {
         assert!(error.to_string().contains("already accepts connections"));
         assert!(is_socket(&path));
         drop(existing);
+        cleanup_paths(&path).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn incoming_bounds_connections_and_expires_read_and_write() {
+        use std::future::Future;
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_stream::StreamExt;
+        use super::LimitedIncoming;
+
+        let path = test_socket_path("limited-ipc");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let mut incoming = LimitedIncoming::new(listener, 1, Duration::from_secs(1));
+        let _first_peer = tokio::net::UnixStream::connect(&path).await.unwrap();
+        let mut first = incoming.next().await.unwrap().unwrap();
+        let _second_peer = tokio::net::UnixStream::connect(&path).await.unwrap();
+        let next = incoming.next();
+        tokio::pin!(next);
+        std::future::poll_fn(|context| {
+            assert!(next.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(first.read(&mut [0; 1]).await.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            first.write_all(b"reply").await.unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        drop(first);
+        next.await.unwrap().unwrap();
         cleanup_paths(&path).await;
     }
 

@@ -81,7 +81,7 @@ If `--service-mode` is omitted, the daemon preserves the old behavior: it runs `
 
 ### Canonical Listener Resource
 
-Service selection, listener endpoints, and Unix socket permissions belong to `tacacsrs:local-services` under `ietf-system:system`.
+Service selection, listener endpoints, ingress limits, and Unix socket permissions belong to `tacacsrs:local-services` under `ietf-system:system`.
 The daemon normalizes listener flags into this generated YANG resource. It derives omitted values from the YANG defaults.
 The service validates the same source for library callers before binding sockets.
 Worker threads, verbosity, and host integration remain process bootstrap inputs, not listener configuration.
@@ -95,7 +95,10 @@ Example resource for `--local-services`:
         "client-api-endpoint": "/run/tacacs/tacacs.sock",
         "tacacs-proxy-enabled": true,
         "tacacs-proxy-endpoint": "127.0.0.1:49",
-        "unix-socket-mode": 432
+        "unix-socket-mode": 432,
+        "max-connections": 64,
+        "max-client-api-streams": 64,
+        "connection-lifetime-seconds": 300
     }
 }
 ```
@@ -105,6 +108,15 @@ YANG JSON encodes permission bits as a decimal number from 0 through 511. The CL
 The resource file loads once at startup. Listener changes require a restart.
 It cannot be combined with listener flags, `--proxy-credential-source`, or `--sonic`.
 SONiC mode still loads its forwarder row and normalizes the result into the canonical resource.
+
+Each listener serves at most `max-connections` connections. Further connections wait in the operating system's bounded listen backlog.
+The client API permits at most `max-client-api-streams` concurrent HTTP/2 streams on each connection.
+Both limits are integers from 1 through 65535, with a generated default of 64.
+Client API protobuf request and response envelopes are limited to 128 KiB, including framing overhead relative to the TACACS+ body limit.
+
+Each served connection expires after `connection-lifetime-seconds`, including setup, idle time, requests, and reply delivery.
+The generated default is 300 seconds; zero is invalid. Clients must reconnect after expiry.
+The lifetime applies even to active requests. Increase it when the deployment requires longer local connections.
 
 All endpoint paths must be absolute. Unix paths cannot contain NUL, parent traversal, or more than 107 bytes.
 These rules apply even to a disabled client API endpoint. Relative paths previously accepted by the IPC parser are no longer valid listener inputs.
@@ -374,7 +386,11 @@ Set a longer authentication budget when an interactive conversation needs more t
 
 Expiry before transmission is classified as not sent. An expired exchange with an unknown outcome does not retry automatically.
 Proxy expiry terminates the conversation and releases admission capacity.
-The deadline covers upstream execution and proxy reply queueing, not physical downstream socket delivery after a reply leaves the session queue.
+The proxy reserves active or pending capacity before creating each session task. Overload replies use a bounded connection-level queue and create no session task.
+The request deadline covers upstream execution, reply queueing, and physical proxy socket writes.
+A final reply retains admission capacity until the writer acknowledges delivery. A partial write that expires closes the connection; it is not resumed or replayed.
+Full continuation queues also close the connection so one session cannot block dispatch to all other sessions.
+Client API physical delivery is bounded by the connection lifetime; its operation deadline still bounds upstream execution.
 
 SONiC ConfigDB is supervised differently from local CLI or file input. Before constructing the service, the daemon waits for a valid `TACPLUS_FORWARDER|global` row and uses its loopback address and port for the raw TACACS+ proxy listener. SONiC mode always hosts both the Client API and proxy. A conflicting `--proxy-endpoint` or non-`both` service mode is rejected. Ctrl-C or SIGTERM cancels this pre-bind retry.
 

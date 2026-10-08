@@ -62,6 +62,17 @@ impl AdmissionPool {
         &self,
         deadline: RequestDeadline,
     ) -> Result<AdmissionPermit, AdmissionError> {
+        self.reserve(deadline)?.wait().await
+    }
+
+    /// Reserves active or pending capacity before creating a request task.
+    ///
+    /// # Errors
+    /// Returns overload or expiry without allocating an unbounded waiter.
+    pub fn reserve(
+        &self,
+        deadline: RequestDeadline,
+    ) -> Result<AdmissionReservation, AdmissionError> {
         deadline.check().map_err(|_| AdmissionError::Expired)?;
         let ticket = {
             let mut state = self
@@ -72,7 +83,10 @@ impl AdmissionPool {
             deadline.check().map_err(|_| AdmissionError::Expired)?;
             if state.pending.is_empty() && state.active < state.limit {
                 state.active += 1;
-                return Ok(AdmissionPermit(Arc::clone(&self.0)));
+                return Ok(AdmissionReservation {
+                    deadline,
+                    slot: ReservedSlot::Active(AdmissionPermit(Arc::clone(&self.0))),
+                });
             }
             if state.pending.len() >= state.limit {
                 return Err(AdmissionError::Full);
@@ -82,26 +96,68 @@ impl AdmissionPool {
             state.pending.push_back(ticket);
             ticket
         };
-        let _waiting = PendingRequest {
+        let waiting = PendingRequest {
             pool: Arc::clone(&self.0),
             ticket,
         };
+        Ok(AdmissionReservation {
+            deadline,
+            slot: ReservedSlot::Pending(waiting),
+        })
+    }
+}
+
+enum ReservedSlot {
+    Active(AdmissionPermit),
+    Pending(PendingRequest),
+}
+
+/// Owns bounded capacity even before its wait future is polled.
+pub struct AdmissionReservation {
+    deadline: RequestDeadline,
+    slot: ReservedSlot,
+}
+
+impl AdmissionReservation {
+    /// Waits for an active slot until the original reservation deadline.
+    ///
+    /// # Errors
+    /// Returns expiry and releases the reservation when its budget is exhausted.
+    pub async fn wait(self) -> Result<AdmissionPermit, AdmissionError> {
+        let deadline = self.deadline;
+        self.wait_until(deadline).await
+    }
+
+    /// Applies an earlier expiry without extending the reservation budget.
+    ///
+    /// # Errors
+    /// Returns expiry if either deadline is exhausted before admission.
+    pub async fn wait_until(
+        self,
+        deadline: RequestDeadline,
+    ) -> Result<AdmissionPermit, AdmissionError> {
+        let deadline = RequestDeadline::at(deadline.expires_at().min(self.deadline.expires_at()));
+        deadline.check().map_err(|_| AdmissionError::Expired)?;
+        let waiting = match self.slot {
+            ReservedSlot::Active(permit) => return Ok(permit),
+            ReservedSlot::Pending(waiting) => waiting,
+        };
         loop {
-            let changed = self.0.changed.notified();
+            let changed = waiting.pool.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
             deadline.check().map_err(|_| AdmissionError::Expired)?;
             {
-                let mut state = self
-                    .0
+                let mut state = waiting
+                    .pool
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 deadline.check().map_err(|_| AdmissionError::Expired)?;
-                if state.pending.front() == Some(&ticket) && state.active < state.limit {
+                if state.pending.front() == Some(&waiting.ticket) && state.active < state.limit {
                     state.pending.pop_front();
                     state.active += 1;
-                    return Ok(AdmissionPermit(Arc::clone(&self.0)));
+                    return Ok(AdmissionPermit(Arc::clone(&waiting.pool)));
                 }
             }
             deadline
@@ -171,6 +227,20 @@ mod tests {
 
     fn deadline() -> RequestDeadline {
         RequestDeadline::after(Duration::from_secs(10)).unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reservations_bound_unpolled_tasks_and_release_on_drop() {
+        let pool = AdmissionPool::new(1);
+        let active = pool.reserve(deadline()).unwrap();
+        let waiting = pool.reserve(deadline()).unwrap();
+        assert!(matches!(pool.reserve(deadline()), Err(AdmissionError::Full)));
+        drop(waiting);
+        let waiting = pool.reserve(deadline()).unwrap();
+        drop(active);
+        waiting.wait().await.unwrap();
+        assert_eq!(pool.0.state.lock().unwrap().active, 0);
+        assert!(pool.0.state.lock().unwrap().pending.is_empty());
     }
 
     #[tokio::test(start_paused = true)]

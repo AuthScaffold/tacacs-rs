@@ -31,6 +31,20 @@ pub(crate) struct RequestRouting {
 }
 
 impl RequestRouting {
+    pub(crate) fn reserve(
+        &self,
+        body_length: usize,
+    ) -> Result<tacacsrs_networking::admission::AdmissionReservation, AdmissionError> {
+        UpstreamManager::reserve_request(&self.lease, body_length)
+    }
+
+    pub(crate) async fn admit_reserved(
+        &self,
+        reservation: tacacsrs_networking::admission::AdmissionReservation,
+    ) -> Result<AdmissionPermit, AdmissionError> {
+        self.manager.admit_reserved(&self.lease, reservation).await
+    }
+
     pub(crate) fn deadline(&self) -> tacacsrs_networking::RequestDeadline {
         self.lease.deadline()
     }

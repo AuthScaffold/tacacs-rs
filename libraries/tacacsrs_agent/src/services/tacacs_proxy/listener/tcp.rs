@@ -11,6 +11,7 @@ use crate::services::tacacs_proxy::TacacsProxyService;
 pub(super) async fn serve(
     address: SocketAddr,
     service: TacacsProxyService,
+    options: crate::services::ListenerOptions,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
 ) -> anyhow::Result<()> {
@@ -24,7 +25,7 @@ pub(super) async fn serve(
     registration.mark_bound();
 
     log::info!("The TACACS+ proxy listener accepts clients on TCP {local_address}");
-    accept_loop(listener, service, format!("TCP {local_address}"), shutdown).await
+    accept_loop(listener, service, format!("TCP {local_address}"), options, shutdown).await
 }
 
 #[async_trait::async_trait]

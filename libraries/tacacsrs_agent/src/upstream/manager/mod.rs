@@ -206,12 +206,30 @@ impl UpstreamManager {
         lease: &RoutingLease,
         body_length: usize,
     ) -> Result<crate::upstream::AdmissionPermit, AdmissionError> {
+        let reservation = Self::reserve_request(lease, body_length)?;
+        self.admit_reserved(lease, reservation).await
+    }
+
+    pub(in crate::upstream) fn reserve_request(
+        lease: &RoutingLease,
+        body_length: usize,
+    ) -> Result<tacacsrs_networking::admission::AdmissionReservation, AdmissionError> {
         lease.validate_body_length(body_length)?;
         let runtime = &lease.runtime;
         let operation = lease.operation;
         if runtime.server_set.client.eligible_count(operation) == 0 {
             return Err(AdmissionError::NoEligibleServer { operation });
         }
+        runtime.admission.reserve(operation, lease.deadline())
+    }
+
+    pub(in crate::upstream) async fn admit_reserved(
+        &self,
+        lease: &RoutingLease,
+        reservation: tacacsrs_networking::admission::AdmissionReservation,
+    ) -> Result<crate::upstream::AdmissionPermit, AdmissionError> {
+        let runtime = &lease.runtime;
+        let operation = lease.operation;
         let wait_timeout = runtime
             .server_set
             .client
@@ -219,10 +237,10 @@ impl UpstreamManager {
             .await
             .and_then(|endpoint| endpoint.prepared().connection_timeout())
             .unwrap_or(std::time::Duration::ZERO);
-        runtime
-            .admission
-            .acquire_until(operation, lease.deadline(), wait_timeout)
+        reservation
+            .wait_until(lease.deadline().capped(wait_timeout))
             .await
+            .map_err(|_| AdmissionError::CapacityTimeout { wait_timeout })
     }
 
     /// Atomically replaces the configured TACACS+ server set.

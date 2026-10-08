@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use tacacsrs_networking::admission::{AdmissionPool, AdmissionError as PoolError};
+use tacacsrs_networking::admission::{AdmissionPool, AdmissionReservation, AdmissionError as PoolError};
 use tacacsrs_networking::RequestDeadline;
 pub(crate) use tacacsrs_networking::admission::AdmissionPermit;
 
@@ -42,6 +42,7 @@ impl AdmissionRegistry {
         self.acquire_until(operation, deadline, wait_timeout).await
     }
 
+    #[cfg(test)]
     pub(crate) async fn acquire_until(
         &self,
         operation: OperationKind,
@@ -54,6 +55,21 @@ impl AdmissionRegistry {
             .map_err(|error| match error {
                 PoolError::Full => AdmissionError::Full,
                 PoolError::Expired => AdmissionError::CapacityTimeout { wait_timeout },
+            })
+    }
+
+    pub(crate) fn reserve(
+        &self,
+        operation: OperationKind,
+        deadline: RequestDeadline,
+    ) -> Result<AdmissionReservation, AdmissionError> {
+        self.operations[operation.index()]
+            .reserve(deadline)
+            .map_err(|error| match error {
+                PoolError::Full => AdmissionError::Full,
+                PoolError::Expired => AdmissionError::CapacityTimeout {
+                    wait_timeout: Duration::ZERO,
+                },
             })
     }
 }

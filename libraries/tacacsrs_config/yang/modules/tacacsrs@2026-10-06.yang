@@ -108,6 +108,24 @@ module tacacsrs {
     container local-services {
       description
         "Startup listener configuration. Changes require a service restart.";
+      leaf max-connections {
+        type uint16 { range "1..max"; }
+        default 64;
+        description "Maximum served connections per enabled listener.";
+      }
+      leaf max-client-api-streams {
+        type uint16 { range "1..max"; }
+        default 64;
+        description "Maximum concurrent HTTP/2 streams on one client API connection.";
+      }
+      leaf connection-lifetime-seconds {
+        type uint32 { range "1..max"; }
+        units "seconds";
+        default 300;
+        description
+          "Maximum lifetime of a served local connection, including setup and reply delivery.
+           The listener closes the connection at expiry, even when requests remain active.";
+      }
       must "client-api-enabled = 'true' or tacacs-proxy-enabled = 'true'";
       must "(tacacs-proxy-enabled = 'true' and tacacs-proxy-endpoint) or
             (tacacs-proxy-enabled = 'false' and not(tacacs-proxy-endpoint))";

@@ -1190,6 +1190,9 @@ pub mod tacacsrs {
         }
     }
 
+    fn default_local_services_max_connections() -> u16 { 64 }
+    fn default_local_services_max_client_api_streams() -> u16 { 64 }
+    fn default_local_services_connection_lifetime_seconds() -> u32 { 300 }
     fn default_local_services_client_api_enabled() -> bool { true }
     fn default_local_services_client_api_endpoint() -> String { "/run/tacacs/tacacs.sock".to_owned() }
     fn default_local_services_unix_socket_mode() -> u16 { 432 }
@@ -1199,6 +1202,19 @@ pub mod tacacsrs {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct LocalServices {
+        /// Maximum served connections per enabled listener.
+        #[serde(rename = "max-connections")]
+        #[serde(default = "default_local_services_max_connections")]
+        pub max_connections: u16,
+        /// Maximum concurrent HTTP/2 streams on one client API connection.
+        #[serde(rename = "max-client-api-streams")]
+        #[serde(default = "default_local_services_max_client_api_streams")]
+        pub max_client_api_streams: u16,
+        /// Maximum lifetime of a served local connection, including setup and reply delivery.
+        /// The listener closes the connection at expiry, even when requests remain active.
+        #[serde(rename = "connection-lifetime-seconds")]
+        #[serde(default = "default_local_services_connection_lifetime_seconds")]
+        pub connection_lifetime_seconds: u32,
         /// Enables the local client API.
         #[serde(rename = "client-api-enabled")]
         #[serde(default = "default_local_services_client_api_enabled")]
@@ -1235,6 +1251,9 @@ pub mod tacacsrs {
     impl Default for LocalServices {
         fn default() -> Self {
             Self {
+                max_connections: default_local_services_max_connections(),
+                max_client_api_streams: default_local_services_max_client_api_streams(),
+                connection_lifetime_seconds: default_local_services_connection_lifetime_seconds(),
                 client_api_enabled: default_local_services_client_api_enabled(),
                 client_api_endpoint: default_local_services_client_api_endpoint(),
                 tacacs_proxy_enabled: Default::default(),

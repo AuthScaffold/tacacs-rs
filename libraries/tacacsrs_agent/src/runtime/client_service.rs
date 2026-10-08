@@ -328,7 +328,7 @@ impl TacacsClientService {
     }
 
     async fn serve_enabled_services(&self, shutdown: &ShutdownCoordinator) -> anyhow::Result<()> {
-        let listener_options = ListenerOptions::new(self.listeners.unix_socket_mode());
+        let listener_options = ListenerOptions::new(&self.listeners);
         let mut tasks = JoinSet::new();
         let mut service_count = 0;
 

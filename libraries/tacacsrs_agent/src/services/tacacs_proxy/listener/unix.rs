@@ -12,21 +12,26 @@ use crate::services::tacacs_proxy::TacacsProxyService;
 pub(super) async fn serve(
     path: &Path,
     service: TacacsProxyService,
-    socket_mode: u32,
+    options: crate::services::ListenerOptions,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
 ) -> anyhow::Result<()> {
     let (listener, socket_guard) =
-        client_api_listener::prepare_unix_listener(path, socket_mode).await?;
+        client_api_listener::prepare_unix_listener(path, options.socket_mode()).await?;
     registration.mark_bound();
 
     log::info!(
         "The TACACS+ proxy listener accepts clients on Unix domain socket {}",
         path.display()
     );
-    let result =
-        accept_loop(listener, service, format!("Unix domain socket {}", path.display()), shutdown)
-            .await;
+    let result = accept_loop(
+        listener,
+        service,
+        format!("Unix domain socket {}", path.display()),
+        options,
+        shutdown,
+    )
+    .await;
     socket_guard
         .cleanup("TACACS+ proxy Unix domain socket")
         .await?;

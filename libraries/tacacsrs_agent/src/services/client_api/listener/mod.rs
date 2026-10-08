@@ -9,6 +9,7 @@ use crate::runtime::{ListenerRegistration, RuntimeHealthSnapshot, ShutdownReceiv
 use crate::services::ListenerOptions;
 
 mod unix;
+mod incoming;
 
 /// Runs the client API listener until the process receives a shutdown signal.
 pub(crate) async fn serve(
@@ -24,7 +25,7 @@ pub(crate) async fn serve(
             unix::serve(
                 path,
                 service,
-                options.socket_mode(),
+                options,
                 shutdown,
                 registration,
                 health,
