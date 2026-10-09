@@ -3,8 +3,9 @@
 ## Status
 
 Stage 4 is in progress as of 2026-10-09. Commit `6a11a83` completes the first increment.
-Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent. S4-02 is partially implemented.
+Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent.
 Commit `75aac8b` adds canonical observation sessions and file watcher ownership. The supervisor now uses observations for startup and recovery.
+Commit `8381d4f` completes S4-02 with owned SONiC observations and removal of transitional APIs. S4-03 is next.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 This increment does not complete the shared configuration controller or credential lifecycle.
 
@@ -14,7 +15,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 ## Checklist
 
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
-- [ ] S4-02: Replace configuration load/subscribe startup with owned observations for every retained source. Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` completes file observation ownership and migrates supervision. Native SONiC observation ownership and transitional API removal remain open. See [owned configuration observations](#owned-configuration-observations).
+- [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
 - [ ] S4-03: Publish generations and applied-health metadata through one controller. Track source and credential revisions separately. Reject stale completions and retain global admission across replacement.
 - [ ] S4-04: Remove process signal ownership from libraries. Apply explicit host cancellation, stale-material budgets, expiry rules, and bounded drains across controller/provider work. Verify shutdown with active and cancelled observations.
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
@@ -99,8 +100,8 @@ No protocol or TLS implementation changes. Miri was not run because nightly `rus
 
 ## Remaining Contracts
 
-Runtime supervision now uses `ConfigDatastore::observe()`. The separate `load()` and `subscribe()` methods remain transitional APIs.
-Native SONiC ownership and adapter removal remain S4-02. Revision and publication coordination remain S4-03.
+Runtime supervision uses `ConfigDatastore::observe()`. Independent one-shot `load()` remains, but the subscription method and observation adapter are removed.
+Native SONiC ownership is complete. Revision and publication coordination remain S4-03.
 The agent now owns configuration recovery and materialization coordination. The daemon retains host-specific filtering and process composition.
 This increment does not introduce source revision semantics or retain canonical policy history in the controller.
 
@@ -160,7 +161,7 @@ File and SONiC backends published post-subscription baselines, but the source tr
 Their subscription workers needed explicit lifetime ownership. Dropping supervisor futures did not prove that all backend tasks stopped.
 The file watcher callback also retained its blocking queue behavior.
 
-The following increment addresses the file observer and runtime contract. SONiC worker ownership remains open.
+The following increment addresses the file observer and runtime contract. SONiC worker ownership remained open until `8381d4f`.
 
 ## Owned Configuration Observations
 
@@ -174,9 +175,9 @@ The supervisor no longer calls `load()` or `subscribe()` directly.
 Credential supervision and the materialization coordinator remain unchanged.
 
 Static sources produce one baseline and then end, without a worker task.
-The transitional default adapts immutable loads or continuous subscriptions to the new contract.
+At `75aac8b`, a transitional default adapted immutable loads or continuous subscriptions to the new contract.
 Continuous adapters require a post-subscription baseline. They do not provide backend task ownership by themselves.
-SONiC still uses this adapter. S4-02 stays open until its Redis notification and reload workers have an explicit owner.
+SONiC used that adapter until `8381d4f` supplied native ownership and removed it.
 
 ### File Session Lifetime
 
@@ -221,6 +222,71 @@ No dependency version, lockfile, YANG schema, generated artifact, or native TLS 
 Documentation is checked through rustdoc and the book build.
 External-peer, Windows, live SONiC, and Miri checks were not rerun for this increment.
 
-Remaining S4-02 work: native SONiC observation ownership, Redis cleanup tests, and removal of the transitional default and legacy subscription APIs.
+At `75aac8b`, remaining S4-02 work covered native SONiC ownership, Redis cleanup tests, and removal of transitional subscription APIs.
 One-shot configuration loading can remain where a caller genuinely needs it.
 Unified generation/health publication, source and credential revision semantics, and the other Stage 4 obligations remain unchanged.
+
+## S4-02 Closure
+
+Commit `8381d4f` completes the remaining source-observation ownership work.
+The SONiC datastore implementation now lives in its own module. The crate root contains declarations and intentional exports.
+Static, file, and SONiC sources each implement `ConfigDatastore::observe()` explicitly.
+The default observation adapter and datastore `subscribe()` method are removed. One-shot loading remains where callers need it.
+
+### SONiC Resources
+
+The observation establishes `PSUBSCRIBE` before it reads the baseline.
+It owns a notification pump that coalesces invalidations through a watch channel. A slow consumer cannot block notification delivery.
+The session stores its reload future instead of starting a separate reload worker.
+Cancellation retains that future and invalidations received during the read. Dropping the session cancels the pump and drops the read future.
+
+Pub/Sub loss returns an observation error, including while a reload is pending.
+The agent reopens observation before reading a replacement baseline.
+Mapping failures emit candidate rejection without replacing the previous valid snapshot.
+Forwarder changes still report restart requirements independently of upstream server changes.
+Removing the final servers publishes an empty canonical snapshot with removal deltas.
+
+Credential change streams also own their watcher workers and cancel them on drop.
+The old spawn-and-return-a-receiver helpers are removed. `watch_credential_changes` returns the owned stream directly.
+Rescan events request complete reconciliation. Failed root-watch re-registration reports unavailability and ends the stream.
+The watch example uses one observation for baseline and updates, and no longer prints the Redis URL.
+
+### Native Regression Evidence
+
+`redis_idle_subscription_drop_closes_pubsub_connection` failed before the fix with a one-second timeout.
+The old notifier remained connected while idle after its consumer was dropped.
+The test now checks Redis client state and confirms connection closure without another ConfigDB event.
+
+Further native checks verify:
+
+- Cancellation of a pending reload retains concurrent invalidations and reconciles the latest snapshot.
+- Pub/Sub disconnect interrupts a pending reload, and a new observation reads a fresh baseline.
+- Dropping an observation during a real paused Redis read closes both the snapshot and Pub/Sub connections.
+- Forwarder changes preserve restart reporting, rejected candidates retain the old snapshot, and final-server deletion publishes an empty snapshot.
+- Repeated idle credential-stream drops finish their workers without waiting for a filesystem event.
+- Credential rescan, atomic replacement, root replacement, and overflow reconciliation remain covered.
+
+### Verification
+
+The isolated native fixture used Redis 7.2.5, built under `/tmp`, with a private Unix socket, no TCP listener, and no persistence.
+No system package or service was installed. The fixture was stopped after testing and removed its socket.
+Tests used database 15 and ran serially because the native cases reset the private database and inspect its client list.
+
+```bash
+TACACSRS_SONIC_TEST_REDIS_URL=unix:///path/to/private/redis.sock \
+	cargo test --workspace --all-features --locked -- --test-threads=1
+```
+
+The complete workspace suite passes with native Redis enabled: 46 SONiC unit tests, eight provider tests, and five credential-watch tests pass.
+The suite also passes 153 agent tests, 83 configuration tests, 60 daemon tests, and seven prepared-source integration tests.
+Strict workspace Clippy, build, formatting, warnings-as-errors rustdoc, all four dependency guards, unused-dependency checks, and audit pass.
+Audit reports no vulnerabilities in 301 locked packages, with the existing index-lock warning.
+The existing nightly `fetch_update` warning remains. Editor-only coercion diagnostics conflict with successful Cargo checks and native tests.
+
+Configuration's `futures-util` dependency returns to development-only use after removal of the stream adapter.
+No dependency version, lockfile, generated YANG artifact, protocol, or TLS implementation changes.
+The documentation update passes rustdoc and the book build.
+The live SONiC VM was not changed or restarted. Live-VM, external TACACS+ peer, Windows, and Miri checks were not rerun.
+
+S4-03 remains open for one generation/health publication controller and separate source and credential revisions.
+Host signal ownership, stale-material policy, certificate chains, revocation retrieval, and operational statistics remain the later Stage 4 obligations.

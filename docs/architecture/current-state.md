@@ -71,18 +71,18 @@ Repeated reloads must not accumulate idle retired drivers.
 
 ### F3. Source loading and subscription lack a gap-free contract
 
-**Priority: P1. Status: backend ordering improved, source contract still incomplete.**
+**Priority: P1. Status: observation ownership and startup ordering complete in S4-02. Revision coordination remains open.**
 
 `ConfigDatastore::observe()` now supplies a canonical baseline and later changes through one session.
 The supervisor retains that session across initialization and serving, and opens a replacement before reconciliation after failure.
-File observations own their native watcher and pending read. The old load/subscribe methods remain as transitional APIs.
-SONiC still enters through a subscription adapter whose worker lifetime is not owned by the session.
+File observations own their native watcher and pending read. SONiC observations own their Redis notification pump and pending snapshot future.
+The default observation adapter and datastore `subscribe()` method are removed. Independent one-shot `load()` remains available.
 
 - [Source interface](../../libraries/tacacsrs_config/src/source.rs)
 - [Supervisor subscription](../../libraries/tacacsrs_agent/src/runtime/config_supervisor.rs)
 - [File watcher setup](../../libraries/tacacsrs_config/src/input/datastore.rs)
 
-Stage 4 must give the SONiC observation ownership of Redis notifications and reload work, then remove the transitional adapter.
+Native Redis tests verify idle and active-read cleanup, concurrent invalidation, disconnect recovery, and empty final snapshots.
 Source and credential revisions still need a unified publication contract.
 
 **Target:** one source session establishes observation and supplies an authoritative snapshot.
