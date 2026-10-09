@@ -289,7 +289,8 @@ Routing observations cannot silently override canonical policy or cause TLS-to-p
 
 **Status:** in progress. Commit `6a11a83` completes owned canonical policy observation and agent policy supervision.
 Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent with explicit host cancellation.
-S4-02 remains open for owned configuration observations and backend subscription cleanup.
+Commit `75aac8b` introduces canonical configuration observations, owns file watcher lifetimes, and removes separate load/subscribe calls from runtime supervision.
+S4-02 remains open for native SONiC observation ownership and removal of transitional APIs.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.

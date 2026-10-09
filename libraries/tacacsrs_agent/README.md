@@ -107,8 +107,10 @@ Notifications require a resolver. Provider configuration is checked before sourc
 The stop future belongs to the host. The supervisor installs no process signal handlers.
 
 Cancellation drops pending load, filter, resolution, and publication futures. It preserves the last successfully published configuration.
-This does not guarantee cancellation of detached backend tasks. The source API still uses separate `load()` and `subscribe()` calls.
-Owned observation sessions and coordinated generation/health publication remain Stage 4 work.
+The runtime uses `ConfigDatastore::observe()` for both initial configuration and later changes.
+Successful initialization retains the same session. Interrupted initialization starts a fresh session before retry or serving.
+File observations own their watcher and coalesce invalidations without a detached reload worker.
+The transitional adapter for legacy backends does not guarantee worker cleanup. SONiC ownership and coordinated generation/health publication remain Stage 4 work.
 
 `ServiceConfig::validation_options` carries the schema policy selected by the configuration source.
 Construction and both reload APIs apply the shared configuration checks with that policy.

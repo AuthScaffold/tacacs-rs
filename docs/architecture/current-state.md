@@ -73,17 +73,17 @@ Repeated reloads must not accumulate idle retired drivers.
 
 **Priority: P1. Status: backend ordering improved, source contract still incomplete.**
 
-`ConfigDatastore` exposes separate `load` and `subscribe` methods without a revision cursor.
-The supervisor loads and applies configuration before it subscribes.
-The file and SONiC subscriptions now install observation before publishing their own baseline.
-That backend behavior repairs startup gaps, but the source trait does not require one owned observation session.
+`ConfigDatastore::observe()` now supplies a canonical baseline and later changes through one session.
+The supervisor retains that session across initialization and serving, and opens a replacement before reconciliation after failure.
+File observations own their native watcher and pending read. The old load/subscribe methods remain as transitional APIs.
+SONiC still enters through a subscription adapter whose worker lifetime is not owned by the session.
 
 - [Source interface](../../libraries/tacacsrs_config/src/source.rs)
 - [Supervisor subscription](../../libraries/tacacsrs_agent/src/runtime/config_supervisor.rs)
 - [File watcher setup](../../libraries/tacacsrs_config/src/input/datastore.rs)
 
-The reconnect path still loads before it subscribes. Subscriptions also retain backend worker tasks that need explicit lifetime ownership.
-Stage 4 must replace this split contract for every retained source, not rely only on backend conventions.
+Stage 4 must give the SONiC observation ownership of Redis notifications and reload work, then remove the transitional adapter.
+Source and credential revisions still need a unified publication contract.
 
 **Target:** one source session establishes observation and supplies an authoritative snapshot.
 Lossy backends must signal a resynchronization requirement and reload after observation starts.

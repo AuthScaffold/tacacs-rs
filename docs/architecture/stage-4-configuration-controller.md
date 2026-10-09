@@ -4,6 +4,7 @@
 
 Stage 4 is in progress as of 2026-10-09. Commit `6a11a83` completes the first increment.
 Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent. S4-02 is partially implemented.
+Commit `75aac8b` adds canonical observation sessions and file watcher ownership. The supervisor now uses observations for startup and recovery.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 This increment does not complete the shared configuration controller or credential lifecycle.
 
@@ -13,7 +14,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 ## Checklist
 
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
-- [ ] S4-02: Replace configuration load/subscribe startup with owned observations for every retained source. Commit `1cca6a4` completes agent ownership of generic recovery and materialization. Owned backend sessions, startup ordering, and subscription cleanup remain open. See [configuration supervision](#configuration-supervision).
+- [ ] S4-02: Replace configuration load/subscribe startup with owned observations for every retained source. Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` completes file observation ownership and migrates supervision. Native SONiC observation ownership and transitional API removal remain open. See [owned configuration observations](#owned-configuration-observations).
 - [ ] S4-03: Publish generations and applied-health metadata through one controller. Track source and credential revisions separately. Reject stale completions and retain global admission across replacement.
 - [ ] S4-04: Remove process signal ownership from libraries. Apply explicit host cancellation, stale-material budgets, expiry rules, and bounded drains across controller/provider work. Verify shutdown with active and cancelled observations.
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
@@ -98,7 +99,8 @@ No protocol or TLS implementation changes. Miri was not run because nightly `rus
 
 ## Remaining Contracts
 
-`ConfigDatastore` still exposes separate `load()` and `subscribe()` methods. Its controller migration remains S4-02/S4-03.
+Runtime supervision now uses `ConfigDatastore::observe()`. The separate `load()` and `subscribe()` methods remain transitional APIs.
+Native SONiC ownership and adapter removal remain S4-02. Revision and publication coordination remain S4-03.
 The agent now owns configuration recovery and materialization coordination. The daemon retains host-specific filtering and process composition.
 This increment does not introduce source revision semantics or retain canonical policy history in the controller.
 
@@ -151,13 +153,74 @@ The existing nightly `fetch_update` deprecation warning now appears in the moved
 The documentation update is checked through the book build and warnings-as-errors rustdoc.
 External-peer, Windows, live SONiC, and Miri tests were not rerun for this ownership increment.
 
-### S4-02 Remainder
+### S4-02 Remainder After Ownership Transfer
 
-Configuration startup and reconnection still use separate load and subscribe operations.
-File and SONiC backends publish post-subscription baselines, but the source trait does not express that contract.
-Their subscription workers still need explicit lifetime ownership. Dropping supervisor futures does not prove that all backend tasks have stopped.
-The file watcher callback also retains its blocking queue behavior. The new policy observer already uses coalesced, nonblocking invalidation.
+At commit `1cca6a4`, configuration startup and reconnection still used separate load and subscribe operations.
+File and SONiC backends published post-subscription baselines, but the source trait did not express that contract.
+Their subscription workers needed explicit lifetime ownership. Dropping supervisor futures did not prove that all backend tasks stopped.
+The file watcher callback also retained its blocking queue behavior.
 
-The next increment must introduce owned observations for static, file, and SONiC sources, then remove the supervisor's separate load/subscribe sequence.
-Verify convergence across startup and reconnect races, cancellation during observation, and native watcher or Redis task cleanup.
-Unified generation/health publication and separate source/credential revisions remain S4-03.
+The following increment addresses the file observer and runtime contract. SONiC worker ownership remains open.
+
+## Owned Configuration Observations
+
+Commit `75aac8b` adds `ConfigDatastore::observe()` and the `ConfigObservation` contract.
+An observation supplies canonical `ConfigChangeEvent` values, including its baseline. Cancelled reads must retain pending work.
+Snapshots remain `Arc<TacacsPlus>` values. No competing desired-configuration model or revision scheme is introduced.
+
+The agent retains one observation across successful initialization and live updates.
+After observation failure or completion, it drops the session, waits through backoff, and opens observation before reading the replacement baseline.
+The supervisor no longer calls `load()` or `subscribe()` directly.
+Credential supervision and the materialization coordinator remain unchanged.
+
+Static sources produce one baseline and then end, without a worker task.
+The transitional default adapts immutable loads or continuous subscriptions to the new contract.
+Continuous adapters require a post-subscription baseline. They do not provide backend task ownership by themselves.
+SONiC still uses this adapter. S4-02 stays open until its Redis notification and reload workers have an explicit owner.
+
+### File Session Lifetime
+
+The file observation owns its native watcher, debounce state, pending read, and last valid snapshot.
+Its callback coalesces invalidations through a watch channel. No callback blocks on a full event queue.
+There is no detached async reload worker. The legacy file subscription forwards to the owned session without starting another task.
+
+Read-access events no longer trigger reloads. Rescan and pathless invalidations require reconciliation.
+Watcher errors remain latched. Removal or renaming of the watched directory returns an observation error.
+Rejected candidates retain the last valid snapshot for subsequent deltas.
+
+Reads and watches use the same captured canonical parent paths for configuration and credential files.
+Retargeting a parent-directory symlink does not move reads outside the watched directory. A new observation captures a new target.
+Configuration input normalization does not rewrite authoritative YANG snapshots or credential references.
+
+Reads run on Tokio's blocking pool. Cancelling `next()` retains its pending read handle and does not consume later invalidations.
+Dropping the session releases the watcher and aborts a read that has not started.
+An operating-system read that already started can finish afterward, but its result cannot publish into the dropped session.
+This is not a guarantee of immediate cancellation for blocking filesystem I/O.
+
+### Cancellation and Regression Evidence
+
+`observation_filters_access_but_reconciles_rescan_events` failed before the event-filter fix because read events triggered reloads.
+`dropped_initialization_reopens_observation_before_retry` failed before its fix with a one-second timeout.
+That case consumes a baseline, pauses filtering, drops initialization, and retries without another source event.
+Both initialization retry and `run_until` now discard incomplete sessions before obtaining a fresh baseline.
+
+Tests also cover native watcher release, 10,000 coalesced invalidations, cancellation during debounce and a pending read, directory loss, and symlink retargeting.
+A cross-crate file test changes configuration between initialization and serving, then verifies convergence.
+A drop-tracked source rejects legacy calls and proves that initialization and updates share one observation until cancellation.
+Recovery tests verify observation setup before replacement baselines, including failed setup and failed baseline reads.
+
+### Verification and Remaining Work
+
+Verification for `75aac8b` passes: 83 configuration tests, 22 supervisor tests, and the complete all-feature workspace suite with 153 agent tests.
+Strict workspace Clippy, build, formatting, warnings-as-errors rustdoc, all four dependency guards, unused-dependency checks, and audit pass.
+Audit reports no vulnerabilities in 301 locked packages, with the existing index-lock warning.
+The existing nightly `fetch_update` deprecation warning remains. Rust 1.88 remains supported.
+
+`futures-util` moves from configuration's development dependencies into its normal dependencies for the task-free stream adapter.
+No dependency version, lockfile, YANG schema, generated artifact, or native TLS behavior changes.
+Documentation is checked through rustdoc and the book build.
+External-peer, Windows, live SONiC, and Miri checks were not rerun for this increment.
+
+Remaining S4-02 work: native SONiC observation ownership, Redis cleanup tests, and removal of the transitional default and legacy subscription APIs.
+One-shot configuration loading can remain where a caller genuinely needs it.
+Unified generation/health publication, source and credential revision semantics, and the other Stage 4 obligations remain unchanged.
