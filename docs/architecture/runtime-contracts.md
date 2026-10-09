@@ -36,7 +36,8 @@ Active shared sessions retain the driver owner. Final owner drop requests abort;
 `TacacsClient::retire_shared_until` supports deadline-bound shared retirement and retry after a cancelled join.
 It is not terminal client shutdown. The [terminal client increment](stage-3-routed-client.md#terminal-client-progress) adds `TacacsClient::close` and `close_and_join`.
 Those APIs reject new work, cancel owned setup, and force native transport closure independently of caller polling.
-Retained conversations do not extend the originating client's lifetime. Routed-catalog and service-wide close/join integration remain S3-05 work.
+Retained conversations do not extend the originating client's lifetime.
+The [S3-05 closure](stage-3-routed-client.md#integrated-retirement) integrates routed families and service shutdown, including historical endpoints and parked setup tasks.
 
 ## Protocol Boundaries
 
@@ -98,7 +99,7 @@ A retryable first `ERROR` reply can trigger another attempt only before any repl
 The [S3-02 implementation](stage-3-routed-client.md#request-generations) captures routing and size policy before admission.
 Proxy continuations use the captured size limit. Global concurrency remains shared and follows live limit updates.
 Availability observations use the captured server-set epoch, so old retries cannot report health for replacement endpoints.
-S3-04 now supplies captured absolute deadlines. Bounded retirement remains S3-05 work.
+S3-04 supplies captured absolute deadlines. S3-05 supplies explicit bounded retirement and joins.
 
 The [S3-03 implementation](stage-3-routed-client.md#routed-client) moves catalogs, operation cursors, circuits, and reconnect serialization into networking.
 Cloned routed clients retain their catalog. Bindings report outcomes against their captured connection generation.
@@ -178,7 +179,8 @@ Networking also exposes reservations that consume bounded capacity before an asy
 The proxy uses those reservations in its connection reader and retains active permits through final physical delivery.
 Canonical startup settings cap served connections per listener, streams per client API connection, and connection lifetime.
 Expired or full proxy write/continuation queues close the connection; completed tasks are reaped during normal operation.
-S3-04's admission and ingress bounds are complete. Explicit runtime close/join and bounded retirement remain S3-05 work.
+S3-04's admission and ingress bounds and S3-05's explicit runtime close/join and bounded retirement are complete.
+Admission closure is terminal, wakes queued work, and rejects unpolled reservations even when limits later increase.
 
 The design separately bounds:
 
@@ -348,6 +350,11 @@ The runtime must not claim complete cleanup while unbounded owned work remains.
 A fatal listener or driver owner failure follows the same cleanup discipline.
 Process exit is not the only available resource cleanup mechanism.
 Embedded hosts need a complete shutdown result without terminating their process.
+
+`TacacsClientService::serve_until` implements signal-free listener shutdown for embedding hosts.
+The maximum current operation budget supplies one absolute drain deadline shared by listeners and all current or historical upstream resources.
+Reload retirement uses the maximum operation budget captured at preparation start; publication schedules each removed endpoint under that cutoff.
+Cancelled serving futures schedule immediate owned cleanup. Explicit joins confirm completion; native socket guards do not depend on caller polling or process exit.
 
 ## Health and Diagnostics
 

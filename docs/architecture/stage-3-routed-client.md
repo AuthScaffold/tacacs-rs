@@ -9,7 +9,8 @@ The third increment extracts an agent-free routed client into networking and mig
 S3-04 now provides bounded shared admission and canonical total request deadlines across both ingress paths.
 Commit `41d29d5` completes ingress-task and downstream delivery bounds. S3-04 is complete.
 S3-05 now provides terminal client shutdown for shared drivers, dedicated transports, and in-progress setup.
-Routed-catalog and service-wide bounded retirement integration remain open within that item.
+Commit `468fdcb` integrates routed retirement and embedded service shutdown under one budget. S3-05 is complete.
+S3-06 remains open for the final integration gates and Stage 3 closure.
 
 Fix nearby issues within the current increment when practical. Add a new item only when the work needs a distinct implementation step.
 Keep completed items visible with verification evidence. Preserve canonical YANG and do not retain obsolete APIs only for compatibility.
@@ -20,7 +21,7 @@ Keep completed items visible with verification evidence. Preserve canonical YANG
 - [x] S3-02: Capture one routing generation and retry policy before admission. Commit `c3b6fd3` retains endpoints, body limits, and recovery policy across reloads. IPC and TCP-backed proxy regressions verify retries and continuations. See [request generations](#request-generations).
 - [x] S3-03: Extract endpoint catalogs, circuits, and reconnect serialization into networking. Commit `861a40b` migrates both ingress paths, removes duplicate agent routing state, fixes stale recovery and connection-failure races, and runs an agent-free example. See [routed client](#routed-client).
 - [x] S3-04: Apply one absolute request deadline across execution and bound pending work. Commits `97db77a`, `5e0f1e3`, and `41d29d5` complete shared admission, canonical deadlines, and ingress/delivery bounds. See [admission progress](#admission-progress), [deadline progress](#deadline-progress), and [ingress bounds](#ingress-bounds).
-- [ ] S3-05: Complete terminal client/runtime shutdown and bounded retirement. Commits `d93c584` and `1928c29` establish shared-driver ownership and correct dedicated cleanup. Commit `d4f6c6c` adds terminal client shutdown, including dedicated transports and setup tasks. Routed/service integration remains open. See [shared-driver progress](#shared-driver-progress) and [terminal client progress](#terminal-client-progress).
+- [x] S3-05: Complete terminal client/runtime shutdown and bounded retirement. Commits `d93c584`, `1928c29`, and `d4f6c6c` establish task ownership and terminal client shutdown. Commit `468fdcb` integrates routed retirement and service shutdown. See [shared-driver progress](#shared-driver-progress), [terminal client progress](#terminal-client-progress), and [integrated retirement](#integrated-retirement).
 - [ ] S3-06: Complete Stage 3 integration gates, remove temporary adapters, and update this checkpoint and the migration plan together. Preserve ordering, operation eligibility, prepared credentials, timeout semantics, and loop exclusion.
 
 ## Retry Ownership
@@ -128,7 +129,7 @@ cargo run -p tacacsrs-networking --example routed_accounting --locked --quiet
 
 It prints `Accounting accepted by backup; no agent or configuration source was required.`
 The example has a five-second outer test bound. Commit `5e0f1e3` also gives its accounting request one two-second deadline across binding and retries.
-S3-04's ingress bounds are complete. S3-05 owns public close/join and bounded retirement.
+S3-04's ingress bounds and S3-05's public close/join and bounded retirement are complete.
 
 ## Admission Progress
 
@@ -267,15 +268,15 @@ The packet reader held the transport mutex while invalid-header handling tried t
 The regression failed before the fix. The reader now removes the invalid transport through its existing guard, and the peer receives EOF promptly.
 This local correction does not complete dedicated-session shutdown ownership.
 
-S3-05 acceptance remains split at that ownership boundary:
+S3-05 completed these acceptance steps:
 
 - [x] Own shared driver tasks, support bounded explicit drain/join, retain handles across cancelled waits, and reject stale promotion. Verify idle, active, forced, repeated, and final-owner cleanup.
 - [x] Add terminal client shutdown covering dedicated transports, in-progress connection setup, and shared sessions. Commit `d4f6c6c` rejects new work and verifies socket release even when callers retain idle conversations or leave reads and setup futures unpolled.
-- [ ] Integrate close/join with routed catalog retirement and agent shutdown. Apply one explicit retirement budget across removed endpoints, repeated reload, and embedded runtime shutdown.
+- [x] Integrate close/join with routed catalog retirement and agent shutdown. Commit `468fdcb` applies an explicit cutoff to removed endpoints and one deadline to service drain and historical endpoint cleanup. Native tests cover repeated catalogs, setup cancellation, embedded shutdown, and cancellation of serving.
 
 Tests cover graceful active-session drain, forced shutdown with an active reader, final-owner abort, concurrent deadlines, and cancelled retirement retried across eight cycles.
 Native peer EOF checks prove transport release. The late-promotion test verifies that an old negotiation cannot repopulate a retired cache.
-The shared-driver increment alone did not provide terminal client shutdown. The following increment adds it; embedded-service integration remains open.
+The shared-driver increment alone did not provide terminal client shutdown. The following increments add terminal client and embedded-service integration.
 
 ## Terminal Client Progress
 
@@ -303,12 +304,54 @@ Drop also seals the shared cache so an old negotiation cannot start a new driver
 Use `close_and_join` when the host needs confirmation that owned tasks and sockets are finished.
 
 `retire_shared_until` remains a nonterminal shared-cache operation. It does not replace terminal client shutdown.
-The existing agent and routed connector interfaces are not yet migrated to terminal close/join.
-The remaining S3-05 item must coordinate catalog retirement and service shutdown under one explicit retirement budget, including repeated reloads.
+At `d4f6c6c`, agent and routed connector interfaces did not yet use terminal close/join.
+Commit `468fdcb` completes that integration, as described below.
 
 Native tests cover retained idle conversations, parked dedicated reads, stalled TLS setup, cancelled joins, shorter concurrent deadlines, and graceful dedicated/shared drain.
 Peer EOF verifies socket release before the retained caller future resumes. Post-close requests fail before request transmission.
 Another test verifies that final client drop prevents an old negotiation from publishing a shared driver.
+
+## Integrated Retirement
+
+Commit `468fdcb` extends `EndpointConnector` and the agent connection contract with terminal `close` and deadline-bound `close_and_join` methods.
+The native implementation delegates to `TacacsClient`. Test connectors must implement the same lifecycle contract rather than silently skipping shutdown.
+Routed endpoint owners retain setup tasks and connection owners until cleanup completes.
+Unused connections are closed and joined before later setup releases their ownership.
+
+Related catalogs share one routing runtime. This registry includes endpoints removed by earlier replacements, even when old request snapshots still hold them.
+`RoutedClient::close_and_join` rejects new work throughout that family and joins historical and current resources under one absolute deadline.
+Late setup results cannot publish into retired endpoints. Parked bind futures do not prevent owned setup cancellation.
+The connector contract requires deadline-respecting cleanup and cancellation-safe ownership; a custom connector must uphold those requirements.
+
+`retire_replaced_until` schedules terminal retirement without delaying publication.
+Captured old catalogs remain usable before the cutoff. At expiry, the owner rejects bindings, cancels setup, closes connections, and joins their tasks.
+Unchanged identities remain active. Rescheduling cannot extend a previous cutoff.
+The manager schedules this cutoff in the publication transition and serializes server reloads.
+The cutoff uses the maximum canonical operation request budget captured when preparation starts. All endpoints removed by that update share it.
+This is a derived runtime deadline, not a second configuration model or a new default.
+
+Admission now has a terminal closed state. Closure wakes pending waiters, rejects unpolled reservations, and cannot be reversed by a limit update.
+Manager closure also prevents later server publication or captured-route binding. Runtime-policy updates after closure do not reopen it.
+Closed-service admission errors are not retriable.
+
+`TacacsClientService::serve_until(stop_future)` lets an embedded host run and stop listeners without process signal handlers.
+The existing `serve()` method wraps the same path with an owned signal future, rather than a detached monitor task.
+Shutdown withdraws serving health and closes admission and new upstream work.
+One deadline, derived from the maximum current operation budget, covers listener drain and every historical/current endpoint join.
+Remaining listener tasks are cancelled and joined at expiry. Native clients then force remaining transport cleanup under that same deadline.
+A successfully stopped service rejects reload and cannot be served again.
+
+Cancellation of a serving future drops an owned guard that schedules immediate upstream retirement.
+The host can call the service's `close_and_join(deadline)` to confirm upstream cleanup after cancellation or without starting listeners.
+An active listener run must be stopped through its `serve_until` trigger and awaited for full listener completion.
+The IPC health bridge now runs inside its listener future. Listener-owned transport guards close accepted Unix sockets even when Tonic retains its connection objects.
+This closes native sockets without relying on the connection-lifetime fallback or process exit.
+
+Tests verify a removed endpoint closes at its cutoff without closing its replacement, and old catalogs cannot bind after retirement.
+A four-generation native test retains old conversations and verifies peer EOF after family-wide join.
+Further tests cover parked setup cancellation, closed admission, rejected publication, embedded shutdown, restart rejection, and cancelled serving futures.
+The earlier single-poll tests now use request-entry notifications because routed setup runs in owned tasks.
+No new standalone work item was needed. S3-06 retains the planned final integration review and gates.
 
 ## Verification
 
@@ -401,4 +444,13 @@ All nine independent native peer cases pass with managed transports and owned se
 The final drop-publication correction passes all 157 networking library tests, with two existing ignored tests, and strict package Clippy.
 Agent coverage remains 114 passing library tests. The documentation book and whitespace checks pass.
 The touched networking files have no editor diagnostics. No dependency, lockfile, generated YANG artifact, protobuf schema, or native credential policy changed.
+Windows, live SONiC, and Miri were not run for this increment.
+
+### S3-05 Closure
+
+All 118 agent library tests pass. Networking passes 161 library tests, with two existing ignored tests, including 12 routed-client tests.
+The full all-features workspace suite, strict workspace Clippy, nightly formatting, workspace build, and warnings-as-errors rustdoc pass.
+All nine independent native peer cases pass. The final serving-cancellation regression and strict package Clippy also pass.
+The documentation book and whitespace checks pass. No dependency, lockfile, generated YANG artifact, protobuf schema, or native credential policy changed.
+The known editor-only `async-trait` diagnostics remain in agent test support; Cargo does not reproduce them.
 Windows, live SONiC, and Miri were not run for this increment.
