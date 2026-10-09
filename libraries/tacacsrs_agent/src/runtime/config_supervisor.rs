@@ -10,15 +10,16 @@
 //! ```
 //!
 //! Datastore policy determines whether initial failure is fatal and whether a
-//! change stream must be continuously restored. Stream restoration always
-//! performs a fresh load before resubscription. Source-owned observation and
-//! coordinated generation/health publication remain separate migration steps.
+//! observation must be continuously restored. Each session supplies a baseline
+//! after observation starts. Coordinated generation/health publication remains
+//! a separate migration step.
 
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use tacacsrs_config::TacacsPlus;
@@ -26,7 +27,8 @@ use tacacsrs_credential_resolution::{
     CredentialChangeEvent, CredentialChangeScope, CredentialChangeSource, CredentialResolver,
 };
 use tacacsrs_config::source::{
-    ChangeNotificationMode, ConfigChangeEvent, ConfigDatastore, InitialLoadPolicy,
+    ChangeNotificationMode, ConfigChangeEvent, ConfigDatastore, ConfigObservation,
+    InitialLoadPolicy,
 };
 
 use crate::{DatastoreState, DegradationReason, RuntimeHealthPublisher, TacacsClientService};
@@ -83,6 +85,7 @@ pub struct ConfigSupervisor {
     materialization_coordinator: Option<Arc<MaterializationCoordinator>>,
     credential_change_source: Option<Arc<dyn CredentialChangeSource>>,
     initialized: bool,
+    observation: Mutex<Option<Box<dyn ConfigObservation>>>,
 }
 
 impl ConfigSupervisor {
@@ -114,6 +117,7 @@ impl ConfigSupervisor {
             self.datastore.validation_options(),
         )));
         self.initialized = false;
+        self.observation.get_mut().take();
         self
     }
 
@@ -144,10 +148,14 @@ impl ConfigSupervisor {
         if self.initialized {
             return Ok(());
         }
+        self.observation.get_mut().take();
         let cancellation = CancellationToken::new();
         tokio::select! {
             biased;
-            () = stop => return Ok(()),
+            () = stop => {
+                self.observation.get_mut().take();
+                return Ok(());
+            },
             result = self.load_initial(&cancellation) => result?,
         }
         self.initialized = true;
@@ -161,8 +169,11 @@ impl ConfigSupervisor {
     ///
     /// # Errors
     /// Returns an error when provider configuration or fail-fast initialization fails.
-    pub async fn run_until(self, stop: impl Future<Output = ()> + Send) -> anyhow::Result<()> {
+    pub async fn run_until(mut self, stop: impl Future<Output = ()> + Send) -> anyhow::Result<()> {
         self.validate_provider()?;
+        if !self.initialized {
+            self.observation.get_mut().take();
+        }
         let cancellation = CancellationToken::new();
         let _cancel_on_drop = cancellation.clone().drop_guard();
         tokio::select! {
@@ -239,6 +250,7 @@ impl ConfigSupervisor {
             materialization_coordinator,
             credential_change_source,
             initialized: false,
+            observation: Mutex::new(None),
         }
     }
 
@@ -266,6 +278,7 @@ impl ConfigSupervisor {
                 }
                 Ok(PublicationOutcome::Superseded) => {}
                 Err(()) if policy == InitialLoadPolicy::FailFast => {
+                    self.observation.lock().await.take();
                     self.mark_source_problem();
                     anyhow::bail!(
                         "Datastore '{}' did not supply a valid initial configuration",
@@ -273,6 +286,7 @@ impl ConfigSupervisor {
                     );
                 }
                 Err(()) => {
+                    self.observation.lock().await.take();
                     self.mark_source_problem();
                     attempt = attempt.saturating_add(1);
                     log::warn!(
@@ -314,83 +328,36 @@ impl ConfigSupervisor {
         }
 
         let mut attempt = 0u32;
-        let mut refresh_before_subscribe = false;
         loop {
-            if refresh_before_subscribe {
-                let reload = tokio::select! {
-                    biased;
-                    () = cancellation.cancelled() => return,
-                    result = self.load_and_apply() => result,
-                };
-                match reload {
-                    Ok(PublicationOutcome::Published) => self.mark_current(),
-                    Ok(PublicationOutcome::Superseded) => {}
-                    Err(()) => {
-                        self.mark_source_problem();
-                        attempt = attempt.saturating_add(1);
-                        if !self.wait_for_retry(attempt, cancellation).await {
-                            return;
-                        }
-                        continue;
-                    }
-                }
-                attempt = 0;
-            }
-
-            let subscription = tokio::select! {
+            let event = tokio::select! {
+                biased;
                 () = cancellation.cancelled() => return,
-                result = self.datastore.subscribe() => result,
+                event = self.next_observation_event() => event,
             };
-            let Ok(mut stream) = subscription else {
-                log::warn!(
-                    "Datastore '{}' change subscription is unavailable",
-                    self.datastore.label(),
-                );
-                self.mark_subscription_unavailable();
-                attempt = attempt.saturating_add(1);
-                if !self.wait_for_retry(attempt, cancellation).await {
-                    return;
+            match event {
+                Ok(ConfigChangeEvent::Changed(change)) => {
+                    let result = tokio::select! {
+                        biased;
+                        () = cancellation.cancelled() => return,
+                        result = self.apply_candidate((*change.config).clone()) => result,
+                    };
+                    match result {
+                        Ok(PublicationOutcome::Published) => self.mark_current(),
+                        Ok(PublicationOutcome::Superseded) => {}
+                        Err(()) => self.mark_candidate_rejected(),
+                    }
+                    attempt = 0;
                 }
-                refresh_before_subscribe = true;
-                continue;
-            };
-
-            self.health.set_continuous_notifications_connected(true);
-            self.health
-                .set_degraded(DegradationReason::ChangeNotificationsUnavailable, false);
-            attempt = 0;
-            loop {
-                let event = tokio::select! {
-                    () = cancellation.cancelled() => return,
-                    event = stream.next() => event,
-                };
-                match event {
-                    Some(ConfigChangeEvent::Changed(change)) => {
-                        match self.apply_candidate((*change.config).clone()).await {
-                            Ok(PublicationOutcome::Published) => self.mark_current(),
-                            Ok(PublicationOutcome::Superseded) => {}
-                            Err(()) => self.mark_candidate_rejected(),
-                        }
-                    }
-                    Some(ConfigChangeEvent::CandidateRejected) => {
-                        self.mark_candidate_rejected();
-                    }
-                    Some(ConfigChangeEvent::RestartRequired { required }) => {
-                        self.health
-                            .set_degraded(DegradationReason::RestartRequired, required);
-                    }
-                    None => {
-                        log::warn!(
-                            "Datastore '{}' continuous change stream ended. The daemon reconnects.",
-                            self.datastore.label(),
-                        );
-                        self.mark_subscription_unavailable();
-                        refresh_before_subscribe = true;
-                        attempt = attempt.saturating_add(1);
-                        if !self.wait_for_retry(attempt, cancellation).await {
-                            return;
-                        }
-                        break;
+                Ok(ConfigChangeEvent::CandidateRejected) => self.mark_candidate_rejected(),
+                Ok(ConfigChangeEvent::RestartRequired { required }) => self
+                    .health
+                    .set_degraded(DegradationReason::RestartRequired, required),
+                Err(()) => {
+                    self.observation.lock().await.take();
+                    self.mark_subscription_unavailable();
+                    attempt = attempt.saturating_add(1);
+                    if !self.wait_for_retry(attempt, cancellation).await {
+                        return;
                     }
                 }
             }
@@ -398,10 +365,48 @@ impl ConfigSupervisor {
     }
 
     async fn load_and_apply(&self) -> Result<PublicationOutcome, ()> {
-        let candidate = self.datastore.load().await.map_err(|_| {
-            log::warn!("Datastore '{}' configuration load failed", self.datastore.label());
-        })?;
-        self.apply_candidate(candidate).await
+        loop {
+            match self.next_observation_event().await? {
+                ConfigChangeEvent::Changed(change) => {
+                    return self.apply_candidate((*change.config).clone()).await
+                }
+                ConfigChangeEvent::CandidateRejected => return Err(()),
+                ConfigChangeEvent::RestartRequired { required } => self
+                    .health
+                    .set_degraded(DegradationReason::RestartRequired, required),
+            }
+        }
+    }
+
+    async fn next_observation_event(&self) -> Result<ConfigChangeEvent, ()> {
+        let mut current = self.observation.lock().await;
+        if current.is_none() {
+            *current = Some(self.datastore.observe().await.map_err(|_| {
+                if self.datastore.runtime_policy().change_notifications
+                    == ChangeNotificationMode::Continuous
+                {
+                    self.mark_subscription_unavailable();
+                }
+                log::warn!("Datastore '{}' observation could not start", self.datastore.label());
+            })?);
+            if self.datastore.runtime_policy().change_notifications
+                == ChangeNotificationMode::Continuous
+            {
+                self.health.set_continuous_notifications_connected(true);
+                self.health
+                    .set_degraded(DegradationReason::ChangeNotificationsUnavailable, false);
+            }
+        }
+        let Some(observation) = current.as_mut() else {
+            return Err(());
+        };
+        if let Ok(Some(event)) = observation.next().await {
+            Ok(event)
+        } else {
+            current.take();
+            log::warn!("Datastore '{}' observation ended", self.datastore.label());
+            Err(())
+        }
     }
 
     async fn apply_candidate(&self, candidate: TacacsPlus) -> Result<PublicationOutcome, ()> {
@@ -660,6 +665,23 @@ mod tests {
 
     #[async_trait]
     impl ConfigDatastore for ScriptedDatastore {
+        async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
+            let events = if self.policy.change_notifications == ChangeNotificationMode::Continuous {
+                self.subscribe().await?
+            } else {
+                Box::pin(tokio_stream::empty()) as ConfigChangeStream
+            };
+            let config = Arc::new(self.load().await?);
+            let baseline = ConfigChangeEvent::Changed(tacacsrs_config::source::ConfigChange {
+                delta: tacacsrs_config::source::ConfigDelta::diff(None, &config),
+                config,
+            });
+            Ok(Box::new(ScriptedObservation {
+                baseline: Some(baseline),
+                events,
+            }))
+        }
+
         fn runtime_policy(&self) -> DatastoreRuntimePolicy {
             self.policy
         }
@@ -711,6 +733,78 @@ mod tests {
     #[derive(Debug)]
     struct FixedBackoff(Duration);
 
+    struct OwnedSource {
+        events: Mutex<Option<tokio::sync::mpsc::Receiver<ConfigChangeEvent>>>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+        opens: AtomicUsize,
+    }
+
+    struct OwnedObservation {
+        events: tokio::sync::mpsc::Receiver<ConfigChangeEvent>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Drop for OwnedObservation {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    #[async_trait]
+    impl ConfigObservation for OwnedObservation {
+        async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
+            Ok(self.events.recv().await)
+        }
+    }
+
+    #[async_trait]
+    impl ConfigDatastore for OwnedSource {
+        fn runtime_policy(&self) -> DatastoreRuntimePolicy {
+            DatastoreRuntimePolicy::new(
+                InitialLoadPolicy::FailFast,
+                ChangeNotificationMode::Continuous,
+            )
+        }
+
+        async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
+            self.opens.fetch_add(1, Ordering::Relaxed);
+            Ok(Box::new(OwnedObservation {
+                events: self
+                    .events
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("one observation owner"),
+                dropped: self.dropped.clone(),
+            }))
+        }
+
+        async fn load(&self) -> anyhow::Result<TacacsPlus> {
+            panic!("runtime must use observation");
+        }
+        async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream> {
+            panic!("runtime must use observation");
+        }
+        fn label(&self) -> &'static str {
+            "owned-test"
+        }
+    }
+
+    struct ScriptedObservation {
+        baseline: Option<ConfigChangeEvent>,
+        events: ConfigChangeStream,
+    }
+
+    #[async_trait]
+    impl ConfigObservation for ScriptedObservation {
+        async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
+            if let Some(baseline) = self.baseline.take() {
+                return Ok(Some(baseline));
+            }
+            Ok(self.events.next().await)
+        }
+    }
+
     impl RetryBackoff for FixedBackoff {
         fn delay(&self, _attempt: u32) -> Duration {
             self.0
@@ -731,6 +825,27 @@ mod tests {
 
     struct BlockingResolver {
         entered: tokio::sync::Notify,
+    }
+
+    struct PausingFilter {
+        paused: std::sync::atomic::AtomicBool,
+        entered: tokio::sync::Notify,
+    }
+
+    impl TacacsPlusFilter for PausingFilter {
+        fn filter(
+            &self,
+            candidate: TacacsPlus,
+        ) -> futures_util::future::BoxFuture<'_, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
+        {
+            Box::pin(async move {
+                if !self.paused.swap(true, Ordering::AcqRel) {
+                    self.entered.notify_one();
+                    std::future::pending::<()>().await;
+                }
+                NoopTacacsPlusFilter::default().filter(candidate).await
+            })
+        }
     }
 
     #[async_trait]
@@ -933,6 +1048,137 @@ mod tests {
             Arc::new(FixedBackoff(backoff)),
         );
         (supervisor, health, service)
+    }
+
+    #[tokio::test]
+    async fn dropped_initialization_reopens_observation_before_retry() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(
+                InitialLoadPolicy::FailFast,
+                ChangeNotificationMode::Continuous,
+            ),
+            [LoadStep::Config(1), LoadStep::Config(2)],
+            [],
+        ));
+        let (mut supervisor, _, service) = supervisor(datastore.clone(), Duration::ZERO);
+        let filter = Arc::new(PausingFilter {
+            paused: std::sync::atomic::AtomicBool::new(false),
+            entered: tokio::sync::Notify::new(),
+        });
+        supervisor.config_filter = filter.clone();
+        {
+            let initialize = supervisor.initialize_until(std::future::pending());
+            tokio::pin!(initialize);
+            tokio::select! {
+                result = &mut initialize => panic!("initialization must pause: {result:?}"),
+                () = filter.entered.notified() => {}
+            }
+        }
+        timeout(Duration::from_secs(1), supervisor.initialize_until(std::future::pending()))
+            .await
+            .expect("retry must not await an event from a consumed baseline")
+            .unwrap();
+        assert_eq!(datastore.subscribe_count.load(Ordering::Relaxed), 2);
+        assert_eq!(service.server_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn initialization_and_updates_share_one_observation_until_cancellation() {
+        let dummy = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (_, health, service) = supervisor(dummy, Duration::ZERO);
+        let (events, receiver) = tokio::sync::mpsc::channel(2);
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let source = Arc::new(OwnedSource {
+            events: Mutex::new(Some(receiver)),
+            dropped: dropped.clone(),
+            opens: AtomicUsize::new(0),
+        });
+        let change = |count| {
+            ConfigChangeEvent::Changed(tacacsrs_config::source::ConfigChange {
+                config: Arc::new(test_config(count)),
+                delta: tacacsrs_config::source::ConfigDelta::default(),
+            })
+        };
+        events.send(change(1)).await.unwrap();
+        let mut supervisor = ConfigSupervisor::new(
+            source.clone(),
+            service.clone(),
+            health,
+            Arc::new(NoopTacacsPlusFilter::default()),
+        );
+        supervisor
+            .initialize_until(std::future::pending())
+            .await
+            .unwrap();
+        events.send(change(2)).await.unwrap();
+        let cancellation = CancellationToken::new();
+        let stop = cancellation.clone();
+        let task = tokio::spawn(async move { supervisor.run_until(stop.cancelled()).await });
+        timeout(Duration::from_secs(1), async {
+            while service.server_count() != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        cancellation.cancel();
+        task.await.unwrap().unwrap();
+        assert_eq!(source.opens.load(Ordering::Relaxed), 1);
+        assert!(dropped.load(Ordering::Acquire));
+        assert!(events.is_closed());
+    }
+
+    #[tokio::test]
+    async fn file_change_between_initialization_and_serving_is_reconciled() {
+        use tacacsrs_config::input::{CliConfigSource, CliDatastoreInput, CliFileDatastore};
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("agent-observation-{unique}.json"));
+        let document = |servers| {
+            format!(r#"{{"ietf-system-tacacs-plus:tacacs-plus":{{"server":{servers}}}}}"#)
+        };
+        tokio::fs::write(&path, document(r#"[{"name":"primary","server-type":"accounting","address":"192.0.2.10","port":49,"shared-secret":"test-secret"}]"#)).await.unwrap();
+        let dummy = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (_, health, service) = supervisor(dummy, Duration::ZERO);
+        let source = Arc::new(CliFileDatastore::new(
+            CliDatastoreInput::new(CliConfigSource::YangFile { path: path.clone() }, "file")
+                .with_debounce(Duration::ZERO),
+        ));
+        let mut supervisor = ConfigSupervisor::new(
+            source,
+            service.clone(),
+            health,
+            Arc::new(NoopTacacsPlusFilter::default()),
+        );
+        supervisor
+            .initialize_until(std::future::pending())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, document(r#"[{"name":"primary","server-type":"accounting","address":"192.0.2.10","port":49,"shared-secret":"test-secret"},{"name":"secondary","server-type":"accounting","address":"192.0.2.11","port":49,"shared-secret":"test-secret"}]"#)).await.unwrap();
+        let cancellation = CancellationToken::new();
+        let stop = cancellation.clone();
+        let task = tokio::spawn(async move { supervisor.run_until(stop.cancelled()).await });
+        timeout(Duration::from_secs(2), async {
+            while service.server_count() != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("file invalidation must survive initialization");
+        cancellation.cancel();
+        task.await.unwrap().unwrap();
+        tokio::fs::remove_file(path).await.unwrap();
     }
 
     #[tokio::test]
@@ -1400,7 +1646,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ended_stream_refreshes_snapshot_before_resubscribing() {
+    async fn ended_observation_reopens_before_reading_recovery_baseline() {
         let datastore = Arc::new(ScriptedDatastore::new(
             DatastoreRuntimePolicy::new(
                 InitialLoadPolicy::RetryUntilAvailable,
@@ -1507,7 +1753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscription_setup_failure_refreshes_before_retry() {
+    async fn observation_setup_failure_never_loads_an_unobserved_snapshot() {
         let datastore = Arc::new(ScriptedDatastore::new(
             DatastoreRuntimePolicy::new(
                 InitialLoadPolicy::RetryUntilAvailable,
@@ -1533,11 +1779,12 @@ mod tests {
             .expect("task must join")
             .expect("supervisor must stop");
 
-        assert_eq!(service.server_count(), 2);
+        assert_eq!(service.server_count(), 1);
+        assert_eq!(datastore.load_count.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
-    async fn failed_refresh_after_stream_end_retries_load_before_resubscribing() {
+    async fn failed_recovery_baseline_reopens_observation_before_retry() {
         let datastore = Arc::new(ScriptedDatastore::new(
             DatastoreRuntimePolicy::new(
                 InitialLoadPolicy::RetryUntilAvailable,
@@ -1552,7 +1799,7 @@ mod tests {
 
         let task = tokio::spawn(async move { supervisor.run(&child).await });
         timeout(Duration::from_secs(1), async {
-            while datastore.subscribe_count.load(Ordering::Relaxed) < 2 {
+            while service.server_count() < 2 {
                 tokio::task::yield_now().await;
             }
         })
@@ -1564,7 +1811,7 @@ mod tests {
             .expect("supervisor must stop");
 
         assert_eq!(datastore.load_count.load(Ordering::Relaxed), 3);
-        assert_eq!(datastore.subscribe_count.load(Ordering::Relaxed), 2);
+        assert_eq!(datastore.subscribe_count.load(Ordering::Relaxed), 3);
         assert_eq!(service.server_count(), 2);
         assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
     }
