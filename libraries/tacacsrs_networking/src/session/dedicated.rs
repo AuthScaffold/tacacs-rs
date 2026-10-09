@@ -93,8 +93,9 @@ impl SingleConnectPromotion {
             SINGLE_CONNECT_RESPONSE_SUPPORTED => {
                 if self.record_server_result(true).await {
                     let mut slot = self.shared_connection.slot.write().await;
-                    if self.cache_generation
-                        == self.shared_connection.generation.load(Ordering::Acquire)
+                    if !self.shared_connection.closed.load(Ordering::Acquire)
+                        && self.cache_generation
+                            == self.shared_connection.generation.load(Ordering::Acquire)
                     {
                         *slot = Some(connection.upgrade());
                     }

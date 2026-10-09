@@ -25,6 +25,10 @@ impl DriverTask {
         self.abort.is_finished()
     }
 
+    pub(crate) fn abort(&self) {
+        self.abort.abort();
+    }
+
     pub(crate) async fn join_until(&self, deadline: RequestDeadline) -> anyhow::Result<()> {
         let mut slot = if let Ok(slot) = deadline.run(self.handle.lock()).await {
             slot
