@@ -1,24 +1,26 @@
 //! Cancellable datastore loading and change-subscription supervision.
 //!
-//! The supervisor owns dependency recovery while the reusable agent runtime
-//! owns the applied server set:
+//! The agent owns dependency recovery, credential materialization, and the applied
+//! server set. The host supplies a source, configuration filter, and stop future:
 //!
 //! ```text
-//! load candidate -> daemon filter -> atomic service reload -> health current
+//! load candidate -> host filter -> atomic service reload -> health current
 //!       |                                      |
 //!       +-- failure -> retain known good ------+-> health stale/unavailable
 //! ```
 //!
 //! Datastore policy determines whether initial failure is fatal and whether a
 //! change stream must be continuously restored. Stream restoration always
-//! performs a fresh load before resubscribing so changes missed during an
-//! outage cannot be silently skipped.
+//! performs a fresh load before resubscription. Source-owned observation and
+//! coordinated generation/health publication remain separate migration steps.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use tacacsrs_agent::{DatastoreState, DegradationReason, RuntimeHealthPublisher, TacacsClientService};
+use tokio_util::sync::CancellationToken;
+
 use tacacsrs_config::TacacsPlus;
 use tacacsrs_credential_resolution::{
     CredentialChangeEvent, CredentialChangeScope, CredentialChangeSource, CredentialResolver,
@@ -26,10 +28,10 @@ use tacacsrs_credential_resolution::{
 use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChangeEvent, ConfigDatastore, InitialLoadPolicy,
 };
-use tokio_util::sync::CancellationToken;
 
-use crate::config_filter::TacacsPlusFilter;
-use crate::materialization_coordinator::{MaterializationCoordinator, PublicationOutcome};
+use crate::{DatastoreState, DegradationReason, RuntimeHealthPublisher, TacacsClientService};
+use crate::runtime::config_filter::TacacsPlusFilter;
+use crate::runtime::materialization_coordinator::{MaterializationCoordinator, PublicationOutcome};
 
 /// Supplies retry delays without owning asynchronous sleeping.
 pub(crate) trait RetryBackoff: Send + Sync {
@@ -72,7 +74,7 @@ impl RetryBackoff for ExponentialBackoff {
 }
 
 /// Applies and continuously refreshes one runtime datastore.
-pub(crate) struct ConfigSupervisor {
+pub struct ConfigSupervisor {
     datastore: Arc<dyn ConfigDatastore>,
     service: Arc<TacacsClientService>,
     health: RuntimeHealthPublisher,
@@ -80,12 +82,13 @@ pub(crate) struct ConfigSupervisor {
     backoff: Arc<dyn RetryBackoff>,
     materialization_coordinator: Option<Arc<MaterializationCoordinator>>,
     credential_change_source: Option<Arc<dyn CredentialChangeSource>>,
+    initialized: bool,
 }
 
 impl ConfigSupervisor {
     /// Creates a supervisor with production retry timing.
     #[must_use]
-    pub(crate) fn new(
+    pub fn new(
         datastore: Arc<dyn ConfigDatastore>,
         service: Arc<TacacsClientService>,
         health: RuntimeHealthPublisher,
@@ -100,44 +103,81 @@ impl ConfigSupervisor {
         )
     }
 
-    /// Creates a supervisor that resolves all central credentials before apply.
+    /// Adds a resolver for central credentials before publication.
     #[must_use]
-    pub(crate) fn new_with_credential_resolver(
-        datastore: Arc<dyn ConfigDatastore>,
-        service: Arc<TacacsClientService>,
-        health: RuntimeHealthPublisher,
-        config_filter: Arc<dyn TacacsPlusFilter>,
+    pub fn with_credential_resolver(
+        mut self,
         credential_resolver: Arc<dyn CredentialResolver>,
     ) -> Self {
-        Self::with_backoff_and_resolver(
-            datastore,
-            service,
-            health,
-            config_filter,
-            Arc::new(ExponentialBackoff::production()),
-            Some(credential_resolver),
-        )
+        self.materialization_coordinator = Some(Arc::new(MaterializationCoordinator::new(
+            credential_resolver,
+            self.datastore.validation_options(),
+        )));
+        self.initialized = false;
+        self
     }
 
-    /// Creates a supervisor that owns separate credential resolution and change subscriptions.
+    /// Adds credential change notifications to continuous supervision.
+    ///
+    /// A credential resolver must also be configured before initialization or execution.
     #[must_use]
-    pub(crate) fn new_with_credential_provider(
-        datastore: Arc<dyn ConfigDatastore>,
-        service: Arc<TacacsClientService>,
-        health: RuntimeHealthPublisher,
-        config_filter: Arc<dyn TacacsPlusFilter>,
-        credential_resolver: Arc<dyn CredentialResolver>,
+    pub fn with_credential_changes(
+        mut self,
         credential_change_source: Arc<dyn CredentialChangeSource>,
     ) -> Self {
-        Self::with_backoff_and_provider(
-            datastore,
-            service,
-            health,
-            config_filter,
-            Arc::new(ExponentialBackoff::production()),
-            Some(credential_resolver),
-            Some(credential_change_source),
-        )
+        self.credential_change_source = Some(credential_change_source);
+        self
+    }
+
+    /// Applies initial configuration before listeners start, unless `stop` completes.
+    ///
+    /// A later [`Self::run_until`] call preserves this initialization and starts
+    /// both configuration and credential supervision.
+    ///
+    /// # Errors
+    /// Returns a sanitized error when provider configuration or fail-fast preparation fails.
+    pub async fn initialize_until(
+        &mut self,
+        stop: impl Future<Output = ()> + Send,
+    ) -> anyhow::Result<()> {
+        self.validate_provider()?;
+        if self.initialized {
+            return Ok(());
+        }
+        let cancellation = CancellationToken::new();
+        tokio::select! {
+            biased;
+            () = stop => return Ok(()),
+            result = self.load_initial(&cancellation) => result?,
+        }
+        self.initialized = true;
+        Ok(())
+    }
+
+    /// Owns configuration and credential supervision until the host stops it.
+    ///
+    /// Cancellation interrupts source loading, filtering, resolution, publication
+    /// lock acquisition, and retry waits. This method installs no signal handlers.
+    ///
+    /// # Errors
+    /// Returns an error when provider configuration or fail-fast initialization fails.
+    pub async fn run_until(self, stop: impl Future<Output = ()> + Send) -> anyhow::Result<()> {
+        self.validate_provider()?;
+        let cancellation = CancellationToken::new();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
+        tokio::select! {
+            biased;
+            () = stop => Ok(()),
+            result = self.run(&cancellation) => result,
+        }
+    }
+
+    fn validate_provider(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.credential_change_source.is_none() || self.materialization_coordinator.is_some(),
+            "Credential change notifications require a credential resolver",
+        );
+        Ok(())
     }
 
     fn with_backoff(
@@ -158,6 +198,7 @@ impl ConfigSupervisor {
         )
     }
 
+    #[cfg(test)]
     fn with_backoff_and_resolver(
         datastore: Arc<dyn ConfigDatastore>,
         service: Arc<TacacsClientService>,
@@ -197,6 +238,7 @@ impl ConfigSupervisor {
             backoff,
             materialization_coordinator,
             credential_change_source,
+            initialized: false,
         }
     }
 
@@ -206,10 +248,7 @@ impl ConfigSupervisor {
     ///
     /// Returns a sanitized error when a fail-fast datastore cannot supply a
     /// valid candidate. Cancellation is a successful shutdown outcome.
-    pub(crate) async fn load_initial(
-        &self,
-        cancellation: &CancellationToken,
-    ) -> anyhow::Result<()> {
+    async fn load_initial(&self, cancellation: &CancellationToken) -> anyhow::Result<()> {
         let policy = self.datastore.runtime_policy().initial_load;
         let mut attempt = 0u32;
 
@@ -253,8 +292,10 @@ impl ConfigSupervisor {
     /// # Errors
     ///
     /// Returns an error only when fail-fast initial loading fails.
-    pub(crate) async fn run(&self, cancellation: &CancellationToken) -> anyhow::Result<()> {
-        self.load_initial(cancellation).await?;
+    async fn run(&self, cancellation: &CancellationToken) -> anyhow::Result<()> {
+        if !self.initialized {
+            self.load_initial(cancellation).await?;
+        }
         if cancellation.is_cancelled() {
             return Ok(());
         }
@@ -266,7 +307,7 @@ impl ConfigSupervisor {
     }
 
     /// Maintains a continuous notification source after initial load.
-    pub(crate) async fn run_notifications(&self, cancellation: &CancellationToken) {
+    async fn run_notifications(&self, cancellation: &CancellationToken) {
         if self.datastore.runtime_policy().change_notifications == ChangeNotificationMode::None {
             cancellation.cancelled().await;
             return;
@@ -276,19 +317,24 @@ impl ConfigSupervisor {
         let mut refresh_before_subscribe = false;
         loop {
             if refresh_before_subscribe {
-                if let Ok(outcome) = self.load_and_apply().await {
-                    if outcome == PublicationOutcome::Published {
-                        self.mark_current();
+                let reload = tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => return,
+                    result = self.load_and_apply() => result,
+                };
+                match reload {
+                    Ok(PublicationOutcome::Published) => self.mark_current(),
+                    Ok(PublicationOutcome::Superseded) => {}
+                    Err(()) => {
+                        self.mark_source_problem();
+                        attempt = attempt.saturating_add(1);
+                        if !self.wait_for_retry(attempt, cancellation).await {
+                            return;
+                        }
+                        continue;
                     }
-                    attempt = 0;
-                } else {
-                    self.mark_source_problem();
-                    attempt = attempt.saturating_add(1);
-                    if !self.wait_for_retry(attempt, cancellation).await {
-                        return;
-                    }
-                    continue;
                 }
+                attempt = 0;
             }
 
             let subscription = tokio::select! {
@@ -320,12 +366,10 @@ impl ConfigSupervisor {
                 };
                 match event {
                     Some(ConfigChangeEvent::Changed(change)) => {
-                        if let Ok(outcome) = self.apply_candidate((*change.config).clone()).await {
-                            if outcome == PublicationOutcome::Published {
-                                self.mark_current();
-                            }
-                        } else {
-                            self.mark_candidate_rejected();
+                        match self.apply_candidate((*change.config).clone()).await {
+                            Ok(PublicationOutcome::Published) => self.mark_current(),
+                            Ok(PublicationOutcome::Superseded) => {}
+                            Err(()) => self.mark_candidate_rejected(),
                         }
                     }
                     Some(ConfigChangeEvent::CandidateRejected) => {
@@ -490,7 +534,7 @@ impl ConfigSupervisor {
     async fn materialize_and_publish(
         &self,
         coordinator: &MaterializationCoordinator,
-        attempt: crate::materialization_coordinator::MaterializationAttempt,
+        attempt: crate::runtime::materialization_coordinator::MaterializationAttempt,
     ) -> anyhow::Result<PublicationOutcome> {
         let prepared = match coordinator.materialize(attempt.clone()).await {
             Ok(prepared) => prepared,
@@ -559,7 +603,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use tacacsrs_agent::{EnabledServices, ServiceConfig};
+    use crate::{EnabledServices, ServiceConfig};
     use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
     use tacacsrs_config::{EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity};
     use tacacsrs_credential_resolution::{
@@ -571,11 +615,12 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
-    use crate::config_filter::NoopTacacsPlusFilter;
+    use crate::runtime::config_filter::NoopTacacsPlusFilter;
 
     #[derive(Debug, Clone, Copy)]
     enum LoadStep {
         Error,
+        Pending,
         Config(usize),
         CentralConfig(usize),
     }
@@ -629,6 +674,7 @@ mod tests {
                 .unwrap_or(LoadStep::Error);
             match step {
                 LoadStep::Error => anyhow::bail!("scripted load failure"),
+                LoadStep::Pending => std::future::pending().await,
                 LoadStep::Config(server_count) => Ok(test_config(server_count)),
                 LoadStep::CentralConfig(server_count) => Ok(central_test_config(server_count)),
             }
@@ -681,6 +727,21 @@ mod tests {
 
     struct CountingResolver {
         resolved_servers: Mutex<Vec<String>>,
+    }
+
+    struct BlockingResolver {
+        entered: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl CredentialResolver for BlockingResolver {
+        async fn resolve(
+            &self,
+            _request: &CredentialRequest,
+        ) -> Result<ResolvedCredential, ResolutionError> {
+            self.entered.notify_one();
+            std::future::pending().await
+        }
     }
 
     enum CredentialSubscriptionStep {
@@ -851,10 +912,10 @@ mod tests {
                     local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
                     tacacs_plus: TacacsPlus::empty(),
                     validation_options: datastore.validation_options(),
-                    runtime_policy: tacacsrs_agent::RuntimePolicy::new(
-                        tacacsrs_agent::FailoverStrategy::default(),
-                        tacacsrs_agent::FailoverStrategy::default(),
-                        tacacsrs_agent::OperationPolicies::default(),
+                    runtime_policy: crate::RuntimePolicy::new(
+                        crate::FailoverStrategy::default(),
+                        crate::FailoverStrategy::default(),
+                        crate::OperationPolicies::default(),
                         Duration::from_secs(1),
                     )
                     .expect("test runtime policy"),
@@ -872,6 +933,126 @@ mod tests {
             Arc::new(FixedBackoff(backoff)),
         );
         (supervisor, health, service)
+    }
+
+    #[tokio::test]
+    async fn initialized_supervisor_starts_credential_notifications_without_reloading_source() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [LoadStep::CentralConfig(1)],
+            [],
+        ));
+        let (supervisor, _, service) = supervisor(datastore.clone(), Duration::ZERO);
+        let resolver = Arc::new(CountingResolver {
+            resolved_servers: Mutex::new(Vec::new()),
+        });
+        let source = Arc::new(ScriptedCredentialChangeSource {
+            subscriptions: Mutex::new(VecDeque::from([CredentialSubscriptionStep::Events(vec![
+                CredentialChangeEvent::Recovered,
+            ])])),
+        });
+        let mut supervisor = supervisor
+            .with_credential_resolver(resolver.clone())
+            .with_credential_changes(source);
+        supervisor
+            .initialize_until(std::future::pending())
+            .await
+            .unwrap();
+        assert_eq!(service.server_count(), 1);
+        assert_eq!(resolver.resolved_servers.lock().unwrap().len(), 1);
+        let cancellation = CancellationToken::new();
+        let stop = cancellation.clone();
+        let task = tokio::spawn(async move { supervisor.run_until(stop.cancelled()).await });
+        timeout(Duration::from_secs(1), async {
+            while resolver.resolved_servers.lock().unwrap().len() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("credential recovery must run after fail-fast initialization");
+        cancellation.cancel();
+        task.await.unwrap().unwrap();
+        assert_eq!(datastore.load_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn host_cancellation_interrupts_resolution_and_keeps_applied_configuration() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [LoadStep::CentralConfig(2)],
+            [],
+        ));
+        let (supervisor, _, service) = supervisor(datastore, Duration::ZERO);
+        supervisor.apply_candidate(test_config(1)).await.unwrap();
+        let resolver = Arc::new(BlockingResolver {
+            entered: tokio::sync::Notify::new(),
+        });
+        let supervisor = supervisor.with_credential_resolver(resolver.clone());
+        let cancellation = CancellationToken::new();
+        let stop = cancellation.clone();
+        let task = tokio::spawn(async move { supervisor.run_until(stop.cancelled()).await });
+        timeout(Duration::from_secs(1), resolver.entered.notified())
+            .await
+            .unwrap();
+        cancellation.cancel();
+        timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(service.server_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn credential_notifications_without_a_resolver_are_rejected() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [LoadStep::Config(1)],
+            [],
+        ));
+        let (supervisor, _, _) = supervisor(datastore.clone(), Duration::ZERO);
+        let source = Arc::new(ScriptedCredentialChangeSource {
+            subscriptions: Mutex::new(VecDeque::new()),
+        });
+        let mut supervisor = supervisor.with_credential_changes(source);
+        assert!(supervisor
+            .initialize_until(std::future::pending())
+            .await
+            .is_err());
+        assert!(supervisor.run_until(std::future::pending()).await.is_err());
+        assert_eq!(datastore.load_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_recovery_reload() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(
+                InitialLoadPolicy::FailFast,
+                ChangeNotificationMode::Continuous,
+            ),
+            [LoadStep::Config(1), LoadStep::Pending],
+            [SubscriptionStep::Empty],
+        ));
+        let (supervisor, _, service) = supervisor(datastore.clone(), Duration::ZERO);
+        let cancellation = CancellationToken::new();
+        supervisor.load_initial(&cancellation).await.unwrap();
+        let stop = cancellation.clone();
+        let mut task = tokio::spawn(async move { supervisor.run_notifications(&stop).await });
+        timeout(Duration::from_secs(1), async {
+            while datastore.load_count.load(Ordering::Relaxed) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("recovery reload must start");
+        cancellation.cancel();
+        let stopped = timeout(Duration::from_millis(100), &mut task).await;
+        if stopped.is_err() {
+            task.abort();
+            let _ = task.await;
+        }
+        assert!(stopped.is_ok(), "cancellation must interrupt a blocked recovery reload");
+        assert_eq!(service.server_count(), 1);
     }
 
     #[tokio::test]
@@ -1304,10 +1485,7 @@ mod tests {
             .load_initial(&cancellation)
             .await
             .expect("initial load");
-        assert!(health.set_listener(
-            tacacsrs_agent::RuntimeService::ClientApi,
-            tacacsrs_agent::ListenerState::Bound,
-        ));
+        assert!(health.set_listener(crate::RuntimeService::ClientApi, crate::ListenerState::Bound,));
         let task = tokio::spawn(async move { supervisor.run_notifications(&child).await });
         timeout(Duration::from_secs(1), async {
             while !health

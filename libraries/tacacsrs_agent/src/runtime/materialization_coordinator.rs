@@ -3,13 +3,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use tacacsrs_agent::{PreparedProxyPolicy, TacacsClientService};
+use tokio::sync::Mutex;
+
 use tacacsrs_config::{TacacsPlus, TacacsPlusServer, ValidationOptions, enumerate_server};
 use tacacsrs_config::prepare::{MaterializationError, materialize_servers, resolution_plan};
 use tacacsrs_credential_resolution::{
     CredentialChangeScope, CredentialKind, CredentialReference, CredentialResolver,
 };
-use tokio::sync::Mutex;
+
+use crate::{PreparedProxyPolicy, TacacsClientService};
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 struct DependencyKey {
@@ -266,7 +268,7 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use tacacsrs_agent::{
+    use crate::{
         EnabledServices, PreparedProxyPolicy, RuntimeHealthPublisher, ServiceConfig,
         TacacsClientService,
     };
@@ -380,10 +382,10 @@ mod tests {
                 local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
                 tacacs_plus: TacacsPlus::empty(),
                 validation_options: ValidationOptions::default(),
-                runtime_policy: tacacsrs_agent::RuntimePolicy::new(
-                    tacacsrs_agent::FailoverStrategy::default(),
-                    tacacsrs_agent::FailoverStrategy::default(),
-                    tacacsrs_agent::OperationPolicies::default(),
+                runtime_policy: crate::RuntimePolicy::new(
+                    crate::FailoverStrategy::default(),
+                    crate::FailoverStrategy::default(),
+                    crate::OperationPolicies::default(),
                     Duration::from_secs(1),
                 )
                 .expect("test runtime policy"),

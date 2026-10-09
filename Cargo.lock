@@ -1983,16 +1983,20 @@ version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
+ "futures-util",
  "if-addrs",
  "log",
+ "rand",
  "rustix",
  "tacacsrs-agent-client",
  "tacacsrs-config",
+ "tacacsrs-credential-resolution",
  "tacacsrs-networking",
  "tacacsrs-protocol",
  "tacacsrs-secrets",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tonic",
  "tonic-health",
 ]
@@ -2071,7 +2075,6 @@ name = "tacacsrs-agentd"
 version = "0.0.0-dev"
 dependencies = [
  "anyhow",
- "async-trait",
  "clap",
  "clap_mangen",
  "console-subscriber",
@@ -2082,7 +2085,6 @@ dependencies = [
  "log",
  "openssl",
  "openssl-sys",
- "rand",
  "rustls-pki-types",
  "serde",
  "serde_json",

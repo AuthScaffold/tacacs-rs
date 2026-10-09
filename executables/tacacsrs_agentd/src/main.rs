@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
-use tacacsrs_agent::runtime::PolicySupervisor;
+use tacacsrs_agent::runtime::{ConfigSupervisor, PolicySupervisor, TacacsPlusFilter};
 use tacacsrs_agent::{
     EnabledServices, RuntimeHealthPublisher, RuntimeLifecycle, RuntimePolicy, ServiceConfig,
     TacacsClientService,
@@ -32,15 +32,12 @@ use tokio_util::sync::CancellationToken;
 
 mod cli;
 mod config_filter;
-mod config_supervisor;
 mod host_integration;
 mod local_services;
-mod materialization_coordinator;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
-use crate::config_filter::{TacacsPlusFilter, config_filter_from_local_services};
-use crate::config_supervisor::ConfigSupervisor;
+use crate::config_filter::config_filter_from_local_services;
 use crate::host_integration::HostIntegration;
 
 /// Initializes the logger based on verbosity level.
@@ -231,36 +228,27 @@ async fn run_supervised_service(
 ) -> anyhow::Result<()> {
     let (credential_resolver, credential_change_source) = credential_provider;
     let datastore_policy = datastore.runtime_policy();
-    let supervisor = match (credential_resolver, credential_change_source) {
-        (Some(resolver), Some(change_source)) => ConfigSupervisor::new_with_credential_provider(
-            Arc::clone(&datastore),
-            Arc::clone(&service),
-            health.clone(),
-            Arc::clone(&config_filter),
-            resolver,
-            change_source,
-        ),
-        (Some(resolver), None) => ConfigSupervisor::new_with_credential_resolver(
-            Arc::clone(&datastore),
-            Arc::clone(&service),
-            health.clone(),
-            Arc::clone(&config_filter),
-            resolver,
-        ),
-        (None, _) => ConfigSupervisor::new(
-            Arc::clone(&datastore),
-            Arc::clone(&service),
-            health.clone(),
-            Arc::clone(&config_filter),
-        ),
-    };
+    let mut supervisor = ConfigSupervisor::new(
+        Arc::clone(&datastore),
+        Arc::clone(&service),
+        health.clone(),
+        config_filter,
+    );
+    if let Some(resolver) = credential_resolver {
+        supervisor = supervisor.with_credential_resolver(resolver);
+    }
+    if let Some(change_source) = credential_change_source {
+        supervisor = supervisor.with_credential_changes(change_source);
+    }
     let cancellation = CancellationToken::new();
     let policy_supervisor = policy_observation.map(|observation| {
         PolicySupervisor::new(observation, Arc::clone(&service), health.clone())
     });
 
     if datastore_policy.initial_load == InitialLoadPolicy::FailFast {
-        supervisor.load_initial(&cancellation).await?;
+        supervisor
+            .initialize_until(cancellation.cancelled())
+            .await?;
     }
 
     let host_task = {
@@ -272,14 +260,7 @@ async fn run_supervised_service(
         let cancellation = cancellation.clone();
         tokio::spawn(async move {
             let config_cancellation = cancellation.clone();
-            let config_future = async move {
-                if datastore_policy.initial_load == InitialLoadPolicy::RetryUntilAvailable {
-                    supervisor.run(&config_cancellation).await
-                } else {
-                    supervisor.run_notifications(&config_cancellation).await;
-                    Ok(())
-                }
-            };
+            let config_future = supervisor.run_until(config_cancellation.cancelled());
 
             let Some(policy_supervisor) = policy_supervisor else {
                 return config_future.await;

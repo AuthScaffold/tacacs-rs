@@ -6,7 +6,10 @@
 //! controls failover.
 
 mod client_service;
+mod config_filter;
+mod config_supervisor;
 mod health;
+mod materialization_coordinator;
 mod policy_supervisor;
 mod proxy_loop_guard;
 mod request_tracker;
@@ -14,6 +17,8 @@ mod server_catalog;
 mod shutdown;
 
 pub use client_service::TacacsClientService;
+pub use config_filter::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};
+pub use config_supervisor::ConfigSupervisor;
 pub use policy_supervisor::PolicySupervisor;
 pub use health::{
     DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher,
