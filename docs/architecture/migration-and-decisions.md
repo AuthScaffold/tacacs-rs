@@ -287,7 +287,8 @@ Routing observations cannot silently override canonical policy or cause TLS-to-p
 
 **Scope:** source observation, materialization coordination, health, and process ownership.
 
-**Status:** next, not started. Stage 3's generic runtime and terminal lifecycle provide the implementation boundary for this work.
+**Status:** in progress. Commit `6a11a83` completes owned canonical policy observation and agent policy supervision.
+The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.
 2. Move generic source and policy supervision into the agent runtime.
@@ -307,7 +308,8 @@ Primary starting points:
 
 - [Configuration supervisor](../../executables/tacacsrs_agentd/src/config_supervisor.rs)
 - [Materialization coordinator](../../executables/tacacsrs_agentd/src/materialization_coordinator.rs)
-- [Policy supervisor](../../executables/tacacsrs_agentd/src/policy_supervisor.rs)
+- [Canonical policy observation](../../libraries/tacacsrs_config/src/source/policy.rs)
+- [Agent policy supervisor](../../libraries/tacacsrs_agent/src/runtime/policy_supervisor.rs)
 - [Agent shutdown](../../libraries/tacacsrs_agent/src/runtime/shutdown.rs)
 - [Health model](../../libraries/tacacsrs_agent/src/runtime/health.rs)
 

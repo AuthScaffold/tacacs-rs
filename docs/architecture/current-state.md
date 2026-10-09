@@ -184,13 +184,13 @@ Direct and IPC modes can still expose different transport metadata without dupli
 
 **Priority: P2. Confidence: confirmed ownership split.**
 
-The agent library installs process signal handlers and starts listeners.
-The daemon owns generic configuration recovery, credential materialization, and policy-file supervision.
-The agent also contains upstream routing that a non-daemon toolkit consumer can need.
+The agent library still offers process signal handling through `serve()`. Its `serve_until()` API accepts host cancellation.
+The daemon still owns generic configuration recovery and credential materialization.
+Stage 3 moved reusable endpoint routing into networking. Stage 4 now places canonical policy observation in configuration and policy supervision in the agent.
 
 - [Signal ownership](../../libraries/tacacsrs_agent/src/runtime/client_service.rs#L292)
 - [Generic daemon supervision](../../executables/tacacsrs_agentd/src/config_supervisor.rs#L77)
-- [Policy supervision](../../executables/tacacsrs_agentd/src/policy_supervisor.rs#L1)
+- [Policy supervision](../../libraries/tacacsrs_agent/src/runtime/policy_supervisor.rs#L1)
 
 **Target:** the network client owns reusable endpoint routing and replay policy.
 The application runtime owns configuration publication and coordinated lifecycle.
