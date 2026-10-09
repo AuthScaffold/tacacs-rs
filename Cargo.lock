@@ -2080,7 +2080,6 @@ dependencies = [
  "futures-util",
  "if-addrs",
  "log",
- "notify",
  "openssl",
  "openssl-sys",
  "rand",

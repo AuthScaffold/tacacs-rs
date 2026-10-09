@@ -119,8 +119,11 @@ impl TacacsClientService {
     }
 
     /// Applies a validated policy to new requests.
-    pub async fn reload_runtime_policy(&self, policy: RuntimePolicy) {
-        self.runtime.reload_runtime_policy(policy).await;
+    ///
+    /// # Errors
+    /// Returns an error if the runtime has closed.
+    pub async fn reload_runtime_policy(&self, policy: RuntimePolicy) -> anyhow::Result<()> {
+        self.runtime.reload_runtime_policy(policy).await
     }
 
     /// Applies upstream configuration with its prepared downstream policy.
@@ -345,9 +348,13 @@ where
     }
 
     /// Atomically applies a validated runtime policy to new requests.
-    pub async fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) {
+    ///
+    /// # Errors
+    /// Returns an error if the runtime has closed.
+    pub async fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) -> anyhow::Result<()> {
         let _reload_guard = self.reload_lock.lock().await;
-        self.state.reload_runtime_policy(runtime_policy);
+        anyhow::ensure!(self.state.reload_runtime_policy(runtime_policy), "Runtime is closed");
+        Ok(())
     }
 
     /// Applies TACACS+ configuration and the downstream proxy obfuscation policy.

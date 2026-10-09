@@ -237,13 +237,13 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     }
 
     /// Atomically replaces the runtime policy for new requests.
-    pub(crate) fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) {
+    pub(crate) fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) -> bool {
         let mut current = self
             .runtime
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.closed.load(std::sync::atomic::Ordering::Acquire) {
-            return;
+            return false;
         }
         current.admission.update(&runtime_policy);
         *current = Arc::new(RuntimeRoutingSnapshot {
@@ -254,6 +254,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             admission: Arc::clone(&current.admission),
             runtime_policy: Arc::new(runtime_policy),
         });
+        true
     }
 
     /// Records startup state without opening cross-operation probe sessions.

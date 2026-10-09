@@ -15,6 +15,8 @@ use tokio_stream::StreamExt;
 
 use crate::{TacacsPlus, ValidationOptions};
 
+pub mod policy;
+
 /// Description of how the configuration changed between two snapshots.
 ///
 /// Each [`ConfigChange`] contains the complete new [`TacacsPlus`] snapshot.

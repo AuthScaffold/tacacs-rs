@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
+use tacacsrs_agent::runtime::PolicySupervisor;
 use tacacsrs_agent::{
     EnabledServices, RuntimeHealthPublisher, RuntimeLifecycle, RuntimePolicy, ServiceConfig,
     TacacsClientService,
@@ -19,6 +20,9 @@ use tacacsrs_config::input::{
 };
 use tacacsrs_config::input::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
 use tacacsrs_config::source::{ConfigDatastore, InitialLoadPolicy};
+use tacacsrs_config::source::policy::{
+    FilePolicyObservation, PolicyChange, PolicyFile, PolicyObservation,
+};
 use tacacsrs_credential_resolution::{CredentialChangeSource, CredentialResolver};
 use tacacsrs_sonic::{
     SonicConfigDb, SonicConnection, SonicCredentialChangeSource, SonicCredentialPolicy,
@@ -32,16 +36,12 @@ mod config_supervisor;
 mod host_integration;
 mod local_services;
 mod materialization_coordinator;
-mod policy_file;
-mod policy_supervisor;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
 use crate::config_filter::{TacacsPlusFilter, config_filter_from_local_services};
 use crate::config_supervisor::ConfigSupervisor;
 use crate::host_integration::HostIntegration;
-use crate::policy_file::PolicyFile;
-use crate::policy_supervisor::PolicySupervisor;
 
 /// Initializes the logger based on verbosity level.
 ///
@@ -227,7 +227,7 @@ async fn run_supervised_service(
     config_filter: Arc<dyn TacacsPlusFilter>,
     credential_provider: CredentialProvider,
     host_integration: HostIntegration,
-    policy_file: Option<PolicyFile>,
+    policy_observation: Option<FilePolicyObservation>,
 ) -> anyhow::Result<()> {
     let (credential_resolver, credential_change_source) = credential_provider;
     let datastore_policy = datastore.runtime_policy();
@@ -255,8 +255,9 @@ async fn run_supervised_service(
         ),
     };
     let cancellation = CancellationToken::new();
-    let policy_supervisor = policy_file
-        .map(|source| PolicySupervisor::new(source, Arc::clone(&service), health.clone()));
+    let policy_supervisor = policy_observation.map(|observation| {
+        PolicySupervisor::new(observation, Arc::clone(&service), health.clone())
+    });
 
     if datastore_policy.initial_load == InitialLoadPolicy::FailFast {
         supervisor.load_initial(&cancellation).await?;
@@ -286,7 +287,7 @@ async fn run_supervised_service(
             let policy_cancellation = cancellation.clone();
             tokio::select! {
                 result = config_future => result,
-                result = policy_supervisor.run(&policy_cancellation) => {
+                result = policy_supervisor.run_until(policy_cancellation.cancelled()) => {
                     if policy_cancellation.is_cancelled() {
                         result
                     } else {
@@ -408,14 +409,18 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let config_filter = config_filter_from_local_services(&local_services)?;
 
     let datastore = build_datastore(&cli, sonic_forwarder);
-    let policy_file = cli.runtime_policy.clone().map(PolicyFile::new);
-    let runtime_policy = match &policy_file {
-        Some(source) => {
-            let policy = source.load().await?;
+    let (runtime_policy, policy_observation) = match &cli.runtime_policy {
+        Some(path) => {
+            let source = PolicyFile::new(path)?;
+            let mut observation = source.observe().await?;
+            let Some(PolicyChange::Changed(policy)) = observation.next().await? else {
+                anyhow::bail!("Initial runtime policy was rejected");
+            };
+            let policy = RuntimePolicy::try_from(policy.as_ref())?;
             log::info!("Loaded runtime policy from {}", source.path().display());
-            policy
+            (policy, Some(observation))
         }
-        None => RuntimePolicy::default(),
+        None => (RuntimePolicy::default(), None),
     };
     let health = RuntimeHealthPublisher::new(enabled_services);
     let empty_tacacs_plus = tacacsrs_config::TacacsPlus::empty();
@@ -440,7 +445,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         config_filter,
         credential_provider,
         host_integration,
-        policy_file,
+        policy_observation,
     )
     .await
 }

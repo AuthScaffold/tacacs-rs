@@ -7,12 +7,14 @@
 
 mod client_service;
 mod health;
+mod policy_supervisor;
 mod proxy_loop_guard;
 mod request_tracker;
 mod server_catalog;
 mod shutdown;
 
 pub use client_service::TacacsClientService;
+pub use policy_supervisor::PolicySupervisor;
 pub use health::{
     DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher,
     RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, UpstreamAvailability,
