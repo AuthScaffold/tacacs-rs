@@ -278,6 +278,8 @@ Primary starting points:
 - [Session routes](../../libraries/tacacsrs_networking/src/session/manager.rs)
 
 **Temporary adapter:** agent connection interfaces can forward to the new client during consumer conversion.
+The [connector-boundary investigation](stage-3-routed-client.md#connector-boundary-investigation) retains the working concrete adapter after an isolated `Send` failure.
+The selected replacement direction keeps service/router implementations generic and instantiates a concrete production connector; optional erasure occurs at the outer service boundary.
 **Removal:** remove duplicate routing and retry state from the agent before the stage ends.
 **Exit gate:** a routed direct client works without the agent.
 Retirement, cancellation, backpressure, and reload tests pass.

@@ -353,6 +353,65 @@ Further tests cover parked setup cancellation, closed admission, rejected public
 The earlier single-poll tests now use request-entry notifications because routed setup runs in owned tasks.
 No new standalone work item was needed. S3-06 retains the planned final integration review and gates.
 
+## Connector Boundary Investigation
+
+On 2026-10-09, the proposed generic dynamic-connector consolidation failed the Rust `Send` checks in agent service futures.
+The experiment was restored to commit `7d616eb` before further investigation. The concrete `ServiceConnector` boundary remains unchanged and working.
+All 118 agent library tests and 12 routed-client tests passed after restoration.
+This investigation does not complete S3-06 or introduce a new production connector API.
+
+The isolated [cross-crate tests](../../libraries/tacacsrs_networking/tests/connector_boundary.rs) compare four connector shapes:
+
+| Factory | Connection | Generic service implementation |
+| --- | --- | --- |
+| Concrete | Concrete | Pass |
+| Concrete | Erased | Pass |
+| Generic wrapper around a dynamic factory | Concrete | Pass |
+| Generic wrapper around a dynamic factory | Erased | Pass |
+
+These tests check `Send` for lookup, bind, replacement, and shutdown futures.
+They also run binding and close/join through a generic service implementation erased as an outer service trait object.
+The generic networking core does not inherently reject dynamic connectors or erased connections.
+
+The failure occurs when a nongeneric service implementation specializes its field to the generic wrapper with an erased associated connection type.
+Boxing that service's async future produces a higher-ranked lifetime/`Send` proof error when it awaits the generic engine's lookup.
+The direct lookup future still passes a `Send` assertion. Changing the service implementation to remain generic makes the boxed future compile.
+Explicit `Send + Sync` and object-lifetime bounds alone did not fix the original experiment.
+
+The [standalone fixture](../../libraries/tacacsrs_networking/tests/fixtures/connector_send.rs) reproduces the failure with only standard-library types.
+It needs no `async-trait`, Tokio, networking implementation, or agent code.
+It contains a generic engine, stored associated connection data, an erased connection type, and an explicitly boxed `Send` future.
+This isolates a Rust higher-ranked lifetime/proof limitation in the proposed shape rather than a runtime networking failure or an `async-trait`-specific problem.
+It is not a general prohibition on type erasure, and no upstream compiler issue number is assigned here.
+
+| Installed compiler | Specialized erased adapter | Generic adapter |
+| --- | --- | --- |
+| Rust 1.88.0, workspace MSRV | Expected compile failure: `Send` is not general enough | Pass |
+| Rust 1.98.1 stable | Same compile failure | Pass |
+| Rust 1.100.0-nightly, 2026-09-24 | Higher-ranked lifetime coercion failure | Pass |
+
+The fixture is outside Cargo's automatic integration-test targets because its default variant intentionally does not compile.
+Its failure is diagnostic evidence, not a permanent requirement that future compilers reject it.
+Run its two variants from the workspace root:
+
+```bash
+# Expected to fail on the recorded compilers.
+rustc --edition=2021 libraries/tacacsrs_networking/tests/fixtures/connector_send.rs --emit=metadata -o /tmp/connector-specialized.rmeta
+
+# Expected to compile, including on the MSRV.
+rustc --edition=2021 --cfg generic_adapter libraries/tacacsrs_networking/tests/fixtures/connector_send.rs --emit=metadata -o /tmp/connector-generic.rmeta
+
+cargo test -p tacacsrs-networking --test connector_boundary --locked
+```
+
+The selected direction is a generic networking core and generic service/router implementations with a concrete production connector and concrete production connection type.
+Test connectors instantiate those same generic implementations. Optional type erasure belongs at the outer service boundary, after the generic implementation establishes `Send`.
+The passing matrix also permits dynamic test factories through that generic adapter; it does not require them in production.
+The next implementation increment must propagate the connector parameter through the agent's request and service owners before removing their concrete adapter.
+Do not replace the working adapter with the failed specialized dynamic shape or raise the MSRV as a workaround.
+
+The investigation changed tests and documentation only. Production code, dependencies, toolchain settings, and runtime behavior remain at the restored boundary.
+
 ## Verification
 
 ### S3-01
