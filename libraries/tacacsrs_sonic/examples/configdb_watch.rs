@@ -5,7 +5,6 @@ use clap::Parser;
 use tacacsrs_config::TacacsPlus;
 use tacacsrs_config::source::ConfigDatastore;
 use tacacsrs_sonic::{SonicConfigDb, SonicConnection};
-use tokio_stream::StreamExt;
 
 const LOCAL_REDIS_URL: &str = "redis://127.0.0.1:6379";
 const DEFAULT_CONFIG_DB: i64 = 4;
@@ -44,28 +43,28 @@ async fn main() -> anyhow::Result<()> {
     let datastore = SonicConfigDb::new(settings);
 
     println!("datastore: {}", datastore.label());
-    println!("redis_url: {}", datastore.settings().url);
+    println!("redis_connection: configured");
     println!("redis_db: {}", datastore.settings().db_index);
     println!("debounce_ms: {}", datastore.settings().debounce.as_millis());
 
-    let initial = datastore
-        .load()
+    let mut changes = datastore
+        .observe()
         .await
-        .context("load initial TACACS+ snapshot from SONiC ConfigDB")?;
-    print_snapshot("initial", &initial);
+        .context("observe TACACS+ configuration in SONiC ConfigDB")?;
+    let Some(tacacsrs_config::source::ConfigChangeEvent::Changed(initial)) = changes.next().await?
+    else {
+        anyhow::bail!("SONiC ConfigDB initial snapshot was rejected");
+    };
+    print_snapshot("initial", &initial.config);
+    changes.next().await?;
 
     if cli.max_events == Some(0) {
         return Ok(());
     }
 
     println!("watching for TACPLUS keyspace notifications");
-    let mut changes = datastore
-        .subscribe()
-        .await
-        .context("subscribe to SONiC ConfigDB change notifications")?;
-
     let mut observed = 0usize;
-    while let Some(event) = changes.next().await {
+    while let Some(event) = changes.next().await? {
         observed += 1;
         println!("change_event: {observed}");
         match event {

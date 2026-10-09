@@ -10,7 +10,6 @@ repository.workspace = true
 anyhow = "1"
 async-trait = "0.1"
 futures-core = "0.3"
-futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 log = "0.4.30"
 notify = "8.2.0"
 rustls-pki-types = "1.14.1"
@@ -27,6 +26,7 @@ tacacsrs-networking = { path = "../tacacsrs_networking" }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 
 [dev-dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread", "fs"] }
 openssl = "0.10.80"
 tokio-openssl = "0.6.5"

@@ -667,7 +667,7 @@ mod tests {
     impl ConfigDatastore for ScriptedDatastore {
         async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
             let events = if self.policy.change_notifications == ChangeNotificationMode::Continuous {
-                self.subscribe().await?
+                self.open_events()?
             } else {
                 Box::pin(tokio_stream::empty()) as ConfigChangeStream
             };
@@ -702,7 +702,13 @@ mod tests {
             }
         }
 
-        async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream> {
+        fn label(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    impl ScriptedDatastore {
+        fn open_events(&self) -> anyhow::Result<ConfigChangeStream> {
             self.subscribe_count.fetch_add(1, Ordering::Relaxed);
             let step = self
                 .subscriptions
@@ -723,10 +729,6 @@ mod tests {
                         .chain(tokio_stream::pending()),
                 )),
             }
-        }
-
-        fn label(&self) -> &'static str {
-            "scripted"
         }
     }
 
@@ -780,9 +782,6 @@ mod tests {
         }
 
         async fn load(&self) -> anyhow::Result<TacacsPlus> {
-            panic!("runtime must use observation");
-        }
-        async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream> {
             panic!("runtime must use observation");
         }
         fn label(&self) -> &'static str {

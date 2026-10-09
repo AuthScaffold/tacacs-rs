@@ -127,7 +127,7 @@ pub enum ConfigChangeEvent {
     },
 }
 
-/// Stream of [`ConfigChangeEvent`] values returned by [`ConfigDatastore::subscribe`].
+/// Stream of canonical configuration change events for stream-based adapters.
 pub type ConfigChangeStream = Pin<Box<dyn Stream<Item = ConfigChangeEvent> + Send + 'static>>;
 
 /// Owns a canonical configuration baseline and subsequent source changes.
@@ -143,14 +143,17 @@ pub trait ConfigObservation: Send {
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>>;
 }
 
-struct StreamObservation {
-    stream: ConfigChangeStream,
-}
+struct StaticObservation(Option<Arc<TacacsPlus>>);
 
 #[async_trait]
-impl ConfigObservation for StreamObservation {
+impl ConfigObservation for StaticObservation {
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
-        Ok(self.stream.next().await)
+        Ok(self.0.take().map(|config| {
+            ConfigChangeEvent::Changed(ConfigChange {
+                delta: ConfigDelta::diff(None, &config),
+                config,
+            })
+        }))
     }
 }
 
@@ -200,33 +203,17 @@ impl DatastoreRuntimePolicy {
 ///
 /// The runtime uses [`ConfigDatastore::observe`] for both the baseline and later
 /// changes. Backends translate vendor formats into canonical [`TacacsPlus`]
-/// snapshots. One-shot loading and legacy subscription remain available while
-/// backend observation ownership is migrated.
+/// snapshots. One-shot loading is available independently of runtime observation.
 #[async_trait]
 pub trait ConfigDatastore: Send + Sync + 'static {
     /// Opens observation before supplying its canonical baseline.
     ///
-    /// The transitional default uses `load()` for immutable sources and
-    /// `subscribe()` for continuous sources. Continuous implementations must emit
-    /// a post-subscription baseline. This adapter does not own backend worker
-    /// tasks. Native overrides must own their observation resources.
+    /// Implementations must own their observation resources and supply a
+    /// post-subscription baseline. Dropping the returned session stops observation.
     ///
     /// # Errors
     /// Returns an error if observation cannot start or an immutable source cannot load.
-    async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
-        let stream = match self.runtime_policy().change_notifications {
-            ChangeNotificationMode::None => {
-                let config = Arc::new(self.load().await?);
-                let delta = ConfigDelta::diff(None, &config);
-                Box::pin(tokio_stream::once(ConfigChangeEvent::Changed(ConfigChange {
-                    config,
-                    delta,
-                }))) as ConfigChangeStream
-            }
-            ChangeNotificationMode::Continuous => self.subscribe().await?,
-        };
-        Ok(Box::new(StreamObservation { stream }))
-    }
+    async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>>;
 
     /// Declares how the runtime must supervise this datastore.
     ///
@@ -254,22 +241,6 @@ pub trait ConfigDatastore: Send + Sync + 'static {
     /// retrieved configuration fails validation.
     async fn load(&self) -> anyhow::Result<TacacsPlus>;
 
-    /// Subscribe to configuration change events.
-    ///
-    /// The stream emits a [`ConfigChangeEvent`] after each relevant datastore
-    /// change. Each [`ConfigChangeEvent::Changed`] event contains the latest
-    /// complete snapshot. Callers can use its delta for an incremental update.
-    /// If the delta is not sufficient, callers must rebuild from the snapshot.
-    /// Backends without notifications return an empty stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the subscription cannot be established (for
-    /// example, the backing store is unreachable). Implementations that do
-    /// not support change notifications return an empty stream rather than
-    /// failing.
-    async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream>;
-
     /// Returns a human-readable label for the datastore implementation.
     ///
     /// Operator logs use this label to identify the datastore, for example
@@ -280,7 +251,7 @@ pub trait ConfigDatastore: Send + Sync + 'static {
 /// In-memory [`ConfigDatastore`] for CLI/file/test workflows.
 ///
 /// `StaticDatastore` holds one `TacacsPlus` snapshot for the process lifetime.
-/// [`subscribe`](ConfigDatastore::subscribe) returns an empty stream.
+/// Observation yields that snapshot once, then ends without a worker task.
 #[derive(Debug, Clone)]
 pub struct StaticDatastore {
     config: Arc<TacacsPlus>,
@@ -308,16 +279,16 @@ impl StaticDatastore {
 
 #[async_trait]
 impl ConfigDatastore for StaticDatastore {
+    async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
+        Ok(Box::new(StaticObservation(Some(self.config.clone()))))
+    }
+
     fn runtime_policy(&self) -> DatastoreRuntimePolicy {
         DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None)
     }
 
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         Ok((*self.config).clone())
-    }
-
-    async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream> {
-        Ok(Box::pin(tokio_stream::empty()))
     }
 
     fn label(&self) -> &'static str {
@@ -377,8 +348,6 @@ mod tests {
             DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None,)
         );
 
-        let mut stream = store.subscribe().await.expect("subscription must succeed");
-        assert!(stream.next().await.is_none(), "static stream must be empty");
         let mut observation = store.observe().await.unwrap();
         let Some(ConfigChangeEvent::Changed(baseline)) = observation.next().await.unwrap() else {
             panic!("static observation must yield its canonical baseline");

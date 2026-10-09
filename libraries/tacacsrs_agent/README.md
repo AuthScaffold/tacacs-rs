@@ -110,7 +110,8 @@ Cancellation drops pending load, filter, resolution, and publication futures. It
 The runtime uses `ConfigDatastore::observe()` for both initial configuration and later changes.
 Successful initialization retains the same session. Interrupted initialization starts a fresh session before retry or serving.
 File observations own their watcher and coalesce invalidations without a detached reload worker.
-The transitional adapter for legacy backends does not guarantee worker cleanup. SONiC ownership and coordinated generation/health publication remain Stage 4 work.
+All retained configuration sources implement owned observation. The transitional adapter and datastore subscription method are removed.
+Coordinated generation and health publication remain Stage 4 work.
 
 `ServiceConfig::validation_options` carries the schema policy selected by the configuration source.
 Construction and both reload APIs apply the shared configuration checks with that policy.

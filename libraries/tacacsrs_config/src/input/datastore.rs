@@ -12,8 +12,8 @@ use tokio::time::Instant;
 
 use crate::TacacsPlus;
 use crate::source::{
-    ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigChangeStream, ConfigDatastore,
-    ConfigDelta, ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy,
+    ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
+    ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy,
 };
 use super::builder::tacacs_plus_from_cli_input;
 use super::model::CliDatastoreInput;
@@ -125,23 +125,6 @@ impl ConfigDatastore for CliFileDatastore {
 
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         tacacs_plus_from_cli_input(&self.input)
-    }
-
-    async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream> {
-        if self.input.watched_paths().is_empty() {
-            return Ok(Box::pin(tokio_stream::empty()));
-        }
-        let observation = self.observe().await?;
-        Ok(Box::pin(futures_util::stream::unfold(observation, |mut observation| async {
-            match observation.next().await {
-                Ok(Some(event)) => Some((event, observation)),
-                Ok(None) => None,
-                Err(_) => {
-                    log::warn!("Configuration observation failed. Closing the subscription");
-                    None
-                }
-            }
-        })))
     }
 
     fn label(&self) -> &'static str {
@@ -260,7 +243,6 @@ mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use futures_core::Stream;
     use tokio::time::{timeout, Duration};
 
     use crate::source::ConfigDatastore;
@@ -329,13 +311,11 @@ mod tests {
         )
     }
 
-    async fn next_change<S>(stream: &mut S) -> crate::source::ConfigChange
-    where
-        S: Stream<Item = crate::source::ConfigChangeEvent> + Unpin,
-    {
-        let event = timeout(Duration::from_secs(5), futures_util::StreamExt::next(stream))
+    async fn next_change(stream: &mut Box<dyn ConfigObservation>) -> crate::source::ConfigChange {
+        let event = timeout(Duration::from_secs(5), stream.next())
             .await
             .expect("change must arrive")
+            .expect("observation must succeed")
             .expect("stream must yield a change");
         let crate::source::ConfigChangeEvent::Changed(change) = event else {
             panic!("expected changed event");
@@ -345,7 +325,6 @@ mod tests {
 
     #[tokio::test]
     async fn normalized_input_uses_shared_source_and_preparation_contract() {
-        use futures_util::StreamExt;
         use tacacsrs_networking::TacacsClient;
 
         use crate::input::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
@@ -409,7 +388,9 @@ mod tests {
                 assert_eq!(endpoint.connection_timeout(), Some(Duration::from_secs(9)));
                 TacacsClient::connect_prepared(endpoint).await.unwrap();
                 assert_eq!(loaded, snapshot);
-                assert!(source.subscribe().await.unwrap().next().await.is_none());
+                let mut observation = source.observe().await.unwrap();
+                next_change(&mut observation).await;
+                assert!(observation.next().await.unwrap().is_none());
             }
         }
     }
@@ -424,7 +405,7 @@ mod tests {
         assert_eq!(datastore.load().await.unwrap().server[0].address, "192.0.2.10");
         fs::write(&path, config("192.0.2.11")).unwrap();
 
-        let mut stream = datastore.subscribe().await.unwrap();
+        let mut stream = datastore.observe().await.unwrap();
         let change = next_change(&mut stream).await;
         assert_eq!(change.config.server[0].address, "192.0.2.11");
         fs::remove_file(path).unwrap();
@@ -588,7 +569,7 @@ mod tests {
                 .with_debounce(Duration::from_millis(50));
         let datastore = CliFileDatastore::new(input);
         let mut stream = datastore
-            .subscribe()
+            .observe()
             .await
             .expect("subscription must succeed");
         assert_eq!(next_change(&mut stream).await.config.server[0].address, "192.0.2.10");
@@ -609,16 +590,17 @@ mod tests {
                 .with_debounce(Duration::from_millis(50));
         let datastore = CliFileDatastore::new(input);
         let mut stream = datastore
-            .subscribe()
+            .observe()
             .await
             .expect("subscription must succeed");
         next_change(&mut stream).await;
 
         fs::write(&path, "not valid JSON").expect("configuration file must update");
 
-        let event = timeout(Duration::from_secs(5), futures_util::StreamExt::next(&mut stream))
+        let event = timeout(Duration::from_secs(5), stream.next())
             .await
             .expect("rejection must arrive")
+            .expect("observation must succeed")
             .expect("stream must yield a rejection");
         fs::remove_file(path).ok();
 
@@ -673,7 +655,7 @@ mod tests {
         .with_debounce(Duration::from_millis(50));
         let datastore = CliFileDatastore::new(input);
         let mut stream = datastore
-            .subscribe()
+            .observe()
             .await
             .expect("subscription must succeed");
         next_change(&mut stream).await;
