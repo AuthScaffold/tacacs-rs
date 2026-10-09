@@ -113,6 +113,7 @@ pub enum DegradationReason {
 /// Immutable, secret-free view of agent runtime health.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RuntimeHealthSnapshot {
+    runtime_generation: Option<RuntimeGeneration>,
     lifecycle: RuntimeLifecycle,
     applied_configuration: bool,
     datastore: DatastoreState,
@@ -126,6 +127,12 @@ pub struct RuntimeHealthSnapshot {
 }
 
 impl RuntimeHealthSnapshot {
+    /// Returns the runtime generation associated with this health snapshot.
+    #[must_use]
+    pub const fn runtime_generation(&self) -> Option<RuntimeGeneration> {
+        self.runtime_generation
+    }
+
     /// Returns the process lifecycle state.
     #[must_use]
     pub const fn lifecycle(&self) -> RuntimeLifecycle {
@@ -238,6 +245,7 @@ impl RuntimeHealthPublisher {
         let client_api_listener = initial_listener_state(enabled_services.client_api());
         let tacacs_proxy_listener = initial_listener_state(enabled_services.tacacs_proxy());
         let initial = RuntimeHealthSnapshot {
+            runtime_generation: None,
             lifecycle: RuntimeLifecycle::Starting,
             applied_configuration: false,
             datastore: DatastoreState::Loading,
@@ -311,7 +319,44 @@ impl RuntimeHealthPublisher {
 
     /// Publishes aggregate observed server availability.
     pub fn set_upstream_availability(&self, availability: UpstreamAvailability) {
-        self.update(|snapshot| snapshot.upstream_availability = availability);
+        self.update(|snapshot| {
+            snapshot.upstream_availability = availability;
+            if availability == UpstreamAvailability::Unavailable {
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::UpstreamsUnavailable);
+            } else {
+                snapshot
+                    .degradation_reasons
+                    .remove(&DegradationReason::UpstreamsUnavailable);
+            }
+        });
+    }
+
+    /// Commits runtime replacement and its health metadata in one watch transition.
+    /// The caller holds the runtime and availability locks before entering this method.
+    pub(crate) fn publish_runtime(
+        &self,
+        generation: RuntimeGeneration,
+        server_count: usize,
+        configuration_applied: Option<bool>,
+        reset_availability: bool,
+        publish: impl FnOnce(),
+    ) {
+        self.update(|snapshot| {
+            publish();
+            snapshot.runtime_generation = Some(generation);
+            snapshot.eligible_server_count = server_count;
+            if let Some(applied) = configuration_applied {
+                snapshot.applied_configuration = applied;
+            }
+            if reset_availability {
+                snapshot.upstream_availability = UpstreamAvailability::Unknown;
+                snapshot
+                    .degradation_reasons
+                    .remove(&DegradationReason::UpstreamsUnavailable);
+            }
+        });
     }
 
     /// Adds or removes a typed degradation reason.
@@ -354,6 +399,22 @@ fn initial_listener_state(enabled: bool) -> ListenerState {
         ListenerState::Pending
     } else {
         ListenerState::Disabled
+    }
+}
+
+/// Identity of one published routing and policy snapshot within a runtime.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct RuntimeGeneration(u64);
+
+impl RuntimeGeneration {
+    pub(crate) const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the diagnostic identifier. Values are scoped to one runtime instance.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
     }
 }
 

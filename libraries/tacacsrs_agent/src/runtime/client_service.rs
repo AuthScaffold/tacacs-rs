@@ -30,8 +30,8 @@ use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 use super::{
-    RequestTracker, RuntimeHealthPublisher, ShutdownCoordinator, UpstreamAvailability,
-    enumerate_supported_servers, ProxyLoopGuard,
+    RequestTracker, RuntimeHealthPublisher, ShutdownCoordinator, enumerate_supported_servers,
+    ProxyLoopGuard,
 };
 use crate::config::{PreparedProxyPolicy, RuntimePolicy, ServiceConfig};
 use crate::services::client_api::ClientApiService;
@@ -295,7 +295,6 @@ where
             anyhow::bail!("Runtime health and service configuration must enable the same services");
         }
         let servers = enumerate_supported_servers(&config.tacacs_plus, &config.validation_options)?;
-        let eligible_server_count = servers.len();
 
         let connector = factory(proxy_loop_guard.clone());
         let proxy_policy = if !configuration_applied
@@ -316,8 +315,7 @@ where
                 .with_certificate_verification_disabled(config.disable_certificate_verification),
         )?);
         let request_tracker = Arc::new(RequestTracker::default());
-        health.set_eligible_server_count(eligible_server_count);
-        health.set_applied_configuration(configuration_applied);
+        state.publish_initial_health(configuration_applied);
 
         Ok(Self {
             config,
@@ -380,17 +378,12 @@ where
     ) -> anyhow::Result<()> {
         proxy_downstream_obfuscation.shared_secret()?;
         let servers = enumerate_supported_servers(&tacacs_plus, &self.config.validation_options)?;
-        let eligible_server_count = servers.len();
         self.state
             .reload_shared_servers_with_proxy_downstream_obfuscation(
                 servers.into_iter().map(Arc::new).collect(),
                 proxy_downstream_obfuscation,
             )
             .await?;
-        self.health.set_eligible_server_count(eligible_server_count);
-        self.health.set_applied_configuration(true);
-        self.health
-            .set_upstream_availability(UpstreamAvailability::Unknown);
         Ok(())
     }
 
@@ -415,17 +408,12 @@ where
             &self.config.validation_options,
         )?;
         let _reload_guard = self.reload_lock.lock().await;
-        let eligible_server_count = servers.len();
         self.state
             .reload_shared_servers_with_proxy_downstream_obfuscation(
                 servers,
                 proxy_downstream_obfuscation,
             )
             .await?;
-        self.health.set_eligible_server_count(eligible_server_count);
-        self.health.set_applied_configuration(true);
-        self.health
-            .set_upstream_availability(UpstreamAvailability::Unknown);
         Ok(())
     }
 
@@ -672,6 +660,73 @@ mod tests {
         config.local_services.tacacs_proxy_endpoint =
             Some(config.local_services.client_api_endpoint.clone());
         assert!(test_service(config).is_err());
+    }
+
+    #[tokio::test]
+    async fn runtime_health_generation_tracks_catalog_and_policy_publication() {
+        use crate::runtime::RuntimeGeneration;
+
+        let config =
+            service_config(test_endpoint("publication-health"), vec![test_server("primary:49")]);
+        let mut source = config.tacacs_plus.clone();
+        let service = test_service(config).unwrap();
+        assert_eq!(service.health.snapshot().runtime_generation(), Some(RuntimeGeneration::new(0)));
+        service
+            .health
+            .set_upstream_availability(crate::UpstreamAvailability::Available);
+        service
+            .reload_runtime_policy(RuntimePolicy::default())
+            .await
+            .unwrap();
+        let policy = service.health.snapshot();
+        assert_eq!(policy.runtime_generation(), Some(RuntimeGeneration::new(1)));
+        assert_eq!(policy.upstream_availability(), crate::UpstreamAvailability::Available);
+        assert!(policy.has_applied_configuration());
+        source.server.push(test_server("secondary:49"));
+        service.reload_tacacs_plus(source.clone()).await.unwrap();
+        let replacement = service.health.snapshot();
+        assert_eq!(replacement.runtime_generation(), Some(RuntimeGeneration::new(2)));
+        assert_eq!(replacement.eligible_server_count(), 2);
+        assert_eq!(replacement.upstream_availability(), crate::UpstreamAvailability::Unknown);
+        source.server[0].shared_secret = None;
+        assert!(service.reload_tacacs_plus(source).await.is_err());
+        assert_eq!(service.health.snapshot(), replacement);
+    }
+
+    #[tokio::test]
+    async fn waiting_policy_publication_does_not_claim_an_applied_configuration() {
+        let mut config = service_config(
+            test_endpoint("waiting-policy-generation"),
+            vec![test_server("primary:49")],
+        );
+        config.tacacs_plus = tacacsrs_config::TacacsPlus::empty();
+        let health = RuntimeHealthPublisher::new(config.enabled_services());
+        let service =
+            TacacsClientService::waiting_for_configuration(config, health.clone()).unwrap();
+        service
+            .reload_runtime_policy(RuntimePolicy::default())
+            .await
+            .unwrap();
+        let snapshot = health.snapshot();
+        assert_eq!(snapshot.runtime_generation().unwrap().value(), 1);
+        assert!(!snapshot.has_applied_configuration());
+        assert_eq!(snapshot.eligible_server_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn unchanged_reload_preserves_observed_upstream_availability() {
+        let config =
+            service_config(test_endpoint("unchanged-health"), vec![test_server("primary:49")]);
+        let source = config.tacacs_plus.clone();
+        let service = test_service(config).unwrap();
+        service
+            .health
+            .set_upstream_availability(crate::UpstreamAvailability::Available);
+        service.reload_tacacs_plus(source).await.unwrap();
+        assert_eq!(
+            service.health.snapshot().upstream_availability(),
+            crate::UpstreamAvailability::Available
+        );
     }
 
     #[tokio::test]

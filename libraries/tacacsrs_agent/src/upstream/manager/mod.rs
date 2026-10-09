@@ -8,7 +8,7 @@ use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_config::prepare::PrepareOptions;
 use tacacsrs_networking::routed::EndpointConnector;
 
-use self::availability::AvailabilityTracker;
+use self::availability::PublicationController;
 use self::server_set::{RuntimeRoutingSnapshot, ServerSet};
 use self::prepared_server::PreparedServer;
 use crate::config::{PreparedProxyPolicy, RuntimePolicy};
@@ -41,8 +41,8 @@ pub(crate) struct UpstreamManager<
     /// Current immutable routing generation for new requests.
     runtime: StdRwLock<Arc<RuntimeRoutingSnapshot<Connector>>>,
     connect_options: PrepareOptions,
-    /// Race-safe aggregate server-availability publisher.
-    availability: AvailabilityTracker,
+    /// Serializes generation publication and server-availability observations.
+    publication: PublicationController,
 }
 
 #[cfg(test)]
@@ -146,7 +146,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 runtime_policy: Arc::new(runtime_policy),
             })),
             connect_options,
-            availability: AvailabilityTracker::new(health),
+            publication: PublicationController::new(health),
         })
     }
 
@@ -245,16 +245,39 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         if self.closed.load(std::sync::atomic::Ordering::Acquire) {
             return false;
         }
-        current.admission.update(&runtime_policy);
-        *current = Arc::new(RuntimeRoutingSnapshot {
-            generation: current.generation.wrapping_add(1),
-            availability_generation: current.availability_generation,
-            server_set: Arc::clone(&current.server_set),
-            proxy_downstream_obfuscation: current.proxy_downstream_obfuscation.clone(),
-            admission: Arc::clone(&current.admission),
-            runtime_policy: Arc::new(runtime_policy),
-        });
+        let generation = current.generation.wrapping_add(1);
+        self.publication.publish_runtime(
+            generation,
+            current.server_set.server_count(),
+            None,
+            false,
+            |availability_generation| {
+                current.admission.update(&runtime_policy);
+                *current = Arc::new(RuntimeRoutingSnapshot {
+                    generation,
+                    availability_generation,
+                    server_set: Arc::clone(&current.server_set),
+                    proxy_downstream_obfuscation: current.proxy_downstream_obfuscation.clone(),
+                    admission: Arc::clone(&current.admission),
+                    runtime_policy: Arc::new(runtime_policy),
+                });
+            },
+        );
         true
+    }
+
+    pub(crate) fn publish_initial_health(&self, applied: bool) {
+        let current = self
+            .runtime
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.publication.publish_runtime(
+            current.generation,
+            current.server_set.server_count(),
+            Some(applied),
+            false,
+            |_| {},
+        );
     }
 
     /// Records startup state without opening cross-operation probe sessions.
@@ -415,19 +438,23 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 !self.closed.load(std::sync::atomic::Ordering::Acquire),
                 "The TACACS+ service closed during preparation"
             );
-            let availability_generation = if materially_changed {
-                self.availability.reset()
-            } else {
-                current.availability_generation
-            };
-            *current = Arc::new(RuntimeRoutingSnapshot {
-                generation: current.generation.wrapping_add(1),
-                availability_generation,
-                server_set: Arc::clone(&new_set),
-                proxy_downstream_obfuscation,
-                admission: Arc::clone(&current.admission),
-                runtime_policy: Arc::clone(&current.runtime_policy),
-            });
+            let generation = current.generation.wrapping_add(1);
+            self.publication.publish_runtime(
+                generation,
+                new_set.server_count(),
+                Some(true),
+                materially_changed,
+                |availability_generation| {
+                    *current = Arc::new(RuntimeRoutingSnapshot {
+                        generation,
+                        availability_generation,
+                        server_set: Arc::clone(&new_set),
+                        proxy_downstream_obfuscation,
+                        admission: Arc::clone(&current.admission),
+                        runtime_policy: Arc::clone(&current.runtime_policy),
+                    });
+                },
+            );
             previous
                 .client
                 .retire_replaced_until(&new_set.client, retirement_deadline);

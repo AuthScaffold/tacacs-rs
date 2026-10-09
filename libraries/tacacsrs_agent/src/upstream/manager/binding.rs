@@ -50,7 +50,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             );
         }
         let observation = self
-            .availability
+            .publication
             .begin_attempt(runtime.availability_generation);
         match lease
             .deadline()
@@ -60,7 +60,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             .and_then(std::convert::identity)
         {
             Ok(binding) => {
-                self.availability.available(observation);
+                self.publication.available(observation);
                 Ok(BoundServer {
                     server: Arc::clone(&runtime.server_set.servers[binding.index()].server),
                     index: binding.index(),
@@ -70,7 +70,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             }
             Err(error) => {
                 if !error.is::<tacacsrs_networking::DeadlineElapsed>() {
-                    self.availability.unavailable(observation);
+                    self.publication.unavailable(observation);
                 }
                 Err(error)
             }
