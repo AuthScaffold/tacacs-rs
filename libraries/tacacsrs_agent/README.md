@@ -96,6 +96,12 @@ The agent exchange interface remains because it owns protocol-to-service error c
 
 ## Generation Readiness
 
+`RuntimeHealthSnapshot::runtime_generation()` identifies the currently published routing and policy snapshot.
+`RuntimeGeneration` values are scoped to one runtime instance. They are not source or credential revisions.
+Catalog replacement, applied-configuration status, eligible-server count, and availability reset now commit under the same publication lock.
+Health readers cannot observe a partially updated publication. Policy-only updates advance the runtime generation without resetting availability or replacing global admission.
+An unchanged catalog reload preserves observed upstream availability. A rejected replacement leaves the published generation and applied-health metadata unchanged.
+
 `runtime::ConfigSupervisor` owns source recovery, credential notifications, and materialization coordination.
 The host supplies a `ConfigDatastore`, service, health publisher, and `TacacsPlusFilter`.
 `NoopTacacsPlusFilter` preserves every upstream. Host-specific filters can derive a working candidate without changing the retained authoritative snapshot.

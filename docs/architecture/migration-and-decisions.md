@@ -291,7 +291,8 @@ Routing observations cannot silently override canonical policy or cause TLS-to-p
 Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent with explicit host cancellation.
 Commit `75aac8b` introduces canonical configuration observations, owns file watcher lifetimes, and removes separate load/subscribe calls from runtime supervision.
 Commit `8381d4f` completes S4-02 with native SONiC observation ownership, credential-stream cleanup, and removal of transitional subscription APIs.
-S4-03 is next: coordinate generation publication, health metadata, and separate source/credential revisions.
+S4-03 is in progress. Commit `899ca75` commits the routing generation and applied-health metadata through one publication boundary.
+Source/credential revisions, materialization bookkeeping, and revision-fenced supervisor health updates remain open.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.

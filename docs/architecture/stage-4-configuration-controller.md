@@ -5,7 +5,8 @@
 Stage 4 is in progress as of 2026-10-09. Commit `6a11a83` completes the first increment.
 Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent.
 Commit `75aac8b` adds canonical observation sessions and file watcher ownership. The supervisor now uses observations for startup and recovery.
-Commit `8381d4f` completes S4-02 with owned SONiC observations and removal of transitional APIs. S4-03 is next.
+Commit `8381d4f` completes S4-02 with owned SONiC observations and removal of transitional APIs.
+Commit `899ca75` starts S4-03 with atomic runtime and applied-health publication.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 This increment does not complete the shared configuration controller or credential lifecycle.
 
@@ -16,7 +17,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
-- [ ] S4-03: Publish generations and applied-health metadata through one controller. Track source and credential revisions separately. Reject stale completions and retain global admission across replacement.
+- [ ] S4-03: Commit `899ca75` publishes runtime generations and applied-health metadata together while retaining global admission. Source/credential revisions, materialization bookkeeping, and stale supervisor health updates remain open. See [runtime publication](#runtime-publication).
 - [ ] S4-04: Remove process signal ownership from libraries. Apply explicit host cancellation, stale-material budgets, expiry rules, and bounded drains across controller/provider work. Verify shutdown with active and cancelled observations.
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
@@ -290,3 +291,54 @@ The live SONiC VM was not changed or restarted. Live-VM, external TACACS+ peer, 
 
 S4-03 remains open for one generation/health publication controller and separate source and credential revisions.
 Host signal ownership, stale-material policy, certificate chains, revocation retrieval, and operational statistics remain the later Stage 4 obligations.
+
+## Runtime Publication
+
+Commit `899ca75` establishes the first S4-03 publication boundary.
+`PublicationController` serializes catalog commits with generation-scoped availability observations.
+The manager holds its runtime write lock, then the publication controller lock, then the health watch write lock.
+Catalog replacement occurs inside that health mutation, before the new health snapshot becomes visible.
+The commit contains no asynchronous waits.
+
+Initial runtime attachment, catalog replacement, materialized-server replacement, and policy updates all use this boundary.
+The health snapshot now exposes a typed `RuntimeGeneration` identifier.
+It records the published runtime snapshot, not a canonical source revision or a credential revision.
+A waiting runtime can publish policy and a generation identifier without claiming that source configuration has been applied.
+
+The commit updates generation, applied status, eligible-server count, and any required availability reset together.
+Availability and its `UpstreamsUnavailable` degradation reason also change in one health mutation.
+An old availability attempt cannot cross the replacement epoch and overwrite the new generation's state.
+Policy-only publication and unchanged catalogs preserve observed availability.
+The admission registry remains shared across generations. Existing request-generation and admission tests still pass.
+
+### Nearby Defect
+
+The service previously cleared upstream availability after the manager returned from every reload.
+That late write erased valid availability on unchanged reloads and could overwrite an observation made after catalog publication.
+`unchanged_reload_preserves_observed_upstream_availability` failed before the fix: health changed from `Available` to `Unknown`.
+The service no longer performs post-publication count, applied-status, or availability writes.
+
+### Verification
+
+New tests cover initial generation identity, policy-only publication, waiting-runtime policy, catalog replacement, unchanged reload, and rejected candidates.
+A barrier-driven test pauses publication while an old availability result and a health reader compete with the commit.
+The observed health contains the replacement generation, count, applied status, and availability reset together.
+
+All 157 agent tests and the complete all-feature workspace suite pass.
+Strict workspace Clippy, nightly formatting, workspace build, warnings-as-errors rustdoc, and the documentation book build pass.
+Edited files have no editor diagnostics.
+No dependency, lockfile, schema, protocol, or native transport changes occur in this increment.
+Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun for this publication-only work.
+
+### S4-03 Remainder
+
+Runtime generation identity does not replace source and credential revisions. Those revisions still need explicit types and publication semantics.
+The materialization coordinator still records active servers after an awaited service reload.
+Its bookkeeping must join a non-cancellable commit so cancellation after runtime publication cannot leave the coordinator behind the applied generation.
+
+Configuration and policy supervisors still publish candidate-health status separately after asynchronous preparation or application.
+Their success and failure updates need revision checks so stale completions cannot clear or set health for a newer candidate.
+The final controller must combine those decisions with canonical source ownership and credential-only updates.
+The existing source snapshots and credential references must remain unchanged throughout preparation and publication.
+
+These obligations remain within S4-03. This increment does not claim completion of the shared configuration controller.
