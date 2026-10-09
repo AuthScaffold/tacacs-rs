@@ -288,6 +288,8 @@ Routing observations cannot silently override canonical policy or cause TLS-to-p
 **Scope:** source observation, materialization coordination, health, and process ownership.
 
 **Status:** in progress. Commit `6a11a83` completes owned canonical policy observation and agent policy supervision.
+Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent with explicit host cancellation.
+S4-02 remains open for owned configuration observations and backend subscription cleanup.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.
@@ -306,8 +308,8 @@ Certificate provisioning and operational data have explicit Stage 4 acceptance c
 
 Primary starting points:
 
-- [Configuration supervisor](../../executables/tacacsrs_agentd/src/config_supervisor.rs)
-- [Materialization coordinator](../../executables/tacacsrs_agentd/src/materialization_coordinator.rs)
+- [Configuration supervisor](../../libraries/tacacsrs_agent/src/runtime/config_supervisor.rs)
+- [Materialization coordinator](../../libraries/tacacsrs_agent/src/runtime/materialization_coordinator.rs)
 - [Canonical policy observation](../../libraries/tacacsrs_config/src/source/policy.rs)
 - [Agent policy supervisor](../../libraries/tacacsrs_agent/src/runtime/policy_supervisor.rs)
 - [Agent shutdown](../../libraries/tacacsrs_agent/src/runtime/shutdown.rs)

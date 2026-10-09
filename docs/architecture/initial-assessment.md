@@ -134,11 +134,14 @@ The daemon supervisor calls agent reload methods and updates shared health state
 
 Evidence:
 
-- [Daemon supervisor](../../executables/tacacsrs_agentd/src/config_supervisor.rs#L1)
+- [Configuration supervisor, now agent-owned](../../libraries/tacacsrs_agent/src/runtime/config_supervisor.rs)
 - [Agent runtime](../../libraries/tacacsrs_agent/src/runtime/client_service.rs#L58)
 
 The split can be valid, but its lifecycle contract needs explicit documentation.
 A maintainer currently needs both sides to understand startup and reload.
+
+Stage 4 update: commit `1cca6a4` moves generic supervision and materialization into the agent.
+The daemon retains host filtering and process composition. Source-session ownership and unified publication remain open.
 
 **Candidate direction:** define one application lifecycle contract and one owner for each transition.
 Keep platform integration and process bootstrap outside the reusable runtime.

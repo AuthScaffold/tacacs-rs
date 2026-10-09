@@ -71,20 +71,19 @@ Repeated reloads must not accumulate idle retired drivers.
 
 ### F3. Source loading and subscription lack a gap-free contract
 
-**Priority: P1. Confidence: source-demonstrated race window. No forced interleaving test ran.**
+**Priority: P1. Status: backend ordering improved, source contract still incomplete.**
 
 `ConfigDatastore` exposes separate `load` and `subscribe` methods without a revision cursor.
 The supervisor loads and applies configuration before it subscribes.
-The CLI datastore takes its own baseline snapshot before it installs its file watcher.
-It does not publish that baseline as an initial change event.
+The file and SONiC subscriptions now install observation before publishing their own baseline.
+That backend behavior repairs startup gaps, but the source trait does not require one owned observation session.
 
 - [Source interface](../../libraries/tacacsrs_config/src/source.rs)
-- [Supervisor subscription](../../executables/tacacsrs_agentd/src/config_supervisor.rs#L268)
+- [Supervisor subscription](../../libraries/tacacsrs_agent/src/runtime/config_supervisor.rs)
 - [File watcher setup](../../libraries/tacacsrs_config/src/input/datastore.rs)
 
-A file change between the applied load and watcher setup can become the watcher's baseline without reaching the runtime.
-A later event can repair the state, but the contract does not guarantee that event.
-The reconnect path also loads before it subscribes.
+The reconnect path still loads before it subscribes. Subscriptions also retain backend worker tasks that need explicit lifetime ownership.
+Stage 4 must replace this split contract for every retained source, not rely only on backend conventions.
 
 **Target:** one source session establishes observation and supplies an authoritative snapshot.
 Lossy backends must signal a resynchronization requirement and reload after observation starts.
@@ -185,11 +184,12 @@ Direct and IPC modes can still expose different transport metadata without dupli
 **Priority: P2. Confidence: confirmed ownership split.**
 
 The agent library still offers process signal handling through `serve()`. Its `serve_until()` API accepts host cancellation.
-The daemon still owns generic configuration recovery and credential materialization.
+The agent now owns generic configuration recovery and credential materialization through `ConfigSupervisor`.
+The daemon supplies source/provider instances, host filtering, and cancellation.
 Stage 3 moved reusable endpoint routing into networking. Stage 4 now places canonical policy observation in configuration and policy supervision in the agent.
 
 - [Signal ownership](../../libraries/tacacsrs_agent/src/runtime/client_service.rs#L292)
-- [Generic daemon supervision](../../executables/tacacsrs_agentd/src/config_supervisor.rs#L77)
+- [Agent configuration supervision](../../libraries/tacacsrs_agent/src/runtime/config_supervisor.rs)
 - [Policy supervision](../../libraries/tacacsrs_agent/src/runtime/policy_supervisor.rs#L1)
 
 **Target:** the network client owns reusable endpoint routing and replay policy.
@@ -275,7 +275,7 @@ Several mechanisms already support the desired architecture:
 | Shared failover executor | [Executor](../../libraries/tacacsrs_networking/src/retry/executor.rs) | One retry control path for typed operations and proxy attempts |
 | Conservative delivery classification | [Exchange errors](../../libraries/tacacsrs_networking/src/exchange_error.rs#L1) | Foundation for safe retry advice |
 | Proxy conversation pinning | [Proxy session](../../libraries/tacacsrs_agent/src/services/tacacs_proxy/upstream_bridge/session.rs#L1) | Preserves upstream state after a valid reply |
-| Stale result rejection | [Materialization coordinator](../../executables/tacacsrs_agentd/src/materialization_coordinator.rs#L181) | Prevents old credential work from replacing new desired state |
+| Stale result rejection | [Materialization coordinator](../../libraries/tacacsrs_agent/src/runtime/materialization_coordinator.rs) | Prevents old credential work from replacing new desired state |
 | Server-slot reuse | [Reload implementation](../../libraries/tacacsrs_agent/src/upstream/manager/mod.rs#L287) | Avoids reconnecting unchanged endpoints |
 | Secret wrappers | [Secret ownership](../../libraries/tacacsrs_secrets/src/lib.rs#L1) | Redaction and bounded secret ownership |
 | Confined credential reads | [SONiC provider](../../libraries/tacacsrs_sonic/src/provider.rs#L283) | Descriptor-relative reads, metadata checks, and protected buffers |

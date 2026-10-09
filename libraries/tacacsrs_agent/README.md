@@ -96,6 +96,20 @@ The agent exchange interface remains because it owns protocol-to-service error c
 
 ## Generation Readiness
 
+`runtime::ConfigSupervisor` owns source recovery, credential notifications, and materialization coordination.
+The host supplies a `ConfigDatastore`, service, health publisher, and `TacacsPlusFilter`.
+`NoopTacacsPlusFilter` preserves every upstream. Host-specific filters can derive a working candidate without changing the retained authoritative snapshot.
+
+Use `with_credential_resolver` and `with_credential_changes` to configure credential providers.
+Notifications require a resolver. Provider configuration is checked before source I/O.
+`initialize_until(stop)` optionally prepares the initial configuration before listeners start.
+`run_until(stop)` consumes the supervisor and runs both source and credential supervision, without repeating successful initialization.
+The stop future belongs to the host. The supervisor installs no process signal handlers.
+
+Cancellation drops pending load, filter, resolution, and publication futures. It preserves the last successfully published configuration.
+This does not guarantee cancellation of detached backend tasks. The source API still uses separate `load()` and `subscribe()` calls.
+Owned observation sessions and coordinated generation/health publication remain Stage 4 work.
+
 `ServiceConfig::validation_options` carries the schema policy selected by the configuration source.
 Construction and both reload APIs apply the shared configuration checks with that policy.
 The daemon obtains the policy from `ConfigDatastore::validation_options`, including explicit migration relaxations.

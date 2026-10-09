@@ -136,7 +136,7 @@ Relevant test collections:
 - [Generated types](../../libraries/tacacsrs_config/tests/generated_types.rs)
 - [Central reference round trips](../../libraries/tacacsrs_config/tests/central_roundtrip.rs)
 - [Enumeration](../../libraries/tacacsrs_config/tests/enumeration_integration.rs)
-- [Materialization and rotation](../../executables/tacacsrs_agentd/src/materialization_coordinator.rs)
+- [Materialization and rotation](../../libraries/tacacsrs_agent/src/runtime/materialization_coordinator.rs)
 - [Cross-adapter fixture](../../executables/tacacsrs_agentd/src/main.rs)
 
 No generated YANG files, feature selections, dependency declarations, or lockfiles change in Stage 0.
