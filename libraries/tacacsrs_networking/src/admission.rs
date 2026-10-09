@@ -9,6 +9,7 @@ use crate::RequestDeadline;
 
 struct State {
     limit: usize,
+    closed: bool,
     active: usize,
     next_ticket: u64,
     pending: VecDeque<u64>,
@@ -38,9 +39,20 @@ impl AdmissionPool {
                 active: 0,
                 next_ticket: 0,
                 pending: VecDeque::new(),
+                closed: false,
             }),
             changed: Notify::new(),
         }))
+    }
+
+    /// Permanently rejects new reservations and wakes pending waiters.
+    pub fn close(&self) {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed = true;
+        self.0.changed.notify_waiters();
     }
 
     /// Updates the active and pending limits without replacing the pool.
@@ -82,11 +94,17 @@ impl AdmissionPool {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             deadline.check().map_err(|_| AdmissionError::Expired)?;
             if state.pending.is_empty() && state.active < state.limit {
+                if state.closed {
+                    return Err(AdmissionError::Closed);
+                }
                 state.active += 1;
                 return Ok(AdmissionReservation {
                     deadline,
                     slot: ReservedSlot::Active(AdmissionPermit(Arc::clone(&self.0))),
                 });
+            }
+            if state.closed {
+                return Err(AdmissionError::Closed);
             }
             if state.pending.len() >= state.limit {
                 return Err(AdmissionError::Full);
@@ -139,7 +157,18 @@ impl AdmissionReservation {
         let deadline = RequestDeadline::at(deadline.expires_at().min(self.deadline.expires_at()));
         deadline.check().map_err(|_| AdmissionError::Expired)?;
         let waiting = match self.slot {
-            ReservedSlot::Active(permit) => return Ok(permit),
+            ReservedSlot::Active(permit) => {
+                if permit
+                    .0
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .closed
+                {
+                    return Err(AdmissionError::Closed);
+                }
+                return Ok(permit);
+            }
             ReservedSlot::Pending(waiting) => waiting,
         };
         loop {
@@ -155,9 +184,15 @@ impl AdmissionReservation {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 deadline.check().map_err(|_| AdmissionError::Expired)?;
                 if state.pending.front() == Some(&waiting.ticket) && state.active < state.limit {
+                    if state.closed {
+                        return Err(AdmissionError::Closed);
+                    }
                     state.pending.pop_front();
                     state.active += 1;
                     return Ok(AdmissionPermit(Arc::clone(&waiting.pool)));
+                }
+                if state.closed {
+                    return Err(AdmissionError::Closed);
                 }
             }
             deadline
@@ -202,6 +237,8 @@ impl Drop for AdmissionPermit {
 /// Admission failed before any request transmission.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum AdmissionError {
+    /// The pool permanently stopped accepting work.
+    Closed,
     /// Both active capacity and the pending queue are full.
     Full,
     /// The request budget expired before admission.
@@ -211,6 +248,7 @@ pub enum AdmissionError {
 impl std::fmt::Display for AdmissionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
+            Self::Closed => "The TACACS+ admission pool is closed",
             Self::Full => "The TACACS+ request admission queue is full",
             Self::Expired => "The TACACS+ request deadline expired before admission",
         })
@@ -227,6 +265,20 @@ mod tests {
 
     fn deadline() -> RequestDeadline {
         RequestDeadline::after(Duration::from_secs(10)).unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn close_releases_waiters_and_rejects_unpolled_reservations() {
+        let pool = AdmissionPool::new(1);
+        let active = pool.reserve(deadline()).unwrap();
+        let queued = pool.acquire(deadline());
+        tokio::pin!(queued);
+        assert!(futures::poll!(&mut queued).is_pending());
+        pool.close();
+        pool.update(100);
+        assert!(matches!(queued.await, Err(AdmissionError::Closed)));
+        assert!(matches!(active.wait().await, Err(AdmissionError::Closed)));
+        assert!(matches!(pool.reserve(deadline()), Err(AdmissionError::Closed)));
     }
 
     #[tokio::test(start_paused = true)]

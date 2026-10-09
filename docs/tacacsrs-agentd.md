@@ -406,6 +406,20 @@ The daemon clears this degradation after the bound values return. It rejects mal
 
 ## Health and Probes
 
+### Retirement and Shutdown
+
+When a reload removes an endpoint, existing requests retain it only until a fixed retirement cutoff.
+The cutoff uses the maximum current `request-timeout-seconds` value when preparation starts; its default is 30 seconds.
+All endpoints removed by that update share the same cutoff. Later reloads do not extend it.
+At expiry, retained endpoints reject new bindings, cancel setup, close active sockets, and join their owned tasks.
+Unchanged endpoints retain their connections.
+
+Shutdown closes admission and stops new upstream work before draining listeners.
+One deadline, derived from the maximum current operation budget, covers listener drain and cleanup of current and historical endpoints.
+At expiry, outstanding work is cancelled and remaining transports close. Unknown outcomes are not replayed automatically.
+The service removes its owned socket paths and reports stopped only after explicit cleanup completes.
+An embedded host can use `TacacsClientService::serve_until` to request this sequence without process signals or process exit.
+
 The Client API endpoint also serves the standard `grpc.health.v1.Health` protocol. No custom health protobuf or additional network listener is used.
 
 | Service name | Meaning |

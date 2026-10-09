@@ -33,13 +33,16 @@ pub(crate) async fn serve(
     let (listener, socket_guard) = prepare_unix_listener(path, options.socket_mode()).await?;
     let incoming =
         LimitedIncoming::new(listener, options.max_connections, options.connection_lifetime);
+    let _transports = incoming.close_guard();
     let (standard_health, health_service) = StandardHealth::new(health).await;
-    let health_task = tokio::spawn(standard_health.run(shutdown.clone()));
+    let health_task = standard_health.run(shutdown.clone());
+    tokio::pin!(health_task);
     registration.mark_bound();
 
     log::info!("The IPC listener accepts clients on Unix domain socket {}", path.display());
 
-    tonic::transport::Server::builder()
+    let server = tonic::transport::Server::builder();
+    let serving = server
         .max_concurrent_streams(Some(options.max_client_api_streams))
         .concurrency_limit_per_connection(options.max_client_api_streams as usize)
         .timeout(options.connection_lifetime)
@@ -49,15 +52,15 @@ pub(crate) async fn serve(
                 .max_encoding_message_size(MAX_IPC_MESSAGE_BYTES),
         )
         .add_service(health_service)
-        .serve_with_incoming_shutdown(incoming, shutdown.wait())
-        .await
-        .with_context(|| format!("Unix IPC server {} failed", path.display()))?;
+        .serve_with_incoming_shutdown(incoming, shutdown.wait());
+    tokio::pin!(serving);
+    tokio::select! {
+        result = &mut serving => { result.with_context(|| format!("Unix IPC server {} failed", path.display()))?; }
+        () = &mut health_task => { serving.await.with_context(|| format!("Unix IPC server {} failed", path.display()))?; }
+    }
 
     log::info!("Received a shutdown signal; draining active IPC requests");
     service.wait_for_active_requests().await;
-    health_task
-        .await
-        .context("Standard gRPC health bridge failed")?;
     socket_guard.cleanup("Unix domain socket").await?;
     Ok(())
 }
@@ -318,6 +321,28 @@ mod tests {
         assert!(error.to_string().contains("already accepts connections"));
         assert!(is_socket(&path));
         drop(existing);
+        cleanup_paths(&path).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn listener_guard_closes_retained_ipc_transports_on_cancellation() {
+        use std::time::Duration;
+        use tokio::io::AsyncReadExt;
+        use tokio_stream::StreamExt;
+        use super::LimitedIncoming;
+
+        let path = test_socket_path("cancelled-ipc");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let mut incoming = LimitedIncoming::new(listener, 1, Duration::from_secs(300));
+        let guard = incoming.close_guard();
+        let mut peer = tokio::net::UnixStream::connect(&path).await.unwrap();
+        let mut transport = incoming.next().await.unwrap().unwrap();
+        drop(guard);
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+        assert_eq!(
+            transport.read(&mut [0; 1]).await.unwrap_err().kind(),
+            std::io::ErrorKind::ConnectionAborted
+        );
         cleanup_paths(&path).await;
     }
 

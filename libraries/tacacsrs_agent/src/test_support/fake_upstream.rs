@@ -41,6 +41,18 @@ impl UpstreamConnection for FakeConnection {
         self.usable.store(false, Ordering::Relaxed);
     }
 
+    fn close(&self) {
+        self.usable.store(false, Ordering::Relaxed);
+    }
+
+    async fn close_and_join(
+        &self,
+        _deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        self.close();
+        Ok(())
+    }
+
     async fn open_conversation(&self) -> anyhow::Result<tacacsrs_networking::ClientConversation> {
         anyhow::bail!("Fake server {} does not implement raw proxy sessions", self.address)
     }

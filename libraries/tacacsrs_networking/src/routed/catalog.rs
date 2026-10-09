@@ -8,6 +8,8 @@ use tokio::sync::{Mutex, RwLock};
 use crate::PreparedEndpoint;
 
 use super::OperationKind;
+use super::EndpointConnector;
+use super::lifecycle::EndpointLifecycle;
 use super::circuit::OperationCircuit;
 
 /// Prepared endpoint identity and explicit operation eligibility.
@@ -91,31 +93,36 @@ impl<Connection: ?Sized> Default for OperationSlot<Connection> {
     }
 }
 
-pub(super) struct EndpointSlot<Connection: ?Sized> {
+pub(super) struct EndpointSlot<Connector: EndpointConnector> {
     pub(super) endpoint: Endpoint,
-    pub(super) operations: [OperationSlot<Connection>; 3],
+    pub(super) operations: [OperationSlot<Connector::Connection>; 3],
+    pub(super) lifecycle: Arc<EndpointLifecycle<Connector>>,
 }
 
-impl<Connection: ?Sized> EndpointSlot<Connection> {
-    pub(super) fn new(endpoint: Endpoint) -> Self {
+impl<Connector: EndpointConnector> EndpointSlot<Connector> {
+    pub(super) fn new(endpoint: Endpoint, lifecycle: Arc<EndpointLifecycle<Connector>>) -> Self {
         Self {
             endpoint,
+            lifecycle,
             operations: std::array::from_fn(|_| OperationSlot::default()),
         }
     }
 
-    pub(super) fn operation(&self, operation: OperationKind) -> &OperationSlot<Connection> {
+    pub(super) fn operation(
+        &self,
+        operation: OperationKind,
+    ) -> &OperationSlot<Connector::Connection> {
         &self.operations[operation.index()]
     }
 }
 
-pub(super) struct Catalog<Connection: ?Sized> {
-    pub(super) endpoints: Vec<Arc<EndpointSlot<Connection>>>,
+pub(super) struct Catalog<Connector: EndpointConnector> {
+    pub(super) endpoints: Vec<Arc<EndpointSlot<Connector>>>,
     routes: [OperationRoute; 3],
 }
 
-impl<Connection: ?Sized> Catalog<Connection> {
-    pub(super) fn new(endpoints: Vec<Arc<EndpointSlot<Connection>>>) -> Self {
+impl<Connector: EndpointConnector> Catalog<Connector> {
+    pub(super) fn new(endpoints: Vec<Arc<EndpointSlot<Connector>>>) -> Self {
         let routes = OperationKind::ALL.map(|operation| OperationRoute {
             indices: endpoints
                 .iter()

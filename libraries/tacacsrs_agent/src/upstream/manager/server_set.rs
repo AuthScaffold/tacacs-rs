@@ -105,6 +105,18 @@ impl EndpointConnector for ServiceConnector {
     async fn retire(&self, connection: &Self::Connection) {
         connection.stop_accepting_new_sessions().await;
     }
+
+    fn close(&self, connection: &Self::Connection) {
+        connection.close();
+    }
+
+    async fn close_and_join(
+        &self,
+        connection: &Self::Connection,
+        deadline: RequestDeadline,
+    ) -> anyhow::Result<()> {
+        connection.close_and_join(deadline).await
+    }
 }
 
 /// Result of binding an IPC request to a TACACS+ server.

@@ -9,6 +9,7 @@ use anyhow::bail;
 use super::{Endpoint, EndpointConnector, NativeConnector, OperationKind};
 use super::catalog::{CachedConnection, Catalog, EndpointSlot};
 use super::circuit::RecoveryPermit;
+use super::lifecycle::{EndpointLifecycle, RoutingRuntime};
 
 struct ConnectFailure {
     generation: u64,
@@ -20,8 +21,9 @@ struct ConnectFailure {
 /// Clones retain the catalog. [`Self::with_endpoints`] creates a replacement
 /// without changing existing requests. No agent, listener, or schema is required.
 pub struct RoutedClient<Connector: EndpointConnector = NativeConnector> {
-    catalog: Arc<Catalog<Connector::Connection>>,
+    catalog: Arc<Catalog<Connector>>,
     connector: Arc<Connector>,
+    runtime: Arc<RoutingRuntime<Connector>>,
 }
 
 impl<Connector: EndpointConnector> Clone for RoutedClient<Connector> {
@@ -29,6 +31,7 @@ impl<Connector: EndpointConnector> Clone for RoutedClient<Connector> {
         Self {
             catalog: Arc::clone(&self.catalog),
             connector: Arc::clone(&self.connector),
+            runtime: Arc::clone(&self.runtime),
         }
     }
 }
@@ -44,14 +47,20 @@ impl RoutedClient {
 impl<Connector: EndpointConnector> RoutedClient<Connector> {
     /// Creates a routed client with a host-supplied connection factory.
     pub fn with_connector(endpoints: Vec<Endpoint>, connector: Connector) -> Self {
+        let connector = Arc::new(connector);
+        let runtime = Arc::new(RoutingRuntime::default());
+        let slots = endpoints
+            .into_iter()
+            .map(|endpoint| {
+                let lifecycle = Arc::new(EndpointLifecycle::new(connector.clone()));
+                runtime.register(lifecycle.clone());
+                Arc::new(EndpointSlot::new(endpoint, lifecycle))
+            })
+            .collect();
         Self {
-            catalog: Arc::new(Catalog::new(
-                endpoints
-                    .into_iter()
-                    .map(|endpoint| Arc::new(EndpointSlot::new(endpoint)))
-                    .collect(),
-            )),
-            connector: Arc::new(connector),
+            catalog: Arc::new(Catalog::new(slots)),
+            connector,
+            runtime,
         }
     }
 
@@ -65,12 +74,17 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                     .iter()
                     .find(|slot| slot.endpoint.same_identity(&endpoint))
                     .cloned()
-                    .unwrap_or_else(|| Arc::new(EndpointSlot::new(endpoint)))
+                    .unwrap_or_else(|| {
+                        let lifecycle = Arc::new(EndpointLifecycle::new(self.connector.clone()));
+                        self.runtime.register(lifecycle.clone());
+                        Arc::new(EndpointSlot::new(endpoint, lifecycle))
+                    })
             })
             .collect();
         let replacement = Self {
             catalog: Arc::new(Catalog::new(slots)),
             connector: Arc::clone(&self.connector),
+            runtime: Arc::clone(&self.runtime),
         };
         for operation in OperationKind::ALL {
             if let Some(previous) = self.active_endpoint(operation).await {
@@ -121,6 +135,39 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
         }
     }
 
+    /// Schedules terminal retirement of removed endpoints without delaying publication.
+    /// Existing captured catalogs can use them only until the supplied deadline.
+    pub fn retire_replaced_until(&self, replacement: &Self, deadline: crate::RequestDeadline) {
+        for slot in self.catalog.endpoints.iter().filter(|old| {
+            !replacement
+                .catalog
+                .endpoints
+                .iter()
+                .any(|new| Arc::ptr_eq(old, new))
+        }) {
+            slot.lifecycle.retire(deadline);
+        }
+    }
+
+    /// Permanently rejects work in this client and all related replacement catalogs.
+    pub fn close(&self) {
+        self.runtime.close();
+    }
+
+    /// Rejects new work and schedules immediate owned cleanup without waiting.
+    /// Use [`Self::close_and_join`] to confirm cleanup completion.
+    pub fn cancel(&self) {
+        self.runtime.cancel();
+    }
+
+    /// Closes and joins current and previously removed endpoints under one budget.
+    ///
+    /// # Errors
+    /// Returns a connector or task failure after completing other cleanup.
+    pub async fn close_and_join(&self, deadline: crate::RequestDeadline) -> anyhow::Result<()> {
+        self.runtime.close_and_join(deadline).await
+    }
+
     /// Selects an eligible endpoint and obtains its operation-isolated connection.
     ///
     /// # Errors
@@ -130,6 +177,7 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
         operation: OperationKind,
         recovery_interval: Duration,
     ) -> anyhow::Result<BoundEndpoint<Connector>> {
+        self.runtime.ensure_open()?;
         let route = self.catalog.route(operation);
         if route.indices.is_empty() {
             bail!("No configured TACACS+ server supports {}", operation.name());
@@ -201,10 +249,16 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
 
     async fn ensure_connection(
         &self,
-        slot: &EndpointSlot<Connector::Connection>,
+        slot: &EndpointSlot<Connector>,
         operation: OperationKind,
     ) -> Result<CachedConnection<Connector::Connection>, ConnectFailure> {
         let state = slot.operation(operation);
+        slot.lifecycle
+            .ensure_open()
+            .map_err(|source| ConnectFailure {
+                generation: state.completed_connect_attempts.load(Ordering::Acquire),
+                source,
+            })?;
         if let Some(cached) = state.connection.read().await.as_ref() {
             return Ok(CachedConnection {
                 generation: cached.generation,
@@ -213,6 +267,12 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
         }
         let previous = state.completed_connect_attempts.load(Ordering::Acquire);
         let _guard = state.connect_lock.lock().await;
+        slot.lifecycle
+            .ensure_open()
+            .map_err(|source| ConnectFailure {
+                generation: state.completed_connect_attempts.load(Ordering::Acquire),
+                source,
+            })?;
         if let Some(cached) = state.connection.read().await.as_ref() {
             return Ok(CachedConnection {
                 generation: cached.generation,
@@ -230,8 +290,8 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                 ),
             });
         }
-        let result = self
-            .connector
+        let result = slot
+            .lifecycle
             .connect(slot.endpoint.prepared().clone(), operation)
             .await;
         let generation = state
@@ -239,6 +299,9 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
         let connection = result.map_err(|source| ConnectFailure { generation, source })?;
+        slot.lifecycle
+            .ensure_open()
+            .map_err(|source| ConnectFailure { generation, source })?;
         *state.connection.write().await = Some(CachedConnection {
             generation,
             connection: Arc::clone(&connection),
@@ -371,6 +434,16 @@ mod tests {
         async fn retire(&self, _connection: &usize) {
             self.retired.fetch_add(1, Ordering::AcqRel);
         }
+
+        fn close(&self, _connection: &usize) {}
+
+        async fn close_and_join(
+            &self,
+            _connection: &usize,
+            _deadline: crate::RequestDeadline,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     fn controlled_client(connector: ControlledConnector) -> RoutedClient<ControlledConnector> {
@@ -382,6 +455,157 @@ mod tests {
             )],
             connector,
         )
+    }
+
+    #[tokio::test]
+    async fn removed_endpoint_closes_at_cutoff_without_closing_replacement() {
+        use tokio::io::AsyncReadExt;
+        use crate::RequestDeadline;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = Endpoint::new(
+            "server",
+            PreparedEndpoint::tcp(
+                listener.local_addr().unwrap().to_string(),
+                false,
+                None,
+                ConnectOptions::default(),
+            ),
+            OperationKind::ALL,
+        );
+        let client = RoutedClient::new(vec![endpoint.clone()]);
+        let old = client
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        let _old_session = old.connection().open_conversation().await.unwrap();
+        let (mut old_peer, _) = listener.accept().await.unwrap();
+        let replacement = client
+            .with_endpoints(vec![Endpoint::new(
+                "replacement",
+                endpoint.prepared().clone(),
+                OperationKind::ALL,
+            )])
+            .await;
+        let current = replacement
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        let _current_session = current.connection().open_conversation().await.unwrap();
+        let (mut current_peer, _) = listener.accept().await.unwrap();
+        client.retire_replaced_until(
+            &replacement,
+            RequestDeadline::after(Duration::from_millis(25)).unwrap(),
+        );
+        client
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), old_peer.read(&mut [0; 1]))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert!(client
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .is_err());
+        replacement
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        replacement
+            .close_and_join(RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(current_peer.read(&mut [0; 1]).await.unwrap(), 0);
+        assert!(client
+            .bind(OperationKind::Authorization, Duration::ZERO)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn shutdown_joins_connections_retained_across_multiple_catalogs() {
+        use crate::RequestDeadline;
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = || {
+            Endpoint::new(
+                "server",
+                PreparedEndpoint::tcp(
+                    listener.local_addr().unwrap().to_string(),
+                    false,
+                    None,
+                    ConnectOptions::default(),
+                ),
+                OperationKind::ALL,
+            )
+        };
+        let mut client = RoutedClient::new(vec![endpoint()]);
+        let mut held = Vec::new();
+        let mut peers = Vec::new();
+        for _generation in 0..4 {
+            let bound = client
+                .bind(OperationKind::Accounting, Duration::ZERO)
+                .await
+                .unwrap();
+            let session = bound.connection().open_conversation().await.unwrap();
+            peers.push(listener.accept().await.unwrap().0);
+            held.push((bound, session));
+            let replacement = client.with_endpoints(vec![endpoint()]).await;
+            client.retire_replaced_until(
+                &replacement,
+                RequestDeadline::after(Duration::from_secs(30)).unwrap(),
+            );
+            client = replacement;
+        }
+        client
+            .close_and_join(RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+        for mut peer in peers {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), peer.read(&mut [0; 1]))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                0
+            );
+        }
+        for (bound, _session) in held {
+            assert!(bound.connection().open_conversation().await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_close_cancels_parked_bind_and_rejects_replacement_catalogs() {
+        use crate::RequestDeadline;
+
+        let client = controlled_client(ControlledConnector {
+            block_first: true,
+            ..Default::default()
+        });
+        let pending = client.bind(OperationKind::Accounting, Duration::ZERO);
+        tokio::pin!(pending);
+        assert!(futures::poll!(&mut pending).is_pending());
+        client.connector.entered.notified().await;
+        client
+            .close_and_join(RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+        assert!(pending.await.is_err());
+        let replacement = client
+            .with_endpoints(vec![client.catalog.endpoints[0].endpoint.clone()])
+            .await;
+        assert!(replacement
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .is_err());
+        assert_eq!(client.connector.attempts.load(Ordering::Acquire), 1);
     }
 
     #[tokio::test]
@@ -417,6 +641,9 @@ mod tests {
             let pending = client.bind(OperationKind::Accounting, Duration::from_secs(30));
             tokio::pin!(pending);
             assert!(futures::poll!(&mut pending).is_pending());
+            tokio::time::timeout(Duration::from_secs(1), client.connector.entered.notified())
+                .await
+                .unwrap();
         }
         let binding = client
             .bind(OperationKind::Accounting, Duration::from_secs(30))

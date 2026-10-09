@@ -16,8 +16,10 @@
 //! Shutdown uses this sequence:
 //!
 //! 1. Each listener stops accepting connections.
-//! 2. Active request handlers finish.
-//! 3. The service removes the Unix domain socket path.
+//! 2. Admission closes and active request handlers drain under one deadline.
+//! 3. Remaining listener tasks are cancelled and joined.
+//! 4. Current and historical upstream resources close and join using that deadline.
+//! 5. Owned Unix socket paths are removed before stopped state is published.
 
 use std::sync::Arc;
 
@@ -73,6 +75,16 @@ pub struct TacacsClientService {
     request_tracker: Arc<RequestTracker>,
     /// Shared protocol-neutral runtime health publisher.
     health: RuntimeHealthPublisher,
+}
+
+struct ServiceRunGuard<'service>(Option<&'service UpstreamManager>);
+
+impl Drop for ServiceRunGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(manager) = self.0 {
+            manager.cancel();
+        }
+    }
 }
 
 impl TacacsClientService {
@@ -308,19 +320,52 @@ impl TacacsClientService {
     /// Returns an error if the IPC listener cannot be created or if the local
     /// endpoint configuration is invalid for the current platform.
     pub async fn serve(&self) -> anyhow::Result<()> {
+        self.serve_until(super::shutdown::process_shutdown_signal())
+            .await
+    }
+
+    /// Runs listeners until an embedding host requests shutdown, without installing signal handlers.
+    ///
+    /// The maximum current operation budget supplies one deadline for listener
+    /// drain and all upstream retirement. The service cannot reopen after exit.
+    ///
+    /// # Errors
+    /// Returns a listener, task, or upstream cleanup error after shutdown.
+    pub async fn serve_until(
+        &self,
+        stop: impl std::future::Future<Output = ()> + Send,
+    ) -> anyhow::Result<()> {
         let shutdown = ShutdownCoordinator::new(self.health.clone());
-        let signal_monitor = shutdown.spawn_process_signal_monitor();
-        let result = self.serve_with_shutdown(&shutdown).await;
-        signal_monitor.abort();
-        result
+        let serving = self.serve_with_shutdown(&shutdown);
+        tokio::pin!(serving);
+        tokio::select! {
+            result = &mut serving => result,
+            () = stop => { shutdown.initiate_shutdown(); serving.await }
+        }
+    }
+
+    /// Permanently closes admission and joins upstream resources without starting listeners.
+    ///
+    /// # Errors
+    /// Returns an upstream cleanup error after joining the remaining resources.
+    pub async fn close_and_join(
+        &self,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        self.state.close_and_join(deadline).await
     }
 
     async fn serve_with_shutdown(&self, shutdown: &ShutdownCoordinator) -> anyhow::Result<()> {
+        self.state.ensure_open()?;
+        let mut run = ServiceRunGuard(Some(&self.state));
         log::info!("Warming TACACS+ server connections");
         self.state.warm_connections();
         let result = self.serve_enabled_services(shutdown).await;
+        run.0 = None;
         if result.is_ok() {
             shutdown.mark_stopped();
+        } else {
+            shutdown.fail();
         }
 
         log::info!("TACACS+ client service has shut down");
@@ -370,23 +415,38 @@ impl TacacsClientService {
             anyhow::bail!("Enable at least one runtime service");
         }
 
-        while let Some(result) = tasks.join_next().await {
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    shutdown.fail();
-                    tasks.shutdown().await;
-                    return Err(error);
-                }
-                Err(error) => {
-                    shutdown.fail();
-                    tasks.shutdown().await;
-                    return Err(anyhow::anyhow!("A runtime service task failed: {error}"));
+        let stop = shutdown.subscribe().wait();
+        tokio::pin!(stop);
+        let mut failure = None;
+        tokio::select! {
+            biased;
+            () = &mut stop => {},
+            result = tasks.join_next() => {
+                match result {
+                    Some(Ok(Err(error))) => { failure = Some(error); shutdown.fail(); }
+                    Some(Err(error)) => { failure = Some(error.into()); shutdown.fail(); }
+                    Some(Ok(Ok(()))) => { shutdown.initiate_shutdown(); }
+                    None => {},
                 }
             }
         }
-
-        Ok(())
+        let deadline = self.state.retirement_deadline()?;
+        self.state.close();
+        let draining = async {
+            while let Some(result) = tasks.join_next().await {
+                if let Err(error) = result
+                    .map_err(anyhow::Error::from)
+                    .and_then(std::convert::identity)
+                {
+                    failure.get_or_insert(error);
+                }
+            }
+        };
+        if deadline.run(draining).await.is_err() {
+            tasks.shutdown().await;
+        }
+        let upstream = self.state.close_and_join(deadline).await;
+        failure.map_or(upstream, Err)
     }
 }
 
@@ -981,6 +1041,114 @@ mod tests {
         assert!(!tokio::fs::try_exists(socket_path)
             .await
             .expect("the socket inspection must succeed"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_serving_future_closes_retained_upstreams() {
+        use tokio::io::AsyncReadExt;
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let config = service_config(
+                test_endpoint("cancelled-service"),
+                vec![test_server(&listener.local_addr().unwrap().to_string())],
+            );
+            let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+            let service = Arc::new(TacacsClientService::new(config, health.clone()).unwrap());
+            let bound = service.state.bind_server_for_new_session().await.unwrap();
+            let _conversation = bound.connection.open_conversation().await.unwrap();
+            let (mut peer, _) = listener.accept().await.unwrap();
+            let running = service.clone();
+            let task =
+                tokio::spawn(async move { running.serve_until(std::future::pending()).await });
+            while health.snapshot().lifecycle() != RuntimeLifecycle::Serving {
+                tokio::task::yield_now().await;
+            }
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+            service
+                .close_and_join(
+                    tacacsrs_networking::RequestDeadline::after(Duration::ZERO).unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(service.state.bind_server_for_new_session().await.is_err());
+        })
+        .await
+        .expect("cancelled serving must not retain upstream sockets");
+    }
+
+    #[tokio::test]
+    async fn embedded_shutdown_joins_retained_upstreams_and_prevents_restart() {
+        use tokio::io::AsyncReadExt;
+        use crate::config::RequestLimits;
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = test_endpoint("embedded-close");
+            let IpcEndpoint::Unix(path) = &endpoint else {
+                unreachable!()
+            };
+            let path = path.clone();
+            let mut config = service_config(
+                endpoint,
+                vec![test_server(&listener.local_addr().unwrap().to_string())],
+            );
+            let limits = RequestLimits::new(1024, 1)
+                .unwrap()
+                .with_request_timeout(Duration::from_millis(50))
+                .unwrap();
+            config.runtime_policy = RuntimePolicy::new(
+                FailoverStrategy::default(),
+                FailoverStrategy::default(),
+                OperationPolicies::new(limits, limits, limits),
+                Duration::from_secs(30),
+            )
+            .unwrap();
+            let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+            let service = Arc::new(TacacsClientService::new(config, health.clone()).unwrap());
+            let bound = service.state.bind_server_for_new_session().await.unwrap();
+            let _conversation = bound.connection.open_conversation().await.unwrap();
+            let (mut peer, _) = listener.accept().await.unwrap();
+            let (stop, stopped) = tokio::sync::oneshot::channel();
+            let running = service.clone();
+            let task = tokio::spawn(async move {
+                running
+                    .serve_until(async {
+                        let _stop = stopped.await;
+                    })
+                    .await
+            });
+            while health.snapshot().lifecycle() != RuntimeLifecycle::Serving {
+                tokio::task::yield_now().await;
+            }
+            let _ipc = ServiceClient::connect(IpcEndpoint::Unix(path.clone()))
+                .await
+                .unwrap();
+            stop.send(()).unwrap();
+            task.await.unwrap().unwrap();
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+            assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Stopped);
+            assert!(!tokio::fs::try_exists(&path).await.unwrap());
+            assert!(bound.connection.open_conversation().await.is_err());
+            assert!(service
+                .reload_materialized_servers_with_proxy_downstream_obfuscation(
+                    Vec::new(),
+                    PreparedProxyPolicy::unobfuscated()
+                )
+                .await
+                .is_err());
+            service
+                .close_and_join(
+                    tacacsrs_networking::RequestDeadline::after(Duration::ZERO).unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(service.serve_until(std::future::pending()).await.is_err());
+        })
+        .await
+        .expect("embedded shutdown must finish without process exit");
     }
 
     #[tokio::test]

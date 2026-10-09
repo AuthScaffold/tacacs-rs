@@ -16,6 +16,12 @@ pub(crate) struct AdmissionRegistry {
 }
 
 impl AdmissionRegistry {
+    pub(crate) fn close(&self) {
+        for operation in &self.operations {
+            operation.close();
+        }
+    }
+
     pub(crate) fn new(policy: &RuntimePolicy) -> Self {
         let operations = OperationKind::ALL.map(|operation| {
             let limits = policy.limits(operation);
@@ -54,6 +60,7 @@ impl AdmissionRegistry {
             .await
             .map_err(|error| match error {
                 PoolError::Full => AdmissionError::Full,
+                PoolError::Closed => AdmissionError::Closed,
                 PoolError::Expired => AdmissionError::CapacityTimeout { wait_timeout },
             })
     }
@@ -67,6 +74,7 @@ impl AdmissionRegistry {
             .reserve(deadline)
             .map_err(|error| match error {
                 PoolError::Full => AdmissionError::Full,
+                PoolError::Closed => AdmissionError::Closed,
                 PoolError::Expired => AdmissionError::CapacityTimeout {
                     wait_timeout: Duration::ZERO,
                 },
@@ -77,6 +85,7 @@ impl AdmissionRegistry {
 /// Reason that a local request did not enter the upstream routing path.
 #[derive(Debug)]
 pub(crate) enum AdmissionError {
+    Closed,
     BodyTooLarge { actual: usize, maximum: usize },
     CapacityTimeout { wait_timeout: Duration },
     Full,
@@ -86,6 +95,7 @@ pub(crate) enum AdmissionError {
 impl std::fmt::Display for AdmissionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Closed => formatter.write_str("The TACACS+ service is closed"),
             Self::BodyTooLarge { actual, maximum } => write!(
                 formatter,
                 "TACACS+ request body length {actual} exceeds the configured maximum of {maximum}"
@@ -108,7 +118,7 @@ impl std::error::Error for AdmissionError {}
 impl AdmissionError {
     #[must_use]
     pub(crate) const fn is_retriable(&self) -> bool {
-        !matches!(self, Self::BodyTooLarge { .. })
+        !matches!(self, Self::BodyTooLarge { .. } | Self::Closed)
     }
 }
 

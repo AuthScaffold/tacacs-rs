@@ -38,6 +38,7 @@ struct ScriptedConnection {
     accounting_status: TacacsAccountingStatus,
     accounting_barrier: Option<(Arc<Notify>, Arc<Notify>)>,
     accounting_delay: Duration,
+    accounting_started: Notify,
 }
 
 impl ScriptedConnection {
@@ -51,6 +52,7 @@ impl ScriptedConnection {
             accounting_status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
             accounting_barrier: None,
             accounting_delay: Duration::ZERO,
+            accounting_started: Notify::new(),
         }
     }
 }
@@ -63,6 +65,15 @@ impl UpstreamConnection for ScriptedConnection {
 
     async fn stop_accepting_new_sessions(&self) {}
 
+    fn close(&self) {}
+
+    async fn close_and_join(
+        &self,
+        _deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn open_conversation(&self) -> anyhow::Result<tacacsrs_networking::ClientConversation> {
         anyhow::bail!("raw conversations are not used in client API routing tests")
     }
@@ -72,6 +83,7 @@ impl UpstreamConnection for ScriptedConnection {
         _request: AccountingRequest,
         _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
+        self.accounting_started.notify_one();
         if !self.accounting_delay.is_zero() {
             tokio::time::sleep(self.accounting_delay).await;
         }
@@ -261,7 +273,7 @@ async fn overload_is_retriable_without_upstream_io_and_cancellation_releases_cap
         });
         let connector = Arc::new(OperationConnector::new(HashMap::from([(
             ("primary:49".to_owned(), OperationKind::Accounting),
-            primary,
+            primary.clone(),
         )])));
         let limits = RequestLimits::new(1024, 1).unwrap();
         let manager = Arc::new(
@@ -287,11 +299,10 @@ async fn overload_is_retriable_without_upstream_io_and_cancellation_releases_cap
         {
             let active = bridge.execute_accounting_request(accounting());
             tokio::pin!(active);
-            std::future::poll_fn(|context| {
-                assert!(std::future::Future::poll(active.as_mut(), context).is_pending());
-                std::task::Poll::Ready(())
-            })
-            .await;
+            tokio::select! {
+                () = primary.accounting_started.notified() => {},
+                result = &mut active => panic!("request completed before its barrier: {result:?}"),
+            }
             let pending = proxy.admit(1);
             tokio::pin!(pending);
             std::future::poll_fn(|context| {
@@ -410,8 +421,8 @@ async fn deadline_includes_admission_and_retry_and_survives_policy_reload() {
         ..ScriptedConnection::successful("backup:49")
     });
     let connector = Arc::new(OperationConnector::new(operation_map(
-        primary,
-        backup,
+        primary.clone(),
+        backup.clone(),
         OperationKind::Accounting,
     )));
     let policy = |seconds| {
@@ -455,17 +466,15 @@ async fn deadline_includes_admission_and_retry_and_survives_policy_reload() {
     tokio::time::advance(Duration::from_secs(2)).await;
     manager.reload_runtime_policy(policy(30));
     drop(occupied);
-    std::future::poll_fn(|context| {
-        assert!(std::future::Future::poll(request.as_mut(), context).is_pending());
-        std::task::Poll::Ready(())
-    })
-    .await;
+    tokio::select! {
+        () = primary.accounting_started.notified() => {},
+        result = &mut request => panic!("primary request did not start: {result:?}"),
+    }
     tokio::time::advance(Duration::from_secs(2)).await;
-    std::future::poll_fn(|context| {
-        assert!(std::future::Future::poll(request.as_mut(), context).is_pending());
-        std::task::Poll::Ready(())
-    })
-    .await;
+    tokio::select! {
+        () = backup.accounting_started.notified() => {},
+        result = &mut request => panic!("backup request did not start: {result:?}"),
+    }
     let error = request.await.unwrap_err();
     assert!(!error.retriable, "a sent request with no reply must not retry");
     assert_eq!(started.elapsed(), Duration::from_secs(5));

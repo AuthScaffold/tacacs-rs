@@ -265,7 +265,22 @@ The listener follows this startup sequence:
 6. begin serving IPC clients
 ```
 
-One coordinator receives SIGTERM or Ctrl-C, changes the shared lifecycle to `Draining`, and then broadcasts shutdown to every listener. Registration guards publish `Binding`, `Bound`, and `Stopped` on every return path. Shutdown stops accepting new local work, waits for active gRPC and raw proxy requests to finish, removes Unix domain socket paths, and finally publishes `Stopped`. A listener bind or accept-loop failure marks fatal health, cancels siblings, and waits for their guards and cleanup before returning.
+`serve()` waits for SIGTERM or Ctrl-C in its owned serving future.
+Embedded hosts use `serve_until(stop_future)` without installing signal handlers.
+Shutdown changes health to `Draining`, closes admission and upstream connection creation, and stops listeners from accepting new work.
+The maximum current operation request budget supplies one absolute deadline for listener drain and all current and historical upstream cleanup.
+At expiry, remaining listener tasks are cancelled and joined, and upstream sockets are forced closed.
+Owned Unix socket paths are removed before successful shutdown publishes `Stopped`.
+A listener failure cancels its siblings and uses the same cleanup path.
+
+Reload schedules removed endpoints for terminal retirement under one cutoff derived from the maximum operation budget at preparation start.
+Captured requests can still use their old endpoints before that cutoff; the retirement owner then cancels setup, closes sockets, and joins drivers.
+Unchanged endpoint identities retain their caches. A later reload cannot extend an earlier retirement cutoff.
+Terminal shutdown also reaches retired endpoints retained by old requests. A stopped service rejects reload and cannot be served again.
+
+Cancelling the serving future schedules immediate upstream cleanup and drops listener-owned transport guards.
+Use `close_and_join(deadline)` to confirm upstream cleanup after cancellation or when the service has not started listeners.
+For an active listener run, request shutdown through the future passed to `serve_until` and await that run's result.
 
 The same typed watch-backed snapshot drives startup, liveness, readiness, datastore freshness, upstream availability, standard gRPC health, host integration, and operator status. It contains only typed flags and counts. Configuration values, server identities, credential references, and raw errors stay outside the shared state.
 

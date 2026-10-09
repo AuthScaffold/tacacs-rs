@@ -9,8 +9,12 @@
 //! Use [`BoundEndpoint::connection`] for typed exchanges or raw conversations.
 //! Report outcomes through the binding, not through a newly published catalog.
 //! Combine bindings with [`crate::retry`] for conservative, bounded retries.
-//! Call [`RoutedClient::retire_replaced`] after publishing a replacement.
-//! This API does not yet impose an absolute deadline or expose close/join.
+//! Schedule [`RoutedClient::retire_replaced_until`] when publishing a replacement.
+//! Removed endpoints remain usable by captured catalogs until that cutoff.
+//! [`RoutedClient::close_and_join`] closes the whole related catalog family,
+//! including historical endpoints and owned setup tasks, under one deadline.
+//! Custom connectors must honor their close/join contract. Request deadlines
+//! remain caller-supplied through [`crate::RequestDeadline`].
 //!
 //! Run the agent-free loopback example with:
 //! `cargo run -p tacacsrs-networking --example routed_accounting`.
@@ -19,6 +23,7 @@ mod circuit;
 mod catalog;
 mod client;
 mod connector;
+mod lifecycle;
 mod operation;
 
 pub use catalog::Endpoint;

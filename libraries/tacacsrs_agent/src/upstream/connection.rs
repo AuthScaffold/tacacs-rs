@@ -28,6 +28,13 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// calls this method when a datastore reload removes or replaces a server.
     async fn stop_accepting_new_sessions(&self);
 
+    fn close(&self);
+
+    async fn close_and_join(
+        &self,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()>;
+
     /// Creates a raw TACACS+ packet session against this upstream server.
     ///
     /// The caller sends and receives TACACS+ packets through the returned

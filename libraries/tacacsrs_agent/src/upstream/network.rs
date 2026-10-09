@@ -75,6 +75,17 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         self.connection.stop_accepting_new_sessions().await;
     }
 
+    fn close(&self) {
+        self.connection.close();
+    }
+
+    async fn close_and_join(
+        &self,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        self.connection.close_and_join(deadline).await
+    }
+
     async fn open_conversation(&self) -> anyhow::Result<tacacsrs_networking::ClientConversation> {
         self.connection
             .open_conversation()

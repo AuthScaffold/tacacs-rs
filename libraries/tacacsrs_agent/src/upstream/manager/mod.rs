@@ -29,6 +29,8 @@ mod binding;
 /// Networking supplies the binding and records routing outcomes. This adapter
 /// associates that binding with source metadata and generation-aware health.
 pub(crate) struct UpstreamManager {
+    closed: std::sync::atomic::AtomicBool,
+    reload_lock: tokio::sync::Mutex<()>,
     /// Current immutable routing generation for new requests.
     runtime: StdRwLock<Arc<RuntimeRoutingSnapshot>>,
     connect_options: PrepareOptions,
@@ -105,6 +107,8 @@ impl UpstreamManager {
             .collect::<anyhow::Result<Vec<_>>>()?;
         let server_set = Arc::new(ServerSet::new(servers, connector));
         Ok(Self {
+            closed: std::sync::atomic::AtomicBool::new(false),
+            reload_lock: tokio::sync::Mutex::new(()),
             runtime: StdRwLock::new(Arc::new(RuntimeRoutingSnapshot {
                 generation: 0,
                 availability_generation: 0,
@@ -125,6 +129,53 @@ impl UpstreamManager {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
+    }
+
+    pub(crate) fn retirement_deadline(
+        &self,
+    ) -> anyhow::Result<tacacsrs_networking::RequestDeadline> {
+        let runtime = self.current_runtime();
+        let budget = OperationKind::ALL
+            .into_iter()
+            .map(|operation| runtime.runtime_policy.limits(operation).request_timeout())
+            .max()
+            .unwrap_or_default();
+        tacacsrs_networking::RequestDeadline::after(budget)
+    }
+
+    pub(crate) fn ensure_open(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.closed.load(std::sync::atomic::Ordering::Acquire),
+            "The TACACS+ service is closed"
+        );
+        Ok(())
+    }
+
+    pub(crate) fn close(&self) {
+        let runtime = self
+            .runtime
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        runtime.admission.close();
+        runtime.server_set.client.close();
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.close();
+        self.current_server_set().client.cancel();
+    }
+
+    pub(crate) async fn close_and_join(
+        &self,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        self.close();
+        self.current_server_set()
+            .client
+            .close_and_join(deadline)
+            .await
     }
 
     fn current_server_set(&self) -> Arc<ServerSet> {
@@ -163,6 +214,9 @@ impl UpstreamManager {
             .runtime
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
         current.admission.update(&runtime_policy);
         *current = Arc::new(RuntimeRoutingSnapshot {
             generation: current.generation.wrapping_add(1),
@@ -240,7 +294,10 @@ impl UpstreamManager {
         reservation
             .wait_until(lease.deadline().capped(wait_timeout))
             .await
-            .map_err(|_| AdmissionError::CapacityTimeout { wait_timeout })
+            .map_err(|error| match error {
+                tacacsrs_networking::admission::AdmissionError::Closed => AdmissionError::Closed,
+                _ => AdmissionError::CapacityTimeout { wait_timeout },
+            })
     }
 
     /// Atomically replaces the configured TACACS+ server set.
@@ -279,6 +336,12 @@ impl UpstreamManager {
         servers: Vec<Arc<TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
+        let _reload = self.reload_lock.lock().await;
+        anyhow::ensure!(
+            !self.closed.load(std::sync::atomic::Ordering::Acquire),
+            "The TACACS+ service is closed"
+        );
+        let retirement_deadline = self.retirement_deadline()?;
         let previous = self.current_server_set();
         let materially_changed = previous.server_count() != servers.len()
             || previous
@@ -319,6 +382,10 @@ impl UpstreamManager {
                 .runtime
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            anyhow::ensure!(
+                !self.closed.load(std::sync::atomic::Ordering::Acquire),
+                "The TACACS+ service closed during preparation"
+            );
             let availability_generation = if materially_changed {
                 self.availability.reset()
             } else {
@@ -332,6 +399,9 @@ impl UpstreamManager {
                 admission: Arc::clone(&current.admission),
                 runtime_policy: Arc::clone(&current.runtime_policy),
             });
+            previous
+                .client
+                .retire_replaced_until(&new_set.client, retirement_deadline);
         }
 
         if new_set.server_count() == 0 {
@@ -776,6 +846,58 @@ mod tests {
 
         assert_eq!(authorization.connection.server_address(), primary.address);
         assert_eq!(failed_over_authentication.connection.server_address(), backup.address);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_wakes_admission_and_rejects_reload_and_captured_routes() {
+        use crate::config::{PolicyService, RequestLimits};
+        use crate::upstream::AdmissionError;
+
+        let connection = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let state = UpstreamManager::new(
+            vec![test_server("server-a:49")],
+            Arc::new(FakeConnector::new(HashMap::from([(
+                connection.address.clone(),
+                connection.clone(),
+            )]))),
+            Duration::from_secs(30),
+            test_health(),
+        );
+        let limits = RequestLimits::new(1024, 1).unwrap();
+        state.reload_runtime_policy(
+            RuntimePolicy::new(
+                FailoverStrategy::default(),
+                FailoverStrategy::default(),
+                OperationPolicies::new(limits, limits, limits),
+                Duration::from_secs(30),
+            )
+            .unwrap(),
+        );
+        let lease = state.capture_request(PolicyService::ClientApi, OperationKind::Accounting);
+        let _active = state.admit_request(&lease, 1).await.unwrap();
+        let _bound = state.bind_request(&lease).await.unwrap();
+        let pending = state.admit_request(&lease, 1);
+        tokio::pin!(pending);
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(pending.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        state
+            .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(pending.await, Err(AdmissionError::Closed)));
+        assert!(state.bind_request(&lease).await.is_err());
+        assert!(state
+            .reload_servers(vec![test_server("server-b:49")])
+            .await
+            .is_err());
+        assert!(!connection.usable.load(Ordering::Acquire));
     }
 
     #[tokio::test(start_paused = true)]
