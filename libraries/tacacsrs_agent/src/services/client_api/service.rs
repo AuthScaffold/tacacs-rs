@@ -11,18 +11,33 @@ use crate::runtime::{
 };
 use crate::services::ListenerOptions;
 use crate::upstream::manager::UpstreamManager;
+use crate::upstream::UpstreamConnection;
+use tacacsrs_networking::routed::EndpointConnector;
 
 /// Owns the local client API runtime dependencies.
-#[derive(Clone)]
-pub(crate) struct ClientApiService {
-    grpc_service: GrpcService,
+pub(crate) struct ClientApiService<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    grpc_service: GrpcService<Connector>,
     request_tracker: Arc<RequestTracker>,
 }
 
-impl ClientApiService {
+impl<Connector: EndpointConnector> Clone for ClientApiService<Connector> {
+    fn clone(&self) -> Self {
+        Self {
+            grpc_service: self.grpc_service.clone(),
+            request_tracker: self.request_tracker.clone(),
+        }
+    }
+}
+
+impl<Connector: EndpointConnector> ClientApiService<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
     /// Creates a local client API service over shared runtime state.
     pub(crate) fn new(
-        upstream_manager: Arc<UpstreamManager>,
+        upstream_manager: Arc<UpstreamManager<Connector>>,
         request_tracker: Arc<RequestTracker>,
     ) -> Self {
         Self {
@@ -45,7 +60,7 @@ impl ClientApiService {
             .await
     }
 
-    pub(super) fn grpc_service(&self) -> GrpcService {
+    pub(super) fn grpc_service(&self) -> GrpcService<Connector> {
         self.grpc_service.clone()
     }
 

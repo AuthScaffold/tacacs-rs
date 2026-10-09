@@ -31,7 +31,9 @@ mod network;
 mod proxy_transport;
 mod router;
 
-pub(crate) use connection::{UpstreamConnection, UpstreamConnector};
+pub(crate) use connection::UpstreamConnection;
+#[cfg(test)]
+pub(crate) use connection::UpstreamConnector;
 pub(crate) use attempt::{AttemptFailureKind, UpstreamRequestError};
 pub(crate) use admission::{AdmissionError, AdmissionPermit};
 pub(crate) use network::NetworkUpstreamConnector;

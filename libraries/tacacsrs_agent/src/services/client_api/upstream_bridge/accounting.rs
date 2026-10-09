@@ -20,8 +20,8 @@ impl RoutedOperation for AccountingRoute {
     const NAME: &'static str = "accounting";
     const DISPLAY_NAME: &'static str = "Accounting";
     const OPERATION: OperationKind = OperationKind::Accounting;
-    async fn send(
-        connection: &dyn UpstreamConnection,
+    async fn send<Connection: UpstreamConnection + ?Sized>(
+        connection: &Connection,
         request: &Self::Request,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError> {
@@ -44,7 +44,10 @@ impl RoutedOperation for AccountingRoute {
     }
 }
 
-impl UpstreamBridge {
+impl<Connector: tacacsrs_networking::routed::EndpointConnector> UpstreamBridge<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
     /// Runs one IPC accounting request against the selected TACACS+ server.
     ///
     /// The networking layer controls connection reuse and single-connection

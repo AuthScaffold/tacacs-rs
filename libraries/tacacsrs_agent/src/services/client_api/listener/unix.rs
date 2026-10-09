@@ -22,14 +22,17 @@ const MAX_IPC_MESSAGE_BYTES: usize =
 ///
 /// After a shutdown signal, the gRPC server stops accepting requests. It waits
 /// for active RPC handlers to finish and then removes the socket path.
-pub(crate) async fn serve(
+pub(crate) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
     path: &Path,
-    service: ClientApiService,
+    service: ClientApiService<Connector>,
     options: ListenerOptions,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
     health: watch::Receiver<RuntimeHealthSnapshot>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    Connector::Connection: crate::upstream::UpstreamConnection,
+{
     let (listener, socket_guard) = prepare_unix_listener(path, options.socket_mode()).await?;
     let incoming =
         LimitedIncoming::new(listener, options.max_connections, options.connection_lifetime);

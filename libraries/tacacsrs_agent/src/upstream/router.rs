@@ -14,23 +14,36 @@ use crate::config::PolicyService;
 
 use super::admission::{AdmissionError, AdmissionPermit};
 use tacacsrs_networking::retry::FailoverPlan;
+use tacacsrs_networking::routed::EndpointConnector;
 use super::manager::{BoundServer, RoutingLease, UpstreamManager};
 use super::OperationKind;
 
 /// Routing and admission entry point for one local service.
-#[derive(Clone)]
-pub(crate) struct OperationRouter {
-    manager: Arc<UpstreamManager>,
+pub(crate) struct OperationRouter<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    manager: Arc<UpstreamManager<Connector>>,
     service: PolicyService,
 }
 
 /// Captures one request's routing inputs across all of its attempts.
-pub(crate) struct RequestRouting {
-    manager: Arc<UpstreamManager>,
-    lease: RoutingLease,
+pub(crate) struct RequestRouting<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    manager: Arc<UpstreamManager<Connector>>,
+    lease: RoutingLease<Connector>,
 }
 
-impl RequestRouting {
+impl<Connector: EndpointConnector> Clone for OperationRouter<Connector> {
+    fn clone(&self) -> Self {
+        Self {
+            manager: self.manager.clone(),
+            service: self.service,
+        }
+    }
+}
+
+impl<Connector: EndpointConnector> RequestRouting<Connector> {
     pub(crate) fn reserve(
         &self,
         body_length: usize,
@@ -53,7 +66,7 @@ impl RequestRouting {
         self.lease.failover_plan()
     }
 
-    pub(crate) async fn bind(&self) -> anyhow::Result<BoundServer> {
+    pub(crate) async fn bind(&self) -> anyhow::Result<BoundServer<Connector>> {
         self.manager.bind_request(&self.lease).await
     }
 
@@ -69,13 +82,16 @@ impl RequestRouting {
     }
 }
 
-impl OperationRouter {
+impl<Connector: EndpointConnector> OperationRouter<Connector> {
     /// Binds a service identity to the shared upstream manager.
-    pub(crate) const fn new(manager: Arc<UpstreamManager>, service: PolicyService) -> Self {
+    pub(crate) const fn new(
+        manager: Arc<UpstreamManager<Connector>>,
+        service: PolicyService,
+    ) -> Self {
         Self { manager, service }
     }
 
-    pub(crate) fn capture_request(&self, operation: OperationKind) -> RequestRouting {
+    pub(crate) fn capture_request(&self, operation: OperationKind) -> RequestRouting<Connector> {
         RequestRouting {
             manager: Arc::clone(&self.manager),
             lease: self.manager.capture_request(self.service, operation),
@@ -83,12 +99,12 @@ impl OperationRouter {
     }
 
     /// Records a successful request and completes a recovery trial when present.
-    pub(crate) async fn note_success(&self, bound_server: &BoundServer) {
+    pub(crate) async fn note_success(&self, bound_server: &BoundServer<Connector>) {
         self.manager.note_bound_server_success(bound_server).await;
     }
 
     /// Records a request failure and moves the operation cursor when needed.
-    pub(crate) async fn note_failure(&self, bound_server: &BoundServer) {
+    pub(crate) async fn note_failure(&self, bound_server: &BoundServer<Connector>) {
         self.manager.note_bound_server_failure(bound_server).await;
     }
 }

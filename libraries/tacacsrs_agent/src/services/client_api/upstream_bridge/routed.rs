@@ -1,6 +1,7 @@
 //! Shared operation helpers for [`UpstreamBridge`].
 
 use async_trait::async_trait;
+use tacacsrs_networking::routed::EndpointConnector;
 use tacacsrs_protocol::operations::ServiceError;
 use tacacsrs_networking::retry::{
     Attempt, AttemptDisposition, FailoverAttempt, FailoverOutcome, run_with_failover,
@@ -31,8 +32,8 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
     /// TACACS+ operation used for routing and connection isolation.
     const OPERATION: OperationKind;
     /// Sends the operation through the selected server connection.
-    async fn send(
-        connection: &dyn UpstreamConnection,
+    async fn send<Connection: UpstreamConnection + ?Sized>(
+        connection: &Connection,
         request: &Self::Request,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError>;
@@ -45,20 +46,22 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
 }
 
 /// One client API request that the failover executor can retry.
-struct RoutedAttempt<'request, Operation>
+struct RoutedAttempt<'request, Operation, Connector: EndpointConnector>
 where
     Operation: RoutedOperation,
 {
-    router: &'request OperationRouter,
-    routing: RequestRouting,
+    router: &'request OperationRouter<Connector>,
+    routing: RequestRouting<Connector>,
     request: &'request Operation::Request,
     outcome_unknown: bool,
 }
 
 #[async_trait]
-impl<Operation> FailoverAttempt for RoutedAttempt<'_, Operation>
+impl<Operation, Connector: EndpointConnector> FailoverAttempt
+    for RoutedAttempt<'_, Operation, Connector>
 where
     Operation: RoutedOperation,
+    Connector::Connection: UpstreamConnection,
 {
     type Value = Operation::Response;
     type Error = ServiceError;
@@ -133,7 +136,10 @@ where
     }
 }
 
-impl UpstreamBridge {
+impl<Connector: EndpointConnector> UpstreamBridge<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
     /// Runs one client API operation against the selected TACACS+ server.
     ///
     /// The networking layer selects dedicated or single-connection behavior.
@@ -155,7 +161,7 @@ impl UpstreamBridge {
         })?;
 
         let plan = routing.failover_plan();
-        let mut attempt = RoutedAttempt::<Operation> {
+        let mut attempt = RoutedAttempt::<Operation, Connector> {
             router: &self.router,
             routing,
             request: &request,

@@ -27,6 +27,8 @@ use crate::config::{PolicyService, PreparedProxyPolicy};
 use crate::runtime::RequestGuard;
 use crate::upstream::OperationRouter;
 use crate::upstream::manager::UpstreamManager;
+use crate::upstream::UpstreamConnection;
+use tacacsrs_networking::routed::EndpointConnector;
 
 mod error;
 mod error_reply;
@@ -38,14 +40,26 @@ mod session_mapping;
 const SESSION_QUEUE_CAPACITY: usize = 8;
 
 /// Maps raw TACACS+ proxy streams to managed server sessions.
-#[derive(Clone)]
-pub(super) struct UpstreamBridge {
-    upstream_manager: Arc<UpstreamManager>,
+pub(super) struct UpstreamBridge<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    upstream_manager: Arc<UpstreamManager<Connector>>,
 }
 
-impl UpstreamBridge {
+impl<Connector: EndpointConnector> Clone for UpstreamBridge<Connector> {
+    fn clone(&self) -> Self {
+        Self {
+            upstream_manager: self.upstream_manager.clone(),
+        }
+    }
+}
+
+impl<Connector: EndpointConnector> UpstreamBridge<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
     /// Creates a raw proxy bridge for the shared upstream manager.
-    pub(super) fn new(upstream_manager: Arc<UpstreamManager>) -> Self {
+    pub(super) fn new(upstream_manager: Arc<UpstreamManager<Connector>>) -> Self {
         Self { upstream_manager }
     }
 
@@ -792,7 +806,7 @@ mod tests {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let manager = Arc::new(UpstreamManager::new(
                 vec![native_server(&listener)],
-                Arc::new(NetworkUpstreamConnector::new(ProxyLoopGuard::new(None))),
+                NetworkUpstreamConnector::new(ProxyLoopGuard::new(None)).erased(),
                 Duration::from_secs(30),
                 RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
             ));
@@ -880,7 +894,7 @@ mod tests {
             };
             let manager = Arc::new(UpstreamManager::new(
                 vec![native_server(&primary), native_server(&backup)],
-                Arc::new(NetworkUpstreamConnector::new(ProxyLoopGuard::new(None))),
+                NetworkUpstreamConnector::new(ProxyLoopGuard::new(None)).erased(),
                 Duration::from_secs(30),
                 RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
             ));

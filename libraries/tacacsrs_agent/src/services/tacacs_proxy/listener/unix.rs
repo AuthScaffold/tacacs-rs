@@ -9,13 +9,16 @@ use crate::runtime::{ListenerRegistration, ShutdownReceiver};
 use crate::services::client_api::listener as client_api_listener;
 use crate::services::tacacs_proxy::TacacsProxyService;
 
-pub(super) async fn serve(
+pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
     path: &Path,
-    service: TacacsProxyService,
+    service: TacacsProxyService<Connector>,
     options: crate::services::ListenerOptions,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    Connector::Connection: crate::upstream::UpstreamConnection,
+{
     let (listener, socket_guard) =
         client_api_listener::prepare_unix_listener(path, options.socket_mode()).await?;
     registration.mark_bound();

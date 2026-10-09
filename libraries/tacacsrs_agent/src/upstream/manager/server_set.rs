@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(test)]
 use async_trait::async_trait;
 
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
@@ -14,29 +15,35 @@ use super::prepared_server::PreparedServer;
 use crate::config::{PolicyService, PreparedProxyPolicy, RuntimePolicy};
 use crate::upstream::admission::AdmissionRegistry;
 use crate::upstream::admission::AdmissionError;
-use crate::upstream::{OperationKind, UpstreamConnection, UpstreamConnector};
+use crate::upstream::OperationKind;
+#[cfg(test)]
+use crate::upstream::{UpstreamConnection, UpstreamConnector};
 
 /// Immutable routing inputs published as one generation.
-pub(super) struct RuntimeRoutingSnapshot {
+pub(super) struct RuntimeRoutingSnapshot<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
     pub(super) generation: u64,
     pub(super) availability_generation: u64,
-    pub(super) server_set: Arc<ServerSet>,
+    pub(super) server_set: Arc<ServerSet<Connector>>,
     pub(super) proxy_downstream_obfuscation: PreparedProxyPolicy,
     pub(super) runtime_policy: Arc<RuntimePolicy>,
     pub(super) admission: Arc<AdmissionRegistry>,
 }
 
 /// One request's immutable routing and retry-policy inputs.
-pub(crate) struct RoutingLease {
-    pub(super) runtime: Arc<RuntimeRoutingSnapshot>,
+pub(crate) struct RoutingLease<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    pub(super) runtime: Arc<RuntimeRoutingSnapshot<Connector>>,
     pub(super) operation: OperationKind,
     plan: FailoverPlan,
     deadline: RequestDeadline,
 }
 
-impl RoutingLease {
+impl<Connector: EndpointConnector> RoutingLease<Connector> {
     pub(super) fn new(
-        runtime: Arc<RuntimeRoutingSnapshot>,
+        runtime: Arc<RuntimeRoutingSnapshot<Connector>>,
         service: PolicyService,
         operation: OperationKind,
     ) -> Self {
@@ -83,13 +90,17 @@ impl RoutingLease {
 }
 
 /// Source metadata and the networking-owned catalog published with it.
-pub(super) struct ServerSet {
+pub(super) struct ServerSet<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
     pub(super) servers: Vec<Arc<PreparedServer>>,
-    pub(super) client: RoutedClient<ServiceConnector>,
+    pub(super) client: RoutedClient<Connector>,
 }
 
-pub(super) struct ServiceConnector(pub(super) Arc<dyn UpstreamConnector>);
+#[cfg(test)]
+pub(crate) struct ServiceConnector(pub(crate) Arc<UpstreamConnector>);
 
+#[cfg(test)]
 #[async_trait]
 impl EndpointConnector for ServiceConnector {
     type Connection = dyn UpstreamConnection;
@@ -122,16 +133,18 @@ impl EndpointConnector for ServiceConnector {
 /// Result of binding an IPC request to a TACACS+ server.
 ///
 /// Contains the server index for failover records and the request connection.
-pub(crate) struct BoundServer {
+pub(crate) struct BoundServer<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
     pub(super) server: Arc<TacacsPlusServer>,
-    pub(super) binding: BoundEndpoint<ServiceConnector>,
+    pub(super) binding: BoundEndpoint<Connector>,
     /// Index in the service server list.
     pub(crate) index: usize,
     /// Server connection for this request.
-    pub(crate) connection: Arc<dyn UpstreamConnection>,
+    pub(crate) connection: Arc<Connector::Connection>,
 }
 
-impl BoundServer {
+impl<Connector: EndpointConnector> BoundServer<Connector> {
     /// Returns the configured upstream server selected for this request.
     pub(crate) fn server(&self) -> &TacacsPlusServer {
         &self.server
@@ -143,17 +156,14 @@ impl BoundServer {
     }
 }
 
-impl ServerSet {
-    pub(super) fn new(
-        servers: Vec<Arc<PreparedServer>>,
-        connector: Arc<dyn UpstreamConnector>,
-    ) -> Self {
+impl<Connector: EndpointConnector> ServerSet<Connector> {
+    pub(super) fn new(servers: Vec<Arc<PreparedServer>>, connector: Connector) -> Self {
         let client = RoutedClient::with_connector(
             servers
                 .iter()
                 .map(|server| server.endpoint.clone())
                 .collect(),
-            ServiceConnector(connector),
+            connector,
         );
         Self { servers, client }
     }

@@ -25,6 +25,8 @@ use super::reply_action::{ReplyAction, is_error_reply, reply_action};
 use super::session_mapping::rewrite_session_id;
 use crate::upstream::{AdmissionError, AdmissionPermit, OperationKind, OperationRouter, RequestRouting};
 use crate::upstream::manager::BoundServer;
+use crate::upstream::UpstreamConnection;
+use tacacsrs_networking::routed::EndpointConnector;
 
 /// One TACACS+ conversation with a selected upstream server.
 #[async_trait]
@@ -98,27 +100,35 @@ pub(super) trait ProxyConversationProvider: Send + Sync + 'static {
 }
 
 /// Provides proxy conversations through the shared upstream router.
-pub(super) struct UpstreamConversationProvider {
-    router: OperationRouter,
+pub(super) struct UpstreamConversationProvider<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    router: OperationRouter<Connector>,
 }
 
-impl UpstreamConversationProvider {
-    pub(super) const fn new(router: OperationRouter) -> Self {
+impl<Connector: EndpointConnector> UpstreamConversationProvider<Connector> {
+    pub(super) const fn new(router: OperationRouter<Connector>) -> Self {
         Self { router }
     }
 }
 
 /// A proxy conversation bound to one server, operation, and routing generation.
-pub(super) struct ManagedProxyConversation {
-    router: OperationRouter,
-    bound_server: BoundServer,
+pub(super) struct ManagedProxyConversation<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    router: OperationRouter<Connector>,
+    bound_server: BoundServer<Connector>,
     conversation: ClientConversation,
 }
 
 #[async_trait]
-impl ProxyConversationProvider for UpstreamConversationProvider {
-    type Conversation = ManagedProxyConversation;
-    type Request = RequestRouting;
+impl<Connector: EndpointConnector> ProxyConversationProvider
+    for UpstreamConversationProvider<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
+    type Conversation = ManagedProxyConversation<Connector>;
+    type Request = RequestRouting<Connector>;
     type Reservation = tacacsrs_networking::admission::AdmissionReservation;
 
     fn reserve(
@@ -177,7 +187,7 @@ impl ProxyConversationProvider for UpstreamConversationProvider {
 }
 
 #[async_trait]
-impl ProxyConversation for ManagedProxyConversation {
+impl<Connector: EndpointConnector> ProxyConversation for ManagedProxyConversation<Connector> {
     fn session_id(&self) -> Option<u32> {
         self.conversation.session_id()
     }

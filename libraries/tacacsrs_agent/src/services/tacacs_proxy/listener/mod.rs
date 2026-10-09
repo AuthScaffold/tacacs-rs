@@ -13,13 +13,16 @@ use crate::services::ListenerOptions;
 mod tcp;
 mod unix;
 
-pub(super) async fn serve(
+pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
     endpoint: &IpcEndpoint,
-    service: TacacsProxyService,
+    service: TacacsProxyService<Connector>,
     options: ListenerOptions,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    Connector::Connection: crate::upstream::UpstreamConnection,
+{
     match endpoint {
         IpcEndpoint::Unix(path) => {
             unix::serve(path, service, options, shutdown, registration).await
@@ -37,9 +40,9 @@ pub(super) async fn serve(
 /// exchange time to finish.
 const PROXY_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
-async fn accept_loop<Listener, Stream>(
+async fn accept_loop<Listener, Stream, Connector: tacacsrs_networking::routed::EndpointConnector>(
     listener: Listener,
-    service: TacacsProxyService,
+    service: TacacsProxyService<Connector>,
     endpoint_label: String,
     options: ListenerOptions,
     shutdown: ShutdownReceiver,
@@ -47,6 +50,7 @@ async fn accept_loop<Listener, Stream>(
 where
     Listener: ProxyListener<Stream>,
     Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    Connector::Connection: crate::upstream::UpstreamConnection,
 {
     let mut shutdown = Box::pin(shutdown.wait());
     let mut connections = JoinSet::new();

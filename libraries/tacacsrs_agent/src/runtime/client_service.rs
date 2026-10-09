@@ -37,8 +37,14 @@ use crate::config::{PreparedProxyPolicy, RuntimePolicy, ServiceConfig};
 use crate::services::client_api::ClientApiService;
 use crate::services::tacacs_proxy::TacacsProxyService;
 use crate::services::ListenerOptions;
-use crate::upstream::{NetworkUpstreamConnector, UpstreamConnector};
+use crate::upstream::NetworkUpstreamConnector;
+#[cfg(test)]
+use crate::upstream::UpstreamConnector;
+use crate::upstream::UpstreamConnection;
 use crate::upstream::manager::UpstreamManager;
+#[cfg(test)]
+use crate::upstream::manager::ServiceConnector;
+use tacacsrs_networking::routed::EndpointConnector;
 
 /// Long-lived local TACACS+ client service.
 ///
@@ -63,12 +69,137 @@ use crate::upstream::manager::UpstreamManager;
 ///                                              Draining ──> Cleanup ──> [end]
 /// ```
 pub struct TacacsClientService {
+    runtime: ServiceRuntime<NetworkUpstreamConnector>,
+}
+
+impl TacacsClientService {
+    /// Builds a service with the concrete native connector.
+    ///
+    /// # Errors
+    /// Returns a configuration or native preparation error.
+    pub fn new(config: ServiceConfig, health: RuntimeHealthPublisher) -> anyhow::Result<Self> {
+        Ok(Self {
+            runtime: ServiceRuntime::from_config(
+                config,
+                health,
+                true,
+                NetworkUpstreamConnector::new,
+            )?,
+        })
+    }
+
+    /// Builds an empty service that waits for its first valid configuration.
+    ///
+    /// # Errors
+    /// Returns an error for nonempty upstreams or invalid listener configuration.
+    pub fn waiting_for_configuration(
+        config: ServiceConfig,
+        health: RuntimeHealthPublisher,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            config.tacacs_plus.server.is_empty(),
+            "Configuration for a waiting service must contain no TACACS+ servers"
+        );
+        Ok(Self {
+            runtime: ServiceRuntime::from_config(
+                config,
+                health,
+                false,
+                NetworkUpstreamConnector::new,
+            )?,
+        })
+    }
+
+    /// Applies a complete validated upstream configuration.
+    ///
+    /// # Errors
+    /// Returns a validation or preparation error without publishing a partial update.
+    pub async fn reload_tacacs_plus(&self, source: TacacsPlus) -> anyhow::Result<()> {
+        self.runtime.reload_tacacs_plus(source).await
+    }
+
+    /// Applies a validated policy to new requests.
+    pub async fn reload_runtime_policy(&self, policy: RuntimePolicy) {
+        self.runtime.reload_runtime_policy(policy).await;
+    }
+
+    /// Applies upstream configuration with its prepared downstream policy.
+    ///
+    /// # Errors
+    /// Returns an error if the complete update cannot be prepared and published.
+    pub async fn reload_tacacs_plus_with_proxy_downstream_obfuscation(
+        &self,
+        source: TacacsPlus,
+        policy: PreparedProxyPolicy,
+    ) -> anyhow::Result<()> {
+        self.runtime
+            .reload_tacacs_plus_with_proxy_downstream_obfuscation(source, policy)
+            .await
+    }
+
+    /// Applies materialized upstreams with their prepared downstream policy.
+    ///
+    /// # Errors
+    /// Returns an error if validation or native preparation fails.
+    pub async fn reload_materialized_servers_with_proxy_downstream_obfuscation(
+        &self,
+        servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
+        policy: PreparedProxyPolicy,
+    ) -> anyhow::Result<()> {
+        self.runtime
+            .reload_materialized_servers_with_proxy_downstream_obfuscation(servers, policy)
+            .await
+    }
+
+    /// Returns the current configured upstream count.
+    #[must_use]
+    pub fn server_count(&self) -> usize {
+        self.runtime.server_count()
+    }
+
+    /// Serves until a process shutdown signal and joins runtime resources.
+    ///
+    /// # Errors
+    /// Returns a listener or shutdown error after cleanup.
+    pub async fn serve(&self) -> anyhow::Result<()> {
+        self.runtime.serve().await
+    }
+
+    /// Serves until an embedding host requests shutdown, without installing signals.
+    ///
+    /// # Errors
+    /// Returns a listener or shutdown error after cleanup.
+    pub async fn serve_until(
+        &self,
+        stop: impl std::future::Future<Output = ()> + Send,
+    ) -> anyhow::Result<()> {
+        self.runtime.serve_until(stop).await
+    }
+
+    /// Closes upstream resources without starting listeners.
+    ///
+    /// Stop an active listener run through its `serve_until` trigger and await it.
+    ///
+    /// # Errors
+    /// Returns an upstream cleanup error after joining remaining resources.
+    pub async fn close_and_join(
+        &self,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        self.runtime.close_and_join(deadline).await
+    }
+}
+
+/// Generic service implementation shared by native production and test connectors.
+pub(crate) struct ServiceRuntime<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
     /// Validated operator configuration.
     config: ServiceConfig,
     listeners: PreparedLocalServices,
     proxy_loop_guard: ProxyLoopGuard,
     /// Shared failover state for all IPC request handlers.
-    state: Arc<UpstreamManager>,
+    state: Arc<UpstreamManager<Connector>>,
     /// Serializes publication of a complete runtime generation.
     reload_lock: Mutex<()>,
     /// Shared request tracker for graceful shutdown.
@@ -77,9 +208,11 @@ pub struct TacacsClientService {
     health: RuntimeHealthPublisher,
 }
 
-struct ServiceRunGuard<'service>(Option<&'service UpstreamManager>);
+struct ServiceRunGuard<'service, Connector: EndpointConnector>(
+    Option<&'service UpstreamManager<Connector>>,
+);
 
-impl Drop for ServiceRunGuard<'_> {
+impl<Connector: EndpointConnector> Drop for ServiceRunGuard<'_, Connector> {
     fn drop(&mut self) {
         if let Some(manager) = self.0 {
             manager.cancel();
@@ -87,7 +220,8 @@ impl Drop for ServiceRunGuard<'_> {
     }
 }
 
-impl TacacsClientService {
+#[cfg(test)]
+impl ServiceRuntime<ServiceConnector> {
     /// Builds a TACACS+ client service with persistent server connections and
     /// ordered failover.
     ///
@@ -128,6 +262,30 @@ impl TacacsClientService {
         health: RuntimeHealthPublisher,
         configuration_applied: bool,
     ) -> anyhow::Result<Self> {
+        Self::from_config(config, health, configuration_applied, |guard| {
+            ServiceConnector(NetworkUpstreamConnector::new(guard).erased())
+        })
+    }
+
+    pub(super) fn new_with_connector(
+        config: ServiceConfig,
+        connector: Arc<UpstreamConnector>,
+        health: RuntimeHealthPublisher,
+    ) -> anyhow::Result<Self> {
+        Self::from_config(config, health, true, |_| ServiceConnector(connector))
+    }
+}
+
+impl<Connector: EndpointConnector> ServiceRuntime<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
+    fn from_config(
+        config: ServiceConfig,
+        health: RuntimeHealthPublisher,
+        configuration_applied: bool,
+        factory: impl FnOnce(ProxyLoopGuard) -> Connector,
+    ) -> anyhow::Result<Self> {
         let listeners = prepare_local_services(&config.local_services)?;
         let proxy_loop_guard = ProxyLoopGuard::new(listeners.tacacs_proxy());
         if health.snapshot().enabled_services() != config.enabled_services() {
@@ -136,8 +294,7 @@ impl TacacsClientService {
         let servers = enumerate_supported_servers(&config.tacacs_plus, &config.validation_options)?;
         let eligible_server_count = servers.len();
 
-        let connector: Arc<dyn UpstreamConnector> =
-            Arc::new(NetworkUpstreamConnector::new(proxy_loop_guard.clone()));
+        let connector = factory(proxy_loop_guard.clone());
         let proxy_policy = if !configuration_applied
             && config.local_services.proxy_credential_source
                 == tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow
@@ -146,7 +303,7 @@ impl TacacsClientService {
         } else {
             tacacsrs_config::proxy_policy::prepare_proxy_policy(&config.local_services, None)?
         };
-        let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+        let state = Arc::new(UpstreamManager::from_connector(
             servers.into_iter().map(Arc::new).collect(),
             proxy_policy,
             config.runtime_policy.clone(),
@@ -158,44 +315,6 @@ impl TacacsClientService {
         let request_tracker = Arc::new(RequestTracker::default());
         health.set_eligible_server_count(eligible_server_count);
         health.set_applied_configuration(configuration_applied);
-
-        Ok(Self {
-            config,
-            listeners,
-            proxy_loop_guard,
-            state,
-            reload_lock: Mutex::new(()),
-            request_tracker,
-            health,
-        })
-    }
-
-    #[cfg(test)]
-    pub(super) fn new_with_connector(
-        config: ServiceConfig,
-        connector: Arc<dyn UpstreamConnector>,
-        health: RuntimeHealthPublisher,
-    ) -> anyhow::Result<Self> {
-        let listeners = prepare_local_services(&config.local_services)?;
-        let proxy_loop_guard = ProxyLoopGuard::new(listeners.tacacs_proxy());
-        if health.snapshot().enabled_services() != config.enabled_services() {
-            anyhow::bail!("Runtime health and service configuration must enable the same services");
-        }
-        let servers = enumerate_supported_servers(&config.tacacs_plus, &config.validation_options)?;
-        let eligible_server_count = servers.len();
-
-        let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
-            servers.into_iter().map(Arc::new).collect(),
-            tacacsrs_config::proxy_policy::prepare_proxy_policy(&config.local_services, None)?,
-            config.runtime_policy.clone(),
-            connector,
-            health.clone(),
-            tacacsrs_config::prepare::PrepareOptions::default()
-                .with_certificate_verification_disabled(config.disable_certificate_verification),
-        )?);
-        let request_tracker = Arc::new(RequestTracker::default());
-        health.set_eligible_server_count(eligible_server_count);
-        health.set_applied_configuration(true);
 
         Ok(Self {
             config,
@@ -466,7 +585,7 @@ mod tests {
     use crate::config::{
         EnabledServices, FailoverStrategy, OperationPolicies, PreparedProxyPolicy, RuntimePolicy,
     };
-    use super::TacacsClientService;
+    type TacacsClientService = super::ServiceRuntime<crate::upstream::manager::ServiceConnector>;
     use crate::runtime::{
         ListenerState, REQUIRED_SERVER_TYPES, RequestTracker, RuntimeHealthPublisher,
         RuntimeLifecycle, RuntimeService, ShutdownCoordinator,
@@ -546,6 +665,83 @@ mod tests {
         config.local_services.tacacs_proxy_endpoint =
             Some(config.local_services.client_api_endpoint.clone());
         assert!(test_service(config).is_err());
+    }
+
+    #[tokio::test]
+    async fn public_facade_uses_concrete_native_connector_through_ipc_and_shutdown() {
+        use tacacsrs_networking::{PacketReader, PacketReadResult, PacketWriter, PacketWriteResult};
+        use tacacsrs_protocol::accounting::reply::AccountingReply;
+        use tacacsrs_protocol::enumerations::TacacsAccountingStatus;
+        use tacacsrs_protocol::packet::{Packet, PacketTrait};
+        use tacacsrs_protocol::traits::TacacsBodyTrait;
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let server = test_server(&address);
+            let endpoint = test_endpoint("concrete-production");
+            let config = service_config(endpoint.clone(), vec![server]);
+            let health = RuntimeHealthPublisher::new(config.enabled_services());
+            let service =
+                Arc::new(super::TacacsClientService::new(config, health.clone()).unwrap());
+            let _: &UpstreamManager<crate::upstream::NetworkUpstreamConnector> =
+                &service.runtime.state;
+            let peer = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let PacketReadResult::Success(request) =
+                    PacketReader::new(Some(b"test-secret".to_vec()))
+                        .read_packet(&mut stream)
+                        .await
+                else {
+                    panic!("expected accounting packet");
+                };
+                let body = AccountingReply {
+                    status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+                    server_msg: String::new(),
+                    data: String::new(),
+                }
+                .to_bytes()
+                .unwrap();
+                let mut header = request.header().clone();
+                header.seq_no += 1;
+                header.length = u32::try_from(body.len()).unwrap();
+                assert!(matches!(
+                    PacketWriter::new(Some(b"test-secret".to_vec()))
+                        .write_packet(&mut stream, Packet::new(header, body).unwrap())
+                        .await,
+                    PacketWriteResult::Success
+                ));
+            });
+            let (stop, stopping) = tokio::sync::oneshot::channel();
+            let running = service.clone();
+            let task = tokio::spawn(async move {
+                running
+                    .serve_until(async {
+                        let _signal = stopping.await;
+                    })
+                    .await
+            });
+            let mut updates = health.subscribe();
+            updates
+                .wait_for(|snapshot| snapshot.lifecycle() == RuntimeLifecycle::Serving)
+                .await
+                .unwrap();
+            let client = ServiceClient::connect(endpoint).await.unwrap();
+            assert_eq!(
+                client
+                    .send_accounting(build_request())
+                    .await
+                    .unwrap()
+                    .server,
+                address
+            );
+            stop.send(()).unwrap();
+            task.await.unwrap().unwrap();
+            peer.await.unwrap();
+            assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Stopped);
+        })
+        .await
+        .expect("concrete production path must complete");
     }
 
     #[tokio::test]
@@ -664,7 +860,7 @@ mod tests {
 
     fn test_service_with_connector(
         config: ServiceConfig,
-        connector: Arc<dyn crate::upstream::UpstreamConnector>,
+        connector: Arc<crate::upstream::UpstreamConnector>,
     ) -> anyhow::Result<TacacsClientService> {
         let health = RuntimeHealthPublisher::new(config.enabled_services());
         TacacsClientService::new_with_connector(config, connector, health)

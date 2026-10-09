@@ -26,7 +26,7 @@ use super::UpstreamBridge;
 use crate::config::{FailoverStrategy, OperationPolicies, PreparedProxyPolicy, RuntimePolicy};
 use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
 use crate::upstream::manager::UpstreamManager;
-use crate::upstream::{OperationKind, UpstreamConnection, UpstreamConnector, UpstreamRequestError};
+use crate::upstream::{OperationKind, UpstreamConnection, UpstreamRequestError};
 use crate::EnabledServices;
 
 struct ScriptedConnection {
@@ -164,7 +164,23 @@ impl OperationConnector {
 }
 
 #[async_trait]
-impl UpstreamConnector for OperationConnector {
+impl tacacsrs_networking::routed::EndpointConnector for OperationConnector {
+    type Connection = dyn UpstreamConnection;
+
+    async fn retire(&self, connection: &Self::Connection) {
+        connection.stop_accepting_new_sessions().await;
+    }
+    fn close(&self, connection: &Self::Connection) {
+        connection.close();
+    }
+    async fn close_and_join(
+        &self,
+        connection: &Self::Connection,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        connection.close_and_join(deadline).await
+    }
+
     async fn connect(
         &self,
         endpoint: tacacsrs_networking::PreparedEndpoint,
@@ -214,7 +230,10 @@ fn policy(strategy: FailoverStrategy) -> RuntimePolicy {
     .expect("test policy")
 }
 
-fn bridge(connector: Arc<OperationConnector>, strategy: FailoverStrategy) -> UpstreamBridge {
+fn bridge(
+    connector: Arc<OperationConnector>,
+    strategy: FailoverStrategy,
+) -> UpstreamBridge<crate::upstream::manager::ServiceConnector> {
     let manager = Arc::new(
         UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
             vec![server("primary"), server("backup")],

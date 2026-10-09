@@ -12,7 +12,9 @@ use tacacsrs_protocol::authorization::reply::AuthorizationReply;
 use tacacsrs_protocol::authorization::request::AuthorizationRequest;
 use tacacsrs_networking::{PreparedEndpoint, TacacsClient};
 
-use super::connection::{UpstreamConnection, UpstreamConnector};
+use super::connection::UpstreamConnection;
+#[cfg(test)]
+use super::connection::UpstreamConnector;
 use super::{OperationKind, UpstreamRequestError};
 use crate::runtime::ProxyLoopGuard;
 
@@ -28,15 +30,36 @@ impl NetworkUpstreamConnector {
     pub(crate) const fn new(proxy_loop_guard: ProxyLoopGuard) -> Self {
         Self { proxy_loop_guard }
     }
+
+    #[cfg(test)]
+    pub(crate) fn erased(self) -> Arc<UpstreamConnector> {
+        Arc::new(ErasedNetworkConnector(self))
+    }
 }
 
 #[async_trait]
-impl UpstreamConnector for NetworkUpstreamConnector {
+impl tacacsrs_networking::routed::EndpointConnector for NetworkUpstreamConnector {
+    type Connection = TacacsUpstreamConnection;
+
+    async fn retire(&self, connection: &Self::Connection) {
+        connection.stop_accepting_new_sessions().await;
+    }
+    fn close(&self, connection: &Self::Connection) {
+        connection.close();
+    }
+    async fn close_and_join(
+        &self,
+        connection: &Self::Connection,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        connection.close_and_join(deadline).await
+    }
+
     async fn connect(
         &self,
         endpoint: PreparedEndpoint,
         operation: OperationKind,
-    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+    ) -> anyhow::Result<Arc<Self::Connection>> {
         let address = endpoint.address().to_owned();
         let connection = TacacsClient::connect_prepared(
             endpoint.with_connection_guard(self.proxy_loop_guard.clone()),
@@ -56,13 +79,46 @@ impl UpstreamConnector for NetworkUpstreamConnector {
 /// The networking layer selects a dedicated connection or a shared
 /// single-connection transport for each operation. The agent only runs
 /// request/reply flows and controls failover.
-struct TacacsUpstreamConnection {
+pub(crate) struct TacacsUpstreamConnection {
     /// The `host:port` address of the TACACS+ server.
     server_address: String,
     /// Operation isolated on this adaptive client.
     operation: OperationKind,
     /// The adaptive client connection.
     connection: TacacsClient,
+}
+
+#[cfg(test)]
+struct ErasedNetworkConnector(NetworkUpstreamConnector);
+
+#[cfg(test)]
+#[async_trait]
+impl tacacsrs_networking::routed::EndpointConnector for ErasedNetworkConnector {
+    type Connection = dyn UpstreamConnection;
+
+    async fn retire(&self, connection: &Self::Connection) {
+        connection.stop_accepting_new_sessions().await;
+    }
+    fn close(&self, connection: &Self::Connection) {
+        connection.close();
+    }
+    async fn close_and_join(
+        &self,
+        connection: &Self::Connection,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        connection.close_and_join(deadline).await
+    }
+
+    async fn connect(
+        &self,
+        endpoint: PreparedEndpoint,
+        operation: OperationKind,
+    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        tacacsrs_networking::routed::EndpointConnector::connect(&self.0, endpoint, operation)
+            .await
+            .map(|connection| connection as Arc<dyn UpstreamConnection>)
+    }
 }
 
 #[async_trait]

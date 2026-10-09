@@ -1,6 +1,7 @@
 //! Adapts networking bindings to source metadata and service health.
 
 use std::sync::Arc;
+use tacacsrs_networking::routed::EndpointConnector;
 
 use super::{BoundServer, RoutingLease, UpstreamManager};
 #[cfg(test)]
@@ -8,9 +9,11 @@ use crate::config::{PolicyService, PreparedProxyPolicy};
 #[cfg(test)]
 use crate::upstream::OperationKind;
 
-impl UpstreamManager {
+impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     #[cfg(test)]
-    pub(crate) async fn bind_server_for_new_session(&self) -> anyhow::Result<BoundServer> {
+    pub(crate) async fn bind_server_for_new_session(
+        &self,
+    ) -> anyhow::Result<BoundServer<Connector>> {
         self.bind_server_for_operation(OperationKind::Authentication)
             .await
     }
@@ -19,7 +22,7 @@ impl UpstreamManager {
     pub(in crate::upstream) async fn bind_server_for_operation(
         &self,
         operation: OperationKind,
-    ) -> anyhow::Result<BoundServer> {
+    ) -> anyhow::Result<BoundServer<Connector>> {
         self.bind_request(&self.capture_request(PolicyService::ClientApi, operation))
             .await
     }
@@ -28,7 +31,7 @@ impl UpstreamManager {
     pub(crate) async fn bind_proxy_server_for_new_session(
         &self,
         operation: OperationKind,
-    ) -> anyhow::Result<(BoundServer, PreparedProxyPolicy)> {
+    ) -> anyhow::Result<(BoundServer<Connector>, PreparedProxyPolicy)> {
         let lease = self.capture_request(PolicyService::TacacsProxy, operation);
         let bound = self.bind_request(&lease).await?;
         Ok((bound, lease.runtime.proxy_downstream_obfuscation.clone()))
@@ -36,8 +39,8 @@ impl UpstreamManager {
 
     pub(in crate::upstream) async fn bind_request(
         &self,
-        lease: &RoutingLease,
-    ) -> anyhow::Result<BoundServer> {
+        lease: &RoutingLease<Connector>,
+    ) -> anyhow::Result<BoundServer<Connector>> {
         let runtime = &lease.runtime;
         let client = &runtime.server_set.client;
         if client.eligible_count(lease.operation) == 0 {
@@ -74,11 +77,17 @@ impl UpstreamManager {
         }
     }
 
-    pub(in crate::upstream) async fn note_bound_server_failure(&self, bound_server: &BoundServer) {
+    pub(in crate::upstream) async fn note_bound_server_failure(
+        &self,
+        bound_server: &BoundServer<Connector>,
+    ) {
         bound_server.binding.note_failure().await;
     }
 
-    pub(in crate::upstream) async fn note_bound_server_success(&self, bound_server: &BoundServer) {
+    pub(in crate::upstream) async fn note_bound_server_success(
+        &self,
+        bound_server: &BoundServer<Connector>,
+    ) {
         bound_server.binding.note_success().await;
     }
 }

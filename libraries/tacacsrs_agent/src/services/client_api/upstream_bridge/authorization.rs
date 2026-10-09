@@ -21,8 +21,8 @@ impl RoutedOperation for AuthorizationRoute {
     const NAME: &'static str = "authorization";
     const DISPLAY_NAME: &'static str = "Authorization";
     const OPERATION: OperationKind = OperationKind::Authorization;
-    async fn send(
-        connection: &dyn UpstreamConnection,
+    async fn send<Connection: UpstreamConnection + ?Sized>(
+        connection: &Connection,
         request: &Self::Request,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError> {
@@ -48,7 +48,10 @@ impl RoutedOperation for AuthorizationRoute {
     }
 }
 
-impl UpstreamBridge {
+impl<Connector: tacacsrs_networking::routed::EndpointConnector> UpstreamBridge<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
     /// Runs one IPC authorization request against the selected TACACS+ server.
     ///
     /// Authorization and accounting use the same server selection and failover

@@ -12,14 +12,17 @@ mod unix;
 mod incoming;
 
 /// Runs the client API listener until the process receives a shutdown signal.
-pub(crate) async fn serve(
+pub(crate) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
     endpoint: &IpcEndpoint,
-    service: ClientApiService,
+    service: ClientApiService<Connector>,
     options: ListenerOptions,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
     health: watch::Receiver<RuntimeHealthSnapshot>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    Connector::Connection: crate::upstream::UpstreamConnection,
+{
     match endpoint {
         IpcEndpoint::Unix(path) => {
             unix::serve(

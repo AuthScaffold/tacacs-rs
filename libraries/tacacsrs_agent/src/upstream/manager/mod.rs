@@ -6,6 +6,7 @@
 use std::sync::{Arc, RwLock as StdRwLock};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_config::prepare::PrepareOptions;
+use tacacsrs_networking::routed::EndpointConnector;
 
 use self::availability::AvailabilityTracker;
 use self::server_set::{RuntimeRoutingSnapshot, ServerSet};
@@ -15,9 +16,13 @@ use crate::config::{PreparedProxyPolicy, RuntimePolicy};
 use crate::config::{FailoverStrategy, OperationPolicies};
 use crate::runtime::RuntimeHealthPublisher;
 use crate::upstream::admission::AdmissionRegistry;
-use crate::upstream::{AdmissionError, OperationKind, ProxyTransportSettings, UpstreamConnector};
+use crate::upstream::{AdmissionError, OperationKind, ProxyTransportSettings};
+#[cfg(test)]
+use crate::upstream::UpstreamConnector;
 
 pub(crate) use self::server_set::{BoundServer, RoutingLease};
+#[cfg(test)]
+pub(crate) use self::server_set::ServiceConnector;
 
 mod server_set;
 mod prepared_server;
@@ -28,17 +33,20 @@ mod binding;
 ///
 /// Networking supplies the binding and records routing outcomes. This adapter
 /// associates that binding with source metadata and generation-aware health.
-pub(crate) struct UpstreamManager {
+pub(crate) struct UpstreamManager<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
     closed: std::sync::atomic::AtomicBool,
     reload_lock: tokio::sync::Mutex<()>,
     /// Current immutable routing generation for new requests.
-    runtime: StdRwLock<Arc<RuntimeRoutingSnapshot>>,
+    runtime: StdRwLock<Arc<RuntimeRoutingSnapshot<Connector>>>,
     connect_options: PrepareOptions,
     /// Race-safe aggregate server-availability publisher.
     availability: AvailabilityTracker,
 }
 
-impl UpstreamManager {
+#[cfg(test)]
+impl UpstreamManager<ServiceConnector> {
     /// Creates shared failover state for the service runtime.
     ///
     /// The runtime can start without a configured server while it waits for
@@ -47,7 +55,7 @@ impl UpstreamManager {
     #[cfg(test)]
     pub(crate) fn new(
         servers: Vec<TacacsPlusServer>,
-        connector: Arc<dyn UpstreamConnector>,
+        connector: Arc<UpstreamConnector>,
         preferred_probe_interval: std::time::Duration,
         health: RuntimeHealthPublisher,
     ) -> Self {
@@ -72,7 +80,7 @@ impl UpstreamManager {
     #[cfg(test)]
     pub(crate) fn new_shared(
         servers: Vec<Arc<TacacsPlusServer>>,
-        connector: Arc<dyn UpstreamConnector>,
+        connector: Arc<UpstreamConnector>,
         preferred_probe_interval: std::time::Duration,
         health: RuntimeHealthPublisher,
     ) -> Self {
@@ -97,7 +105,27 @@ impl UpstreamManager {
         servers: Vec<Arc<TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
         runtime_policy: RuntimePolicy,
-        connector: Arc<dyn UpstreamConnector>,
+        connector: Arc<UpstreamConnector>,
+        health: RuntimeHealthPublisher,
+        connect_options: PrepareOptions,
+    ) -> anyhow::Result<Self> {
+        Self::from_connector(
+            servers,
+            proxy_downstream_obfuscation,
+            runtime_policy,
+            ServiceConnector(connector),
+            health,
+            connect_options,
+        )
+    }
+}
+
+impl<Connector: EndpointConnector> UpstreamManager<Connector> {
+    pub(crate) fn from_connector(
+        servers: Vec<Arc<TacacsPlusServer>>,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
+        runtime_policy: RuntimePolicy,
+        connector: Connector,
         health: RuntimeHealthPublisher,
         connect_options: PrepareOptions,
     ) -> anyhow::Result<Self> {
@@ -122,7 +150,7 @@ impl UpstreamManager {
         })
     }
 
-    fn current_runtime(&self) -> Arc<RuntimeRoutingSnapshot> {
+    fn current_runtime(&self) -> Arc<RuntimeRoutingSnapshot<Connector>> {
         Arc::clone(
             &self
                 .runtime
@@ -178,7 +206,7 @@ impl UpstreamManager {
             .await
     }
 
-    fn current_server_set(&self) -> Arc<ServerSet> {
+    fn current_server_set(&self) -> Arc<ServerSet<Connector>> {
         Arc::clone(&self.current_runtime().server_set)
     }
 
@@ -186,7 +214,7 @@ impl UpstreamManager {
         &self,
         service: crate::config::PolicyService,
         operation: OperationKind,
-    ) -> RoutingLease {
+    ) -> RoutingLease<Connector> {
         let lease = RoutingLease::new(self.current_runtime(), service, operation);
         log::debug!(
             "Captured {} request routing generation {}",
@@ -257,7 +285,7 @@ impl UpstreamManager {
     /// Services reach this through [`crate::upstream::OperationRouter`].
     pub(in crate::upstream) async fn admit_request(
         &self,
-        lease: &RoutingLease,
+        lease: &RoutingLease<Connector>,
         body_length: usize,
     ) -> Result<crate::upstream::AdmissionPermit, AdmissionError> {
         let reservation = Self::reserve_request(lease, body_length)?;
@@ -265,7 +293,7 @@ impl UpstreamManager {
     }
 
     pub(in crate::upstream) fn reserve_request(
-        lease: &RoutingLease,
+        lease: &RoutingLease<Connector>,
         body_length: usize,
     ) -> Result<tacacsrs_networking::admission::AdmissionReservation, AdmissionError> {
         lease.validate_body_length(body_length)?;
@@ -279,7 +307,7 @@ impl UpstreamManager {
 
     pub(in crate::upstream) async fn admit_reserved(
         &self,
-        lease: &RoutingLease,
+        lease: &RoutingLease<Connector>,
         reservation: tacacsrs_networking::admission::AdmissionReservation,
     ) -> Result<crate::upstream::AdmissionPermit, AdmissionError> {
         let runtime = &lease.runtime;
@@ -443,7 +471,23 @@ mod tests {
     }
 
     #[async_trait]
-    impl UpstreamConnector for BlockingConnector {
+    impl tacacsrs_networking::routed::EndpointConnector for BlockingConnector {
+        type Connection = dyn crate::upstream::UpstreamConnection;
+
+        async fn retire(&self, connection: &Self::Connection) {
+            connection.stop_accepting_new_sessions().await;
+        }
+        fn close(&self, connection: &Self::Connection) {
+            connection.close();
+        }
+        async fn close_and_join(
+            &self,
+            connection: &Self::Connection,
+            deadline: tacacsrs_networking::RequestDeadline,
+        ) -> anyhow::Result<()> {
+            connection.close_and_join(deadline).await
+        }
+
         async fn connect(
             &self,
             _endpoint: tacacsrs_networking::PreparedEndpoint,
@@ -503,7 +547,7 @@ mod tests {
         server
     }
 
-    fn bound_secret(bound: &BoundServer) -> &[u8] {
+    fn bound_secret(bound: &BoundServer<super::ServiceConnector>) -> &[u8] {
         bound
             .server()
             .client_identity
@@ -788,7 +832,7 @@ mod tests {
                 test_server("server-b:49"),
                 test_server("server-c:49"),
             ],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
             Duration::from_millis(25),
             test_health(),
         );
@@ -1107,7 +1151,7 @@ mod tests {
         )])));
         let state = UpstreamManager::new(
             vec![test_server("server-a:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
             Duration::from_secs(5),
             test_health(),
         );
@@ -1159,7 +1203,7 @@ mod tests {
 
         let state = UpstreamManager::new(
             vec![test_server("server-a:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
             Duration::from_millis(25),
             test_health(),
         );
@@ -1200,7 +1244,7 @@ mod tests {
 
         let state = UpstreamManager::new(
             vec![test_server("server-a:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
             Duration::from_millis(25),
             test_health(),
         );
@@ -1318,7 +1362,7 @@ mod tests {
 
         let state = Arc::new(UpstreamManager::new(
             vec![test_server("server-a:49"), test_server("server-b:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
             Duration::from_millis(200),
             test_health(),
         ));

@@ -22,7 +22,7 @@ use tacacsrs_protocol::enumerations::{
 use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 use tokio::sync::Mutex;
 
-use crate::upstream::{OperationKind, UpstreamConnection, UpstreamConnector, UpstreamRequestError};
+use crate::upstream::{OperationKind, UpstreamConnection, UpstreamRequestError};
 
 #[derive(Debug)]
 pub(crate) struct FakeConnection {
@@ -159,7 +159,23 @@ impl FakeConnector {
 }
 
 #[async_trait]
-impl UpstreamConnector for FakeConnector {
+impl tacacsrs_networking::routed::EndpointConnector for FakeConnector {
+    type Connection = dyn UpstreamConnection;
+
+    async fn retire(&self, connection: &Self::Connection) {
+        connection.stop_accepting_new_sessions().await;
+    }
+    fn close(&self, connection: &Self::Connection) {
+        connection.close();
+    }
+    async fn close_and_join(
+        &self,
+        connection: &Self::Connection,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        connection.close_and_join(deadline).await
+    }
+
     async fn connect(
         &self,
         endpoint: tacacsrs_networking::PreparedEndpoint,

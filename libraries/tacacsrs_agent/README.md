@@ -51,41 +51,48 @@ tacacsrs_agent
 │           └── error - downstream/upstream connection error boundary
 ├── upstream         - TACACS+ upstream service boundary
 │   ├── router       - per-service facade over the upstream manager
-│   ├── executor     - the one retry loop that applies a failover plan
-│   ├── failover     - shared strategy and replay-safety decisions
 │   ├── admission    - shared operation-size and concurrency admission
-│   ├── operation    - authentication, authorization, and accounting identity
 │   ├── attempt      - transmission-aware request failures
 │   ├── proxy_transport
 │   │                - downstream settings published with the server set
-│   ├── manager      - server snapshots and operation routing
-│   │   ├── circuit  - server-operation recovery state
-│   │   ├── routing  - route selection and connection invalidation
+│   ├── manager      - source snapshots, policy publication, and health
+│   │   ├── availability - generation-aware upstream observations
+│   │   ├── binding  - networking bindings paired with source metadata
 │   │   ├── server_set
-│   │   │            - immutable catalogs and operation cursors
-│   │   └── server_slot
-│   │                - operation-scoped connection ownership
-│   ├── connection   - upstream connection and connector traits
+│   │   │            - generic request snapshots and networking catalog handles
+│   │   └── prepared_server
+│   │                - source metadata and prepared endpoint identity
+│   ├── connection   - agent exchange interface
 │   └── network      - production TCP/TLS upstream connector
 └── test_support     - fake upstream fixtures for tests
 ```
 
 ## Failover ownership
 
-Only two modules read the failover configuration:
+`config::RuntimePolicy` projects canonical service policy into a `FailoverPlan` attempt budget.
+`tacacsrs_networking::retry` applies the conservative replay rules and owns the retry loop.
+The networking `routed` module owns endpoint catalogs, operation identities, circuits, reconnect serialization, and lifecycle state.
+The agent does not keep duplicate routing or retry state.
 
-- `upstream::failover` turns a `RuntimePolicy` into a `FailoverPlan`. The plan
-  holds the attempt budget and the replay-safety rule for one operation.
-- `upstream::executor` applies that plan. It is the only retry loop.
-
-A service does not read the plan. It implements `FailoverAttempt` and returns
-one `Attempt` value for each try. This keeps strategy interpretation out of the
-client API bridge and out of the raw proxy bridge.
+Each ingress path implements `FailoverAttempt` and returns one `Attempt` value for each try.
+The networking executor decides whether another attempt is permitted. Unknown outcomes are never replayed automatically.
 
 Services reach routing and admission through `upstream::OperationRouter`. The
 router binds one `PolicyService` identity at construction. A service therefore
 cannot read another service's state, cannot change the runtime configuration,
 and does not pass a service identity on each call.
+
+## Connector Composition
+
+`TacacsClientService` is the public, nongeneric service facade.
+It contains `ServiceRuntime<NetworkUpstreamConnector>`, whose connector returns the concrete `TacacsUpstreamConnection` type.
+Snapshots, request routers, both ingress services, listeners, and exchange adapters remain generic over the connector internally.
+This keeps the async `Send` proof in generic implementations and avoids the specialized erased shape described in the architecture investigation.
+
+Production and fake factories implement networking's `EndpointConnector` contract.
+The former agent `UpstreamConnector` trait is removed; that name now identifies a test-only trait-object alias.
+The erased `ServiceConnector` adapter also compiles only in tests. No dynamic connector or dynamic connection is stored on the production routing path.
+The agent exchange interface remains because it owns protocol-to-service error conversion and operation-specific diagnostics.
 
 ## Generation Readiness
 
