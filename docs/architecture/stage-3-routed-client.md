@@ -8,7 +8,8 @@ The second increment captures routing inputs before admission and retains them a
 The third increment extracts an agent-free routed client into networking and migrates both ingress paths.
 S3-04 now provides bounded shared admission and canonical total request deadlines across both ingress paths.
 Commit `41d29d5` completes ingress-task and downstream delivery bounds. S3-04 is complete.
-S3-05 now owns and joins shared drivers. Full terminal client shutdown and service-wide bounded retirement remain open within that item.
+S3-05 now provides terminal client shutdown for shared drivers, dedicated transports, and in-progress setup.
+Routed-catalog and service-wide bounded retirement integration remain open within that item.
 
 Fix nearby issues within the current increment when practical. Add a new item only when the work needs a distinct implementation step.
 Keep completed items visible with verification evidence. Preserve canonical YANG and do not retain obsolete APIs only for compatibility.
@@ -19,7 +20,7 @@ Keep completed items visible with verification evidence. Preserve canonical YANG
 - [x] S3-02: Capture one routing generation and retry policy before admission. Commit `c3b6fd3` retains endpoints, body limits, and recovery policy across reloads. IPC and TCP-backed proxy regressions verify retries and continuations. See [request generations](#request-generations).
 - [x] S3-03: Extract endpoint catalogs, circuits, and reconnect serialization into networking. Commit `861a40b` migrates both ingress paths, removes duplicate agent routing state, fixes stale recovery and connection-failure races, and runs an agent-free example. See [routed client](#routed-client).
 - [x] S3-04: Apply one absolute request deadline across execution and bound pending work. Commits `97db77a`, `5e0f1e3`, and `41d29d5` complete shared admission, canonical deadlines, and ingress/delivery bounds. See [admission progress](#admission-progress), [deadline progress](#deadline-progress), and [ingress bounds](#ingress-bounds).
-- [ ] S3-05: Complete terminal client/runtime shutdown and bounded retirement. Commit `d93c584` owns shared drivers and adds explicit bounded shared retirement; `1928c29` fixes a dedicated invalid-header cleanup deadlock. Dedicated/setup shutdown and routed/service integration remain open. See [shared-driver progress](#shared-driver-progress).
+- [ ] S3-05: Complete terminal client/runtime shutdown and bounded retirement. Commits `d93c584` and `1928c29` establish shared-driver ownership and correct dedicated cleanup. Commit `d4f6c6c` adds terminal client shutdown, including dedicated transports and setup tasks. Routed/service integration remains open. See [shared-driver progress](#shared-driver-progress) and [terminal client progress](#terminal-client-progress).
 - [ ] S3-06: Complete Stage 3 integration gates, remove temporary adapters, and update this checkpoint and the migration plan together. Preserve ordering, operation eligibility, prepared credentials, timeout semantics, and loop exclusion.
 
 ## Retry Ownership
@@ -269,12 +270,45 @@ This local correction does not complete dedicated-session shutdown ownership.
 S3-05 acceptance remains split at that ownership boundary:
 
 - [x] Own shared driver tasks, support bounded explicit drain/join, retain handles across cancelled waits, and reject stale promotion. Verify idle, active, forced, repeated, and final-owner cleanup.
-- [ ] Add terminal client shutdown covering dedicated transports, in-progress connection setup, and shared sessions. Reject new work after close and prove transport release without relying on caller completion.
+- [x] Add terminal client shutdown covering dedicated transports, in-progress connection setup, and shared sessions. Commit `d4f6c6c` rejects new work and verifies socket release even when callers retain idle conversations or leave reads and setup futures unpolled.
 - [ ] Integrate close/join with routed catalog retirement and agent shutdown. Apply one explicit retirement budget across removed endpoints, repeated reload, and embedded runtime shutdown.
 
 Tests cover graceful active-session drain, forced shutdown with an active reader, final-owner abort, concurrent deadlines, and cancelled retirement retried across eight cycles.
 Native peer EOF checks prove transport release. The late-promotion test verifies that an old negotiation cannot repopulate a retired cache.
-S3-05 remains unchecked; this increment does not claim full client or embedded-service shutdown.
+The shared-driver increment alone did not provide terminal client shutdown. The following increment adds it; embedded-service integration remains open.
+
+## Terminal Client Progress
+
+Commit `d4f6c6c` adds terminal lifecycle ownership to `TacacsClient`.
+`close()` permanently rejects new operations, cancels in-progress connection setup, and prevents late single-connect promotion.
+`close_and_join(deadline)` also drains existing transports, forces remaining sockets closed at expiry, and joins owned setup and shared-driver tasks.
+Closing is idempotent. A closed client cannot reopen.
+Cancelling a join leaves the client closed and retains its cleanup ownership, so another caller can retry the join.
+
+Managed transport controls own the actual native read and write halves.
+Their locks exist only during an I/O poll, not while the caller waits for readiness.
+Shutdown can therefore drop the socket even when a dedicated-session future still holds its outer session mutex and is no longer polled.
+Forced closure wakes registered I/O waiters. Retained handles subsequently return a closed-transport error.
+An activity counter records completed native transport closure, including concurrent close callers and handles retained after closure.
+
+Connection setup now runs in owned tasks that report their result through a one-shot channel.
+The client retains their driver handles and uses weak lifecycle references inside the tasks to avoid self-retaining cycles.
+Caller cancellation aborts setup. Terminal close cancels and joins setup without requiring that caller to poll its future again.
+Transport registration and close use the same state lock, and session publication rechecks terminal state.
+Requests cannot publish new transports or sessions after terminal close wins.
+
+Dropping the final client requests immediate cleanup and closes its registered sockets.
+Keeping a `ClientConversation` does not keep the originating client alive; callers must retain the client while using its conversations.
+Drop also seals the shared cache so an old negotiation cannot start a new driver after client destruction.
+Use `close_and_join` when the host needs confirmation that owned tasks and sockets are finished.
+
+`retire_shared_until` remains a nonterminal shared-cache operation. It does not replace terminal client shutdown.
+The existing agent and routed connector interfaces are not yet migrated to terminal close/join.
+The remaining S3-05 item must coordinate catalog retirement and service shutdown under one explicit retirement budget, including repeated reloads.
+
+Native tests cover retained idle conversations, parked dedicated reads, stalled TLS setup, cancelled joins, shorter concurrent deadlines, and graceful dedicated/shared drain.
+Peer EOF verifies socket release before the retained caller future resumes. Post-close requests fail before request transmission.
+Another test verifies that final client drop prevents an old negotiation from publishing a shared driver.
 
 ## Verification
 
@@ -358,4 +392,13 @@ After the dedicated cleanup correction, networking passes 149 library tests, wit
 The invalid-header regression failed before that correction and now verifies immediate error and peer EOF.
 The documentation book and whitespace checks pass. The touched networking files have no editor diagnostics.
 No dependency, lockfile, generated YANG artifact, protobuf schema, or native credential policy changed.
+Windows, live SONiC, and Miri were not run for this increment.
+
+### S3-05 Terminal Client Increment
+
+The full workspace suite, strict workspace Clippy, nightly formatting, workspace build, and warnings-as-errors rustdoc pass.
+All nine independent native peer cases pass with managed transports and owned setup tasks.
+The final drop-publication correction passes all 157 networking library tests, with two existing ignored tests, and strict package Clippy.
+Agent coverage remains 114 passing library tests. The documentation book and whitespace checks pass.
+The touched networking files have no editor diagnostics. No dependency, lockfile, generated YANG artifact, protobuf schema, or native credential policy changed.
 Windows, live SONiC, and Miri were not run for this increment.

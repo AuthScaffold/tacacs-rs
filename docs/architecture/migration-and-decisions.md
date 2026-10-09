@@ -258,8 +258,8 @@ Client execution has no generated-model dependency, and all retained transport m
 **Status:** in progress. The [Stage 3 checkpoint](stage-3-routed-client.md) records completed increments and remaining acceptance gates.
 S3-01 through S3-04 are complete. Both ingress paths retain one request generation and delegate routing state to networking.
 An agent-free routed accounting example passes. Shared admission, canonical total deadlines, pre-spawn reservations, and listener/delivery bounds are implemented.
-S3-05 is in progress. Shared drivers now have explicit ownership and bounded retirement/join.
-Terminal client shutdown for dedicated transports and in-progress setup, plus routed/service-wide retirement integration, remain open within S3-05.
+S3-05 is in progress. Terminal client shutdown now covers dedicated transports, shared drivers, and owned connection-setup tasks.
+Routed-catalog and service-wide retirement integration remain open within S3-05.
 
 1. Move operation routing, circuits, and reconnect serialization from the agent to the client.
 2. Retain the shared retry executor and adapt it to neutral operation/failure types.
