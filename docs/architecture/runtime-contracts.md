@@ -39,6 +39,10 @@ Those APIs reject new work, cancel owned setup, and force native transport closu
 Retained conversations do not extend the originating client's lifetime.
 The [S3-05 closure](stage-3-routed-client.md#integrated-retirement) integrates routed families and service shutdown, including historical endpoints and parked setup tasks.
 
+The [Stage 3 closure](stage-3-routed-client.md#generic-service-composition) keeps connector types generic through request, service, and listener implementations.
+The public agent facade selects a concrete native connector and connection. Dynamic factories exist only in test support.
+This composition preserves `Send` on the MSRV without the specialized erased shape that failed the isolated compiler checks.
+
 ## Protocol Boundaries
 
 ### Packet construction and decoding

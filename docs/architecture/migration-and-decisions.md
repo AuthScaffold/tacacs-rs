@@ -255,12 +255,12 @@ Client execution has no generated-model dependency, and all retained transport m
 
 **Scope:** endpoint routing, failover, sessions, and resource lifetime.
 
-**Status:** in progress. The [Stage 3 checkpoint](stage-3-routed-client.md) records completed increments and remaining acceptance gates.
-S3-01 through S3-05 are complete. Both ingress paths retain one request generation and delegate routing state to networking.
+**Status:** complete. The [Stage 3 checkpoint](stage-3-routed-client.md) records all six completed increments and their verification evidence.
+Both ingress paths retain one request generation and delegate routing state to networking.
 An agent-free routed accounting example passes. Shared admission, canonical total deadlines, pre-spawn reservations, and listener/delivery bounds are implemented.
 Terminal client shutdown covers dedicated transports, shared drivers, and owned connection-setup tasks.
 Routed catalogs and embedded service shutdown now close and join current and historical resources under one retirement budget.
-S3-06 is next: final integration gates, temporary-adapter review, and Stage 3 closure.
+Commit `f657aad` completes generic service/router ownership with a concrete production connector and connection. Stage 4 is next.
 
 1. Move operation routing, circuits, and reconnect serialization from the agent to the client.
 2. Retain the shared retry executor and adapt it to neutral operation/failure types.
@@ -277,17 +277,17 @@ Primary starting points:
 - [Connection driver](../../libraries/tacacsrs_networking/src/runtime/multiplexed/mod.rs)
 - [Session routes](../../libraries/tacacsrs_networking/src/session/manager.rs)
 
-**Temporary adapter:** agent connection interfaces can forward to the new client during consumer conversion.
-The [connector-boundary investigation](stage-3-routed-client.md#connector-boundary-investigation) retains the working concrete adapter after an isolated `Send` failure.
-The selected replacement direction keeps service/router implementations generic and instantiates a concrete production connector; optional erasure occurs at the outer service boundary.
-**Removal:** remove duplicate routing and retry state from the agent before the stage ends.
-**Exit gate:** a routed direct client works without the agent.
-Retirement, cancellation, backpressure, and reload tests pass.
+**Completed boundary:** networking owns routing, retry, admission, and connection lifetime mechanics. The agent retains configuration projection and ingress-specific behavior.
+The [connector-boundary investigation](stage-3-routed-client.md#connector-boundary-investigation) led to generic async service implementations, not an MSRV increase.
+The duplicate agent connector trait is removed. Dynamic connector forwarding remains only in test fixtures; the production facade composes concrete native types.
+**Exit gate passed:** a routed direct client works without the agent. Retirement, cancellation, backpressure, and reload tests pass.
 Routing observations cannot silently override canonical policy or cause TLS-to-plaintext fallback.
 
 ### Stage 4. Create one configuration controller and lifecycle API
 
 **Scope:** source observation, materialization coordination, health, and process ownership.
+
+**Status:** next, not started. Stage 3's generic runtime and terminal lifecycle provide the implementation boundary for this work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.
 2. Move generic source and policy supervision into the agent runtime.

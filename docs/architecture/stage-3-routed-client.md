@@ -2,7 +2,7 @@
 
 ## Status
 
-Stage 3 is in progress. Stage 2's canonical configuration and prepared-endpoint boundaries remain in place.
+Stage 3 is complete as of 2026-10-09. Stage 2's canonical configuration and prepared-endpoint boundaries remain in place.
 The first increment transfers retry decisions and execution into networking and makes ordered retries conservative for every operation.
 The second increment captures routing inputs before admission and retains them across retries and proxy continuations.
 The third increment extracts an agent-free routed client into networking and migrates both ingress paths.
@@ -10,7 +10,7 @@ S3-04 now provides bounded shared admission and canonical total request deadline
 Commit `41d29d5` completes ingress-task and downstream delivery bounds. S3-04 is complete.
 S3-05 now provides terminal client shutdown for shared drivers, dedicated transports, and in-progress setup.
 Commit `468fdcb` integrates routed retirement and embedded service shutdown under one budget. S3-05 is complete.
-S3-06 remains open for the final integration gates and Stage 3 closure.
+Commit `f657aad` completes S3-06 with generic service/router implementations and concrete production connectors. The Stage 3 integration gates pass.
 
 Fix nearby issues within the current increment when practical. Add a new item only when the work needs a distinct implementation step.
 Keep completed items visible with verification evidence. Preserve canonical YANG and do not retain obsolete APIs only for compatibility.
@@ -22,7 +22,7 @@ Keep completed items visible with verification evidence. Preserve canonical YANG
 - [x] S3-03: Extract endpoint catalogs, circuits, and reconnect serialization into networking. Commit `861a40b` migrates both ingress paths, removes duplicate agent routing state, fixes stale recovery and connection-failure races, and runs an agent-free example. See [routed client](#routed-client).
 - [x] S3-04: Apply one absolute request deadline across execution and bound pending work. Commits `97db77a`, `5e0f1e3`, and `41d29d5` complete shared admission, canonical deadlines, and ingress/delivery bounds. See [admission progress](#admission-progress), [deadline progress](#deadline-progress), and [ingress bounds](#ingress-bounds).
 - [x] S3-05: Complete terminal client/runtime shutdown and bounded retirement. Commits `d93c584`, `1928c29`, and `d4f6c6c` establish task ownership and terminal client shutdown. Commit `468fdcb` integrates routed retirement and service shutdown. See [shared-driver progress](#shared-driver-progress), [terminal client progress](#terminal-client-progress), and [integrated retirement](#integrated-retirement).
-- [ ] S3-06: Complete Stage 3 integration gates, remove temporary adapters, and update this checkpoint and the migration plan together. Preserve ordering, operation eligibility, prepared credentials, timeout semantics, and loop exclusion.
+- [x] S3-06: Commit `f657aad` completes generic service ownership and concrete production composition. The duplicate connector trait is removed and the erased adapter is test-only. Workspace, boundary, generation, direct-client, and native-peer gates pass. See [generic service composition](#generic-service-composition) and [Stage 3 closure](#stage-3-closure).
 
 ## Retry Ownership
 
@@ -351,14 +351,14 @@ Tests verify a removed endpoint closes at its cutoff without closing its replace
 A four-generation native test retains old conversations and verifies peer EOF after family-wide join.
 Further tests cover parked setup cancellation, closed admission, rejected publication, embedded shutdown, restart rejection, and cancelled serving futures.
 The earlier single-poll tests now use request-entry notifications because routed setup runs in owned tasks.
-No new standalone work item was needed. S3-06 retains the planned final integration review and gates.
+No new standalone work item was needed. S3-06 completes the final integration review and gates below.
 
 ## Connector Boundary Investigation
 
 On 2026-10-09, the proposed generic dynamic-connector consolidation failed the Rust `Send` checks in agent service futures.
-The experiment was restored to commit `7d616eb` before further investigation. The concrete `ServiceConnector` boundary remains unchanged and working.
+The experiment was restored to commit `7d616eb` before further investigation. At that point, the concrete `ServiceConnector` boundary remained unchanged and working.
 All 118 agent library tests and 12 routed-client tests passed after restoration.
-This investigation does not complete S3-06 or introduce a new production connector API.
+The investigation alone did not complete S3-06 or introduce a new production connector API.
 
 The isolated [cross-crate tests](../../libraries/tacacsrs_networking/tests/connector_boundary.rs) compare four connector shapes:
 
@@ -407,10 +407,48 @@ cargo test -p tacacsrs-networking --test connector_boundary --locked
 The selected direction is a generic networking core and generic service/router implementations with a concrete production connector and concrete production connection type.
 Test connectors instantiate those same generic implementations. Optional type erasure belongs at the outer service boundary, after the generic implementation establishes `Send`.
 The passing matrix also permits dynamic test factories through that generic adapter; it does not require them in production.
-The next implementation increment must propagate the connector parameter through the agent's request and service owners before removing their concrete adapter.
-Do not replace the working adapter with the failed specialized dynamic shape or raise the MSRV as a workaround.
+Commit `f657aad` implements this direction by propagating the connector parameter through the agent's request and service owners.
+The failed specialized dynamic shape is not used in production. The MSRV remains Rust 1.88.
 
-The investigation changed tests and documentation only. Production code, dependencies, toolchain settings, and runtime behavior remain at the restored boundary.
+The investigation commit changed tests and documentation only. The subsequent implementation is described below.
+
+## Generic Service Composition
+
+Commit `f657aad` makes snapshots, leases, bindings, the upstream manager, request routers, and both ingress paths generic over `EndpointConnector`.
+The Tonic handlers, proxy conversation provider, listeners, and service runtime keep that generic parameter in their async implementations.
+Typed operation adapters borrow the connector's associated connection type instead of coercing it into an erased connection.
+Manual clone implementations share existing owners without requiring the connector itself to implement `Clone`.
+
+The public `TacacsClientService` remains a nongeneric facade over `ServiceRuntime<NetworkUpstreamConnector>`.
+That production connector implements networking's `EndpointConnector` and returns the concrete `TacacsUpstreamConnection` type.
+The public facade exposes configuration, serving, and shutdown operations without exposing internal generic parameters or test machinery.
+Both native construction and test injection use one validation/preparation implementation; duplicate constructor logic is removed.
+
+The former agent `UpstreamConnector` trait is removed.
+Its name now denotes a test-only alias for the shared networking connector trait object.
+`ServiceConnector` and native-connection erasure also compile only in tests, where heterogeneous fixtures need them.
+The production routing path has no dynamic connector, dynamic connection, or temporary connector-forwarding adapter.
+The agent exchange interface remains intentionally: it supplies agent error conversion and operation-specific diagnostics, not duplicate routing or lifetime state.
+
+The new production regression checks the exact `UpstreamManager<NetworkUpstreamConnector>` type inside the public facade.
+It then starts IPC, sends accounting through a native obfuscated TCP peer, and performs terminal shutdown.
+All existing fake-connector tests instantiate the same generic implementation and continue to pass.
+The four cross-crate connector-boundary tests from the investigation also remain passing on the MSRV.
+
+## Stage 3 Closure
+
+Stage 3's implementation gates are complete:
+
+- Protocol operations and routed execution work without an agent process or generated configuration in networking.
+- One request retains its prepared catalog, policy, admission ownership, and deadline across safe retries and reloads.
+- Unknown outcomes do not replay automatically; proxy continuations remain pinned to their original session.
+- Admission reservations, bounded ingress, and physical proxy delivery keep their tested cancellation and capacity behavior.
+- Terminal client and routed-family shutdown close dedicated/shared transports and owned setup tasks, including historical endpoints retained after reload.
+- Production service composition is concrete at the outer facade and generic through the implementation, with no MSRV workaround or unsafe concurrency code.
+- Canonical generation, credential boundaries, server ordering, operation eligibility, and execution-time proxy loop checks remain intact.
+
+Stage 4 remains separate work. It owns configuration observation/supervision, coordinated generation and health publication, host cancellation policy, and stale-material handling.
+Its existing certificate-chain provisioning, revocation-evidence, and operational-statistics obligations remain open. Stage 3 closure is not a claim of complete RFC 9887 conformance.
 
 ## Verification
 
@@ -513,3 +551,18 @@ All nine independent native peer cases pass. The final serving-cancellation regr
 The documentation book and whitespace checks pass. No dependency, lockfile, generated YANG artifact, protobuf schema, or native credential policy changed.
 The known editor-only `async-trait` diagnostics remain in agent test support; Cargo does not reproduce them.
 Windows, live SONiC, and Miri were not run for this increment.
+
+### S3-06 and Stage 3 Closure
+
+All 119 agent library tests pass, including the concrete production IPC/TCP/shutdown regression.
+Networking passes 161 library tests, with two existing ignored tests, and all four connector-boundary integration tests.
+The complete all-features workspace suite, strict workspace Clippy, nightly formatting, workspace build, and warnings-as-errors rustdoc pass.
+The agent-free routed accounting example and all nine independent `tac_plus-ng` peer cases pass.
+All four CI dependency-boundary guards, all 13 generator tests, and deterministic regeneration pass.
+Workspace unused-dependency checks pass. The dependency audit reports no vulnerabilities in 301 locked packages, with the known crates.io index-lock warning.
+The documentation book and whitespace checks pass.
+
+No dependency version, lockfile, generated YANG artifact, protobuf contract, or native credential policy changed in this increment.
+The MSRV remains Rust 1.88. The standalone negative compiler fixture remains diagnostic-only and is not an automatic Cargo test target.
+Rust Analyzer still reports the known editor-only `async-trait` diagnostics in test support; Cargo does not reproduce them.
+Windows and live SONiC were not run. Miri was not rerun because this container lacks the required nightly `rust-src` installation, as previously recorded.
