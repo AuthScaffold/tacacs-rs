@@ -102,6 +102,11 @@ Catalog replacement, applied-configuration status, eligible-server count, and av
 Health readers cannot observe a partially updated publication. Policy-only updates advance the runtime generation without resetting availability or replacing global admission.
 An unchanged catalog reload preserves observed upstream availability. A rejected replacement leaves the published generation and applied-health metadata unchanged.
 
+Materialized updates also commit the coordinator's active-server set and active source generation inside the runtime publication boundary.
+Cancellation before publication leaves the prior runtime and active material unchanged.
+Cancellation during later connection retirement retains matching runtime, health, and coordinator state.
+The coordinator releases its state lock at commit, before asynchronous retirement. Canonical source snapshots and credential references remain unchanged.
+
 `runtime::ConfigSupervisor` owns source recovery, credential notifications, and materialization coordination.
 The host supplies a `ConfigDatastore`, service, health publisher, and `TacacsPlusFilter`.
 `NoopTacacsPlusFilter` preserves every upstream. Host-specific filters can derive a working candidate without changing the retained authoritative snapshot.

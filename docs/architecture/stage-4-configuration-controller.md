@@ -2,11 +2,12 @@
 
 ## Status
 
-Stage 4 is in progress as of 2026-10-09. Commit `6a11a83` completes the first increment.
+Stage 4 is in progress as of 2026-10-12. Commit `6a11a83` completes the first increment.
 Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent.
 Commit `75aac8b` adds canonical observation sessions and file watcher ownership. The supervisor now uses observations for startup and recovery.
 Commit `8381d4f` completes S4-02 with owned SONiC observations and removal of transitional APIs.
 Commit `899ca75` starts S4-03 with atomic runtime and applied-health publication.
+Commit `a3f1727` adds active materialization bookkeeping to the same commit and closes its cancellation window.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 This increment does not complete the shared configuration controller or credential lifecycle.
 
@@ -17,7 +18,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
-- [ ] S4-03: Commit `899ca75` publishes runtime generations and applied-health metadata together while retaining global admission. Source/credential revisions, materialization bookkeeping, and stale supervisor health updates remain open. See [runtime publication](#runtime-publication).
+- [ ] S4-03: Commits `899ca75` and `a3f1727` publish runtime generations, applied health, and active materialization bookkeeping together while retaining global admission. Source/credential revisions and stale supervisor health updates remain open. See [materialization commit](#materialization-commit).
 - [ ] S4-04: Remove process signal ownership from libraries. Apply explicit host cancellation, stale-material budgets, expiry rules, and bounded drains across controller/provider work. Verify shutdown with active and cancelled observations.
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
@@ -333,8 +334,8 @@ Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were n
 ### S4-03 Remainder
 
 Runtime generation identity does not replace source and credential revisions. Those revisions still need explicit types and publication semantics.
-The materialization coordinator still records active servers after an awaited service reload.
-Its bookkeeping must join a non-cancellable commit so cancellation after runtime publication cannot leave the coordinator behind the applied generation.
+At `899ca75`, the materialization coordinator still recorded active servers after an awaited service reload.
+Commit `a3f1727` resolves that gap by moving the bookkeeping into the runtime commit, as described below.
 
 Configuration and policy supervisors still publish candidate-health status separately after asynchronous preparation or application.
 Their success and failure updates need revision checks so stale completions cannot clear or set health for a newer candidate.
@@ -342,3 +343,49 @@ The final controller must combine those decisions with canonical source ownershi
 The existing source snapshots and credential references must remain unchanged throughout preparation and publication.
 
 These obligations remain within S4-03. This increment does not claim completion of the shared configuration controller.
+
+## Materialization Commit
+
+Commit `a3f1727` makes active materialization bookkeeping part of the runtime publication transaction.
+The coordinator checks that the prepared attempt is current and constructs the next active server set before publication.
+It passes that set and a private, synchronous commit callback through the service to the manager.
+The callback updates active servers and the active source generation inside the existing runtime and health commit.
+There is no asynchronous wait between runtime replacement and these bookkeeping updates.
+
+The callback consumes the coordinator state guard. Its completion releases that guard before asynchronous connection retirement starts.
+The callback must not fail, block, or acquire runtime or health locks.
+It is an internal publication mechanism, not a new public extension point.
+Existing public reload methods preserve their signatures and use an empty bookkeeping callback.
+
+Preparation, stale-attempt rejection, credential validation, and native context construction still precede the commit.
+If cancellation occurs before publication, the previous runtime, applied health, and active material remain unchanged.
+If cancellation occurs after publication during retirement, all three already describe the replacement generation.
+The existing bounded retirement scheduling remains in place. This change adds no detached production task.
+
+### Regression Evidence
+
+The test `cancellation_after_runtime_publication_retains_matching_active_material` pauses the reload immediately after publication and cancels the caller.
+Before the fix, the runtime reported an applied server while the coordinator's active-server vector was empty.
+The failed assertion reported `left: 0`, `right: 1`.
+
+The expanded test publishes two servers and confirms that the coordinator is readable while retirement remains paused.
+After cancellation, a change to one credential selects only its dependent server. The other server retains its existing shared material.
+The retained canonical source equals the original value, including its credential references.
+The next successful refresh advances runtime health to the next generation.
+
+A second test cancels publication while it waits for the service publication lock.
+No runtime or active-material change occurs, and the health snapshot remains unchanged.
+Existing native-credential rejection, stale-result rejection, and dependency-index tests continue to pass.
+
+### Verification and Remaining Work
+
+All 11 materialization-coordinator tests and 159 agent tests pass.
+The complete all-feature workspace suite, strict workspace Clippy, build, nightly formatting, and warnings-as-errors rustdoc pass.
+The documentation update passes the book build and rustdoc. Edited files have no editor diagnostics.
+No dependency, lockfile, schema, protocol, native TLS, or public API changes occur in this increment.
+Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun for this agent-only publication change.
+
+S4-03 still needs explicit source and credential revisions and revision-fenced supervisor health decisions.
+Configuration and policy supervisors still update candidate-health status after awaited operations.
+Those success and failure updates must not describe an older candidate after a newer candidate becomes authoritative.
+The final controller must preserve canonical source ownership and global admission while it combines those decisions.
