@@ -212,13 +212,15 @@ impl MaterializationCoordinator {
         }
 
         service
-            .reload_materialized_servers_with_proxy_downstream_obfuscation(
+            .publish_materialized_servers(
                 next_active.clone(),
                 prepared.attempt.proxy_policy,
+                move || {
+                    state.active_servers = next_active;
+                    state.active_source_generation = Some(state.source_generation);
+                },
             )
             .await?;
-        state.active_servers = next_active;
-        state.active_source_generation = Some(state.source_generation);
         Ok(PublicationOutcome::Published)
     }
 
@@ -377,6 +379,10 @@ mod tests {
 
     fn service() -> TacacsClientService {
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        service_with_health(health)
+    }
+
+    fn service_with_health(health: RuntimeHealthPublisher) -> TacacsClientService {
         TacacsClientService::waiting_for_configuration(
             ServiceConfig {
                 local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
@@ -401,6 +407,84 @@ mod tests {
             kind: CredentialKind::SymmetricKey,
             reference: CredentialReference::SymmetricKey(reference.to_owned()),
         }
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_runtime_publication_retains_matching_active_material() {
+        let coordinator = MaterializationCoordinator::new(
+            resolver(&[
+                ("object-a", b"valid-baseline-psk-material"),
+                ("object-b", b"second-baseline-psk-material"),
+            ]),
+            ValidationOptions::default(),
+        );
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service_with_health(health.clone());
+        let mut candidate = source("object-a", "192.0.2.20");
+        let mut secondary = source("object-b", "192.0.2.21").server.remove(0);
+        secondary.name = "secondary".to_owned();
+        candidate.server.push(secondary);
+        let original = candidate.clone();
+        let attempt = coordinator
+            .accept_source(candidate.clone(), candidate, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        service.pause_next_publication();
+        {
+            let publishing = coordinator.publish(prepared, &service);
+            tokio::pin!(publishing);
+            tokio::select! {
+                result = &mut publishing => panic!("publication must pause: {result:?}"),
+                result = tokio::time::timeout(Duration::from_secs(1), async {
+                    while service.server_count() != 2 { tokio::task::yield_now().await; }
+                }) => result.expect("runtime publication must complete"),
+            }
+            let active = tokio::time::timeout(Duration::from_secs(1), coordinator.active_servers())
+                .await
+                .expect("retirement must not retain the coordinator lock");
+            assert_eq!(active.len(), 2);
+        }
+        assert_eq!(service.server_count(), 2);
+        let active = coordinator.active_servers().await;
+        assert_eq!(active.len(), 2, "coordinator must commit before post-publication cancellation");
+        assert_eq!(active[0].address, "192.0.2.20");
+        assert_eq!(health.snapshot().runtime_generation().unwrap().value(), 1);
+        assert_eq!(coordinator.state.lock().await.desired_source.as_deref(), Some(&original));
+        let refresh = coordinator
+            .credential_change(&known("object-a"))
+            .await
+            .unwrap();
+        assert_eq!(refresh.selected_server_names(), &BTreeSet::from(["primary".to_owned()]));
+        let refreshed = coordinator.materialize(refresh).await.unwrap();
+        coordinator.publish(refreshed, &service).await.unwrap();
+        assert!(Arc::ptr_eq(&active[1], &coordinator.active_servers().await[1]));
+        assert_eq!(health.snapshot().runtime_generation().unwrap().value(), 2);
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_runtime_publication_leaves_active_material_unchanged() {
+        let coordinator = MaterializationCoordinator::new(
+            resolver(&[("object-a", b"valid-baseline-psk-material")]),
+            ValidationOptions::default(),
+        );
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service_with_health(health.clone());
+        let candidate = source("object-a", "192.0.2.20");
+        let attempt = coordinator
+            .accept_source(candidate.clone(), candidate, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        let previous_health = health.snapshot();
+        let held = service.hold_publication().await;
+        {
+            let publishing = coordinator.publish(prepared, &service);
+            tokio::pin!(publishing);
+            assert!(futures_util::poll!(&mut publishing).is_pending());
+        }
+        drop(held);
+        assert_eq!(service.server_count(), 0);
+        assert!(coordinator.active_servers().await.is_empty());
+        assert_eq!(health.snapshot(), previous_health);
     }
 
     #[tokio::test]

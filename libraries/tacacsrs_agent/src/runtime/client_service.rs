@@ -73,6 +73,16 @@ pub struct TacacsClientService {
 }
 
 impl TacacsClientService {
+    #[cfg(test)]
+    pub(crate) fn pause_next_publication(&self) {
+        self.runtime.state.pause_next_publication();
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn hold_publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.runtime.reload_lock.lock().await
+    }
+
     /// Builds a service with the concrete native connector.
     ///
     /// # Errors
@@ -151,6 +161,18 @@ impl TacacsClientService {
     ) -> anyhow::Result<()> {
         self.runtime
             .reload_materialized_servers_with_proxy_downstream_obfuscation(servers, policy)
+            .await
+    }
+
+    /// Applies materialized servers and coordinator bookkeeping in one commit.
+    pub(crate) async fn publish_materialized_servers(
+        &self,
+        servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
+        policy: PreparedProxyPolicy,
+        commit: impl FnOnce() + Send,
+    ) -> anyhow::Result<()> {
+        self.runtime
+            .publish_materialized_servers(servers, policy, commit)
             .await
     }
 
@@ -402,6 +424,16 @@ where
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
+        self.publish_materialized_servers(servers, proxy_downstream_obfuscation, || {})
+            .await
+    }
+
+    async fn publish_materialized_servers(
+        &self,
+        servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
+        commit: impl FnOnce() + Send,
+    ) -> anyhow::Result<()> {
         proxy_downstream_obfuscation.shared_secret()?;
         tacacsrs_config::prepare::validate_materialized_servers(
             servers.iter().map(AsRef::as_ref),
@@ -409,10 +441,7 @@ where
         )?;
         let _reload_guard = self.reload_lock.lock().await;
         self.state
-            .reload_shared_servers_with_proxy_downstream_obfuscation(
-                servers,
-                proxy_downstream_obfuscation,
-            )
+            .reload_shared_servers_with_commit(servers, proxy_downstream_obfuscation, commit)
             .await?;
         Ok(())
     }

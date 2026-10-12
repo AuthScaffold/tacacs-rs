@@ -43,6 +43,8 @@ pub(crate) struct UpstreamManager<
     connect_options: PrepareOptions,
     /// Serializes generation publication and server-availability observations.
     publication: PublicationController,
+    #[cfg(test)]
+    publication_pause: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 
 #[cfg(test)]
@@ -147,6 +149,8 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             })),
             connect_options,
             publication: PublicationController::new(health),
+            #[cfg(test)]
+            publication_pause: std::sync::Mutex::new(None),
         })
     }
 
@@ -388,6 +392,18 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         servers: Vec<Arc<TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
+        self.reload_shared_servers_with_commit(servers, proxy_downstream_obfuscation, || {})
+            .await
+    }
+
+    /// Commits caller bookkeeping with the catalog, before health readers see it.
+    /// The callback must not block, fail, or acquire runtime or health locks.
+    pub(crate) async fn reload_shared_servers_with_commit(
+        &self,
+        servers: Vec<Arc<TacacsPlusServer>>,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
+        commit: impl FnOnce() + Send,
+    ) -> anyhow::Result<()> {
         let _reload = self.reload_lock.lock().await;
         anyhow::ensure!(
             !self.closed.load(std::sync::atomic::Ordering::Acquire),
@@ -453,6 +469,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                         admission: Arc::clone(&current.admission),
                         runtime_policy: Arc::clone(&current.runtime_policy),
                     });
+                    commit();
                 },
             );
             previous
@@ -466,9 +483,21 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             log::info!("Reloaded the TACACS+ server set: {} server(s)", new_set.server_count());
         }
 
+        #[cfg(test)]
+        {
+            let pause = self.publication_pause.lock().unwrap().take();
+            if let Some(pause) = pause {
+                pause.notified().await;
+            }
+        }
         previous.client.retire_replaced(&new_set.client).await;
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_next_publication(&self) {
+        *self.publication_pause.lock().unwrap() = Some(Arc::new(tokio::sync::Notify::new()));
     }
 }
 
