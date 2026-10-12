@@ -293,7 +293,8 @@ Commit `75aac8b` introduces canonical configuration observations, owns file watc
 Commit `8381d4f` completes S4-02 with native SONiC observation ownership, credential-stream cleanup, and removal of transitional subscription APIs.
 S4-03 is in progress. Commit `899ca75` commits the routing generation and applied-health metadata through one publication boundary.
 Commit `a3f1727` includes active materialization bookkeeping in that commit and releases its lock before asynchronous retirement.
-Source/credential revisions and revision-fenced supervisor health updates remain open.
+Commit `044518c` adds independent materialization source/credential revisions, applied revision metadata, and credential-result health fencing.
+Source admission before filtering, non-materialized source updates, and source/policy candidate-health fencing remain open.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.

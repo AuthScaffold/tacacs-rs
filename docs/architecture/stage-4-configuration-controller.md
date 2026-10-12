@@ -8,6 +8,7 @@ Commit `75aac8b` adds canonical observation sessions and file watcher ownership.
 Commit `8381d4f` completes S4-02 with owned SONiC observations and removal of transitional APIs.
 Commit `899ca75` starts S4-03 with atomic runtime and applied-health publication.
 Commit `a3f1727` adds active materialization bookkeeping to the same commit and closes its cancellation window.
+Commit `044518c` adds independent materialization revisions and protects credential health from stale results.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 This increment does not complete the shared configuration controller or credential lifecycle.
 
@@ -18,7 +19,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
-- [ ] S4-03: Commits `899ca75` and `a3f1727` publish runtime generations, applied health, and active materialization bookkeeping together while retaining global admission. Source/credential revisions and stale supervisor health updates remain open. See [materialization commit](#materialization-commit).
+- [ ] S4-03: Commits `899ca75` and `a3f1727` unify runtime, applied-health, and materialization commits. Commit `044518c` adds materialization revisions and credential-health fencing. Source admission, non-materialized updates, and source/policy candidate-health fencing remain open. See [revision-aware materialization](#revision-aware-materialization).
 - [ ] S4-04: Remove process signal ownership from libraries. Apply explicit host cancellation, stale-material budgets, expiry rules, and bounded drains across controller/provider work. Verify shutdown with active and cancelled observations.
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
@@ -333,7 +334,7 @@ Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were n
 
 ### S4-03 Remainder
 
-Runtime generation identity does not replace source and credential revisions. Those revisions still need explicit types and publication semantics.
+Runtime generation identity does not replace source and credential revisions. Commit `044518c` adds those types for coordinated materialization.
 At `899ca75`, the materialization coordinator still recorded active servers after an awaited service reload.
 Commit `a3f1727` resolves that gap by moving the bookkeeping into the runtime commit, as described below.
 
@@ -385,7 +386,68 @@ The documentation update passes the book build and rustdoc. Edited files have no
 No dependency, lockfile, schema, protocol, native TLS, or public API changes occur in this increment.
 Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun for this agent-only publication change.
 
-S4-03 still needs explicit source and credential revisions and revision-fenced supervisor health decisions.
+After `a3f1727`, explicit source and credential revisions and revision-fenced supervisor health decisions remained open.
 Configuration and policy supervisors still update candidate-health status after awaited operations.
 Those success and failure updates must not describe an older candidate after a newer candidate becomes authoritative.
 The final controller must preserve canonical source ownership and global admission while it combines those decisions.
+
+## Revision-Aware Materialization
+
+Commit `044518c` introduces `SourceRevision`, `CredentialRevision`, and their applied pair, `MaterializationRevision`.
+The materialization coordinator assigns these values without changing canonical snapshots or credential references.
+The source counter advances for each accepted canonical candidate, including repeated observations and preparation retries.
+The credential counter advances independently when a credential invalidation schedules materialization.
+An unrelated credential event does not advance the counter when all accepted work is already applied.
+
+These counters identify observations within one coordinator instance. They are not provider revisions, content hashes, or globally ordered identifiers.
+The pair replaces the coordinator's primitive source-generation and attempt-ID checks.
+A failed, cancelled, or superseded attempt does not change the applied pair.
+
+`RuntimeHealthSnapshot::materialization_revision()` returns the applied pair with its runtime generation.
+The coordinator returns the pair from the synchronous commit callback, after it updates active material.
+The health publisher records the pair and clears `CredentialResolutionFailed` before it releases the health mutation lock.
+Policy-only publication preserves the pair. Direct server publication clears it because no coordinated materialization revision describes that update.
+The IPC health contract is unchanged; this metadata is available through the Rust health snapshot API.
+
+### Stale Outcome Fix
+
+The regression `older_publication_completion_cannot_clear_newer_credential_failure` failed before the fix.
+It pauses an older successful publication during retirement, completes a newer credential failure, then resumes the older caller.
+The older completion previously erased the newer `CredentialResolutionFailed` state.
+
+Successful materialization now clears credential failure during commit, not after the reload future returns.
+Failure reporting compares the attempt pair with the current pair and mutates health under the same coordinator lock.
+There is no unlocked check-then-update window for that credential failure flag.
+Superseded results do not update it, and cancellation after publication cannot prevent successful credential-health recovery.
+
+### Overlapping Credential Changes
+
+The previous selective-refresh logic considered only whether the source generation had changed.
+A second credential event could supersede an unfinished first event and select only its own server, leaving the first server's material stale.
+Selection now compares the complete active and desired revision pairs.
+If any accepted work remains unapplied, the next attempt selects all current dependencies.
+After complete publication, a known credential event again selects only its affected servers.
+This conservative retry rule also covers cancelled or failed credential materialization.
+
+### Verification
+
+The 12 materialization tests and 23 supervisor tests pass.
+They cover independent counters, unchanged source references, overlapping invalidations, stale success, stale failure, and cancellation at publication.
+Tests also verify that policy updates preserve applied metadata and direct server updates clear it.
+The complete all-feature workspace suite passes, including all 161 agent tests.
+Strict workspace Clippy, build, formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+Edited files have no editor diagnostics.
+
+No dependency, lockfile, configuration schema, IPC schema, protocol, or TLS changes occur in this increment.
+Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun for this agent-only change.
+
+### S4-03 Remainder
+
+Materialization revisions begin when the coordinator accepts a candidate, which currently happens after asynchronous host filtering.
+The final controller must assign source identity before filtering so an older filter completion cannot become a newer authoritative candidate.
+The no-resolver source path must participate in that same revision contract.
+
+Configuration-source status and policy rejection status still have separate supervisor updates after asynchronous work.
+Their success and failure decisions need revision checks and coordinated publication, as the credential failure flag now has.
+This increment does not claim that all supervisor health transitions are protected from stale completions.
+These remaining obligations stay within S4-03; no additional work item is needed.
