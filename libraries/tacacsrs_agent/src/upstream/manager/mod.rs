@@ -265,6 +265,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                     admission: Arc::clone(&current.admission),
                     runtime_policy: Arc::new(runtime_policy),
                 });
+                None
             },
         );
         true
@@ -280,7 +281,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             current.server_set.server_count(),
             Some(applied),
             false,
-            |_| {},
+            |_| None,
         );
     }
 
@@ -392,7 +393,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         servers: Vec<Arc<TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
-        self.reload_shared_servers_with_commit(servers, proxy_downstream_obfuscation, || {})
+        self.reload_shared_servers_with_commit(servers, proxy_downstream_obfuscation, || None)
             .await
     }
 
@@ -402,7 +403,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         &self,
         servers: Vec<Arc<TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
-        commit: impl FnOnce() + Send,
+        commit: impl FnOnce() -> Option<crate::MaterializationRevision> + Send,
     ) -> anyhow::Result<()> {
         let _reload = self.reload_lock.lock().await;
         anyhow::ensure!(
@@ -469,7 +470,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                         admission: Arc::clone(&current.admission),
                         runtime_policy: Arc::clone(&current.runtime_policy),
                     });
-                    commit();
+                    commit()
                 },
             );
             previous
@@ -496,8 +497,10 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     }
 
     #[cfg(test)]
-    pub(crate) fn pause_next_publication(&self) {
-        *self.publication_pause.lock().unwrap() = Some(Arc::new(tokio::sync::Notify::new()));
+    pub(crate) fn pause_next_publication(&self) -> Arc<tokio::sync::Notify> {
+        let pause = Arc::new(tokio::sync::Notify::new());
+        *self.publication_pause.lock().unwrap() = Some(pause.clone());
+        pause
     }
 }
 

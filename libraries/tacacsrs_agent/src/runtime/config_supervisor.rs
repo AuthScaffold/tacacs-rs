@@ -426,17 +426,7 @@ impl ConfigSupervisor {
                         filtered.proxy_downstream_obfuscation,
                     )
                     .await;
-                let result = self.materialize_and_publish(coordinator, attempt).await;
-                match result {
-                    Ok(PublicationOutcome::Published) => self
-                        .health
-                        .set_degraded(DegradationReason::CredentialResolutionFailed, false),
-                    Ok(PublicationOutcome::Superseded) => {}
-                    Err(_) => self
-                        .health
-                        .set_degraded(DegradationReason::CredentialResolutionFailed, true),
-                }
-                result
+                self.materialize_and_publish(coordinator, attempt).await
             }
             None => self
                 .service
@@ -521,19 +511,7 @@ impl ConfigSupervisor {
             return true;
         };
         let result = self.materialize_and_publish(coordinator, attempt).await;
-        match result {
-            Ok(PublicationOutcome::Published) => {
-                self.health
-                    .set_degraded(DegradationReason::CredentialResolutionFailed, false);
-                true
-            }
-            Ok(PublicationOutcome::Superseded) => true,
-            Err(_) => {
-                self.health
-                    .set_degraded(DegradationReason::CredentialResolutionFailed, true);
-                false
-            }
-        }
+        result.is_ok()
     }
 
     async fn materialize_and_publish(
@@ -541,14 +519,18 @@ impl ConfigSupervisor {
         coordinator: &MaterializationCoordinator,
         attempt: crate::runtime::materialization_coordinator::MaterializationAttempt,
     ) -> anyhow::Result<PublicationOutcome> {
-        let prepared = match coordinator.materialize(attempt.clone()).await {
-            Ok(prepared) => prepared,
-            Err(_) if !coordinator.is_current_attempt(&attempt).await => {
-                return Ok(PublicationOutcome::Superseded);
-            }
-            Err(_) => anyhow::bail!("credential materialization failed"),
+        let result = match coordinator.materialize(attempt.clone()).await {
+            Ok(prepared) => coordinator.publish(prepared, &self.service).await,
+            Err(_) => Err(anyhow::anyhow!("credential materialization failed")),
         };
-        coordinator.publish(prepared, &self.service).await
+        if matches!(result, Ok(PublicationOutcome::Superseded))
+            || !coordinator
+                .report_credential_result(&attempt, &self.health, result.is_err())
+                .await
+        {
+            return Ok(PublicationOutcome::Superseded);
+        }
+        result
     }
 
     async fn wait_for_retry(&self, attempt: u32, cancellation: &CancellationToken) -> bool {
@@ -1298,6 +1280,55 @@ mod tests {
         }
         assert!(stopped.is_ok(), "cancellation must interrupt a blocked recovery reload");
         assert_eq!(service.server_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn older_publication_completion_cannot_clear_newer_credential_failure() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (_, health, service) = supervisor(datastore.clone(), Duration::ZERO);
+        let resolver = Arc::new(SelectiveResolver {
+            rejected_server: Mutex::new(None),
+        });
+        let supervisor = ConfigSupervisor::with_backoff_and_resolver(
+            datastore,
+            service.clone(),
+            health.clone(),
+            Arc::new(NoopTacacsPlusFilter::default()),
+            Arc::new(FixedBackoff(Duration::ZERO)),
+            Some(resolver.clone()),
+        );
+        let release = service.pause_next_publication();
+        let publication = supervisor.apply_candidate(central_test_config(1));
+        tokio::pin!(publication);
+        tokio::select! {
+            result = &mut publication => panic!("publication must pause: {result:?}"),
+            result = timeout(Duration::from_secs(1), async {
+                while service.server_count() != 1 { tokio::task::yield_now().await; }
+            }) => result.unwrap(),
+        }
+        *resolver.rejected_server.lock().unwrap() = Some("server-0".to_owned());
+        assert!(
+            !supervisor
+                .apply_credential_change(&CredentialChangeScope::Unknown)
+                .await
+        );
+        assert!(health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&DegradationReason::CredentialResolutionFailed));
+        release.notify_one();
+        publication.await.unwrap();
+        assert!(
+            health
+                .snapshot()
+                .degradation_reasons()
+                .contains(&DegradationReason::CredentialResolutionFailed),
+            "an older completion must not erase a newer credential failure"
+        );
     }
 
     #[tokio::test]

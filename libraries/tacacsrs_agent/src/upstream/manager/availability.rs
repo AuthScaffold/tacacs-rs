@@ -76,7 +76,7 @@ impl PublicationController {
         server_count: usize,
         configuration_applied: Option<bool>,
         materially_changed: bool,
-        publish: impl FnOnce(u64),
+        publish: impl FnOnce(u64) -> Option<crate::MaterializationRevision>,
     ) {
         let mut state = self
             .state
@@ -142,6 +142,7 @@ mod tests {
                     entered.wait();
                     release.wait();
                     committed.store(true, Ordering::Release);
+                    None
                 });
             })
         };

@@ -114,6 +114,7 @@ pub enum DegradationReason {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RuntimeHealthSnapshot {
     runtime_generation: Option<RuntimeGeneration>,
+    materialization_revision: Option<super::MaterializationRevision>,
     lifecycle: RuntimeLifecycle,
     applied_configuration: bool,
     datastore: DatastoreState,
@@ -127,6 +128,13 @@ pub struct RuntimeHealthSnapshot {
 }
 
 impl RuntimeHealthSnapshot {
+    /// Returns the revisions used for the current coordinated materialization.
+    /// Direct server reloads clear this metadata. Policy updates preserve it.
+    #[must_use]
+    pub const fn materialization_revision(&self) -> Option<super::MaterializationRevision> {
+        self.materialization_revision
+    }
+
     /// Returns the runtime generation associated with this health snapshot.
     #[must_use]
     pub const fn runtime_generation(&self) -> Option<RuntimeGeneration> {
@@ -246,6 +254,7 @@ impl RuntimeHealthPublisher {
         let tacacs_proxy_listener = initial_listener_state(enabled_services.tacacs_proxy());
         let initial = RuntimeHealthSnapshot {
             runtime_generation: None,
+            materialization_revision: None,
             lifecycle: RuntimeLifecycle::Starting,
             applied_configuration: false,
             datastore: DatastoreState::Loading,
@@ -341,14 +350,20 @@ impl RuntimeHealthPublisher {
         server_count: usize,
         configuration_applied: Option<bool>,
         reset_availability: bool,
-        publish: impl FnOnce(),
+        publish: impl FnOnce() -> Option<super::MaterializationRevision>,
     ) {
         self.update(|snapshot| {
-            publish();
+            let revision = publish();
             snapshot.runtime_generation = Some(generation);
             snapshot.eligible_server_count = server_count;
             if let Some(applied) = configuration_applied {
                 snapshot.applied_configuration = applied;
+                snapshot.materialization_revision = revision;
+                if revision.is_some() {
+                    snapshot
+                        .degradation_reasons
+                        .remove(&DegradationReason::CredentialResolutionFailed);
+                }
             }
             if reset_availability {
                 snapshot.upstream_availability = UpstreamAvailability::Unknown;

@@ -74,8 +74,8 @@ pub struct TacacsClientService {
 
 impl TacacsClientService {
     #[cfg(test)]
-    pub(crate) fn pause_next_publication(&self) {
-        self.runtime.state.pause_next_publication();
+    pub(crate) fn pause_next_publication(&self) -> Arc<tokio::sync::Notify> {
+        self.runtime.state.pause_next_publication()
     }
 
     #[cfg(test)]
@@ -169,7 +169,7 @@ impl TacacsClientService {
         &self,
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         policy: PreparedProxyPolicy,
-        commit: impl FnOnce() + Send,
+        commit: impl FnOnce() -> Option<super::MaterializationRevision> + Send,
     ) -> anyhow::Result<()> {
         self.runtime
             .publish_materialized_servers(servers, policy, commit)
@@ -424,7 +424,7 @@ where
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
-        self.publish_materialized_servers(servers, proxy_downstream_obfuscation, || {})
+        self.publish_materialized_servers(servers, proxy_downstream_obfuscation, || None)
             .await
     }
 
@@ -432,7 +432,7 @@ where
         &self,
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
-        commit: impl FnOnce() + Send,
+        commit: impl FnOnce() -> Option<super::MaterializationRevision> + Send,
     ) -> anyhow::Result<()> {
         proxy_downstream_obfuscation.shared_secret()?;
         tacacsrs_config::prepare::validate_materialized_servers(
