@@ -22,6 +22,7 @@ Commit `3897414` completes S4-05 with canonical client-chain provisioning and na
 Commit `567ec16` starts S4-06 with canonical required issuer-signed OCSP stapling and bounded evidence lifetime.
 Commit `d78cf06` adds delegated OCSP signer authorization and responder-certificate lifetime bounds.
 Commit `a06fced` adds canonical full-CRL materialization, native CA-path validation, and evidence-bounded catalog lifetime.
+Commit `f55973a` immediately cuts off replaced endpoints when changed CRL policy or evidence commits, including older draining generations.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
 
@@ -35,7 +36,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
-- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds inline/provider full CRLs, CA-path checks, and catalog expiry. Remote retrieval, refresh orchestration, and unsupported evidence forms remain open. See [full CRL evidence](#full-crl-evidence).
+- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs and catalog expiry; `f55973a` cuts off replaced connections on committed CRL changes. Remote retrieval, proactive refresh, and unsupported evidence forms remain open. See [CRL refresh retirement](#crl-refresh-retirement).
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
 ## Policy Observation
@@ -1324,3 +1325,59 @@ Artifact SHA-256 values:
 No dependency, lockfile, or IPC schema changes occur.
 S4-06 remains open for built-in remote retrieval, proactive refresh and retirement, responder revocation without No Check, and additional evidence forms or combinations.
 S4-07 statistics remains open. No complete revocation-coverage or full RFC 9887 conformance claim is made.
+
+## CRL Refresh Retirement
+
+Commit `f55973a` closes the normal-drain gap after accepted CRL changes.
+Previously, replacing CRL evidence prepared new endpoints but left old endpoints usable until the ordinary request-based retirement deadline.
+That grace period could retain active connections authenticated with earlier evidence.
+
+### Publication Policy
+
+Before publication, the agent compares the current and replacement CRL policy for each retained server name.
+A changed CRL set or policy marks that server for immediate retirement. Identical evidence does not.
+The comparison occurs outside the runtime publication lock; it does not compare large evidence buffers during the commit.
+
+After preparation and final publication checks succeed, the manager installs the selected cutoffs before exposing the new runtime and health generation.
+Replaced endpoints for marked servers receive one immediate cutoff. Other replaced endpoints retain the normal drain deadline.
+Rejected preparation leaves the applied generation and active connections unchanged.
+The coordinator's existing revision fencing still excludes superseded source or credential work before it reaches this publication path.
+
+This policy is conservative: an accepted evidence change invalidates old sessions without claiming that each peer was individually proved revoked.
+It can interrupt in-flight work. Unknown delivery remains non-retriable under the existing conservative retry contract.
+The rule applies to CRL changes for an existing configured server name. It does not redefine ordinary server removal or renaming semantics.
+
+### Historical Generations
+
+`RoutedClient::retire_replaced_with_deadlines` selects a deadline from each removed endpoint's name.
+The existing uniform-deadline method delegates to it. Earlier cutoffs cannot be extended by a later call.
+The selection also visits already-retiring endpoints from older catalogs in the same runtime family.
+Retained identities and unpublished candidate endpoints are excluded.
+
+This closes a second gap: an ordinary reload can start draining one generation before a later CRL update arrives.
+The later update now shortens the older endpoint's cutoff too, rather than considering only the immediately previous catalog.
+The lifecycle registry retains only the endpoint name for this selection, not a copy of its prepared TLS context or credential material.
+
+The cutoff synchronously rejects new bindings through affected endpoints.
+Existing owned retirement tasks cancel setup, close native connections, and join cleanup. Socket closure still depends on runtime scheduling and yielding code.
+This is not hard real-time preemption, and already completed I/O cannot be withdrawn.
+
+### Verification
+
+Focused networking tests cover immediate and graceful endpoints in one replacement, unchanged identity reuse, and nonrenewable deadlines.
+They also cover older draining generations and prove that an unpublished candidate remains usable.
+Both new pure lifecycle tests pass under Miri.
+
+The native regression runs the public agent through IPC and holds a transmitted accounting request on a real mTLS connection.
+An identical reload and a rejected malformed CRL candidate leave the peer open. An ordinary timeout reload also retains its grace interval.
+A later accepted CRL update closes that older peer within the test's one-second bound, without consuming the normal request budget.
+The request fails, the generation remains unchanged on rejection, and the host shuts down and joins its tasks.
+
+The all-feature workspace suite passes, including 189 agent tests, 171 networking tests with two existing ignored tests, and nineteen prepared-source tests.
+Strict workspace Clippy, workspace build, nightly formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+The affected tests and package Clippy checks pass after the final metadata ownership refinement. Editor diagnostics and whitespace checks are clear.
+No dependency, lockfile, generated YANG, IPC schema, or unsafe-code changes occur.
+Native Redis, live SONiC, the external peer matrix, and Windows checks were not rerun for this publication/lifecycle increment.
+
+S4-06 remains open for built-in remote evidence retrieval, proactive refresh, responder revocation without No Check, and additional evidence forms or combinations.
+The CRL refresh cutoff is implemented within the existing work item. S4-07 statistics remains open.
