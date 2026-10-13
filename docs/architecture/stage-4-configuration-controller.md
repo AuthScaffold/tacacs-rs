@@ -10,8 +10,9 @@ Commit `899ca75` starts S4-03 with atomic runtime and applied-health publication
 Commit `a3f1727` adds active materialization bookkeeping to the same commit and closes its cancellation window.
 Commit `044518c` adds independent materialization revisions and protects credential health from stale results.
 Commit `3f72a8f` moves source admission before filtering and unifies source publication and health across both resolver modes.
+Commit `907cff1` completes S4-03 with revision-fenced policy decisions and atomic policy-health publication.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
-This increment does not complete the shared configuration controller or credential lifecycle.
+The publication contract is complete. The remaining Stage 4 lifecycle, certificate, revocation, and statistics work is still open.
 
 Fix nearby findings within each increment when practical. Keep completed items and their verification evidence.
 The startup race and closed-runtime publication fix belong to S4-01, not separate work items.
@@ -20,7 +21,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
-- [ ] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revisions and credential-health fencing. Commit `3f72a8f` completes source admission and source-health coordination for both resolver modes. Policy revision and health publication remain open. See [source admission and health](#source-admission-and-health).
+- [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [ ] S4-04: Remove process signal ownership from libraries. Apply explicit host cancellation, stale-material budgets, expiry rules, and bounded drains across controller/provider work. Verify shutdown with active and cancelled observations.
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
@@ -61,7 +62,7 @@ An unavailable source is not reported as an accepted policy.
 `TacacsClientService::reload_runtime_policy()` now returns an error after terminal closure.
 The manager reports publication success under its existing publication lock.
 Thus, the supervisor cannot log success or clear policy rejection for a policy that the closed runtime ignored.
-Policy and health updates still use separate owners. S4-03 must make generation publication and applied-health metadata one controller operation.
+At `6a11a83`, policy and health updates still used separate owners. S4-03 later unifies generation publication and applied-health metadata.
 
 The daemon now keeps one observation from the initial snapshot through live supervision.
 Its former policy-file and policy-supervisor modules are removed.
@@ -105,7 +106,7 @@ No protocol or TLS implementation changes. Miri was not run because nightly `rus
 ## Remaining Contracts
 
 Runtime supervision uses `ConfigDatastore::observe()`. Independent one-shot `load()` remains, but the subscription method and observation adapter are removed.
-Native SONiC ownership is complete. Revision and publication coordination remain S4-03.
+Native SONiC ownership and revision/publication coordination are complete through S4-03.
 The agent now owns configuration recovery and materialization coordination. The daemon retains host-specific filtering and process composition.
 This increment does not introduce source revision semantics or retain canonical policy history in the controller.
 
@@ -292,7 +293,7 @@ No dependency version, lockfile, generated YANG artifact, protocol, or TLS imple
 The documentation update passes rustdoc and the book build.
 The live SONiC VM was not changed or restarted. Live-VM, external TACACS+ peer, Windows, and Miri checks were not rerun.
 
-S4-03 remains open for one generation/health publication controller and separate source and credential revisions.
+At the S4-02 checkpoint, S4-03 remained open for generation/health coordination and separate source and credential revisions.
 Host signal ownership, stale-material policy, certificate chains, revocation retrieval, and operational statistics remain the later Stage 4 obligations.
 
 ## Runtime Publication
@@ -502,7 +503,71 @@ The documentation update passes the book build and rustdoc. Edited files have no
 No dependency, lockfile, configuration schema, IPC schema, protocol, or TLS changes occur in this increment.
 Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun for this agent-only change.
 
-S4-03 remains open for policy admission identity and policy candidate-health publication.
-The policy supervisor still applies prepared policy and then updates rejection health separately.
-That result handling must join the generation commit and reject stale success or failure before S4-03 can close.
-Global admission, canonical policy authority, and source/credential revision semantics must remain intact.
+At `3f72a8f`, S4-03 remained open for policy admission identity and policy candidate-health publication.
+The policy supervisor still applied prepared policy and updated rejection health separately.
+The following increment closes that boundary while preserving global admission and canonical policy authority.
+
+## S4-03 Closure
+
+Commit `907cff1` completes policy revision fencing and the shared publication contract.
+`PolicyRevision` is a runtime-local admission counter, independent of source and credential revisions.
+The controller assigns it before canonical validation or an asynchronous publication-lock wait.
+Newer admission supersedes older work, even if the newer candidate is rejected or cancelled.
+Admission alone does not change the applied policy or its health snapshot.
+
+### Policy Decisions
+
+`TacacsClientService::apply_policy_candidate` accepts a borrowed generated policy, or `None` for a source rejection.
+Canonical validation produces derived runtime policy without changing the source.
+`reload_runtime_policy` accepts an already prepared policy and enters the same admission path.
+Both return `PolicyUpdate`, which distinguishes applied, rejected, and superseded decisions.
+Closed runtimes return an error without changing rejection health.
+
+The manager holds the runtime lock before checking the current admission under the publication-controller lock.
+Successful policy publication updates the policy, runtime generation, global admission limits, applied policy revision, and rejection recovery inside one health mutation.
+No asynchronous wait separates these updates.
+Rejection checks the same admission identity under the same lock order and retains the last applied policy.
+Stale success and failure return `Superseded` without a health mutation or generation advance.
+
+`RuntimeHealthSnapshot::applied_policy_revision()` records the last committed update.
+It is `None` before the first update, including when startup supplied a prepared policy.
+Rejected and cancelled revisions can leave gaps in the counter. The value is diagnostic, not a persistent provider revision or content hash.
+Policy updates preserve applied configuration status, source/credential revisions, server count, upstream availability, and captured request policy.
+Server updates preserve the applied policy revision. Global admission retains the same shared registry across both update types.
+
+`PolicySupervisor::new` now takes only an observation and service.
+It no longer owns an independent health publisher or writes rejection health after an awaited service call.
+It reports explicit update outcomes instead of logging every completed call as applied.
+
+### Regression Evidence
+
+`delayed_policy_cannot_overwrite_a_newer_rejection` failed before the fix.
+An older valid candidate waited for the publication lock while another supervisor rejected a newer observation.
+After release, the older call previously published its policy and cleared the newer rejection.
+The new admission check leaves the applied generation and rejection unchanged.
+
+Further tests verify:
+
+- A newer valid canonical candidate supersedes a prepared-policy update waiting for publication.
+- Cancelling a publication wait retains the previous policy and rejection state; a later retry can apply.
+- Invalid canonical policy and source rejection preserve applied revision and generation.
+- Closed runtimes reject both valid updates and rejection observations without changing health.
+- Stale controller success and failure cannot mutate health or execute a commit callback.
+- A barrier-driven health reader sees policy revision, runtime generation, and rejection recovery together.
+- Policy and materialization updates preserve each other's applied revision metadata, and admission retains shared identity across replacement.
+
+### Verification
+
+All 172 agent tests and the complete all-feature workspace suite pass.
+The focused policy selection runs 20 tests. Daemon checks pass 60 unit tests and seven prepared-source integration tests.
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+Edited files have no editor diagnostics.
+No dependency, lockfile, configuration schema, IPC schema, protocol, or native TLS changes occur in this increment.
+Rust API changes are intentional: policy methods return explicit outcomes, and the supervisor constructor no longer accepts a health publisher.
+Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun for this publication-only work.
+
+### Next Boundary
+
+S4-04 owns process signal removal from libraries, host cancellation, stale-material budgets, expiry behavior, and bounded drains.
+Client certificate chains, revocation evidence retrieval, and operational statistics retain their separate Stage 4 acceptance criteria.
+This closure does not claim completion of Stage 4 or full RFC 9887 conformance.

@@ -83,7 +83,7 @@ The default observation adapter and datastore `subscribe()` method are removed. 
 - [File watcher setup](../../libraries/tacacsrs_config/src/input/datastore.rs)
 
 Native Redis tests verify idle and active-read cleanup, concurrent invalidation, disconnect recovery, and empty final snapshots.
-Source and credential revisions still need a unified publication contract.
+Source, credential, and policy revisions now participate in the shared runtime and health publication contract completed in S4-03.
 
 **Target:** one source session establishes observation and supplies an authoritative snapshot.
 Lossy backends must signal a resynchronization requirement and reload after observation starts.

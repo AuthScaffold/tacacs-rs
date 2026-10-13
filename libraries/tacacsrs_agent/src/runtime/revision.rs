@@ -1,4 +1,4 @@
-//! Controller-local identities for canonical source and credential observations.
+//! Controller-local identities for source, credential, and policy observations.
 //!
 //! These counters identify observed inputs, not hashes of configuration or secret
 //! material. Values from different controller instances must not be compared.

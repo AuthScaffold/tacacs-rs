@@ -138,7 +138,19 @@ The runtime uses `ConfigDatastore::observe()` for both initial configuration and
 Successful initialization retains the same session. Interrupted initialization starts a fresh session before retry or serving.
 File observations own their watcher and coalesce invalidations without a detached reload worker.
 All retained configuration sources implement owned observation. The transitional adapter and datastore subscription method are removed.
-Coordinated generation and health publication remain Stage 4 work.
+Source, credential, and policy decisions use revision checks and the shared generation/health publication boundary.
+
+`TacacsClientService::apply_policy_candidate` accepts a borrowed canonical policy, or `None` for a rejected source observation.
+It assigns `PolicyRevision` before validation or publication waits. The canonical value remains unchanged.
+Both this method and `reload_runtime_policy` return `PolicyUpdate`: `Applied(revision)`, `Rejected(revision)`, or `Superseded`.
+Prepared-policy reloads cannot return `Rejected`; their validation has already completed.
+Runtime closure remains an error. A superseded candidate cannot change policy, global admission, or health.
+
+`RuntimeHealthSnapshot::applied_policy_revision()` records the last committed policy update, or `None` before the first update.
+Policy, runtime generation, shared admission limits, and rejection recovery commit together without an asynchronous wait.
+Rejected or cancelled candidates preserve the applied policy revision and generation. Revision numbers can therefore have gaps.
+Server updates preserve the policy revision. Policy updates preserve materialization revisions, applied source status, and upstream availability.
+`PolicySupervisor::new(observation, service)` no longer accepts a separate health publisher or writes health after publication.
 
 `ServiceConfig::validation_options` carries the schema policy selected by the configuration source.
 Construction and both reload APIs apply the shared configuration checks with that policy.
