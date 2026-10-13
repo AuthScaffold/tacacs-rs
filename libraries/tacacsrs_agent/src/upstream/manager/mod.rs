@@ -187,6 +187,10 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         self.current_runtime().runtime_policy.shutdown_timeout()
     }
 
+    pub(crate) fn source_stale_timeout(&self) -> std::time::Duration {
+        self.current_runtime().runtime_policy.source_stale_timeout()
+    }
+
     pub(crate) fn shutdown_deadline(&self) -> anyhow::Result<tacacsrs_networking::RequestDeadline> {
         let runtime = self.current_runtime();
         let requests = OperationKind::ALL
@@ -443,12 +447,28 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         proxy_downstream_obfuscation: PreparedProxyPolicy,
         commit: impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
+        self.reload_shared_servers_with_retirement(
+            servers,
+            proxy_downstream_obfuscation,
+            None,
+            commit,
+        )
+        .await
+    }
+
+    pub(crate) async fn reload_shared_servers_with_retirement(
+        &self,
+        servers: Vec<Arc<TacacsPlusServer>>,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
+        retirement: Option<tacacsrs_networking::RequestDeadline>,
+        commit: impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
+    ) -> anyhow::Result<()> {
         let _reload = self.reload_lock.lock().await;
         anyhow::ensure!(
             !self.closed.load(std::sync::atomic::Ordering::Acquire),
             "The TACACS+ service is closed"
         );
-        let retirement_deadline = self.retirement_deadline()?;
+        let retirement_deadline = retirement.unwrap_or(self.retirement_deadline()?);
         let previous = self.current_server_set();
         let materially_changed = previous.server_count() != servers.len()
             || previous
@@ -494,6 +514,9 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 "The TACACS+ service closed during preparation"
             );
             let generation = current.generation.wrapping_add(1);
+            previous
+                .client
+                .retire_replaced_until(&new_set.client, retirement_deadline);
             self.publication.publish_runtime(
                 generation,
                 new_set.server_count(),
@@ -511,9 +534,6 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                     commit()
                 },
             );
-            previous
-                .client
-                .retire_replaced_until(&new_set.client, retirement_deadline);
         }
 
         if new_set.server_count() == 0 {
@@ -1086,6 +1106,54 @@ mod tests {
         );
         release.notify_one();
         state.bind_server_for_new_session().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn immediate_retirement_blocks_old_bindings_without_replacing_admission() {
+        let old = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let fresh = Arc::new(FakeConnection {
+            address: "server-b:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([
+            (old.address.clone(), old.clone()),
+            (fresh.address.clone(), fresh.clone()),
+        ])));
+        let state = UpstreamManager::new(
+            vec![test_server("server-a:49")],
+            connector,
+            Duration::from_secs(30),
+            test_health(),
+        );
+        let retained =
+            state.capture_request(crate::PolicyService::ClientApi, OperationKind::Accounting);
+        state.bind_request(&retained).await.unwrap();
+        state
+            .reload_shared_servers_with_retirement(
+                Vec::new(),
+                PreparedProxyPolicy::unobfuscated(),
+                Some(tacacsrs_networking::RequestDeadline::at(tokio::time::Instant::now())),
+                || None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.server_count(), 0);
+        assert!(!old.usable.load(Ordering::Acquire));
+        assert!(state.bind_request(&retained).await.is_err());
+        state
+            .reload_servers(vec![test_server("server-b:49")])
+            .await
+            .unwrap();
+        let restored =
+            state.capture_request(crate::PolicyService::ClientApi, OperationKind::Accounting);
+        assert!(Arc::ptr_eq(&retained.runtime.admission, &restored.runtime.admission));
+        state.bind_request(&restored).await.unwrap();
+        assert!(fresh.usable.load(Ordering::Acquire));
     }
 
     #[tokio::test(start_paused = true)]

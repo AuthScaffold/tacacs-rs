@@ -29,6 +29,7 @@ struct CoordinatorState {
     revision: MaterializationRevision,
     active_revision: Option<MaterializationRevision>,
     source_current: bool,
+    source_expired: bool,
 }
 
 impl Default for CoordinatorState {
@@ -42,6 +43,7 @@ impl Default for CoordinatorState {
             revision: MaterializationRevision::default(),
             active_revision: None,
             source_current: false,
+            source_expired: false,
         }
     }
 }
@@ -280,6 +282,9 @@ impl MaterializationCoordinator {
         if prepared.attempt.revision != state.revision {
             return Ok(PublicationOutcome::Superseded);
         }
+        if state.source_expired && !state.source_current {
+            return Ok(PublicationOutcome::Superseded);
+        }
 
         let candidate_by_name = prepared
             .candidates
@@ -315,14 +320,42 @@ impl MaterializationCoordinator {
                 move || {
                     state.active_servers = next_active;
                     state.active_revision = Some(state.revision);
+                    state.source_expired = false;
                     Some(MaterializationCommit {
                         revision: state.revision,
                         source_current: state.source_current,
+                        source_expired: false,
                     })
                 },
             )
             .await?;
         Ok(PublicationOutcome::Published)
+    }
+
+    pub(crate) async fn expire_source(
+        &self,
+        expected: MaterializationRevision,
+        service: &TacacsClientService,
+        health: &crate::RuntimeHealthPublisher,
+    ) -> anyhow::Result<()> {
+        let mut state = self.state.lock().await;
+        if state.active_revision != Some(expected)
+            || health.snapshot().datastore() == crate::DatastoreState::Current
+        {
+            return Ok(());
+        }
+        service
+            .withdraw_stale_source(move || {
+                state.active_servers.clear();
+                state.active_revision = None;
+                state.source_expired = true;
+                Some(MaterializationCommit {
+                    revision: expected,
+                    source_current: false,
+                    source_expired: true,
+                })
+            })
+            .await
     }
 
     #[cfg(test)]

@@ -198,6 +198,33 @@ impl TacacsClientService {
             .await
     }
 
+    /// Withdraws expired upstreams without closing the recoverable runtime.
+    pub(crate) async fn withdraw_stale_source(
+        &self,
+        commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
+    ) -> anyhow::Result<()> {
+        let _reload = self.runtime.reload_lock.lock().await;
+        let proxy = self
+            .runtime
+            .state
+            .proxy_transport_settings()
+            .downstream_obfuscation()
+            .clone();
+        self.runtime
+            .state
+            .reload_shared_servers_with_retirement(
+                Vec::new(),
+                proxy,
+                Some(tacacsrs_networking::RequestDeadline::at(tokio::time::Instant::now())),
+                commit,
+            )
+            .await
+    }
+
+    pub(crate) fn source_stale_timeout(&self) -> std::time::Duration {
+        self.runtime.state.source_stale_timeout()
+    }
+
     /// Returns the applied graceful shutdown budget for an embedding host.
     /// Capture it once when shutdown begins; later policy updates must not renew it.
     #[must_use]

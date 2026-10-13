@@ -1336,6 +1336,7 @@ pub mod tacacsrs {
     }
 
     fn default_runtime_policy_shutdown_timeout_seconds() -> u32 { 30 }
+    fn default_runtime_policy_source_stale_timeout_seconds() -> u32 { 300 }
     fn default_runtime_policy_failover_recovery_interval_seconds() -> u32 { 30 }
     fn default_runtime_policy_client_api_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
     fn default_runtime_policy_tacacs_proxy_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
@@ -1351,6 +1352,13 @@ pub mod tacacsrs {
         #[serde(rename = "shutdown-timeout-seconds")]
         #[serde(default = "default_runtime_policy_shutdown_timeout_seconds")]
         pub shutdown_timeout_seconds: u32,
+        /// Maximum grace interval after applied source configuration becomes stale.
+        /// Capture the deadline at the first observed source failure or rejection.
+        /// Retries, credential refresh, and policy changes do not renew the interval.
+        /// At expiry, withdraw upstreams until a valid source is applied again.
+        #[serde(rename = "source-stale-timeout-seconds")]
+        #[serde(default = "default_runtime_policy_source_stale_timeout_seconds")]
+        pub source_stale_timeout_seconds: u32,
         /// Interval before a failed route receives one recovery trial.
         #[serde(rename = "failover-recovery-interval-seconds")]
         #[serde(default = "default_runtime_policy_failover_recovery_interval_seconds")]
@@ -1381,6 +1389,7 @@ pub mod tacacsrs {
         fn default() -> Self {
             Self {
                 shutdown_timeout_seconds: default_runtime_policy_shutdown_timeout_seconds(),
+                source_stale_timeout_seconds: default_runtime_policy_source_stale_timeout_seconds(),
                 failover_recovery_interval_seconds: default_runtime_policy_failover_recovery_interval_seconds(),
                 client_api_failover_strategy: default_runtime_policy_client_api_failover_strategy(),
                 tacacs_proxy_failover_strategy: default_runtime_policy_tacacs_proxy_failover_strategy(),

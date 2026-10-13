@@ -185,6 +185,16 @@ module tacacsrs {
            At expiry, pending asynchronous work is cancelled.
            Policy updates do not extend a shutdown already in progress.";
       }
+      leaf source-stale-timeout-seconds {
+        type uint32 { range "1..max"; }
+        units "seconds";
+        default 300;
+        description
+          "Maximum grace interval after applied source configuration becomes stale.
+           Capture the deadline at the first observed source failure or rejection.
+           Retries, credential refresh, and policy changes do not renew the interval.
+           At expiry, withdraw upstreams until a valid source is applied again.";
+      }
       leaf failover-recovery-interval-seconds {
         type uint32 { range "1..max"; }
         units "seconds";

@@ -314,11 +314,66 @@ impl ConfigSupervisor {
         if cancellation.is_cancelled() {
             return Ok(());
         }
-        tokio::join!(
-            self.run_notifications(cancellation),
-            self.run_credential_notifications(cancellation),
-        );
+        tokio::try_join!(
+            async {
+                self.run_notifications(cancellation).await;
+                Ok(())
+            },
+            async {
+                self.run_credential_notifications(cancellation).await;
+                Ok(())
+            },
+            self.run_source_expiry(cancellation),
+        )?;
         Ok(())
+    }
+
+    async fn run_source_expiry(&self, cancellation: &CancellationToken) -> anyhow::Result<()> {
+        let mut changes = self.health.subscribe();
+        let mut deadline: Option<tokio::time::Instant> = None;
+        let mut source_revision = None;
+        loop {
+            let snapshot = changes.borrow_and_update().clone();
+            let stale =
+                matches!(snapshot.datastore(), DatastoreState::Stale | DatastoreState::Unavailable)
+                    && snapshot.eligible_server_count() > 0;
+            let revision = snapshot.materialization_revision().filter(|_| stale);
+            if snapshot.datastore() == DatastoreState::Current {
+                deadline = None;
+            }
+            if let Some(revision) = revision {
+                if source_revision != Some(revision.source()) {
+                    deadline = None;
+                    source_revision = Some(revision.source());
+                }
+            }
+            if revision.is_some() && deadline.is_none() {
+                deadline = Some(
+                    tokio::time::Instant::now()
+                        .checked_add(self.service.source_stale_timeout())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Source stale budget exceeds the clock range")
+                        })?,
+                );
+            }
+            let wait = async {
+                if let (Some(deadline), Some(_)) = (deadline, revision) {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return Ok(()),
+                () = wait => {
+                    if let Some(revision) = revision {
+                        self.materialization_coordinator.expire_source(revision, &self.service, &self.health).await?;
+                    }
+                }
+                notification = changes.changed() => { if notification.is_err() { return Ok(()); } },
+            }
+        }
     }
 
     /// Maintains a continuous notification source after initial load.
@@ -1144,6 +1199,178 @@ mod tests {
         assert!(rotated
             .degradation_reasons()
             .contains(&DegradationReason::DatastoreStale));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_source_expiry_does_not_renew_and_valid_source_recovers() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+        let policy =
+            |seconds| {
+                tacacsrs_config::policy::parse_runtime_policy(format!(
+            r#"{{"tacacsrs:runtime-policy":{{"source-stale-timeout-seconds":{seconds}}}}}"#
+        ).as_bytes()).unwrap()
+            };
+        service
+            .apply_policy_candidate(Some(&policy(2)))
+            .await
+            .unwrap();
+        supervisor.apply_candidate(test_config(1)).await.unwrap();
+        let original = health.snapshot().materialization_revision().unwrap();
+        assert!(health.set_listener(crate::RuntimeService::ClientApi, crate::ListenerState::Bound));
+        assert!(health.snapshot().is_readiness_serving());
+        supervisor
+            .materialization_coordinator
+            .source_unavailable(&health, true)
+            .await;
+        let cancellation = CancellationToken::new();
+        let monitor = supervisor.run_source_expiry(&cancellation);
+        tokio::pin!(monitor);
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        service
+            .apply_policy_candidate(Some(&policy(100)))
+            .await
+            .unwrap();
+        supervisor
+            .materialization_coordinator
+            .source_unavailable(&health, true)
+            .await;
+        assert!(
+            supervisor
+                .apply_credential_change(&CredentialChangeScope::Unknown)
+                .await
+        );
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        assert_eq!(service.server_count(), 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        assert_eq!(service.server_count(), 0);
+        let expired = health.snapshot();
+        assert!(expired
+            .degradation_reasons()
+            .contains(&DegradationReason::SourceExpired));
+        assert!(expired.materialization_revision().is_none());
+        assert!(expired.has_applied_configuration());
+        assert!(!expired.is_readiness_serving());
+        assert!(expired.is_liveness_serving());
+        assert!(expired.is_startup_serving());
+        assert!(
+            supervisor
+                .apply_credential_change(&CredentialChangeScope::Unknown)
+                .await
+        );
+        assert_eq!(
+            service.server_count(),
+            0,
+            "credential refresh cannot revive expired source configuration"
+        );
+        supervisor.apply_candidate(test_config(2)).await.unwrap();
+        assert_eq!(service.server_count(), 2);
+        let recovered = health.snapshot();
+        assert_eq!(recovered.datastore(), DatastoreState::Current);
+        assert!(recovered.is_readiness_serving());
+        assert!(!recovered
+            .degradation_reasons()
+            .contains(&DegradationReason::SourceExpired));
+        assert!(
+            recovered
+                .materialization_revision()
+                .unwrap()
+                .source()
+                .value()
+                > original.source().value()
+        );
+        supervisor
+            .materialization_coordinator
+            .expire_source(original, &service, &health)
+            .await
+            .unwrap();
+        assert_eq!(
+            health.snapshot(),
+            recovered,
+            "stale expiry must not withdraw a recovered generation"
+        );
+        cancellation.cancel();
+        monitor.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recovered_source_resets_expiry_even_when_health_updates_coalesce() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+        let policy = tacacsrs_config::policy::parse_runtime_policy(
+            br#"{"tacacsrs:runtime-policy":{"source-stale-timeout-seconds":2}}"#,
+        )
+        .unwrap();
+        service.apply_policy_candidate(Some(&policy)).await.unwrap();
+        supervisor.apply_candidate(test_config(1)).await.unwrap();
+        supervisor
+            .materialization_coordinator
+            .source_unavailable(&health, true)
+            .await;
+        let cancellation = CancellationToken::new();
+        let monitor = supervisor.run_source_expiry(&cancellation);
+        tokio::pin!(monitor);
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        supervisor.apply_candidate(test_config(2)).await.unwrap();
+        supervisor
+            .materialization_coordinator
+            .source_unavailable(&health, true)
+            .await;
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        assert_eq!(service.server_count(), 2);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        assert_eq!(service.server_count(), 0);
+        cancellation.cancel();
+        monitor.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unavailable_source_does_not_serve_past_the_default_stale_budget() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [LoadStep::Config(1)],
+            [],
+        ));
+        let (mut supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+        supervisor
+            .initialize_until(std::future::pending())
+            .await
+            .unwrap();
+        supervisor
+            .materialization_coordinator
+            .source_unavailable(&health, true)
+            .await;
+        let cancellation = CancellationToken::new();
+        let running = supervisor.run_until(cancellation.cancelled());
+        tokio::pin!(running);
+        let expired = tokio::select! {
+            result = &mut running => panic!("supervisor must remain active: {result:?}"),
+            result = timeout(Duration::from_secs(301), async {
+                let mut changes = health.subscribe();
+                loop {
+                    if changes.borrow_and_update().eligible_server_count() == 0 { break; }
+                    changes.changed().await.unwrap();
+                }
+            }) => result,
+        };
+        cancellation.cancel();
+        running.await.unwrap();
+        assert!(expired.is_ok(), "stale source must withdraw its applied upstreams");
+        assert_eq!(service.server_count(), 0);
     }
 
     #[tokio::test]

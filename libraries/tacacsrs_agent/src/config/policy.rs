@@ -148,6 +148,7 @@ pub struct RuntimePolicy {
     operations: OperationPolicies,
     failover_recovery_interval: Duration,
     shutdown_timeout: Duration,
+    source_stale_timeout: Duration,
 }
 
 impl RuntimePolicy {
@@ -187,6 +188,9 @@ impl RuntimePolicy {
                 policy.failover_recovery_interval_seconds,
             )),
             shutdown_timeout: Duration::from_secs(u64::from(policy.shutdown_timeout_seconds)),
+            source_stale_timeout: Duration::from_secs(u64::from(
+                policy.source_stale_timeout_seconds,
+            )),
         }
     }
 
@@ -211,6 +215,9 @@ impl RuntimePolicy {
             failover_recovery_interval,
             shutdown_timeout: Duration::from_secs(u64::from(
                 tacacsrs_config::tacacsrs::RuntimePolicy::default().shutdown_timeout_seconds,
+            )),
+            source_stale_timeout: Duration::from_secs(u64::from(
+                tacacsrs_config::tacacsrs::RuntimePolicy::default().source_stale_timeout_seconds,
             )),
         })
     }
@@ -253,6 +260,12 @@ impl RuntimePolicy {
     #[must_use]
     pub const fn shutdown_timeout(&self) -> Duration {
         self.shutdown_timeout
+    }
+
+    /// Returns the grace interval captured when applied source configuration becomes stale.
+    #[must_use]
+    pub const fn source_stale_timeout(&self) -> Duration {
+        self.source_stale_timeout
     }
 }
 

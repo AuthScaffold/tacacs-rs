@@ -81,6 +81,7 @@ pub struct MaterializationRevision {
 pub(crate) struct MaterializationCommit {
     pub(crate) revision: MaterializationRevision,
     pub(crate) source_current: bool,
+    pub(crate) source_expired: bool,
 }
 
 impl MaterializationRevision {

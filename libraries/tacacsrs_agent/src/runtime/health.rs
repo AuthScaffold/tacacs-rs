@@ -92,6 +92,8 @@ pub enum DegradationReason {
     DatastoreUnavailable,
     /// The runtime retained an older known-good datastore snapshot.
     DatastoreStale,
+    /// The source exceeded its stale budget and its upstreams were withdrawn.
+    SourceExpired,
     /// Continuous datastore notifications are not connected.
     ChangeNotificationsUnavailable,
     /// Continuous credential-provider notifications are not connected.
@@ -402,9 +404,20 @@ impl RuntimeHealthPublisher {
                 snapshot.applied_configuration = applied;
                 snapshot.materialization_revision = commit.as_ref().map(|commit| commit.revision);
                 if let Some(commit) = commit {
-                    snapshot
-                        .degradation_reasons
-                        .remove(&DegradationReason::CredentialResolutionFailed);
+                    if commit.source_expired {
+                        snapshot.materialization_revision = None;
+                        snapshot
+                            .degradation_reasons
+                            .insert(DegradationReason::SourceExpired);
+                        snapshot.mark_source_problem();
+                    } else {
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::SourceExpired);
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::CredentialResolutionFailed);
+                    }
                     if commit.source_current {
                         snapshot.datastore = DatastoreState::Current;
                         snapshot
