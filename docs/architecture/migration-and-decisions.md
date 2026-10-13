@@ -303,7 +303,8 @@ Commit `ed47f41` adds independent referenced-credential staleness budgets, withd
 Commit `8ff62cd` preserves absolute provider validity through materialization, publication, request deadlines, and owned expiry supervision.
 Commit `23e7f98` extracts configured client-certificate validity and enforces it during preparation, publication, handshakes, sessions, and supervised expiry.
 Commit `7b3eed7` completes negotiated peer-path expiry and owned idle-transport retirement, including alternate CA paths and exact pins.
-Canonical client-chain provisioning is next in S4-05. Non-yielding code and started blocking I/O still require explicit deployment limits.
+Commit `3897414` completes S4-05 with canonical client-chain inputs, provider and PEM adapters, and native mTLS acceptance tests.
+S4-06 revocation policy and evidence retrieval are next. Non-yielding code and started blocking I/O still require explicit deployment limits.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.
@@ -330,7 +331,7 @@ Primary starting points:
 - [Health model](../../libraries/tacacsrs_agent/src/runtime/health.rs)
 
 **Source contract:** each datastore supplies an owned observation session. S4-02 removed the transitional subscription adapter.
-**Removal:** replace that wrapper for every retained source before the stage ends.
+**Migration status:** all retained source implementations use the owned observation contract; no transitional source wrapper remains.
 **Exit gate:** source-race tests converge, stale completions cannot publish, embedded shutdown completes, and process health behavior matches deployment tests.
 Credential-only changes derive new generations from unchanged YANG snapshots with separate credential revisions.
 No controller or provider rewrites authoritative credential references during preparation or publication.

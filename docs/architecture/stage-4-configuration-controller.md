@@ -18,8 +18,9 @@ Commit `ed47f41` adds independent referenced-credential expiry and revalidation 
 Commit `8ff62cd` adds absolute provider validity metadata, publication checks, request deadline bounds, and owned expiry supervision.
 Commit `23e7f98` adds intrinsic configured client-certificate validity, including inline identities and cached sessions.
 Commit `7b3eed7` completes S4-04 with negotiated peer-path expiry and owned idle-transport retirement.
+Commit `3897414` completes S4-05 with canonical client-chain provisioning and native mTLS verification.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
-The publication and S4-04 lifecycle contracts are complete. Canonical client chains, revocation, and statistics remain open.
+The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
 
 Fix nearby findings within each increment when practical. Keep completed items and their verification evidence.
 The startup race and closed-runtime publication fix belong to S4-01, not separate work items.
@@ -30,7 +31,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
-- [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
+- [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
@@ -1032,3 +1033,68 @@ Deployment limits for non-yielding code and started blocking I/O remain part of 
 Stage 4 remains open for S4-05 canonical client-chain provisioning, S4-06 revocation evidence and freshness, and S4-07 operational statistics.
 The next increment must provision canonical client chains before native tests for complete, missing, and incorrect intermediate chains.
 No full RFC 9887 conformance claim is made.
+
+## Canonical Client Chains
+
+Commit `3897414` adds the project-owned `tacacsrs:intermediate-certificate` leaf-list beneath client certificate `inline-definition`.
+It applies to per-server identities and reusable `client-credentials` bundles. The existing `cert-data` field remains the leaf certificate.
+Each ordered list entry contains one DER intermediate, encoded as RFC 7951 base64 in JSON.
+Entries start with the leaf's issuer and proceed toward the root. The list excludes the leaf and self-signed root.
+Canonical validation rejects empty or duplicate entries; native preparation validates certificate contents and the supplied path.
+
+The existing generator supports ordered binary lists. Generated Rust adds `intermediate_certificate: Vec<Vec<u8>>` with the existing base64 serializer.
+No generator algorithm or pinned upstream YANG source changes. Updated Rust, tree, and module hashes are recorded in the generation manifest.
+
+### Provider and Input APIs
+
+`CertificateWithKeyMaterial::intermediates` carries ordered provider bytes using the existing non-revealing `PublicBytes` wrapper.
+Materialization moves those bytes into a derived inline identity. It leaves authoritative configuration and central references unchanged.
+Provider validity still applies to the complete result. Intrinsic native validity intersects all supplied client certificates.
+
+`CertificateIdentity::intermediates` borrows ordered DER slices. `with_tls_client_certificate_chain` constructs the canonical builder value.
+The existing single-certificate builder methods delegate with an empty chain.
+The CLI file loader now returns `ClientCertificateChain`, with separate leaf and intermediate fields.
+PEM files accept the leaf followed by ordered intermediates; DER files still contain exactly one certificate.
+The CLI adapter preserves the chain in canonical configuration, and both executable help texts describe the input order.
+
+### Native Validation and Transmission
+
+Native preparation requires one DER object per entry and rejects duplicate certificates, incorrect issuer order, and supplied self-signed roots.
+OpenSSL checks the supplied path and client purpose using its highest supplied intermediate as a temporary validation anchor.
+This validates supplied material without declaring that intermediate trusted by the remote peer.
+The peer remains responsible for verifying a path to its own trust anchor; a missing upper intermediate can still fail during the handshake.
+The development peer-verification override does not bypass local chain validation.
+
+The reusable TLS context installs the leaf and ordered intermediates separately. The private key must match the leaf.
+The earliest certificate expiry bounds the configured identity through the existing lifetime enforcement.
+No canonical field becomes runtime state, and no source reference is rewritten.
+
+### Verification
+
+The native mTLS matrix uses a leaf, two distinct intermediates, and a root-only peer trust store.
+Complete chains authenticate from inline, reusable-bundle, provider, and normalized PEM inputs.
+Missing chains, a missing upper issuer, incorrect or reversed intermediates, duplicates, a repeated leaf, supplied roots, and concatenated DER entries fail.
+Successful peers verify the supplied intermediates. Tests also check source immutability and the earliest intermediate's expiry bound.
+
+Canonical tests cover ordered base64 round trips for both YANG locations and rejection of empty, duplicate, or malformed entries.
+Provider tests cover intermediate transfer and non-revealing debug output. PEM tests use distinct certificate values to verify input order.
+The all-feature workspace suite passes, including 189 agent tests, 86 configuration tests, 31 generated-type tests, and the existing native process tests.
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+The affected crate dependency guards pass. All nine independent TACACS+ peer cases pass.
+All 13 generator tests and deterministic regeneration pass. The pinned upstream module remains unchanged.
+
+Artifact SHA-256 values:
+
+- Generated Rust: `cf33c18b807f59a528f155bc2bf0d0bc202340f8cc38556c6c0e91f7a124ade0`.
+- Expanded tree: `b4ef257bc03d9107c0418ddc6e2d62ae8aafb9c433aead41a1471fd273b39490`.
+- Project YANG module: `3a42ef9eaabd127aa77b51c64a3d034eba008bea7ee5741895d0fd9023acd895`.
+
+No dependency, lockfile, IPC schema, or unsafe-code changes occur. Editor diagnostics and whitespace checks are clear.
+Native Redis, live SONiC, Windows, and Miri were not rerun.
+
+## S4-05 Closure
+
+S4-05 is complete. Canonical configuration owns ordered client chains, and providers or file adapters populate that same model.
+Native preparation and mTLS tests enforce the supplied-chain contract while preserving source authority.
+Stage 4 remains open for S4-06 revocation policy, evidence retrieval, freshness, and unavailable-status behavior, followed by S4-07 operational statistics.
+This work does not implement revocation retrieval or establish full RFC 9887 conformance.
