@@ -415,6 +415,10 @@ fn certificate_source(address: SocketAddr) -> Result<(TacacsPlus, SslContext)> {
     certificate.set_pubkey(&key)?;
     certificate.set_not_before(Asn1Time::from_unix(now - 60)?.as_ref())?;
     certificate.set_not_after(Asn1Time::from_unix(now + 60)?.as_ref())?;
+    let names = openssl::x509::extension::SubjectAlternativeName::new()
+        .dns("localhost")
+        .build(&certificate.x509v3_context(None, None))?;
+    certificate.append_extension(names)?;
     certificate.sign(&key, openssl::hash::MessageDigest::sha256())?;
     let certificate = certificate.build();
     let source = TacacsPlusBuilder::new()
@@ -491,12 +495,79 @@ async fn client_certificate_expiry_rejects_cached_sessions_before_transmission()
     assert!(client.open_conversation().await.is_err());
     assert!(TacacsClient::connect_prepared(endpoint).await.is_err());
     retained.complete().await;
-    client
-        .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::ZERO)?)
-        .await?;
+    close_expired_client(&client).await?;
     tokio::time::resume();
     tokio::time::timeout(Duration::from_secs(5), peer).await???;
     assert_eq!(source, original);
+    Ok(())
+}
+
+async fn close_expired_client(client: &TacacsClient) -> Result<()> {
+    if let Err(error) = client
+        .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::ZERO)?)
+        .await
+    {
+        if !format!("{error:#}").contains("TLS certificate validity expired") {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn negotiated_peer_expiry_closes_idle_transport_with_retained_session() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let (_, context) = certificate_source(listener.local_addr()?)?;
+    let certificate = context
+        .certificate()
+        .expect("test peer certificate")
+        .to_der()?;
+    let endpoint = PreparedEndpoint::tcp(
+        listener.local_addr()?.to_string(),
+        true,
+        None,
+        tacacsrs_networking::ConnectOptions::default(),
+    )
+    .with_certificate_tls(
+        "localhost",
+        None,
+        tacacsrs_networking::CertificateTrust::Certificates {
+            authorities: &[],
+            end_entities: &[&certificate],
+        },
+        None,
+    )?;
+    assert!(endpoint.client_certificate_validity().is_none());
+    let (closed, observed) = tokio::sync::oneshot::channel();
+    let peer = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await?;
+        let mut ssl = Ssl::new(&context)?;
+        ssl.set_verify(openssl::ssl::SslVerifyMode::NONE);
+        let mut stream = SslStream::new(ssl, tcp)?;
+        Pin::new(&mut stream).accept().await?;
+        reply_to_accounting(&mut stream, None, true).await?;
+        let mut byte = [0];
+        assert_eq!(
+            stream.read(&mut byte).await?,
+            0,
+            "expired peer must receive no further packets"
+        );
+        let _ = closed.send(());
+        Ok::<(), anyhow::Error>(())
+    });
+    let client = TacacsClient::connect_prepared(endpoint).await?;
+    client
+        .execute(AccountingExchange::new(accounting_request()))
+        .await?;
+    let mut retained = client.open_conversation().await?;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::resume();
+    let expired = tokio::time::timeout(Duration::from_millis(250), observed).await;
+    retained.complete().await;
+    close_expired_client(&client).await?;
+    tokio::time::timeout(Duration::from_secs(5), peer).await???;
+    assert!(expired.is_ok(), "peer validity must close idle transports without a new request");
     Ok(())
 }
 
@@ -553,6 +624,71 @@ async fn inline_client_certificate_expiry_withdraws_supervised_catalog() -> Resu
     assert_eq!(datastore.load().await?, original);
     cancellation.cancel();
     monitor.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn peer_expiry_after_transmission_reports_unknown_delivery() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let (_, context) = certificate_source(listener.local_addr()?)?;
+    let certificate = context
+        .certificate()
+        .expect("test peer certificate")
+        .to_der()?;
+    let endpoint = PreparedEndpoint::tcp(
+        listener.local_addr()?.to_string(),
+        false,
+        None,
+        tacacsrs_networking::ConnectOptions::default(),
+    )
+    .with_certificate_tls(
+        "localhost",
+        None,
+        tacacsrs_networking::CertificateTrust::Certificates {
+            authorities: &[],
+            end_entities: &[&certificate],
+        },
+        None,
+    )?;
+    let (received, observed) = tokio::sync::oneshot::channel();
+    let peer = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await?;
+        let mut ssl = Ssl::new(&context)?;
+        ssl.set_verify(openssl::ssl::SslVerifyMode::NONE);
+        let mut stream = SslStream::new(ssl, tcp)?;
+        Pin::new(&mut stream).accept().await?;
+        assert!(matches!(
+            PacketReader::new(None).read_packet(&mut stream).await,
+            PacketReadResult::Success(_)
+        ));
+        let _ = received.send(());
+        match stream.read(&mut [0]).await {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::UnexpectedEof
+                ) => {}
+            result => {
+                panic!("expired transport must close without more application bytes: {result:?}")
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+    let client = TacacsClient::connect_prepared(endpoint).await?;
+    let request = client.execute_classified(AccountingExchange::new(accounting_request()));
+    tokio::pin!(request);
+    tokio::select! {
+        result = &mut request => panic!("request ended before transmission: {result:?}"),
+        result = observed => result?,
+    }
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    let error = request.await.unwrap_err();
+    assert_eq!(error.transmission_state(), tacacsrs_networking::TransmissionState::OutcomeUnknown);
+    tokio::time::resume();
+    close_expired_client(&client).await?;
+    tokio::time::timeout(Duration::from_secs(5), peer).await???;
     Ok(())
 }
 

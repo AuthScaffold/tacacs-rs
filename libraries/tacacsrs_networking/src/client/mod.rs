@@ -432,14 +432,16 @@ impl TacacsClient {
             .store(true, std::sync::atomic::Ordering::Release);
     }
 
-    /// Closes the client, drains existing sessions, and joins owned setup and driver tasks.
+    /// Closes the client, drains sessions, and joins setup, driver, and certificate-expiry tasks.
     ///
     /// At `deadline`, remaining transports close even if callers retain idle
     /// conversations or do not poll their I/O futures. Cancelled joins can be retried;
     /// the client remains closed. Final client drop also requests immediate cleanup.
+    /// Certificate expiry can close a transport before this shutdown deadline.
     ///
     /// # Errors
     /// Returns a setup or driver task failure after completing other cleanup.
+    /// This can include an I/O error from a driver already stopped by certificate expiry.
     pub async fn close_and_join(&self, deadline: crate::RequestDeadline) -> anyhow::Result<()> {
         self.close();
         self.stop_accepting_new_sessions().await;
@@ -448,7 +450,8 @@ impl TacacsClient {
         let driver_result = self.retire_shared_until(deadline).await;
         self.lifecycle.force_close_transports();
         self.lifecycle.wait_for_transports().await;
-        setup_result.and(driver_result)
+        let expiry_result = self.lifecycle.join_expiries(deadline).await;
+        setup_result.and(driver_result).and(expiry_result)
     }
 
     /// Retires and joins the currently cached and previously retired shared drivers.

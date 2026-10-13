@@ -357,12 +357,12 @@ async fn conversation_enforces_multi_round_sequence_progression() {
 
 #[tokio::test(start_paused = true)]
 async fn retained_conversation_rejects_expired_client_certificate_without_sending() {
-    use crate::transport::tls::{CertificateValidity, ClientIdentityLifetime};
+    use crate::transport::tls::{CertificateValidity, CertificateLifetime};
     let certificate = openssl::x509::X509::from_pem(include_bytes!(
         "../../../../../lde/containers/config/certificates/client.crt"
     ))
     .unwrap();
-    let lifetime = ClientIdentityLifetime {
+    let lifetime = CertificateLifetime {
         validity: CertificateValidity::from_certificate(&certificate).unwrap(),
         deadline: crate::RequestDeadline::after(Duration::from_secs(1)).unwrap(),
     };

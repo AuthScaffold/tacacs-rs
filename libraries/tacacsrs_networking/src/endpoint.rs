@@ -159,7 +159,7 @@ impl PreparedEndpoint {
 
     pub(crate) fn client_identity_lifetime(
         &self,
-    ) -> Option<crate::transport::tls::ClientIdentityLifetime> {
+    ) -> Option<crate::transport::tls::CertificateLifetime> {
         match &self.transport {
             PreparedTransport::Tls(config) => config.lifetime,
             PreparedTransport::Tcp | PreparedTransport::Psk(_, _) => None,

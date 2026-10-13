@@ -10,19 +10,28 @@ use openssl::x509::X509Ref;
 const SECONDS_PER_DAY: i64 = 86_400;
 
 #[derive(Clone, Copy)]
-pub(crate) struct ClientIdentityLifetime {
+pub(crate) struct CertificateLifetime {
     pub(crate) validity: CertificateValidity,
     pub(crate) deadline: crate::RequestDeadline,
 }
 
-impl ClientIdentityLifetime {
+impl CertificateLifetime {
+    pub(crate) fn intersect(self, other: Self) -> Result<Self> {
+        Ok(Self {
+            validity: self.validity.intersect(other.validity)?,
+            deadline: crate::RequestDeadline::at(
+                self.deadline.expires_at().min(other.deadline.expires_at()),
+            ),
+        })
+    }
+
     pub(crate) fn new(validity: CertificateValidity) -> Result<Self> {
         let monotonic = tokio::time::Instant::now();
         let now = SystemTime::now();
-        ensure!(validity.is_valid_at(now), "Client certificate validity excludes the current time");
+        ensure!(validity.is_valid_at(now), "Certificate validity excludes the current time");
         let deadline = monotonic
             .checked_add(validity.valid_until.duration_since(now)?)
-            .context("Client certificate validity exceeds the runtime clock range")?;
+            .context("Certificate validity exceeds the runtime clock range")?;
         Ok(Self {
             validity,
             deadline: crate::RequestDeadline::at(deadline),
@@ -32,7 +41,7 @@ impl ClientIdentityLifetime {
     pub(crate) fn check(self) -> Result<()> {
         ensure!(
             self.validity.is_valid_at(SystemTime::now()),
-            "Client certificate validity excludes the current time"
+            "Certificate validity excludes the current time"
         );
         self.deadline.check()?;
         Ok(())
@@ -49,10 +58,10 @@ impl ClientIdentityLifetime {
     }
 }
 
-/// Absolute validity of the configured client certificate chain.
+/// Absolute validity of a certificate or selected certificate chain.
 ///
 /// Runtime use includes the lower bound and excludes the upper bound.
-/// These dates do not describe alternative trust anchors or the negotiated peer chain.
+/// Alternative trust paths must be evaluated separately, not intersected together.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct CertificateValidity {
     valid_from: SystemTime,
@@ -60,6 +69,20 @@ pub struct CertificateValidity {
 }
 
 impl CertificateValidity {
+    pub(crate) fn from_chain(
+        chain: &openssl::stack::StackRef<openssl::x509::X509>,
+    ) -> Result<Self> {
+        let first = chain
+            .get(0)
+            .context("Verified certificate chain is empty")?;
+        chain
+            .iter()
+            .skip(1)
+            .try_fold(Self::from_certificate(first)?, |validity, certificate| {
+                validity.intersect(Self::from_certificate(certificate)?)
+            })
+    }
+
     pub(crate) fn from_certificate(certificate: &X509Ref) -> Result<Self> {
         let validity = Self {
             valid_from: system_time(certificate.not_before())?,
@@ -67,7 +90,7 @@ impl CertificateValidity {
         };
         ensure!(
             validity.valid_from < validity.valid_until,
-            "Client certificate validity interval is empty"
+            "Certificate validity interval is empty"
         );
         Ok(validity)
     }
@@ -79,24 +102,24 @@ impl CertificateValidity {
         };
         ensure!(
             validity.valid_from < validity.valid_until,
-            "Client certificate validity intervals do not overlap"
+            "Certificate validity intervals do not overlap"
         );
         Ok(validity)
     }
 
-    /// Returns the inclusive start of the configured identity's validity.
+    /// Returns the inclusive start of the certificate interval.
     #[must_use]
     pub const fn valid_from(self) -> SystemTime {
         self.valid_from
     }
 
-    /// Returns the exclusive end of the configured identity's validity.
+    /// Returns the exclusive end of the certificate interval.
     #[must_use]
     pub const fn valid_until(self) -> SystemTime {
         self.valid_until
     }
 
-    /// Reports whether the supplied wall-clock time permits this identity.
+    /// Reports whether the supplied wall-clock time is within the interval.
     #[must_use]
     pub fn is_valid_at(self, now: SystemTime) -> bool {
         self.valid_from <= now && now < self.valid_until

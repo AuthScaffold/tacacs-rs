@@ -13,7 +13,7 @@ pub(crate) use config_builder::TlsConfigurationBuilder;
 pub(crate) use config::TlsClientConfig;
 pub use config::{CertificateIdentity, CertificateTrust, PrivateKeyEncoding};
 pub use validity::CertificateValidity;
-pub(crate) use validity::ClientIdentityLifetime;
+pub(crate) use validity::CertificateLifetime;
 
 use anyhow::Context;
 use openssl::ssl::Ssl;
@@ -37,8 +37,10 @@ pub(crate) async fn connect_tls(
     stream: TcpStream,
     peer_identity: &str,
     sni_name: Option<&str>,
+    peer_validity_index: config_builder::PeerValidityIndex,
 ) -> anyhow::Result<SslStream<TcpStream>> {
     let mut ssl = Ssl::new(context).context("OpenSSL failed to allocate TLS SSL object")?;
+    ssl.set_ex_data(peer_validity_index, std::sync::Mutex::new(None));
     ssl.param_mut()
         .set_hostflags(X509CheckFlags::NO_PARTIAL_WILDCARDS | X509CheckFlags::NEVER_CHECK_SUBJECT);
     match peer_identity.parse::<std::net::IpAddr>() {

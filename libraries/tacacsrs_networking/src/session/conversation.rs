@@ -20,13 +20,13 @@ use super::ClientSession;
 pub struct ClientConversation {
     session: Option<ClientSession>,
     state: ConversationState,
-    lifetime: Option<crate::transport::tls::ClientIdentityLifetime>,
+    lifetime: Option<crate::transport::tls::CertificateLifetime>,
 }
 
 impl ClientConversation {
     pub(crate) fn new(
         session: ClientSession,
-        lifetime: Option<crate::transport::tls::ClientIdentityLifetime>,
+        lifetime: Option<crate::transport::tls::CertificateLifetime>,
     ) -> Self {
         Self {
             state: ConversationState::new(session.session_id()),

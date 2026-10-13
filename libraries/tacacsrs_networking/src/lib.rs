@@ -11,6 +11,10 @@
 //! Establishment checks each resolved destination before TCP connect and checks the
 //! connected socket before TLS or TACACS+ I/O. Endpoint clones share the guard.
 //! The host owns listener state and interface discovery. Networking does not interpret YANG.
+//!
+//! Certificate TLS connections retain the validity of the accepted peer path and
+//! configured client identity. Owned expiry tasks close both transport halves,
+//! including idle connections. New connections can verify replacement peer credentials.
 
 mod client;
 pub mod admission;
