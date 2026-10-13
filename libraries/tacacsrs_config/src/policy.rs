@@ -49,6 +49,10 @@ pub fn parse_runtime_policy(bytes: &[u8]) -> anyhow::Result<RuntimePolicy> {
 /// outside the supported TACACS+ range.
 pub fn validate_runtime_policy(policy: &RuntimePolicy) -> anyhow::Result<()> {
     ensure!(
+        policy.shutdown_timeout_seconds > 0,
+        "runtime-policy/shutdown-timeout-seconds must be greater than zero"
+    );
+    ensure!(
         policy.failover_recovery_interval_seconds > 0,
         "runtime-policy/failover-recovery-interval-seconds must be greater than zero"
     );
@@ -99,6 +103,7 @@ mod tests {
     fn generated_defaults_preserve_absent_containers() {
         let policy = parse_runtime_policy(br#"{"tacacsrs:runtime-policy":{}}"#).unwrap();
         assert_eq!(policy, RuntimePolicy::default());
+        assert_eq!(policy.shutdown_timeout_seconds, 30);
         assert!(policy.authentication.is_none());
         assert_eq!(crate::tacacsrs::Authentication::default().max_body_length, 4096);
         assert_eq!(crate::tacacsrs::Authorization::default().max_body_length, 16384);
@@ -126,6 +131,7 @@ mod tests {
             r#"{"tacacsrs:runtime-policy":{"authentication":{"unknown":1}}}"#,
             r#"{"tacacsrs:runtime-policy":{}} {}"#,
             r#"{"tacacsrs:runtime-policy":{"failover-recovery-interval-seconds":0}}"#,
+            r#"{"tacacsrs:runtime-policy":{"shutdown-timeout-seconds":0}}"#,
             r#"{"tacacsrs:runtime-policy":{"accounting":{"max-body-length":65537}}}"#,
             r#"{"tacacsrs:runtime-policy":{"authorization":{"max-concurrent-requests":0}}}"#,
             r#"{"tacacsrs:runtime-policy":{"authentication":{"request-timeout-seconds":0}}}"#,

@@ -2075,6 +2075,7 @@ name = "tacacsrs-agentd"
 version = "0.0.0-dev"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "clap_mangen",
  "console-subscriber",

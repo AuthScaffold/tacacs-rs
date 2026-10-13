@@ -1335,6 +1335,7 @@ pub mod tacacsrs {
         }
     }
 
+    fn default_runtime_policy_shutdown_timeout_seconds() -> u32 { 30 }
     fn default_runtime_policy_failover_recovery_interval_seconds() -> u32 { 30 }
     fn default_runtime_policy_client_api_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
     fn default_runtime_policy_tacacs_proxy_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
@@ -1343,6 +1344,13 @@ pub mod tacacsrs {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct RuntimePolicy {
+        /// Graceful shutdown budget for runtime and host cleanup.
+        /// The host captures one deadline when shutdown starts.
+        /// At expiry, pending asynchronous work is cancelled.
+        /// Policy updates do not extend a shutdown already in progress.
+        #[serde(rename = "shutdown-timeout-seconds")]
+        #[serde(default = "default_runtime_policy_shutdown_timeout_seconds")]
+        pub shutdown_timeout_seconds: u32,
         /// Interval before a failed route receives one recovery trial.
         #[serde(rename = "failover-recovery-interval-seconds")]
         #[serde(default = "default_runtime_policy_failover_recovery_interval_seconds")]
@@ -1372,6 +1380,7 @@ pub mod tacacsrs {
     impl Default for RuntimePolicy {
         fn default() -> Self {
             Self {
+                shutdown_timeout_seconds: default_runtime_policy_shutdown_timeout_seconds(),
                 failover_recovery_interval_seconds: default_runtime_policy_failover_recovery_interval_seconds(),
                 client_api_failover_strategy: default_runtime_policy_client_api_failover_strategy(),
                 tacacs_proxy_failover_strategy: default_runtime_policy_tacacs_proxy_failover_strategy(),

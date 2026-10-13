@@ -279,6 +279,7 @@ impl PreparedService {
             supervisor_task,
             cancellation.clone(),
             health,
+            || service.shutdown_timeout(),
         )
         .await
     }
@@ -296,13 +297,14 @@ async fn supervise_tasks(
     mut supervisor_task: tokio::task::JoinHandle<anyhow::Result<()>>,
     cancellation: CancellationToken,
     health: RuntimeHealthPublisher,
+    shutdown_timeout: impl FnOnce() -> Duration,
 ) -> anyhow::Result<()> {
     let _tasks = PeerTasks {
         cancellation: cancellation.clone(),
         host: host_task.abort_handle(),
         supervisor: supervisor_task.abort_handle(),
     };
-    let mut service_future = std::pin::pin!(service_future);
+    let mut service_future = Box::pin(service_future);
 
     let mut service_completed = false;
     let mut peer_failed = false;
@@ -331,25 +333,58 @@ async fn supervise_tasks(
         }
     };
 
+    let deadline =
+        if let Some(deadline) = tokio::time::Instant::now().checked_add(shutdown_timeout()) {
+            deadline
+        } else {
+            if service_result.is_ok() {
+                service_result = Err(anyhow::anyhow!("Shutdown budget exceeds the clock range"));
+            }
+            tokio::time::Instant::now()
+        };
     cancellation.cancel();
-    if !service_completed {
-        service_result = service_result.and(service_future.await);
-    }
-    if !supervisor_task_completed {
-        let cleanup = supervisor_task
-            .await
-            .context("Configuration supervisor task failed")
-            .and_then(std::convert::identity);
-        peer_failed |= cleanup.is_err();
-        service_result = service_result.and(cleanup);
-    }
-    if !host_task_completed {
-        let cleanup = host_task
-            .await
-            .context("Host integration task failed")
-            .and_then(std::convert::identity);
-        peer_failed |= cleanup.is_err();
-        service_result = service_result.and(cleanup);
+    let cleanup = async {
+        if !service_completed {
+            let result = (&mut service_future).await;
+            if service_result.is_ok() {
+                service_result = result;
+            }
+        }
+        if !supervisor_task_completed {
+            let result = (&mut supervisor_task)
+                .await
+                .context("Configuration supervisor task failed")
+                .and_then(std::convert::identity);
+            supervisor_task_completed = true;
+            peer_failed |= result.is_err();
+            if service_result.is_ok() {
+                service_result = result;
+            }
+        }
+        if !host_task_completed {
+            let result = (&mut host_task)
+                .await
+                .context("Host integration task failed")
+                .and_then(std::convert::identity);
+            host_task_completed = true;
+            peer_failed |= result.is_err();
+            if service_result.is_ok() {
+                service_result = result;
+            }
+        }
+    };
+    if tokio::time::timeout_at(deadline, cleanup).await.is_err() {
+        health.set_lifecycle(RuntimeLifecycle::Failed);
+        drop(service_future);
+        host_task.abort();
+        supervisor_task.abort();
+        if !host_task_completed {
+            let _ = host_task.await;
+        }
+        if !supervisor_task_completed {
+            let _ = supervisor_task.await;
+        }
+        return service_result.and(Err(anyhow::anyhow!("Shutdown deadline elapsed")));
     }
 
     if peer_failed {
@@ -534,7 +569,20 @@ mod supervision_tests {
     use tacacsrs_agent::{EnabledServices, RuntimeHealthPublisher, RuntimeLifecycle};
     use tokio_util::sync::CancellationToken;
 
-    use super::{supervise_tasks, supervisor_exit_to_fatal_error};
+    use super::supervisor_exit_to_fatal_error;
+
+    async fn supervise_tasks(
+        service: impl std::future::Future<Output = anyhow::Result<()>>,
+        host: tokio::task::JoinHandle<anyhow::Result<()>>,
+        supervisor: tokio::task::JoinHandle<anyhow::Result<()>>,
+        cancellation: CancellationToken,
+        health: RuntimeHealthPublisher,
+    ) -> anyhow::Result<()> {
+        super::supervise_tasks(service, host, supervisor, cancellation, health, || {
+            tacacsrs_agent::RuntimePolicy::default().shutdown_timeout()
+        })
+        .await
+    }
 
     fn health() -> RuntimeHealthPublisher {
         RuntimeHealthPublisher::new(EnabledServices::CLIENT_API)
@@ -552,6 +600,111 @@ mod supervision_tests {
     async fn service_until_cancel(cancellation: CancellationToken) -> anyhow::Result<()> {
         cancellation.cancelled().await;
         Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cleanup_phases_share_one_captured_deadline() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let cancellation = CancellationToken::new();
+        let child = cancellation.clone();
+        let service = async move {
+            child.cancelled().await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            Ok(())
+        };
+        let host = tokio::spawn(future::pending::<anyhow::Result<()>>());
+        let host_finished = host.abort_handle();
+        let supervisor = tokio::spawn(future::pending::<anyhow::Result<()>>());
+        let supervisor_finished = supervisor.abort_handle();
+        let budget = Arc::new(AtomicU64::new(3));
+        let updated = budget.clone();
+        let child = cancellation.clone();
+        let update = tokio::spawn(async move {
+            child.cancelled().await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            updated.store(100, Ordering::Release);
+        });
+        cancellation.cancel();
+        let started = tokio::time::Instant::now();
+        let health = health();
+        let result =
+            super::supervise_tasks(service, host, supervisor, cancellation, health.clone(), || {
+                Duration::from_secs(budget.load(Ordering::Acquire))
+            })
+            .await;
+        update.await.unwrap();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Shutdown deadline elapsed"));
+        assert_eq!(started.elapsed(), Duration::from_secs(3));
+        assert!(host_finished.is_finished());
+        assert!(supervisor_finished.is_finished());
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn primary_peer_error_survives_stalled_service_teardown() {
+        use std::time::Duration;
+
+        let cancellation = CancellationToken::new();
+        let host = tokio::spawn(async { Err(anyhow::anyhow!("primary host failure")) });
+        let supervisor = tokio::spawn(future::pending::<anyhow::Result<()>>());
+        let supervisor_finished = supervisor.abort_handle();
+        let started = tokio::time::Instant::now();
+        let health = health();
+        let result = super::supervise_tasks(
+            future::pending(),
+            host,
+            supervisor,
+            cancellation,
+            health.clone(),
+            || Duration::from_secs(2),
+        )
+        .await;
+        assert!(format!("{:#}", result.unwrap_err()).contains("primary host failure"));
+        assert_eq!(started.elapsed(), Duration::from_secs(2));
+        assert!(supervisor_finished.is_finished());
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn teardown_budget_starts_at_service_exit_not_process_start() {
+        use std::time::Duration;
+
+        let cancellation = CancellationToken::new();
+        let service = async {
+            tokio::time::sleep(Duration::from_secs(100)).await;
+            Ok(())
+        };
+        let host = tokio::spawn(future::pending::<anyhow::Result<()>>());
+        let supervisor = wait_for_cancel(cancellation.clone());
+        let started = tokio::time::Instant::now();
+        assert!(super::supervise_tasks(service, host, supervisor, cancellation, health(), || {
+            Duration::from_secs(3)
+        })
+        .await
+        .is_err());
+        assert_eq!(started.elapsed(), Duration::from_secs(103));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_peer_cannot_hold_shutdown_open_indefinitely() {
+        let cancellation = CancellationToken::new();
+        let host = tokio::spawn(future::pending::<anyhow::Result<()>>());
+        let supervisor = wait_for_cancel(cancellation.clone());
+        let health = health();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(31),
+            supervise_tasks(future::ready(Ok(())), host, supervisor, cancellation, health.clone()),
+        )
+        .await;
+        assert!(result.is_ok(), "a stalled peer must not outlive the shutdown budget");
+        assert!(result.unwrap().is_err(), "forced shutdown must not report success");
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
     }
 
     #[tokio::test]

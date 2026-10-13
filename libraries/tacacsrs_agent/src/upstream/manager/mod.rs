@@ -183,6 +183,22 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         Ok(())
     }
 
+    pub(crate) fn shutdown_timeout(&self) -> std::time::Duration {
+        self.current_runtime().runtime_policy.shutdown_timeout()
+    }
+
+    pub(crate) fn shutdown_deadline(&self) -> anyhow::Result<tacacsrs_networking::RequestDeadline> {
+        let runtime = self.current_runtime();
+        let requests = OperationKind::ALL
+            .into_iter()
+            .map(|operation| runtime.runtime_policy.limits(operation).request_timeout())
+            .max()
+            .unwrap_or_default();
+        tacacsrs_networking::RequestDeadline::after(
+            requests.min(runtime.runtime_policy.shutdown_timeout()),
+        )
+    }
+
     pub(crate) fn close(&self) {
         let runtime = self
             .runtime

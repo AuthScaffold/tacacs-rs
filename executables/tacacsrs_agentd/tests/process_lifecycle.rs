@@ -1,6 +1,7 @@
 //! Native host-signal and startup-cancellation regressions.
 
 use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -161,5 +162,95 @@ async fn host_signal_drains_a_serving_agent_and_closes_idle_ipc_connection() {
     })
     .await
     .expect("shutdown must close the held IPC transport");
+    assert!(!endpoint.exists());
+}
+
+#[tokio::test]
+async fn shutdown_budget_terminates_a_stalled_systemd_helper() {
+    let directory = ProcessDirectory::new();
+    let endpoint = directory.0.join("agent.sock");
+    let policy = directory.0.join("policy.json");
+    let helper = directory.0.join("systemd-notify");
+    let helper_pid = directory.0.join("helper.pid");
+    tokio::fs::write(&policy, br#"{"tacacsrs:runtime-policy":{"shutdown-timeout-seconds":1}}"#)
+        .await
+        .unwrap();
+    tokio::fs::write(
+        &helper,
+        b"#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$TACACSRS_HELPER_PID\"\nexec /bin/sleep 60\n",
+    )
+    .await
+    .unwrap();
+    tokio::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700))
+        .await
+        .unwrap();
+    let paths = std::env::join_paths(
+        std::iter::once(directory.0.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let mut child = agent()
+        .args([
+            "--server-addr",
+            "192.0.2.10:49",
+            "--shared-secret",
+            "test-secret",
+            "--host-integration",
+            "systemd",
+            "--listen-endpoint",
+        ])
+        .arg(&endpoint)
+        .arg("--runtime-policy")
+        .arg(&policy)
+        .env("PATH", paths)
+        .env("NOTIFY_SOCKET", directory.0.join("notify.sock"))
+        .env("TACACSRS_HELPER_PID", &helper_pid)
+        .spawn()
+        .unwrap();
+    wait_for_signal_registration(&mut child).await;
+    let helper_process = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(pid) = tokio::fs::read_to_string(&helper_pid).await {
+                if let Ok(pid) = pid.trim().parse::<u32>() {
+                    return pid;
+                }
+            }
+            assert!(child.try_wait().unwrap().is_none(), "daemon exited before helper start");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("systemd helper must start");
+    assert!(Command::new("kill")
+        .arg("-TERM")
+        .arg(child.id().unwrap().to_string())
+        .status()
+        .await
+        .unwrap()
+        .success());
+    let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+        .await
+        .expect("stalled helper must not hold process shutdown open")
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Shutdown deadline elapsed"));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match tokio::fs::read_to_string(format!("/proc/{helper_process}/status")).await {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Ok(status)
+                    if status
+                        .lines()
+                        .any(|line| line.starts_with("State:") && line.contains('Z')) =>
+                {
+                    break
+                }
+                Ok(_) => tokio::time::sleep(Duration::from_millis(5)).await,
+                Err(error) => panic!("read helper state: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("owned helper must be terminated on timeout");
     assert!(!endpoint.exists());
 }

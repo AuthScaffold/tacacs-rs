@@ -198,6 +198,13 @@ impl TacacsClientService {
             .await
     }
 
+    /// Returns the applied graceful shutdown budget for an embedding host.
+    /// Capture it once when shutdown begins; later policy updates must not renew it.
+    #[must_use]
+    pub fn shutdown_timeout(&self) -> std::time::Duration {
+        self.runtime.state.shutdown_timeout()
+    }
+
     /// Returns the current configured upstream count.
     #[must_use]
     pub fn server_count(&self) -> usize {
@@ -496,7 +503,7 @@ where
             shutdown.initiate_shutdown();
             let result = self
                 .state
-                .close_and_join(self.state.retirement_deadline()?)
+                .close_and_join(self.state.shutdown_deadline()?)
                 .await;
             if result.is_ok() {
                 shutdown.mark_stopped();
@@ -600,7 +607,7 @@ where
                 }
             }
         }
-        let deadline = self.state.retirement_deadline()?;
+        let deadline = self.state.shutdown_deadline()?;
         self.state.close();
         let draining = async {
             while let Some(result) = tasks.join_next().await {
@@ -747,6 +754,33 @@ mod tests {
         source.server[0].shared_secret = None;
         assert!(service.reload_tacacs_plus(source).await.is_err());
         assert_eq!(service.health.snapshot(), replacement);
+    }
+
+    #[tokio::test]
+    async fn shutdown_budget_reloads_without_changing_request_retirement_budget() {
+        let config =
+            service_config(test_endpoint("shutdown-budget"), vec![test_server("primary:49")]);
+        let service = test_service(config).unwrap();
+        let source = tacacsrs_config::policy::parse_runtime_policy(
+            br#"{"tacacsrs:runtime-policy":{
+            "shutdown-timeout-seconds":2,"authentication":{"request-timeout-seconds":100}}}"#,
+        )
+        .unwrap();
+        let original = source.clone();
+        service
+            .reload_runtime_policy(RuntimePolicy::try_from(&source).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(source, original);
+        assert_eq!(service.state.shutdown_timeout(), Duration::from_secs(2));
+        let now = tokio::time::Instant::now();
+        assert!(
+            service.state.shutdown_deadline().unwrap().expires_at() <= now + Duration::from_secs(3)
+        );
+        assert!(
+            service.state.retirement_deadline().unwrap().expires_at()
+                >= now + Duration::from_secs(99)
+        );
     }
 
     #[tokio::test]

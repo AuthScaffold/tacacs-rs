@@ -1,35 +1,43 @@
 //! Daemon-owned host process-manager integration.
 
-use std::process::Command;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tacacsrs_agent::{RuntimeHealthSnapshot, RuntimeLifecycle};
+use tokio::process::Command;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::cli::HostIntegrationMode;
 
+#[async_trait::async_trait]
 trait SystemdCommand: Send + Sync {
     fn is_available(&self) -> bool;
-    fn execute(&self, arguments: &[String]) -> anyhow::Result<()>;
+    async fn execute(&self, arguments: &[String]) -> anyhow::Result<()>;
 }
 
 #[derive(Debug)]
 struct ProcessSystemdCommand;
 
+#[async_trait::async_trait]
 impl SystemdCommand for ProcessSystemdCommand {
     fn is_available(&self) -> bool {
-        Command::new("systemd-notify")
-            .arg("--version")
-            .status()
-            .is_ok_and(|status| status.success())
+        std::env::var_os("PATH").is_some_and(|paths| {
+            std::env::split_paths(&paths).any(|directory| {
+                std::fs::metadata(directory.join("systemd-notify")).is_ok_and(|metadata| {
+                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                })
+            })
+        })
     }
 
-    fn execute(&self, arguments: &[String]) -> anyhow::Result<()> {
+    async fn execute(&self, arguments: &[String]) -> anyhow::Result<()> {
         let status = Command::new("systemd-notify")
+            .kill_on_drop(true)
             .args(arguments)
             .status()
+            .await
             .map_err(|error| anyhow::anyhow!("Failed to run systemd-notify: {error}"))?;
         if !status.success() {
             anyhow::bail!("systemd-notify exited with an unsuccessful status: {status}");
@@ -109,7 +117,8 @@ impl HostIntegration {
                 Ok(())
             }
             Self::Systemd(integration) => {
-                let mut retry_pending = integration.publish(&health.borrow().clone())?;
+                let snapshot = health.borrow().clone();
+                let mut retry_pending = integration.publish(&snapshot).await?;
                 loop {
                     let backoff = integration.retry_backoff;
                     // When a one-shot notification failed transiently, retry after a
@@ -126,17 +135,20 @@ impl HostIntegration {
                     tokio::select! {
                         biased;
                         () = cancellation.cancelled() => {
-                            integration.publish(&health.borrow().clone())?;
+                            let snapshot = health.borrow().clone();
+                            integration.publish(&snapshot).await?;
                             return Ok(());
                         }
                         () = &mut retry => {
-                            retry_pending = integration.publish(&health.borrow().clone())?;
+                            let snapshot = health.borrow().clone();
+                            retry_pending = integration.publish(&snapshot).await?;
                         }
                         result = health.changed() => {
                             if result.is_err() {
                                 return Ok(());
                             }
-                            retry_pending = integration.publish(&health.borrow().clone())?;
+                            let snapshot = health.borrow().clone();
+                            retry_pending = integration.publish(&snapshot).await?;
                         }
                     }
                 }
@@ -166,7 +178,7 @@ impl SystemdIntegration {
     /// only after the command succeeds. When a one-shot notification is still
     /// owed after a transient auto-mode failure, this method returns `true`.
     /// The caller must retry the notification.
-    fn publish(&mut self, snapshot: &RuntimeHealthSnapshot) -> anyhow::Result<bool> {
+    async fn publish(&mut self, snapshot: &RuntimeHealthSnapshot) -> anyhow::Result<bool> {
         let mut arguments = vec!["--pid=parent".to_owned()];
         arguments.push(format!("--status={}", status_text(snapshot)));
 
@@ -181,7 +193,7 @@ impl SystemdIntegration {
             arguments.push("--stopping".to_owned());
         }
 
-        match self.command.execute(&arguments) {
+        match self.command.execute(&arguments).await {
             Ok(()) => {
                 if want_ready {
                     self.ready_sent = true;
@@ -239,12 +251,13 @@ mod tests {
         calls: Mutex<Vec<Vec<String>>>,
     }
 
+    #[async_trait::async_trait]
     impl SystemdCommand for CapturingCommand {
         fn is_available(&self) -> bool {
             self.available
         }
 
-        fn execute(&self, arguments: &[String]) -> anyhow::Result<()> {
+        async fn execute(&self, arguments: &[String]) -> anyhow::Result<()> {
             self.calls
                 .lock()
                 .expect("calls lock")
@@ -398,8 +411,8 @@ mod tests {
             .is_err());
     }
 
-    #[test]
-    fn publish_marks_ready_sent_only_after_the_command_succeeds() {
+    #[tokio::test]
+    async fn publish_marks_ready_sent_only_after_the_command_succeeds() {
         let command = Arc::new(CapturingCommand {
             available: true,
             fail_first: Mutex::new(1),
@@ -416,15 +429,16 @@ mod tests {
 
         let retry_pending = integration
             .publish(&snapshot)
+            .await
             .expect("auto tolerates failure");
         assert!(retry_pending, "a failed one-shot must request a retry");
         assert!(!integration.ready_sent);
 
-        let retry_pending = integration.publish(&snapshot).expect("auto succeeds");
+        let retry_pending = integration.publish(&snapshot).await.expect("auto succeeds");
         assert!(!retry_pending);
         assert!(integration.ready_sent);
 
-        let retry_pending = integration.publish(&snapshot).expect("auto succeeds");
+        let retry_pending = integration.publish(&snapshot).await.expect("auto succeeds");
         assert!(!retry_pending, "a delivered one-shot must not request another retry");
 
         let ready_calls = command
@@ -440,8 +454,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn publish_marks_stopping_sent_only_after_the_command_succeeds() {
+    #[tokio::test]
+    async fn publish_marks_stopping_sent_only_after_the_command_succeeds() {
         let command = Arc::new(CapturingCommand {
             available: true,
             fail_first: Mutex::new(1),
@@ -460,11 +474,12 @@ mod tests {
 
         let retry_pending = integration
             .publish(&snapshot)
+            .await
             .expect("auto tolerates failure");
         assert!(retry_pending);
         assert!(!integration.stopping_sent);
 
-        let retry_pending = integration.publish(&snapshot).expect("auto succeeds");
+        let retry_pending = integration.publish(&snapshot).await.expect("auto succeeds");
         assert!(!retry_pending);
         assert!(integration.stopping_sent);
 
@@ -478,8 +493,8 @@ mod tests {
         assert_eq!(stopping_calls, 2);
     }
 
-    #[test]
-    fn publish_retries_stopping_after_lifecycle_advances_to_stopped() {
+    #[tokio::test]
+    async fn publish_retries_stopping_after_lifecycle_advances_to_stopped() {
         let command = Arc::new(CapturingCommand {
             available: true,
             fail_first: Mutex::new(1),
@@ -497,10 +512,12 @@ mod tests {
 
         assert!(integration
             .publish(&health.snapshot())
+            .await
             .expect("auto tolerates failure"));
         health.set_lifecycle(RuntimeLifecycle::Stopped);
         assert!(!integration
             .publish(&health.snapshot())
+            .await
             .expect("stopping retry succeeds"));
         assert!(integration.stopping_sent);
 

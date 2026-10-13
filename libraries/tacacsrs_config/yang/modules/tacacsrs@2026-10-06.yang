@@ -175,6 +175,16 @@ module tacacsrs {
     container runtime-policy {
       description
         "Failover and admission controls for local client API and proxy services.";
+      leaf shutdown-timeout-seconds {
+        type uint32 { range "1..max"; }
+        units "seconds";
+        default 30;
+        description
+          "Graceful shutdown budget for runtime and host cleanup.
+           The host captures one deadline when shutdown starts.
+           At expiry, pending asynchronous work is cancelled.
+           Policy updates do not extend a shutdown already in progress.";
+      }
       leaf failover-recovery-interval-seconds {
         type uint32 { range "1..max"; }
         units "seconds";

@@ -147,6 +147,7 @@ pub struct RuntimePolicy {
     tacacs_proxy_failover_strategy: FailoverStrategy,
     operations: OperationPolicies,
     failover_recovery_interval: Duration,
+    shutdown_timeout: Duration,
 }
 
 impl RuntimePolicy {
@@ -185,6 +186,7 @@ impl RuntimePolicy {
             failover_recovery_interval: Duration::from_secs(u64::from(
                 policy.failover_recovery_interval_seconds,
             )),
+            shutdown_timeout: Duration::from_secs(u64::from(policy.shutdown_timeout_seconds)),
         }
     }
 
@@ -207,6 +209,9 @@ impl RuntimePolicy {
             tacacs_proxy_failover_strategy,
             operations,
             failover_recovery_interval,
+            shutdown_timeout: Duration::from_secs(u64::from(
+                tacacsrs_config::tacacsrs::RuntimePolicy::default().shutdown_timeout_seconds,
+            )),
         })
     }
 
@@ -242,6 +247,12 @@ impl RuntimePolicy {
     #[must_use]
     pub const fn failover_recovery_interval(&self) -> Duration {
         self.failover_recovery_interval
+    }
+
+    /// Returns the graceful teardown budget captured when shutdown starts.
+    #[must_use]
+    pub const fn shutdown_timeout(&self) -> Duration {
+        self.shutdown_timeout
     }
 }
 
