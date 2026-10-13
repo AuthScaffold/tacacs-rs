@@ -108,7 +108,7 @@ Cancellation during later connection retirement retains matching runtime, health
 The coordinator releases its state lock at commit, before asynchronous retirement. Canonical source snapshots and credential references remain unchanged.
 
 `RuntimeHealthSnapshot::materialization_revision()` reports the applied `SourceRevision` and `CredentialRevision` for coordinated materialization.
-The source counter advances when the coordinator accepts a canonical candidate, including repeated observations.
+The source counter advances at admission before asynchronous host filtering, including repeated candidates and source rejection notifications.
 The credential counter advances independently when an invalidation schedules materialization.
 These counters belong to one controller instance. They are not content hashes, provider versions, or globally comparable identifiers.
 Policy-only updates preserve the applied pair. Direct server reloads clear it because they bypass coordinated materialization.
@@ -120,6 +120,12 @@ If a newer credential invalidation supersedes incomplete work, it refreshes all 
 `runtime::ConfigSupervisor` owns source recovery, credential notifications, and materialization coordination.
 The host supplies a `ConfigDatastore`, service, health publisher, and `TacacsPlusFilter`.
 `NoopTacacsPlusFilter` preserves every upstream. Host-specific filters can derive a working candidate without changing the retained authoritative snapshot.
+
+All supervised sources use the same coordinator, including inline configuration without a credential resolver.
+An older filter result cannot replace a newer admitted source or update its health. Source recovery commits with the accepted runtime generation.
+A pending or rejected source cannot trigger credential refresh against an older filtered candidate.
+Credential invalidations during filtering are retained in the revision used for the eventual prepared candidate.
+During source unavailability, credential refresh can use retained configuration without marking the source current.
 
 Use `with_credential_resolver` and `with_credential_changes` to configure credential providers.
 Notifications require a resolver. Provider configuration is checked before source I/O.

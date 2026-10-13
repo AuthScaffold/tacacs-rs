@@ -2,13 +2,14 @@
 
 ## Status
 
-Stage 4 is in progress as of 2026-10-12. Commit `6a11a83` completes the first increment.
+Stage 4 is in progress as of 2026-10-13. Commit `6a11a83` completes the first increment.
 Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent.
 Commit `75aac8b` adds canonical observation sessions and file watcher ownership. The supervisor now uses observations for startup and recovery.
 Commit `8381d4f` completes S4-02 with owned SONiC observations and removal of transitional APIs.
 Commit `899ca75` starts S4-03 with atomic runtime and applied-health publication.
 Commit `a3f1727` adds active materialization bookkeeping to the same commit and closes its cancellation window.
 Commit `044518c` adds independent materialization revisions and protects credential health from stale results.
+Commit `3f72a8f` moves source admission before filtering and unifies source publication and health across both resolver modes.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 This increment does not complete the shared configuration controller or credential lifecycle.
 
@@ -19,7 +20,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
-- [ ] S4-03: Commits `899ca75` and `a3f1727` unify runtime, applied-health, and materialization commits. Commit `044518c` adds materialization revisions and credential-health fencing. Source admission, non-materialized updates, and source/policy candidate-health fencing remain open. See [revision-aware materialization](#revision-aware-materialization).
+- [ ] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revisions and credential-health fencing. Commit `3f72a8f` completes source admission and source-health coordination for both resolver modes. Policy revision and health publication remain open. See [source admission and health](#source-admission-and-health).
 - [ ] S4-04: Remove process signal ownership from libraries. Apply explicit host cancellation, stale-material budgets, expiry rules, and bounded drains across controller/provider work. Verify shutdown with active and cancelled observations.
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
@@ -443,11 +444,65 @@ Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were n
 
 ### S4-03 Remainder
 
-Materialization revisions begin when the coordinator accepts a candidate, which currently happens after asynchronous host filtering.
-The final controller must assign source identity before filtering so an older filter completion cannot become a newer authoritative candidate.
-The no-resolver source path must participate in that same revision contract.
+At `044518c`, materialization revisions began after asynchronous host filtering.
+Commit `3f72a8f` assigns source identity before filtering and includes no-resolver sources in the same revision contract.
 
-Configuration-source status and policy rejection status still have separate supervisor updates after asynchronous work.
-Their success and failure decisions need revision checks and coordinated publication, as the credential failure flag now has.
-This increment does not claim that all supervisor health transitions are protected from stale completions.
-These remaining obligations stay within S4-03; no additional work item is needed.
+At that checkpoint, configuration-source and policy rejection status still had separate supervisor updates after asynchronous work.
+The following increment completes source-result coordination. Policy health remains within S4-03.
+
+## Source Admission and Health
+
+Commit `3f72a8f` assigns each source candidate a revision before host filtering starts.
+Admission retains the canonical candidate and invalidates older filtered work.
+Filtered acceptance checks the admitted source revision before it records the derived runtime candidate or schedules materialization.
+Late filter success and failure cannot replace or reject a newer admitted source.
+
+Every supervisor now owns a coordinator. The resolver is optional, rather than the coordinator itself.
+Inline configuration uses the same revision, validation, publication, and health path as resolver-backed configuration.
+Without a resolver, unresolved central credential references still fail before publication.
+The accepted inline generation also records a materialization revision with its independent credential counter.
+
+Source admission clears the previous filtered candidate until the new filter result is accepted.
+Credential notifications during this interval advance the credential revision without republishing the previous source.
+The eventual accepted filter result captures the latest credential revision and prepares the new source.
+Rejected observations advance source identity and invalidate pending work while leaving the active runtime unchanged.
+
+### Source Health Ownership
+
+The coordinator checks source rejection under its state lock and publishes rejection health in one mutation.
+Materialization failures also publish their credential and source flags together, conditional on the attempt still being current.
+Successful publication carries source-current status into the existing runtime and health commit.
+The supervisor no longer marks a source current or rejected after a completed publication future returns.
+Thus, late retirement completion cannot clear a newer source rejection.
+
+Observation loss marks the retained source unavailable without discarding valid active material.
+Credential refresh can still rotate that retained material, but its commit does not claim that the source recovered.
+An admitted valid source restores current status only when its generation is published.
+Canonical snapshots and credential references remain unchanged by filtering and materialization.
+
+### Regression Evidence
+
+`older_filter_completion_cannot_replace_a_newer_source` failed before the change: the old candidate reported `Published`, not `Superseded`.
+The test now covers old filter success and failure, both with and without a resolver.
+The newer server set and health snapshot remain unchanged in all four cases.
+
+Additional tests verify:
+
+- Source health is current before asynchronous retirement completes.
+- A rejected observation remains rejected when an older publication returns.
+- Credential refresh during a source outage preserves stale source health and unavailable-notification status.
+- Credential invalidation during filtering is retained without reusing the old filtered source.
+- Central references fail without a resolver, while a later valid inline candidate recovers through the same publication path.
+
+### Verification and Remaining Work
+
+All 166 agent tests pass, including 27 supervisor tests and the materialization regressions.
+The complete all-feature workspace suite, strict workspace Clippy, build, nightly formatting, and warnings-as-errors rustdoc pass.
+The documentation update passes the book build and rustdoc. Edited files have no editor diagnostics.
+No dependency, lockfile, configuration schema, IPC schema, protocol, or TLS changes occur in this increment.
+Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun for this agent-only change.
+
+S4-03 remains open for policy admission identity and policy candidate-health publication.
+The policy supervisor still applies prepared policy and then updates rejection health separately.
+That result handling must join the generation commit and reject stale success or failure before S4-03 can close.
+Global admission, canonical policy authority, and source/credential revision semantics must remain intact.

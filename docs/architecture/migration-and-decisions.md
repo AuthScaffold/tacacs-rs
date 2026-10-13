@@ -294,7 +294,8 @@ Commit `8381d4f` completes S4-02 with native SONiC observation ownership, creden
 S4-03 is in progress. Commit `899ca75` commits the routing generation and applied-health metadata through one publication boundary.
 Commit `a3f1727` includes active materialization bookkeeping in that commit and releases its lock before asynchronous retirement.
 Commit `044518c` adds independent materialization source/credential revisions, applied revision metadata, and credential-result health fencing.
-Source admission before filtering, non-materialized source updates, and source/policy candidate-health fencing remain open.
+Commit `3f72a8f` assigns source identity before filtering, unifies inline and resolver-backed publication, and coordinates source health decisions.
+Policy revision and candidate-health publication remain open in S4-03.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.
