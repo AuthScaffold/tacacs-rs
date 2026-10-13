@@ -19,6 +19,7 @@ Commit `8ff62cd` adds absolute provider validity metadata, publication checks, r
 Commit `23e7f98` adds intrinsic configured client-certificate validity, including inline identities and cached sessions.
 Commit `7b3eed7` completes S4-04 with negotiated peer-path expiry and owned idle-transport retirement.
 Commit `3897414` completes S4-05 with canonical client-chain provisioning and native mTLS verification.
+Commit `567ec16` starts S4-06 with canonical required issuer-signed OCSP stapling and bounded evidence lifetime.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
 
@@ -32,7 +33,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
-- [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
+- [ ] S4-06: Commit `567ec16` enforces canonical issuer-signed stapling, strict unavailable-status behavior, and evidence freshness during TLS and transport use. Delegated responders, issuer/intermediate revocation, and broader retrieval remain open. See [required stapled evidence](#required-stapled-evidence).
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
 ## Policy Observation
@@ -1098,3 +1099,76 @@ S4-05 is complete. Canonical configuration owns ordered client chains, and provi
 Native preparation and mTLS tests enforce the supplied-chain contract while preserving source authority.
 Stage 4 remains open for S4-06 revocation policy, evidence retrieval, freshness, and unavailable-status behavior, followed by S4-07 operational statistics.
 This work does not implement revocation retrieval or establish full RFC 9887 conformance.
+
+## Required Stapled Evidence
+
+Commit `567ec16` adds an opt-in `tacacsrs:require-stapled-ocsp` presence container to server authentication and reusable server-credential bundles.
+Its `max-response-age-seconds` leaf is a positive `uint32`, with a generated default of 300.
+An absent container preserves existing certificate verification without adding a revocation requirement.
+Bundle expansion copies the canonical policy into the derived server. Source snapshots and references remain unchanged.
+Required evidence rejects PSK combinations and the development certificate-verification override before connection establishment.
+
+### Verification and Freshness
+
+Networking exposes `CertificateRevocationPolicy` and applies it to a prepared certificate TLS endpoint.
+The client requests a staple and verifies it through OpenSSL's status callback during the handshake.
+Native mTLS tests confirm that rejected evidence prevents client-certificate transmission, not only later TACACS+ traffic.
+One typed OpenSSL index identifies per-connection policy, issuer inputs, and the verified interval or sanitized failure.
+
+This increment accepts responses signed directly by the authenticated peer leaf's issuer.
+The issuer must match the leaf's issuer relationship and verify its signature; candidates come from TLS chains and configured CA material.
+OCSP verification uses only that issuer as a signer candidate. Embedded or delegated signing certificates are not accepted.
+SHA-1 and SHA-256 certificate IDs are supported. Evidence must cover the actual peer certificate and report `GOOD`.
+Missing, malformed, unsuccessful, wrongly signed, wrong-certificate, unknown, revoked, or stale responses fail closed.
+The parser rejects staples over 64 KiB and DER responses with trailing data.
+
+The accepted interval begins at `thisUpdate` and ends at the earlier of `nextUpdate` and `thisUpdate` plus the configured age.
+When `nextUpdate` is absent, the configured age still limits use. There is no clock-skew allowance or stale grace.
+The interval intersects certificate validity and flows into the existing monotonic and wall-clock transport lifetime.
+Existing owned expiry tasks close idle or active transports when evidence expires. Reconnection must validate new evidence; no background responder query is added.
+
+### Native Time Bridge
+
+OpenSSL's safe Rust wrapper exposes OCSP timestamps as `Asn1GeneralizedTimeRef`, but its time-difference API requires `Asn1TimeRef`.
+A small local unsafe bridge reborrows the native object for a read-only conversion. No reference escapes the call.
+The installed C headers define both types as `ASN1_STRING`; the bridge records that safety requirement beside the cast.
+Native tests cover pre-epoch, epoch, and generalized-time boundary values.
+
+### Generator Repair
+
+The first canonical policy test rejected the qualified JSON container name.
+The generator applied project-module qualification to leaves and leaf-lists, but omitted it for containers and lists.
+Both paths now receive parent-module context and use the existing RFC 7951 naming rule.
+A generator regression covers qualified project containers and lists. The runtime policy test covers both direct and bundled inputs.
+This fix stays within S4-06 because the new canonical policy exposed it.
+
+### Verification
+
+All-feature workspace tests pass, including 189 agent tests, 86 configuration tests, 33 generated-type tests, and thirteen prepared-source tests.
+Networking passes 169 tests with two existing ignored tests. Native process tests also pass.
+The native OCSP matrix uses locally generated, issuer-signed responses and checks good, missing, revoked, unknown, wrong-certificate, tampered, malformed, and unsuccessful evidence.
+It also verifies client-authentication protection and idle expiry for both a short `nextUpdate` and absent `nextUpdate`.
+Pure tests cover future and stale intervals, exclusive expiry, nonrenewal, and policy age bounds.
+
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+Affected dependency guards pass. All nine independent TACACS+ peer cases pass with the new requirement disabled by default.
+All 14 generator tests and deterministic regeneration pass; the pinned upstream YANG module remains unchanged.
+Editor diagnostics and whitespace checks are clear. No dependency, lockfile, or IPC schema changes occur.
+
+The user installed nightly `rust-src`, and Miri prepared its sysroot successfully.
+Both pure revocation tests pass under Miri. The native bridge test cannot run because Miri does not support `OPENSSL_init_ssl`.
+This is an interpreter limitation, not a passed FFI check. The bridge and complete OCSP path pass native tests.
+Native Redis, live SONiC, and Windows checks were not rerun.
+
+Artifact SHA-256 values:
+
+- Generated Rust: `a7f98f8ad9a949887258f702805cd04eb4a949ab441ff83f4d65c569c35ba9c2`.
+- Expanded tree: `fb513c5d60fca78d91292178dff9cf266f630422f7ac51fadb3657edaa806bad`.
+- Project YANG module: `d20fbfcfc7bf1e1b7363512cebb799bf3530715be70efc71dd0f066dbdc77d1f`.
+
+### S4-06 Remainder
+
+S4-06 remains open. This mode covers issuer-signed peer-leaf staples, not complete revocation checking.
+Remaining work includes delegated responders, issuer/intermediate revocation, and controller/provider integration for broader OCSP or CRL retrieval and refresh.
+Future modes must retain explicit freshness, failure behavior, source authority, cancellation ownership, and native verification tests.
+S4-07 operational statistics remains open. No full RFC 9887 conformance claim is made.

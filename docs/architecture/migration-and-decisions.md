@@ -304,7 +304,9 @@ Commit `8ff62cd` preserves absolute provider validity through materialization, p
 Commit `23e7f98` extracts configured client-certificate validity and enforces it during preparation, publication, handshakes, sessions, and supervised expiry.
 Commit `7b3eed7` completes negotiated peer-path expiry and owned idle-transport retirement, including alternate CA paths and exact pins.
 Commit `3897414` completes S4-05 with canonical client-chain inputs, provider and PEM adapters, and native mTLS acceptance tests.
-S4-06 revocation policy and evidence retrieval are next. Non-yielding code and started blocking I/O still require explicit deployment limits.
+Commit `567ec16` starts S4-06 with canonical required issuer-signed OCSP stapling, handshake-time verification, and evidence-bounded transport lifetime.
+Delegated responders, issuer/intermediate revocation, and broader evidence retrieval remain open in S4-06.
+Non-yielding code and started blocking I/O still require explicit deployment limits.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.
@@ -318,7 +320,7 @@ The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the comple
 Certificate provisioning and operational data have explicit Stage 4 acceptance contracts:
 
 - Client-chain provisioning belongs to configuration preparation and credential providers. Add canonical chain inputs before accepting multi-certificate client material. Native mTLS tests must cover complete, missing, and incorrect intermediate chains without changing source references.
-- Revocation policy belongs to the controller/provider lifecycle and TLS verifier integration. Define freshness and unavailable-status behavior, obtain revocation evidence, and reject revoked credentials before use. Current certificate verification does not implement revocation retrieval or claim full RFC 9887 conformance.
+- Revocation policy belongs to the controller/provider lifecycle and TLS verifier integration. Required issuer-signed staples now enforce leaf status and freshness before client authentication. Broader retrieval and chain coverage remain incomplete; no full RFC 9887 conformance is claimed.
 - YANG operational statistics belong to the controller's health/publication boundary. Populate and export `ServerStatistics` from runtime events without putting read-only counters into desired configuration. Verify counter updates and generation association across reloads.
 
 Primary starting points:
