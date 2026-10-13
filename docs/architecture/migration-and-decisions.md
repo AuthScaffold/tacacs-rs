@@ -296,7 +296,8 @@ Commit `a3f1727` includes active materialization bookkeeping in that commit and 
 Commit `044518c` adds independent materialization source/credential revisions, applied revision metadata, and credential-result health fencing.
 Commit `3f72a8f` assigns source identity before filtering, unifies inline and resolver-backed publication, and coordinates source health decisions.
 Commit `907cff1` completes S4-03 with revision-fenced policy admission and atomic policy-health publication.
-S4-04 is next: host-owned signals, explicit cancellation, stale-material policy, expiry, and bounded drains.
+S4-04 is in progress. Commit `36d9cbc` moves signals to the daemon and coordinates startup cancellation and task cleanup.
+Stale-material budgets, expiry rules, and explicit teardown bounds across controller/provider work remain open.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.

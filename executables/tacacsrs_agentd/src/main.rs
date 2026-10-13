@@ -42,7 +42,7 @@ use crate::host_integration::HostIntegration;
 
 /// Initializes the logger based on verbosity level.
 ///
-/// When built with the `console` feature, the daemon uses the tokio-console
+/// With the `console` feature and `tokio_unstable`, the daemon uses the tokio-console
 /// tracing subscriber instead of `env_logger`. This subscriber gives real-time
 /// async runtime profiling with the `tokio-console` tool.
 #[cfg(all(feature = "console", tokio_unstable))]

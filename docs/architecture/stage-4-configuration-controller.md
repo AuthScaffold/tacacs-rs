@@ -11,6 +11,7 @@ Commit `a3f1727` adds active materialization bookkeeping to the same commit and 
 Commit `044518c` adds independent materialization revisions and protects credential health from stale results.
 Commit `3f72a8f` moves source admission before filtering and unifies source publication and health across both resolver modes.
 Commit `907cff1` completes S4-03 with revision-fenced policy decisions and atomic policy-health publication.
+Commit `36d9cbc` starts S4-04 with daemon-owned signals and coordinated cancellation from bootstrap through serving.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication contract is complete. The remaining Stage 4 lifecycle, certificate, revocation, and statistics work is still open.
 
@@ -22,7 +23,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
-- [ ] S4-04: Remove process signal ownership from libraries. Apply explicit host cancellation, stale-material budgets, expiry rules, and bounded drains across controller/provider work. Verify shutdown with active and cancelled observations.
+- [ ] S4-04: Commit `36d9cbc` removes library signal ownership and verifies native bootstrap cancellation, service drain, and peer cleanup. Stale-material budgets, expiry rules, and explicit controller/provider teardown bounds remain open. See [host signal ownership](#host-signal-ownership).
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
@@ -571,3 +572,69 @@ Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were n
 S4-04 owns process signal removal from libraries, host cancellation, stale-material budgets, expiry behavior, and bounded drains.
 Client certificate chains, revocation evidence retrieval, and operational statistics retain their separate Stage 4 acceptance criteria.
 This closure does not claim completion of Stage 4 or full RFC 9887 conformance.
+
+## Host Signal Ownership
+
+Commit `36d9cbc` removes the agent library's `serve()` methods and process signal future.
+The only listener entry point is `serve_until(stop_future)`. Agent code no longer uses `tokio::signal` or requests Tokio's signal feature directly.
+The embedding host owns signal selection and error handling.
+
+The daemon registers SIGINT and SIGTERM once, before asynchronous bootstrap.
+It polls the signal future alongside the application instead of starting a detached signal task.
+One cancellation token covers forwarder bootstrap, local-service and policy loading, initial configuration, observation, and serving.
+Registration errors fail startup explicitly. Requested cancellation during asynchronous bootstrap returns successfully without binding listeners.
+
+`PreparedService` separates completed bootstrap from the running service.
+Fail-fast initialization observes the same host cancellation token. If it is cancelled, the daemon does not spawn listener or peer tasks.
+The ready-stop library path also skips binding, closes upstream runtime state, and publishes `Stopped` after cleanup.
+The regression preserves an unrelated regular file at the configured endpoint, proving that cancellation did not attempt socket preparation.
+
+### Supervision Cleanup
+
+The daemon keeps the service future alive after a host or configuration task failure.
+It cancels the shared token, awaits service drain, and joins both peer tasks before returning.
+Requested shutdown is selected before expected peer exits, so those exits do not produce a false fatal error.
+Unexpected peer exits and cleanup errors preserve a failed lifecycle while the original error remains available to the caller.
+An ownership guard cancels and aborts peer tasks if the supervision future itself is dropped.
+
+The existing listener and upstream drain deadline remains derived from the maximum current operation budget.
+This increment does not add a separate process-wide deadline for every controller or provider cleanup operation.
+Started blocking filesystem work also retains the cancellation limitations documented in the observation increments.
+
+### Nearby Defects
+
+`host_panic_cancels_and_joins_configuration_before_returning` failed before the fix because an early `?` bypassed cancellation.
+Cleanup no longer returns early before joining the other peer. The regression checks both cancellation and completed joining before return.
+
+`already_stopped_host_does_not_attempt_listener_binding` also failed before the fix.
+The old path started listener preparation after the stop future was already ready and rejected the unrelated file at its endpoint.
+The new path does not attempt binding.
+
+Native all-feature tests exposed an unconditional Tokio Console startup panic without `tokio_unstable`.
+The daemon now enables profiling only when the feature and instrumentation cfg are both present.
+Other console-feature builds report disabled profiling and use normal logging. Cargo explicitly accepts the instrumentation cfg.
+The instrumented profiling mode itself was not exercised in this increment.
+
+### Native Verification
+
+The process tests start the built daemon as a child process. They use private temporary directories and kill-on-drop cleanup.
+Linux `/proc` state confirms that both signal handlers are registered before the tests deliver a signal to that child PID.
+Both SIGINT and SIGTERM cancel SONiC bootstrap when its configured Redis endpoint is unavailable.
+The serving test holds an idle Unix IPC connection, sends SIGTERM, and verifies successful exit, transport closure, and socket removal.
+That test uses a one-second operation budget to exercise bounded listener and upstream cleanup.
+The tests pass in both default and all-feature builds without changing or restarting the SONiC VM.
+
+All 173 agent tests, 64 daemon unit tests, seven prepared-source tests, and two native process tests pass.
+The complete all-feature workspace suite, strict Clippy, build, formatting, warnings-as-errors rustdoc, and book build pass.
+Unused-dependency analysis passes. Audit reports no vulnerabilities in 301 locked packages, with the existing index-lock warning.
+The existing nightly `fetch_update` deprecation warning remains. Edited files have no editor diagnostics.
+
+Dependency features change only for signal ownership and native process tests. No package version, lockfile, schema, protocol, or TLS implementation changes.
+Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun.
+
+### S4-04 Remainder
+
+Define canonical stale-material budgets and expiry behavior instead of retaining unavailable credentials indefinitely by accident.
+Apply explicit teardown budgets to controller/provider work and verify both cooperative and non-cooperative dependencies.
+Preserve last-known-good source semantics, generation identity, and bounded connection retirement while adding these policies.
+S4-04 remains open. Certificate chains, revocation evidence retrieval, and statistics remain the later Stage 4 obligations.

@@ -335,7 +335,8 @@ Manager closure also prevents later server publication or captured-route binding
 Closed-service admission errors are not retriable.
 
 `TacacsClientService::serve_until(stop_future)` lets an embedded host run and stop listeners without process signal handlers.
-The existing `serve()` method wraps the same path with an owned signal future, rather than a detached monitor task.
+At Stage 3, `serve()` wrapped that path with an owned signal future, rather than a detached monitor task.
+Stage 4 commit `36d9cbc` removes this wrapper and transfers all process signal handling to the daemon.
 Shutdown withdraws serving health and closes admission and new upstream work.
 One deadline, derived from the maximum current operation budget, covers listener drain and every historical/current endpoint join.
 Remaining listener tasks are cancelled and joined at expiry. Native clients then force remaining transport cleanup under that same deadline.

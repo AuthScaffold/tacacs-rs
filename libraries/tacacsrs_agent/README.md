@@ -328,8 +328,9 @@ The listener follows this startup sequence:
 6. begin serving IPC clients
 ```
 
-`serve()` waits for SIGTERM or Ctrl-C in its owned serving future.
-Embedded hosts use `serve_until(stop_future)` without installing signal handlers.
+All hosts use `serve_until(stop_future)`. The former signal-owning `serve()` method is removed.
+The library installs no process signal handlers. The daemon registers SIGINT and SIGTERM before asynchronous bootstrap and supplies the stop future.
+A stop future that is already ready prevents listener binding and closes the runtime without touching the configured socket path.
 Shutdown changes health to `Draining`, closes admission and upstream connection creation, and stops listeners from accepting new work.
 The maximum current operation request budget supplies one absolute deadline for listener drain and all current and historical upstream cleanup.
 At expiry, remaining listener tasks are cancelled and joined, and upstream sockets are forced closed.

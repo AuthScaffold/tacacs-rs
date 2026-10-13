@@ -183,12 +183,13 @@ Direct and IPC modes can still expose different transport metadata without dupli
 
 **Priority: P2. Confidence: confirmed ownership split.**
 
-The agent library still offers process signal handling through `serve()`. Its `serve_until()` API accepts host cancellation.
+The agent library exposes only `serve_until()` with explicit host cancellation. It no longer installs process signal handlers.
+The daemon registers SIGINT/SIGTERM before bootstrap and retains cancellation through listener drain and peer-task cleanup.
 The agent now owns generic configuration recovery and credential materialization through `ConfigSupervisor`.
 The daemon supplies source/provider instances, host filtering, and cancellation.
 Stage 3 moved reusable endpoint routing into networking. Stage 4 now places canonical policy observation in configuration and policy supervision in the agent.
 
-- [Signal ownership](../../libraries/tacacsrs_agent/src/runtime/client_service.rs#L292)
+- [Signal ownership](../../executables/tacacsrs_agentd/src/main.rs)
 - [Agent configuration supervision](../../libraries/tacacsrs_agent/src/runtime/config_supervisor.rs)
 - [Policy supervision](../../libraries/tacacsrs_agent/src/runtime/policy_supervisor.rs#L1)
 
