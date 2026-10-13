@@ -10,7 +10,7 @@
 //! configuration file into a [`ServiceConfig`]. It passes the result to
 //! [`TacacsClientService::new`](crate::TacacsClientService::new) for
 //! validation. It then calls
-//! [`serve`](crate::TacacsClientService::serve) to start the runtime.
+//! [`serve_until`](crate::TacacsClientService::serve_until) with a host stop future to start the runtime.
 
 use tacacsrs_config::TacacsPlus;
 pub use tacacsrs_config::proxy_policy::PreparedProxyPolicy;

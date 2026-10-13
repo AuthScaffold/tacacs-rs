@@ -23,6 +23,7 @@
 
 use std::sync::Arc;
 
+use futures_util::FutureExt;
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
 use tacacsrs_config::local_services::{prepare_local_services, PreparedLocalServices, ListenerEndpoint};
@@ -50,7 +51,7 @@ use tacacsrs_networking::routed::EndpointConnector;
 ///
 /// [`TacacsClientService`] connects operator configuration to shared runtime
 /// state. Its constructor validates the configuration and creates the failover
-/// state machine. [`serve`](TacacsClientService::serve) starts the listeners.
+/// state machine. [`serve_until`](TacacsClientService::serve_until) starts the listeners with host cancellation.
 ///
 /// This type is not `Clone` because it owns the listener lifecycle. Share
 /// [`ServiceConfig`] before you create the service.
@@ -201,14 +202,6 @@ impl TacacsClientService {
     #[must_use]
     pub fn server_count(&self) -> usize {
         self.runtime.server_count()
-    }
-
-    /// Serves until a process shutdown signal and joins runtime resources.
-    ///
-    /// # Errors
-    /// Returns a listener or shutdown error after cleanup.
-    pub async fn serve(&self) -> anyhow::Result<()> {
-        self.runtime.serve().await
     }
 
     /// Serves until an embedding host requests shutdown, without installing signals.
@@ -485,21 +478,6 @@ where
         self.state.server_count()
     }
 
-    /// Runs the local service listeners until the process stops.
-    ///
-    /// Startup leaves operation connections unopened until their first request.
-    /// If no eligible servers exist, the listeners still start. A later
-    /// datastore reload can make the service ready without a process restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the IPC listener cannot be created or if the local
-    /// endpoint configuration is invalid for the current platform.
-    pub async fn serve(&self) -> anyhow::Result<()> {
-        self.serve_until(super::shutdown::process_shutdown_signal())
-            .await
-    }
-
     /// Runs listeners until an embedding host requests shutdown, without installing signal handlers.
     ///
     /// The maximum current operation budget supplies one deadline for listener
@@ -511,12 +489,28 @@ where
         &self,
         stop: impl std::future::Future<Output = ()> + Send,
     ) -> anyhow::Result<()> {
+        self.state.ensure_open()?;
         let shutdown = ShutdownCoordinator::new(self.health.clone());
+        tokio::pin!(stop);
+        if stop.as_mut().now_or_never().is_some() {
+            shutdown.initiate_shutdown();
+            let result = self
+                .state
+                .close_and_join(self.state.retirement_deadline()?)
+                .await;
+            if result.is_ok() {
+                shutdown.mark_stopped();
+            } else {
+                shutdown.fail();
+            }
+            return result;
+        }
         let serving = self.serve_with_shutdown(&shutdown);
         tokio::pin!(serving);
         tokio::select! {
+            biased;
+            () = &mut stop => { shutdown.initiate_shutdown(); serving.await }
             result = &mut serving => result,
-            () = stop => { shutdown.initiate_shutdown(); serving.await }
         }
     }
 
@@ -753,6 +747,24 @@ mod tests {
         source.server[0].shared_secret = None;
         assert!(service.reload_tacacs_plus(source).await.is_err());
         assert_eq!(service.health.snapshot(), replacement);
+    }
+
+    #[tokio::test]
+    async fn already_stopped_host_does_not_attempt_listener_binding() {
+        let endpoint = test_endpoint("stop-before-bind");
+        let IpcEndpoint::Unix(path) = &endpoint else {
+            panic!("Unix test endpoint required");
+        };
+        tokio::fs::write(path, b"unrelated existing file")
+            .await
+            .unwrap();
+        let config = service_config(endpoint.clone(), vec![test_server("primary:49")]);
+        let service = test_service(config).unwrap();
+        let result = service.serve_until(std::future::ready(())).await;
+        assert_eq!(tokio::fs::read(path).await.unwrap(), b"unrelated existing file");
+        tokio::fs::remove_file(path).await.unwrap();
+        assert!(result.is_ok(), "a stopped host must not attempt to bind: {result:?}");
+        assert_eq!(service.health.snapshot().lifecycle(), RuntimeLifecycle::Stopped);
     }
 
     #[tokio::test]
@@ -1162,7 +1174,8 @@ mod tests {
         );
 
         let service = test_service_with_connector(config, connector).unwrap();
-        let service_task = tokio::spawn(async move { service.serve().await });
+        let service_task =
+            tokio::spawn(async move { service.serve_until(std::future::pending()).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let client = ServiceClient::connect(endpoint.clone()).await.unwrap();
@@ -1214,7 +1227,8 @@ mod tests {
         let config = service_config(endpoint.clone(), vec![test_server("primary:49")]);
 
         let service = test_service_with_connector(config, connector).unwrap();
-        let service_task = tokio::spawn(async move { service.serve().await });
+        let service_task =
+            tokio::spawn(async move { service.serve_until(std::future::pending()).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let client = ServiceClient::connect(endpoint.clone()).await.unwrap();

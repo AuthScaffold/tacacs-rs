@@ -21,7 +21,7 @@ tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 tacacsrs-networking = { path = "../tacacsrs_networking" }
 tacacsrs-secrets = { path = "../tacacsrs_secrets" }
-tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }
 tokio-util = "0.7.18"
 tonic = "0.14.6"
