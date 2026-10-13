@@ -42,6 +42,10 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         lease: &RoutingLease<Connector>,
     ) -> anyhow::Result<BoundServer<Connector>> {
         let runtime = &lease.runtime;
+        anyhow::ensure!(
+            runtime.credential_lifetime.is_valid(),
+            "Credential validity expired before request binding"
+        );
         let client = &runtime.server_set.client;
         if client.eligible_count(lease.operation) == 0 {
             anyhow::bail!(
@@ -60,6 +64,10 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             .and_then(std::convert::identity)
         {
             Ok(binding) => {
+                anyhow::ensure!(
+                    runtime.credential_lifetime.is_valid(),
+                    "Credential validity expired during request binding"
+                );
                 self.publication.available(observation);
                 Ok(BoundServer {
                     server: Arc::clone(&runtime.server_set.servers[binding.index()].server),

@@ -146,6 +146,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 proxy_downstream_obfuscation,
                 admission: Arc::new(AdmissionRegistry::new(&runtime_policy)),
                 runtime_policy: Arc::new(runtime_policy),
+                credential_lifetime: crate::runtime::CredentialLifetime::unbounded(),
             })),
             connect_options,
             publication: PublicationController::new(health),
@@ -315,6 +316,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 proxy_downstream_obfuscation: current.proxy_downstream_obfuscation.clone(),
                 admission: Arc::clone(&current.admission),
                 runtime_policy: Arc::new(runtime_policy),
+                credential_lifetime: current.credential_lifetime,
             });
         }))
     }
@@ -457,6 +459,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             servers,
             proxy_downstream_obfuscation,
             None,
+            None,
             commit,
         )
         .await
@@ -467,6 +470,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         servers: Vec<Arc<TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
         retirement: Option<tacacsrs_networking::RequestDeadline>,
+        validity: Option<crate::runtime::CredentialLifetime>,
         commit: impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
         let _reload = self.reload_lock.lock().await;
@@ -519,6 +523,10 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 !self.closed.load(std::sync::atomic::Ordering::Acquire),
                 "The TACACS+ service closed during preparation"
             );
+            anyhow::ensure!(
+                validity.is_none_or(crate::runtime::CredentialLifetime::is_valid),
+                "Credential validity expired before publication"
+            );
             let generation = current.generation.wrapping_add(1);
             previous
                 .client
@@ -536,6 +544,8 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                         proxy_downstream_obfuscation,
                         admission: Arc::clone(&current.admission),
                         runtime_policy: Arc::clone(&current.runtime_policy),
+                        credential_lifetime: validity
+                            .unwrap_or(crate::runtime::CredentialLifetime::unbounded()),
                     });
                     commit()
                 },
@@ -1017,6 +1027,66 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn credential_validity_bounds_leases_and_rechecks_waiting_publication() {
+        use crate::config::PolicyService;
+        use crate::runtime::CredentialLifetime;
+        use tacacsrs_credential_resolution::CredentialValidity;
+        let connection = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let state = UpstreamManager::new(
+            vec![test_server("server-a:49")],
+            Arc::new(FakeConnector::new(HashMap::from([(
+                connection.address.clone(),
+                connection.clone(),
+            )]))),
+            Duration::from_secs(30),
+            test_health(),
+        );
+        let lifetime = CredentialLifetime::new(
+            CredentialValidity::new(
+                None,
+                Some(std::time::SystemTime::now() + Duration::from_secs(2)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        state
+            .reload_shared_servers_with_retirement(
+                vec![Arc::new(test_server("server-a:49"))],
+                PreparedProxyPolicy::unobfuscated(),
+                None,
+                Some(lifetime),
+                || None,
+            )
+            .await
+            .unwrap();
+        let captured = state.capture_request(PolicyService::ClientApi, OperationKind::Accounting);
+        assert_eq!(captured.deadline().expires_at(), lifetime.deadline.unwrap());
+        state.bind_request(&captured).await.unwrap();
+        let generation = state.current_runtime().generation;
+        let guard = state.reload_lock.lock().await;
+        let pending = state.reload_shared_servers_with_retirement(
+            vec![Arc::new(test_server("server-a:49"))],
+            PreparedProxyPolicy::unobfuscated(),
+            None,
+            Some(lifetime),
+            || None,
+        );
+        tokio::pin!(pending);
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(state.bind_request(&captured).await.is_err());
+        let current = state.capture_request(PolicyService::ClientApi, OperationKind::Accounting);
+        assert!(state.bind_request(&current).await.is_err());
+        drop(guard);
+        assert!(pending.await.is_err());
+        assert_eq!(state.current_runtime().generation, generation);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn shutdown_wakes_admission_and_rejects_reload_and_captured_routes() {
         use crate::config::{PolicyService, RequestLimits};
         use crate::upstream::AdmissionError;
@@ -1144,6 +1214,7 @@ mod tests {
                 Vec::new(),
                 PreparedProxyPolicy::unobfuscated(),
                 Some(tacacsrs_networking::RequestDeadline::at(tokio::time::Instant::now())),
+                None,
                 || None,
             )
             .await

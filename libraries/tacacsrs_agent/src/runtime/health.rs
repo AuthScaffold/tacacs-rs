@@ -121,6 +121,7 @@ pub enum DegradationReason {
 pub struct RuntimeHealthSnapshot {
     runtime_generation: Option<RuntimeGeneration>,
     applied_policy_revision: Option<super::PolicyRevision>,
+    credential_lifetime: Option<super::CredentialLifetime>,
     materialization_revision: Option<super::MaterializationRevision>,
     lifecycle: RuntimeLifecycle,
     applied_configuration: bool,
@@ -135,6 +136,18 @@ pub struct RuntimeHealthSnapshot {
 }
 
 impl RuntimeHealthSnapshot {
+    /// Returns provider validity bounds independently of stale grace periods.
+    #[must_use]
+    pub fn credential_validity(
+        &self,
+    ) -> Option<tacacsrs_credential_resolution::CredentialValidity> {
+        self.credential_lifetime.map(|lifetime| lifetime.validity)
+    }
+
+    pub(crate) const fn credential_lifetime(&self) -> Option<super::CredentialLifetime> {
+        self.credential_lifetime
+    }
+
     /// Returns the last committed policy revision, or `None` before the first update.
     /// Rejection, cancellation, and server updates preserve this applied identity.
     #[must_use]
@@ -285,6 +298,7 @@ impl RuntimeHealthPublisher {
         let initial = RuntimeHealthSnapshot {
             runtime_generation: None,
             applied_policy_revision: None,
+            credential_lifetime: None,
             materialization_revision: None,
             lifecycle: RuntimeLifecycle::Starting,
             applied_configuration: false,
@@ -407,6 +421,7 @@ impl RuntimeHealthPublisher {
             if let Some(applied) = configuration_applied {
                 snapshot.applied_configuration = applied;
                 snapshot.materialization_revision = commit.as_ref().map(|commit| commit.revision);
+                snapshot.credential_lifetime = commit.as_ref().map(|commit| commit.validity);
                 if let Some(commit) = commit {
                     if commit.expired == super::ExpiredMaterial::None {
                         snapshot

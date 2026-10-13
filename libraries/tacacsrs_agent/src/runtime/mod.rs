@@ -25,6 +25,8 @@ pub use revision::{
     CredentialRevision, MaterializationRevision, PolicyRevision, PolicyUpdate, SourceRevision,
 };
 pub(crate) use revision::{ExpiredMaterial, MaterialExpiry, MaterializationCommit};
+mod credential_lifetime;
+pub(crate) use credential_lifetime::CredentialLifetime;
 pub use health::{
     DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher, RuntimeGeneration,
     RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, UpstreamAvailability,

@@ -191,10 +191,11 @@ impl TacacsClientService {
         &self,
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         policy: PreparedProxyPolicy,
+        validity: super::CredentialLifetime,
         commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
         self.runtime
-            .publish_materialized_servers(servers, policy, commit)
+            .publish_materialized_servers(servers, policy, Some(validity), commit)
             .await
     }
 
@@ -216,6 +217,7 @@ impl TacacsClientService {
                 Vec::new(),
                 proxy,
                 Some(tacacsrs_networking::RequestDeadline::at(tokio::time::Instant::now())),
+                None,
                 commit,
             )
             .await
@@ -488,7 +490,7 @@ where
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
-        self.publish_materialized_servers(servers, proxy_downstream_obfuscation, || None)
+        self.publish_materialized_servers(servers, proxy_downstream_obfuscation, None, || None)
             .await
     }
 
@@ -496,6 +498,7 @@ where
         &self,
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
+        validity: Option<super::CredentialLifetime>,
         commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
         proxy_downstream_obfuscation.shared_secret()?;
@@ -505,7 +508,13 @@ where
         )?;
         let _reload_guard = self.reload_lock.lock().await;
         self.state
-            .reload_shared_servers_with_commit(servers, proxy_downstream_obfuscation, commit)
+            .reload_shared_servers_with_retirement(
+                servers,
+                proxy_downstream_obfuscation,
+                None,
+                validity,
+                commit,
+            )
             .await?;
         Ok(())
     }

@@ -70,6 +70,8 @@ impl fmt::Debug for PublicBytes {
 /// Resolved certificate and corresponding private key.
 #[derive(Debug)]
 pub struct CertificateWithKeyMaterial {
+    /// Provider-supplied absolute validity, independent of certificate encoding.
+    pub validity: crate::CredentialValidity,
     /// Public key format when the provider returns separate public key data.
     pub public_key_format: Option<PublicKeyFormat>,
     /// Public key data when returned separately from the certificate.
@@ -94,6 +96,8 @@ pub struct NamedCertificateMaterial {
 /// Resolved public certificate bag.
 #[derive(Debug)]
 pub struct CertificateBagMaterial {
+    /// Provider-supplied validity for the complete bag.
+    pub validity: crate::CredentialValidity,
     /// Public certificates in the order from the provider.
     pub certificates: Vec<NamedCertificateMaterial>,
 }
@@ -101,6 +105,8 @@ pub struct CertificateBagMaterial {
 /// Resolved symmetric key and its encoding metadata.
 #[derive(Debug)]
 pub struct SymmetricKeyMaterial {
+    /// Provider-supplied absolute validity for the key.
+    pub validity: crate::CredentialValidity,
     /// Symmetric key format, if the provider supplies it.
     pub key_format: Option<SymmetricKeyFormat>,
     /// Secret symmetric key bytes.
@@ -121,6 +127,18 @@ pub enum ResolvedCredential {
 }
 
 impl ResolvedCredential {
+    /// Returns the absolute validity supplied with this credential.
+    #[must_use]
+    pub const fn validity(&self) -> crate::CredentialValidity {
+        match self {
+            Self::CertificateWithKey(material) => material.validity,
+            Self::SymmetricKey(material) => material.validity,
+            Self::CaCertificateBag(material) | Self::EeCertificateBag(material) => {
+                material.validity
+            }
+        }
+    }
+
     /// Returns the credential kind for request and response matching.
     #[must_use]
     pub const fn kind(&self) -> CredentialKind {
@@ -140,6 +158,7 @@ mod tests {
     #[test]
     fn provider_material_preserves_encoding_metadata() {
         let certificate = CertificateWithKeyMaterial {
+            validity: crate::CredentialValidity::unbounded(),
             public_key_format: Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),
             public_key: Some(PublicBytes::new(b"public-key".to_vec())),
             private_key_format: PrivateKeyFormat::OneAsymmetricKeyFormat,
@@ -147,10 +166,12 @@ mod tests {
             private_key: SecretBytes::new(b"private-key".to_vec()),
         };
         let symmetric_key = SymmetricKeyMaterial {
+            validity: crate::CredentialValidity::unbounded(),
             key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
             key: SecretBytes::new(b"symmetric-key".to_vec()),
         };
         let bag = CertificateBagMaterial {
+            validity: crate::CredentialValidity::unbounded(),
             certificates: vec![NamedCertificateMaterial {
                 name: "provider-name".to_owned(),
                 certificate: PublicBytes::new(b"bag-certificate".to_vec()),

@@ -83,6 +83,7 @@ pub(crate) struct MaterializationCommit {
     pub(crate) source_current: bool,
     pub(crate) expired: ExpiredMaterial,
     pub(crate) credential_references: bool,
+    pub(crate) validity: super::CredentialLifetime,
 }
 
 #[derive(Clone, Copy)]

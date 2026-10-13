@@ -7,6 +7,7 @@ mod material;
 mod request;
 mod resolver;
 mod result_set;
+mod validity;
 
 pub use error::{ProviderErrorKind, ResolutionError, ResolutionErrorKind};
 pub use change::{
@@ -25,4 +26,5 @@ pub use request::{
     ResolutionPlan,
 };
 pub use resolver::{CredentialResolver, resolve_plan};
+pub use validity::{CredentialValidity, InvalidCredentialValidity};
 pub use result_set::{ResolvedCredentialSet, ResolvedResponse};

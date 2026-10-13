@@ -236,19 +236,29 @@ async fn materialized_endpoint(
     let resolver = FakeCredentialResolver::new().with_response(
         RequestSlot::from_index(0),
         ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+            validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
             key_format: None,
             key: SecretBytes::new(key.to_vec()),
         }),
     );
     let materialized =
         enumerate_materialized_servers(source, &resolver, &ValidationOptions::default()).await?;
-    validate_materialized_servers(materialized.iter(), &ValidationOptions::default())?;
+    validate_materialized_servers(
+        materialized
+            .iter()
+            .map(tacacsrs_config::prepare::MaterializedServer::server),
+        &ValidationOptions::default(),
+    )?;
+    assert_eq!(
+        materialized[0].validity(),
+        tacacsrs_credential_resolution::CredentialValidity::unbounded()
+    );
     let endpoint = prepare_endpoint(&materialized[0], PrepareOptions::default())?;
     assert_eq!(
         endpoint.connection_timeout(),
         Some(Duration::from_secs(u64::from(source.server[0].timeout)))
     );
-    Ok((endpoint, materialized[0].clone()))
+    Ok((endpoint, materialized[0].server().clone()))
 }
 
 fn psk_peer_builder(dhe: bool) -> Result<SslContextBuilder> {

@@ -2,10 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::time::SystemTime;
 
 use tacacsrs_credential_resolution::{
     CertificateBagMaterial, CertificateWithKeyMaterial, CredentialResolver, ResolutionError,
     ResolvedCredential, SymmetricKeyMaterial, resolve_plan, RequestContext, PublicBytes,
+    CredentialValidity,
 };
 
 use crate::keystore::{EndEntityCertWithKeyInlineDefinition, SymmetricKeyInlineDefinition};
@@ -28,6 +30,8 @@ pub enum MaterializationErrorKind {
     UnresolvedReference,
     /// Final generated-model validation failed.
     Validation,
+    /// Provider validity windows conflict or exclude the current time.
+    Validity,
 }
 
 /// Sanitized materialization error without reference or credential values.
@@ -115,6 +119,49 @@ impl fmt::Debug for MaterializationError {
 
 impl std::error::Error for MaterializationError {}
 
+/// Derived server data and provider validity constraints, separate from canonical configuration.
+#[derive(Debug, Clone)]
+pub struct MaterializedServer {
+    server: TacacsPlusServer,
+    validity: CredentialValidity,
+}
+
+impl MaterializedServer {
+    /// Wraps inline configuration with no provider-supplied validity bounds.
+    #[must_use]
+    pub fn unbounded(server: TacacsPlusServer) -> Self {
+        Self {
+            server,
+            validity: CredentialValidity::unbounded(),
+        }
+    }
+
+    /// Borrows the derived server configuration.
+    #[must_use]
+    pub const fn server(&self) -> &TacacsPlusServer {
+        &self.server
+    }
+
+    /// Returns the intersection of all provider validity bounds for this server.
+    #[must_use]
+    pub const fn validity(&self) -> CredentialValidity {
+        self.validity
+    }
+
+    /// Transfers both server data and validity to a runtime owner.
+    #[must_use]
+    pub fn into_parts(self) -> (TacacsPlusServer, CredentialValidity) {
+        (self.server, self.validity)
+    }
+}
+
+impl std::ops::Deref for MaterializedServer {
+    type Target = TacacsPlusServer;
+    fn deref(&self) -> &Self::Target {
+        &self.server
+    }
+}
+
 /// Adds resolved credentials to one enumerated server.
 ///
 /// This function makes sure that the generated inline result is valid.
@@ -127,7 +174,7 @@ pub async fn materialize_server(
     server: TacacsPlusServer,
     resolver: &dyn CredentialResolver,
     validation_options: &ValidationOptions,
-) -> Result<TacacsPlusServer, MaterializationError> {
+) -> Result<MaterializedServer, MaterializationError> {
     let candidate = materialize_server_unvalidated(server, resolver).await?;
     let mut candidates = validate_candidates(vec![candidate], validation_options)?;
     Ok(candidates.remove(0))
@@ -142,7 +189,7 @@ pub async fn materialize_servers(
     servers: Vec<TacacsPlusServer>,
     resolver: &dyn CredentialResolver,
     validation_options: &ValidationOptions,
-) -> Result<Vec<TacacsPlusServer>, MaterializationError> {
+) -> Result<Vec<MaterializedServer>, MaterializationError> {
     let mut candidates = Vec::with_capacity(servers.len());
     for server in servers {
         candidates.push(materialize_server_unvalidated(server, resolver).await?);
@@ -162,7 +209,7 @@ pub async fn enumerate_materialized_servers(
     config: &TacacsPlus,
     resolver: &dyn CredentialResolver,
     validation_options: &ValidationOptions,
-) -> Result<Vec<TacacsPlusServer>, MaterializationError> {
+) -> Result<Vec<MaterializedServer>, MaterializationError> {
     let servers = enumerate_servers(config).map_err(|_| MaterializationError::enumeration())?;
     materialize_servers(servers, resolver, validation_options).await
 }
@@ -170,7 +217,7 @@ pub async fn enumerate_materialized_servers(
 async fn materialize_server_unvalidated(
     mut server: TacacsPlusServer,
     resolver: &dyn CredentialResolver,
-) -> Result<TacacsPlusServer, MaterializationError> {
+) -> Result<MaterializedServer, MaterializationError> {
     let plan = super::resolution_plan(&server).map_err(MaterializationError::resolution)?;
     let result_set = resolve_plan(&plan, resolver)
         .await
@@ -180,12 +227,20 @@ async fn materialize_server_unvalidated(
         .map(|(slot, _, credential)| (slot, credential))
         .collect::<BTreeMap<_, _>>();
 
+    let mut validity = CredentialValidity::unbounded();
     for request in plan.requests() {
         let credential = credentials.remove(&request.slot()).ok_or_else(|| {
             MaterializationError::new(
                 MaterializationErrorKind::InvalidMaterial,
                 Some(request.context().server_name().to_owned()),
                 Some(request.context().field_path()),
+            )
+        })?;
+        validity = validity.intersect(credential.validity()).map_err(|_| {
+            MaterializationError::new(
+                MaterializationErrorKind::Validity,
+                Some(server.name.clone()),
+                None,
             )
         })?;
         install_credential(&mut server, request.context().field_path(), credential)?;
@@ -206,7 +261,7 @@ async fn materialize_server_unvalidated(
         ));
     }
 
-    Ok(server)
+    Ok(MaterializedServer { server, validity })
 }
 
 fn install_credential(
@@ -322,15 +377,33 @@ fn install_certificate_bag(
 }
 
 fn validate_candidates(
-    candidates: Vec<TacacsPlusServer>,
+    candidates: Vec<MaterializedServer>,
     validation_options: &ValidationOptions,
-) -> Result<Vec<TacacsPlusServer>, MaterializationError> {
+) -> Result<Vec<MaterializedServer>, MaterializationError> {
+    let now = SystemTime::now();
+    for candidate in &candidates {
+        if !candidate.validity.is_valid_at(now) {
+            return Err(MaterializationError::new(
+                MaterializationErrorKind::Validity,
+                Some(candidate.name.clone()),
+                None,
+            ));
+        }
+    }
+    let (servers, validities): (Vec<_>, Vec<_>) = candidates
+        .into_iter()
+        .map(MaterializedServer::into_parts)
+        .unzip();
     let mut config = TacacsPlus {
         client_credentials: Vec::new(),
         server_credentials: Vec::new(),
-        server: candidates,
+        server: servers,
     };
     validation::validate_config_with_options(&config, validation_options)
         .map_err(|_| MaterializationError::new(MaterializationErrorKind::Validation, None, None))?;
-    Ok(std::mem::take(&mut config.server))
+    Ok(std::mem::take(&mut config.server)
+        .into_iter()
+        .zip(validities)
+        .map(|(server, validity)| MaterializedServer { server, validity })
+        .collect())
 }

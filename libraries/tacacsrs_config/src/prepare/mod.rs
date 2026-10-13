@@ -12,7 +12,7 @@ mod readiness;
 
 pub use materialization::{
     enumerate_materialized_servers, materialize_server, materialize_servers, MaterializationError,
-    MaterializationErrorKind,
+    MaterializationErrorKind, MaterializedServer,
 };
 pub use planning::resolution_plan;
 pub use endpoint::{prepare_endpoint, PrepareOptions};
