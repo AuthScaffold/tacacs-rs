@@ -332,7 +332,9 @@ All hosts use `serve_until(stop_future)`. The former signal-owning `serve()` met
 The library installs no process signal handlers. The daemon registers SIGINT and SIGTERM before asynchronous bootstrap and supplies the stop future.
 A stop future that is already ready prevents listener binding and closes the runtime without touching the configured socket path.
 Shutdown changes health to `Draining`, closes admission and upstream connection creation, and stops listeners from accepting new work.
-The maximum current operation request budget supplies one absolute deadline for listener drain and all current and historical upstream cleanup.
+Listener and upstream drain use the smaller of the maximum current operation budget and canonical `shutdown-timeout-seconds`.
+The shutdown policy defaults to 30 seconds and rejects zero. It does not change request deadlines or endpoint retirement during reload.
+Embedding hosts can read the applied budget through `TacacsClientService::shutdown_timeout()` and capture a deadline when cleanup begins.
 At expiry, remaining listener tasks are cancelled and joined, and upstream sockets are forced closed.
 Owned Unix socket paths are removed before successful shutdown publishes `Stopped`.
 A listener failure cancels its siblings and uses the same cleanup path.
@@ -345,6 +347,10 @@ Terminal shutdown also reaches retired endpoints retained by old requests. A sto
 Cancelling the serving future schedules immediate upstream cleanup and drops listener-owned transport guards.
 Use `close_and_join(deadline)` to confirm upstream cleanup after cancellation or when the service has not started listeners.
 For an active listener run, request shutdown through the future passed to `serve_until` and await that run's result.
+
+The daemon captures one absolute deadline across service drain, configuration supervision, and host-task cleanup.
+At expiry it drops the service future, aborts and joins pending peer tasks, and reports failed shutdown without hiding the original failure.
+This bounds graceful asynchronous waits. Arbitrary non-yielding Rust code or an already-started blocking filesystem operation is not preemptible by a future timeout.
 
 The same typed watch-backed snapshot drives startup, liveness, readiness, datastore freshness, upstream availability, standard gRPC health, host integration, and operator status. It contains only typed flags and counts. Configuration values, server identities, credential references, and raw errors stay outside the shared state.
 

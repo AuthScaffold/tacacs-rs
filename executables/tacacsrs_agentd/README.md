@@ -29,6 +29,11 @@ Unexpected host or configuration task exit is fatal, but the daemon still reques
 Use `--runtime-policy <FILE>` to load live failover strategies and request
 limits. The daemon keeps the last-known-good policy after an invalid update.
 
+Set `shutdown-timeout-seconds` in that canonical policy resource to bound graceful service and peer cleanup. Its default is 30 seconds; zero is invalid.
+The daemon captures the applied value once when cleanup begins. Later policy updates do not renew the deadline.
+At expiry it cancels pending work and exits with an error. An earlier failure remains the primary reported error.
+Systemd notifications use owned asynchronous child processes, so a stalled helper is terminated when teardown aborts its task.
+
 ## Optional Profiling
 
 Tokio Console profiling requires the `console` feature and `RUSTFLAGS="--cfg tokio_unstable"` when building Tokio and the daemon.

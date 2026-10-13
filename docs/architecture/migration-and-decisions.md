@@ -297,7 +297,8 @@ Commit `044518c` adds independent materialization source/credential revisions, a
 Commit `3f72a8f` assigns source identity before filtering, unifies inline and resolver-backed publication, and coordinates source health decisions.
 Commit `907cff1` completes S4-03 with revision-fenced policy admission and atomic policy-health publication.
 S4-04 is in progress. Commit `36d9cbc` moves signals to the daemon and coordinates startup cancellation and task cleanup.
-Stale-material budgets, expiry rules, and explicit teardown bounds across controller/provider work remain open.
+Commit `37faec2` adds canonical graceful-teardown budgets and cancellable systemd helper execution.
+Stale-material budgets and expiry rules remain open. Non-yielding code and started blocking I/O still require explicit deployment limits.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.

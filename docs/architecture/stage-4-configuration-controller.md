@@ -12,6 +12,7 @@ Commit `044518c` adds independent materialization revisions and protects credent
 Commit `3f72a8f` moves source admission before filtering and unifies source publication and health across both resolver modes.
 Commit `907cff1` completes S4-03 with revision-fenced policy decisions and atomic policy-health publication.
 Commit `36d9cbc` starts S4-04 with daemon-owned signals and coordinated cancellation from bootstrap through serving.
+Commit `37faec2` adds canonical graceful-teardown budgets and verifies cancellation of a stalled native host helper.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication contract is complete. The remaining Stage 4 lifecycle, certificate, revocation, and statistics work is still open.
 
@@ -23,7 +24,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
-- [ ] S4-04: Commit `36d9cbc` removes library signal ownership and verifies native bootstrap cancellation, service drain, and peer cleanup. Stale-material budgets, expiry rules, and explicit controller/provider teardown bounds remain open. See [host signal ownership](#host-signal-ownership).
+- [ ] S4-04: Commit `36d9cbc` removes library signal ownership. Commit `37faec2` adds canonical graceful-teardown budgets and owned asynchronous host helpers. Stale-material and expiry policy remain open; non-yielding code and blocking-I/O limits remain explicit. See [bounded graceful teardown](#bounded-graceful-teardown).
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
@@ -638,3 +639,65 @@ Define canonical stale-material budgets and expiry behavior instead of retaining
 Apply explicit teardown budgets to controller/provider work and verify both cooperative and non-cooperative dependencies.
 Preserve last-known-good source semantics, generation identity, and bounded connection retirement while adding these policies.
 S4-04 remains open. Certificate chains, revocation evidence retrieval, and statistics remain the later Stage 4 obligations.
+
+## Bounded Graceful Teardown
+
+Commit `37faec2` adds `shutdown-timeout-seconds` to the project-owned YANG runtime-policy resource.
+The field is a nonzero unsigned 32-bit number of seconds, with a generated default of 30.
+Configuration validation rejects zero. The agent derives a `Duration` without changing the source value.
+Generated Rust, the expanded tree, and the generation manifest are updated from the pinned YANG inputs.
+
+The daemon reads the applied budget when it begins cleanup after a shutdown request or a supervised task exit.
+It computes one absolute deadline before cancelling the shared token.
+Service drain, configuration-supervisor completion, and host-task completion consume the same budget.
+Later steps cannot start a fresh timeout, and a policy update cannot extend the captured deadline.
+
+At expiry, the daemon marks health failed, drops the service future, aborts pending peers, and joins their cancelled tasks.
+Forced teardown returns an error rather than reporting clean shutdown.
+If another failure triggered cleanup, that original error remains primary.
+The library independently caps listener and upstream drain by the smaller of the shutdown policy and maximum current operation budget.
+Endpoint retirement during configuration reload retains its request-based cutoff.
+
+### Native Host Helper Ownership
+
+The systemd adapter previously used a synchronous process wait, which could block a runtime worker and prevent task cancellation.
+It now awaits an owned Tokio child process with kill-on-drop behavior.
+Helper availability checks inspect executable metadata instead of running an unbounded `--version` subprocess during selection.
+Health snapshots are cloned before awaiting notifications; no health borrow is held across the process wait.
+Existing ready/stopping retry semantics remain unchanged.
+
+### Regression Evidence
+
+`stalled_peer_cannot_hold_shutdown_open_indefinitely` failed before the fix after its 31-second test limit.
+The daemon waited forever for a peer that ignored cancellation.
+The final paused-time tests verify the generated default, one deadline across sequential cleanup phases, unchanged deadlines after policy changes, and preserved primary errors.
+Another test verifies that the budget begins at cleanup, not at process startup.
+
+The native process test installs a private fake `systemd-notify` helper that never completes within the test budget.
+It starts the daemon with a one-second canonical shutdown budget, sends SIGTERM, and checks failed exit, helper termination, and socket removal.
+This proves cancellation of a real child-process dependency, not only a mocked pending future.
+The normal serving and bootstrap signal tests remain passing.
+
+### Verification
+
+The complete all-feature workspace suite passes, including 174 agent tests, 68 daemon unit tests, seven prepared-source tests, and three native process tests.
+Strict workspace Clippy, build, formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+All 13 generator tests and deterministic regeneration checks pass. The pinned upstream module is unchanged.
+Generated Rust SHA-256: `44efbc8d9993099759f27ba3e0a66bef949b2ddf5aff3e3215aeba3b16f85f74`.
+All four dependency-boundary guards, unused-dependency analysis, and dependency audit pass.
+Audit reports no vulnerabilities in 301 locked packages, with the existing index-lock warning. The existing nightly deprecation warning remains.
+Edited files have no editor diagnostics after the final lint correction.
+
+The daemon adds a direct `async-trait` dependency and enables Tokio process support for production host integration.
+No package version, TACACS+ wire behavior, IPC schema, or TLS implementation changes.
+Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun.
+
+### Remaining Lifecycle Policy
+
+The deadline bounds graceful asynchronous waits. Abort and join still require Rust futures and destructors to yield or complete.
+An arbitrary blocking call, non-yielding task, or already-started blocking filesystem operation cannot be forcibly preempted inside this runtime.
+Deployments require process-supervisor termination limits for those cases. This increment does not claim a hard wall-clock bound for arbitrary code.
+
+S4-04 still needs canonical stale-material budgets and expiry behavior, with fail-closed handling where those policies require it.
+Preserve source revisions, last-known-good semantics, and bounded endpoint retirement while adding those decisions.
+Certificate chains, revocation evidence retrieval, and operational statistics remain the later Stage 4 work.
