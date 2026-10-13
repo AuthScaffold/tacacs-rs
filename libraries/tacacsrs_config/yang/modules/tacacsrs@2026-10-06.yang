@@ -194,6 +194,16 @@ module tacacsrs {
            Retries and policy changes do not renew the interval.
            At expiry, withdraw upstreams until complete credential revalidation succeeds.";
       }
+         leaf credential-refresh-interval-seconds {
+           type uint32 { range "1..max"; }
+           units "seconds";
+           default 60;
+           description
+          "Maximum scheduled delay between provider credential refresh attempts.
+           Start earlier when prepared material approaches expiry.
+           Refresh does not extend signed or provider validity and does not
+           mark valid material stale unless revalidation fails.";
+         }
       leaf source-stale-timeout-seconds {
         type uint32 { range "1..max"; }
         units "seconds";

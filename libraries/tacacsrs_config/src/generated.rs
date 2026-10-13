@@ -1450,6 +1450,7 @@ pub mod tacacsrs {
 
     fn default_runtime_policy_shutdown_timeout_seconds() -> u32 { 30 }
     fn default_runtime_policy_credential_stale_timeout_seconds() -> u32 { 300 }
+    fn default_runtime_policy_credential_refresh_interval_seconds() -> u32 { 60 }
     fn default_runtime_policy_source_stale_timeout_seconds() -> u32 { 300 }
     fn default_runtime_policy_failover_recovery_interval_seconds() -> u32 { 30 }
     fn default_runtime_policy_client_api_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
@@ -1472,6 +1473,13 @@ pub mod tacacsrs {
         #[serde(rename = "credential-stale-timeout-seconds")]
         #[serde(default = "default_runtime_policy_credential_stale_timeout_seconds")]
         pub credential_stale_timeout_seconds: u32,
+        /// Maximum scheduled delay between provider credential refresh attempts.
+        /// Start earlier when prepared material approaches expiry.
+        /// Refresh does not extend signed or provider validity and does not
+        /// mark valid material stale unless revalidation fails.
+        #[serde(rename = "credential-refresh-interval-seconds")]
+        #[serde(default = "default_runtime_policy_credential_refresh_interval_seconds")]
+        pub credential_refresh_interval_seconds: u32,
         /// Maximum grace interval after applied source configuration becomes stale.
         /// Capture the deadline at the first observed source failure or rejection.
         /// Retries, credential refresh, and policy changes do not renew the interval.
@@ -1510,6 +1518,7 @@ pub mod tacacsrs {
             Self {
                 shutdown_timeout_seconds: default_runtime_policy_shutdown_timeout_seconds(),
                 credential_stale_timeout_seconds: default_runtime_policy_credential_stale_timeout_seconds(),
+                credential_refresh_interval_seconds: default_runtime_policy_credential_refresh_interval_seconds(),
                 source_stale_timeout_seconds: default_runtime_policy_source_stale_timeout_seconds(),
                 failover_recovery_interval_seconds: default_runtime_policy_failover_recovery_interval_seconds(),
                 client_api_failover_strategy: default_runtime_policy_client_api_failover_strategy(),

@@ -240,6 +240,34 @@ This is conservative retirement after an evidence change, not proof that every o
 Remote retrieval, responder revocation without No Check, scoped CRLs, and broader revocation orchestration remain S4-06 work.
 This mode does not establish full RFC 9887 conformance.
 
+## Provider Refresh
+
+The agent supervisor periodically revalidates provider-backed credentials, including referenced CRL sets, even without credential notifications.
+The separate canonical runtime-policy resource controls the maximum scheduled interval:
+
+```json
+{
+  "tacacsrs:runtime-policy": {
+    "credential-refresh-interval-seconds": 60
+  }
+}
+```
+
+The value must be positive and defaults to 60 seconds.
+When prepared material has an earlier expiry, the supervisor schedules refresh at half its remaining lifetime, with at least one second between attempts.
+Health updates and longer policy intervals do not postpone an already scheduled refresh. A shorter interval can bring it forward.
+The next interval starts after an attempt completes. This interval is not a provider I/O timeout; providers must bound their own retrieval operations.
+
+A scheduled attempt does not mark still-valid material stale. Failed revalidation uses the existing credential-failure and stale-grace rules.
+Repeated failures do not renew stale grace. Provider or signed validity expiry still withdraws the catalog while a resolver is pending.
+Successful revalidation can recover an expired credential catalog, but cannot revive an expired configuration source.
+Unchanged provider validity bounds retain their earlier monotonic cutoff; rereading the same material cannot extend its lifetime.
+
+Refresh uses the existing credential revision and atomic publication path without changing canonical references or source revisions.
+The supervisor owns the refresh future and cancels it on host stop. It creates no detached refresh worker.
+Without a resolver, or when the accepted source has no provider references, no automatic resolution occurs.
+Inline-only evidence still requires a new source snapshot. Built-in HTTP and distribution-point retrieval remain unimplemented.
+
 ## EPSK Presence
 
 `server-authentication/tls13-epsks` is a YANG `empty` leaf, not a boolean.

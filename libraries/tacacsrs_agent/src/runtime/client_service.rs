@@ -231,6 +231,10 @@ impl TacacsClientService {
         self.runtime.state.credential_stale_timeout()
     }
 
+    pub(crate) fn credential_refresh_interval(&self) -> std::time::Duration {
+        self.runtime.state.credential_refresh_interval()
+    }
+
     /// Returns the applied graceful shutdown budget for an embedding host.
     /// Capture it once when shutdown begins; later policy updates must not renew it.
     #[must_use]

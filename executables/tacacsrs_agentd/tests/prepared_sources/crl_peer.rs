@@ -20,6 +20,112 @@ use tacacsrs_networking::{RequestDeadline, TacacsClient};
 
 use super::ocsp_peer::{Directory, fixtures};
 
+struct RefreshingCrlResolver {
+    crl: Vec<u8>,
+    validity: std::sync::Mutex<CredentialValidity>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl tacacsrs_credential_resolution::CredentialResolver for RefreshingCrlResolver {
+    async fn resolve(
+        &self,
+        request: &tacacsrs_credential_resolution::CredentialRequest,
+    ) -> Result<ResolvedCredential, tacacsrs_credential_resolution::ResolutionError> {
+        use tacacsrs_credential_resolution::{CredentialKind, ProviderErrorKind, ResolutionError};
+        if request.kind() != CredentialKind::CertificateRevocationLists {
+            return Err(ResolutionError::provider(
+                ProviderErrorKind::Unavailable,
+                request.context(),
+            ));
+        }
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(ResolvedCredential::CertificateRevocationLists(CertificateRevocationListsMaterial {
+            validity: *self.validity.lock().unwrap(),
+            lists: vec![PublicBytes::new(self.crl.clone())],
+        }))
+    }
+}
+
+#[tokio::test]
+async fn provider_crl_validity_refreshes_before_expiry_without_notifications() -> Result<()> {
+    use std::sync::Arc;
+    use std::time::SystemTime;
+    use tacacsrs_agent::{EnabledServices, RuntimeHealthPublisher, ServiceConfig, TacacsClientService};
+    use tacacsrs_agent::runtime::{ConfigSupervisor, NoopTacacsPlusFilter};
+    use tacacsrs_config::source::{ConfigDatastore, StaticDatastore};
+    let directory = Directory::new()?;
+    let crl = make_crl(&directory.0, false, false).await?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let source = source_for(&issuer, 449, &[crl.clone()], true, true)?;
+    let original = source.clone();
+    let source = Arc::new(StaticDatastore::new(source));
+    let resolver = Arc::new(RefreshingCrlResolver {
+        crl,
+        validity: std::sync::Mutex::new(CredentialValidity::new(
+            None,
+            Some(SystemTime::now() + Duration::from_secs(20)),
+        )?),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+    let service = Arc::new(TacacsClientService::waiting_for_configuration(
+        ServiceConfig {
+            local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
+            tacacs_plus: TacacsPlus::empty(),
+            validation_options: ValidationOptions::default(),
+            runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
+            disable_certificate_verification: false,
+        },
+        health.clone(),
+    )?);
+    let mut supervisor = ConfigSupervisor::new(
+        source.clone(),
+        service.clone(),
+        health.clone(),
+        Arc::new(NoopTacacsPlusFilter::default()),
+    )
+    .with_credential_resolver(resolver.clone());
+    supervisor.initialize_until(std::future::pending()).await?;
+    let previous = health.snapshot();
+    *resolver.validity.lock().unwrap() = CredentialValidity::unbounded();
+    let stop = tokio_util::sync::CancellationToken::new();
+    tokio::time::pause();
+    let running = supervisor.run_until(stop.cancelled());
+    tokio::pin!(running);
+    assert!(futures_util::poll!(&mut running).is_pending());
+    tokio::time::advance(Duration::from_secs(11)).await;
+    assert!(futures_util::poll!(&mut running).is_pending());
+    let refreshed = health.snapshot();
+    assert_eq!(resolver.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    assert_eq!(service.server_count(), 1);
+    assert_eq!(
+        refreshed.materialization_revision().unwrap().source(),
+        previous.materialization_revision().unwrap().source()
+    );
+    assert!(
+        refreshed
+            .materialization_revision()
+            .unwrap()
+            .credentials()
+            .value()
+            > previous
+                .materialization_revision()
+                .unwrap()
+                .credentials()
+                .value()
+    );
+    assert!(
+        refreshed.credential_validity().unwrap().valid_until()
+            > previous.credential_validity().unwrap().valid_until()
+    );
+    assert_eq!(source.load().await?, original);
+    stop.cancel();
+    running.await?;
+    Ok(())
+}
+
 async fn make_crl(directory: &Path, revoked: bool, stale: bool) -> Result<Vec<u8>> {
     let peer = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
     let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;

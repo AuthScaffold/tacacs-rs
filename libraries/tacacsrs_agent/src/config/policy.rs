@@ -150,6 +150,7 @@ pub struct RuntimePolicy {
     shutdown_timeout: Duration,
     source_stale_timeout: Duration,
     credential_stale_timeout: Duration,
+    credential_refresh_interval: Duration,
 }
 
 impl RuntimePolicy {
@@ -195,6 +196,9 @@ impl RuntimePolicy {
             credential_stale_timeout: Duration::from_secs(u64::from(
                 policy.credential_stale_timeout_seconds,
             )),
+            credential_refresh_interval: Duration::from_secs(u64::from(
+                policy.credential_refresh_interval_seconds,
+            )),
         }
     }
 
@@ -226,6 +230,10 @@ impl RuntimePolicy {
             credential_stale_timeout: Duration::from_secs(u64::from(
                 tacacsrs_config::tacacsrs::RuntimePolicy::default()
                     .credential_stale_timeout_seconds,
+            )),
+            credential_refresh_interval: Duration::from_secs(u64::from(
+                tacacsrs_config::tacacsrs::RuntimePolicy::default()
+                    .credential_refresh_interval_seconds,
             )),
         })
     }
@@ -280,6 +288,12 @@ impl RuntimePolicy {
     #[must_use]
     pub const fn credential_stale_timeout(&self) -> Duration {
         self.credential_stale_timeout
+    }
+
+    /// Returns the maximum scheduled delay between provider refresh attempts.
+    #[must_use]
+    pub const fn credential_refresh_interval(&self) -> Duration {
+        self.credential_refresh_interval
     }
 }
 

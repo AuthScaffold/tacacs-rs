@@ -203,6 +203,12 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             .credential_stale_timeout()
     }
 
+    pub(crate) fn credential_refresh_interval(&self) -> std::time::Duration {
+        self.current_runtime()
+            .runtime_policy
+            .credential_refresh_interval()
+    }
+
     pub(crate) fn shutdown_deadline(&self) -> anyhow::Result<tacacsrs_networking::RequestDeadline> {
         let runtime = self.current_runtime();
         let requests = OperationKind::ALL
