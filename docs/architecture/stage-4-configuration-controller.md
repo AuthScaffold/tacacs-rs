@@ -23,6 +23,7 @@ Commit `567ec16` starts S4-06 with canonical required issuer-signed OCSP staplin
 Commit `d78cf06` adds delegated OCSP signer authorization and responder-certificate lifetime bounds.
 Commit `a06fced` adds canonical full-CRL materialization, native CA-path validation, and evidence-bounded catalog lifetime.
 Commit `f55973a` immediately cuts off replaced endpoints when changed CRL policy or evidence commits, including older draining generations.
+Commit `5b9ba63` adds proactive provider revalidation before expiry without requiring credential notifications.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
 
@@ -36,7 +37,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
-- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs and catalog expiry; `f55973a` cuts off replaced connections on committed CRL changes. Remote retrieval, proactive refresh, and unsupported evidence forms remain open. See [CRL refresh retirement](#crl-refresh-retirement).
+- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Built-in remote retrieval and unsupported evidence forms remain open. See [proactive provider refresh](#proactive-provider-refresh).
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
 ## Policy Observation
@@ -1381,3 +1382,70 @@ Native Redis, live SONiC, the external peer matrix, and Windows checks were not 
 
 S4-06 remains open for built-in remote evidence retrieval, proactive refresh, responder revocation without No Check, and additional evidence forms or combinations.
 The CRL refresh cutoff is implemented within the existing work item. S4-07 statistics remains open.
+
+## Proactive Provider Refresh
+
+Commit `5b9ba63` adds an owned refresh future alongside source observation, credential notifications, and the existing expiry monitors.
+The supervisor now revalidates provider-backed material without waiting for a notification or an outage.
+The failed-before regression supplied renewed provider validity without an event; the old supervisor never fetched it before expiry.
+
+### Canonical Scheduling Policy
+
+The project runtime-policy resource adds `credential-refresh-interval-seconds`, a positive unsigned 32-bit value with a generated default of 60.
+The agent projects it to a `Duration`; it does not introduce another desired-policy model.
+The scheduler uses the smaller of that interval and half the remaining prepared lifetime, with a one-second minimum spacing.
+Material without an upper bound uses the configured interval. Expired or withdrawn material can be retried at that interval.
+
+The next interval starts after the previous attempt completes. This is a scheduling bound, not a timeout for provider I/O.
+A pending deadline can move earlier after a shorter policy or material lifetime, but unrelated health updates cannot postpone it.
+There is no detached task or busy retry loop. Without a resolver, the refresh future only waits for cancellation.
+An inline-only accepted source has no automatic resolution work, even when the host supplies an otherwise unused resolver.
+
+### Admission and Publication
+
+Scheduled refresh enters the same materialization coordinator and credential revision sequence as observed changes.
+It selects the accepted source's provider-backed work and uses existing complete materialization and revision-fenced publication.
+Source revisions, canonical snapshots, and credential references remain unchanged.
+The loop cannot refresh an expired configuration source or reuse a source projection still waiting for filtering.
+
+A timer tick does not mark valid material stale. A failed refresh uses the existing credential-resolution failure and stale-grace rules.
+Successful revalidation commits freshness and validity through the existing publication transaction.
+The absolute-validity and stale-material monitors remain independently polled while a provider call is pending.
+Host stop drops the owned refresh future, including its in-progress resolution or publication wait.
+Providers remain responsible for bounded, cooperative retrieval operations; this does not make blocking code preemptible.
+
+### Unchanged Validity Protection
+
+Repeated preparation previously constructed a new monotonic cutoff from the provider's absolute bounds.
+Automatic revalidation makes it important not to renew that cutoff for an unchanged interval.
+When the same server receives unchanged provider bounds, the coordinator intersects the new lifetime with the earlier active lifetime.
+This preserves the original monotonic expiry even when wall time moves backward or tests advance only the monotonic clock.
+Genuinely renewed validity can publish a later interval, subject to native certificate and signed-evidence bounds.
+
+### Verification
+
+The failed-before test now refreshes a provider before expiry without a notification source, retaining the source revision and advancing the credential revision.
+Further tests cover unchanged-bound expiry, longer policy updates without postponement, shorter policy updates, and inline-only catalogs.
+Failure tests verify stale expiry and later recovery without notifications.
+A pending provider does not block independent expiry or host cancellation, and a scheduled attempt alone does not set `CredentialsStale`.
+
+The native CRL test uses a reusable credential bundle and provider reference, then changes provider validity without sending an event.
+Scheduled materialization preserves the canonical source and reference, publishes renewed validity, and keeps the catalog available.
+It still uses the signed CRL's intrinsic deadline; unbounded provider metadata does not remove that limit.
+
+The all-feature workspace suite passes, including 195 agent tests, 87 configuration tests, and twenty prepared-source tests.
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+The pure refresh-delay test passes under Miri. Existing nightly manifest and `fetch_update` warnings remain; Rust 1.88 compatibility is unchanged.
+All 15 generator tests and deterministic regeneration pass. Editor diagnostics and whitespace checks are clear.
+No dependency, lockfile, IPC schema, or unsafe-code changes occur.
+Native Redis, live SONiC, the external peer matrix, and Windows checks were not rerun for this controller scheduling increment.
+
+Artifact SHA-256 values:
+
+- Generated Rust: `6dbff05d85ed3dc99c6b286734083677280e95fe7d4f0d170579dff4e733a91e`.
+- Expanded tree: `0c3ced4aacc7b3ec4253a823687f1cb998ae27858a7667e5917a11faf0ebcefa`.
+- Project module: `dcbd5f56fb29b978c7eed779576e685c20c9a2a951ed74b3facb294e0648aa28`.
+
+S4-06 remains open for built-in remote evidence retrieval, responder revocation without No Check, and other evidence forms or combinations.
+This increment orchestrates attached providers; it does not add an HTTP client or distribution-point discovery.
+S4-07 operational statistics remains open. No full RFC 9887 conformance claim is made.
