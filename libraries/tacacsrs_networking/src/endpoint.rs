@@ -102,6 +102,29 @@ impl PreparedEndpoint {
         Ok(self)
     }
 
+    /// Requires issuer-signed stapled OCSP evidence on this certificate TLS endpoint.
+    ///
+    /// # Errors
+    /// Returns an error if required evidence is combined with another transport or disabled verification.
+    pub fn with_certificate_revocation(
+        mut self,
+        policy: crate::CertificateRevocationPolicy,
+    ) -> anyhow::Result<Self> {
+        self.transport = match self.transport {
+            PreparedTransport::Tls(config) => {
+                PreparedTransport::Tls(config.with_revocation_policy(policy)?)
+            }
+            transport => {
+                anyhow::ensure!(
+                    policy.maximum_response_age().is_none(),
+                    "Required OCSP evidence needs certificate TLS"
+                );
+                transport
+            }
+        };
+        Ok(self)
+    }
+
     /// Creates a plain TCP endpoint from explicit runtime values.
     ///
     /// The packet layer applies `obfuscation_key` when present. This constructor

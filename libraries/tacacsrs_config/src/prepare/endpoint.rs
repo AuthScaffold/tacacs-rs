@@ -157,12 +157,30 @@ pub fn prepare_endpoint(
         .flat_map(|inline| inline.intermediate_certificate.iter().map(Vec::as_slice))
         .collect::<Vec<_>>();
     let identity = certificate_identity(server, &intermediates)?;
-    endpoint.with_certificate_tls(
-        certificate_peer_identity(server),
-        tls_sni_name(server)?,
-        trust,
-        identity,
-    )
+    endpoint
+        .with_certificate_tls(
+            certificate_peer_identity(server),
+            tls_sni_name(server)?,
+            trust,
+            identity,
+        )?
+        .with_certificate_revocation(certificate_revocation(server)?)
+}
+
+fn certificate_revocation(
+    server: &TacacsPlusServer,
+) -> Result<tacacsrs_networking::CertificateRevocationPolicy> {
+    server
+        .server_authentication
+        .as_ref()
+        .and_then(|authentication| authentication.require_stapled_ocsp.as_ref())
+        .map(|policy| {
+            tacacsrs_networking::CertificateRevocationPolicy::require_stapled_ocsp(
+                std::time::Duration::from_secs(u64::from(policy.max_response_age_seconds)),
+            )
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 fn certificate_identity<'a>(
@@ -356,6 +374,7 @@ mod tests {
                 central_truststore_reference: None,
             };
             server.server_authentication = Some(crate::TlsClientServerAuthentication {
+                require_stapled_ocsp: None,
                 ca_certs: (!end_entity).then(|| bag.clone()),
                 ee_certs: end_entity.then_some(bag),
                 credentials_reference: None,
@@ -613,6 +632,7 @@ mod tests {
             central_truststore_reference: None,
         };
         crate::TlsClientServerAuthentication {
+            require_stapled_ocsp: None,
             credentials_reference: None,
             ca_certs: (!end_entity).then(|| trust.clone()),
             ee_certs: end_entity.then_some(trust),

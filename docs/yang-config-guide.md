@@ -84,7 +84,7 @@ IP addresses are not sent as certificate-TLS SNI names.
 
 The implementation disables CN fallback and partial-label wildcards. A complete leftmost-label wildcard can match one label, not multiple nested labels.
 This follows the DNS/IP identity rules referenced by RFC 9887 Section 3.4.2 and RFC 9525.
-It does not establish full RFC 9887 conformance, including revocation, certificate-chain provisioning, or other profile requirements.
+Full RFC 9887 conformance remains unclaimed. Revocation coverage and other profile requirements remain incomplete.
 
 Migration can require certificates with matching SAN entries. Chain trust alone no longer permits a certificate for a different identity.
 The explicit development-only verification override still bypasses certificate verification and permits server impersonation.
@@ -109,7 +109,7 @@ Configured trust excludes platform roots. Preparation does not modify the author
 
 This replaces the old combined-root behavior. Certificate renewal can require updating an exact `ee-certs` entry.
 Use CA trust only when authorizing other valid certificates issued by that authority is intended.
-Certificate revocation retrieval is not implemented. Full RFC 9887 conformance remains unclaimed.
+General CRL and OCSP responder retrieval is not implemented. Optional required stapling is described below. Full RFC 9887 conformance remains unclaimed.
 
 ## Certificate Input Boundary
 
@@ -144,7 +144,36 @@ The peer still decides whether the supplied path reaches one of its trust anchor
 
 Credential providers return ordered intermediate bytes with the leaf and key. Materialization installs them only in a derived server value.
 Authoritative snapshots and provider references remain unchanged. The earliest supplied certificate expiry bounds the prepared identity's lifetime.
-Revocation retrieval remains a separate Stage 4 requirement, not a current capability.
+Broader revocation retrieval remains a separate Stage 4 requirement.
+
+## Required Stapled OCSP
+
+To require fresh issuer-signed OCSP evidence, add this member inside `server-authentication` or a reusable `server-credentials` entry:
+
+```json
+{
+  "tacacsrs:require-stapled-ocsp": {
+    "max-response-age-seconds": 300
+  }
+}
+```
+
+The container enables the requirement. Its maximum age defaults to 300 seconds and must be a positive `uint32` value.
+Omitting the container leaves revocation checking disabled without disabling normal certificate verification.
+Required stapling cannot be combined with PSK authentication or the development certificate-verification override.
+
+The client requests a staple and verifies it during the TLS handshake, before sending its client certificate or TACACS+ data.
+Missing, malformed, incorrectly signed, stale, unknown, revoked, or wrong-certificate evidence rejects the connection. There is no soft-fail fallback.
+The response must be signed directly by the authenticated leaf's issuer. The issuer must be available from certificate chains or configured CA material.
+Certificate IDs can use SHA-1 or SHA-256. Responses larger than 64 KiB and trailing DER data are rejected.
+
+Freshness ends at the earlier of `nextUpdate` and `thisUpdate` plus the configured maximum age.
+If `nextUpdate` is absent, the maximum age still bounds use. No clock-skew allowance or stale-material grace extends this interval.
+The verified interval bounds the connection lifetime, including idle transports. A later connection must obtain fresh valid evidence.
+Accurate system time remains necessary; runtime scheduling limits still apply to physical transport closure.
+
+This mode checks the peer leaf only. Delegated responders, intermediate or issuer revocation, CRL retrieval, and background OCSP queries are not implemented.
+It does not claim complete revocation coverage or full RFC 9887 conformance.
 
 ## EPSK Presence
 

@@ -3,7 +3,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
-use openssl::asn1::{Asn1Time, Asn1TimeRef};
+use openssl::asn1::{Asn1Time, Asn1TimeRef, Asn1GeneralizedTimeRef};
+use foreign_types::ForeignTypeRef;
 use openssl::x509::X509Ref;
 
 /// ASN.1 time differences express whole days separately from seconds.
@@ -69,6 +70,14 @@ pub struct CertificateValidity {
 }
 
 impl CertificateValidity {
+    pub(crate) fn from_bounds(valid_from: SystemTime, valid_until: SystemTime) -> Result<Self> {
+        ensure!(valid_from < valid_until, "Certificate evidence validity interval is empty");
+        Ok(Self {
+            valid_from,
+            valid_until,
+        })
+    }
+
     pub(crate) fn from_chain(
         chain: &openssl::stack::StackRef<openssl::x509::X509>,
     ) -> Result<Self> {
@@ -126,6 +135,14 @@ impl CertificateValidity {
     }
 }
 
+#[allow(unsafe_code)]
+pub(super) fn generalized_system_time(time: &Asn1GeneralizedTimeRef) -> Result<SystemTime> {
+    // SAFETY: OpenSSL defines both ASN1 time types as ASN1_STRING. The input
+    // remains alive for this read-only conversion, and no reference escapes.
+    let time = unsafe { Asn1TimeRef::from_ptr(time.as_ptr().cast()) };
+    system_time(time)
+}
+
 fn system_time(time: &Asn1TimeRef) -> Result<SystemTime> {
     let epoch = Asn1Time::from_unix(0)?;
     let difference = epoch
@@ -144,6 +161,19 @@ fn system_time(time: &Asn1TimeRef) -> Result<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generalized_time_conversion_preserves_native_timestamp_boundaries() {
+        for (encoded, expected) in [
+            ("19691231235959Z", UNIX_EPOCH - Duration::from_secs(1)),
+            ("19700101000000Z", UNIX_EPOCH),
+            ("20500101000000Z", UNIX_EPOCH + Duration::from_secs(2_524_608_000)),
+        ] {
+            let time = openssl::asn1::Asn1GeneralizedTime::from_str(encoded).unwrap();
+            assert_eq!(generalized_system_time(&time).unwrap(), expected);
+        }
+        assert!(CertificateValidity::from_bounds(UNIX_EPOCH, UNIX_EPOCH).is_err());
+    }
 
     #[test]
     fn asn1_dates_preserve_seconds_before_and_after_the_epoch() {

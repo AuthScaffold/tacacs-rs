@@ -100,6 +100,7 @@ impl TlsConfigurationBuilder {
 
         builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
         builder.set_max_proto_version(Some(SslVersion::TLS1_3))?;
+        super::revocation::configure_verifier(&mut builder)?;
 
         if self.disable_certificate_verification {
             builder.set_verify(SslVerifyMode::NONE);

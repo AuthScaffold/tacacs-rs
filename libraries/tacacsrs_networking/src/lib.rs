@@ -36,7 +36,8 @@ pub use deadline::{DeadlineElapsed, RequestDeadline};
 pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use endpoint::{ConnectionGuard, PreparedEndpoint};
 pub use transport::tls::{
-    CertificateIdentity, CertificateTrust, CertificateValidity, PrivateKeyEncoding,
+    CertificateIdentity, CertificateTrust, CertificateValidity, CertificateRevocationPolicy,
+    PrivateKeyEncoding,
 };
 pub use transport::tls_psk::{PskHash, PskDheGroup};
 pub use establish::{ConnectOptions, ConnectPreflight};

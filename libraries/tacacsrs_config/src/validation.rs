@@ -283,6 +283,7 @@ fn validate_server_authentication(
             server_authentication.credentials_reference.is_some(),
             server_authentication.ca_certs.is_some()
                 || server_authentication.ee_certs.is_some()
+                || server_authentication.require_stapled_ocsp.is_some()
                 || server_authentication.tls13_epsks.is_some(),
         ],
     )?;
@@ -294,6 +295,10 @@ fn validate_server_authentication(
     if let Some(ref ee_certs) = server_authentication.ee_certs {
         validate_trust_choice(&server.name, "server-authentication/ee-certs", ee_certs)?;
     }
+    validate_ocsp_policy(
+        server_authentication.require_stapled_ocsp.as_ref(),
+        server_authentication.tls13_epsks.is_some(),
+    )?;
 
     Ok(())
 }
@@ -339,11 +344,32 @@ fn validate_client_credentials(credentials: &ClientCredentials) -> anyhow::Resul
 }
 
 fn validate_server_credentials(credentials: &ServerCredentials) -> anyhow::Result<()> {
+    validate_ocsp_policy(
+        credentials.require_stapled_ocsp.as_ref(),
+        credentials.tls13_epsks.is_some(),
+    )?;
     if let Some(ref ca_certs) = credentials.ca_certs {
         validate_trust_choice(&credentials.id, "server-credentials/ca-certs", ca_certs)?;
     }
     if let Some(ref ee_certs) = credentials.ee_certs {
         validate_trust_choice(&credentials.id, "server-credentials/ee-certs", ee_certs)?;
+    }
+    Ok(())
+}
+
+fn validate_ocsp_policy(
+    policy: Option<&crate::tacacsrs::RequireStapledOcsp>,
+    epsk: bool,
+) -> anyhow::Result<()> {
+    if let Some(policy) = policy {
+        anyhow::ensure!(
+            policy.max_response_age_seconds > 0,
+            "OCSP maximum response age must be positive"
+        );
+        anyhow::ensure!(
+            !epsk,
+            "Required OCSP evidence cannot be combined with PSK server authentication"
+        );
     }
     Ok(())
 }

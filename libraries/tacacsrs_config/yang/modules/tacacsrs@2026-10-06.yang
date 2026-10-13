@@ -329,6 +329,46 @@ module tacacsrs {
     }
   }
 
+  grouping stapled-ocsp-policy {
+    description
+      "Required revocation evidence for certificate TLS peer authentication.";
+    container require-stapled-ocsp {
+      presence "Require fresh issuer-signed OCSP evidence for the peer leaf.";
+      description
+        "Request a stapled OCSP response and fail closed if evidence is
+         unavailable, invalid, stale, unknown, or revoked. Only responses
+         signed directly by the certificate issuer are supported.
+         Delegated responders and intermediate revocation are not supported.";
+      leaf max-response-age-seconds {
+        type uint32 { range "1..max"; }
+        default 300;
+        description
+          "Maximum time since thisUpdate. Evidence expires at the earlier
+           of this limit and nextUpdate, when nextUpdate is present.
+           No clock-skew allowance or stale grace extends this interval.";
+      }
+    }
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
+        + "sys-tcs-plus:server-credentials" {
+    description
+      "Adds required stapled OCSP to reusable server authentication.";
+    uses stapled-ocsp-policy;
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
+        + "sys-tcs-plus:server/"
+        + "sys-tcs-plus:security/"
+        + "sys-tcs-plus:tls/"
+        + "sys-tcs-plus:server-authentication/"
+        + "sys-tcs-plus:ref-or-explicit/"
+        + "sys-tcs-plus:explicit" {
+    description
+      "Adds required stapled OCSP to per-server certificate authentication.";
+    uses stapled-ocsp-policy;
+  }
+
   augment "/sys:system/sys-tcs-plus:tacacs-plus/"
         + "sys-tcs-plus:client-credentials/"
         + "sys-tcs-plus:auth-type/"

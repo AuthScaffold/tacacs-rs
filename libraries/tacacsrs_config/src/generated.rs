@@ -341,6 +341,14 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
+        /// Request a stapled OCSP response and fail closed if evidence is
+        /// unavailable, invalid, stale, unknown, or revoked. Only responses
+        /// signed directly by the certificate issuer are supported.
+        /// Delegated responders and intermediate revocation are not supported.
+        #[serde(rename = "tacacsrs:require-stapled-ocsp")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_stapled_ocsp: Option<tacacsrs::RequireStapledOcsp>,
     }
 
     /// Identity credentials that a TLS client may present when
@@ -409,6 +417,14 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
+        /// Request a stapled OCSP response and fail closed if evidence is
+        /// unavailable, invalid, stale, unknown, or revoked. Only responses
+        /// signed directly by the certificate issuer are supported.
+        /// Delegated responders and intermediate revocation are not supported.
+        #[serde(rename = "tacacsrs:require-stapled-ocsp")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_stapled_ocsp: Option<tacacsrs::RequireStapledOcsp>,
     }
 
     /// Choice constraints for [`TlsClientServerAuthentication`].
@@ -418,7 +434,7 @@ pub mod tacacs_plus {
         /// Each inner slice is one case; at most one case may have fields set.
         pub const CHOICE_REF_OR_EXPLICIT: &[(&str, &[&str])] = &[
             ("ref", &["credentials-reference"]),
-            ("explicit", &["ca-certs", "ee-certs", "tls13-epsks"]),
+            ("explicit", &["ca-certs", "ee-certs", "tls13-epsks", "require-stapled-ocsp"]),
         ];
         pub const CHOICE_REF_OR_EXPLICIT_MANDATORY: bool = false;
     }
@@ -1195,6 +1211,31 @@ pub mod tacacsrs {
             S: serde::Serializer,
         {
             serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
+    fn default_require_stapled_ocsp_max_response_age_seconds() -> u32 { 300 }
+
+    /// Request a stapled OCSP response and fail closed if evidence is
+    /// unavailable, invalid, stale, unknown, or revoked. Only responses
+    /// signed directly by the certificate issuer are supported.
+    /// Delegated responders and intermediate revocation are not supported.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct RequireStapledOcsp {
+        /// Maximum time since thisUpdate. Evidence expires at the earlier
+        /// of this limit and nextUpdate, when nextUpdate is present.
+        /// No clock-skew allowance or stale grace extends this interval.
+        #[serde(rename = "max-response-age-seconds")]
+        #[serde(default = "default_require_stapled_ocsp_max_response_age_seconds")]
+        pub max_response_age_seconds: u32,
+    }
+
+    impl Default for RequireStapledOcsp {
+        fn default() -> Self {
+            Self {
+                max_response_age_seconds: default_require_stapled_ocsp_max_response_age_seconds(),
+            }
         }
     }
 

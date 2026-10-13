@@ -130,6 +130,7 @@ mod tests {
 
         server.shared_secret = None;
         server.server_authentication = Some(TlsClientServerAuthentication {
+            require_stapled_ocsp: None,
             credentials_reference: None,
             ca_certs: None,
             ee_certs: None,

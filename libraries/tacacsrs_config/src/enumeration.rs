@@ -134,6 +134,7 @@ fn enumerate_server_credentials(server: &mut TacacsPlusServer, config: &TacacsPl
             sa.ca_certs = bundle.ca_certs.clone();
             sa.ee_certs = bundle.ee_certs.clone();
             sa.tls13_epsks = bundle.tls13_epsks;
+            sa.require_stapled_ocsp = bundle.require_stapled_ocsp.clone();
             sa.credentials_reference = None;
         }
     }

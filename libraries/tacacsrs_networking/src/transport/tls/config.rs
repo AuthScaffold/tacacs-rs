@@ -59,6 +59,9 @@ pub(crate) struct TlsClientConfig {
     sni_name: Option<String>,
     pub(crate) lifetime: Option<CertificateLifetime>,
     peer_validity_index: super::config_builder::PeerValidityIndex,
+    pub(crate) revocation: super::CertificateRevocationPolicy,
+    revocation_issuers: Vec<X509>,
+    verification_disabled: bool,
 }
 
 impl TlsClientConfig {
@@ -83,6 +86,7 @@ impl TlsClientConfig {
         }
         let mut builder = TlsConfigurationBuilder::new()
             .with_certificate_verification_disabled(disable_verification);
+        let mut revocation_issuers = Vec::new();
         if let CertificateTrust::Certificates {
             authorities,
             end_entities,
@@ -100,6 +104,7 @@ impl TlsClientConfig {
                 .iter()
                 .map(|data| parse_certificate_data(data))
                 .collect::<Result<Vec<_>>>()?;
+            revocation_issuers.clone_from(&authorities);
             builder = builder.with_certificate_trust(authorities, end_entities);
         }
         if let Some(identity) = identity {
@@ -138,6 +143,9 @@ impl TlsClientConfig {
         Ok(Self {
             context: prepared.context,
             peer_validity_index: prepared.peer_validity_index,
+            revocation: super::CertificateRevocationPolicy::disabled(),
+            revocation_issuers,
+            verification_disabled: disable_verification,
             lifetime: prepared
                 .validity
                 .map(CertificateLifetime::new)
@@ -147,6 +155,18 @@ impl TlsClientConfig {
         })
     }
 
+    pub(crate) fn with_revocation_policy(
+        mut self,
+        policy: super::CertificateRevocationPolicy,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            !self.verification_disabled || policy.maximum_response_age().is_none(),
+            "Required OCSP evidence cannot be combined with disabled certificate verification"
+        );
+        self.revocation = policy;
+        Ok(self)
+    }
+
     pub(crate) async fn connect(&self, tcp_stream: TcpStream) -> Result<BoxedTransport> {
         let handshake = connect_tls(
             &self.context,
@@ -154,6 +174,7 @@ impl TlsClientConfig {
             &self.peer_identity,
             self.sni_name.as_deref(),
             self.peer_validity_index,
+            super::revocation::ConnectionRevocation::new(self.revocation, &self.revocation_issuers),
         );
         let stream = match self.lifetime {
             Some(lifetime) => lifetime.run(handshake).await,
@@ -188,6 +209,10 @@ impl TlsClientConfig {
             }
         } else {
             super::CertificateValidity::from_certificate(&peer)?
+        };
+        let validity = match super::revocation::verified_validity(stream.ssl())? {
+            Some(evidence) => validity.intersect(evidence)?,
+            None => validity,
         };
         let peer_lifetime = CertificateLifetime::new(validity)?;
         let lifetime = self

@@ -40,7 +40,7 @@ module: ietf-system-tacacs-plus
        |           +--rw target-kdf?                         uint16
        |           +--rw trs:psk-dhe-ke-groups*              psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
        +--rw server-credentials* [id] {credential-reference}?
-       |  +--rw id             string
+       |  +--rw id                          string
        |  +--rw ca-certs!
        |  |  +--rw (inline-or-truststore)
        |  |     +--:(inline) {inline-definitions-supported}?
@@ -59,7 +59,9 @@ module: ietf-system-tacacs-plus
        |  |     |        +--rw cert-data    trust-anchor-cert-cms
        |  |     +--:(central-truststore) {central-truststore-supported,certificates}?
        |  |        +--rw central-truststore-reference?   ts:central-certificate-bag-ref
-       |  +--rw tls13-epsks?   empty {tlsc:server-auth-tls13-epsk}?
+       |  +--rw tls13-epsks?                empty {tlsc:server-auth-tls13-epsk}?
+       |  +--rw trs:require-stapled-ocsp!
+       |     +--rw trs:max-response-age-seconds?   uint32
        +--rw server* [name]
           +--rw name                           string
           +--rw server-type                    tacacs-plus-server-type
@@ -112,7 +114,7 @@ module: ietf-system-tacacs-plus
           |  |  +--rw server-authentication
           |  |     +--rw (ref-or-explicit)?
           |  |        +--:(ref)
-          |  |        |  +--rw credentials-reference?   sys-tcs-plus:server-credentials-ref {credential-reference}?
+          |  |        |  +--rw credentials-reference?      sys-tcs-plus:server-credentials-ref {credential-reference}?
           |  |        +--:(explicit)
           |  |           +--rw ca-certs!
           |  |           |  +--rw (inline-or-truststore)
@@ -132,7 +134,9 @@ module: ietf-system-tacacs-plus
           |  |           |     |        +--rw cert-data    trust-anchor-cert-cms
           |  |           |     +--:(central-truststore) {central-truststore-supported,certificates}?
           |  |           |        +--rw central-truststore-reference?   ts:central-certificate-bag-ref
-          |  |           +--rw tls13-epsks?             empty {tlsc:server-auth-tls13-epsk}?
+          |  |           +--rw tls13-epsks?                empty {tlsc:server-auth-tls13-epsk}?
+          |  |           +--rw trs:require-stapled-ocsp!
+          |  |              +--rw trs:max-response-age-seconds?   uint32
           |  +--:(obfuscation)
           |     +--rw shared-secret?           string
           +--rw (source-type)?
