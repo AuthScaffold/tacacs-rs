@@ -53,6 +53,17 @@ async fn signed_response(
     status: &str,
     next_minutes: Option<u32>,
 ) -> Result<Vec<u8>> {
+    signed_response_with_responder(directory, certificate, status, next_minutes, None, None).await
+}
+
+async fn signed_response_with_responder(
+    directory: &Path,
+    certificate: &X509,
+    status: &str,
+    next_minutes: Option<u32>,
+    responder: Option<(&X509, &PKey<openssl::pkey::Private>)>,
+    extra_certificate: Option<&X509>,
+) -> Result<Vec<u8>> {
     let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
     let mut request = OcspRequest::new()?;
     request.add_id(OcspCertId::from_cert(MessageDigest::sha1(), certificate, &issuer)?)?;
@@ -64,6 +75,15 @@ async fn signed_response(
         _ => String::new(),
     };
     std::fs::write(directory.join("index.txt"), index)?;
+    let (signer, signing_key) = if let Some((certificate, key)) = responder {
+        let signer = directory.join("responder.pem");
+        let signing_key = directory.join("responder.key");
+        std::fs::write(&signer, certificate.to_pem()?)?;
+        std::fs::write(&signing_key, key.private_key_to_pem_pkcs8()?)?;
+        (signer, signing_key)
+    } else {
+        (fixtures().join("ca.crt"), fixtures().join("ca.key"))
+    };
     let mut command = tokio::process::Command::new("openssl");
     command
         .kill_on_drop(true)
@@ -71,16 +91,23 @@ async fn signed_response(
         .arg("-index")
         .arg(directory.join("index.txt"))
         .arg("-rsigner")
-        .arg(fixtures().join("ca.crt"))
+        .arg(signer)
         .arg("-rkey")
-        .arg(fixtures().join("ca.key"))
+        .arg(signing_key)
         .arg("-CA")
         .arg(fixtures().join("ca.crt"))
         .arg("-reqin")
         .arg(directory.join("request.der"))
         .arg("-respout")
-        .arg(directory.join("response.der"))
-        .arg("-resp_no_certs");
+        .arg(directory.join("response.der"));
+    if responder.is_none() {
+        command.arg("-resp_no_certs");
+    }
+    if let Some(certificate) = extra_certificate {
+        let path = directory.join("extra.pem");
+        std::fs::write(&path, certificate.to_pem()?)?;
+        command.arg("-rother").arg(path);
+    }
     if let Some(minutes) = next_minutes {
         command.arg("-nmin").arg(minutes.to_string());
     }
@@ -112,6 +139,168 @@ fn peer_context(staple: Option<Vec<u8>>, issuer: &X509) -> Result<SslContext> {
         })?;
     }
     Ok(context.build())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ResponderCase {
+    Authorized,
+    MissingUsage,
+    WrongUsage,
+    WrongKeyUsage,
+    MissingKeyUsage,
+    MissingNoCheck,
+    MalformedNoCheck,
+    CriticalNoCheck,
+    DuplicateNoCheck,
+    Expired,
+    Future,
+    WrongIssuer,
+}
+
+fn delegated_responder(case: ResponderCase) -> Result<(X509, PKey<openssl::pkey::Private>)> {
+    use openssl::asn1::{Asn1Object, Asn1OctetString, Asn1Time};
+    use openssl::x509::{X509Extension, X509NameBuilder};
+    use openssl::x509::extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage};
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let issuer_key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let key = PKey::from_rsa(openssl::rsa::Rsa::generate(2048)?)?;
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs(),
+    )?;
+    let mut name = X509NameBuilder::new()?;
+    name.append_entry_by_text("CN", "Test OCSP responder")?;
+    let mut certificate = X509::builder()?;
+    certificate.set_version(2)?;
+    certificate.set_serial_number(
+        openssl::bn::BigNum::from_u32(4000)?
+            .to_asn1_integer()?
+            .as_ref(),
+    )?;
+    certificate.set_subject_name(&name.build())?;
+    certificate.set_issuer_name(issuer.subject_name())?;
+    certificate.set_pubkey(&key)?;
+    let (start, end) = match case {
+        ResponderCase::Expired => (now - 120, now - 60),
+        ResponderCase::Future => (now + 60, now + 120),
+        _ => (now - 60, now + 60),
+    };
+    certificate.set_not_before(Asn1Time::from_unix(start)?.as_ref())?;
+    certificate.set_not_after(Asn1Time::from_unix(end)?.as_ref())?;
+    certificate.append_extension(BasicConstraints::new().build()?)?;
+    let mut usage = KeyUsage::new();
+    if matches!(case, ResponderCase::WrongKeyUsage) {
+        usage.key_encipherment();
+    } else {
+        usage.digital_signature();
+    }
+    if !matches!(case, ResponderCase::MissingKeyUsage) {
+        certificate.append_extension(usage.build()?)?;
+    }
+    if !matches!(case, ResponderCase::MissingUsage) {
+        let mut usage = ExtendedKeyUsage::new();
+        if matches!(case, ResponderCase::WrongUsage) {
+            usage.server_auth();
+        } else {
+            usage.other("OCSPSigning");
+        }
+        certificate.append_extension(usage.build()?)?;
+    }
+    if !matches!(case, ResponderCase::MissingNoCheck) {
+        let no_check = Asn1Object::from_str("1.3.6.1.5.5.7.48.1.5")?;
+        let encoded = if matches!(case, ResponderCase::MalformedNoCheck) {
+            &[0x01, 0x01, 0x00][..]
+        } else {
+            &[0x05, 0x00][..]
+        };
+        let value = Asn1OctetString::new_from_bytes(encoded)?;
+        for _ in 0..if matches!(case, ResponderCase::DuplicateNoCheck) {
+            2
+        } else {
+            1
+        } {
+            certificate.append_extension(X509Extension::new_from_der(
+                &no_check,
+                matches!(case, ResponderCase::CriticalNoCheck),
+                &value,
+            )?)?;
+        }
+    }
+    let signing_key = if matches!(case, ResponderCase::WrongIssuer) {
+        &key
+    } else {
+        &issuer_key
+    };
+    certificate.sign(signing_key, MessageDigest::sha256())?;
+    Ok((certificate.build(), key))
+}
+
+#[tokio::test]
+async fn delegated_staple_uses_authorized_responder_and_its_expiry() -> Result<()> {
+    let directory = Directory::new()?;
+    let server = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let (responder, key) = delegated_responder(ResponderCase::Authorized)?;
+    let response = signed_response_with_responder(
+        &directory.0,
+        &server,
+        "good",
+        Some(1440),
+        Some((&responder, &key)),
+        None,
+    )
+    .await?;
+    assert!(
+        probe(Some(response), Some(Duration::from_secs(61))).await?,
+        "authorized delegated responder must be accepted"
+    );
+    let (responder, key) = delegated_responder(ResponderCase::MissingKeyUsage)?;
+    let (unused, _) = delegated_responder(ResponderCase::Expired)?;
+    let response = signed_response_with_responder(
+        &directory.0,
+        &server,
+        "good",
+        Some(1440),
+        Some((&responder, &key)),
+        Some(&unused),
+    )
+    .await?;
+    assert!(
+        probe(Some(response), Some(Duration::from_secs(61))).await?,
+        "unused expired certificates must not constrain the selected responder"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn delegated_staples_reject_unauthorized_or_unusable_responders() -> Result<()> {
+    let directory = Directory::new()?;
+    let server = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    for case in [
+        ResponderCase::MissingUsage,
+        ResponderCase::WrongUsage,
+        ResponderCase::WrongKeyUsage,
+        ResponderCase::MissingNoCheck,
+        ResponderCase::MalformedNoCheck,
+        ResponderCase::CriticalNoCheck,
+        ResponderCase::DuplicateNoCheck,
+        ResponderCase::Expired,
+        ResponderCase::Future,
+        ResponderCase::WrongIssuer,
+    ] {
+        let (responder, key) = delegated_responder(case)?;
+        let response = signed_response_with_responder(
+            &directory.0,
+            &server,
+            "good",
+            Some(1440),
+            Some((&responder, &key)),
+            None,
+        )
+        .await?;
+        assert!(!probe(Some(response), None).await?, "rejected responder case: {case:?}");
+    }
+    Ok(())
 }
 
 async fn probe(staple: Option<Vec<u8>>, expiry: Option<Duration>) -> Result<bool> {

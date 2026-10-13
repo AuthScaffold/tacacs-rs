@@ -342,9 +342,10 @@ pub mod tacacs_plus {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
         /// Request a stapled OCSP response and fail closed if evidence is
-        /// unavailable, invalid, stale, unknown, or revoked. Only responses
-        /// signed directly by the certificate issuer are supported.
-        /// Delegated responders and intermediate revocation are not supported.
+        /// unavailable, invalid, stale, unknown, or revoked. Responses must
+        /// be signed by the issuer or a responder issued directly by it.
+        /// Delegated responders require OCSP signing usage and a noncritical
+        /// No Check extension. Intermediate revocation is not supported.
         #[serde(rename = "tacacsrs:require-stapled-ocsp")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -418,9 +419,10 @@ pub mod tacacs_plus {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
         /// Request a stapled OCSP response and fail closed if evidence is
-        /// unavailable, invalid, stale, unknown, or revoked. Only responses
-        /// signed directly by the certificate issuer are supported.
-        /// Delegated responders and intermediate revocation are not supported.
+        /// unavailable, invalid, stale, unknown, or revoked. Responses must
+        /// be signed by the issuer or a responder issued directly by it.
+        /// Delegated responders require OCSP signing usage and a noncritical
+        /// No Check extension. Intermediate revocation is not supported.
         #[serde(rename = "tacacsrs:require-stapled-ocsp")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1217,9 +1219,10 @@ pub mod tacacsrs {
     fn default_require_stapled_ocsp_max_response_age_seconds() -> u32 { 300 }
 
     /// Request a stapled OCSP response and fail closed if evidence is
-    /// unavailable, invalid, stale, unknown, or revoked. Only responses
-    /// signed directly by the certificate issuer are supported.
-    /// Delegated responders and intermediate revocation are not supported.
+    /// unavailable, invalid, stale, unknown, or revoked. Responses must
+    /// be signed by the issuer or a responder issued directly by it.
+    /// Delegated responders require OCSP signing usage and a noncritical
+    /// No Check extension. Intermediate revocation is not supported.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct RequireStapledOcsp {

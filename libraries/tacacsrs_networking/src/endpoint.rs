@@ -102,7 +102,7 @@ impl PreparedEndpoint {
         Ok(self)
     }
 
-    /// Requires issuer-signed stapled OCSP evidence on this certificate TLS endpoint.
+    /// Applies stapled OCSP requirements to this certificate TLS endpoint.
     ///
     /// # Errors
     /// Returns an error if required evidence is combined with another transport or disabled verification.

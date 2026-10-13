@@ -1,20 +1,20 @@
 //! Certificate revocation requirements for native TLS connections.
 
+mod responder;
+
 use std::num::NonZeroU32;
 use std::time::{Duration, SystemTime};
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, ensure};
 use openssl::hash::MessageDigest;
-use openssl::ocsp::{OcspCertId, OcspCertStatus, OcspFlag, OcspResponse, OcspResponseStatus};
+use openssl::ocsp::{OcspCertId, OcspCertStatus, OcspResponse, OcspResponseStatus};
 use openssl::ssl::{Ssl, SslRef, SslContextBuilder};
 use openssl::x509::{X509, X509VerifyResult};
-use openssl::x509::store::X509StoreBuilder;
-use openssl::x509::verify::X509VerifyFlags;
 
 use super::validity::{CertificateValidity, generalized_system_time};
 
-/// Bounds untrusted OCSP parsing work after the TLS handshake.
+/// Bounds untrusted OCSP parsing work during the TLS handshake.
 const MAXIMUM_STAPLE_BYTES: usize = 64 * 1024;
 
 pub(super) struct ConnectionRevocation {
@@ -94,8 +94,9 @@ pub(super) fn verified_validity(ssl: &SslRef) -> anyhow::Result<Option<Certifica
 /// Controls mandatory, fresh stapled OCSP evidence for a TLS peer leaf.
 ///
 /// The default leaves revocation checking disabled. Required evidence fails closed.
-/// This implementation accepts issuer-signed responses with SHA-1 or SHA-256 certificate IDs.
-/// Delegated responders and intermediate-certificate revocation are not supported.
+/// Responses can be signed by the issuer or its authorized delegated responder.
+/// Delegated responders require OCSP signing usage and a noncritical No Check extension.
+/// SHA-1 and SHA-256 certificate IDs are supported. Intermediate revocation is not supported.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub struct CertificateRevocationPolicy {
     maximum_age_seconds: Option<NonZeroU32>,
@@ -178,15 +179,7 @@ impl CertificateRevocationPolicy {
                         .is_ok_and(|key| peer.verify(&key).unwrap_or(false))
             })
             .context("OCSP requires the authenticated peer's issuer certificate")?;
-        let mut certificates = openssl::stack::Stack::new()?;
-        certificates.push(issuer.to_owned())?;
-        let mut store = X509StoreBuilder::new()?;
-        store.set_flags(X509VerifyFlags::PARTIAL_CHAIN)?;
-        store.add_cert(issuer.to_owned())?;
-        let store = store.build();
-        basic
-            .verify(&certificates, &store, OcspFlag::NO_INTERN)
-            .context("OCSP response must be signed by the peer certificate issuer")?;
+        let signer_validity = responder::verify(&basic, issuer)?;
         let mut status = None;
         for digest in [MessageDigest::sha1(), MessageDigest::sha256()] {
             let identifier = OcspCertId::from_cert(digest, &peer, issuer)?;
@@ -207,7 +200,11 @@ impl CertificateRevocationPolicy {
             .map(generalized_system_time)
             .transpose()?;
         let validity = freshness_interval(start, next, maximum_age, SystemTime::now())?
-            .intersect(CertificateValidity::from_certificate(issuer)?)?;
+            .intersect(signer_validity)?;
+        ensure!(
+            validity.is_valid_at(SystemTime::now()),
+            "OCSP responder or evidence validity expired"
+        );
         Ok(Some(validity))
     }
 }

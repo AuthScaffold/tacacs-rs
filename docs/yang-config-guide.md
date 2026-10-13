@@ -165,7 +165,7 @@ Broader revocation retrieval remains a separate Stage 4 requirement.
 
 ## Required Stapled OCSP
 
-To require fresh issuer-signed OCSP evidence, add this member inside `server-authentication` or a reusable `server-credentials` entry:
+To require fresh authenticated OCSP evidence, add this member inside `server-authentication` or a reusable `server-credentials` entry:
 
 ```json
 {
@@ -181,15 +181,23 @@ Required stapling cannot be combined with PSK authentication or the development 
 
 The client requests a staple and verifies it during the TLS handshake, before sending its client certificate or TACACS+ data.
 Missing, malformed, incorrectly signed, stale, unknown, revoked, or wrong-certificate evidence rejects the connection. There is no soft-fail fallback.
-The response must be signed directly by the authenticated leaf's issuer. The issuer must be available from certificate chains or configured CA material.
+The response must be signed by the authenticated leaf's issuer or a responder issued directly by that issuer.
+The issuer must be available from certificate chains or configured CA material. An embedded responder certificate does not become a trust anchor.
 Certificate IDs can use SHA-1 or SHA-256. Responses larger than 64 KiB and trailing DER data are rejected.
+
+Delegated responders must have the `id-kp-OCSPSigning` extended key usage. If key usage is present, it must permit digital signatures.
+They must also contain exactly one noncritical `id-pkix-ocsp-nocheck` extension with a DER NULL value.
+That extension lets clients omit a separate revocation check for the responder certificate during its validity period.
+Responders without No Check remain unsupported until responder-revocation retrieval is implemented. Their staples fail closed.
+OpenSSL verifies the response signature, delegation, and certificate path. Expired, future, incorrectly issued, or incorrectly constrained responders are rejected.
 
 Freshness ends at the earlier of `nextUpdate` and `thisUpdate` plus the configured maximum age.
 If `nextUpdate` is absent, the maximum age still bounds use. No clock-skew allowance or stale-material grace extends this interval.
 The verified interval bounds the connection lifetime, including idle transports. A later connection must obtain fresh valid evidence.
+The actual signer's certificate validity also bounds this interval. Unused certificates embedded in the response do not shorten it.
 Accurate system time remains necessary; runtime scheduling limits still apply to physical transport closure.
 
-This mode checks the peer leaf only. Delegated responders, intermediate or issuer revocation, CRL retrieval, and background OCSP queries are not implemented.
+This mode checks the peer leaf only. Intermediate or issuer revocation, CRL retrieval, and background OCSP queries are not implemented.
 It does not claim complete revocation coverage or full RFC 9887 conformance.
 
 ## EPSK Presence

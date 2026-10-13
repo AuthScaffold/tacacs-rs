@@ -333,12 +333,13 @@ module tacacsrs {
     description
       "Required revocation evidence for certificate TLS peer authentication.";
     container require-stapled-ocsp {
-      presence "Require fresh issuer-signed OCSP evidence for the peer leaf.";
+      presence "Require fresh authenticated OCSP evidence for the peer leaf.";
       description
         "Request a stapled OCSP response and fail closed if evidence is
-         unavailable, invalid, stale, unknown, or revoked. Only responses
-         signed directly by the certificate issuer are supported.
-         Delegated responders and intermediate revocation are not supported.";
+         unavailable, invalid, stale, unknown, or revoked. Responses must
+         be signed by the issuer or a responder issued directly by it.
+         Delegated responders require OCSP signing usage and a noncritical
+         No Check extension. Intermediate revocation is not supported.";
       leaf max-response-age-seconds {
         type uint32 { range "1..max"; }
         default 300;
