@@ -301,7 +301,8 @@ Commit `37faec2` adds canonical graceful-teardown budgets and cancellable system
 Commit `e91fe02` adds canonical stale-source budgets, generation-checked withdrawal, and recovery without a process restart.
 Commit `ed47f41` adds independent referenced-credential staleness budgets, withdrawal, and complete revalidation on recovery.
 Commit `8ff62cd` preserves absolute provider validity through materialization, publication, request deadlines, and owned expiry supervision.
-Intrinsic certificate validity extraction and lifecycle enforcement remain open. Non-yielding code and started blocking I/O still require explicit deployment limits.
+Commit `23e7f98` extracts configured client-certificate validity and enforces it during preparation, publication, handshakes, sessions, and supervised expiry.
+Negotiated peer-chain validity and trust-alternative lifecycle enforcement remain open. Non-yielding code and started blocking I/O still require explicit deployment limits.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.

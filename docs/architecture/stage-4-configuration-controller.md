@@ -16,6 +16,7 @@ Commit `37faec2` adds canonical graceful-teardown budgets and verifies cancellat
 Commit `e91fe02` adds stale-source expiry with recoverable upstream withdrawal.
 Commit `ed47f41` adds independent referenced-credential expiry and revalidation while preserving source-expiry enforcement.
 Commit `8ff62cd` adds absolute provider validity metadata, publication checks, request deadline bounds, and owned expiry supervision.
+Commit `23e7f98` adds intrinsic configured client-certificate validity, including inline identities and cached sessions.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication contract is complete. The remaining Stage 4 lifecycle, certificate, revocation, and statistics work is still open.
 
@@ -27,7 +28,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
-- [ ] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces absolute provider validity. Intrinsic certificate lifecycle expiry remains open; blocking-code limits remain explicit. See [absolute provider validity](#absolute-provider-validity).
+- [ ] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Peer-chain expiry remains open; blocking-code limits remain explicit. See [client certificate lifetimes](#client-certificate-lifetimes).
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
@@ -901,3 +902,60 @@ S4-04 remains open for intrinsic certificate validity extraction and lifecycle e
 Provider validity constrains resolved material but does not replace native certificate verification or revocation checks.
 Canonical client-chain provisioning, revocation evidence, and operational statistics remain S4-05 through S4-07.
 Expiry still requires a yielding runtime; arbitrary blocking work needs deployment limits.
+
+## Client Certificate Lifetimes
+
+Commit `23e7f98` closes the configured client-identity validity gap without adding a provider dependency to networking.
+OpenSSL previously accepted expired local certificates during context construction. The failed-before regression confirms this behavior.
+Native preparation now rejects expired and not-yet-valid client identities, even when the development option disables peer verification.
+
+### Ownership and Enforcement
+
+Networking owns `CertificateValidity` and decodes X.509 dates with OpenSSL ASN.1 APIs, without parsing formatted date strings.
+Runtime use includes the start and excludes the end. Native chain construction intersects the supplied local certificate dates.
+Canonical client-chain provisioning remains S4-05 work; the public identity input still accepts one certificate.
+`PreparedEndpoint::client_certificate_validity()` exposes these intrinsic bounds separately from provider metadata and negotiated peer certificates.
+
+The prepared TLS context retains a conservative monotonic deadline and checks the wall clock before and after use.
+Direct client construction rejects expired prepared identities. Session creation checks validity even when a shared connection is cached.
+Fixed exchanges and conversations cannot run past the captured certificate deadline, including when the caller supplies no deadline.
+A longer caller deadline cannot extend certificate validity. Expiry during TLS setup remains `NotSent`; expiry after exchange entry is conservative about delivery.
+
+The agent retains each prepared server's certificate lifetime across unchanged-slot reuse.
+Publication intersects intrinsic and provider bounds, rechecks them, and commits the combined lifetime with routing and applied health.
+The existing owned expiry monitor withdraws inline-certificate catalogs without a provider or credential notification failure.
+Withdrawal preserves the expired metadata needed for independent source and credential expiry checks. Canonical snapshots remain unchanged.
+
+### Native Test Fixture Fix
+
+The workspace run exposed a collision in the process-test directory helper.
+PID and wall-clock nanoseconds did not distinguish concurrent tests when clock timestamps matched.
+The helper now adds a process-local sequence and retries occupied paths without reusing or deleting another test's directory.
+A deterministic equal-timestamp regression verifies the fix.
+
+### Verification
+
+All-feature workspace tests pass, including 189 agent tests, ten prepared-source tests, and four native process tests.
+Networking tests pass with two existing ignored tests. New regressions cover:
+
+- Rejection of expired and future client identities with peer verification enabled or disabled.
+- Native timestamp conversion before the Unix epoch and across the UTC/generalized-time range.
+- Cached native TLS sessions and retained conversations after identity expiry.
+- Cancellation of a stalled TLS handshake before a longer request deadline.
+- Supervised inline-certificate withdrawal, policy reload, combined health bounds, and source immutability.
+
+All nine independent TACACS+ peer cases pass, including certificate TLS, required mTLS, PSK, and plain or obfuscated TCP.
+The peer binary reports `278d8c738cfb2ed8ba505fd1b60575fcc3fadca5` with OpenSSL 3.0.20.
+Strict workspace Clippy, default-feature agent Clippy, workspace build, nightly formatting, warnings-as-errors rustdoc, and the networking dependency guard pass.
+The documentation book builds. Final editor diagnostics and whitespace checks are clear.
+No dependency, lockfile, YANG artifact, or IPC schema changes occur. Native Redis, live SONiC, Windows, and Miri were not rerun.
+
+### Remaining Scope
+
+S4-04 remains open for negotiated peer-chain validity and lifecycle behavior for alternative trust paths and pins.
+Trust bags contain alternatives, not one required identity chain; this increment does not intersect every trust certificate into a catalog-wide expiry.
+Existing native handshake verification remains in place, but peer-certificate expiry after connection establishment is not yet a lifecycle deadline.
+
+Direct clients enforce configured identity validity on use; they do not add an idle-socket retirement task. Hosts retain explicit close/join ownership.
+The supervised agent withdraws expired catalogs through its owned monitor. Wall-clock jumps and non-yielding work retain the documented scheduling limits.
+Canonical chains, revocation evidence, and operational statistics remain S4-05 through S4-07. This work does not establish full RFC 9887 conformance.
