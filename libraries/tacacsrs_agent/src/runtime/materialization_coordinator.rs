@@ -12,7 +12,7 @@ use tacacsrs_credential_resolution::{
 };
 
 use crate::{PreparedProxyPolicy, TacacsClientService};
-use super::MaterializationRevision;
+use super::{MaterializationCommit, MaterializationRevision, SourceRevision};
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 struct DependencyKey {
@@ -28,6 +28,7 @@ struct CoordinatorState {
     active_servers: Vec<Arc<TacacsPlusServer>>,
     revision: MaterializationRevision,
     active_revision: Option<MaterializationRevision>,
+    source_current: bool,
 }
 
 impl Default for CoordinatorState {
@@ -40,19 +41,21 @@ impl Default for CoordinatorState {
             active_servers: Vec::new(),
             revision: MaterializationRevision::default(),
             active_revision: None,
+            source_current: false,
         }
     }
 }
 
 pub(crate) struct MaterializationCoordinator {
     state: Mutex<CoordinatorState>,
-    resolver: Arc<dyn CredentialResolver>,
+    resolver: Option<Arc<dyn CredentialResolver>>,
     validation_options: ValidationOptions,
 }
 
 #[derive(Clone)]
 pub(crate) struct MaterializationAttempt {
     revision: MaterializationRevision,
+    source_update: bool,
     runtime_source: Arc<TacacsPlus>,
     proxy_policy: PreparedProxyPolicy,
     selected_servers: BTreeSet<String>,
@@ -76,17 +79,90 @@ impl MaterializationCoordinator {
     ) -> Self {
         Self {
             state: Mutex::new(CoordinatorState::default()),
-            resolver,
+            resolver: Some(resolver),
             validation_options,
         }
     }
 
+    pub(crate) fn without_resolver(validation_options: ValidationOptions) -> Self {
+        Self {
+            state: Mutex::new(CoordinatorState::default()),
+            resolver: None,
+            validation_options,
+        }
+    }
+
+    pub(crate) fn has_resolver(&self) -> bool {
+        self.resolver.is_some()
+    }
+
+    pub(crate) async fn admit_source(&self, source: TacacsPlus) -> SourceRevision {
+        let mut state = self.state.lock().await;
+        state.revision.source.advance();
+        state.desired_source = Some(Arc::new(source));
+        state.desired_runtime_source = None;
+        state.desired_proxy_policy = None;
+        state.desired_dependencies = None;
+        state.source_current = true;
+        state.revision.source
+    }
+
+    pub(crate) async fn reject_source(
+        &self,
+        revision: SourceRevision,
+        health: &crate::RuntimeHealthPublisher,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        if state.revision.source != revision {
+            return false;
+        }
+        state.desired_runtime_source = None;
+        state.desired_proxy_policy = None;
+        state.desired_dependencies = None;
+        state.source_current = false;
+        health.reject_source_candidate();
+        true
+    }
+
+    pub(crate) async fn reject_observation(&self, health: &crate::RuntimeHealthPublisher) {
+        let mut state = self.state.lock().await;
+        state.revision.source.advance();
+        state.source_current = false;
+        state.desired_runtime_source = None;
+        state.desired_proxy_policy = None;
+        state.desired_dependencies = None;
+        health.reject_source_candidate();
+    }
+
+    pub(crate) async fn source_unavailable(
+        &self,
+        health: &crate::RuntimeHealthPublisher,
+        disconnected: bool,
+    ) {
+        let mut state = self.state.lock().await;
+        state.source_current = false;
+        health.source_unavailable(disconnected);
+    }
+
+    #[cfg(test)]
     pub(crate) async fn accept_source(
         &self,
         desired_source: TacacsPlus,
         runtime_source: TacacsPlus,
         proxy_policy: PreparedProxyPolicy,
     ) -> MaterializationAttempt {
+        let revision = self.admit_source(desired_source).await;
+        self.accept_filtered_source(revision, runtime_source, proxy_policy)
+            .await
+            .expect("test source must remain current")
+    }
+
+    pub(crate) async fn accept_filtered_source(
+        &self,
+        revision: SourceRevision,
+        runtime_source: TacacsPlus,
+        proxy_policy: PreparedProxyPolicy,
+    ) -> Option<MaterializationAttempt> {
         let dependencies = dependency_index(&runtime_source);
         let runtime_source = Arc::new(runtime_source);
         let selected_servers = runtime_source
@@ -95,17 +171,19 @@ impl MaterializationCoordinator {
             .map(|server| server.name.clone())
             .collect();
         let mut state = self.state.lock().await;
-        state.revision.source.advance();
-        state.desired_source = Some(Arc::new(desired_source));
+        if state.revision.source != revision {
+            return None;
+        }
         state.desired_runtime_source = Some(Arc::clone(&runtime_source));
         state.desired_proxy_policy = Some(proxy_policy.clone());
         state.desired_dependencies = dependencies;
-        MaterializationAttempt {
+        Some(MaterializationAttempt {
             revision: state.revision,
+            source_update: true,
             runtime_source,
             proxy_policy,
             selected_servers,
-        }
+        })
     }
 
     pub(crate) async fn credential_change(
@@ -113,7 +191,12 @@ impl MaterializationCoordinator {
         scope: &CredentialChangeScope,
     ) -> Option<MaterializationAttempt> {
         let mut state = self.state.lock().await;
-        let runtime_source = Arc::clone(state.desired_runtime_source.as_ref()?);
+        let Some(runtime_source) = state.desired_runtime_source.clone() else {
+            if state.desired_source.is_some() {
+                state.revision.credentials.advance();
+            }
+            return None;
+        };
         let proxy_policy = state.desired_proxy_policy.clone()?;
         let selected_servers = if state.active_revision == Some(state.revision) {
             match (scope, state.desired_dependencies.as_ref()) {
@@ -137,6 +220,7 @@ impl MaterializationCoordinator {
         state.revision.credentials.advance();
         Some(MaterializationAttempt {
             revision: state.revision,
+            source_update: false,
             runtime_source,
             proxy_policy,
             selected_servers,
@@ -153,8 +237,12 @@ impl MaterializationCoordinator {
             .map(|server_name| enumerate_server(&attempt.runtime_source, server_name))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| MaterializationError::enumeration())?;
-        let candidates =
-            materialize_servers(servers, self.resolver.as_ref(), &self.validation_options).await?;
+        let candidates = match self.resolver.as_deref() {
+            Some(resolver) => {
+                materialize_servers(servers, resolver, &self.validation_options).await?
+            }
+            None => servers,
+        };
         Ok(PreparedMaterialization {
             attempt,
             candidates,
@@ -178,7 +266,7 @@ impl MaterializationCoordinator {
             return false;
         }
         if failed {
-            health.set_degraded(crate::DegradationReason::CredentialResolutionFailed, true);
+            health.reject_materialization(attempt.source_update);
         }
         true
     }
@@ -227,7 +315,10 @@ impl MaterializationCoordinator {
                 move || {
                     state.active_servers = next_active;
                     state.active_revision = Some(state.revision);
-                    Some(state.revision)
+                    Some(MaterializationCommit {
+                        revision: state.revision,
+                        source_current: state.source_current,
+                    })
                 },
             )
             .await?;
@@ -417,6 +508,50 @@ mod tests {
             kind: CredentialKind::SymmetricKey,
             reference: CredentialReference::SymmetricKey(reference.to_owned()),
         }
+    }
+
+    #[tokio::test]
+    async fn pending_filter_blocks_old_source_refresh_and_keeps_credential_revision() {
+        let coordinator = MaterializationCoordinator::new(
+            resolver(&[("object-a", b"valid-material-long-enough")]),
+            ValidationOptions::default(),
+        );
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service_with_health(health.clone());
+        let original = source("object-a", "192.0.2.20");
+        let baseline = coordinator
+            .accept_source(original.clone(), original, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(baseline).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        let candidate = source("object-a", "192.0.2.21");
+        let revision = coordinator.admit_source(candidate.clone()).await;
+        assert!(coordinator
+            .credential_change(&known("object-a"))
+            .await
+            .is_none());
+        let filtered = coordinator
+            .accept_filtered_source(
+                revision,
+                candidate.clone(),
+                PreparedProxyPolicy::unobfuscated(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(filtered.revision.source(), revision);
+        assert_eq!(filtered.revision.credentials().value(), 1);
+        let prepared = coordinator.materialize(filtered).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        assert_eq!(coordinator.active_servers().await[0].address, "192.0.2.21");
+        assert_eq!(coordinator.state.lock().await.desired_source.as_deref(), Some(&candidate));
+        assert_eq!(
+            health
+                .snapshot()
+                .materialization_revision()
+                .unwrap()
+                .source(),
+            revision
+        );
     }
 
     #[tokio::test]

@@ -82,7 +82,7 @@ pub struct ConfigSupervisor {
     health: RuntimeHealthPublisher,
     config_filter: Arc<dyn TacacsPlusFilter>,
     backoff: Arc<dyn RetryBackoff>,
-    materialization_coordinator: Option<Arc<MaterializationCoordinator>>,
+    materialization_coordinator: Arc<MaterializationCoordinator>,
     credential_change_source: Option<Arc<dyn CredentialChangeSource>>,
     initialized: bool,
     observation: Mutex<Option<Box<dyn ConfigObservation>>>,
@@ -112,10 +112,10 @@ impl ConfigSupervisor {
         mut self,
         credential_resolver: Arc<dyn CredentialResolver>,
     ) -> Self {
-        self.materialization_coordinator = Some(Arc::new(MaterializationCoordinator::new(
+        self.materialization_coordinator = Arc::new(MaterializationCoordinator::new(
             credential_resolver,
             self.datastore.validation_options(),
-        )));
+        ));
         self.initialized = false;
         self.observation.get_mut().take();
         self
@@ -185,7 +185,8 @@ impl ConfigSupervisor {
 
     fn validate_provider(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.credential_change_source.is_none() || self.materialization_coordinator.is_some(),
+            self.credential_change_source.is_none()
+                || self.materialization_coordinator.has_resolver(),
             "Credential change notifications require a credential resolver",
         );
         Ok(())
@@ -238,8 +239,11 @@ impl ConfigSupervisor {
         credential_resolver: Option<Arc<dyn CredentialResolver>>,
         credential_change_source: Option<Arc<dyn CredentialChangeSource>>,
     ) -> Self {
-        let materialization_coordinator = credential_resolver.map(|resolver| {
-            Arc::new(MaterializationCoordinator::new(resolver, datastore.validation_options()))
+        let materialization_coordinator = Arc::new(match credential_resolver {
+            Some(resolver) => {
+                MaterializationCoordinator::new(resolver, datastore.validation_options())
+            }
+            None => MaterializationCoordinator::without_resolver(datastore.validation_options()),
         });
         Self {
             datastore,
@@ -273,13 +277,11 @@ impl ConfigSupervisor {
 
             match result {
                 Ok(PublicationOutcome::Published) => {
-                    self.mark_current();
                     return Ok(());
                 }
                 Ok(PublicationOutcome::Superseded) => {}
                 Err(()) if policy == InitialLoadPolicy::FailFast => {
                     self.observation.lock().await.take();
-                    self.mark_source_problem();
                     anyhow::bail!(
                         "Datastore '{}' did not supply a valid initial configuration",
                         self.datastore.label(),
@@ -287,7 +289,6 @@ impl ConfigSupervisor {
                 }
                 Err(()) => {
                     self.observation.lock().await.take();
-                    self.mark_source_problem();
                     attempt = attempt.saturating_add(1);
                     log::warn!(
                         "Datastore '{}' initial configuration is unavailable. The daemon retries.",
@@ -336,25 +337,23 @@ impl ConfigSupervisor {
             };
             match event {
                 Ok(ConfigChangeEvent::Changed(change)) => {
-                    let result = tokio::select! {
+                    let _ = tokio::select! {
                         biased;
                         () = cancellation.cancelled() => return,
                         result = self.apply_candidate((*change.config).clone()) => result,
                     };
-                    match result {
-                        Ok(PublicationOutcome::Published) => self.mark_current(),
-                        Ok(PublicationOutcome::Superseded) => {}
-                        Err(()) => self.mark_candidate_rejected(),
-                    }
                     attempt = 0;
                 }
-                Ok(ConfigChangeEvent::CandidateRejected) => self.mark_candidate_rejected(),
+                Ok(ConfigChangeEvent::CandidateRejected) => {
+                    self.materialization_coordinator
+                        .reject_observation(&self.health)
+                        .await;
+                }
                 Ok(ConfigChangeEvent::RestartRequired { required }) => self
                     .health
                     .set_degraded(DegradationReason::RestartRequired, required),
                 Err(()) => {
                     self.observation.lock().await.take();
-                    self.mark_subscription_unavailable();
                     attempt = attempt.saturating_add(1);
                     if !self.wait_for_retry(attempt, cancellation).await {
                         return;
@@ -370,7 +369,12 @@ impl ConfigSupervisor {
                 ConfigChangeEvent::Changed(change) => {
                     return self.apply_candidate((*change.config).clone()).await
                 }
-                ConfigChangeEvent::CandidateRejected => return Err(()),
+                ConfigChangeEvent::CandidateRejected => {
+                    self.materialization_coordinator
+                        .reject_observation(&self.health)
+                        .await;
+                    return Err(());
+                }
                 ConfigChangeEvent::RestartRequired { required } => self
                     .health
                     .set_degraded(DegradationReason::RestartRequired, required),
@@ -381,14 +385,19 @@ impl ConfigSupervisor {
     async fn next_observation_event(&self) -> Result<ConfigChangeEvent, ()> {
         let mut current = self.observation.lock().await;
         if current.is_none() {
-            *current = Some(self.datastore.observe().await.map_err(|_| {
-                if self.datastore.runtime_policy().change_notifications
-                    == ChangeNotificationMode::Continuous
-                {
-                    self.mark_subscription_unavailable();
-                }
+            let opened = self.datastore.observe().await;
+            let Ok(opened) = opened else {
+                self.materialization_coordinator
+                    .source_unavailable(
+                        &self.health,
+                        self.datastore.runtime_policy().change_notifications
+                            == ChangeNotificationMode::Continuous,
+                    )
+                    .await;
                 log::warn!("Datastore '{}' observation could not start", self.datastore.label());
-            })?);
+                return Err(());
+            };
+            *current = Some(opened);
             if self.datastore.runtime_policy().change_notifications
                 == ChangeNotificationMode::Continuous
             {
@@ -404,42 +413,47 @@ impl ConfigSupervisor {
             Ok(event)
         } else {
             current.take();
+            self.materialization_coordinator
+                .source_unavailable(
+                    &self.health,
+                    self.datastore.runtime_policy().change_notifications
+                        == ChangeNotificationMode::Continuous,
+                )
+                .await;
             log::warn!("Datastore '{}' observation ended", self.datastore.label());
             Err(())
         }
     }
 
     async fn apply_candidate(&self, candidate: TacacsPlus) -> Result<PublicationOutcome, ()> {
-        let desired_source = candidate.clone();
-        let filtered = self.config_filter.filter(candidate).await.map_err(|_| {
+        let coordinator = &self.materialization_coordinator;
+        let revision = coordinator.admit_source(candidate.clone()).await;
+        let filtered = self.config_filter.filter(candidate).await;
+        let Ok(filtered) = filtered else {
             log::warn!(
                 "Datastore '{}' configuration candidate was rejected by runtime filtering",
                 self.datastore.label(),
             );
-        })?;
-        let apply = match self.materialization_coordinator.as_deref() {
-            Some(coordinator) => {
-                let attempt = coordinator
-                    .accept_source(
-                        desired_source,
-                        filtered.tacacs_plus,
-                        filtered.proxy_downstream_obfuscation,
-                    )
-                    .await;
-                self.materialize_and_publish(coordinator, attempt).await
-            }
-            None => self
-                .service
-                .reload_tacacs_plus_with_proxy_downstream_obfuscation(
-                    filtered.tacacs_plus,
-                    filtered.proxy_downstream_obfuscation,
-                )
-                .await
-                .map(|()| PublicationOutcome::Published),
+            return if coordinator.reject_source(revision, &self.health).await {
+                Err(())
+            } else {
+                Ok(PublicationOutcome::Superseded)
+            };
         };
+        let Some(attempt) = coordinator
+            .accept_filtered_source(
+                revision,
+                filtered.tacacs_plus,
+                filtered.proxy_downstream_obfuscation,
+            )
+            .await
+        else {
+            return Ok(PublicationOutcome::Superseded);
+        };
+        let apply = self.materialize_and_publish(coordinator, attempt).await;
         apply.map_err(|_| {
             log::warn!(
-                "The daemon failed to prepare or publish the configuration candidate from datastore '{}'",
+                "Failed to prepare or publish the configuration candidate from datastore '{}'",
                 self.datastore.label(),
             );
         })
@@ -504,9 +518,7 @@ impl ConfigSupervisor {
     }
 
     async fn apply_credential_change(&self, scope: &CredentialChangeScope) -> bool {
-        let Some(coordinator) = self.materialization_coordinator.as_deref() else {
-            return true;
-        };
+        let coordinator = &self.materialization_coordinator;
         let Some(attempt) = coordinator.credential_change(scope).await else {
             return true;
         };
@@ -541,45 +553,9 @@ impl ConfigSupervisor {
         }
     }
 
-    fn mark_current(&self) {
-        self.health.set_datastore(DatastoreState::Current);
-        self.health
-            .set_degraded(DegradationReason::DatastoreUnavailable, false);
-        self.health
-            .set_degraded(DegradationReason::DatastoreStale, false);
-        self.health
-            .set_degraded(DegradationReason::CandidateConfigurationRejected, false);
-    }
-
-    fn mark_source_problem(&self) {
-        let has_known_good = self.health.snapshot().has_applied_configuration();
-        self.health.set_datastore(if has_known_good {
-            DatastoreState::Stale
-        } else {
-            DatastoreState::Unavailable
-        });
-        self.health
-            .set_degraded(DegradationReason::DatastoreStale, has_known_good);
-        self.health
-            .set_degraded(DegradationReason::DatastoreUnavailable, !has_known_good);
-    }
-
-    fn mark_subscription_unavailable(&self) {
-        self.health.set_continuous_notifications_connected(false);
-        self.health
-            .set_degraded(DegradationReason::ChangeNotificationsUnavailable, true);
-        self.mark_source_problem();
-    }
-
     fn mark_credential_notifications_unavailable(&self) {
         self.health
             .set_degraded(DegradationReason::CredentialNotificationsUnavailable, true);
-    }
-
-    fn mark_candidate_rejected(&self) {
-        self.health
-            .set_degraded(DegradationReason::CandidateConfigurationRejected, true);
-        self.mark_source_problem();
     }
 }
 
@@ -813,6 +789,29 @@ mod tests {
         entered: tokio::sync::Notify,
     }
 
+    struct ReorderedFilter {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        reject_old: bool,
+    }
+
+    impl TacacsPlusFilter for ReorderedFilter {
+        fn filter(
+            &self,
+            candidate: TacacsPlus,
+        ) -> futures_util::future::BoxFuture<'_, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
+        {
+            Box::pin(async move {
+                if candidate.server.len() == 1 {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                    anyhow::ensure!(!self.reject_old, "rejected old candidate");
+                }
+                NoopTacacsPlusFilter::default().filter(candidate).await
+            })
+        }
+    }
+
     impl TacacsPlusFilter for PausingFilter {
         fn filter(
             &self,
@@ -1029,6 +1028,151 @@ mod tests {
             Arc::new(FixedBackoff(backoff)),
         );
         (supervisor, health, service)
+    }
+
+    #[tokio::test]
+    async fn older_filter_completion_cannot_replace_a_newer_source() {
+        for with_resolver in [false, true] {
+            for reject_old in [false, true] {
+                let datastore = Arc::new(ScriptedDatastore::new(
+                    DatastoreRuntimePolicy::new(
+                        InitialLoadPolicy::FailFast,
+                        ChangeNotificationMode::None,
+                    ),
+                    [],
+                    [],
+                ));
+                let (mut supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+                if with_resolver {
+                    supervisor = supervisor.with_credential_resolver(Arc::new(CountingResolver {
+                        resolved_servers: Mutex::new(Vec::new()),
+                    }));
+                }
+                let filter = Arc::new(ReorderedFilter {
+                    entered: tokio::sync::Notify::new(),
+                    release: tokio::sync::Notify::new(),
+                    reject_old,
+                });
+                supervisor.config_filter = filter.clone();
+                let older = supervisor.apply_candidate(test_config(1));
+                tokio::pin!(older);
+                tokio::select! {
+                    result = &mut older => panic!("old filter must pause: {result:?}"),
+                    () = filter.entered.notified() => {},
+                }
+                assert_eq!(
+                    supervisor.apply_candidate(test_config(2)).await.unwrap(),
+                    PublicationOutcome::Published
+                );
+                let applied = health.snapshot();
+                filter.release.notify_one();
+                assert_eq!(older.await.unwrap(), PublicationOutcome::Superseded);
+                assert_eq!(service.server_count(), 2);
+                assert_eq!(health.snapshot(), applied);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn late_publication_return_cannot_clear_a_rejected_source_observation() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+        let release = service.pause_next_publication();
+        let publication = supervisor.apply_candidate(test_config(1));
+        tokio::pin!(publication);
+        tokio::select! {
+            result = &mut publication => panic!("publication must pause: {result:?}"),
+            result = timeout(Duration::from_secs(1), async {
+                while service.server_count() != 1 { tokio::task::yield_now().await; }
+            }) => result.unwrap(),
+        }
+        assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
+        supervisor
+            .materialization_coordinator
+            .reject_observation(&health)
+            .await;
+        let rejected = health.snapshot();
+        release.notify_one();
+        assert_eq!(publication.await.unwrap(), PublicationOutcome::Superseded);
+        assert_eq!(health.snapshot(), rejected);
+        assert_eq!(service.server_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn credential_refresh_during_source_outage_does_not_claim_source_recovery() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (supervisor, health, _) = supervisor(datastore, Duration::ZERO);
+        let supervisor = supervisor.with_credential_resolver(Arc::new(CountingResolver {
+            resolved_servers: Mutex::new(Vec::new()),
+        }));
+        supervisor
+            .apply_candidate(central_test_config(1))
+            .await
+            .unwrap();
+        let baseline = health.snapshot().materialization_revision().unwrap();
+        supervisor
+            .materialization_coordinator
+            .source_unavailable(&health, true)
+            .await;
+        assert!(
+            supervisor
+                .apply_credential_change(&CredentialChangeScope::Unknown)
+                .await
+        );
+        let rotated = health.snapshot();
+        assert_eq!(rotated.materialization_revision().unwrap().source(), baseline.source());
+        assert!(
+            rotated
+                .materialization_revision()
+                .unwrap()
+                .credentials()
+                .value()
+                > baseline.credentials().value()
+        );
+        assert_eq!(rotated.datastore(), DatastoreState::Stale);
+        assert!(rotated
+            .degradation_reasons()
+            .contains(&DegradationReason::ChangeNotificationsUnavailable));
+        assert!(rotated
+            .degradation_reasons()
+            .contains(&DegradationReason::DatastoreStale));
+    }
+
+    #[tokio::test]
+    async fn source_without_a_resolver_rejects_central_references_before_publication() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+        assert!(supervisor
+            .apply_candidate(central_test_config(1))
+            .await
+            .is_err());
+        assert_eq!(service.server_count(), 0);
+        let rejected = health.snapshot();
+        assert!(rejected.materialization_revision().is_none());
+        assert!(!rejected.has_applied_configuration());
+        assert_eq!(rejected.datastore(), DatastoreState::Unavailable);
+        assert!(rejected
+            .degradation_reasons()
+            .contains(&DegradationReason::CandidateConfigurationRejected));
+        supervisor.apply_candidate(test_config(1)).await.unwrap();
+        let applied = health.snapshot();
+        assert_eq!(applied.materialization_revision().unwrap().source().value(), 2);
+        assert_eq!(applied.datastore(), DatastoreState::Current);
+        assert!(!applied
+            .degradation_reasons()
+            .contains(&DegradationReason::CandidateConfigurationRejected));
     }
 
     #[tokio::test]
@@ -1504,8 +1648,10 @@ mod tests {
             .apply_candidate(central_test_config(1))
             .await
             .expect("apply known-good candidate");
-        supervisor.mark_current();
-        supervisor.mark_candidate_rejected();
+        supervisor
+            .materialization_coordinator
+            .reject_observation(&health)
+            .await;
 
         assert!(
             supervisor

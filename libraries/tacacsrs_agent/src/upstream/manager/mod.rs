@@ -403,7 +403,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         &self,
         servers: Vec<Arc<TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
-        commit: impl FnOnce() -> Option<crate::MaterializationRevision> + Send,
+        commit: impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
         let _reload = self.reload_lock.lock().await;
         anyhow::ensure!(

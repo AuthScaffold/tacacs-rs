@@ -76,7 +76,7 @@ impl PublicationController {
         server_count: usize,
         configuration_applied: Option<bool>,
         materially_changed: bool,
-        publish: impl FnOnce(u64) -> Option<crate::MaterializationRevision>,
+        publish: impl FnOnce(u64) -> Option<crate::runtime::MaterializationCommit>,
     ) {
         let mut state = self
             .state

@@ -169,7 +169,7 @@ impl TacacsClientService {
         &self,
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         policy: PreparedProxyPolicy,
-        commit: impl FnOnce() -> Option<super::MaterializationRevision> + Send,
+        commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
         self.runtime
             .publish_materialized_servers(servers, policy, commit)
@@ -432,7 +432,7 @@ where
         &self,
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
-        commit: impl FnOnce() -> Option<super::MaterializationRevision> + Send,
+        commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
         proxy_downstream_obfuscation.shared_secret()?;
         tacacsrs_config::prepare::validate_materialized_servers(

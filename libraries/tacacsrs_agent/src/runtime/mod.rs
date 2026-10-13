@@ -22,6 +22,7 @@ pub use config_filter::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilt
 pub use config_supervisor::ConfigSupervisor;
 pub use policy_supervisor::PolicySupervisor;
 pub use revision::{CredentialRevision, MaterializationRevision, SourceRevision};
+pub(crate) use revision::MaterializationCommit;
 pub use health::{
     DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher, RuntimeGeneration,
     RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, UpstreamAvailability,

@@ -1,9 +1,9 @@
 //! Controller-local identities for canonical source and credential observations.
 //!
-//! These counters identify accepted inputs, not hashes of configuration or secret
+//! These counters identify observed inputs, not hashes of configuration or secret
 //! material. Values from different controller instances must not be compared.
 
-/// Revision of an accepted canonical source candidate, including repeated observations.
+/// Revision of source admission or rejection, assigned before host filtering.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub struct SourceRevision(u64);
 
@@ -46,6 +46,11 @@ impl CredentialRevision {
 pub struct MaterializationRevision {
     pub(crate) source: SourceRevision,
     pub(crate) credentials: CredentialRevision,
+}
+
+pub(crate) struct MaterializationCommit {
+    pub(crate) revision: MaterializationRevision,
+    pub(crate) source_current: bool,
 }
 
 impl MaterializationRevision {

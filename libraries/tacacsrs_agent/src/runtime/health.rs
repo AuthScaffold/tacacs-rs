@@ -230,6 +230,22 @@ impl RuntimeHealthSnapshot {
         matches!(self.lifecycle, RuntimeLifecycle::Starting | RuntimeLifecycle::Serving)
     }
 
+    fn mark_source_problem(&mut self) {
+        if self.applied_configuration {
+            self.datastore = DatastoreState::Stale;
+            self.degradation_reasons
+                .insert(DegradationReason::DatastoreStale);
+            self.degradation_reasons
+                .remove(&DegradationReason::DatastoreUnavailable);
+        } else {
+            self.datastore = DatastoreState::Unavailable;
+            self.degradation_reasons
+                .insert(DegradationReason::DatastoreUnavailable);
+            self.degradation_reasons
+                .remove(&DegradationReason::DatastoreStale);
+        }
+    }
+
     fn all_enabled_listeners_bound(&self) -> bool {
         (!self.enabled_services.client_api() || self.client_api_listener == ListenerState::Bound)
             && (!self.enabled_services.tacacs_proxy()
@@ -350,19 +366,31 @@ impl RuntimeHealthPublisher {
         server_count: usize,
         configuration_applied: Option<bool>,
         reset_availability: bool,
-        publish: impl FnOnce() -> Option<super::MaterializationRevision>,
+        publish: impl FnOnce() -> Option<super::MaterializationCommit>,
     ) {
         self.update(|snapshot| {
-            let revision = publish();
+            let commit = publish();
             snapshot.runtime_generation = Some(generation);
             snapshot.eligible_server_count = server_count;
             if let Some(applied) = configuration_applied {
                 snapshot.applied_configuration = applied;
-                snapshot.materialization_revision = revision;
-                if revision.is_some() {
+                snapshot.materialization_revision = commit.as_ref().map(|commit| commit.revision);
+                if let Some(commit) = commit {
                     snapshot
                         .degradation_reasons
                         .remove(&DegradationReason::CredentialResolutionFailed);
+                    if commit.source_current {
+                        snapshot.datastore = DatastoreState::Current;
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::DatastoreUnavailable);
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::DatastoreStale);
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::CandidateConfigurationRejected);
+                    }
                 }
             }
             if reset_availability {
@@ -371,6 +399,42 @@ impl RuntimeHealthPublisher {
                     .degradation_reasons
                     .remove(&DegradationReason::UpstreamsUnavailable);
             }
+        });
+    }
+
+    /// Records rejection without exposing a partially updated source-health snapshot.
+    pub(crate) fn reject_source_candidate(&self) {
+        self.update(|snapshot| {
+            snapshot
+                .degradation_reasons
+                .insert(DegradationReason::CandidateConfigurationRejected);
+            snapshot.mark_source_problem();
+        });
+    }
+
+    pub(crate) fn reject_materialization(&self, source_update: bool) {
+        self.update(|snapshot| {
+            snapshot
+                .degradation_reasons
+                .insert(DegradationReason::CredentialResolutionFailed);
+            if source_update {
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::CandidateConfigurationRejected);
+                snapshot.mark_source_problem();
+            }
+        });
+    }
+
+    pub(crate) fn source_unavailable(&self, disconnected: bool) {
+        self.update(|snapshot| {
+            if disconnected {
+                snapshot.continuous_notifications_connected = false;
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::ChangeNotificationsUnavailable);
+            }
+            snapshot.mark_source_problem();
         });
     }
 
