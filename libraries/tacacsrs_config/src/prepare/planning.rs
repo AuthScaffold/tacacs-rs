@@ -28,8 +28,14 @@ pub fn resolution_plan(server: &TacacsPlusServer) -> Result<ResolutionPlan, Reso
             CentralCredentialUsage::ClientTls13Epsk => CredentialKind::SymmetricKey,
             CentralCredentialUsage::ServerCaCertificateBag => CredentialKind::CaCertificateBag,
             CentralCredentialUsage::ServerEeCertificateBag => CredentialKind::EeCertificateBag,
+            CentralCredentialUsage::ServerCertificateRevocationLists => {
+                CredentialKind::CertificateRevocationLists
+            }
         };
         let reference = match slot.reference() {
+            CentralCredentialReference::CertificateRevocationLists(reference) => {
+                CredentialReference::CertificateRevocationLists(reference.to_owned())
+            }
             CentralCredentialReference::CertificateWithKey {
                 asymmetric_key,
                 certificate,

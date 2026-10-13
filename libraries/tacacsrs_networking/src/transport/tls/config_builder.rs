@@ -115,6 +115,19 @@ impl TlsConfigurationBuilder {
                 )?;
             } else {
                 builder.set_default_verify_paths()?;
+                let ssl_index = X509StoreContext::ssl_idx()?;
+                builder.set_verify_callback(SslVerifyMode::PEER, move |verified, context| {
+                    if !verified || context.error_depth() != 0 {
+                        return verified;
+                    }
+                    let accepted = context.ex_data(ssl_index).is_some_and(|ssl| {
+                        super::revocation::crls::verify(ssl, context.chain()).is_ok()
+                    });
+                    if !accepted {
+                        context.set_error(X509VerifyResult::APPLICATION_VERIFICATION);
+                    }
+                    accepted
+                });
             }
         }
 
@@ -290,6 +303,13 @@ fn configure_certificate_trust(
             })
         };
         if let Some(validity) = selected {
+            if context
+                .ex_data(ssl_index)
+                .is_some_and(|ssl| super::revocation::crls::verify(ssl, context.chain()).is_err())
+            {
+                context.set_error(X509VerifyResult::APPLICATION_VERIFICATION);
+                return false;
+            }
             if let Some(slot) = context
                 .ex_data(ssl_index)
                 .and_then(|ssl| ssl.ex_data(peer_validity_index))

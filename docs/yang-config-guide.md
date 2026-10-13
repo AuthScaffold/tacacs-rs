@@ -197,8 +197,44 @@ The verified interval bounds the connection lifetime, including idle transports.
 The actual signer's certificate validity also bounds this interval. Unused certificates embedded in the response do not shorten it.
 Accurate system time remains necessary; runtime scheduling limits still apply to physical transport closure.
 
-This mode checks the peer leaf only. Intermediate or issuer revocation, CRL retrieval, and background OCSP queries are not implemented.
+This stapling mode checks the peer leaf only. The separate full-CRL mode below checks the CA-authenticated path.
+Background OCSP queries and responder-revocation retrieval remain unimplemented.
 It does not claim complete revocation coverage or full RFC 9887 conformance.
+
+## Required Full CRLs
+
+The `tacacsrs:require-crls` presence container selects full-CRL verification for CA-authenticated TLS servers.
+It works in per-server authentication and reusable `server-credentials` entries.
+Supply either an inline `crl` array of base64-encoded DER lists or one opaque `evidence-reference`, not both.
+
+```json
+{
+  "tacacsrs:require-crls": {
+    "max-age-seconds": 300,
+    "evidence-reference": "primary-ca-crls"
+  }
+}
+```
+
+Provider references require an attached `CredentialResolver` that supports `CertificateRevocationLists`. The stock SONiC resolver does not yet supply this material kind.
+Inline CRL arrays can be supplied through existing canonical JSON sources. No HTTP or distribution-point fetcher is added by this mode.
+
+The maximum age defaults to 300 seconds and must be positive. Each list must contain exactly one complete DER CRL and include `nextUpdate`.
+The complete set is limited to 4 MiB and one list per issuer name. Empty, stale, future, duplicate-issuer, or trailing-DER inputs fail preparation.
+Delta CRLs, issuing-distribution-point extensions, and freshest-CRL references are rejected because scoped or delta evidence is not supported.
+
+Native verification checks the accepted certificate path against the supplied lists before client authentication or TACACS+ data.
+Bad signatures, revoked leaves or intermediates, and incomplete evidence reject the TLS connection. Missing CRLs never fall back to unchecked authentication.
+This mode cannot be combined with exact peer pins, PSK authentication, required stapled OCSP, or disabled certificate verification.
+
+All supplied lists contribute to the prepared evidence deadline, not only lists later used by a connection.
+The deadline is the earliest `nextUpdate` or `thisUpdate` plus maximum age, further constrained by provider and client-certificate validity.
+Direct clients stop using expired evidence. The supervised agent withdraws expired catalogs while retaining source observation and the canonical configuration.
+Replace the inline source or publish a provider change to trigger fresh materialization. Provider references remain unchanged in the authoritative snapshot.
+New generations use refreshed evidence. In-flight requests retain the existing generation, deadline, and retirement bounds.
+
+Remote retrieval, responder revocation without No Check, scoped CRLs, and broader revocation orchestration remain S4-06 work.
+This mode does not establish full RFC 9887 conformance.
 
 ## EPSK Presence
 

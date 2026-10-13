@@ -329,9 +329,40 @@ module tacacsrs {
     }
   }
 
-  grouping stapled-ocsp-policy {
+  grouping certificate-revocation-policy {
     description
       "Required revocation evidence for certificate TLS peer authentication.";
+    container require-crls {
+      presence "Require fresh CRLs for certificate TLS server authentication.";
+      description
+        "Require complete CRLs for the verified server certificate path.
+         Exact peer pins and PSK authentication are not supported in this mode.
+         Unavailable, invalid, stale, or incomplete evidence fails closed.";
+      leaf max-age-seconds {
+        type uint32 { range "1..max"; }
+        default 300;
+        description
+          "Maximum seconds since each CRL thisUpdate. The earlier of this
+           limit and nextUpdate bounds evidence use without stale grace.";
+      }
+      choice evidence {
+        mandatory true;
+        case inline {
+          leaf-list crl {
+            type binary { length "1..max"; }
+            min-elements 1;
+            description "One complete DER CRL per entry.";
+          }
+        }
+        case provider {
+          leaf evidence-reference {
+            type string { length "1..max"; }
+            mandatory true;
+            description "Opaque provider reference to a complete CRL set.";
+          }
+        }
+      }
+    }
     container require-stapled-ocsp {
       presence "Require fresh authenticated OCSP evidence for the peer leaf.";
       description
@@ -355,7 +386,7 @@ module tacacsrs {
         + "sys-tcs-plus:server-credentials" {
     description
       "Adds required stapled OCSP to reusable server authentication.";
-    uses stapled-ocsp-policy;
+    uses certificate-revocation-policy;
   }
 
   augment "/sys:system/sys-tcs-plus:tacacs-plus/"
@@ -367,7 +398,7 @@ module tacacsrs {
         + "sys-tcs-plus:explicit" {
     description
       "Adds required stapled OCSP to per-server certificate authentication.";
-    uses stapled-ocsp-policy;
+    uses certificate-revocation-policy;
   }
 
   augment "/sys:system/sys-tcs-plus:tacacs-plus/"

@@ -58,6 +58,9 @@ pub(crate) struct TlsClientConfig {
     peer_identity: String,
     sni_name: Option<String>,
     pub(crate) lifetime: Option<CertificateLifetime>,
+    pub(crate) client_validity: Option<super::CertificateValidity>,
+    crls: Option<std::sync::Arc<super::revocation::crls::CrlEvidence>>,
+    peer_pins: bool,
     peer_validity_index: super::config_builder::PeerValidityIndex,
     pub(crate) revocation: super::CertificateRevocationPolicy,
     revocation_issuers: Vec<X509>,
@@ -86,6 +89,7 @@ impl TlsClientConfig {
         }
         let mut builder = TlsConfigurationBuilder::new()
             .with_certificate_verification_disabled(disable_verification);
+        let peer_pins = matches!(&trust, CertificateTrust::Certificates { end_entities, .. } if !end_entities.is_empty());
         let mut revocation_issuers = Vec::new();
         if let CertificateTrust::Certificates {
             authorities,
@@ -142,6 +146,9 @@ impl TlsClientConfig {
             .context("Failed to build TLS configuration")?;
         Ok(Self {
             context: prepared.context,
+            client_validity: prepared.validity,
+            crls: None,
+            peer_pins,
             peer_validity_index: prepared.peer_validity_index,
             revocation: super::CertificateRevocationPolicy::disabled(),
             revocation_issuers,
@@ -163,7 +170,33 @@ impl TlsClientConfig {
             !self.verification_disabled || policy.maximum_response_age().is_none(),
             "Required OCSP evidence cannot be combined with disabled certificate verification"
         );
+        anyhow::ensure!(
+            self.crls.is_none() || policy.maximum_response_age().is_none(),
+            "CRL and stapled OCSP modes cannot be combined"
+        );
         self.revocation = policy;
+        Ok(self)
+    }
+
+    pub(crate) fn with_crls(
+        mut self,
+        lists: &[&[u8]],
+        maximum_age: std::time::Duration,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            !self.verification_disabled && !self.peer_pins,
+            "CRL mode requires CA authentication with certificate verification enabled"
+        );
+        anyhow::ensure!(
+            self.revocation.maximum_response_age().is_none(),
+            "CRL and stapled OCSP modes cannot be combined"
+        );
+        let evidence = super::revocation::crls::CrlEvidence::prepare(lists, maximum_age)?;
+        self.lifetime = Some(match self.lifetime {
+            Some(lifetime) => lifetime.intersect(evidence.lifetime)?,
+            None => evidence.lifetime,
+        });
+        self.crls = Some(std::sync::Arc::new(evidence));
         Ok(self)
     }
 
@@ -175,6 +208,7 @@ impl TlsClientConfig {
             self.sni_name.as_deref(),
             self.peer_validity_index,
             super::revocation::ConnectionRevocation::new(self.revocation, &self.revocation_issuers),
+            self.crls.clone(),
         );
         let stream = match self.lifetime {
             Some(lifetime) => lifetime.run(handshake).await,

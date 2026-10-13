@@ -284,6 +284,7 @@ fn validate_server_authentication(
             server_authentication.ca_certs.is_some()
                 || server_authentication.ee_certs.is_some()
                 || server_authentication.require_stapled_ocsp.is_some()
+                || server_authentication.require_crls.is_some()
                 || server_authentication.tls13_epsks.is_some(),
         ],
     )?;
@@ -295,6 +296,12 @@ fn validate_server_authentication(
     if let Some(ref ee_certs) = server_authentication.ee_certs {
         validate_trust_choice(&server.name, "server-authentication/ee-certs", ee_certs)?;
     }
+    validate_crl_policy(
+        server_authentication.require_crls.as_ref(),
+        server_authentication.ee_certs.is_some(),
+        server_authentication.tls13_epsks.is_some(),
+        server_authentication.require_stapled_ocsp.is_some(),
+    )?;
     validate_ocsp_policy(
         server_authentication.require_stapled_ocsp.as_ref(),
         server_authentication.tls13_epsks.is_some(),
@@ -344,6 +351,12 @@ fn validate_client_credentials(credentials: &ClientCredentials) -> anyhow::Resul
 }
 
 fn validate_server_credentials(credentials: &ServerCredentials) -> anyhow::Result<()> {
+    validate_crl_policy(
+        credentials.require_crls.as_ref(),
+        credentials.ee_certs.is_some(),
+        credentials.tls13_epsks.is_some(),
+        credentials.require_stapled_ocsp.is_some(),
+    )?;
     validate_ocsp_policy(
         credentials.require_stapled_ocsp.as_ref(),
         credentials.tls13_epsks.is_some(),
@@ -353,6 +366,40 @@ fn validate_server_credentials(credentials: &ServerCredentials) -> anyhow::Resul
     }
     if let Some(ref ee_certs) = credentials.ee_certs {
         validate_trust_choice(&credentials.id, "server-credentials/ee-certs", ee_certs)?;
+    }
+    Ok(())
+}
+
+fn validate_crl_policy(
+    policy: Option<&crate::tacacsrs::RequireCrls>,
+    pins: bool,
+    epsk: bool,
+    ocsp: bool,
+) -> anyhow::Result<()> {
+    let Some(policy) = policy else {
+        return Ok(());
+    };
+    anyhow::ensure!(policy.max_age_seconds > 0, "CRL maximum age must be positive");
+    anyhow::ensure!(
+        !pins && !epsk && !ocsp,
+        "CRL mode cannot be combined with exact pins, PSK, or stapled OCSP"
+    );
+    anyhow::ensure!(
+        policy.crl.is_some() != policy.evidence_reference.is_some(),
+        "CRL policy requires exactly one inline or provider evidence source"
+    );
+    if let Some(reference) = &policy.evidence_reference {
+        anyhow::ensure!(!reference.is_empty(), "CRL evidence reference must not be empty");
+    }
+    if let Some(lists) = &policy.crl {
+        anyhow::ensure!(!lists.is_empty(), "Required CRL set is empty");
+        let mut seen = std::collections::BTreeSet::new();
+        for crl in lists {
+            anyhow::ensure!(
+                !crl.is_empty() && seen.insert(crl.as_slice()),
+                "CRL entries must be nonempty and unique"
+            );
+        }
     }
     Ok(())
 }

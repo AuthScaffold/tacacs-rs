@@ -125,7 +125,7 @@ impl TacacsClient {
     ///
     /// Returns an error if the local certificate expired or the configured preflight fails.
     pub async fn connect_prepared(endpoint: PreparedEndpoint) -> anyhow::Result<Self> {
-        if let Some(lifetime) = endpoint.client_identity_lifetime() {
+        if let Some(lifetime) = endpoint.prepared_credential_lifetime() {
             lifetime.check()?;
         }
         let connection = Self::from_prepared(endpoint);
@@ -257,7 +257,7 @@ impl TacacsClient {
     ) -> anyhow::Result<ClientSession> {
         self.lifecycle.ensure_open()?;
         let operation = self.create_open_session(expected);
-        let session = match self.endpoint.client_identity_lifetime() {
+        let session = match self.endpoint.prepared_credential_lifetime() {
             Some(lifetime) => lifetime.run(operation).await?,
             None => operation.await?,
         };
@@ -335,7 +335,7 @@ impl TacacsClient {
     where
         Exchange: FixedExchange,
     {
-        if let Some(lifetime) = self.endpoint.client_identity_lifetime() {
+        if let Some(lifetime) = self.endpoint.prepared_credential_lifetime() {
             return self
                 .execute_classified_until(exchange, lifetime.deadline)
                 .await;
@@ -365,7 +365,7 @@ impl TacacsClient {
     where
         Exchange: FixedExchange,
     {
-        let lifetime = self.endpoint.client_identity_lifetime();
+        let lifetime = self.endpoint.prepared_credential_lifetime();
         if let Some(lifetime) = lifetime {
             lifetime.check().map_err(FixedExchangeError::not_sent)?;
         }
@@ -402,7 +402,7 @@ impl TacacsClient {
     /// Returns an error when a dedicated or shared session cannot be created.
     pub async fn open_conversation(&self) -> anyhow::Result<ClientConversation> {
         self.create_session().await.map(|session| {
-            ClientConversation::new(session, self.endpoint.client_identity_lifetime())
+            ClientConversation::new(session, self.endpoint.prepared_credential_lifetime())
         })
     }
 

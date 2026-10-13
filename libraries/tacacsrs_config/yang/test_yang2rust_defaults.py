@@ -9,6 +9,19 @@ from plugins.yang2rust import Collector, RustEmitter
 
 
 class GeneratedDefaultsTests(unittest.TestCase):
+    def test_binary_leaf_list_in_choice_uses_optional_list_serializer(self):
+        output = self.generate('''
+container evidence {
+    choice source {
+        mandatory true;
+        case inline { leaf-list crl { type binary; min-elements 1; } }
+        case provider { leaf reference { type string; } }
+    }
+}
+''')
+        self.assertIn('pub crl: Option<Vec<Vec<u8>>>', output)
+        self.assertIn('base64_binary::option_vec_bytes', output)
+
     def test_project_containers_and_lists_use_qualified_json_names(self):
         with tempfile.TemporaryDirectory() as directory:
             ctx = context.Context(repository.FileRepository(directory))

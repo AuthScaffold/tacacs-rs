@@ -60,6 +60,13 @@ module: ietf-system-tacacs-plus
        |  |     +--:(central-truststore) {central-truststore-supported,certificates}?
        |  |        +--rw central-truststore-reference?   ts:central-certificate-bag-ref
        |  +--rw tls13-epsks?                empty {tlsc:server-auth-tls13-epsk}?
+       |  +--rw trs:require-crls!
+       |  |  +--rw trs:max-age-seconds?            uint32
+       |  |  +--rw (trs:evidence)
+       |  |     +--:(trs:inline)
+       |  |     |  +--rw trs:crl*                  binary
+       |  |     +--:(trs:provider)
+       |  |        +--rw trs:evidence-reference    string
        |  +--rw trs:require-stapled-ocsp!
        |     +--rw trs:max-response-age-seconds?   uint32
        +--rw server* [name]
@@ -135,6 +142,13 @@ module: ietf-system-tacacs-plus
           |  |           |     +--:(central-truststore) {central-truststore-supported,certificates}?
           |  |           |        +--rw central-truststore-reference?   ts:central-certificate-bag-ref
           |  |           +--rw tls13-epsks?                empty {tlsc:server-auth-tls13-epsk}?
+          |  |           +--rw trs:require-crls!
+          |  |           |  +--rw trs:max-age-seconds?            uint32
+          |  |           |  +--rw (trs:evidence)
+          |  |           |     +--:(trs:inline)
+          |  |           |     |  +--rw trs:crl*                  binary
+          |  |           |     +--:(trs:provider)
+          |  |           |        +--rw trs:evidence-reference    string
           |  |           +--rw trs:require-stapled-ocsp!
           |  |              +--rw trs:max-response-age-seconds?   uint32
           |  +--:(obfuscation)

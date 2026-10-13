@@ -341,6 +341,13 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
+        /// Require complete CRLs for the verified server certificate path.
+        /// Exact peer pins and PSK authentication are not supported in this mode.
+        /// Unavailable, invalid, stale, or incomplete evidence fails closed.
+        #[serde(rename = "tacacsrs:require-crls")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_crls: Option<tacacsrs::RequireCrls>,
         /// Request a stapled OCSP response and fail closed if evidence is
         /// unavailable, invalid, stale, unknown, or revoked. Responses must
         /// be signed by the issuer or a responder issued directly by it.
@@ -418,6 +425,13 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
+        /// Require complete CRLs for the verified server certificate path.
+        /// Exact peer pins and PSK authentication are not supported in this mode.
+        /// Unavailable, invalid, stale, or incomplete evidence fails closed.
+        #[serde(rename = "tacacsrs:require-crls")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_crls: Option<tacacsrs::RequireCrls>,
         /// Request a stapled OCSP response and fail closed if evidence is
         /// unavailable, invalid, stale, unknown, or revoked. Responses must
         /// be signed by the issuer or a responder issued directly by it.
@@ -436,7 +450,7 @@ pub mod tacacs_plus {
         /// Each inner slice is one case; at most one case may have fields set.
         pub const CHOICE_REF_OR_EXPLICIT: &[(&str, &[&str])] = &[
             ("ref", &["credentials-reference"]),
-            ("explicit", &["ca-certs", "ee-certs", "tls13-epsks", "require-stapled-ocsp"]),
+            ("explicit", &["ca-certs", "ee-certs", "tls13-epsks", "require-crls", "require-stapled-ocsp"]),
         ];
         pub const CHOICE_REF_OR_EXPLICIT_MANDATORY: bool = false;
     }
@@ -1214,6 +1228,53 @@ pub mod tacacsrs {
         {
             serializer.serialize_str(self.as_rfc7951_str())
         }
+    }
+
+    fn default_require_crls_max_age_seconds() -> u32 { 300 }
+
+    /// Require complete CRLs for the verified server certificate path.
+    /// Exact peer pins and PSK authentication are not supported in this mode.
+    /// Unavailable, invalid, stale, or incomplete evidence fails closed.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct RequireCrls {
+        /// Maximum seconds since each CRL thisUpdate. The earlier of this
+        /// limit and nextUpdate bounds evidence use without stale grace.
+        #[serde(rename = "max-age-seconds")]
+        #[serde(default = "default_require_crls_max_age_seconds")]
+        pub max_age_seconds: u32,
+        /// One complete DER CRL per entry.
+        #[serde(with = "crate::serde_helpers::base64_binary::option_vec_bytes")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub crl: Option<Vec<Vec<u8>>>,
+        /// Opaque provider reference to a complete CRL set.
+        #[serde(rename = "evidence-reference")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub evidence_reference: Option<String>,
+    }
+
+    impl Default for RequireCrls {
+        fn default() -> Self {
+            Self {
+                max_age_seconds: default_require_crls_max_age_seconds(),
+                crl: None,
+                evidence_reference: None,
+            }
+        }
+    }
+
+    /// Choice constraints for [`RequireCrls`].
+    impl RequireCrls {
+        /// YANG choice `evidence` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_EVIDENCE: &[(&str, &[&str])] = &[
+            ("inline", &["crl"]),
+            ("provider", &["evidence-reference"]),
+        ];
+        pub const CHOICE_EVIDENCE_MANDATORY: bool = true;
     }
 
     fn default_require_stapled_ocsp_max_response_age_seconds() -> u32 { 300 }

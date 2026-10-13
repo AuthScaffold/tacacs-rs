@@ -24,6 +24,47 @@ fn secret_bytes_require_explicit_borrow_and_redact_debug() {
 }
 
 #[test]
+fn revocation_requests_are_closed_and_references_are_redacted() {
+    let reference = CredentialReference::CertificateRevocationLists("opaque-crl-object".to_owned());
+    assert!(!format!("{reference:?}").contains("opaque-crl-object"));
+    let plan = ResolutionPlan::new([(
+        RequestContext::new("server", "revocation"),
+        CredentialKind::CertificateRevocationLists,
+        reference,
+    )])
+    .unwrap();
+    assert_eq!(
+        plan.requests()[0]
+            .reference()
+            .certificate_revocation_lists(),
+        Some("opaque-crl-object")
+    );
+    assert!(!format!("{:?}", plan.requests()[0]).contains("opaque-crl-object"));
+    let material = ResolvedCredential::CertificateRevocationLists(
+        tacacsrs_credential_resolution::CertificateRevocationListsMaterial {
+            validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
+            lists: vec![PublicBytes::new(b"test-crl-bytes".to_vec())],
+        },
+    );
+    let result = ResolvedCredentialSet::from_responses(
+        &plan,
+        [ResolvedResponse::new(plan.requests()[0].slot(), material)],
+    )
+    .unwrap();
+    assert_eq!(
+        result.credential(plan.requests()[0].slot()).unwrap().kind(),
+        CredentialKind::CertificateRevocationLists
+    );
+    assert!(!format!("{result:?}").contains("test-crl-bytes"));
+    assert!(ResolutionPlan::new([(
+        RequestContext::new("server", "revocation"),
+        CredentialKind::CertificateRevocationLists,
+        CredentialReference::SymmetricKey("wrong-kind".to_owned())
+    )])
+    .is_err());
+}
+
+#[test]
 fn secret_bearing_aggregate_debug_redacts_all_material() {
     let credential = ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
         intermediates: vec![PublicBytes::new(b"intermediate-certificate-value".to_vec())],

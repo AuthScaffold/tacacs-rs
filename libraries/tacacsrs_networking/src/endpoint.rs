@@ -176,11 +176,38 @@ impl PreparedEndpoint {
     /// These bounds do not describe provider metadata or negotiated peer certificates.
     #[must_use]
     pub fn client_certificate_validity(&self) -> Option<crate::CertificateValidity> {
-        self.client_identity_lifetime()
+        match &self.transport {
+            PreparedTransport::Tls(config) => config.client_validity,
+            _ => None,
+        }
+    }
+
+    /// Returns validity shared by prepared client credentials and CRL evidence.
+    #[must_use]
+    pub fn prepared_credential_validity(&self) -> Option<crate::CertificateValidity> {
+        self.prepared_credential_lifetime()
             .map(|lifetime| lifetime.validity)
     }
 
-    pub(crate) fn client_identity_lifetime(
+    /// Requires fresh full CRLs for the CA-authenticated server path.
+    ///
+    /// # Errors
+    /// Returns an error for invalid evidence, non-certificate transports, pins, or incompatible verification modes.
+    pub fn with_certificate_crls(
+        mut self,
+        lists: &[&[u8]],
+        maximum_age: Duration,
+    ) -> anyhow::Result<Self> {
+        self.transport = match self.transport {
+            PreparedTransport::Tls(config) => {
+                PreparedTransport::Tls(config.with_crls(lists, maximum_age)?)
+            }
+            _ => anyhow::bail!("CRL mode requires certificate TLS"),
+        };
+        Ok(self)
+    }
+
+    pub(crate) fn prepared_credential_lifetime(
         &self,
     ) -> Option<crate::transport::tls::CertificateLifetime> {
         match &self.transport {

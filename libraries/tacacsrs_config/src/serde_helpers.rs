@@ -69,6 +69,40 @@ pub(crate) mod base64_binary {
         }
     }
 
+    pub(crate) mod option_vec_bytes {
+        use base64::Engine;
+        use serde::{Deserialize, Serialize};
+        use super::BASE64;
+
+        pub fn serialize<S: serde::Serializer>(
+            value: &Option<Vec<Vec<u8>>>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            value
+                .as_ref()
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|value| BASE64.encode(value))
+                        .collect::<Vec<_>>()
+                })
+                .serialize(serializer)
+        }
+
+        pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<Vec<Vec<u8>>>, D::Error> {
+            Option::<Vec<String>>::deserialize(deserializer)?
+                .map(|values| {
+                    values
+                        .into_iter()
+                        .map(|value| BASE64.decode(value).map_err(serde::de::Error::custom))
+                        .collect()
+                })
+                .transpose()
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) mod vec_bytes {
         use base64::Engine;

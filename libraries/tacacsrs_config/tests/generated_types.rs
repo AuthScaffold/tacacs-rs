@@ -21,6 +21,36 @@ fn canonical_root_rejects_trailing_json() {
 }
 
 #[test]
+fn crl_policy_preserves_provider_reference_and_binary_choice() {
+    for evidence in [
+        serde_json::json!({"crl": ["AQ==", "Ag=="]}),
+        serde_json::json!({"evidence-reference": "opaque-crls"}),
+    ] {
+        let document = serde_json::json!({"ietf-system-tacacs-plus:tacacs-plus": {"server": [{
+            "name": "crls", "address": "localhost", "port": 300, "server-type": "accounting",
+            "server-authentication": {"tacacsrs:require-crls": evidence}
+        }]}});
+        let source = parse_yang_json(&document.to_string()).unwrap();
+        let policy = source.server[0]
+            .server_authentication
+            .as_ref()
+            .unwrap()
+            .require_crls
+            .as_ref()
+            .unwrap();
+        assert_eq!(policy.max_age_seconds, 300);
+        let serialized = serde_json::to_value(policy).unwrap();
+        for field in ["crl", "evidence-reference"] {
+            assert_eq!(serialized[field], evidence[field]);
+        }
+        let mut invalid = document.clone();
+        invalid["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["server-authentication"]
+            ["tacacsrs:require-crls"] = serde_json::json!({"crl": [""]});
+        assert!(parse_yang_json(&invalid.to_string()).is_err());
+    }
+}
+
+#[test]
 fn required_ocsp_policy_survives_bundle_expansion_and_rejects_insecure_preparation() {
     for bundled in [false, true] {
         let authentication = serde_json::json!({"tacacsrs:require-stapled-ocsp": {}});
@@ -77,6 +107,7 @@ fn required_ocsp_policy_rejects_psk_authentication() {
             .with_tls13_epsk_psk_only("client", b"valid-test-key-material".to_vec())
             .build();
     server.server_authentication = Some(tacacsrs_config::TlsClientServerAuthentication {
+        require_crls: None,
         require_stapled_ocsp: Some(tacacsrs_config::tacacsrs::RequireStapledOcsp::default()),
         ..Default::default()
     });
@@ -257,6 +288,7 @@ fn generated_central_trust_shape_is_shared_by_direct_and_bundle_ca_ee_fields() {
         central_truststore_reference: Some("opaque-certificate-bag".to_owned()),
     };
     let bundle = tacacsrs_config::ServerCredentials {
+        require_crls: None,
         require_stapled_ocsp: None,
         id: "bundle".to_owned(),
         ca_certs: Some(trust.clone()),

@@ -44,6 +44,9 @@ mod psk_peer;
 #[path = "prepared_sources/ocsp_peer.rs"]
 mod ocsp_peer;
 
+#[path = "prepared_sources/crl_peer.rs"]
+mod crl_peer;
+
 /// OpenSSL option bit 10 permits TLS 1.3 PSK exchange without DHE.
 const ALLOW_NO_DHE_KEX: SslOptions = SslOptions::from_bits_retain(1 << 10);
 /// A peer group absent from the client's default list forces the no-DHE path.

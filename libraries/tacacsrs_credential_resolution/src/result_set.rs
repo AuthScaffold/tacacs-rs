@@ -188,6 +188,14 @@ mod tests {
 
         let responses = plan.requests().iter().map(|request| {
             let credential = match request.kind() {
+                CredentialKind::CertificateRevocationLists => {
+                    ResolvedCredential::CertificateRevocationLists(
+                        crate::CertificateRevocationListsMaterial {
+                            validity: crate::CredentialValidity::unbounded(),
+                            lists: Vec::new(),
+                        },
+                    )
+                }
                 CredentialKind::CertificateWithKey => {
                     ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
                         intermediates: Vec::new(),

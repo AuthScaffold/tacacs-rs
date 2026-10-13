@@ -41,10 +41,12 @@ async fn connect_tls(
     sni_name: Option<&str>,
     peer_validity_index: config_builder::PeerValidityIndex,
     revocation: Option<revocation::ConnectionRevocation>,
+    crls: Option<std::sync::Arc<revocation::crls::CrlEvidence>>,
 ) -> anyhow::Result<SslStream<TcpStream>> {
     let mut ssl = Ssl::new(context).context("OpenSSL failed to allocate TLS SSL object")?;
     ssl.set_ex_data(peer_validity_index, std::sync::Mutex::new(None));
     revocation::request(&mut ssl, revocation)?;
+    revocation::crls::attach(&mut ssl, crls)?;
     ssl.param_mut()
         .set_hostflags(X509CheckFlags::NO_PARTIAL_WILDCARDS | X509CheckFlags::NEVER_CHECK_SUBJECT);
     match peer_identity.parse::<std::net::IpAddr>() {
@@ -66,6 +68,7 @@ async fn connect_tls(
         .context("OpenSSL failed to attach the TLS SSL object to the TCP connection")?;
 
     let handshake = SslStream::connect(std::pin::Pin::new(&mut stream)).await;
+    revocation::crls::require_verified(stream.ssl())?;
     revocation::verified_validity(stream.ssl())?;
     handshake.context("OpenSSL TLS handshake failed")?;
 

@@ -17,10 +17,10 @@ use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerType};
 use tacacsrs_config::prepare::{prepare_endpoint, PrepareOptions};
 use tacacsrs_networking::{RequestDeadline, TacacsClient};
 
-struct Directory(PathBuf);
+pub(super) struct Directory(pub(super) PathBuf);
 
 impl Directory {
-    fn new() -> Result<Self> {
+    pub(super) fn new() -> Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         loop {
             let path = std::env::temp_dir().join(format!(
@@ -43,7 +43,7 @@ impl Drop for Directory {
     }
 }
 
-fn fixtures() -> PathBuf {
+pub(super) fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lde/containers/config/certificates")
 }
 

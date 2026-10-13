@@ -17,8 +17,8 @@ pub use change::{
 pub use fake::FakeCredentialResolver;
 pub use material::{
     CertificateBagMaterial, CertificateWithKeyMaterial, NamedCertificateMaterial, PublicBytes,
-    ResolvedCredential, SymmetricKeyMaterial, PrivateKeyFormat, PublicKeyFormat,
-    SymmetricKeyFormat,
+    CertificateRevocationListsMaterial, ResolvedCredential, SymmetricKeyMaterial, PrivateKeyFormat,
+    PublicKeyFormat, SymmetricKeyFormat,
 };
 pub use tacacsrs_secrets::SecretBytes;
 pub use request::{

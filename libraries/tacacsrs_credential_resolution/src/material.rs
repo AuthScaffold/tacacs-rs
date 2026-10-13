@@ -104,6 +104,15 @@ pub struct CertificateBagMaterial {
     pub certificates: Vec<NamedCertificateMaterial>,
 }
 
+/// Provider-supplied DER certificate revocation lists and their absolute validity.
+#[derive(Debug)]
+pub struct CertificateRevocationListsMaterial {
+    /// Absolute provider validity, independent of signed CRL freshness.
+    pub validity: crate::CredentialValidity,
+    /// Complete DER CRLs. Each value contains exactly one list.
+    pub lists: Vec<PublicBytes>,
+}
+
 /// Resolved symmetric key and its encoding metadata.
 #[derive(Debug)]
 pub struct SymmetricKeyMaterial {
@@ -126,6 +135,8 @@ pub enum ResolvedCredential {
     CaCertificateBag(CertificateBagMaterial),
     /// End-entity certificate bag.
     EeCertificateBag(CertificateBagMaterial),
+    /// Complete certificate revocation lists.
+    CertificateRevocationLists(CertificateRevocationListsMaterial),
 }
 
 impl ResolvedCredential {
@@ -133,6 +144,7 @@ impl ResolvedCredential {
     #[must_use]
     pub const fn validity(&self) -> crate::CredentialValidity {
         match self {
+            Self::CertificateRevocationLists(material) => material.validity,
             Self::CertificateWithKey(material) => material.validity,
             Self::SymmetricKey(material) => material.validity,
             Self::CaCertificateBag(material) | Self::EeCertificateBag(material) => {
@@ -145,6 +157,7 @@ impl ResolvedCredential {
     #[must_use]
     pub const fn kind(&self) -> CredentialKind {
         match self {
+            Self::CertificateRevocationLists(_) => CredentialKind::CertificateRevocationLists,
             Self::CertificateWithKey(_) => CredentialKind::CertificateWithKey,
             Self::SymmetricKey(_) => CredentialKind::SymmetricKey,
             Self::CaCertificateBag(_) => CredentialKind::CaCertificateBag,
@@ -156,6 +169,16 @@ impl ResolvedCredential {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revocation_material_preserves_bytes_without_debug_disclosure() {
+        let material = CertificateRevocationListsMaterial {
+            validity: crate::CredentialValidity::unbounded(),
+            lists: vec![PublicBytes::new(b"provider-crl-test-material".to_vec())],
+        };
+        assert_eq!(material.lists[0].as_bytes(), b"provider-crl-test-material");
+        assert!(!format!("{material:?}").contains("provider-crl-test-material"));
+    }
 
     #[test]
     fn provider_material_preserves_encoding_metadata() {

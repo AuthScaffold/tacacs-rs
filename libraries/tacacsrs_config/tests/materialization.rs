@@ -33,6 +33,9 @@ impl CredentialResolver for ValidityResolver {
         .resolve(request)
         .await?;
         match &mut credential {
+            ResolvedCredential::CertificateRevocationLists(material) => {
+                material.validity = self.trust;
+            }
             ResolvedCredential::CertificateWithKey(material) => material.validity = self.identity,
             ResolvedCredential::SymmetricKey(material) => material.validity = self.identity,
             ResolvedCredential::CaCertificateBag(material)
@@ -108,6 +111,14 @@ impl CredentialResolver for CompleteResolver {
         }
 
         Ok(match request.kind() {
+            CredentialKind::CertificateRevocationLists => {
+                ResolvedCredential::CertificateRevocationLists(
+                    tacacsrs_credential_resolution::CertificateRevocationListsMaterial {
+                        validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
+                        lists: vec![PublicBytes::new(b"resolved-crl".to_vec())],
+                    },
+                )
+            }
             CredentialKind::CertificateWithKey => {
                 ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
                     intermediates: vec![

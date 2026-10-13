@@ -1482,7 +1482,9 @@ class RustEmitter:
             w('        #[serde(deserialize_with = "crate::serde_helpers::deserialize_present_empty")]\n')
 
         if f.rust_type == "Vec<u8>" and f.secret_kind is None:
-            if f.is_vec:
+            if f.is_vec and f.optional:
+                w('        #[serde(with = "crate::serde_helpers::base64_binary::option_vec_bytes")]\n')
+            elif f.is_vec:
                 w('        #[serde(with = "crate::serde_helpers::base64_binary::vec_bytes")]\n')
             elif f.optional:
                 w('        #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]\n')

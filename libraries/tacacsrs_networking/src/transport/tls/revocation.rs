@@ -1,6 +1,7 @@
 //! Certificate revocation requirements for native TLS connections.
 
 mod responder;
+pub(in crate::transport::tls) mod crls;
 
 use std::num::NonZeroU32;
 use std::time::{Duration, SystemTime};

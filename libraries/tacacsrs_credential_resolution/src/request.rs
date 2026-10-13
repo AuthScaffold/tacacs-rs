@@ -33,6 +33,8 @@ pub enum CredentialKind {
     CaCertificateBag,
     /// End-entity certificate bag.
     EeCertificateBag,
+    /// Certificate revocation lists used for server-chain authentication.
+    CertificateRevocationLists,
 }
 
 /// Stable request context that contains no endpoint or raw reference value.
@@ -79,6 +81,8 @@ pub enum CredentialReference {
     SymmetricKey(String),
     /// Opaque central truststore certificate-bag reference.
     CertificateBag(String),
+    /// Opaque reference to a complete certificate revocation list set.
+    CertificateRevocationLists(String),
 }
 
 impl CredentialReference {
@@ -90,7 +94,9 @@ impl CredentialReference {
                 asymmetric_key,
                 certificate,
             } => Some((asymmetric_key.as_deref(), certificate.as_deref())),
-            Self::SymmetricKey(_) | Self::CertificateBag(_) => None,
+            Self::SymmetricKey(_)
+            | Self::CertificateBag(_)
+            | Self::CertificateRevocationLists(_) => None,
         }
     }
 
@@ -99,7 +105,9 @@ impl CredentialReference {
     pub fn symmetric_key(&self) -> Option<&str> {
         match self {
             Self::SymmetricKey(reference) => Some(reference),
-            Self::CertificateWithKey { .. } | Self::CertificateBag(_) => None,
+            Self::CertificateWithKey { .. }
+            | Self::CertificateBag(_)
+            | Self::CertificateRevocationLists(_) => None,
         }
     }
 
@@ -108,7 +116,18 @@ impl CredentialReference {
     pub fn certificate_bag(&self) -> Option<&str> {
         match self {
             Self::CertificateBag(reference) => Some(reference),
-            Self::CertificateWithKey { .. } | Self::SymmetricKey(_) => None,
+            Self::CertificateWithKey { .. }
+            | Self::SymmetricKey(_)
+            | Self::CertificateRevocationLists(_) => None,
+        }
+    }
+
+    /// Returns the opaque reference for revocation-evidence lookup.
+    #[must_use]
+    pub fn certificate_revocation_lists(&self) -> Option<&str> {
+        match self {
+            Self::CertificateRevocationLists(reference) => Some(reference),
+            _ => None,
         }
     }
 }
@@ -116,6 +135,10 @@ impl CredentialReference {
 impl fmt::Debug for CredentialReference {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CertificateRevocationLists(_) => formatter
+                .debug_tuple("CertificateRevocationLists")
+                .field(&"<redacted>")
+                .finish(),
             Self::CertificateWithKey { .. } => formatter
                 .debug_struct("CertificateWithKey")
                 .field("reference", &"<redacted>")
@@ -205,7 +228,11 @@ impl ResolutionPlan {
                         },
                         CredentialKind::CertificateWithKey,
                     ) => asymmetric_key.is_some() || certificate.is_some(),
-                    (CredentialReference::SymmetricKey(_), CredentialKind::SymmetricKey)
+                    (
+                        CredentialReference::CertificateRevocationLists(_),
+                        CredentialKind::CertificateRevocationLists,
+                    )
+                    | (CredentialReference::SymmetricKey(_), CredentialKind::SymmetricKey)
                     | (
                         CredentialReference::CertificateBag(_),
                         CredentialKind::CaCertificateBag | CredentialKind::EeCertificateBag,

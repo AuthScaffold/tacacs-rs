@@ -143,7 +143,7 @@ pub(super) fn generalized_system_time(time: &Asn1GeneralizedTimeRef) -> Result<S
     system_time(time)
 }
 
-fn system_time(time: &Asn1TimeRef) -> Result<SystemTime> {
+pub(super) fn system_time(time: &Asn1TimeRef) -> Result<SystemTime> {
     let epoch = Asn1Time::from_unix(0)?;
     let difference = epoch
         .diff(time)

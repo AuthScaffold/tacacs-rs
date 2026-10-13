@@ -271,6 +271,9 @@ fn install_credential(
 ) -> Result<(), MaterializationError> {
     let server_name = server.name.clone();
     match credential {
+        ResolvedCredential::CertificateRevocationLists(material) => {
+            install_revocation_lists(server, field_path, material)
+        }
         ResolvedCredential::CertificateWithKey(material) => {
             install_certificate_with_key(server, field_path, material)
         }
@@ -291,6 +294,30 @@ fn install_credential(
             Some(field_path),
         )
     })
+}
+
+fn install_revocation_lists(
+    server: &mut TacacsPlusServer,
+    field_path: &str,
+    material: tacacsrs_credential_resolution::CertificateRevocationListsMaterial,
+) -> Option<()> {
+    if field_path != "server-authentication/tacacsrs:require-crls" {
+        return None;
+    }
+    let policy = server
+        .server_authentication
+        .as_mut()?
+        .require_crls
+        .as_mut()?;
+    policy.crl = Some(
+        material
+            .lists
+            .into_iter()
+            .map(PublicBytes::into_bytes)
+            .collect(),
+    );
+    policy.evidence_reference = None;
+    Some(())
 }
 
 fn install_certificate_with_key(

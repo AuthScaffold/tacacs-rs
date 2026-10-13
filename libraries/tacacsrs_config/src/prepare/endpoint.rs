@@ -157,14 +157,36 @@ pub fn prepare_endpoint(
         .flat_map(|inline| inline.intermediate_certificate.iter().map(Vec::as_slice))
         .collect::<Vec<_>>();
     let identity = certificate_identity(server, &intermediates)?;
-    endpoint
+    let endpoint = endpoint
         .with_certificate_tls(
             certificate_peer_identity(server),
             tls_sni_name(server)?,
             trust,
             identity,
         )?
-        .with_certificate_revocation(certificate_revocation(server)?)
+        .with_certificate_revocation(certificate_revocation(server)?)?;
+    apply_crl_evidence(endpoint, server)
+}
+
+fn apply_crl_evidence(
+    endpoint: PreparedEndpoint,
+    server: &TacacsPlusServer,
+) -> Result<PreparedEndpoint> {
+    if let Some(policy) = server
+        .server_authentication
+        .as_ref()
+        .and_then(|authentication| authentication.require_crls.as_ref())
+    {
+        let lists = policy
+            .crl
+            .as_ref()
+            .context("Resolve CRL evidence before endpoint preparation")?;
+        return endpoint.with_certificate_crls(
+            &lists.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+            std::time::Duration::from_secs(u64::from(policy.max_age_seconds)),
+        );
+    }
+    Ok(endpoint)
 }
 
 fn certificate_revocation(
@@ -374,6 +396,7 @@ mod tests {
                 central_truststore_reference: None,
             };
             server.server_authentication = Some(crate::TlsClientServerAuthentication {
+                require_crls: None,
                 require_stapled_ocsp: None,
                 ca_certs: (!end_entity).then(|| bag.clone()),
                 ee_certs: end_entity.then_some(bag),
@@ -632,6 +655,7 @@ mod tests {
             central_truststore_reference: None,
         };
         crate::TlsClientServerAuthentication {
+            require_crls: None,
             require_stapled_ocsp: None,
             credentials_reference: None,
             ca_certs: (!end_entity).then(|| trust.clone()),
