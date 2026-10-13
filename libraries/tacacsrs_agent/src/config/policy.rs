@@ -149,6 +149,7 @@ pub struct RuntimePolicy {
     failover_recovery_interval: Duration,
     shutdown_timeout: Duration,
     source_stale_timeout: Duration,
+    credential_stale_timeout: Duration,
 }
 
 impl RuntimePolicy {
@@ -191,6 +192,9 @@ impl RuntimePolicy {
             source_stale_timeout: Duration::from_secs(u64::from(
                 policy.source_stale_timeout_seconds,
             )),
+            credential_stale_timeout: Duration::from_secs(u64::from(
+                policy.credential_stale_timeout_seconds,
+            )),
         }
     }
 
@@ -218,6 +222,10 @@ impl RuntimePolicy {
             )),
             source_stale_timeout: Duration::from_secs(u64::from(
                 tacacsrs_config::tacacsrs::RuntimePolicy::default().source_stale_timeout_seconds,
+            )),
+            credential_stale_timeout: Duration::from_secs(u64::from(
+                tacacsrs_config::tacacsrs::RuntimePolicy::default()
+                    .credential_stale_timeout_seconds,
             )),
         })
     }
@@ -266,6 +274,12 @@ impl RuntimePolicy {
     #[must_use]
     pub const fn source_stale_timeout(&self) -> Duration {
         self.source_stale_timeout
+    }
+
+    /// Returns the grace interval captured when referenced credentials become stale.
+    #[must_use]
+    pub const fn credential_stale_timeout(&self) -> Duration {
+        self.credential_stale_timeout
     }
 }
 

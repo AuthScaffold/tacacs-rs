@@ -81,7 +81,41 @@ pub struct MaterializationRevision {
 pub(crate) struct MaterializationCommit {
     pub(crate) revision: MaterializationRevision,
     pub(crate) source_current: bool,
-    pub(crate) source_expired: bool,
+    pub(crate) expired: ExpiredMaterial,
+    pub(crate) credential_references: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum MaterialExpiry {
+    Source,
+    Credentials,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub(crate) enum ExpiredMaterial {
+    #[default]
+    None,
+    Source,
+    Credentials,
+    Both,
+}
+
+impl ExpiredMaterial {
+    pub(crate) fn contains(self, kind: MaterialExpiry) -> bool {
+        matches!(
+            (self, kind),
+            (Self::Source | Self::Both, MaterialExpiry::Source)
+                | (Self::Credentials | Self::Both, MaterialExpiry::Credentials)
+        )
+    }
+
+    pub(crate) fn with(self, kind: MaterialExpiry) -> Self {
+        match (self, kind) {
+            (Self::None | Self::Source, MaterialExpiry::Source) => Self::Source,
+            (Self::None | Self::Credentials, MaterialExpiry::Credentials) => Self::Credentials,
+            _ => Self::Both,
+        }
+    }
 }
 
 impl MaterializationRevision {

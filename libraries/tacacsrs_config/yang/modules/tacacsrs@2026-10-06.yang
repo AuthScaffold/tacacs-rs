@@ -185,6 +185,15 @@ module tacacsrs {
            At expiry, pending asynchronous work is cancelled.
            Policy updates do not extend a shutdown already in progress.";
       }
+      leaf credential-stale-timeout-seconds {
+        type uint32 { range "1..max"; }
+        units "seconds";
+        default 300;
+        description
+          "Grace interval for referenced credentials after invalidation or provider loss.
+           Retries and policy changes do not renew the interval.
+           At expiry, withdraw upstreams until complete credential revalidation succeeds.";
+      }
       leaf source-stale-timeout-seconds {
         type uint32 { range "1..max"; }
         units "seconds";

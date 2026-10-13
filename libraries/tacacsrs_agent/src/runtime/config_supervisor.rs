@@ -324,33 +324,71 @@ impl ConfigSupervisor {
                 Ok(())
             },
             self.run_source_expiry(cancellation),
+            self.run_credential_expiry(cancellation),
         )?;
         Ok(())
     }
 
     async fn run_source_expiry(&self, cancellation: &CancellationToken) -> anyhow::Result<()> {
+        self.run_material_expiry(crate::runtime::MaterialExpiry::Source, cancellation)
+            .await
+    }
+
+    async fn run_credential_expiry(&self, cancellation: &CancellationToken) -> anyhow::Result<()> {
+        self.run_material_expiry(crate::runtime::MaterialExpiry::Credentials, cancellation)
+            .await
+    }
+
+    async fn run_material_expiry(
+        &self,
+        kind: crate::runtime::MaterialExpiry,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<()> {
+        use crate::runtime::MaterialExpiry;
         let mut changes = self.health.subscribe();
         let mut deadline: Option<tokio::time::Instant> = None;
-        let mut source_revision = None;
+        let mut last_revision: Option<crate::MaterializationRevision> = None;
         loop {
             let snapshot = changes.borrow_and_update().clone();
-            let stale =
-                matches!(snapshot.datastore(), DatastoreState::Stale | DatastoreState::Unavailable)
-                    && snapshot.eligible_server_count() > 0;
-            let revision = snapshot.materialization_revision().filter(|_| stale);
-            if snapshot.datastore() == DatastoreState::Current {
+            let stale = match kind {
+                MaterialExpiry::Source => matches!(
+                    snapshot.datastore(),
+                    DatastoreState::Stale | DatastoreState::Unavailable
+                ),
+                MaterialExpiry::Credentials => snapshot
+                    .degradation_reasons()
+                    .contains(&DegradationReason::CredentialsStale),
+            };
+            let expired = snapshot.degradation_reasons().contains(&match kind {
+                MaterialExpiry::Source => DegradationReason::SourceExpired,
+                MaterialExpiry::Credentials => DegradationReason::CredentialsExpired,
+            });
+            if !stale || expired {
                 deadline = None;
             }
-            if let Some(revision) = revision {
-                if source_revision != Some(revision.source()) {
+            if let Some(revision) = snapshot.materialization_revision() {
+                if snapshot.eligible_server_count() == 0 {
                     deadline = None;
-                    source_revision = Some(revision.source());
+                    last_revision = None;
+                } else {
+                    let recovered = last_revision.is_some_and(|last| match kind {
+                        MaterialExpiry::Source => last.source() != revision.source(),
+                        MaterialExpiry::Credentials => last != revision,
+                    });
+                    if recovered {
+                        deadline = None;
+                    }
+                    last_revision = Some(revision);
                 }
             }
+            let revision = last_revision.filter(|_| stale && !expired);
             if revision.is_some() && deadline.is_none() {
                 deadline = Some(
                     tokio::time::Instant::now()
-                        .checked_add(self.service.source_stale_timeout())
+                        .checked_add(match kind {
+                            MaterialExpiry::Source => self.service.source_stale_timeout(),
+                            MaterialExpiry::Credentials => self.service.credential_stale_timeout(),
+                        })
                         .ok_or_else(|| {
                             anyhow::anyhow!("Source stale budget exceeds the clock range")
                         })?,
@@ -368,7 +406,7 @@ impl ConfigSupervisor {
                 () = cancellation.cancelled() => return Ok(()),
                 () = wait => {
                     if let Some(revision) = revision {
-                        self.materialization_coordinator.expire_source(revision, &self.service, &self.health).await?;
+                        self.materialization_coordinator.expire_material(kind, revision, &self.service, &self.health).await?;
                     }
                 }
                 notification = changes.changed() => { if notification.is_err() { return Ok(()); } },
@@ -526,7 +564,9 @@ impl ConfigSupervisor {
                 result = source.subscribe() => result,
             };
             let Ok(mut stream) = subscription else {
-                self.mark_credential_notifications_unavailable();
+                self.materialization_coordinator
+                    .credentials_unavailable(&self.health)
+                    .await;
                 attempt = attempt.saturating_add(1);
                 if !self.wait_for_retry(attempt, cancellation).await {
                     return;
@@ -542,25 +582,24 @@ impl ConfigSupervisor {
                 };
                 match event {
                     Some(CredentialChangeEvent::Changed(scope)) => {
-                        self.apply_credential_change(&scope).await;
                         self.health.set_degraded(
                             DegradationReason::CredentialNotificationsUnavailable,
                             false,
                         );
+                        self.apply_credential_change(&scope).await;
                     }
                     Some(CredentialChangeEvent::Recovered) => {
-                        if self
-                            .apply_credential_change(&CredentialChangeScope::Unknown)
-                            .await
-                        {
-                            self.health.set_degraded(
-                                DegradationReason::CredentialNotificationsUnavailable,
-                                false,
-                            );
-                        }
+                        self.health.set_degraded(
+                            DegradationReason::CredentialNotificationsUnavailable,
+                            false,
+                        );
+                        self.apply_credential_change(&CredentialChangeScope::Unknown)
+                            .await;
                     }
                     Some(CredentialChangeEvent::Unavailable) | None => {
-                        self.mark_credential_notifications_unavailable();
+                        self.materialization_coordinator
+                            .credentials_unavailable(&self.health)
+                            .await;
                         attempt = attempt.saturating_add(1);
                         if !self.wait_for_retry(attempt, cancellation).await {
                             return;
@@ -574,7 +613,10 @@ impl ConfigSupervisor {
 
     async fn apply_credential_change(&self, scope: &CredentialChangeScope) -> bool {
         let coordinator = &self.materialization_coordinator;
-        let Some(attempt) = coordinator.credential_change(scope).await else {
+        let Some(attempt) = coordinator
+            .observe_credentials(scope, Some(&self.health))
+            .await
+        else {
             return true;
         };
         let result = self.materialize_and_publish(coordinator, attempt).await;
@@ -606,11 +648,6 @@ impl ConfigSupervisor {
             () = cancellation.cancelled() => false,
             () = tokio::time::sleep(delay) => true,
         }
-    }
-
-    fn mark_credential_notifications_unavailable(&self) {
-        self.health
-            .set_degraded(DegradationReason::CredentialNotificationsUnavailable, true);
     }
 }
 
@@ -837,6 +874,29 @@ mod tests {
 
     struct BlockingResolver {
         entered: tokio::sync::Notify,
+    }
+
+    struct PausingRefreshResolver {
+        paused: std::sync::atomic::AtomicBool,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl CredentialResolver for PausingRefreshResolver {
+        async fn resolve(
+            &self,
+            _request: &CredentialRequest,
+        ) -> Result<ResolvedCredential, ResolutionError> {
+            if self.paused.load(Ordering::Acquire) {
+                self.release.notified().await;
+            }
+            Ok(ResolvedCredential::SymmetricKey(
+                tacacsrs_credential_resolution::SymmetricKeyMaterial {
+                    key_format: None,
+                    key: SecretBytes::new(b"refresh-test-material-long-enough".to_vec()),
+                },
+            ))
+        }
     }
 
     struct PausingFilter {
@@ -1336,6 +1396,371 @@ mod tests {
         assert_eq!(service.server_count(), 0);
         cancellation.cancel();
         monitor.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn credential_expiry_does_not_renew_and_revalidation_recovers() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+        let resolver = Arc::new(SelectiveResolver {
+            rejected_server: Mutex::new(None),
+        });
+        let supervisor = supervisor.with_credential_resolver(resolver.clone());
+        let policy = |seconds| {
+            tacacsrs_config::policy::parse_runtime_policy(format!(
+            r#"{{"tacacsrs:runtime-policy":{{"credential-stale-timeout-seconds":{seconds}}}}}"#).as_bytes()).unwrap()
+        };
+        service
+            .apply_policy_candidate(Some(&policy(2)))
+            .await
+            .unwrap();
+        supervisor
+            .apply_candidate(central_test_config(1))
+            .await
+            .unwrap();
+        let original = health.snapshot().materialization_revision().unwrap();
+        assert!(health.set_listener(crate::RuntimeService::ClientApi, crate::ListenerState::Bound));
+        *resolver.rejected_server.lock().unwrap() = Some("server-0".to_owned());
+        assert!(
+            !supervisor
+                .apply_credential_change(&CredentialChangeScope::Unknown)
+                .await
+        );
+        let cancellation = CancellationToken::new();
+        let monitor = supervisor.run_credential_expiry(&cancellation);
+        tokio::pin!(monitor);
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        service
+            .apply_policy_candidate(Some(&policy(100)))
+            .await
+            .unwrap();
+        assert!(
+            !supervisor
+                .apply_credential_change(&CredentialChangeScope::Unknown)
+                .await
+        );
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        assert_eq!(service.server_count(), 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        assert_eq!(service.server_count(), 0);
+        let expired = health.snapshot();
+        assert_eq!(expired.datastore(), DatastoreState::Current);
+        assert!(expired
+            .degradation_reasons()
+            .contains(&DegradationReason::CredentialsExpired));
+        assert!(!expired
+            .degradation_reasons()
+            .contains(&DegradationReason::SourceExpired));
+        assert!(!expired.is_readiness_serving());
+        assert!(expired.is_liveness_serving());
+        *resolver.rejected_server.lock().unwrap() = None;
+        assert!(
+            supervisor
+                .apply_credential_change(&CredentialChangeScope::Unknown)
+                .await
+        );
+        let recovered = health.snapshot();
+        assert!(recovered.is_readiness_serving());
+        assert_eq!(recovered.materialization_revision().unwrap().source(), original.source());
+        assert!(
+            recovered
+                .materialization_revision()
+                .unwrap()
+                .credentials()
+                .value()
+                > original.credentials().value()
+        );
+        assert!(!recovered
+            .degradation_reasons()
+            .contains(&DegradationReason::CredentialsExpired));
+        supervisor
+            .materialization_coordinator
+            .expire_material(
+                crate::runtime::MaterialExpiry::Credentials,
+                original,
+                &service,
+                &health,
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.snapshot(), recovered);
+        cancellation.cancel();
+        monitor.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_credential_resolution_expires_and_its_late_result_is_superseded() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+        let resolver = Arc::new(PausingRefreshResolver {
+            paused: std::sync::atomic::AtomicBool::new(false),
+            release: tokio::sync::Notify::new(),
+        });
+        let supervisor = supervisor.with_credential_resolver(resolver.clone());
+        let policy = tacacsrs_config::policy::parse_runtime_policy(
+            br#"{"tacacsrs:runtime-policy":{"credential-stale-timeout-seconds":2}}"#,
+        )
+        .unwrap();
+        service.apply_policy_candidate(Some(&policy)).await.unwrap();
+        supervisor
+            .apply_candidate(central_test_config(1))
+            .await
+            .unwrap();
+        resolver.paused.store(true, Ordering::Release);
+        let refresh = supervisor.apply_credential_change(&CredentialChangeScope::Unknown);
+        tokio::pin!(refresh);
+        assert!(futures_util::poll!(&mut refresh).is_pending());
+        assert!(health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&DegradationReason::CredentialsStale));
+        let cancellation = CancellationToken::new();
+        let monitor = supervisor.run_credential_expiry(&cancellation);
+        tokio::pin!(monitor);
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        assert_eq!(service.server_count(), 0);
+        resolver.release.notify_one();
+        assert!(refresh.await);
+        assert_eq!(
+            service.server_count(),
+            0,
+            "pre-expiry resolution must not revive withdrawn material"
+        );
+        resolver.paused.store(false, Ordering::Release);
+        assert!(
+            supervisor
+                .apply_credential_change(&CredentialChangeScope::Unknown)
+                .await
+        );
+        assert_eq!(service.server_count(), 1);
+        cancellation.cancel();
+        monitor.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recovered_notifications_and_revalidation_clear_credential_staleness() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (supervisor, health, _) = supervisor(datastore, Duration::from_secs(1));
+        let supervisor = supervisor
+            .with_credential_resolver(Arc::new(CountingResolver {
+                resolved_servers: Mutex::new(Vec::new()),
+            }))
+            .with_credential_changes(Arc::new(ScriptedCredentialChangeSource {
+                subscriptions: Mutex::new(VecDeque::from([
+                    CredentialSubscriptionStep::Error,
+                    CredentialSubscriptionStep::Events(vec![CredentialChangeEvent::Recovered]),
+                ])),
+            }));
+        supervisor
+            .apply_candidate(central_test_config(1))
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let observing = supervisor.run_credential_notifications(&cancellation);
+        tokio::pin!(observing);
+        assert!(futures_util::poll!(&mut observing).is_pending());
+        assert!(health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&DegradationReason::CredentialNotificationsUnavailable));
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(futures_util::poll!(&mut observing).is_pending());
+        let recovered = health.snapshot();
+        assert!(!recovered
+            .degradation_reasons()
+            .contains(&DegradationReason::CredentialNotificationsUnavailable));
+        assert!(
+            !recovered
+                .degradation_reasons()
+                .contains(&DegradationReason::CredentialsStale),
+            "successful reconnect and validation must clear staleness"
+        );
+        cancellation.cancel();
+        observing.await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn credential_observation_loss_expires_only_referenced_material() {
+        for referenced in [false, true] {
+            let datastore = Arc::new(ScriptedDatastore::new(
+                DatastoreRuntimePolicy::new(
+                    InitialLoadPolicy::FailFast,
+                    ChangeNotificationMode::None,
+                ),
+                [],
+                [],
+            ));
+            let (supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+            let supervisor = supervisor.with_credential_resolver(Arc::new(CountingResolver {
+                resolved_servers: Mutex::new(Vec::new()),
+            }));
+            let policy = tacacsrs_config::policy::parse_runtime_policy(
+                br#"{"tacacsrs:runtime-policy":{"credential-stale-timeout-seconds":1}}"#,
+            )
+            .unwrap();
+            service.apply_policy_candidate(Some(&policy)).await.unwrap();
+            supervisor
+                .apply_candidate(if referenced {
+                    central_test_config(1)
+                } else {
+                    test_config(1)
+                })
+                .await
+                .unwrap();
+            supervisor
+                .materialization_coordinator
+                .credentials_unavailable(&health)
+                .await;
+            let cancellation = CancellationToken::new();
+            let monitor = supervisor.run_credential_expiry(&cancellation);
+            tokio::pin!(monitor);
+            assert!(futures_util::poll!(&mut monitor).is_pending());
+            tokio::time::advance(Duration::from_secs(1)).await;
+            assert!(futures_util::poll!(&mut monitor).is_pending());
+            assert_eq!(service.server_count(), usize::from(!referenced));
+            assert_eq!(
+                health
+                    .snapshot()
+                    .degradation_reasons()
+                    .contains(&DegradationReason::CredentialsExpired),
+                referenced
+            );
+            cancellation.cancel();
+            monitor.await.unwrap();
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn independent_expiry_budgets_remain_active_after_the_first_withdrawal() {
+        for (source_timeout, credential_timeout) in [(1, 2), (2, 1)] {
+            let datastore = Arc::new(ScriptedDatastore::new(
+                DatastoreRuntimePolicy::new(
+                    InitialLoadPolicy::FailFast,
+                    ChangeNotificationMode::None,
+                ),
+                [],
+                [],
+            ));
+            let (supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+            let resolver = Arc::new(SelectiveResolver {
+                rejected_server: Mutex::new(None),
+            });
+            let supervisor = supervisor.with_credential_resolver(resolver.clone());
+            let policy = tacacsrs_config::policy::parse_runtime_policy(format!(r#"{{"tacacsrs:runtime-policy":{{"credential-stale-timeout-seconds":{credential_timeout},"source-stale-timeout-seconds":{source_timeout}}}}}"#).as_bytes()).unwrap();
+            service.apply_policy_candidate(Some(&policy)).await.unwrap();
+            supervisor
+                .apply_candidate(central_test_config(1))
+                .await
+                .unwrap();
+            *resolver.rejected_server.lock().unwrap() = Some("server-0".to_owned());
+            assert!(
+                !supervisor
+                    .apply_credential_change(&CredentialChangeScope::Unknown)
+                    .await
+            );
+            supervisor
+                .materialization_coordinator
+                .source_unavailable(&health, true)
+                .await;
+            let cancellation = CancellationToken::new();
+            let source = supervisor.run_source_expiry(&cancellation);
+            let credentials = supervisor.run_credential_expiry(&cancellation);
+            tokio::pin!(source, credentials);
+            assert!(futures_util::poll!(&mut source).is_pending());
+            assert!(futures_util::poll!(&mut credentials).is_pending());
+            tokio::time::advance(Duration::from_secs(1)).await;
+            assert!(futures_util::poll!(&mut credentials).is_pending());
+            assert!(futures_util::poll!(&mut source).is_pending());
+            assert_eq!(service.server_count(), 0);
+            tokio::time::advance(Duration::from_secs(1)).await;
+            assert!(futures_util::poll!(&mut source).is_pending());
+            assert!(futures_util::poll!(&mut credentials).is_pending());
+            assert!(health
+                .snapshot()
+                .degradation_reasons()
+                .contains(&DegradationReason::SourceExpired));
+            *resolver.rejected_server.lock().unwrap() = None;
+            assert!(
+                supervisor
+                    .apply_credential_change(&CredentialChangeScope::Unknown)
+                    .await
+            );
+            assert_eq!(
+                service.server_count(),
+                0,
+                "credential recovery must not bypass expired source configuration"
+            );
+            supervisor
+                .apply_candidate(central_test_config(1))
+                .await
+                .unwrap();
+            assert_eq!(service.server_count(), 1);
+            assert!(!health
+                .snapshot()
+                .degradation_reasons()
+                .contains(&DegradationReason::CredentialsExpired));
+            cancellation.cancel();
+            source.await.unwrap();
+            credentials.await.unwrap();
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_credentials_expire_even_while_source_is_current() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [LoadStep::CentralConfig(1)],
+            [],
+        ));
+        let (supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+        let resolver = Arc::new(SelectiveResolver {
+            rejected_server: Mutex::new(None),
+        });
+        let mut supervisor = supervisor.with_credential_resolver(resolver.clone());
+        supervisor
+            .initialize_until(std::future::pending())
+            .await
+            .unwrap();
+        *resolver.rejected_server.lock().unwrap() = Some("server-0".to_owned());
+        assert!(
+            !supervisor
+                .apply_credential_change(&CredentialChangeScope::Unknown)
+                .await
+        );
+        assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
+        let cancellation = CancellationToken::new();
+        let running = supervisor.run_until(cancellation.cancelled());
+        tokio::pin!(running);
+        let expired = tokio::select! {
+            result = &mut running => panic!("supervision must remain active: {result:?}"),
+            result = timeout(Duration::from_secs(301), async {
+                let mut updates = health.subscribe();
+                loop {
+                    if updates.borrow_and_update().eligible_server_count() == 0 { break; }
+                    updates.changed().await.unwrap();
+                }
+            }) => result,
+        };
+        cancellation.cancel();
+        running.await.unwrap();
+        assert!(expired.is_ok(), "failed credentials must not remain usable indefinitely");
+        assert_eq!(service.server_count(), 0);
     }
 
     #[tokio::test(start_paused = true)]

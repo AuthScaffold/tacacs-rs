@@ -199,7 +199,7 @@ impl TacacsClientService {
     }
 
     /// Withdraws expired upstreams without closing the recoverable runtime.
-    pub(crate) async fn withdraw_stale_source(
+    pub(crate) async fn withdraw_expired_material(
         &self,
         commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
@@ -223,6 +223,10 @@ impl TacacsClientService {
 
     pub(crate) fn source_stale_timeout(&self) -> std::time::Duration {
         self.runtime.state.source_stale_timeout()
+    }
+
+    pub(crate) fn credential_stale_timeout(&self) -> std::time::Duration {
+        self.runtime.state.credential_stale_timeout()
     }
 
     /// Returns the applied graceful shutdown budget for an embedding host.

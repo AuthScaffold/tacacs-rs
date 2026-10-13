@@ -94,6 +94,10 @@ pub enum DegradationReason {
     DatastoreStale,
     /// The source exceeded its stale budget and its upstreams were withdrawn.
     SourceExpired,
+    /// Applied credentials await successful refresh after invalidation or failure.
+    CredentialsStale,
+    /// Credential freshness exceeded its grace budget and upstreams were withdrawn.
+    CredentialsExpired,
     /// Continuous datastore notifications are not connected.
     ChangeNotificationsUnavailable,
     /// Continuous credential-provider notifications are not connected.
@@ -404,21 +408,46 @@ impl RuntimeHealthPublisher {
                 snapshot.applied_configuration = applied;
                 snapshot.materialization_revision = commit.as_ref().map(|commit| commit.revision);
                 if let Some(commit) = commit {
-                    if commit.source_expired {
-                        snapshot.materialization_revision = None;
-                        snapshot
-                            .degradation_reasons
-                            .insert(DegradationReason::SourceExpired);
-                        snapshot.mark_source_problem();
-                    } else {
+                    if commit.expired == super::ExpiredMaterial::None {
                         snapshot
                             .degradation_reasons
                             .remove(&DegradationReason::SourceExpired);
                         snapshot
                             .degradation_reasons
                             .remove(&DegradationReason::CredentialResolutionFailed);
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::CredentialsStale);
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::CredentialsExpired);
+                        if commit.credential_references
+                            && snapshot
+                                .degradation_reasons
+                                .contains(&DegradationReason::CredentialNotificationsUnavailable)
+                        {
+                            snapshot
+                                .degradation_reasons
+                                .insert(DegradationReason::CredentialsStale);
+                        }
+                    } else {
+                        snapshot.materialization_revision = None;
+                        if commit.expired.contains(super::MaterialExpiry::Source) {
+                            snapshot
+                                .degradation_reasons
+                                .insert(DegradationReason::SourceExpired);
+                            snapshot.mark_source_problem();
+                        }
+                        if commit.expired.contains(super::MaterialExpiry::Credentials) {
+                            snapshot
+                                .degradation_reasons
+                                .insert(DegradationReason::CredentialsExpired);
+                            snapshot
+                                .degradation_reasons
+                                .insert(DegradationReason::CredentialsStale);
+                        }
                     }
-                    if commit.source_current {
+                    if commit.source_current && commit.expired == super::ExpiredMaterial::None {
                         snapshot.datastore = DatastoreState::Current;
                         snapshot
                             .degradation_reasons
@@ -451,16 +480,34 @@ impl RuntimeHealthPublisher {
         });
     }
 
-    pub(crate) fn reject_materialization(&self, source_update: bool) {
+    pub(crate) fn reject_materialization(&self, source_update: bool, credentials_stale: bool) {
         self.update(|snapshot| {
             snapshot
                 .degradation_reasons
                 .insert(DegradationReason::CredentialResolutionFailed);
+            if credentials_stale {
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::CredentialsStale);
+            }
             if source_update {
                 snapshot
                     .degradation_reasons
                     .insert(DegradationReason::CandidateConfigurationRejected);
                 snapshot.mark_source_problem();
+            }
+        });
+    }
+
+    pub(crate) fn credential_notifications_unavailable(&self, credentials_stale: bool) {
+        self.update(|snapshot| {
+            snapshot
+                .degradation_reasons
+                .insert(DegradationReason::CredentialNotificationsUnavailable);
+            if credentials_stale {
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::CredentialsStale);
             }
         });
     }

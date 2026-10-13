@@ -24,7 +24,7 @@ pub use policy_supervisor::PolicySupervisor;
 pub use revision::{
     CredentialRevision, MaterializationRevision, PolicyRevision, PolicyUpdate, SourceRevision,
 };
-pub(crate) use revision::MaterializationCommit;
+pub(crate) use revision::{ExpiredMaterial, MaterialExpiry, MaterializationCommit};
 pub use health::{
     DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher, RuntimeGeneration,
     RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, UpstreamAvailability,

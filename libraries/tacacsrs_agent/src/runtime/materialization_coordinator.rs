@@ -12,7 +12,9 @@ use tacacsrs_credential_resolution::{
 };
 
 use crate::{PreparedProxyPolicy, TacacsClientService};
-use super::{MaterializationCommit, MaterializationRevision, SourceRevision};
+use super::{
+    ExpiredMaterial, MaterialExpiry, MaterializationCommit, MaterializationRevision, SourceRevision,
+};
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 struct DependencyKey {
@@ -28,8 +30,10 @@ struct CoordinatorState {
     active_servers: Vec<Arc<TacacsPlusServer>>,
     revision: MaterializationRevision,
     active_revision: Option<MaterializationRevision>,
+    withdrawn_revision: Option<MaterializationRevision>,
     source_current: bool,
-    source_expired: bool,
+    expired: ExpiredMaterial,
+    active_credential_references: bool,
 }
 
 impl Default for CoordinatorState {
@@ -42,8 +46,10 @@ impl Default for CoordinatorState {
             active_servers: Vec::new(),
             revision: MaterializationRevision::default(),
             active_revision: None,
+            withdrawn_revision: None,
             source_current: false,
-            source_expired: false,
+            expired: ExpiredMaterial::None,
+            active_credential_references: false,
         }
     }
 }
@@ -188,14 +194,28 @@ impl MaterializationCoordinator {
         })
     }
 
+    #[cfg(test)]
     pub(crate) async fn credential_change(
         &self,
         scope: &CredentialChangeScope,
+    ) -> Option<MaterializationAttempt> {
+        self.observe_credentials(scope, None).await
+    }
+
+    pub(crate) async fn observe_credentials(
+        &self,
+        scope: &CredentialChangeScope,
+        health: Option<&crate::RuntimeHealthPublisher>,
     ) -> Option<MaterializationAttempt> {
         let mut state = self.state.lock().await;
         let Some(runtime_source) = state.desired_runtime_source.clone() else {
             if state.desired_source.is_some() {
                 state.revision.credentials.advance();
+                if state.active_credential_references {
+                    if let Some(health) = health {
+                        health.set_degraded(crate::DegradationReason::CredentialsStale, true);
+                    }
+                }
             }
             return None;
         };
@@ -220,6 +240,11 @@ impl MaterializationCoordinator {
             return None;
         }
         state.revision.credentials.advance();
+        if state.active_credential_references {
+            if let Some(health) = health {
+                health.set_degraded(crate::DegradationReason::CredentialsStale, true);
+            }
+        }
         Some(MaterializationAttempt {
             revision: state.revision,
             source_update: false,
@@ -268,9 +293,15 @@ impl MaterializationCoordinator {
             return false;
         }
         if failed {
-            health.reject_materialization(attempt.source_update);
+            health
+                .reject_materialization(attempt.source_update, state.active_credential_references);
         }
         true
+    }
+
+    pub(crate) async fn credentials_unavailable(&self, health: &crate::RuntimeHealthPublisher) {
+        let state = self.state.lock().await;
+        health.credential_notifications_unavailable(state.active_credential_references);
     }
 
     pub(crate) async fn publish(
@@ -282,7 +313,7 @@ impl MaterializationCoordinator {
         if prepared.attempt.revision != state.revision {
             return Ok(PublicationOutcome::Superseded);
         }
-        if state.source_expired && !state.source_current {
+        if state.expired.contains(MaterialExpiry::Source) && !state.source_current {
             return Ok(PublicationOutcome::Superseded);
         }
 
@@ -320,11 +351,17 @@ impl MaterializationCoordinator {
                 move || {
                     state.active_servers = next_active;
                     state.active_revision = Some(state.revision);
-                    state.source_expired = false;
+                    state.withdrawn_revision = None;
+                    state.expired = ExpiredMaterial::None;
+                    state.active_credential_references = state
+                        .desired_dependencies
+                        .as_ref()
+                        .is_none_or(|dependencies| !dependencies.is_empty());
                     Some(MaterializationCommit {
                         revision: state.revision,
                         source_current: state.source_current,
-                        source_expired: false,
+                        expired: ExpiredMaterial::None,
+                        credential_references: state.active_credential_references,
                     })
                 },
             )
@@ -332,27 +369,55 @@ impl MaterializationCoordinator {
         Ok(PublicationOutcome::Published)
     }
 
+    #[cfg(test)]
     pub(crate) async fn expire_source(
         &self,
         expected: MaterializationRevision,
         service: &TacacsClientService,
         health: &crate::RuntimeHealthPublisher,
     ) -> anyhow::Result<()> {
+        self.expire_material(MaterialExpiry::Source, expected, service, health)
+            .await
+    }
+
+    pub(crate) async fn expire_material(
+        &self,
+        kind: MaterialExpiry,
+        expected: MaterializationRevision,
+        service: &TacacsClientService,
+        health: &crate::RuntimeHealthPublisher,
+    ) -> anyhow::Result<()> {
         let mut state = self.state.lock().await;
-        if state.active_revision != Some(expected)
-            || health.snapshot().datastore() == crate::DatastoreState::Current
-        {
+        let snapshot = health.snapshot();
+        let should_expire = match kind {
+            MaterialExpiry::Source => {
+                snapshot.datastore() != crate::DatastoreState::Current
+                    && !state.expired.contains(MaterialExpiry::Source)
+            }
+            MaterialExpiry::Credentials => {
+                !state.expired.contains(MaterialExpiry::Credentials)
+                    && snapshot
+                        .degradation_reasons()
+                        .contains(&crate::DegradationReason::CredentialsStale)
+            }
+        };
+        if state.active_revision.or(state.withdrawn_revision) != Some(expected) || !should_expire {
             return Ok(());
         }
         service
-            .withdraw_stale_source(move || {
+            .withdraw_expired_material(move || {
                 state.active_servers.clear();
                 state.active_revision = None;
-                state.source_expired = true;
+                state.withdrawn_revision = Some(expected);
+                state.expired = state.expired.with(kind);
+                if matches!(kind, MaterialExpiry::Credentials) {
+                    state.revision.credentials.advance();
+                }
                 Some(MaterializationCommit {
                     revision: expected,
-                    source_current: false,
-                    source_expired: true,
+                    source_current: state.source_current,
+                    expired: state.expired,
+                    credential_references: state.active_credential_references,
                 })
             })
             .await

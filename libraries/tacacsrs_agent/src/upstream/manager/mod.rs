@@ -191,6 +191,12 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         self.current_runtime().runtime_policy.source_stale_timeout()
     }
 
+    pub(crate) fn credential_stale_timeout(&self) -> std::time::Duration {
+        self.current_runtime()
+            .runtime_policy
+            .credential_stale_timeout()
+    }
+
     pub(crate) fn shutdown_deadline(&self) -> anyhow::Result<tacacsrs_networking::RequestDeadline> {
         let runtime = self.current_runtime();
         let requests = OperationKind::ALL
