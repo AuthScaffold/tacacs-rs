@@ -21,6 +21,7 @@ Commit `7b3eed7` completes S4-04 with negotiated peer-path expiry and owned idle
 Commit `3897414` completes S4-05 with canonical client-chain provisioning and native mTLS verification.
 Commit `567ec16` starts S4-06 with canonical required issuer-signed OCSP stapling and bounded evidence lifetime.
 Commit `d78cf06` adds delegated OCSP signer authorization and responder-certificate lifetime bounds.
+Commit `a06fced` adds canonical full-CRL materialization, native CA-path validation, and evidence-bounded catalog lifetime.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
 
@@ -34,7 +35,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
-- [ ] S4-06: Commit `567ec16` enforces required stapling, strict unavailable-status behavior, and evidence freshness. Commit `d78cf06` adds authorized delegated responders with No Check. Responder and issuer-chain revocation plus broader retrieval remain open. See [delegated responders](#delegated-responders).
+- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds inline/provider full CRLs, CA-path checks, and catalog expiry. Remote retrieval, refresh orchestration, and unsupported evidence forms remain open. See [full CRL evidence](#full-crl-evidence).
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
 ## Policy Observation
@@ -1247,3 +1248,79 @@ The expanded-tree hash remains `fb513c5d60fca78d91292178dff9cf266f630422f7ac51fa
 S4-06 remains open for responder revocation without No Check, issuer/intermediate revocation, and broader evidence retrieval and refresh.
 This implementation checks the peer leaf's stapled status. It does not establish complete revocation coverage or full RFC 9887 conformance.
 S4-07 operational statistics remains open.
+
+## Full CRL Evidence
+
+Commit `a06fced` adds the opt-in `tacacsrs:require-crls` presence container to server authentication and reusable server-credential bundles.
+It requires exactly one evidence source: an inline `crl` array or an opaque `evidence-reference`.
+Each inline value contains one complete DER CRL, encoded as RFC 7951 base64. `max-age-seconds` is positive and defaults to 300.
+This mode rejects exact peer pins, PSK, required stapled OCSP, and disabled certificate verification.
+
+### Provider and Source Ownership
+
+The provider-neutral crate adds a closed `CertificateRevocationLists` request kind, opaque reference, and typed result variant.
+`CertificateRevocationListsMaterial` carries public byte wrappers and independent provider validity. Debug output omits evidence and raw reference values.
+CRL slots follow the existing credential slots in deterministic order. Result-set construction still checks request kinds, slots, and response variants.
+
+Configuration inspection, planning, bundle expansion, and materialization handle CRLs through the same abstractions as other provider material.
+Only the derived server receives inline evidence; its authoritative source and provider references remain unchanged.
+The existing dependency index and credential-change contract can trigger CRL revalidation and generation replacement.
+The stock SONiC resolver does not implement this material kind. Hosts must supply a compatible resolver, or use inline evidence in canonical JSON.
+This increment adds no HTTP client, distribution-point fetcher, or detached retrieval task.
+
+### Native Verification
+
+Prepared evidence is limited to 4 MiB and one CRL per issuer name.
+Preparation checks exact DER framing, required `nextUpdate`, signed freshness bounds, and a nonempty interval across the complete set.
+Delta CRLs, issuing-distribution-point extensions, and freshest-CRL references are rejected explicitly.
+The implementation supports unscoped full CRLs only; it does not silently treat partial evidence as complete.
+
+During TLS verification, OpenSSL revalidates the accepted CA path using the same selected anchor and supplied CRLs.
+Native CRL flags enforce signature verification, issuer coverage, and revocation checking across that path.
+Revoked leaves, revoked intermediates, incorrect signatures, and missing issuer evidence reject the connection before client authentication or TACACS+ data.
+Per-SSL result state records completion and native failure details. A successful handshake cannot produce a usable transport without the required CRL check.
+The native store retains its own references to CRLs; local unsafe calls document ownership and borrow requirements.
+
+### Lifetime and Refresh
+
+Every supplied CRL contributes to the prepared evidence interval, including lists not selected by a later connection.
+The end is the earliest `nextUpdate` or `thisUpdate` plus maximum age. Provider and client-certificate bounds can shorten it further.
+`PreparedEndpoint::prepared_credential_validity()` exposes these combined preparation constraints separately from the client-certificate-only getter.
+Direct clients check the combined lifetime, and the agent publishes it with routing and applied health.
+The existing owned expiry monitor withdraws an expired catalog even while the source remains current.
+
+Fresh inline configuration or provider invalidation uses the existing materialization and revision-fenced publication path.
+New generations use new evidence. In-flight requests retain the existing generation, request deadline, and bounded retirement contract.
+Immediate retirement based on newly observed revocation requires further controller integration; this increment does not claim that behavior.
+
+### Generator Fix
+
+The new evidence choice exposed an optional-binary-list generator defect.
+The Rust field became `Option<Vec<Vec<u8>>>`, but the generator selected the non-optional base64 serializer, causing compilation to fail.
+An optional-list serializer now preserves absence and base64 values, and the generator selects it for optional binary vectors.
+A focused generator regression and canonical round-trip test cover the correction. Evidence-choice validation rejects empty lists and conflicting sources.
+
+### Verification
+
+Native tests cover inline, provider, and reusable-bundle evidence, bad signatures, stale lists, trailing DER data, and idle transport expiry.
+A root-and-intermediate fixture verifies that complete evidence authenticates and that revoked intermediates or missing issuer CRLs fail before client authentication.
+A supervisor test advances past evidence freshness and observes catalog withdrawal without source failure or canonical-source mutation.
+Provider tests cover byte preservation, redaction, typed references, and closed result matching.
+
+All-feature workspace tests pass, including 189 agent tests, 86 configuration tests, 34 generated-type tests, and eighteen prepared-source tests.
+Networking passes 169 tests with two existing ignored tests. Native process tests pass.
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+Affected crate dependency guards and all nine independent TACACS+ peer cases pass.
+All 15 generator tests and deterministic regeneration pass. The pinned upstream module is unchanged.
+The new provider material test passes under Miri. Native OpenSSL remains unsupported by Miri, so native CRL verification is not Miri-verified.
+Editor diagnostics and whitespace checks are clear. Native Redis, live SONiC, and Windows checks were not rerun.
+
+Artifact SHA-256 values:
+
+- Generated Rust: `9c3736c6fa7849e0fe8e8baead09c6b80a5dc2b1ece92433494bfc66db0dc804`.
+- Expanded tree: `47a8af50174b77018a950e2e014d696afae98cd5d2290d0e67f4c5c76b12b08a`.
+- Project module: `2b40bc4a65bb771b0f8461edaafe3a583d4021a0f03781ad45dc2b5a7c0db454`.
+
+No dependency, lockfile, or IPC schema changes occur.
+S4-06 remains open for built-in remote retrieval, proactive refresh and retirement, responder revocation without No Check, and additional evidence forms or combinations.
+S4-07 statistics remains open. No complete revocation-coverage or full RFC 9887 conformance claim is made.
