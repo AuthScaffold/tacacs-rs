@@ -132,7 +132,15 @@ Its owned monitor captures the applied budget when it first observes a stale pub
 Repeated failures, credential refreshes, and policy updates do not renew that interval.
 At expiry, a generation-checked transaction withdraws upstreams and marks `SourceExpired`. Readiness stops while liveness and source observation continue.
 Removed endpoints receive an immediate retirement cutoff. A valid source publication can restore service without replacing shared admission or restarting the process.
-Credential refresh cannot revive an expired unavailable source. Credential-only staleness and certificate validity require separate lifecycle policy.
+Credential refresh cannot revive an expired unavailable source.
+
+`credential-stale-timeout-seconds` independently limits stale referenced credentials and defaults to 300 seconds, with a minimum of one second.
+Relevant invalidation marks material stale before resolution starts. Notification loss also starts grace when the applied catalog uses credential references.
+Inline-only catalogs do not expire because an unused credential watcher is unavailable.
+At expiry, the runtime withdraws the entire catalog and reports `CredentialsExpired`, while source observation and liveness remain active.
+An attempt started before expiry cannot revive the old material. Complete revalidation can restore service without changing canonical source references.
+Repeated failures and policy changes do not renew grace. Source and credential expiry remain independently enforced after either withdraws the catalog.
+Absolute credential validity, certificate expiry, and revocation require separate policy and metadata.
 
 Use `with_credential_resolver` and `with_credential_changes` to configure credential providers.
 Notifications require a resolver. Provider configuration is checked before source I/O.

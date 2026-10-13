@@ -344,6 +344,7 @@ failover for both local services:
     "tacacsrs:runtime-policy": {
         "shutdown-timeout-seconds": 30,
         "source-stale-timeout-seconds": 300,
+        "credential-stale-timeout-seconds": 300,
         "failover-recovery-interval-seconds": 30,
         "client-api-failover-strategy": "ordered-safe-retry",
         "tacacs-proxy-failover-strategy": "ordered-safe-retry",
@@ -385,7 +386,16 @@ After the first observed stale-source condition, retries, credential refresh, an
 At expiry the agent withdraws the upstream catalog, retires the old endpoints, and reports `SourceExpired`.
 Readiness becomes `NOT_SERVING`; liveness and configuration observation remain active.
 A valid source publication restores service without a process restart. Credential refresh alone cannot revive an expired unavailable source.
-This source budget does not implement credential-only expiry, certificate validity deadlines, or revocation retrieval.
+The source budget is independent of credential freshness, certificate validity deadlines, and revocation retrieval.
+
+`credential-stale-timeout-seconds` defaults to 300 seconds and rejects zero.
+Relevant credential invalidation, failed refresh, or notification loss starts a grace period for referenced material.
+Pending resolution counts as stale; a resolver that does not return cannot avoid expiry.
+Inline-only catalogs are not expired by loss of an unused credential notification source.
+Repeated failures and policy changes cannot renew the current grace period.
+Expiry withdraws the whole upstream catalog and reports `CredentialsExpired`, even if the source remains current.
+Fresh complete revalidation restores service. Pre-expiry work cannot revive withdrawn credentials, and credential recovery cannot bypass an expired source.
+These staleness budgets do not implement certificate validity deadlines or revocation retrieval.
 
 IPC and proxy clients share each operation's active capacity and bounded FIFO admission queue.
 The pending limit equals `max-concurrent-requests`. A full queue returns an immediate overload error without upstream I/O.

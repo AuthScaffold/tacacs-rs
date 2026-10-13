@@ -14,6 +14,7 @@ Commit `907cff1` completes S4-03 with revision-fenced policy decisions and atomi
 Commit `36d9cbc` starts S4-04 with daemon-owned signals and coordinated cancellation from bootstrap through serving.
 Commit `37faec2` adds canonical graceful-teardown budgets and verifies cancellation of a stalled native host helper.
 Commit `e91fe02` adds stale-source expiry with recoverable upstream withdrawal.
+Commit `ed47f41` adds independent referenced-credential expiry and revalidation while preserving source-expiry enforcement.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication contract is complete. The remaining Stage 4 lifecycle, certificate, revocation, and statistics work is still open.
 
@@ -25,7 +26,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
-- [ ] S4-04: Commits `36d9cbc` and `37faec2` establish host-owned signals and graceful teardown budgets. Commit `e91fe02` adds recoverable stale-source expiry. Credential-only staleness and validity expiry remain open; blocking-code limits remain explicit. See [stale-source expiry](#stale-source-expiry).
+- [ ] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Absolute validity expiry remains open; blocking-code limits remain explicit. See [credential freshness expiry](#credential-freshness-expiry).
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
@@ -766,7 +767,73 @@ Edited files have no editor diagnostics. No dependency, lockfile, IPC schema, or
 Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun.
 
 This interval addresses stale source configuration, not every form of stale credential material.
-Credential-provider failure while the source remains current still needs its own budget and recovery contract.
+At `e91fe02`, credential-provider failure while the source remained current still needed a separate budget and recovery contract.
 Certificate validity deadlines and revocation evidence remain separate requirements.
 Expiry uses the asynchronous runtime and serialized publication path; existing limits for non-yielding code and blocking I/O still apply.
 These remaining policies stay within S4-04 and the later certificate/revocation stages. S4-04 is not complete.
+
+## Credential Freshness Expiry
+
+Commit `ed47f41` adds canonical `credential-stale-timeout-seconds`, a nonzero unsigned 32-bit seconds value with a generated default of 300.
+It bounds referenced credential staleness independently of source configuration freshness.
+The coordinator records whether the applied catalog depends on provider references. Inline-only material is not expired because an unused credential watcher is unavailable.
+
+Relevant invalidation marks `CredentialsStale` before resolution begins. Failed refresh or notification loss leaves that state set.
+An owned monitor captures the applied policy budget when it observes stale material.
+Repeated failures, retries, and policy changes do not renew the interval.
+Successful materialization resets freshness using the applied revision pair, including when watch updates coalesce.
+A resolver that remains pending cannot avoid the timer by withholding its error result.
+
+### Withdrawal and Revalidation
+
+At expiry, the coordinator rechecks the active revision and stale state before withdrawing the complete upstream catalog.
+The commit clears active material, publishes `CredentialsExpired`, and installs the same immediate retirement cutoff used by source expiry.
+Readiness is withdrawn while liveness, source observation, and credential observation remain active.
+Source health remains current if configuration itself is still current.
+
+Credential expiry advances the credential revision so work started before withdrawal is superseded, even if it later resolves successfully.
+Recovery requires a new complete materialization. It can use the unchanged canonical source, but it cannot reuse incomplete pre-expiry results.
+Successful publication clears credential expiry and staleness when notifications are available.
+If notifications remain unavailable, a successful revalidation begins a fresh grace interval rather than claiming continuous observation.
+
+Source and credential expiry use explicit independent states: neither, source, credentials, or both.
+The last withdrawn revision remains available for the second expiry check after the first has emptied the catalog.
+Thus, credential recovery cannot revive configuration whose source budget expired later.
+A stale expiry result cannot remove a newly revalidated generation.
+An intentionally empty applied catalog does not start a material expiry timer.
+
+### Recovery Ordering Fix
+
+The new tests exposed a health ordering defect after notification reconnect.
+Successful materialization could retain `CredentialsStale` because `CredentialNotificationsUnavailable` was cleared only after the commit returned.
+That could expire healthy credentials later.
+The supervisor now records recovered notification delivery before revalidation, while the commit controls material freshness.
+If revalidation fails, material remains stale without falsely reporting that the notification connection is still unavailable.
+
+### Regression Evidence
+
+`failed_credentials_expire_even_while_source_is_current` failed before the fix after 301 virtual seconds.
+It now withdraws last-known-good credentials while preserving source-current health.
+`recovered_notifications_and_revalidation_clear_credential_staleness` also failed before its ordering fix.
+
+Further tests verify:
+
+- Repeated refresh failures and a larger policy budget do not postpone expiry.
+- A pending resolver expires, and its late result cannot restore old material.
+- Complete revalidation restores readiness with the same source revision and a newer credential revision.
+- Notification loss expires referenced material but not an inline-only catalog.
+- Both source-first and credential-first expiry preserve the second deadline after withdrawal.
+- Credential recovery cannot bypass expired source configuration.
+
+### Verification and Remaining Work
+
+All 184 agent tests and the complete all-feature workspace suite pass, including the existing native process tests.
+Strict workspace Clippy, build, formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+All 13 generator tests and deterministic regeneration checks pass. The pinned upstream YANG input is unchanged.
+Generated Rust SHA-256: `c233c0d7dbf74b549cc3094e64e4e8d9aa5f0b449a21301f56b422b16e32ddef`.
+Edited files have no editor diagnostics. No dependency, lockfile, IPC schema, or native TLS implementation changes occur.
+Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun.
+
+S4-04 remains open for absolute validity metadata and expiry, distinct from observed staleness.
+Certificate-chain provisioning and revocation evidence remain the later Stage 4 contracts.
+Expiry still depends on a yielding async runtime and serialized publication; it does not make blocking code preemptible or establish full RFC 9887 conformance.
