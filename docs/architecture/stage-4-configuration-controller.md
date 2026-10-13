@@ -17,8 +17,9 @@ Commit `e91fe02` adds stale-source expiry with recoverable upstream withdrawal.
 Commit `ed47f41` adds independent referenced-credential expiry and revalidation while preserving source-expiry enforcement.
 Commit `8ff62cd` adds absolute provider validity metadata, publication checks, request deadline bounds, and owned expiry supervision.
 Commit `23e7f98` adds intrinsic configured client-certificate validity, including inline identities and cached sessions.
+Commit `7b3eed7` completes S4-04 with negotiated peer-path expiry and owned idle-transport retirement.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
-The publication contract is complete. The remaining Stage 4 lifecycle, certificate, revocation, and statistics work is still open.
+The publication and S4-04 lifecycle contracts are complete. Canonical client chains, revocation, and statistics remain open.
 
 Fix nearby findings within each increment when practical. Keep completed items and their verification evidence.
 The startup race and closed-runtime publication fix belong to S4-01, not separate work items.
@@ -28,7 +29,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
-- [ ] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Peer-chain expiry remains open; blocking-code limits remain explicit. See [client certificate lifetimes](#client-certificate-lifetimes).
+- [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
@@ -959,3 +960,75 @@ Existing native handshake verification remains in place, but peer-certificate ex
 Direct clients enforce configured identity validity on use; they do not add an idle-socket retirement task. Hosts retain explicit close/join ownership.
 The supervised agent withdraws expired catalogs through its owned monitor. Wall-clock jumps and non-yielding work retain the documented scheduling limits.
 Canonical chains, revocation evidence, and operational statistics remain S4-05 through S4-07. This work does not establish full RFC 9887 conformance.
+
+## Negotiated Peer Lifetimes
+
+Commit `7b3eed7` applies certificate validity to each established TLS transport.
+The native idle-session regression failed before this change: the connection remained open after its authenticated peer certificate expired.
+
+### Selected Path Metadata
+
+Networking retains validity from the path accepted for that connection, not an intersection of all configured trust alternatives.
+Platform trust uses OpenSSL's verified chain. An exact peer pin uses the matched leaf's dates.
+Explicit CA validation uses the verified CA path, including its intermediates and trust anchor.
+If an intermediate peer pin masks a separate CA path, alternate verification supplies the dates of the CA path it accepts.
+Unused pins and other trust alternatives do not shorten that connection's lifetime.
+
+The verifier records the selected interval in per-SSL data. One process-wide typed OpenSSL index avoids repeated index allocation on context reload.
+Each SSL connection owns its metadata slot; connections do not share selected certificate dates.
+The development verification override still checks the presented leaf's dates, but does not claim a verified chain.
+`CertificateLifetime` replaces the narrower internal client-identity name and intersects local and peer bounds without extending either captured deadline.
+Canonical snapshots, provider references, and prepared endpoint configuration remain unchanged.
+
+### Owned Transport Expiry
+
+Established transports carry their lifetime into the existing managed transport control.
+That control owns an expiry task which holds only a weak reference back to the control.
+Expiry closes both native transport halves and wakes pending I/O, even when an application retains an idle conversation.
+Each read, write, flush, and shutdown poll also checks validity before native I/O, independently of timer execution.
+This also closes idle transports when their configured local certificate expires.
+
+Client lifecycle state retains expiry task handles and joins them during `close_and_join`.
+Dropping the transport aborts its timer without a reference cycle. Dropping the client still closes its registered transports.
+Cancellation-safe task handles remain available when a join is interrupted.
+A completed driver can return its certificate-expiry I/O error after cleanup; native regressions distinguish that error from failed cleanup.
+
+The monitor checks wall time at one-second intervals and observes the captured monotonic deadline.
+Per-I/O checks apply the same bounds. Runtime scheduling and short native critical sections still limit physical closure timing.
+This is not preemption of arbitrary blocking code, and a clock change does not undo completed I/O.
+
+### Request and Recovery Semantics
+
+Expiry after request transmission reports unknown delivery. It does not permit replay of that operation.
+An expired peer connection does not make the canonical source stale or permanently withdraw its configured server.
+A later connection can validate a fresh peer certificate through the unchanged endpoint and trust configuration.
+Expired provider or configured client material still follows the existing catalog-level revalidation rules.
+
+### Verification
+
+New regressions cover idle cached peer expiry, retained sessions, in-flight unknown delivery, and fresh-certificate recovery without configuration reload.
+Native path tests cover ordinary CA validation, alternate CA verification, and exact pins with shorter unused trust entries.
+Managed transport tests prove that timer cancellation cannot permit expired I/O and that timer handles do not retain dropped transport owners.
+Native closure checks accept EOF, reset, or broken pipe where TLS post-handshake writes encounter a closed socket; unexpected application bytes still fail.
+
+All-feature workspace tests pass: 189 agent tests, 85 configuration tests, 166 networking tests with two existing ignored tests, and twelve prepared-source tests.
+All four native process tests pass. All nine independent TACACS+ peer cases pass with the existing OpenSSL 3.0.20 peer binary.
+Strict workspace Clippy, workspace build, nightly formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+The networking and credential dependency guards pass. Unused-dependency analysis passes; audit reports no vulnerabilities in 301 locked packages.
+Audit retains the existing crates.io index-refresh lock warning. Editor diagnostics and whitespace checks are clear.
+
+The only manifest change enables Tokio `test-util` for configuration's development dependency.
+No package version, lockfile, YANG artifact, IPC schema, or unsafe-code changes occur.
+Native Redis, live SONiC, Windows, and Miri were not rerun.
+
+## S4-04 Closure
+
+S4-04 is complete across seven implementation increments: `36d9cbc`, `37faec2`, `e91fe02`, `ed47f41`, `8ff62cd`, `23e7f98`, and `7b3eed7`.
+Hosts own signals and cancellation. Canonical policies bound graceful teardown and stale source or credential use.
+Provider, configured identity, and negotiated peer validity now bound their corresponding runtime resources.
+Revision fencing preserves recovery and source authority, while owned tasks provide explicit cancellation and join paths.
+Deployment limits for non-yielding code and started blocking I/O remain part of the lifecycle contract.
+
+Stage 4 remains open for S4-05 canonical client-chain provisioning, S4-06 revocation evidence and freshness, and S4-07 operational statistics.
+The next increment must provision canonical client chains before native tests for complete, missing, and incorrect intermediate chains.
+No full RFC 9887 conformance claim is made.

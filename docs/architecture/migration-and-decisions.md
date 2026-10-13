@@ -296,13 +296,14 @@ Commit `a3f1727` includes active materialization bookkeeping in that commit and 
 Commit `044518c` adds independent materialization source/credential revisions, applied revision metadata, and credential-result health fencing.
 Commit `3f72a8f` assigns source identity before filtering, unifies inline and resolver-backed publication, and coordinates source health decisions.
 Commit `907cff1` completes S4-03 with revision-fenced policy admission and atomic policy-health publication.
-S4-04 is in progress. Commit `36d9cbc` moves signals to the daemon and coordinates startup cancellation and task cleanup.
+S4-04 is complete. Commit `36d9cbc` moves signals to the daemon and coordinates startup cancellation and task cleanup.
 Commit `37faec2` adds canonical graceful-teardown budgets and cancellable systemd helper execution.
 Commit `e91fe02` adds canonical stale-source budgets, generation-checked withdrawal, and recovery without a process restart.
 Commit `ed47f41` adds independent referenced-credential staleness budgets, withdrawal, and complete revalidation on recovery.
 Commit `8ff62cd` preserves absolute provider validity through materialization, publication, request deadlines, and owned expiry supervision.
 Commit `23e7f98` extracts configured client-certificate validity and enforces it during preparation, publication, handshakes, sessions, and supervised expiry.
-Negotiated peer-chain validity and trust-alternative lifecycle enforcement remain open. Non-yielding code and started blocking I/O still require explicit deployment limits.
+Commit `7b3eed7` completes negotiated peer-path expiry and owned idle-transport retirement, including alternate CA paths and exact pins.
+Canonical client-chain provisioning is next in S4-05. Non-yielding code and started blocking I/O still require explicit deployment limits.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.
@@ -328,7 +329,7 @@ Primary starting points:
 - [Agent shutdown](../../libraries/tacacsrs_agent/src/runtime/shutdown.rs)
 - [Health model](../../libraries/tacacsrs_agent/src/runtime/health.rs)
 
-**Temporary adapter:** old source implementations can enter through a reconciliation wrapper with explicit limitations.
+**Source contract:** each datastore supplies an owned observation session. S4-02 removed the transitional subscription adapter.
 **Removal:** replace that wrapper for every retained source before the stage ends.
 **Exit gate:** source-race tests converge, stale completions cannot publish, embedded shutdown completes, and process health behavior matches deployment tests.
 Credential-only changes derive new generations from unchanged YANG snapshots with separate credential revisions.
