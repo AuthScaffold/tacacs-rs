@@ -15,6 +15,7 @@ Commit `36d9cbc` starts S4-04 with daemon-owned signals and coordinated cancella
 Commit `37faec2` adds canonical graceful-teardown budgets and verifies cancellation of a stalled native host helper.
 Commit `e91fe02` adds stale-source expiry with recoverable upstream withdrawal.
 Commit `ed47f41` adds independent referenced-credential expiry and revalidation while preserving source-expiry enforcement.
+Commit `8ff62cd` adds absolute provider validity metadata, publication checks, request deadline bounds, and owned expiry supervision.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication contract is complete. The remaining Stage 4 lifecycle, certificate, revocation, and statistics work is still open.
 
@@ -26,7 +27,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
-- [ ] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Absolute validity expiry remains open; blocking-code limits remain explicit. See [credential freshness expiry](#credential-freshness-expiry).
+- [ ] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces absolute provider validity. Intrinsic certificate lifecycle expiry remains open; blocking-code limits remain explicit. See [absolute provider validity](#absolute-provider-validity).
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
@@ -837,3 +838,66 @@ Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were n
 S4-04 remains open for absolute validity metadata and expiry, distinct from observed staleness.
 Certificate-chain provisioning and revocation evidence remain the later Stage 4 contracts.
 Expiry still depends on a yielding async runtime and serialized publication; it does not make blocking code preemptible or establish full RFC 9887 conformance.
+
+## Absolute Provider Validity
+
+Commit `8ff62cd` adds `CredentialValidity` to the provider-neutral credential contract.
+Every resolved key, certificate identity, and certificate bag carries explicit validity metadata.
+The interval includes its start and excludes its end. Missing bounds are unbounded; empty intervals are rejected.
+Existing providers explicitly return unbounded metadata. This does not assert that encoded certificates remain valid indefinitely.
+
+### Materialization and Publication
+
+Configuration materialization intersects every provider interval used by a server.
+It rejects conflicting intervals and material that is expired or not yet valid.
+`MaterializedServer` returns the derived generated server together with its provider bounds.
+Canonical YANG snapshots and credential references remain unchanged. No new desired-configuration field stores these runtime values.
+
+The coordinator retains each active server's interval and monotonic deadline.
+A partial refresh preserves unchanged servers' deadlines. The complete catalog uses the earliest deadline and the intersection of all intervals.
+The manager checks validity again after preparation and publication-lock acquisition, before replacing the runtime.
+Runtime routing and applied health receive the same validity metadata in the publication commit.
+`RuntimeHealthSnapshot::credential_validity()` exposes the provider interval without credential material.
+
+### Expiry and Clocks
+
+An owned supervisor future monitors validity independently of source and credential staleness.
+No notification failure is required to trigger expiry. Grace periods and policy changes cannot extend a validity deadline.
+Expiry withdraws the complete upstream catalog, retires its endpoints, and publishes `CredentialsExpired` through the existing revision-fenced transaction.
+Source-first withdrawal retains validity metadata so credential expiry still occurs independently.
+Recovery requires complete valid materialization. Expired provider results cannot restore the catalog, and an old expiry cannot remove a recovered generation.
+
+The runtime checks absolute bounds against the wall clock. It also captures a conservative monotonic expiry during preparation.
+Retained material must satisfy both clocks. A backward clock change cannot extend its captured deadline.
+The monitor rechecks wall time at most one second after a clock change, subject to runtime scheduling and publication locks.
+Request binding checks wall and monotonic validity before and after connection acquisition.
+Captured request deadlines never exceed the credential deadline, including after policy reload or admission waits.
+Existing in-flight work after a forward wall-clock jump is withdrawn when the monitor runs; this is not hard real-time preemption.
+
+### Verification
+
+The focused provider, configuration, and agent tests pass. All 189 agent tests pass after the final clock regression.
+The all-feature workspace suite passes, including native prepared-source and daemon process tests.
+Strict workspace Clippy, workspace build, nightly formatting, and warnings-as-errors rustdoc pass.
+Editor diagnostics and patch whitespace checks are clear. The documentation book also builds successfully.
+
+New regressions cover:
+
+- Half-open intervals, empty intersections, and source immutability.
+- Not-yet-valid and expired provider results, with sanitized materialization errors.
+- Expiry after preparation and while publication waits for a lock.
+- Partial refresh and policy reload without renewal of retained deadlines.
+- Expiry without notification failure and after source withdrawal.
+- Rejection of expired replacement material and revision-fenced recovery.
+- Old and new request bindings after expiry, with capped request deadlines.
+- Forward and backward wall-clock boundaries and conservative monotonic intersection.
+
+No dependency, lockfile, YANG artifact, IPC schema, or native TLS implementation changes occur.
+Native Redis, live SONiC, the external TACACS+ peer matrix, Windows, and Miri checks were not rerun.
+
+### Remaining Work
+
+S4-04 remains open for intrinsic certificate validity extraction and lifecycle enforcement, including certificates configured inline.
+Provider validity constrains resolved material but does not replace native certificate verification or revocation checks.
+Canonical client-chain provisioning, revocation evidence, and operational statistics remain S4-05 through S4-07.
+Expiry still requires a yielding runtime; arbitrary blocking work needs deployment limits.
