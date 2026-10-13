@@ -10,27 +10,21 @@ use std::sync::Arc;
 use anyhow::Context;
 use tacacsrs_config::source::policy::{PolicyChange, PolicyObservation};
 
-use crate::{DegradationReason, RuntimeHealthPublisher, RuntimePolicy, TacacsClientService};
+use crate::{PolicyUpdate, TacacsClientService};
 
 /// Applies canonical policy candidates until the host requests shutdown.
 pub struct PolicySupervisor<Observation> {
     observation: Observation,
     service: Arc<TacacsClientService>,
-    health: RuntimeHealthPublisher,
 }
 
 impl<Observation: PolicyObservation> PolicySupervisor<Observation> {
     /// Takes ownership of an observation, including any unread baseline.
     #[must_use]
-    pub fn new(
-        observation: Observation,
-        service: Arc<TacacsClientService>,
-        health: RuntimeHealthPublisher,
-    ) -> Self {
+    pub fn new(observation: Observation, service: Arc<TacacsClientService>) -> Self {
         Self {
             observation,
             service,
-            health,
         }
     }
 
@@ -50,24 +44,22 @@ impl<Observation: PolicyObservation> PolicySupervisor<Observation> {
                 change = self.observation.next() => change?.context("Runtime policy observation ended")?,
             };
             let candidate = match change {
-                PolicyChange::Changed(source) => RuntimePolicy::try_from(source.as_ref()).ok(),
+                PolicyChange::Changed(source) => Some(source),
                 PolicyChange::CandidateRejected => None,
             };
-            if let Some(policy) = candidate {
-                tokio::select! {
-                    biased;
-                    () = &mut stop => return Ok(()),
-                    applied = self.service.reload_runtime_policy(policy) => applied?,
-                }
-                self.health
-                    .set_degraded(DegradationReason::CandidatePolicyRejected, false);
-                log::info!("Applied the updated runtime policy");
-            } else {
-                self.health
-                    .set_degraded(DegradationReason::CandidatePolicyRejected, true);
-                log::warn!(
+            let result = tokio::select! {
+                biased;
+                () = &mut stop => return Ok(()),
+                result = self.service.apply_policy_candidate(candidate.as_deref()) => result?,
+            };
+            match result {
+                PolicyUpdate::Applied(_) => log::info!("Applied the updated runtime policy"),
+                PolicyUpdate::Rejected(_) => log::warn!(
                     "Rejected the runtime policy update. Keeping the last-known-good policy"
-                );
+                ),
+                PolicyUpdate::Superseded => {
+                    log::debug!("Skipped a superseded runtime policy candidate");
+                }
             }
         }
     }
@@ -83,7 +75,9 @@ mod tests {
     use tacacsrs_config::TacacsPlus;
     use tacacsrs_networking::RequestDeadline;
 
-    use crate::{EnabledServices, ServiceConfig};
+    use crate::{
+        DegradationReason, EnabledServices, RuntimeHealthPublisher, RuntimePolicy, ServiceConfig,
+    };
 
     use super::*;
 
@@ -145,6 +139,150 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delayed_policy_cannot_overwrite_a_newer_rejection() {
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service(health.clone());
+        let held = service.hold_publication().await;
+        let (older_events, older_receiver) = mpsc::channel(1);
+        older_events
+            .send(PolicyChange::Changed(Arc::new(
+                tacacsrs_config::tacacsrs::RuntimePolicy::default(),
+            )))
+            .await
+            .unwrap();
+        let older = PolicySupervisor::new(
+            Observation {
+                events: older_receiver,
+                dropped: Arc::new(AtomicBool::new(false)),
+                entered: None,
+            },
+            service.clone(),
+        )
+        .run_until(std::future::pending());
+        tokio::pin!(older);
+        assert!(futures_util::poll!(&mut older).is_pending());
+        let generation = health.snapshot().runtime_generation();
+        let (newer_events, newer_receiver) = mpsc::channel(1);
+        newer_events
+            .send(PolicyChange::CandidateRejected)
+            .await
+            .unwrap();
+        let newer = PolicySupervisor::new(
+            Observation {
+                events: newer_receiver,
+                dropped: Arc::new(AtomicBool::new(false)),
+                entered: None,
+            },
+            service.clone(),
+        )
+        .run_until(std::future::pending());
+        tokio::pin!(newer);
+        assert!(futures_util::poll!(&mut newer).is_pending());
+        assert!(health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&DegradationReason::CandidatePolicyRejected));
+        drop(held);
+        assert!(futures_util::poll!(&mut older).is_pending());
+        assert!(
+            health
+                .snapshot()
+                .degradation_reasons()
+                .contains(&DegradationReason::CandidatePolicyRejected),
+            "a delayed policy must not clear rejection of a newer candidate"
+        );
+        assert_eq!(health.snapshot().runtime_generation(), generation);
+        drop(older_events);
+        drop(newer_events);
+    }
+
+    #[tokio::test]
+    async fn newer_valid_policy_supersedes_prepared_update_waiting_for_publication() {
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service(health.clone());
+        let held = service.hold_publication().await;
+        let older = service.reload_runtime_policy(RuntimePolicy::default());
+        tokio::pin!(older);
+        assert!(futures_util::poll!(&mut older).is_pending());
+        let source = tacacsrs_config::policy::parse_runtime_policy(
+            br#"{"tacacsrs:runtime-policy":{"accounting":{"max-concurrent-requests":7}}}"#,
+        )
+        .unwrap();
+        let original = source.clone();
+        let newer = service.apply_policy_candidate(Some(&source));
+        tokio::pin!(newer);
+        assert!(futures_util::poll!(&mut newer).is_pending());
+        drop(held);
+        assert_eq!(older.await.unwrap(), PolicyUpdate::Superseded);
+        let PolicyUpdate::Applied(revision) = newer.await.unwrap() else {
+            panic!("new policy must apply");
+        };
+        assert_eq!(revision.value(), 2);
+        let applied = health.snapshot();
+        assert_eq!(applied.applied_policy_revision(), Some(revision));
+        assert_eq!(applied.runtime_generation().unwrap().value(), 1);
+        assert!(!applied.has_applied_configuration());
+        assert_eq!(source, original);
+    }
+
+    #[tokio::test]
+    async fn cancelled_policy_wait_keeps_previous_policy_and_rejection_health() {
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service(health.clone());
+        let policy = tacacsrs_config::tacacsrs::RuntimePolicy::default();
+        service.apply_policy_candidate(Some(&policy)).await.unwrap();
+        assert!(matches!(
+            service.apply_policy_candidate(None).await.unwrap(),
+            PolicyUpdate::Rejected(_)
+        ));
+        let previous = health.snapshot();
+        let held = service.hold_publication().await;
+        {
+            let pending = service.apply_policy_candidate(Some(&policy));
+            tokio::pin!(pending);
+            assert!(futures_util::poll!(&mut pending).is_pending());
+        }
+        drop(held);
+        assert_eq!(health.snapshot(), previous);
+        let PolicyUpdate::Applied(revision) =
+            service.apply_policy_candidate(Some(&policy)).await.unwrap()
+        else {
+            panic!("retry must apply");
+        };
+        assert_eq!(revision.value(), 4);
+        assert!(!health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&DegradationReason::CandidatePolicyRejected));
+    }
+
+    #[tokio::test]
+    async fn invalid_canonical_policy_preserves_applied_revision_and_generation() {
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service(health.clone());
+        let mut policy = tacacsrs_config::tacacsrs::RuntimePolicy::default();
+        service.apply_policy_candidate(Some(&policy)).await.unwrap();
+        let before = health.snapshot();
+        policy.failover_recovery_interval_seconds = 0;
+        assert!(matches!(
+            service.apply_policy_candidate(Some(&policy)).await.unwrap(),
+            PolicyUpdate::Rejected(_)
+        ));
+        let after = health.snapshot();
+        assert_eq!(after.applied_policy_revision(), before.applied_policy_revision());
+        assert_eq!(after.runtime_generation(), before.runtime_generation());
+        assert!(after
+            .degradation_reasons()
+            .contains(&DegradationReason::CandidatePolicyRejected));
+        service
+            .close_and_join(RequestDeadline::after(Duration::from_secs(1)).unwrap())
+            .await
+            .unwrap();
+        assert!(service.apply_policy_candidate(None).await.is_err());
+        assert_eq!(health.snapshot(), after);
+    }
+
+    #[tokio::test]
     async fn invalid_update_keeps_policy_and_valid_update_clears_degradation() {
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         let (events, receiver) = mpsc::channel(4);
@@ -156,7 +294,6 @@ mod tests {
                 entered: None,
             },
             service(health.clone()),
-            health.clone(),
         );
         let (stop, stopped) = oneshot::channel();
         let task = tokio::spawn(supervisor.run_until(async {
@@ -205,7 +342,6 @@ mod tests {
                 entered: None,
             },
             service,
-            health.clone(),
         );
         let result = supervisor.run_until(std::future::pending()).await;
         assert!(result.unwrap_err().to_string().contains("closed"));
@@ -229,7 +365,6 @@ mod tests {
                 entered: None,
             },
             service(health.clone()),
-            health.clone(),
         );
         assert!(supervisor.run_until(std::future::pending()).await.is_err());
         assert!(dropped.load(Ordering::Acquire));
@@ -243,8 +378,7 @@ mod tests {
                 dropped: dropped.clone(),
                 entered: Some(entered),
             },
-            service(health.clone()),
-            health,
+            service(health),
         );
         let task = tokio::spawn(supervisor.run_until(async {
             stopped.await.unwrap();

@@ -241,9 +241,8 @@ async fn run_supervised_service(
         supervisor = supervisor.with_credential_changes(change_source);
     }
     let cancellation = CancellationToken::new();
-    let policy_supervisor = policy_observation.map(|observation| {
-        PolicySupervisor::new(observation, Arc::clone(&service), health.clone())
-    });
+    let policy_supervisor = policy_observation
+        .map(|observation| PolicySupervisor::new(observation, Arc::clone(&service)));
 
     if datastore_policy.initial_load == InitialLoadPolicy::FailFast {
         supervisor

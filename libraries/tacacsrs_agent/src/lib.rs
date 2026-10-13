@@ -28,7 +28,8 @@ pub use config::{
 };
 pub use upstream::OperationKind;
 pub use runtime::{
-    CredentialRevision, MaterializationRevision, SourceRevision, DatastoreState, DegradationReason,
-    ListenerState, RuntimeHealthPublisher, RuntimeGeneration, RuntimeHealthSnapshot,
-    RuntimeLifecycle, RuntimeService, TacacsClientService, UpstreamAvailability,
+    PolicyRevision, PolicyUpdate, CredentialRevision, MaterializationRevision, SourceRevision,
+    DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher, RuntimeGeneration,
+    RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, TacacsClientService,
+    UpstreamAvailability,
 };

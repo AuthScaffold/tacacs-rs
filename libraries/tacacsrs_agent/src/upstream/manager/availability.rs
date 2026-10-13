@@ -13,6 +13,7 @@ pub(super) struct AvailabilityAttempt {
 
 #[derive(Debug, Default)]
 struct ObservationState {
+    policy_revision: crate::PolicyRevision,
     generation: u64,
     next_sequence: u64,
     last_observed_sequence: u64,
@@ -27,6 +28,46 @@ pub(super) struct PublicationController {
 }
 
 impl PublicationController {
+    pub(super) fn admit_policy(&self) -> crate::PolicyRevision {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.policy_revision.advance();
+        state.policy_revision
+    }
+
+    pub(super) fn reject_policy(&self, revision: crate::PolicyRevision) -> crate::PolicyUpdate {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if revision != state.policy_revision {
+            return crate::PolicyUpdate::Superseded;
+        }
+        self.health
+            .set_degraded(crate::DegradationReason::CandidatePolicyRejected, true);
+        crate::PolicyUpdate::Rejected(revision)
+    }
+
+    pub(super) fn publish_policy(
+        &self,
+        revision: crate::PolicyRevision,
+        generation: u64,
+        publish: impl FnOnce(),
+    ) -> crate::PolicyUpdate {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if revision != state.policy_revision {
+            return crate::PolicyUpdate::Superseded;
+        }
+        self.health
+            .publish_policy(RuntimeGeneration::new(generation), revision, publish);
+        crate::PolicyUpdate::Applied(revision)
+    }
+
     pub(super) fn new(health: RuntimeHealthPublisher) -> Self {
         Self {
             health,
@@ -165,6 +206,59 @@ mod tests {
         publishing.join().unwrap();
         stale.join().unwrap();
         observed.join().unwrap();
+    }
+
+    #[test]
+    fn policy_decisions_reject_stale_success_and_failure_without_mutation() {
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let controller = PublicationController::new(health.clone());
+        let older = controller.admit_policy();
+        let newer = controller.admit_policy();
+        assert_eq!(controller.publish_policy(newer, 1, || {}), crate::PolicyUpdate::Applied(newer));
+        let published = health.snapshot();
+        assert_eq!(controller.reject_policy(older), crate::PolicyUpdate::Superseded);
+        assert_eq!(
+            controller.publish_policy(older, 2, || panic!("stale commit must not run")),
+            crate::PolicyUpdate::Superseded
+        );
+        assert_eq!(health.snapshot(), published);
+    }
+
+    #[test]
+    fn policy_commit_publishes_revision_generation_and_recovery_together() {
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let controller = Arc::new(PublicationController::new(health.clone()));
+        let rejected = controller.admit_policy();
+        controller.reject_policy(rejected);
+        let revision = controller.admit_policy();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let committed = Arc::new(AtomicBool::new(false));
+        let publishing = {
+            let entered = entered.clone();
+            let release = release.clone();
+            let committed = committed.clone();
+            std::thread::spawn(move || {
+                controller.publish_policy(revision, 8, || {
+                    entered.wait();
+                    release.wait();
+                    committed.store(true, Ordering::Release);
+                })
+            })
+        };
+        entered.wait();
+        let reading = std::thread::spawn(move || {
+            let snapshot = health.snapshot();
+            assert!(committed.load(Ordering::Acquire));
+            assert_eq!(snapshot.applied_policy_revision(), Some(revision));
+            assert_eq!(snapshot.runtime_generation().unwrap().value(), 8);
+            assert!(!snapshot
+                .degradation_reasons()
+                .contains(&DegradationReason::CandidatePolicyRejected));
+        });
+        release.wait();
+        assert_eq!(publishing.join().unwrap(), crate::PolicyUpdate::Applied(revision));
+        reading.join().unwrap();
     }
 
     #[test]

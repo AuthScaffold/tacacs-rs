@@ -21,7 +21,9 @@ pub use client_service::TacacsClientService;
 pub use config_filter::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};
 pub use config_supervisor::ConfigSupervisor;
 pub use policy_supervisor::PolicySupervisor;
-pub use revision::{CredentialRevision, MaterializationRevision, SourceRevision};
+pub use revision::{
+    CredentialRevision, MaterializationRevision, PolicyRevision, PolicyUpdate, SourceRevision,
+};
 pub(crate) use revision::MaterializationCommit;
 pub use health::{
     DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher, RuntimeGeneration,

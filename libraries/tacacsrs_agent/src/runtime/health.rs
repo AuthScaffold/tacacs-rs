@@ -114,6 +114,7 @@ pub enum DegradationReason {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RuntimeHealthSnapshot {
     runtime_generation: Option<RuntimeGeneration>,
+    applied_policy_revision: Option<super::PolicyRevision>,
     materialization_revision: Option<super::MaterializationRevision>,
     lifecycle: RuntimeLifecycle,
     applied_configuration: bool,
@@ -128,6 +129,13 @@ pub struct RuntimeHealthSnapshot {
 }
 
 impl RuntimeHealthSnapshot {
+    /// Returns the last committed policy revision, or `None` before the first update.
+    /// Rejection, cancellation, and server updates preserve this applied identity.
+    #[must_use]
+    pub const fn applied_policy_revision(&self) -> Option<super::PolicyRevision> {
+        self.applied_policy_revision
+    }
+
     /// Returns the revisions used for the current coordinated materialization.
     /// Direct server reloads clear this metadata. Policy updates preserve it.
     #[must_use]
@@ -270,6 +278,7 @@ impl RuntimeHealthPublisher {
         let tacacs_proxy_listener = initial_listener_state(enabled_services.tacacs_proxy());
         let initial = RuntimeHealthSnapshot {
             runtime_generation: None,
+            applied_policy_revision: None,
             materialization_revision: None,
             lifecycle: RuntimeLifecycle::Starting,
             applied_configuration: false,
@@ -355,6 +364,23 @@ impl RuntimeHealthPublisher {
                     .degradation_reasons
                     .remove(&DegradationReason::UpstreamsUnavailable);
             }
+        });
+    }
+
+    /// Commits runtime replacement and its health metadata in one watch transition.
+    pub(crate) fn publish_policy(
+        &self,
+        generation: RuntimeGeneration,
+        revision: super::PolicyRevision,
+        publish: impl FnOnce(),
+    ) {
+        self.update(|snapshot| {
+            publish();
+            snapshot.runtime_generation = Some(generation);
+            snapshot.applied_policy_revision = Some(revision);
+            snapshot
+                .degradation_reasons
+                .remove(&DegradationReason::CandidatePolicyRejected);
         });
     }
 

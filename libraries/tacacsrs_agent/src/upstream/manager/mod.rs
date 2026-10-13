@@ -241,34 +241,56 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     }
 
     /// Atomically replaces the runtime policy for new requests.
+    #[cfg(test)]
     pub(crate) fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) -> bool {
+        self.admit_policy()
+            .and_then(|revision| self.publish_policy(revision, runtime_policy))
+            .is_ok_and(|outcome| matches!(outcome, crate::PolicyUpdate::Applied(_)))
+    }
+
+    pub(crate) fn admit_policy(&self) -> anyhow::Result<crate::PolicyRevision> {
+        let _runtime = self
+            .runtime
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_open()?;
+        Ok(self.publication.admit_policy())
+    }
+
+    pub(crate) fn reject_policy(
+        &self,
+        revision: crate::PolicyRevision,
+    ) -> anyhow::Result<crate::PolicyUpdate> {
+        let _runtime = self
+            .runtime
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_open()?;
+        Ok(self.publication.reject_policy(revision))
+    }
+
+    pub(crate) fn publish_policy(
+        &self,
+        revision: crate::PolicyRevision,
+        runtime_policy: RuntimePolicy,
+    ) -> anyhow::Result<crate::PolicyUpdate> {
         let mut current = self
             .runtime
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
-            return false;
-        }
+        self.ensure_open()?;
         let generation = current.generation.wrapping_add(1);
-        self.publication.publish_runtime(
-            generation,
-            current.server_set.server_count(),
-            None,
-            false,
-            |availability_generation| {
-                current.admission.update(&runtime_policy);
-                *current = Arc::new(RuntimeRoutingSnapshot {
-                    generation,
-                    availability_generation,
-                    server_set: Arc::clone(&current.server_set),
-                    proxy_downstream_obfuscation: current.proxy_downstream_obfuscation.clone(),
-                    admission: Arc::clone(&current.admission),
-                    runtime_policy: Arc::new(runtime_policy),
-                });
-                None
-            },
-        );
-        true
+        Ok(self.publication.publish_policy(revision, generation, || {
+            current.admission.update(&runtime_policy);
+            *current = Arc::new(RuntimeRoutingSnapshot {
+                generation,
+                availability_generation: current.availability_generation,
+                server_set: Arc::clone(&current.server_set),
+                proxy_downstream_obfuscation: current.proxy_downstream_obfuscation.clone(),
+                admission: Arc::clone(&current.admission),
+                runtime_policy: Arc::new(runtime_policy),
+            });
+        }))
     }
 
     pub(crate) fn publish_initial_health(&self, applied: bool) {
@@ -1106,6 +1128,8 @@ mod tests {
             state.reload_runtime_policy(policy(512, 1));
             let current = state.capture_request(service, OperationKind::Authentication);
             assert_ne!(captured.generation(), current.generation());
+            assert!(Arc::ptr_eq(&captured.runtime.admission, &current.runtime.admission));
+            assert_ne!(captured.runtime.runtime_policy, current.runtime.runtime_policy);
             assert!(matches!(
                 current.validate_body_length(768),
                 Err(AdmissionError::BodyTooLarge { maximum: 512, .. })

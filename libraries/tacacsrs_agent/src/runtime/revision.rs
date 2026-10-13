@@ -22,6 +22,36 @@ impl SourceRevision {
     }
 }
 
+/// Identifies policy admission before validation or publication waits.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub struct PolicyRevision(u64);
+
+impl PolicyRevision {
+    pub(crate) fn advance(&mut self) {
+        self.0 = self
+            .0
+            .checked_add(1)
+            .expect("policy revision space exhausted");
+    }
+
+    /// Returns the runtime-local diagnostic counter.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Result of a policy candidate processed by the runtime publication controller.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PolicyUpdate {
+    /// The candidate and its health metadata committed together.
+    Applied(PolicyRevision),
+    /// The current candidate was invalid. The applied policy is unchanged.
+    Rejected(PolicyRevision),
+    /// A newer admission replaced this candidate before its decision.
+    Superseded,
+}
+
 /// Revision of a relevant credential invalidation, independent of source changes.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub struct CredentialRevision(u64);

@@ -594,6 +594,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(health.snapshot().materialization_revision(), Some(rotation.revision));
+        let applied_policy = health.snapshot().applied_policy_revision().unwrap();
         assert!(
             !coordinator
                 .report_credential_result(&attempt, &health, true)
@@ -616,6 +617,7 @@ mod tests {
         let prepared = coordinator.materialize(refresh.clone()).await.unwrap();
         coordinator.publish(prepared, &service).await.unwrap();
         assert_eq!(health.snapshot().materialization_revision(), Some(refresh.revision));
+        assert_eq!(health.snapshot().applied_policy_revision(), Some(applied_policy));
         service
             .reload_materialized_servers_with_proxy_downstream_obfuscation(
                 coordinator.active_servers().await,

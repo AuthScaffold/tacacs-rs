@@ -129,11 +129,32 @@ impl TacacsClientService {
     }
 
     /// Applies a validated policy to new requests.
+    /// Returns `Superseded` when a newer policy was admitted before publication.
     ///
     /// # Errors
     /// Returns an error if the runtime has closed.
-    pub async fn reload_runtime_policy(&self, policy: RuntimePolicy) -> anyhow::Result<()> {
+    pub async fn reload_runtime_policy(
+        &self,
+        policy: RuntimePolicy,
+    ) -> anyhow::Result<super::PolicyUpdate> {
         self.runtime.reload_runtime_policy(policy).await
+    }
+
+    /// Applies an observed canonical policy or records a source rejection.
+    /// `None` records a rejected observation. Invalid canonical values also return
+    /// `Rejected` without replacing the applied policy. The source is borrowed unchanged.
+    ///
+    /// # Errors
+    /// Returns an error if the runtime has closed.
+    pub async fn apply_policy_candidate(
+        &self,
+        source: Option<&tacacsrs_config::tacacsrs::RuntimePolicy>,
+    ) -> anyhow::Result<super::PolicyUpdate> {
+        let revision = self.runtime.state.admit_policy()?;
+        match source.map(RuntimePolicy::try_from) {
+            Some(Ok(policy)) => self.runtime.publish_policy(revision, policy).await,
+            Some(Err(_)) | None => self.runtime.state.reject_policy(revision),
+        }
     }
 
     /// Applies upstream configuration with its prepared downstream policy.
@@ -368,13 +389,25 @@ where
     }
 
     /// Atomically applies a validated runtime policy to new requests.
+    /// Newer admitted candidates supersede older updates waiting for publication.
     ///
     /// # Errors
     /// Returns an error if the runtime has closed.
-    pub async fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) -> anyhow::Result<()> {
+    pub async fn reload_runtime_policy(
+        &self,
+        runtime_policy: RuntimePolicy,
+    ) -> anyhow::Result<super::PolicyUpdate> {
+        let revision = self.state.admit_policy()?;
+        self.publish_policy(revision, runtime_policy).await
+    }
+
+    async fn publish_policy(
+        &self,
+        revision: super::PolicyRevision,
+        runtime_policy: RuntimePolicy,
+    ) -> anyhow::Result<super::PolicyUpdate> {
         let _reload_guard = self.reload_lock.lock().await;
-        anyhow::ensure!(self.state.reload_runtime_policy(runtime_policy), "Runtime is closed");
-        Ok(())
+        self.state.publish_policy(revision, runtime_policy)
     }
 
     /// Applies TACACS+ configuration and the downstream proxy obfuscation policy.
