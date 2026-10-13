@@ -343,6 +343,7 @@ failover for both local services:
 {
     "tacacsrs:runtime-policy": {
         "shutdown-timeout-seconds": 30,
+        "source-stale-timeout-seconds": 300,
         "failover-recovery-interval-seconds": 30,
         "client-api-failover-strategy": "ordered-safe-retry",
         "tacacs-proxy-failover-strategy": "ordered-safe-retry",
@@ -378,6 +379,13 @@ The policy file remains an independently watched resource. Policy and server cha
 `shutdown-timeout-seconds` bounds graceful teardown and defaults to 30 seconds. Its minimum is one second.
 The daemon captures the applied value when cleanup begins. Service drain and both peer tasks share that absolute deadline.
 Sequential cleanup steps do not receive new budgets, and policy changes cannot extend cleanup already in progress.
+
+`source-stale-timeout-seconds` limits continued use of stale source configuration. Its default is 300 seconds and its minimum is one second.
+After the first observed stale-source condition, retries, credential refresh, and policy updates do not renew the captured grace interval.
+At expiry the agent withdraws the upstream catalog, retires the old endpoints, and reports `SourceExpired`.
+Readiness becomes `NOT_SERVING`; liveness and configuration observation remain active.
+A valid source publication restores service without a process restart. Credential refresh alone cannot revive an expired unavailable source.
+This source budget does not implement credential-only expiry, certificate validity deadlines, or revocation retrieval.
 
 IPC and proxy clients share each operation's active capacity and bounded FIFO admission queue.
 The pending limit equals `max-concurrent-requests`. A full queue returns an immediate overload error without upstream I/O.

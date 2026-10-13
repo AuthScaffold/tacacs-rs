@@ -13,6 +13,7 @@ Commit `3f72a8f` moves source admission before filtering and unifies source publ
 Commit `907cff1` completes S4-03 with revision-fenced policy decisions and atomic policy-health publication.
 Commit `36d9cbc` starts S4-04 with daemon-owned signals and coordinated cancellation from bootstrap through serving.
 Commit `37faec2` adds canonical graceful-teardown budgets and verifies cancellation of a stalled native host helper.
+Commit `e91fe02` adds stale-source expiry with recoverable upstream withdrawal.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication contract is complete. The remaining Stage 4 lifecycle, certificate, revocation, and statistics work is still open.
 
@@ -24,7 +25,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-01: Own canonical policy observation in configuration and policy supervision in the agent. Commit `6a11a83` removes daemon policy algorithms and closes the startup race. See [policy observation](#policy-observation).
 - [x] S4-02: Commit `1cca6a4` moves recovery and materialization into the agent. Commit `75aac8b` owns file observations and migrates supervision. Commit `8381d4f` owns SONiC Redis and credential streams and removes transitional APIs. Native cleanup, cancellation, and recovery tests pass. See [S4-02 closure](#s4-02-closure).
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
-- [ ] S4-04: Commit `36d9cbc` removes library signal ownership. Commit `37faec2` adds canonical graceful-teardown budgets and owned asynchronous host helpers. Stale-material and expiry policy remain open; non-yielding code and blocking-I/O limits remain explicit. See [bounded graceful teardown](#bounded-graceful-teardown).
+- [ ] S4-04: Commits `36d9cbc` and `37faec2` establish host-owned signals and graceful teardown budgets. Commit `e91fe02` adds recoverable stale-source expiry. Credential-only staleness and validity expiry remain open; blocking-code limits remain explicit. See [stale-source expiry](#stale-source-expiry).
 - [ ] S4-05: Add canonical client-chain inputs and the credential-provider contract. Verify complete, missing, and incorrect intermediate chains with native mTLS peers. Preserve source references during preparation.
 - [ ] S4-06: Define revocation freshness and unavailable-status behavior. Obtain revocation evidence and reject revoked credentials before use. Integrate the controller/provider lifecycle with TLS verification.
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
@@ -701,3 +702,71 @@ Deployments require process-supervisor termination limits for those cases. This 
 S4-04 still needs canonical stale-material budgets and expiry behavior, with fail-closed handling where those policies require it.
 Preserve source revisions, last-known-good semantics, and bounded endpoint retirement while adding those decisions.
 Certificate chains, revocation evidence retrieval, and operational statistics remain the later Stage 4 work.
+
+## Stale-Source Expiry
+
+Commit `e91fe02` adds `source-stale-timeout-seconds` to the canonical project runtime-policy resource.
+It is a nonzero unsigned 32-bit seconds value with a generated default of 300.
+The agent projects it into a duration without changing the canonical policy value.
+Generated Rust, the expanded tree, and their manifest hashes are regenerated from the pinned inputs.
+
+### Grace Interval
+
+The configuration supervisor owns an expiry future alongside source and credential observation. It starts no detached timer task.
+For an applied, nonempty catalog, the monitor captures a deadline from the first stale or unavailable source-health snapshot it observes.
+The applied canonical budget supplies the interval.
+Repeated failures, rejected candidates, credential-only refreshes, and policy updates do not renew that deadline.
+Changed policy budgets apply to a later stale interval, not one already captured.
+
+A successful source publication ends the old interval. A later outage receives a new interval.
+The monitor compares published source revisions so this reset survives coalesced health updates that omit the brief current state.
+Credential revision changes alone cannot reset source grace.
+No expiry is needed before the first applied source or when the current catalog is already empty.
+
+### Withdrawal and Recovery
+
+At the deadline, the monitor requests withdrawal of the still-stale applied revision.
+The coordinator rechecks the applied revision and current source health under its state lock.
+A stale expiry request cannot remove a newer recovered generation.
+The transaction publishes an empty upstream catalog, clears active materialization bookkeeping, and marks `SourceExpired` together.
+The canonical desired source remains available for future preparation.
+
+Removed endpoints receive an immediate retirement cutoff before replacement health becomes visible.
+Retained old routing handles cannot establish new bindings to those endpoints. Global admission remains the same shared registry.
+The applied materialization revision becomes absent because the withdrawn catalog no longer represents applied source material.
+The runtime retains completed-startup state, but zero eligible servers withdraw readiness.
+Liveness, listeners, and configuration observation remain active.
+
+A valid source publication clears expiry and restores the upstream set through the normal revision-checked commit.
+An unavailable expired source cannot be revived by credential-only refresh or a longer policy budget.
+Expiry does not falsely clear an existing credential-resolution failure.
+The runtime remains recoverable rather than entering terminal process shutdown.
+
+### Regression Evidence
+
+`unavailable_source_does_not_serve_past_the_default_stale_budget` failed before the change after 301 virtual seconds.
+The runtime retained its upstreams indefinitely after source loss.
+It now withdraws them at the configured grace deadline while the supervisor remains active.
+
+Further tests verify:
+
+- Repeated source failures, credential refresh, and a policy increase do not extend the current interval.
+- Expiry withdraws readiness while preserving startup and liveness health.
+- A valid source restores service, and an older expiry request cannot remove that generation.
+- Coalesced recovery and failure transitions reset the interval for the new source revision.
+- Immediate retirement blocks retained old bindings, and recovery reuses the global admission registry.
+
+### Verification and Remaining Work
+
+All 178 agent tests and the complete all-feature workspace suite pass, including the existing three native process tests.
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+All 13 generator tests and deterministic regeneration checks pass. The pinned upstream YANG module remains unchanged.
+Generated Rust SHA-256: `ddfa160deaf1c1f33f94481a36a1dfa945147f990bcacdf33005487c8120ba42`.
+Edited files have no editor diagnostics. No dependency, lockfile, IPC schema, or TLS implementation changes occur.
+Native Redis, live SONiC, external TACACS+ peer, Windows, and Miri checks were not rerun.
+
+This interval addresses stale source configuration, not every form of stale credential material.
+Credential-provider failure while the source remains current still needs its own budget and recovery contract.
+Certificate validity deadlines and revocation evidence remain separate requirements.
+Expiry uses the asynchronous runtime and serialized publication path; existing limits for non-yielding code and blocking I/O still apply.
+These remaining policies stay within S4-04 and the later certificate/revocation stages. S4-04 is not complete.

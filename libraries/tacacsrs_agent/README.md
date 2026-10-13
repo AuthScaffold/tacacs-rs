@@ -127,6 +127,13 @@ A pending or rejected source cannot trigger credential refresh against an older 
 Credential invalidations during filtering are retained in the revision used for the eventual prepared candidate.
 During source unavailability, credential refresh can use retained configuration without marking the source current.
 
+`ConfigSupervisor` enforces canonical `source-stale-timeout-seconds`, which defaults to 300 seconds and rejects zero.
+Its owned monitor captures the applied budget when it first observes a stale published source.
+Repeated failures, credential refreshes, and policy updates do not renew that interval.
+At expiry, a generation-checked transaction withdraws upstreams and marks `SourceExpired`. Readiness stops while liveness and source observation continue.
+Removed endpoints receive an immediate retirement cutoff. A valid source publication can restore service without replacing shared admission or restarting the process.
+Credential refresh cannot revive an expired unavailable source. Credential-only staleness and certificate validity require separate lifecycle policy.
+
 Use `with_credential_resolver` and `with_credential_changes` to configure credential providers.
 Notifications require a resolver. Provider configuration is checked before source I/O.
 `initialize_until(stop)` optionally prepares the initial configuration before listeners start.
