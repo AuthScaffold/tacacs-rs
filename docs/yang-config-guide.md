@@ -125,6 +125,23 @@ Malformed, incomplete, mismatched, and trailing public-key data fail before publ
 
 ### Client Certificate Chains
 
+During mutual TLS, the TACACS+ server verifies the client's identity. A common certificate hierarchy is:
+
+```text
+Root CA --signs--> Intermediate CA --signs--> Client certificate
+```
+
+The server can trust the root without already having the intermediate certificate.
+The client certificate identifies its issuer, but does not contain that issuer's certificate or public key.
+Sending the intermediate lets the server verify the signatures along the path to its trusted root.
+The client must not assume that the server will download missing certificates.
+
+Supplying an intermediate does not make it trusted. The server still requires a valid path to a trust anchor it already accepts.
+The client sends public certificates, never their private keys. This configuration omits the root because sending it cannot establish trust.
+
+An intermediate chain is optional. A leaf alone can suffice when a trusted root signs it directly or the server already has the intermediates.
+Client-chain provisioning does not affect server-only TLS or PSK authentication.
+
 Inline client identities use the following fields under `certificate/inline-definition`:
 
 | Field | Content |

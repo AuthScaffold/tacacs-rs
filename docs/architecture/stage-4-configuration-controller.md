@@ -1037,6 +1037,16 @@ No full RFC 9887 conformance claim is made.
 
 ## Canonical Client Chains
 
+### Rationale
+
+Mutual TLS requires the server to verify the client's certificate path, not merely receive its leaf certificate.
+Many deployments trust a root CA but do not store every issuing intermediate.
+A server can therefore reject a valid client identity when the client sends only its leaf certificate.
+Explicit chain provisioning supplies the missing public certificates without assuming server-side retrieval or changing the server's trust policy.
+The [configuration guide](../yang-config-guide.md#client-certificate-chains) explains the certificate hierarchy and when intermediates are needed.
+
+### Canonical Input
+
 Commit `3897414` adds the project-owned `tacacsrs:intermediate-certificate` leaf-list beneath client certificate `inline-definition`.
 It applies to per-server identities and reusable `client-credentials` bundles. The existing `cert-data` field remains the leaf certificate.
 Each ordered list entry contains one DER intermediate, encoded as RFC 7951 base64 in JSON.
