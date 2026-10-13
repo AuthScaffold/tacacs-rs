@@ -52,7 +52,8 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
         let slots = endpoints
             .into_iter()
             .map(|endpoint| {
-                let lifecycle = Arc::new(EndpointLifecycle::new(connector.clone()));
+                let lifecycle =
+                    Arc::new(EndpointLifecycle::new(connector.clone(), endpoint.name()));
                 runtime.register(lifecycle.clone());
                 Arc::new(EndpointSlot::new(endpoint, lifecycle))
             })
@@ -75,7 +76,10 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                     .find(|slot| slot.endpoint.same_identity(&endpoint))
                     .cloned()
                     .unwrap_or_else(|| {
-                        let lifecycle = Arc::new(EndpointLifecycle::new(self.connector.clone()));
+                        let lifecycle = Arc::new(EndpointLifecycle::new(
+                            self.connector.clone(),
+                            endpoint.name(),
+                        ));
                         self.runtime.register(lifecycle.clone());
                         Arc::new(EndpointSlot::new(endpoint, lifecycle))
                     })
@@ -138,6 +142,20 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
     /// Schedules terminal retirement of removed endpoints without delaying publication.
     /// Existing captured catalogs can use them only until the supplied deadline.
     pub fn retire_replaced_until(&self, replacement: &Self, deadline: crate::RequestDeadline) {
+        self.retire_replaced_with_deadlines(replacement, |_| deadline);
+    }
+
+    /// Selects a terminal retirement deadline from each removed endpoint's name.
+    ///
+    /// Already-retiring historical endpoints are also considered. Retained endpoint
+    /// identities and unpublished candidates are excluded. The selector runs synchronously
+    /// and must not block. Earlier cutoffs cannot be extended by a later call.
+    pub fn retire_replaced_with_deadlines(
+        &self,
+        replacement: &Self,
+        mut deadline: impl FnMut(&str) -> crate::RequestDeadline,
+    ) {
+        let historical = self.runtime.retiring_endpoints();
         for slot in self.catalog.endpoints.iter().filter(|old| {
             !replacement
                 .catalog
@@ -145,7 +163,17 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                 .iter()
                 .any(|new| Arc::ptr_eq(old, new))
         }) {
-            slot.lifecycle.retire(deadline);
+            slot.lifecycle.retire(deadline(slot.endpoint.name()));
+        }
+        for lifecycle in historical.into_iter().filter(|historical| {
+            !self
+                .catalog
+                .endpoints
+                .iter()
+                .chain(&replacement.catalog.endpoints)
+                .any(|slot| Arc::ptr_eq(&slot.lifecycle, historical))
+        }) {
+            lifecycle.retire(deadline(&lifecycle.endpoint_name));
         }
     }
 
@@ -455,6 +483,129 @@ mod tests {
             )],
             connector,
         )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn per_endpoint_retirement_preserves_unrelated_grace_and_retained_identity() {
+        use crate::RequestDeadline;
+        let endpoint = |name, operation| {
+            Endpoint::new(
+                name,
+                PreparedEndpoint::tcp("127.0.0.1:49", false, None, ConnectOptions::default()),
+                [operation],
+            )
+        };
+        let retained = endpoint("retained", OperationKind::Authorization);
+        let client = RoutedClient::with_connector(
+            vec![
+                endpoint("urgent", OperationKind::Authentication),
+                endpoint("grace", OperationKind::Accounting),
+                retained.clone(),
+            ],
+            ControlledConnector::default(),
+        );
+        let original = client
+            .bind(OperationKind::Authorization, Duration::ZERO)
+            .await
+            .unwrap();
+        let replacement = client
+            .with_endpoints(vec![
+                endpoint("urgent", OperationKind::Authentication),
+                endpoint("grace", OperationKind::Accounting),
+                retained,
+            ])
+            .await;
+        let now = tokio::time::Instant::now();
+        let mut selected = Vec::new();
+        client.retire_replaced_with_deadlines(&replacement, |name| {
+            selected.push(name.to_owned());
+            RequestDeadline::at(if name == "urgent" {
+                now
+            } else {
+                now + Duration::from_secs(5)
+            })
+        });
+        assert_eq!(selected, ["urgent", "grace"]);
+        client.retire_replaced_until(
+            &replacement,
+            RequestDeadline::after(Duration::from_secs(60)).unwrap(),
+        );
+        assert!(client
+            .bind(OperationKind::Authentication, Duration::ZERO)
+            .await
+            .is_err());
+        client
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert!(client
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .is_err());
+        let unchanged = client
+            .bind(OperationKind::Authorization, Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(original.connection(), unchanged.connection()));
+        for operation in OperationKind::ALL {
+            replacement.bind(operation, Duration::ZERO).await.unwrap();
+        }
+        replacement
+            .close_and_join(RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn selective_retirement_reaches_older_generations_but_not_unpublished_candidates() {
+        use crate::RequestDeadline;
+        let endpoint = || {
+            Endpoint::new(
+                "primary",
+                PreparedEndpoint::tcp("127.0.0.1:49", false, None, ConnectOptions::default()),
+                OperationKind::ALL,
+            )
+        };
+        let first = RoutedClient::with_connector(vec![endpoint()], ControlledConnector::default());
+        let second = first.with_endpoints(vec![endpoint()]).await;
+        first.retire_replaced_until(
+            &second,
+            RequestDeadline::after(Duration::from_secs(60)).unwrap(),
+        );
+        let third = second.with_endpoints(vec![endpoint()]).await;
+        let candidate = third.with_endpoints(vec![endpoint()]).await;
+        first
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        second
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        second.retire_replaced_with_deadlines(&third, |_| {
+            RequestDeadline::at(tokio::time::Instant::now())
+        });
+        assert!(first
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .is_err());
+        assert!(second
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .is_err());
+        third
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        candidate
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        third
+            .close_and_join(RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

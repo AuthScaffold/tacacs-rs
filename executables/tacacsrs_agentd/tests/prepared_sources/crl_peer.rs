@@ -391,3 +391,133 @@ async fn crl_expiry_withdraws_supervised_catalog_without_source_failure() -> Res
     monitor.await?;
     Ok(())
 }
+
+async fn stalled_accounting_peer(
+    listener: TcpListener,
+    context: SslContext,
+    received: tokio::sync::oneshot::Sender<()>,
+    closed: tokio::sync::oneshot::Sender<()>,
+) -> Result<()> {
+    use tacacsrs_networking::{PacketReadResult, PacketReader};
+    let (tcp, _) = listener.accept().await?;
+    let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
+    Pin::new(&mut stream).accept().await?;
+    assert!(matches!(
+        PacketReader::new(None).read_packet(&mut stream).await,
+        PacketReadResult::Success(_)
+    ));
+    let _ = received.send(());
+    match stream.read(&mut [0]).await {
+        Ok(0) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::BrokenPipe
+            ) => {}
+        result => anyhow::bail!("unexpected application data after CRL refresh: {result:?}"),
+    }
+    let _ = closed.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn committed_crl_refresh_interrupts_active_peer_without_waiting_for_request_budget(
+) -> Result<()> {
+    use std::sync::Arc;
+    use tacacsrs_agent::{RuntimeHealthPublisher, RuntimeLifecycle, ServiceConfig, TacacsClientService};
+    use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+    use tacacsrs_protocol::operations::AccountingOperation;
+    let directory = Directory::new()?;
+    let good = make_crl(&directory.0, false, false).await?;
+    let revoked = make_crl(&directory.0, true, false).await?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let context = peer_context(&issuer, None)?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let source = source_for(&issuer, listener.local_addr()?.port(), &[good], false, false)?;
+    let path = directory.0.join("agent.sock");
+    let endpoint = IpcEndpoint::Unix(path.clone());
+    let config = ServiceConfig {
+        local_services: tacacsrs_config::tacacsrs::LocalServices {
+            client_api_enabled: true,
+            client_api_endpoint: path.display().to_string(),
+            ..Default::default()
+        },
+        tacacs_plus: source.clone(),
+        validation_options: ValidationOptions::default(),
+        runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
+        disable_certificate_verification: false,
+    };
+    let health = RuntimeHealthPublisher::new(config.enabled_services());
+    let service = Arc::new(TacacsClientService::new(config, health.clone())?);
+    let (received, observed) = tokio::sync::oneshot::channel();
+    let (closed, mut closure) = tokio::sync::oneshot::channel();
+    let peer = tokio::spawn(stalled_accounting_peer(listener, context, received, closed));
+    let stop = tokio_util::sync::CancellationToken::new();
+    let running = service.clone();
+    let shutdown = stop.clone();
+    let serving = tokio::spawn(async move { running.serve_until(shutdown.cancelled()).await });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        health
+            .subscribe()
+            .wait_for(|snapshot| snapshot.lifecycle() == RuntimeLifecycle::Serving),
+    )
+    .await??;
+    let client = ServiceClient::connect(endpoint).await?;
+    let request = client.send_accounting(AccountingOperation {
+        user: "refresh".to_owned(),
+        port: "test".to_owned(),
+        remote_address: "127.0.0.1".to_owned(),
+        command: "show".to_owned(),
+        command_arguments: Vec::new(),
+    });
+    tokio::pin!(request);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! { result = &mut request => panic!("request ended before peer received it: {result:?}"), result = observed => result.unwrap() }
+    }).await?;
+    service.reload_tacacs_plus(source.clone()).await?;
+    let mut ordinary = source.clone();
+    ordinary.server[0].timeout += 1;
+    service.reload_tacacs_plus(ordinary).await?;
+    let before_rejection = health.snapshot().runtime_generation();
+    let mut invalid = source.clone();
+    invalid.server[0]
+        .server_authentication
+        .as_mut()
+        .unwrap()
+        .require_crls
+        .as_mut()
+        .unwrap()
+        .crl = Some(vec![b"invalid-crl".to_vec()]);
+    assert!(service.reload_tacacs_plus(invalid).await.is_err());
+    assert_eq!(health.snapshot().runtime_generation(), before_rejection);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), &mut closure)
+            .await
+            .is_err(),
+        "unchanged evidence, ordinary reload, or rejected evidence must not close the active peer"
+    );
+    let mut updated = source;
+    updated.server[0]
+        .server_authentication
+        .as_mut()
+        .unwrap()
+        .require_crls
+        .as_mut()
+        .unwrap()
+        .crl = Some(vec![revoked]);
+    service.reload_tacacs_plus(updated).await?;
+    let closed_promptly = tokio::time::timeout(Duration::from_secs(1), closure).await;
+    stop.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(5), request).await?;
+    assert!(result.is_err());
+    tokio::time::timeout(Duration::from_secs(5), serving).await???;
+    tokio::time::timeout(Duration::from_secs(5), peer).await???;
+    assert!(
+        closed_promptly.is_ok(),
+        "committed CRL changes must not retain the ordinary request drain budget"
+    );
+    Ok(())
+}

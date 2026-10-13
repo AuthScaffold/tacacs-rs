@@ -523,6 +523,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             servers: new_server_slots,
             client,
         });
+        let urgent = previous.changed_crl_servers(&new_set);
 
         {
             let mut current = self
@@ -535,9 +536,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             );
             anyhow::ensure!(validity.is_valid(), "Credential validity expired before publication");
             let generation = current.generation.wrapping_add(1);
-            previous
-                .client
-                .retire_replaced_until(&new_set.client, retirement_deadline);
+            previous.retire_replaced_until(&new_set, retirement_deadline, &urgent);
             self.publication.publish_runtime(
                 generation,
                 new_set.server_count(),

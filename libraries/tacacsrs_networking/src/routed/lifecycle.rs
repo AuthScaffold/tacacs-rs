@@ -19,6 +19,7 @@ struct State<Connection: ?Sized> {
 }
 
 pub(super) struct EndpointLifecycle<Connector: EndpointConnector> {
+    pub(super) endpoint_name: String,
     connector: Arc<Connector>,
     state: Mutex<State<Connector::Connection>>,
 }
@@ -32,8 +33,9 @@ impl Drop for SetupGuard {
 }
 
 impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
-    pub(super) fn new(connector: Arc<Connector>) -> Self {
+    pub(super) fn new(connector: Arc<Connector>, endpoint_name: &str) -> Self {
         Self {
+            endpoint_name: endpoint_name.to_owned(),
             connector,
             state: Mutex::new(State {
                 closed: false,
@@ -228,6 +230,14 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
         result
     }
 
+    fn is_retiring(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.cutoff.is_some() && !state.closed
+    }
+
     fn finished(&self) -> bool {
         let state = self
             .state
@@ -260,6 +270,19 @@ impl<Connector: EndpointConnector> Default for RoutingRuntime<Connector> {
 }
 
 impl<Connector: EndpointConnector> RoutingRuntime<Connector> {
+    pub(super) fn retiring_endpoints(&self) -> Vec<Arc<EndpointLifecycle<Connector>>> {
+        let endpoints = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1
+            .clone();
+        endpoints
+            .into_iter()
+            .filter(|endpoint| endpoint.is_retiring())
+            .collect()
+    }
+
     pub(super) fn register(&self, endpoint: Arc<EndpointLifecycle<Connector>>) {
         let mut state = self
             .state

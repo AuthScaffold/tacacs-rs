@@ -11,6 +11,8 @@
 //! Combine bindings with [`crate::retry`] for conservative, bounded retries.
 //! Schedule [`RoutedClient::retire_replaced_until`] when publishing a replacement.
 //! Removed endpoints remain usable by captured catalogs until that cutoff.
+//! Use [`RoutedClient::retire_replaced_with_deadlines`] to select cutoffs per endpoint,
+//! including already-retiring historical generations. Unpublished candidates are excluded.
 //! [`RoutedClient::close_and_join`] closes the whole related catalog family,
 //! including historical endpoints and owned setup tasks, under one deadline.
 //! Custom connectors must honor their close/join contract. Request deadlines

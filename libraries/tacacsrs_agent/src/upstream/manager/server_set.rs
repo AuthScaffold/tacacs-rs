@@ -176,4 +176,48 @@ impl<Connector: EndpointConnector> ServerSet<Connector> {
     pub(super) fn server_count(&self) -> usize {
         self.servers.len()
     }
+
+    pub(super) fn retire_replaced_until(
+        &self,
+        replacement: &Self,
+        deadline: RequestDeadline,
+        urgent: &std::collections::BTreeSet<&str>,
+    ) {
+        let immediate = RequestDeadline::at(tokio::time::Instant::now());
+        self.client
+            .retire_replaced_with_deadlines(&replacement.client, |name| {
+                if urgent.contains(name) {
+                    immediate
+                } else {
+                    deadline
+                }
+            });
+    }
+
+    pub(super) fn changed_crl_servers(
+        &self,
+        replacement: &Self,
+    ) -> std::collections::BTreeSet<&str> {
+        self.servers
+            .iter()
+            .filter(|old| {
+                replacement
+                    .servers
+                    .iter()
+                    .find(|new| new.server.name == old.server.name)
+                    .is_some_and(|new| {
+                        old.server
+                            .server_authentication
+                            .as_ref()
+                            .and_then(|authentication| authentication.require_crls.as_ref())
+                            != new
+                                .server
+                                .server_authentication
+                                .as_ref()
+                                .and_then(|authentication| authentication.require_crls.as_ref())
+                    })
+            })
+            .map(|old| old.server.name.as_str())
+            .collect()
+    }
 }

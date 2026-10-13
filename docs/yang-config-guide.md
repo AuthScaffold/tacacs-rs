@@ -231,7 +231,11 @@ All supplied lists contribute to the prepared evidence deadline, not only lists 
 The deadline is the earliest `nextUpdate` or `thisUpdate` plus maximum age, further constrained by provider and client-certificate validity.
 Direct clients stop using expired evidence. The supervised agent withdraws expired catalogs while retaining source observation and the canonical configuration.
 Replace the inline source or publish a provider change to trigger fresh materialization. Provider references remain unchanged in the authoritative snapshot.
-New generations use refreshed evidence. In-flight requests retain the existing generation, deadline, and retirement bounds.
+New generations use refreshed evidence. A committed CRL policy or evidence change for an existing server installs an immediate cutoff on its replaced endpoints.
+This includes endpoints already draining from older generations. New bindings through those endpoints stop at publication, and owned cleanup tasks close their active transports.
+Such a change can interrupt in-flight requests; an unknown delivery outcome must not be replayed automatically.
+Identical evidence and rejected candidates do not trigger this cutoff. Unrelated configuration changes retain the ordinary drain budget.
+This is conservative retirement after an evidence change, not proof that every old peer was revoked. Physical closure still depends on runtime scheduling.
 
 Remote retrieval, responder revocation without No Check, scoped CRLs, and broader revocation orchestration remain S4-06 work.
 This mode does not establish full RFC 9887 conformance.
