@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::io::AsyncReadExt;
@@ -16,10 +17,21 @@ impl ProcessDirectory {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("tacacsrs-process-{}-{unique}", std::process::id()));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
+        Self::with_timestamp(unique)
+    }
+
+    fn with_timestamp(timestamp: u128) -> Self {
+        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("tacacsrs-process-{}-{timestamp}-{sequence}", std::process::id()));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("could not create process test directory: {error}"),
+            }
+        }
     }
 }
 
@@ -27,6 +39,15 @@ impl Drop for ProcessDirectory {
     fn drop(&mut self) {
         std::fs::remove_dir_all(&self.0).ok();
     }
+}
+
+#[test]
+fn process_directories_are_unique_when_clock_timestamps_match() {
+    let first = ProcessDirectory::with_timestamp(0);
+    let second = ProcessDirectory::with_timestamp(0);
+    assert_ne!(first.0, second.0);
+    assert!(first.0.is_dir());
+    assert!(second.0.is_dir());
 }
 
 fn agent() -> Command {

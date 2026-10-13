@@ -135,6 +135,11 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             .into_iter()
             .map(|server| PreparedServer::new(server, connect_options).map(Arc::new))
             .collect::<anyhow::Result<Vec<_>>>()?;
+        let credential_lifetime = servers
+            .iter()
+            .try_fold(crate::runtime::CredentialLifetime::unbounded(), |lifetime, server| {
+                lifetime.intersect(server.certificate_lifetime)
+            })?;
         let server_set = Arc::new(ServerSet::new(servers, connector));
         Ok(Self {
             closed: std::sync::atomic::AtomicBool::new(false),
@@ -146,7 +151,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 proxy_downstream_obfuscation,
                 admission: Arc::new(AdmissionRegistry::new(&runtime_policy)),
                 runtime_policy: Arc::new(runtime_policy),
-                credential_lifetime: crate::runtime::CredentialLifetime::unbounded(),
+                credential_lifetime,
             })),
             connect_options,
             publication: PublicationController::new(health),
@@ -500,6 +505,11 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             new_server_slots.push(slot);
         }
 
+        let validity = new_server_slots.iter().try_fold(
+            validity.unwrap_or(crate::runtime::CredentialLifetime::unbounded()),
+            |lifetime, server| lifetime.intersect(server.certificate_lifetime),
+        )?;
+
         let client = previous
             .client
             .with_endpoints(
@@ -523,10 +533,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 !self.closed.load(std::sync::atomic::Ordering::Acquire),
                 "The TACACS+ service closed during preparation"
             );
-            anyhow::ensure!(
-                validity.is_none_or(crate::runtime::CredentialLifetime::is_valid),
-                "Credential validity expired before publication"
-            );
+            anyhow::ensure!(validity.is_valid(), "Credential validity expired before publication");
             let generation = current.generation.wrapping_add(1);
             previous
                 .client
@@ -544,10 +551,15 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                         proxy_downstream_obfuscation,
                         admission: Arc::clone(&current.admission),
                         runtime_policy: Arc::clone(&current.runtime_policy),
-                        credential_lifetime: validity
-                            .unwrap_or(crate::runtime::CredentialLifetime::unbounded()),
+                        credential_lifetime: validity,
                     });
-                    commit()
+                    let mut materialization = commit();
+                    if let Some(commit) = &mut materialization {
+                        if commit.expired == crate::runtime::ExpiredMaterial::None {
+                            commit.validity = validity;
+                        }
+                    }
+                    materialization
                 },
             );
         }

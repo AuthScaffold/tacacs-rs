@@ -9,7 +9,7 @@ use openssl::x509::X509;
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
-use super::{connect_tls, TlsConfigurationBuilder};
+use super::{connect_tls, TlsConfigurationBuilder, ClientIdentityLifetime};
 use crate::helpers::data_contains_pem_header;
 
 /// DER encoding of a client private key.
@@ -55,6 +55,7 @@ pub(crate) struct TlsClientConfig {
     context: SslContext,
     peer_identity: String,
     sni_name: Option<String>,
+    pub(crate) lifetime: Option<ClientIdentityLifetime>,
 }
 
 impl TlsClientConfig {
@@ -120,19 +121,28 @@ impl TlsClientConfig {
                 .context("Failed to parse TLS private key")?;
             builder = builder.with_client_auth_der(vec![certificate], key);
         }
+        let prepared = builder
+            .build()
+            .context("Failed to build TLS configuration")?;
         Ok(Self {
-            context: builder
-                .build()
-                .context("Failed to build TLS configuration")?,
+            context: prepared.context,
+            lifetime: prepared
+                .validity
+                .map(ClientIdentityLifetime::new)
+                .transpose()?,
             peer_identity: peer_identity.to_owned(),
             sni_name: sni_name.map(str::to_owned),
         })
     }
 
     pub(crate) async fn connect(&self, tcp_stream: TcpStream) -> Result<SslStream<TcpStream>> {
-        connect_tls(&self.context, tcp_stream, &self.peer_identity, self.sni_name.as_deref())
-            .await
-            .context("Failed to establish TLS connection")
+        let handshake =
+            connect_tls(&self.context, tcp_stream, &self.peer_identity, self.sni_name.as_deref());
+        match self.lifetime {
+            Some(lifetime) => lifetime.run(handshake).await,
+            None => handshake.await,
+        }
+        .context("Failed to establish TLS connection")
     }
 }
 

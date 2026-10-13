@@ -1,4 +1,4 @@
-//! Provider validity checked against both wall and monotonic clocks.
+//! Provider and certificate validity checked against wall and monotonic clocks.
 
 use std::time::SystemTime;
 

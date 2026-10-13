@@ -312,7 +312,8 @@ async fn conversation_enforces_multi_round_sequence_progression() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
     let session = connection.create_session().unwrap();
     let session_id = session.session_id();
-    let mut conversation = ClientConversation::new(crate::session::ClientSession::shared(session));
+    let mut conversation =
+        ClientConversation::new(crate::session::ClientSession::shared(session), None);
 
     let conversation_task = tokio::spawn(async move {
         assert_eq!(conversation.session_id(), Some(session_id));
@@ -354,12 +355,37 @@ async fn conversation_enforces_multi_round_sequence_progression() {
     ));
 }
 
+#[tokio::test(start_paused = true)]
+async fn retained_conversation_rejects_expired_client_certificate_without_sending() {
+    use crate::transport::tls::{CertificateValidity, ClientIdentityLifetime};
+    let certificate = openssl::x509::X509::from_pem(include_bytes!(
+        "../../../../../lde/containers/config/certificates/client.crt"
+    ))
+    .unwrap();
+    let lifetime = ClientIdentityLifetime {
+        validity: CertificateValidity::from_certificate(&certificate).unwrap(),
+        deadline: crate::RequestDeadline::after(Duration::from_secs(1)).unwrap(),
+    };
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let session = connection.create_session().unwrap();
+    let session_id = session.session_id();
+    let mut conversation =
+        ClientConversation::new(crate::session::ClientSession::shared(session), Some(lifetime));
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(conversation
+        .round_trip(conversation_packet(session_id, 1))
+        .await
+        .is_err());
+    assert_eq!(conversation.session_id(), None);
+}
+
 #[tokio::test]
 async fn invalid_conversation_reply_completes_session() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
     let session = connection.create_session().unwrap();
     let session_id = session.session_id();
-    let mut conversation = ClientConversation::new(crate::session::ClientSession::shared(session));
+    let mut conversation =
+        ClientConversation::new(crate::session::ClientSession::shared(session), None);
 
     let conversation_task = tokio::spawn(async move {
         conversation

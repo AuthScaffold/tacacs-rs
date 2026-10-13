@@ -123,8 +123,11 @@ impl TacacsClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the configured preflight fails.
+    /// Returns an error if the local certificate expired or the configured preflight fails.
     pub async fn connect_prepared(endpoint: PreparedEndpoint) -> anyhow::Result<Self> {
+        if let Some(lifetime) = endpoint.client_identity_lifetime() {
+            lifetime.check()?;
+        }
         let connection = Self::from_prepared(endpoint);
         connection.run_preflight().await?;
         Ok(connection)
@@ -253,7 +256,11 @@ impl TacacsClient {
         expected: Option<ExpectedResponseHeader>,
     ) -> anyhow::Result<ClientSession> {
         self.lifecycle.ensure_open()?;
-        let session = self.create_open_session(expected).await?;
+        let operation = self.create_open_session(expected);
+        let session = match self.endpoint.client_identity_lifetime() {
+            Some(lifetime) => lifetime.run(operation).await?,
+            None => operation.await?,
+        };
         self.lifecycle.ensure_open()?;
         Ok(session)
     }
@@ -300,6 +307,7 @@ impl TacacsClient {
     /// Networking assigns the session identifier and request sequence number,
     /// validates the complete reply header, and completes the underlying
     /// session on every success or error path.
+    /// A configured client certificate bounds execution even without a caller deadline.
     ///
     /// # Errors
     ///
@@ -327,6 +335,11 @@ impl TacacsClient {
     where
         Exchange: FixedExchange,
     {
+        if let Some(lifetime) = self.endpoint.client_identity_lifetime() {
+            return self
+                .execute_classified_until(exchange, lifetime.deadline)
+                .await;
+        }
         let expected =
             ExpectedResponseHeader::fixed(exchange.packet_type(), exchange.minor_version());
         let session = self
@@ -343,6 +356,7 @@ impl TacacsClient {
     /// # Errors
     /// Returns a classified expiry before transmission or an unknown outcome
     /// after the exchange starts. The deadline includes session establishment.
+    /// Client certificate expiry can shorten this deadline but cannot extend it.
     pub async fn execute_classified_until<Exchange>(
         &self,
         exchange: Exchange,
@@ -351,6 +365,13 @@ impl TacacsClient {
     where
         Exchange: FixedExchange,
     {
+        let lifetime = self.endpoint.client_identity_lifetime();
+        if let Some(lifetime) = lifetime {
+            lifetime.check().map_err(FixedExchangeError::not_sent)?;
+        }
+        let deadline = lifetime.map_or(deadline, |lifetime| {
+            crate::RequestDeadline::at(deadline.expires_at().min(lifetime.deadline.expires_at()))
+        });
         let expected =
             ExpectedResponseHeader::fixed(exchange.packet_type(), exchange.minor_version());
         let session = deadline
@@ -365,6 +386,11 @@ impl TacacsClient {
             .map_err(FixedExchangeError::outcome_unknown)
             .and_then(std::convert::identity);
         let _completed = deadline.run(session.complete()).await;
+        if let Some(lifetime) = lifetime {
+            lifetime
+                .check()
+                .map_err(FixedExchangeError::outcome_unknown)?;
+        }
         result
     }
 
@@ -375,7 +401,9 @@ impl TacacsClient {
     ///
     /// Returns an error when a dedicated or shared session cannot be created.
     pub async fn open_conversation(&self) -> anyhow::Result<ClientConversation> {
-        self.create_session().await.map(ClientConversation::new)
+        self.create_session().await.map(|session| {
+            ClientConversation::new(session, self.endpoint.client_identity_lifetime())
+        })
     }
 
     /// Stops the cached shared connection from accepting new sessions.

@@ -16,16 +16,22 @@ use super::ClientSession;
 /// Keep the originating [`crate::TacacsClient`] alive while using a conversation.
 /// Dropping that client closes its transports. Terminal client shutdown can also
 /// force a retained conversation closed when its drain deadline expires.
+/// Each round trip also checks and obeys the configured client certificate's lifetime.
 pub struct ClientConversation {
     session: Option<ClientSession>,
     state: ConversationState,
+    lifetime: Option<crate::transport::tls::ClientIdentityLifetime>,
 }
 
 impl ClientConversation {
-    pub(crate) fn new(session: ClientSession) -> Self {
+    pub(crate) fn new(
+        session: ClientSession,
+        lifetime: Option<crate::transport::tls::ClientIdentityLifetime>,
+    ) -> Self {
         Self {
             state: ConversationState::new(session.session_id()),
             session: Some(session),
+            lifetime,
         }
     }
 
@@ -47,7 +53,12 @@ impl ClientConversation {
     /// packet I/O failure, or a response that does not match the request.
     pub async fn round_trip(&mut self, request: Packet) -> anyhow::Result<Packet> {
         self.state.validate_request(request.header())?;
-        let result = self.round_trip_inner(request).await;
+        let lifetime = self.lifetime;
+        let operation = self.round_trip_inner(request);
+        let result = match lifetime {
+            Some(lifetime) => lifetime.run(operation).await,
+            None => operation.await,
+        };
         if result.is_err() {
             self.complete().await;
         }

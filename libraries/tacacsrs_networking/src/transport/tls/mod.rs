@@ -5,12 +5,15 @@
 
 mod config_builder;
 mod config;
+mod validity;
 #[allow(clippy::module_inception)]
 mod tls;
 
 pub(crate) use config_builder::TlsConfigurationBuilder;
 pub(crate) use config::TlsClientConfig;
 pub use config::{CertificateIdentity, CertificateTrust, PrivateKeyEncoding};
+pub use validity::CertificateValidity;
+pub(crate) use validity::ClientIdentityLifetime;
 
 use anyhow::Context;
 use openssl::ssl::Ssl;

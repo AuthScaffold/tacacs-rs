@@ -148,6 +148,24 @@ impl PreparedEndpoint {
         self.options.timeout()
     }
 
+    /// Returns intrinsic validity for the configured client certificate, when present.
+    ///
+    /// These bounds do not describe provider metadata or negotiated peer certificates.
+    #[must_use]
+    pub fn client_certificate_validity(&self) -> Option<crate::CertificateValidity> {
+        self.client_identity_lifetime()
+            .map(|lifetime| lifetime.validity)
+    }
+
+    pub(crate) fn client_identity_lifetime(
+        &self,
+    ) -> Option<crate::transport::tls::ClientIdentityLifetime> {
+        match &self.transport {
+            PreparedTransport::Tls(config) => config.lifetime,
+            PreparedTransport::Tcp | PreparedTransport::Psk(_, _) => None,
+        }
+    }
+
     pub(crate) const fn security_label(&self) -> &'static str {
         match self.transport {
             PreparedTransport::Tls(_) | PreparedTransport::Psk(_, _) => "tls",
