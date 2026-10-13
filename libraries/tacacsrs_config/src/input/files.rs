@@ -11,30 +11,51 @@ fn data_contains_pem_header(data: &[u8]) -> bool {
         .any(|window| window == PEM_HEADER)
 }
 
-/// Normalizes PEM or DER certificate data into DER bytes.
+/// A normalized certificate file with a leaf and ordered DER intermediates.
+///
+/// Native preparation validates certificate contents, issuer order, and dates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientCertificateChain {
+    /// The first certificate in the input file.
+    pub leaf: Vec<u8>,
+    /// Remaining certificates in input order. Native preparation rejects roots.
+    pub intermediates: Vec<Vec<u8>>,
+}
+
+/// Normalizes a PEM certificate chain or a single DER certificate.
 ///
 /// # Errors
 ///
 /// Returns an error if the data is empty, PEM parsing fails, or the PEM file
-/// does not contain exactly one certificate.
-pub fn normalize_cli_certificate_data(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+/// does not contain any certificates.
+pub fn normalize_cli_certificate_data(data: &[u8]) -> anyhow::Result<ClientCertificateChain> {
     if data.is_empty() {
         anyhow::bail!("client certificate data is empty");
     }
 
     if !data_contains_pem_header(data) {
-        return Ok(data.to_vec());
+        return Ok(ClientCertificateChain {
+            leaf: data.to_vec(),
+            intermediates: Vec::new(),
+        });
     }
 
     let certificates = CertificateDer::pem_slice_iter(data)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| anyhow::anyhow!("cannot parse PEM client certificate: {err}"))?;
 
-    if certificates.len() != 1 {
-        anyhow::bail!("client certificate file must contain exactly one PEM certificate");
-    }
-
-    Ok(certificates[0].as_ref().to_vec())
+    let mut certificates = certificates.into_iter();
+    let leaf = certificates
+        .next()
+        .context("Client certificate file contains no PEM certificates")?
+        .as_ref()
+        .to_vec();
+    Ok(ClientCertificateChain {
+        leaf,
+        intermediates: certificates
+            .map(|certificate| certificate.as_ref().to_vec())
+            .collect(),
+    })
 }
 
 /// Normalizes PEM or DER private key data into DER bytes and a YANG key format.
@@ -74,7 +95,7 @@ pub fn normalize_cli_private_key_data(data: &[u8]) -> anyhow::Result<(Vec<u8>, P
 /// # Errors
 ///
 /// Returns an error if the file cannot be read or parsed.
-pub fn load_client_certificate(path: &Path) -> anyhow::Result<Vec<u8>> {
+pub fn load_client_certificate(path: &Path) -> anyhow::Result<ClientCertificateChain> {
     let cert_data = std::fs::read(path)
         .with_context(|| format!("cannot read client certificate {}", path.display()))?;
     normalize_cli_certificate_data(&cert_data)
@@ -105,17 +126,26 @@ mod tests {
 
     #[test]
     fn der_certificate_passthrough() {
-        assert_eq!(normalize_cli_certificate_data(b"der").unwrap(), b"der");
+        assert_eq!(
+            normalize_cli_certificate_data(b"der").unwrap(),
+            ClientCertificateChain {
+                leaf: b"der".to_vec(),
+                intermediates: Vec::new()
+            }
+        );
     }
 
     #[test]
-    fn client_pem_input_rejects_certificate_chains() {
+    fn client_pem_input_preserves_certificate_chain_order() {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../lde/containers/config/certificates/client.crt");
-        let certificate = std::fs::read(path).unwrap();
-        assert!(normalize_cli_certificate_data(&certificate).is_ok());
-        let chain = [certificate.as_slice(), b"\n", certificate.as_slice()].concat();
-        let error = normalize_cli_certificate_data(&chain).unwrap_err();
-        assert!(error.to_string().contains("exactly one PEM certificate"));
+            .join("../../lde/containers/config/certificates");
+        let certificate = std::fs::read(path.join("client.crt")).unwrap();
+        let intermediate = std::fs::read(path.join("server.crt")).unwrap();
+        let leaf = normalize_cli_certificate_data(&certificate).unwrap();
+        let issuer = normalize_cli_certificate_data(&intermediate).unwrap();
+        let chain = [certificate.as_slice(), b"\n", intermediate.as_slice()].concat();
+        let normalized = normalize_cli_certificate_data(&chain).unwrap();
+        assert_eq!(normalized.leaf, leaf.leaf);
+        assert_eq!(normalized.intermediates, [issuer.leaf]);
     }
 }

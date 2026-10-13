@@ -311,6 +311,11 @@ fn install_certificate_with_key(
         private_key_format: Some(material.private_key_format.into()),
         cleartext_private_key: Some(material.private_key),
         cert_data: Some(material.certificate.into_bytes()),
+        intermediate_certificate: material
+            .intermediates
+            .into_iter()
+            .map(PublicBytes::into_bytes)
+            .collect(),
     });
     certificate.central_keystore_reference = None;
     Some(())

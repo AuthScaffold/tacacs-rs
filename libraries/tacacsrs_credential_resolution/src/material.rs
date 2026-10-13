@@ -80,6 +80,8 @@ pub struct CertificateWithKeyMaterial {
     pub private_key_format: PrivateKeyFormat,
     /// Public end-entity certificate.
     pub certificate: PublicBytes,
+    /// DER intermediate certificates in issuer order, excluding the leaf and root.
+    pub intermediates: Vec<PublicBytes>,
     /// Secret private key corresponding to the certificate.
     pub private_key: SecretBytes,
 }
@@ -158,6 +160,7 @@ mod tests {
     #[test]
     fn provider_material_preserves_encoding_metadata() {
         let certificate = CertificateWithKeyMaterial {
+            intermediates: Vec::new(),
             validity: crate::CredentialValidity::unbounded(),
             public_key_format: Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),
             public_key: Some(PublicBytes::new(b"public-key".to_vec())),

@@ -109,13 +109,13 @@ Configured trust excludes platform roots. Preparation does not modify the author
 
 This replaces the old combined-root behavior. Certificate renewal can require updating an exact `ee-certs` entry.
 Use CA trust only when authorizing other valid certificates issued by that authority is intended.
-Certificate revocation retrieval and client-chain provisioning are not implemented by this change. Full RFC 9887 conformance remains unclaimed.
+Certificate revocation retrieval is not implemented. Full RFC 9887 conformance remains unclaimed.
 
 ## Certificate Input Boundary
 
 Each `cert-data` value must contain exactly one DER certificate. Concatenated certificates and trailing bytes fail before runtime publication.
 This rule also applies to each CA or end-entity trust-bag entry. Multiple entries remain supported.
-CLI client certificate PEM files must contain exactly one certificate. The native decoder no longer silently ignores trailing DER material.
+CLI client certificate files accept a PEM chain or one DER certificate. Each individual DER value must still contain exactly one certificate.
 The development verification override does not relax certificate framing.
 
 If separate `public-key` metadata is supplied, `public-key-format` must also be present, and vice versa.
@@ -123,9 +123,28 @@ TLS preparation supports `ietf-crypto-types:subject-public-key-info-format` with
 The private key must still match the certificate. SSH public-key encoding is explicitly unsupported for TLS certificate metadata.
 Malformed, incomplete, mismatched, and trailing public-key data fail before publication, including when certificate verification is disabled for development.
 
-The current client-identity contract supports one leaf certificate and its matching private key, not a supplied intermediate chain.
-Stage 4 owns a canonical chain-provisioning contract and its provider and mTLS acceptance tests.
-Until that contract exists, multi-certificate client inputs are rejected. Revocation retrieval is also a named Stage 4 requirement, not a current capability.
+### Client Certificate Chains
+
+Inline client identities use the following fields under `certificate/inline-definition`:
+
+| Field | Content |
+| --- | --- |
+| `cert-data` | One base64-encoded DER leaf certificate |
+| `tacacsrs:intermediate-certificate` | An ordered JSON array of base64-encoded DER intermediate certificates |
+| `cleartext-private-key` | The private key that matches the leaf, using the declared key format |
+
+The intermediate list starts with the leaf's issuer and proceeds toward the root. Do not include the leaf again or a self-signed root.
+The same fields work in per-server identities and reusable `client-credentials` bundles. Omit the list when no intermediates are needed.
+Each list entry must be nonempty and unique. Native preparation checks framing, issuer order, signatures, client purpose, and certificate validity.
+Malformed, duplicate, out-of-order, or unrelated intermediates fail before publication. The development peer-verification override does not bypass these local checks.
+
+For CLI PEM files, put the leaf first and append intermediates in issuer order. Do not append the root or concatenate DER certificates.
+The file loader preserves this order in canonical configuration. Native preparation sends the leaf and supplied intermediates to the peer.
+The peer still decides whether the supplied path reaches one of its trust anchors; a missing intermediate can cause handshake rejection.
+
+Credential providers return ordered intermediate bytes with the leaf and key. Materialization installs them only in a derived server value.
+Authoritative snapshots and provider references remain unchanged. The earliest supplied certificate expiry bounds the prepared identity's lifetime.
+Revocation retrieval remains a separate Stage 4 requirement, not a current capability.
 
 ## EPSK Presence
 

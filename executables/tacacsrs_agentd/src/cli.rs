@@ -146,7 +146,8 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) use_tls: bool,
 
-    /// Path to a PEM- or DER-encoded client certificate file for TLS authentication.
+    /// Path to a PEM client certificate chain or one DER certificate.
+    /// Put the leaf first, followed by intermediates in issuer order. Omit the root.
     #[arg(long, value_name = "FILE", requires = "client_key")]
     pub(crate) client_certificate: Option<String>,
 

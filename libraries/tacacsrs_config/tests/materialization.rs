@@ -110,6 +110,10 @@ impl CredentialResolver for CompleteResolver {
         Ok(match request.kind() {
             CredentialKind::CertificateWithKey => {
                 ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+                    intermediates: vec![
+                        PublicBytes::new(b"first-intermediate".to_vec()),
+                        PublicBytes::new(b"second-intermediate".to_vec()),
+                    ],
                     validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
                     public_key_format: Some(
                         tacacsrs_credential_resolution::PublicKeyFormat::SubjectPublicKeyInfoFormat,
@@ -240,6 +244,7 @@ async fn certificate_materialization_preserves_formats_names_and_order() {
         }"#,
     )
     .expect("central certificate configuration must parse");
+    let original = source.clone();
 
     let materialized = enumerate_materialized_servers(
         &source,
@@ -268,6 +273,14 @@ async fn certificate_materialization_preserves_formats_names_and_order() {
     assert_eq!(inline.private_key_format, Some(PrivateKeyFormat::OneAsymmetricKeyFormat),);
     assert_eq!(inline.public_key.as_deref(), Some(b"resolved-public-key".as_slice()));
     assert_eq!(inline.cert_data.as_deref(), Some(b"resolved-certificate".as_slice()));
+    assert_eq!(
+        inline.intermediate_certificate,
+        [
+            b"first-intermediate".to_vec(),
+            b"second-intermediate".to_vec()
+        ]
+    );
+    assert_eq!(source, original);
     assert_eq!(
         inline
             .cleartext_private_key

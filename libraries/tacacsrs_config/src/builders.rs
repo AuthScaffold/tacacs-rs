@@ -191,8 +191,27 @@ impl TacacsPlusServerBuilder {
     /// Selects TLS using a client certificate identity and private key format.
     #[must_use]
     pub fn with_tls_client_certificate_with_key_format(
+        self,
+        cert_data: Option<Vec<u8>>,
+        cleartext_private_key: Option<Vec<u8>>,
+        private_key_format: Option<crypto_types::PrivateKeyFormat>,
+    ) -> Self {
+        self.with_tls_client_certificate_chain(
+            cert_data,
+            Vec::new(),
+            cleartext_private_key,
+            private_key_format,
+        )
+    }
+
+    /// Selects a TLS client identity with DER intermediates in issuer order.
+    ///
+    /// Intermediates exclude the leaf and self-signed root. Native preparation validates the chain.
+    #[must_use]
+    pub fn with_tls_client_certificate_chain(
         mut self,
         cert_data: Option<Vec<u8>>,
+        intermediates: Vec<Vec<u8>>,
         cleartext_private_key: Option<Vec<u8>>,
         private_key_format: Option<crypto_types::PrivateKeyFormat>,
     ) -> Self {
@@ -207,6 +226,7 @@ impl TacacsPlusServerBuilder {
                     cleartext_private_key: cleartext_private_key
                         .map(tacacsrs_secrets::SecretBytes::new),
                     cert_data,
+                    intermediate_certificate: intermediates,
                 }),
                 central_keystore_reference: None,
             }),

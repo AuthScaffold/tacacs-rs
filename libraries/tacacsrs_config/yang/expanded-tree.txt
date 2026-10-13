@@ -10,13 +10,14 @@ module: ietf-system-tacacs-plus
        |     |     +--rw (inline-or-keystore)
        |     |        +--:(inline) {inline-definitions-supported}?
        |     |        |  +--rw inline-definition
-       |     |        |     +--rw public-key-format?             identityref
-       |     |        |     +--rw public-key?                    binary
-       |     |        |     +--rw private-key-format?            identityref
+       |     |        |     +--rw public-key-format?              identityref
+       |     |        |     +--rw public-key?                     binary
+       |     |        |     +--rw private-key-format?             identityref
        |     |        |     +--rw (private-key-type)
        |     |        |     |  +--:(cleartext-private-key) {cleartext-private-keys}?
-       |     |        |     |     +--rw cleartext-private-key?   binary
-       |     |        |     +--rw cert-data?                     end-entity-cert-cms
+       |     |        |     |     +--rw cleartext-private-key?    binary
+       |     |        |     +--rw cert-data?                      end-entity-cert-cms
+       |     |        |     +--rw trs:intermediate-certificate*   binary
        |     |        +--:(central-keystore) {central-keystore-supported,asymmetric-keys}?
        |     |           +--rw central-keystore-reference
        |     |              +--rw asymmetric-key?   ks:central-asymmetric-key-ref {central-keystore-supported,asymmetric-keys}?
@@ -79,13 +80,14 @@ module: ietf-system-tacacs-plus
           |  |  |           |     +--rw (inline-or-keystore)
           |  |  |           |        +--:(inline) {inline-definitions-supported}?
           |  |  |           |        |  +--rw inline-definition
-          |  |  |           |        |     +--rw public-key-format?             identityref
-          |  |  |           |        |     +--rw public-key?                    binary
-          |  |  |           |        |     +--rw private-key-format?            identityref
+          |  |  |           |        |     +--rw public-key-format?              identityref
+          |  |  |           |        |     +--rw public-key?                     binary
+          |  |  |           |        |     +--rw private-key-format?             identityref
           |  |  |           |        |     +--rw (private-key-type)
           |  |  |           |        |     |  +--:(cleartext-private-key) {cleartext-private-keys}?
-          |  |  |           |        |     |     +--rw cleartext-private-key?   binary
-          |  |  |           |        |     +--rw cert-data?                     end-entity-cert-cms
+          |  |  |           |        |     |     +--rw cleartext-private-key?    binary
+          |  |  |           |        |     +--rw cert-data?                      end-entity-cert-cms
+          |  |  |           |        |     +--rw trs:intermediate-certificate*   binary
           |  |  |           |        +--:(central-keystore) {central-keystore-supported,asymmetric-keys}?
           |  |  |           |           +--rw central-keystore-reference
           |  |  |           |              +--rw asymmetric-key?   ks:central-asymmetric-key-ref {central-keystore-supported,asymmetric-keys}?

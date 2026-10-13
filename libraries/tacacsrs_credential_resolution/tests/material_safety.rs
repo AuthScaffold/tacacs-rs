@@ -26,6 +26,7 @@ fn secret_bytes_require_explicit_borrow_and_redact_debug() {
 #[test]
 fn secret_bearing_aggregate_debug_redacts_all_material() {
     let credential = ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+        intermediates: vec![PublicBytes::new(b"intermediate-certificate-value".to_vec())],
         validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
         public_key_format: None,
         public_key: None,
@@ -39,6 +40,7 @@ fn secret_bearing_aggregate_debug_redacts_all_material() {
     assert!(debug.contains("length: 24"));
     assert!(debug.contains("<redacted>"));
     assert!(!debug.contains("public-certificate-value"));
+    assert!(!debug.contains("intermediate-certificate-value"));
     assert!(!debug.contains("private-key-value"));
 }
 

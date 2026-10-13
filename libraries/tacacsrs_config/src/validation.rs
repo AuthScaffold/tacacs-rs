@@ -507,6 +507,7 @@ fn validate_client_identity_key_formats(
                     .as_ref()
                     .map(tacacsrs_secrets::SecretBytes::expose_secret),
                 inline.cert_data.as_deref(),
+                &inline.intermediate_certificate,
                 &path,
             )?;
         }
@@ -566,6 +567,7 @@ fn validate_client_credential_key_formats(
                     .as_ref()
                     .map(tacacsrs_secrets::SecretBytes::expose_secret),
                 inline.cert_data.as_deref(),
+                &inline.intermediate_certificate,
                 &path,
             )?;
         }
@@ -597,6 +599,7 @@ fn validate_inline_asymmetric_key_material(
     public_key: Option<&[u8]>,
     cleartext_private_key: Option<&[u8]>,
     cert_data: Option<&[u8]>,
+    intermediates: &[Vec<u8>],
     context: &str,
 ) -> anyhow::Result<()> {
     if let Some(pk) = public_key {
@@ -607,6 +610,14 @@ fn validate_inline_asymmetric_key_material(
     }
     if let Some(cert) = cert_data {
         validate_binary_data(cert, context, "cert-data")?;
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for intermediate in intermediates {
+        validate_binary_data(intermediate, context, "tacacsrs:intermediate-certificate")?;
+        anyhow::ensure!(
+            seen.insert(intermediate.as_slice()),
+            "{context}: intermediate certificates must be unique"
+        );
     }
     Ok(())
 }

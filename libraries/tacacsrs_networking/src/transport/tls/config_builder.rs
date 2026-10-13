@@ -125,6 +125,7 @@ impl TlsConfigurationBuilder {
             if cert_chain.is_empty() {
                 anyhow::bail!("Client certificate chain was not provided");
             }
+            validate_client_chain(&cert_chain)?;
 
             for certificate in &cert_chain {
                 let current = CertificateValidity::from_certificate(certificate)?;
@@ -153,6 +154,55 @@ impl TlsConfigurationBuilder {
             peer_validity_index,
         })
     }
+}
+
+fn validate_client_chain(chain: &[X509]) -> anyhow::Result<()> {
+    if chain.len() < 2 {
+        return Ok(());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for certificate in chain {
+        anyhow::ensure!(
+            seen.insert(certificate.to_der()?),
+            "Client certificate chain contains duplicate certificates"
+        );
+    }
+    for pair in chain.windows(2) {
+        let issuer = &pair[1];
+        anyhow::ensure!(
+            issuer.issued(&pair[0]) == X509VerifyResult::OK,
+            "Client intermediate certificates must follow issuer order"
+        );
+        let public_key = issuer.public_key()?;
+        anyhow::ensure!(
+            issuer.subject_name().try_cmp(issuer.issuer_name())? != std::cmp::Ordering::Equal
+                || !issuer.verify(&public_key)?,
+            "Client intermediate certificates must not include a self-signed root"
+        );
+    }
+    let mut store = X509StoreBuilder::new()?;
+    store.set_flags(X509VerifyFlags::PARTIAL_CHAIN)?;
+    store.set_purpose(X509PurposeId::SSL_CLIENT)?;
+    let anchor = chain
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("Client certificate chain is empty"))?;
+    store.add_cert(anchor.clone())?;
+    let store = store.build();
+    let mut untrusted = openssl::stack::Stack::new()?;
+    for certificate in chain.iter().skip(1).take(chain.len() - 2) {
+        untrusted.push(certificate.clone())?;
+    }
+    let mut verification = X509StoreContext::new()?;
+    anyhow::ensure!(
+        verification.init(
+            &store,
+            &chain[0],
+            &untrusted,
+            openssl::x509::X509StoreContextRef::verify_cert
+        )?,
+        "Client certificate chain failed native validation"
+    );
+    Ok(())
 }
 
 fn configure_certificate_trust(

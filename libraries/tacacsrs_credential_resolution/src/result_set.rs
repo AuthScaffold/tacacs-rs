@@ -190,6 +190,7 @@ mod tests {
             let credential = match request.kind() {
                 CredentialKind::CertificateWithKey => {
                     ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+                        intermediates: Vec::new(),
                         validity: crate::CredentialValidity::unbounded(),
                         public_key_format: None,
                         public_key: None,

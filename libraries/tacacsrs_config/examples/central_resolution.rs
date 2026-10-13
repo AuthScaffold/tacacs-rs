@@ -45,6 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_response(
             plan.requests()[0].slot(),
             ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+                intermediates: Vec::new(),
                 validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
                 public_key_format: Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),
                 public_key: Some(PublicBytes::new(b"example public key bytes".to_vec())),

@@ -98,7 +98,8 @@ pub struct Cli {
     #[arg(long, value_name = "NAME", requires = "use_tls", conflicts_with = "service_endpoint")]
     pub tls_server_name: Option<String>,
 
-    /// Path to a PEM- or DER-encoded client certificate file for TLS authentication
+    /// Path to a PEM client certificate chain or one DER certificate.
+    /// Put the leaf first, followed by intermediates in issuer order. Omit the root.
     #[arg(long, value_name = "FILE", requires = "client_key", conflicts_with = "service_endpoint")]
     pub client_certificate: Option<String>,
 

@@ -82,6 +82,72 @@ fn generated_central_certificate_shape_and_choice_metadata() {
 }
 
 #[test]
+fn canonical_client_chains_round_trip_through_inline_and_bundle_inputs() {
+    let inline = serde_json::json!({
+        "private-key-format": "ietf-crypto-types:one-asymmetric-key-format",
+        "cleartext-private-key": "AQ==", "cert-data": "Ag==",
+        "tacacsrs:intermediate-certificate": ["Aw==", "BAU="]
+    });
+    for bundled in [false, true] {
+        let identity = serde_json::json!({"certificate": {"inline-definition": inline}});
+        let mut document = serde_json::json!({"ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [{"name": "chain", "address": "192.0.2.1", "port": 300,
+                "server-type": "accounting", "client-identity": identity}]
+        }});
+        if bundled {
+            document["ietf-system-tacacs-plus:tacacs-plus"]["client-credentials"] = serde_json::json!([
+                {"id": "bundle", "certificate": {"inline-definition": inline}}
+            ]);
+            document["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["client-identity"] =
+                serde_json::json!({"credentials-reference": "bundle"});
+        }
+        let source = parse_yang_json(&document.to_string()).unwrap();
+        let original = source.clone();
+        let enumerated = tacacsrs_config::enumerate_server(&source, "chain").unwrap();
+        let certificate = enumerated
+            .client_identity
+            .unwrap()
+            .certificate
+            .unwrap()
+            .inline_definition
+            .unwrap();
+        assert_eq!(certificate.intermediate_certificate, [vec![3], vec![4, 5]]);
+        let serialized = serde_json::to_value(&certificate).unwrap();
+        assert_eq!(
+            serialized["tacacsrs:intermediate-certificate"],
+            inline["tacacsrs:intermediate-certificate"]
+        );
+        assert_eq!(source, original);
+        let certificate = if bundled {
+            &mut document["ietf-system-tacacs-plus:tacacs-plus"]["client-credentials"][0]
+                ["certificate"]["inline-definition"]
+        } else {
+            &mut document["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["client-identity"]
+                ["certificate"]["inline-definition"]
+        };
+        certificate["tacacsrs:intermediate-certificate"] =
+            serialized["tacacsrs:intermediate-certificate"].clone();
+        let round_trip = parse_yang_json(&document.to_string()).unwrap();
+        assert_eq!(round_trip, original);
+        for invalid in [
+            serde_json::json!([""]),
+            serde_json::json!(["Aw==", "Aw=="]),
+            serde_json::json!(["%%%"]),
+        ] {
+            let certificate = if bundled {
+                &mut document["ietf-system-tacacs-plus:tacacs-plus"]["client-credentials"][0]
+                    ["certificate"]["inline-definition"]
+            } else {
+                &mut document["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["client-identity"]
+                    ["certificate"]["inline-definition"]
+            };
+            certificate["tacacsrs:intermediate-certificate"] = invalid;
+            assert!(parse_yang_json(&document.to_string()).is_err());
+        }
+    }
+}
+
+#[test]
 fn generated_central_epsk_shape_preserves_protocol_metadata() {
     let epsk = tacacsrs_config::Tls13Epsk {
         inline_definition: None,

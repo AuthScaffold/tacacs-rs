@@ -27,6 +27,8 @@ pub enum PrivateKeyEncoding {
 pub struct CertificateIdentity<'a> {
     /// End-entity certificate in DER format.
     pub certificate: &'a [u8],
+    /// DER intermediate certificates in issuer order, excluding the leaf and root.
+    pub intermediates: &'a [&'a [u8]],
     /// Optional DER `SubjectPublicKeyInfo` that must match the certificate's key.
     pub public_key_info: Option<&'a [u8]>,
     /// Private key corresponding to the certificate.
@@ -120,7 +122,15 @@ impl TlsClientConfig {
             }
             let key = parse_private_key_data(identity.private_key, identity.private_key_encoding)
                 .context("Failed to parse TLS private key")?;
-            builder = builder.with_client_auth_der(vec![certificate], key);
+            let mut chain = Vec::with_capacity(identity.intermediates.len() + 1);
+            chain.push(certificate);
+            for intermediate in identity.intermediates {
+                chain.push(
+                    parse_certificate_data(intermediate)
+                        .context("Failed to parse TLS client intermediate certificate")?,
+                );
+            }
+            builder = builder.with_client_auth_der(chain, key);
         }
         let prepared = builder
             .build()
@@ -270,6 +280,7 @@ mod tests {
             None,
             CertificateTrust::Platform,
             Some(CertificateIdentity {
+                intermediates: &[],
                 certificate: &der,
                 public_key_info: None,
                 private_key: &key,
@@ -302,6 +313,7 @@ mod tests {
                     );
                 }
                 let identity = CertificateIdentity {
+                    intermediates: &[],
                     certificate: &combined,
                     public_key_info: None,
                     private_key: &key,

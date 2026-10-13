@@ -156,7 +156,12 @@ async fn client_certificate_tls_operations() -> Result<()> {
     let (key, format) = load_client_private_key(&certificates().join("client.key"))?;
     let cert = load_client_certificate(&certificates().join("client.crt"))?;
     let mut server = server("TACPLUS_TLS_ADDR", 4449)?
-        .with_tls_client_certificate_with_key_format(Some(cert), Some(key), Some(format))
+        .with_tls_client_certificate_chain(
+            Some(cert.leaf),
+            cert.intermediates,
+            Some(key),
+            Some(format),
+        )
         .build();
     server.server_authentication = Some(trust_store()?);
     operations(server).await

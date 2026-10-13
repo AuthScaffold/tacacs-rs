@@ -314,6 +314,52 @@ module tacacsrs {
     }
   }
 
+  grouping client-certificate-chain {
+    description
+      "Intermediate certificates for a configured TLS client identity.";
+    leaf-list intermediate-certificate {
+      type binary {
+        length "1..max";
+      }
+      ordered-by user;
+      description
+        "DER-encoded intermediate certificates in issuer order, starting
+         with the issuer of cert-data. Each entry contains one X.509
+         certificate. Do not include the leaf or a self-signed root.";
+    }
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
+        + "sys-tcs-plus:client-credentials/"
+        + "sys-tcs-plus:auth-type/"
+        + "sys-tcs-plus:certificate/"
+        + "sys-tcs-plus:certificate/"
+        + "sys-tcs-plus:inline-or-keystore/"
+        + "sys-tcs-plus:inline/"
+        + "sys-tcs-plus:inline-definition" {
+    description
+      "Adds a client certificate chain to reusable inline credentials.";
+    uses client-certificate-chain;
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
+        + "sys-tcs-plus:server/"
+        + "sys-tcs-plus:security/"
+        + "sys-tcs-plus:tls/"
+        + "sys-tcs-plus:client-identity/"
+        + "sys-tcs-plus:ref-or-explicit/"
+        + "sys-tcs-plus:explicit/"
+        + "sys-tcs-plus:auth-type/"
+        + "sys-tcs-plus:certificate/"
+        + "sys-tcs-plus:certificate/"
+        + "sys-tcs-plus:inline-or-keystore/"
+        + "sys-tcs-plus:inline/"
+        + "sys-tcs-plus:inline-definition" {
+    description
+      "Adds a client certificate chain to per-server inline credentials.";
+    uses client-certificate-chain;
+  }
+
   augment "/sys:system/sys-tcs-plus:tacacs-plus/"
         + "sys-tcs-plus:client-credentials/"
         + "sys-tcs-plus:auth-type/"

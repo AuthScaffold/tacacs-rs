@@ -614,6 +614,14 @@ pub mod keystore {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub cert_data: Option<Vec<u8>>,
+        /// DER-encoded intermediate certificates in issuer order, starting
+        /// with the issuer of cert-data. Each entry contains one X.509
+        /// certificate. Do not include the leaf or a self-signed root.
+        #[serde(rename = "tacacsrs:intermediate-certificate")]
+        #[serde(with = "crate::serde_helpers::base64_binary::vec_bytes")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub intermediate_certificate: Vec<Vec<u8>>,
     }
 
     /// Choice constraints for [`EndEntityCertWithKeyInlineDefinition`].
