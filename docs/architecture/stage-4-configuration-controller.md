@@ -20,6 +20,7 @@ Commit `23e7f98` adds intrinsic configured client-certificate validity, includin
 Commit `7b3eed7` completes S4-04 with negotiated peer-path expiry and owned idle-transport retirement.
 Commit `3897414` completes S4-05 with canonical client-chain provisioning and native mTLS verification.
 Commit `567ec16` starts S4-06 with canonical required issuer-signed OCSP stapling and bounded evidence lifetime.
+Commit `d78cf06` adds delegated OCSP signer authorization and responder-certificate lifetime bounds.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
 
@@ -33,7 +34,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
-- [ ] S4-06: Commit `567ec16` enforces canonical issuer-signed stapling, strict unavailable-status behavior, and evidence freshness during TLS and transport use. Delegated responders, issuer/intermediate revocation, and broader retrieval remain open. See [required stapled evidence](#required-stapled-evidence).
+- [ ] S4-06: Commit `567ec16` enforces required stapling, strict unavailable-status behavior, and evidence freshness. Commit `d78cf06` adds authorized delegated responders with No Check. Responder and issuer-chain revocation plus broader retrieval remain open. See [delegated responders](#delegated-responders).
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
 ## Policy Observation
@@ -1182,3 +1183,67 @@ S4-06 remains open. This mode covers issuer-signed peer-leaf staples, not comple
 Remaining work includes delegated responders, issuer/intermediate revocation, and controller/provider integration for broader OCSP or CRL retrieval and refresh.
 Future modes must retain explicit freshness, failure behavior, source authority, cancellation ownership, and native verification tests.
 S4-07 operational statistics remains open. No full RFC 9887 conformance claim is made.
+
+## Delegated Responders
+
+Commit `d78cf06` extends the existing required-staple policy to authorized OCSP responders issued directly by the peer certificate's issuer.
+The policy's shape, default maximum age, and failure behavior remain unchanged. Updated YANG descriptions state the delegated-responder requirements.
+The original issuer-signed path remains supported.
+
+### Authorization and Rationale
+
+A CA can delegate OCSP signing to a separate certificate rather than use its issuing key for every status response.
+The responder certificate must carry `id-kp-OCSPSigning`. If its key-usage extension is present, it must permit digital signatures.
+The peer's issuer must issue and sign that responder certificate directly. Embedded certificates do not become trust anchors.
+
+OpenSSL verifies the response signature, certificate path, and OCSP authorization against an issuer-scoped store.
+Verification disables fallback to unrelated explicit OCSP trust grants. It does not disable signature, chain, or authorization checks.
+The native signer accessor identifies the certificate actually used by verification, including an embedded delegated certificate.
+Additional explicit checks enforce direct issuance and signing-key usage.
+
+This increment requires exactly one noncritical `id-pkix-ocsp-nocheck` extension whose value is DER NULL.
+No Check permits omission of a separate responder-certificate revocation check during that certificate's validity period.
+Without it, a delegated responder would need its own revocation evidence. That retrieval path remains unimplemented, so those responses fail closed.
+Malformed, duplicate, or critical No Check extensions are rejected.
+
+### Lifetime and Ownership
+
+The accepted evidence interval intersects the actual signer certificate's validity, the issuer's validity, and the existing response freshness limits.
+A short-lived responder therefore retires the connection before a longer OCSP deadline.
+Unused certificates embedded in the response do not shorten the selected signer's interval.
+Existing owned transport expiry, handshake-time rejection, and client-authentication protection remain in place.
+No canonical source, reference, or runtime revision semantics change.
+
+The small native adapter keeps the response and supplemental certificate stack alive while reading their borrowed signer and extension data.
+It checks returned pointers and indices and returns only owned timestamp values. It does not free borrowed native objects or export raw pointers.
+Each unsafe operation records its ownership and lifetime assumptions. The native matrix exercises issuer and delegated signer paths.
+
+### Nearby Defect
+
+The rejection matrix initially accepted a responder whose key usage allowed encryption but not signing.
+OpenSSL's OCSP authorization alone did not reject that case in the tested native version.
+An explicit digital-signature check now rejects it. An absent key-usage extension remains valid because it imposes no usage restriction.
+
+### Verification
+
+The authorized-delegation regression failed against the issuer-only implementation and passes after this change.
+Native tests verify accepted delegation, responder-limited idle expiry, absent key usage, and an unrelated expired certificate embedded in a valid response.
+They reject missing or wrong OCSP usage, encryption-only key usage, missing or invalid No Check, expired or future responders, and wrong issuer signatures.
+The existing issuer-signed status, signature, freshness, and mTLS protection matrix also passes.
+
+All-feature workspace tests pass, including 189 agent tests, 86 configuration tests, 169 networking tests with two existing ignored tests, and fifteen prepared-source tests.
+Strict workspace Clippy, workspace build, nightly formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+All nine independent TACACS+ peer cases pass. All 14 generator tests and deterministic regeneration pass.
+Both pure revocation tests pass under Miri. Native OpenSSL calls remain unsupported by Miri; the new native adapter is not Miri-verified.
+Editor diagnostics and whitespace checks are clear. Native Redis, live SONiC, and Windows checks were not rerun.
+
+No dependency, lockfile, IPC schema, or canonical field-shape changes occur. Only the policy descriptions and their generated documentation hashes change.
+Generated Rust SHA-256: `ba4a5e0e8c740c911acde3781b05970c75d6f49f0b7cae39db20109cfec5da0f`.
+Project module SHA-256: `a387521446fe568cf1f86f879049085aa411a717101f0b5c84e50bc0fab2d350`.
+The expanded-tree hash remains `fb513c5d60fca78d91292178dff9cf266f630422f7ac51fadb3657edaa806bad`.
+
+### Remaining Work
+
+S4-06 remains open for responder revocation without No Check, issuer/intermediate revocation, and broader evidence retrieval and refresh.
+This implementation checks the peer leaf's stapled status. It does not establish complete revocation coverage or full RFC 9887 conformance.
+S4-07 operational statistics remains open.
