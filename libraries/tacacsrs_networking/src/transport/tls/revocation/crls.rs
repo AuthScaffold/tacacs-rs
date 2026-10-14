@@ -8,7 +8,7 @@ use foreign_types::ForeignTypeRef;
 use openssl::nid::Nid;
 use openssl::ssl::{Ssl, SslRef};
 use openssl::stack::{Stack, StackRef};
-use openssl::x509::{X509, X509Crl, X509StoreContext, X509PurposeId};
+use openssl::x509::{X509, X509Ref, X509Crl, X509StoreContext, X509PurposeId};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::verify::X509VerifyFlags;
 
@@ -88,8 +88,17 @@ impl CrlEvidence {
         })
     }
 
-    #[allow(unsafe_code)]
     fn verify(&self, chain: &StackRef<X509>) -> anyhow::Result<()> {
+        self.verify_with_purpose(chain, X509PurposeId::SSL_SERVER, true)
+    }
+
+    #[allow(unsafe_code)]
+    fn verify_with_purpose(
+        &self,
+        chain: &StackRef<X509>,
+        purpose: X509PurposeId,
+        entire_chain: bool,
+    ) -> anyhow::Result<()> {
         self.lifetime.check()?;
         let leaf = chain.get(0).context("Verified peer chain is empty")?;
         let anchor = chain
@@ -97,12 +106,12 @@ impl CrlEvidence {
             .next_back()
             .context("Verified peer anchor is missing")?;
         let mut store = X509StoreBuilder::new()?;
-        store.set_flags(
-            X509VerifyFlags::PARTIAL_CHAIN
-                | X509VerifyFlags::CRL_CHECK
-                | X509VerifyFlags::CRL_CHECK_ALL,
-        )?;
-        store.set_purpose(X509PurposeId::SSL_SERVER)?;
+        let mut flags = X509VerifyFlags::PARTIAL_CHAIN | X509VerifyFlags::CRL_CHECK;
+        if entire_chain {
+            flags |= X509VerifyFlags::CRL_CHECK_ALL;
+        }
+        store.set_flags(flags)?;
+        store.set_purpose(purpose)?;
         store.add_cert(anchor.to_owned())?;
         for crl in &self.lists {
             // SAFETY: Both native objects remain alive. OpenSSL takes its own
@@ -213,4 +222,22 @@ pub(in crate::transport::tls) fn require_verified(ssl: &SslRef) -> anyhow::Resul
         Some(Err(error)) => anyhow::bail!("CRL verification failed: {error}"),
         None => anyhow::bail!("Required CRL evidence was not verified"),
     }
+}
+
+pub(super) fn verify_responder(
+    ssl: &SslRef,
+    signer: &X509Ref,
+    issuer: &X509Ref,
+) -> anyhow::Result<()> {
+    let connection = ssl
+        .ex_data(index()?)
+        .context("Delegated OCSP responder requires No Check or configured CRL evidence")?;
+    require_verified(ssl)?;
+    let mut chain = Stack::new()?;
+    chain.push(signer.to_owned())?;
+    chain.push(issuer.to_owned())?;
+    connection
+        .evidence
+        .verify_with_purpose(&chain, X509PurposeId::OCSP_HELPER, false)
+        .context("OCSP responder CRL validation failed")
 }

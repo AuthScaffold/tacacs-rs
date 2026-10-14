@@ -177,7 +177,7 @@ To require fresh authenticated OCSP evidence, add this member inside `server-aut
 ```
 
 The container enables the requirement. Its maximum age defaults to 300 seconds and must be a positive `uint32` value.
-Omitting the container leaves revocation checking disabled without disabling normal certificate verification.
+Omitting the container disables the OCSP requirement, not separately configured CRL checks or normal certificate verification.
 Required stapling cannot be combined with PSK authentication or the development certificate-verification override.
 
 The client requests a staple and verifies it during the TLS handshake, before sending its client certificate or TACACS+ data.
@@ -187,9 +187,12 @@ The issuer must be available from certificate chains or configured CA material. 
 Certificate IDs can use SHA-1 or SHA-256. Responses larger than 64 KiB and trailing DER data are rejected.
 
 Delegated responders must have the `id-kp-OCSPSigning` extended key usage. If key usage is present, it must permit digital signatures.
-They must also contain exactly one noncritical `id-pkix-ocsp-nocheck` extension with a DER NULL value.
-That extension lets clients omit a separate revocation check for the responder certificate during its validity period.
-Responders without No Check remain unsupported until responder-revocation retrieval is implemented. Their staples fail closed.
+They also require either a valid No Check extension or verified CRL evidence supplied through `tacacsrs:require-crls`.
+A present `id-pkix-ocsp-nocheck` extension must occur exactly once, be noncritical, and contain DER NULL.
+That extension permits omission of a separate responder-certificate revocation check during its validity period.
+Malformed, duplicate, or critical No Check extensions fail even when CRLs are available.
+Without No Check, the verifier checks the responder against its direct issuer's configured CRL after the peer path passes CRL verification.
+Missing evidence, invalid signatures, stale lists, and revoked responders fail closed. TLS callbacks perform no retrieval I/O.
 OpenSSL verifies the response signature, delegation, and certificate path. Expired, future, incorrectly issued, or incorrectly constrained responders are rejected.
 
 Freshness ends at the earlier of `nextUpdate` and `thisUpdate` plus the configured maximum age.
@@ -198,8 +201,8 @@ The verified interval bounds the connection lifetime, including idle transports.
 The actual signer's certificate validity also bounds this interval. Unused certificates embedded in the response do not shorten it.
 Accurate system time remains necessary; runtime scheduling limits still apply to physical transport closure.
 
-This stapling mode checks the peer leaf only. The separate full-CRL mode below checks the CA-authenticated path.
-Background OCSP queries and responder-revocation retrieval remain unimplemented.
+Stapling checks the peer leaf. The full-CRL requirement below can also check the CA-authenticated path and non-exempt delegated responders.
+Background OCSP queries and certificate-driven responder-evidence retrieval remain unimplemented.
 It does not claim complete revocation coverage or full RFC 9887 conformance.
 
 ## Required Full CRLs
@@ -226,7 +229,10 @@ Delta CRLs, issuing-distribution-point extensions, and freshest-CRL references a
 
 Native verification checks the accepted certificate path against the supplied lists before client authentication or TACACS+ data.
 Bad signatures, revoked leaves or intermediates, and incomplete evidence reject the TLS connection. Missing CRLs never fall back to unchecked authentication.
-This mode cannot be combined with exact peer pins, PSK authentication, required stapled OCSP, or disabled certificate verification.
+This mode cannot be combined with exact peer pins, PSK authentication, or disabled certificate verification.
+It can be combined with required stapled OCSP in per-server policy or reusable credential bundles.
+Both checks must pass. A good staple cannot override a revoked CRL status, and a good CRL cannot replace a required staple.
+The earliest CRL, OCSP, responder, or peer-path deadline limits transport lifetime.
 
 All supplied lists contribute to the prepared evidence deadline, not only lists later used by a connection.
 The deadline is the earliest `nextUpdate` or `thisUpdate` plus maximum age, further constrained by provider and client-certificate validity.
@@ -238,7 +244,7 @@ Such a change can interrupt in-flight requests; an unknown delivery outcome must
 Identical evidence and rejected candidates do not trigger this cutoff. Unrelated configuration changes retain the ordinary drain budget.
 This is conservative retirement after an evidence change, not proof that every old peer was revoked. Physical closure still depends on runtime scheduling.
 
-Certificate-driven retrieval, responder revocation without No Check, and scoped CRLs remain S4-06 work.
+Certificate-driven retrieval, OCSP queries, and scoped CRLs remain S4-06 work.
 This mode does not establish full RFC 9887 conformance.
 
 ### HTTP CRL Provider

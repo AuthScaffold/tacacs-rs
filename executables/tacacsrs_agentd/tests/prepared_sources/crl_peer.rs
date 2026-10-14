@@ -134,7 +134,7 @@ pub(super) async fn make_crl(directory: &Path, revoked: bool, stale: bool) -> Re
     make_issuer_crl(directory, &issuer, &key, revoked.then_some(&peer), stale).await
 }
 
-async fn make_issuer_crl(
+pub(super) async fn make_issuer_crl(
     directory: &Path,
     issuer: &X509,
     key: &PKey<openssl::pkey::Private>,

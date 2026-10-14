@@ -94,10 +94,10 @@ pub(super) fn verified_validity(ssl: &SslRef) -> anyhow::Result<Option<Certifica
 
 /// Controls mandatory, fresh stapled OCSP evidence for a TLS peer leaf.
 ///
-/// The default leaves revocation checking disabled. Required evidence fails closed.
+/// The default disables OCSP requirements, not configured CRL checks. Required evidence fails closed.
 /// Responses can be signed by the issuer or its authorized delegated responder.
-/// Delegated responders require OCSP signing usage and a noncritical No Check extension.
-/// SHA-1 and SHA-256 certificate IDs are supported. Intermediate revocation is not supported.
+/// Delegated responders require OCSP signing usage and either valid No Check or verified configured CRLs.
+/// SHA-1 and SHA-256 certificate IDs are supported. OCSP covers the peer leaf; CRLs can also cover its CA path.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub struct CertificateRevocationPolicy {
     maximum_age_seconds: Option<NonZeroU32>,
@@ -180,7 +180,7 @@ impl CertificateRevocationPolicy {
                         .is_ok_and(|key| peer.verify(&key).unwrap_or(false))
             })
             .context("OCSP requires the authenticated peer's issuer certificate")?;
-        let signer_validity = responder::verify(&basic, issuer)?;
+        let signer_validity = responder::verify(&basic, issuer, ssl)?;
         let mut status = None;
         for digest in [MessageDigest::sha1(), MessageDigest::sha256()] {
             let identifier = OcspCertId::from_cert(digest, &peer, issuer)?;

@@ -300,7 +300,6 @@ fn validate_server_authentication(
         server_authentication.require_crls.as_ref(),
         server_authentication.ee_certs.is_some(),
         server_authentication.tls13_epsks.is_some(),
-        server_authentication.require_stapled_ocsp.is_some(),
     )?;
     validate_ocsp_policy(
         server_authentication.require_stapled_ocsp.as_ref(),
@@ -355,7 +354,6 @@ fn validate_server_credentials(credentials: &ServerCredentials) -> anyhow::Resul
         credentials.require_crls.as_ref(),
         credentials.ee_certs.is_some(),
         credentials.tls13_epsks.is_some(),
-        credentials.require_stapled_ocsp.is_some(),
     )?;
     validate_ocsp_policy(
         credentials.require_stapled_ocsp.as_ref(),
@@ -374,16 +372,12 @@ fn validate_crl_policy(
     policy: Option<&crate::tacacsrs::RequireCrls>,
     pins: bool,
     epsk: bool,
-    ocsp: bool,
 ) -> anyhow::Result<()> {
     let Some(policy) = policy else {
         return Ok(());
     };
     anyhow::ensure!(policy.max_age_seconds > 0, "CRL maximum age must be positive");
-    anyhow::ensure!(
-        !pins && !epsk && !ocsp,
-        "CRL mode cannot be combined with exact pins, PSK, or stapled OCSP"
-    );
+    anyhow::ensure!(!pins && !epsk, "CRL mode cannot be combined with exact pins or PSK");
     anyhow::ensure!(
         policy.crl.is_some() != policy.evidence_reference.is_some(),
         "CRL policy requires exactly one inline or provider evidence source"

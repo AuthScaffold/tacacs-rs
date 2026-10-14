@@ -304,6 +304,15 @@ async fn delegated_staples_reject_unauthorized_or_unusable_responders() -> Resul
 }
 
 async fn probe(staple: Option<Vec<u8>>, expiry: Option<Duration>) -> Result<bool> {
+    probe_with_crls(staple, expiry, None, 300).await
+}
+
+async fn probe_with_crls(
+    staple: Option<Vec<u8>>,
+    expiry: Option<Duration>,
+    crls: Option<Vec<Vec<u8>>>,
+    crl_maximum_age: u32,
+) -> Result<bool> {
     let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
     let context = peer_context(staple, &issuer)?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -336,6 +345,11 @@ async fn probe(staple: Option<Vec<u8>>, expiry: Option<Duration>) -> Result<bool
     });
     authentication.require_stapled_ocsp = Some(tacacsrs_config::tacacsrs::RequireStapledOcsp {
         max_response_age_seconds: 300,
+    });
+    authentication.require_crls = crls.map(|lists| tacacsrs_config::tacacsrs::RequireCrls {
+        max_age_seconds: crl_maximum_age,
+        crl: Some(lists),
+        evidence_reference: None,
     });
     let original = server.clone();
     let endpoint = prepare_endpoint(&server, PrepareOptions::default())?;
@@ -386,6 +400,141 @@ async fn probe(staple: Option<Vec<u8>>, expiry: Option<Duration>) -> Result<bool
         .await?;
     tokio::time::timeout(Duration::from_secs(5), peer).await???;
     Ok(accepted)
+}
+
+#[tokio::test]
+async fn delegated_responder_without_no_check_uses_required_crls() -> Result<()> {
+    let directory = Directory::new()?;
+    let server = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let (responder, key) = delegated_responder(ResponderCase::MissingNoCheck)?;
+    let response = signed_response_with_responder(
+        &directory.0,
+        &server,
+        "good",
+        Some(1440),
+        Some((&responder, &key)),
+        None,
+    )
+    .await?;
+    let crl = super::crl_peer::make_crl(&directory.0, false, false).await?;
+    assert!(
+        probe_with_crls(Some(response), Some(Duration::from_secs(61)), Some(vec![crl]), 300)
+            .await?,
+        "a directly authorized responder can use a valid issuer CRL instead of No Check"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn combined_evidence_rejects_revoked_responders_and_conflicting_peer_status() -> Result<()> {
+    let directory = Directory::new()?;
+    let server = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let issuer_key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let (responder, key) = delegated_responder(ResponderCase::MissingNoCheck)?;
+    let good = signed_response_with_responder(
+        &directory.0,
+        &server,
+        "good",
+        Some(1440),
+        Some((&responder, &key)),
+        None,
+    )
+    .await?;
+    let good_crl = super::crl_peer::make_crl(&directory.0, false, false).await?;
+    let stale_crl = super::crl_peer::make_crl(&directory.0, false, true).await?;
+    let error = probe_with_crls(Some(good.clone()), None, Some(vec![stale_crl]), 300)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("CRL is stale"));
+    let revoked_responder = super::crl_peer::make_issuer_crl(
+        &directory.0,
+        &issuer,
+        &issuer_key,
+        Some(&responder),
+        false,
+    )
+    .await?;
+    let revoked_peer = super::crl_peer::make_crl(&directory.0, true, false).await?;
+    let mut forged = good_crl.clone();
+    *forged.last_mut().unwrap() ^= 1;
+    for (label, crl) in [
+        ("responder revoked", revoked_responder),
+        ("peer revoked", revoked_peer),
+        ("forged CRL", forged),
+    ] {
+        assert!(!probe_with_crls(Some(good.clone()), None, Some(vec![crl]), 300).await?, "{label}");
+    }
+    for status in ["revoked", "unknown"] {
+        let response = signed_response_with_responder(
+            &directory.0,
+            &server,
+            status,
+            Some(1440),
+            Some((&responder, &key)),
+            None,
+        )
+        .await?;
+        assert!(
+            !probe_with_crls(Some(response), None, Some(vec![good_crl.clone()]), 300).await?,
+            "{status}"
+        );
+    }
+    assert!(!probe_with_crls(None, None, Some(vec![good_crl.clone()]), 300).await?);
+    assert!(
+        probe_with_crls(Some(good), Some(Duration::from_secs(11)), Some(vec![good_crl]), 10)
+            .await?,
+        "CRL freshness must bound use before responder and OCSP expiry"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn combined_evidence_preserves_responder_authorization_and_no_check_validation() -> Result<()>
+{
+    let directory = Directory::new()?;
+    let server = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let crl = super::crl_peer::make_crl(&directory.0, false, false).await?;
+    for case in [
+        ResponderCase::WrongKeyUsage,
+        ResponderCase::MissingUsage,
+        ResponderCase::MalformedNoCheck,
+        ResponderCase::CriticalNoCheck,
+        ResponderCase::DuplicateNoCheck,
+    ] {
+        let (responder, key) = delegated_responder(case)?;
+        let response = signed_response_with_responder(
+            &directory.0,
+            &server,
+            "good",
+            Some(1440),
+            Some((&responder, &key)),
+            None,
+        )
+        .await?;
+        assert!(
+            !probe_with_crls(Some(response), None, Some(vec![crl.clone()]), 300).await?,
+            "{case:?}"
+        );
+    }
+    let (responder, key) = delegated_responder(ResponderCase::Authorized)?;
+    let response = signed_response_with_responder(
+        &directory.0,
+        &server,
+        "good",
+        Some(1440),
+        Some((&responder, &key)),
+        None,
+    )
+    .await?;
+    assert!(probe_with_crls(Some(response), None, Some(vec![crl.clone()]), 300).await?);
+    let response = signed_response(&directory.0, &server, "good", Some(1)).await?;
+    assert!(
+        probe_with_crls(Some(response), Some(Duration::from_secs(61)), Some(vec![crl]), 300)
+            .await?,
+        "OCSP freshness must still bound use before CRL expiry"
+    );
+    Ok(())
 }
 
 #[tokio::test]

@@ -170,10 +170,6 @@ impl TlsClientConfig {
             !self.verification_disabled || policy.maximum_response_age().is_none(),
             "Required OCSP evidence cannot be combined with disabled certificate verification"
         );
-        anyhow::ensure!(
-            self.crls.is_none() || policy.maximum_response_age().is_none(),
-            "CRL and stapled OCSP modes cannot be combined"
-        );
         self.revocation = policy;
         Ok(self)
     }
@@ -186,10 +182,6 @@ impl TlsClientConfig {
         anyhow::ensure!(
             !self.verification_disabled && !self.peer_pins,
             "CRL mode requires CA authentication with certificate verification enabled"
-        );
-        anyhow::ensure!(
-            self.revocation.maximum_response_age().is_none(),
-            "CRL and stapled OCSP modes cannot be combined"
         );
         let evidence = super::revocation::crls::CrlEvidence::prepare(lists, maximum_age)?;
         self.lifetime = Some(match self.lifetime {

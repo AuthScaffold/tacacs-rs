@@ -8,6 +8,7 @@ use openssl::asn1::Asn1OctetStringRef;
 use openssl::nid::Nid;
 use openssl::ocsp::{OcspBasicResponseRef, OcspFlag};
 use openssl::stack::Stack;
+use openssl::ssl::SslRef;
 use openssl::x509::{X509Ref, X509VerifyResult};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::verify::X509VerifyFlags;
@@ -30,6 +31,7 @@ unsafe extern "C" {
 pub(super) fn verify(
     response: &OcspBasicResponseRef,
     issuer: &X509Ref,
+    ssl: &SslRef,
 ) -> anyhow::Result<CertificateValidity> {
     let mut certificates = Stack::new()?;
     certificates.push(issuer.to_owned())?;
@@ -63,20 +65,24 @@ pub(super) fn verify(
             key_usage & openssl_sys::X509v3_KU_DIGITAL_SIGNATURE != 0,
             "OCSP responder key usage must permit digital signatures"
         );
-        require_no_check(signer)?;
+        if !has_no_check(signer)? {
+            super::crls::verify_responder(ssl, signer, issuer)?;
+        }
     }
     CertificateValidity::from_certificate(signer)?
         .intersect(CertificateValidity::from_certificate(issuer)?)
 }
 
 #[allow(unsafe_code)]
-fn require_no_check(certificate: &X509Ref) -> anyhow::Result<()> {
+fn has_no_check(certificate: &X509Ref) -> anyhow::Result<bool> {
     let nid = Nid::ID_PKIX_OCSP_NOCHECK.as_raw();
     // SAFETY: All native reads borrow the live certificate. Indices and returned
     // pointers are checked before use; no extension data outlives the certificate.
     unsafe {
         let position = openssl_sys::X509_get_ext_by_NID(certificate.as_ptr(), nid, -1);
-        ensure!(position >= 0, "Delegated OCSP responder requires the No Check extension");
+        if position < 0 {
+            return Ok(false);
+        }
         ensure!(
             openssl_sys::X509_get_ext_by_NID(certificate.as_ptr(), nid, position) < 0,
             "Delegated OCSP responder has duplicate No Check extensions"
@@ -94,5 +100,5 @@ fn require_no_check(certificate: &X509Ref) -> anyhow::Result<()> {
             "OCSP responder No Check must contain DER NULL"
         );
     }
-    Ok(())
+    Ok(true)
 }

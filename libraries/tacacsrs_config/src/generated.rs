@@ -351,8 +351,10 @@ pub mod tacacs_plus {
         /// Request a stapled OCSP response and fail closed if evidence is
         /// unavailable, invalid, stale, unknown, or revoked. Responses must
         /// be signed by the issuer or a responder issued directly by it.
-        /// Delegated responders require OCSP signing usage and a noncritical
-        /// No Check extension. Intermediate revocation is not supported.
+        /// Delegated responders require OCSP signing usage and either a valid
+        /// noncritical No Check extension or verified configured CRL evidence.
+        /// This requirement can be combined with require-crls. Both checks
+        /// must pass. OCSP covers the peer leaf; CRLs cover the CA path.
         #[serde(rename = "tacacsrs:require-stapled-ocsp")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -435,8 +437,10 @@ pub mod tacacs_plus {
         /// Request a stapled OCSP response and fail closed if evidence is
         /// unavailable, invalid, stale, unknown, or revoked. Responses must
         /// be signed by the issuer or a responder issued directly by it.
-        /// Delegated responders require OCSP signing usage and a noncritical
-        /// No Check extension. Intermediate revocation is not supported.
+        /// Delegated responders require OCSP signing usage and either a valid
+        /// noncritical No Check extension or verified configured CRL evidence.
+        /// This requirement can be combined with require-crls. Both checks
+        /// must pass. OCSP covers the peer leaf; CRLs cover the CA path.
         #[serde(rename = "tacacsrs:require-stapled-ocsp")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1282,8 +1286,10 @@ pub mod tacacsrs {
     /// Request a stapled OCSP response and fail closed if evidence is
     /// unavailable, invalid, stale, unknown, or revoked. Responses must
     /// be signed by the issuer or a responder issued directly by it.
-    /// Delegated responders require OCSP signing usage and a noncritical
-    /// No Check extension. Intermediate revocation is not supported.
+    /// Delegated responders require OCSP signing usage and either a valid
+    /// noncritical No Check extension or verified configured CRL evidence.
+    /// This requirement can be combined with require-crls. Both checks
+    /// must pass. OCSP covers the peer leaf; CRLs cover the CA path.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct RequireStapledOcsp {
