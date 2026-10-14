@@ -127,7 +127,7 @@ async fn provider_crl_validity_refreshes_before_expiry_without_notifications() -
     Ok(())
 }
 
-async fn make_crl(directory: &Path, revoked: bool, stale: bool) -> Result<Vec<u8>> {
+pub(super) async fn make_crl(directory: &Path, revoked: bool, stale: bool) -> Result<Vec<u8>> {
     let peer = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
     let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
     let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
@@ -207,7 +207,7 @@ fn peer_context(issuer: &X509, identity: Option<&PeerIdentity>) -> Result<SslCon
     Ok(context.build())
 }
 
-fn source_for(
+pub(super) fn source_for(
     issuer: &X509,
     port: u16,
     lists: &[Vec<u8>],

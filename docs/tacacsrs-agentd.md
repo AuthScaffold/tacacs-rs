@@ -250,6 +250,39 @@ Configured CA trust and exact end-entity trust are now separate. Empty explicit 
 A rejected replacement leaves the previous prepared generation active.
 See [certificate trust](yang-config-guide.md#certificate-trust) for exact-match renewal behavior and additive trust rules.
 
+### HTTP CRL Registration
+
+`--http-crl-source REFERENCE URL` authorizes a public HTTP(S) CRL location for one opaque evidence reference.
+Repeat the flag with the same reference to add issuer lists in fetch order:
+
+```bash
+tacacsrs-agentd --config /etc/tacacs/upstreams.json \
+    --http-crl-source primary-ca-crls https://pki.example.net/root.crl \
+    --http-crl-source primary-ca-crls https://pki.example.net/issuer.crl
+```
+
+The canonical `tacacsrs:require-crls/evidence-reference` must contain `primary-ca-crls` for this example.
+Registration does not enable CRL verification by itself or replace the canonical revocation policy.
+The startup map remains fixed until restart. Live source changes can select registered references but cannot authorize new URLs.
+Invalid registrations fail before source bootstrap or listener binding, including in SONiC mode.
+
+Each set permits at most 16 unique locations. The daemon uses a 10-second whole-set timeout, a 4 MiB body cap, and four active fetches.
+All locations must succeed. Redirects, environment proxies, decompression, URL credentials, queries, and fragments are disabled or rejected.
+Locations must contain no secrets, including path components. Process arguments and backend diagnostics can expose them.
+Registration authorizes each host and its DNS results; it is not a network sandbox.
+HTTPS verifies platform CA trust and host identity independently of upstream TACACS+ trust configuration.
+Downloaded CRLs still require native signature, freshness, path, and revocation checks.
+
+In SONiC mode, HTTP resolution composes with the existing credential provider and retains its notifications.
+Other credential kinds and unregistered references use the SONiC provider. A failed registered HTTP fetch never uses that fallback.
+Outside SONiC mode, unregistered references fail resolution.
+
+The existing `credential-refresh-interval-seconds` policy schedules retrieval without a separate HTTP task or notification source.
+Failed refresh uses the credential-staleness budget, then withdraws readiness. Signed evidence expiry applies independently.
+Successful refresh restores an expired credential catalog without changing canonical references or restarting the process.
+SIGINT and SIGTERM cancel pending retrieval during startup and live refresh.
+See [the YANG CRL guide](yang-config-guide.md#required-full-crls) for evidence requirements and unsupported modes.
+
 ### Timeouts and Failover
 
 | Flag | Default | Description |

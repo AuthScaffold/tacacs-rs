@@ -89,6 +89,11 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "FILE")]
     pub(crate) runtime_policy: Option<PathBuf>,
 
+    /// Register a public HTTP(S) CRL URL for an opaque evidence reference.
+    /// Repeat the reference to add issuer CRLs in fetch order. Locations must contain no secrets.
+    #[arg(long, value_names = ["REFERENCE", "URL"], num_args = 2, action = clap::ArgAction::Append)]
+    pub(crate) http_crl_source: Vec<String>,
+
     /// Startup YANG JSON file containing a tacacsrs:local-services resource.
     #[arg(long, value_name = "FILE", conflicts_with_all = [
         "listen_endpoint", "proxy_endpoint", "service_mode", "socket_mode", "sonic", "proxy_credential_source",

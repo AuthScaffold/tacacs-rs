@@ -26,7 +26,9 @@ let resolver = Arc::new(HttpCrlResolver::new(
 The canonical `tacacsrs:require-crls/evidence-reference` retains `primary-ca-crls`.
 An embedding host supplies the resolver to materialization or `ConfigSupervisor::with_credential_resolver`.
 The supervisor's existing refresh policy revalidates these references without separate HTTP worker tasks.
-The stock daemon does not yet expose production registration of HTTP sources.
+The daemon exposes startup registration through repeatable `--http-crl-source REFERENCE URL` pairs.
+It groups matching references into ordered URL sets and attaches this resolver to its supervisor.
+In `SONiC` mode, it retains the `SONiC` provider as the fallback and keeps its credential notifications.
 
 `with_fallback` delegates other credential kinds and unregistered references to another provider.
 A registered HTTP source never uses the fallback after a failed fetch.

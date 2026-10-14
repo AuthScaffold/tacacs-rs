@@ -23,21 +23,19 @@ use tacacsrs_config::source::{ConfigDatastore, InitialLoadPolicy};
 use tacacsrs_config::source::policy::{
     FilePolicyObservation, PolicyChange, PolicyFile, PolicyObservation,
 };
-use tacacsrs_credential_resolution::{CredentialChangeSource, CredentialResolver};
-use tacacsrs_sonic::{
-    SonicConfigDb, SonicConnection, SonicCredentialChangeSource, SonicCredentialPolicy,
-    SonicCredentialResolver, SonicCredentialRoots,
-};
+use tacacsrs_sonic::{SonicConfigDb, SonicConnection};
 use tokio_util::sync::CancellationToken;
 
 mod cli;
 mod config_filter;
+mod credential_provider;
 mod host_integration;
 mod local_services;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
 use crate::config_filter::config_filter_from_local_services;
+use crate::credential_provider::CredentialProvider;
 use crate::host_integration::HostIntegration;
 
 /// Initializes the logger based on verbosity level.
@@ -420,25 +418,6 @@ fn supervisor_exit_to_fatal_error(
     }
 }
 
-type CredentialProvider =
-    (Option<Arc<dyn CredentialResolver>>, Option<Arc<dyn CredentialChangeSource>>);
-
-fn build_credential_provider(cli: &Cli) -> CredentialProvider {
-    if !cli.sonic {
-        return (None, None);
-    }
-    let resolver = Arc::new(SonicCredentialResolver::reloadable(
-        SonicCredentialRoots::default(),
-        SonicCredentialPolicy::production_from_root_group(),
-    )) as Arc<dyn CredentialResolver>;
-    let settings = sonic_connection_from_cli(cli);
-    let change_source = settings.credential_watch_root.map(|root| {
-        Arc::new(SonicCredentialChangeSource::new(root, settings.debounce))
-            as Arc<dyn CredentialChangeSource>
-    });
-    (Some(resolver), change_source)
-}
-
 /// Starts the central TACACS+ client service process.
 ///
 /// The service listens on the configured local IPC endpoint. It maintains
@@ -512,6 +491,7 @@ async fn run_until(
 }
 
 async fn prepare_service(cli: Cli) -> anyhow::Result<PreparedService> {
+    let credential_provider = credential_provider::build(&cli)?;
     let host_integration = HostIntegration::from_environment(cli.host_integration)?;
     let sonic_forwarder = sonic_forwarder_from_cli(&cli).await?;
     let local_services = local_services::load(&cli, sonic_forwarder).await?;
@@ -550,7 +530,6 @@ async fn prepare_service(cli: Cli) -> anyhow::Result<PreparedService> {
         )
         .context("Failed to build TACACS+ client service configuration")?,
     );
-    let credential_provider = build_credential_provider(&cli);
     Ok(PreparedService {
         datastore,
         service,

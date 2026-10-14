@@ -238,14 +238,17 @@ Such a change can interrupt in-flight requests; an unknown delivery outcome must
 Identical evidence and rejected candidates do not trigger this cutoff. Unrelated configuration changes retain the ordinary drain budget.
 This is conservative retirement after an evidence change, not proof that every old peer was revoked. Physical closure still depends on runtime scheduling.
 
-Daemon HTTP registration, certificate-driven retrieval, responder revocation without No Check, and scoped CRLs remain S4-06 work.
+Certificate-driven retrieval, responder revocation without No Check, and scoped CRLs remain S4-06 work.
 This mode does not establish full RFC 9887 conformance.
 
 ### HTTP CRL Provider
 
 The [HTTP credential provider](../libraries/tacacsrs_credential_http/README.md) maps opaque evidence references to explicit ordered URL sets.
 An embedding host registers trusted public locations and attaches the resolver to materialization or the agent supervisor.
-Canonical references remain unchanged. The stock daemon does not yet expose production HTTP source registration.
+Canonical references remain unchanged. The daemon accepts repeatable `--http-crl-source REFERENCE URL` pairs at startup.
+Matching references form one ordered set. Registration authorizes locations but does not enable CRL verification by itself.
+URL-map changes require a restart; existing registered references remain usable by live source and credential refresh.
+See [daemon registration](tacacsrs-agentd.md#http-crl-registration) for examples and SONiC provider composition.
 
 Retrieval uses one whole-set timeout, an aggregate byte cap, and a shared concurrency cap.
 Defaults are 10 seconds, 4 MiB, and four active fetches. Each set contains at most 16 locations.

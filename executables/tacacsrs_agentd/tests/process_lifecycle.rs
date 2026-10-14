@@ -139,6 +139,41 @@ async fn host_signals_cancel_blocked_bootstrap_without_binding() {
 }
 
 #[tokio::test]
+async fn invalid_http_registration_fails_before_sonic_bootstrap() {
+    let directory = ProcessDirectory::new();
+    let endpoint = directory.0.join("agent.sock");
+    let url = "https://example.test/crl?token=private-value";
+    let child = agent()
+        .args([
+            "--sonic",
+            "--sonic-redis-url",
+            "redis://127.0.0.1:9",
+            "--host-integration",
+            "none",
+            "--http-crl-source",
+            "private-reference",
+            url,
+            "--listen-endpoint",
+        ])
+        .arg(&endpoint)
+        .spawn()
+        .unwrap();
+    let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("CRL locations cannot contain"));
+    assert!(
+        !error.contains(url)
+            && !error.contains("private-reference")
+            && !error.contains("private-value")
+    );
+    assert!(!endpoint.exists());
+}
+
+#[tokio::test]
 async fn host_signal_drains_a_serving_agent_and_closes_idle_ipc_connection() {
     let directory = ProcessDirectory::new();
     let endpoint = directory.0.join("agent.sock");

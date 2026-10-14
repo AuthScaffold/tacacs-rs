@@ -76,6 +76,18 @@ When the upstream TACACS+ server requires the daemon to present a TLS client ide
 - Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. These flags do not accept that container format. Provide PEM or DER certificate and private-key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If upstream TLS material comes from `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 
+## HTTP CRL Registration
+
+Use `--http-crl-source REFERENCE URL` to register public HTTP(S) CRL locations at startup.
+Repeat the reference to supply an ordered issuer set. Canonical `tacacsrs:require-crls` policy retains the opaque reference.
+Registration does not enable verification by itself. URL-map changes require a process restart.
+
+The provider uses a whole-set timeout and byte and concurrency limits. HTTPS requires trusted, matching certificates.
+Locations must contain no secrets. URL credentials, queries, fragments, redirects, and environment proxies are not supported.
+The existing supervisor refreshes evidence and enforces failure and expiry policy. Host signals cancel pending retrieval.
+SONiC credential resolution and notifications remain available through provider composition.
+See [HTTP CRL registration](../../docs/tacacsrs-agentd.md#http-crl-registration) for limits and examples.
+
 ## TLS 1.3 PSK
 
 When built with the `psk` feature, use `--psk-identity` and `--psk-key` with
