@@ -6,15 +6,16 @@ use anyhow::Result;
 use openssl::pkey::PKey;
 use openssl::ssl::{Ssl, SslContext, SslMethod, SslVersion, SslVerifyMode};
 use openssl::x509::{X509, X509Crl};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_openssl::SslStream;
 
 use tacacsrs_config::{TacacsPlus, TacacsPlusServerBuilder, TacacsPlusServerType, ValidationOptions};
 use tacacsrs_config::prepare::{enumerate_materialized_servers, prepare_endpoint, PrepareOptions};
+use tacacsrs_credential_http::{CrlFetchLimits, HttpCrlResolver, HttpCrlSource};
 use tacacsrs_credential_resolution::{
-    CertificateRevocationListsMaterial, CredentialValidity, FakeCredentialResolver, PublicBytes,
-    RequestSlot, ResolvedCredential,
+    CertificateRevocationListsMaterial, CredentialResolver, CredentialValidity,
+    FakeCredentialResolver, PublicBytes, RequestSlot, ResolvedCredential,
 };
 use tacacsrs_networking::{RequestDeadline, TacacsClient};
 
@@ -268,11 +269,6 @@ async fn probe(
     expect_expiry: bool,
     identity: Option<&PeerIdentity>,
 ) -> Result<bool> {
-    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
-    let context = peer_context(&issuer, identity)?;
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let source = source_for(&issuer, listener.local_addr()?.port(), lists, provider, bundle)?;
-    let original = source.clone();
     let resolver = if provider {
         FakeCredentialResolver::new().with_response(
             RequestSlot::from_index(0),
@@ -284,8 +280,24 @@ async fn probe(
     } else {
         FakeCredentialResolver::new()
     };
+    probe_with_resolver(lists, provider, bundle, expect_expiry, identity, &resolver).await
+}
+
+async fn probe_with_resolver(
+    lists: &[Vec<u8>],
+    provider: bool,
+    bundle: bool,
+    expect_expiry: bool,
+    identity: Option<&PeerIdentity>,
+    resolver: &dyn CredentialResolver,
+) -> Result<bool> {
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let context = peer_context(&issuer, identity)?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let source = source_for(&issuer, listener.local_addr()?.port(), lists, provider, bundle)?;
+    let original = source.clone();
     let materialized =
-        enumerate_materialized_servers(&source, &resolver, &ValidationOptions::default()).await?;
+        enumerate_materialized_servers(&source, resolver, &ValidationOptions::default()).await?;
     let endpoint = prepare_endpoint(materialized[0].server(), PrepareOptions::default());
     assert_eq!(source, original);
     let Ok(endpoint) = endpoint else {
@@ -335,6 +347,42 @@ async fn probe(
         .await?;
     tokio::time::timeout(Duration::from_secs(5), peer).await???;
     Ok(accepted)
+}
+
+#[tokio::test]
+async fn downloaded_crls_remain_untrusted_until_native_verification() -> Result<()> {
+    let directory = Directory::new()?;
+    let good = make_crl(&directory.0, false, false).await?;
+    let mut forged = good.clone();
+    *forged.last_mut().unwrap() ^= 1;
+    let revoked = make_crl(&directory.0, true, false).await?;
+    let stale = make_crl(&directory.0, false, true).await?;
+    for (body, accepted) in [
+        (good, true),
+        (revoked, false),
+        (forged, false),
+        (stale, false),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let url = format!("http://{}/issuer.crl", listener.local_addr()?);
+        let http = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            assert!(stream.read(&mut [0; 4096]).await? > 0);
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/pkix-crl\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await?;
+            stream.write_all(&body).await?;
+            Ok::<(), anyhow::Error>(())
+        });
+        let resolver = HttpCrlResolver::new(
+            [HttpCrlSource::new("opaque-crls", [url])?],
+            CrlFetchLimits::default(),
+        )?;
+        assert_eq!(
+            probe_with_resolver(&[], true, true, accepted, None, &resolver).await?,
+            accepted
+        );
+        tokio::time::timeout(Duration::from_secs(5), http).await???;
+    }
+    Ok(())
 }
 
 #[tokio::test]

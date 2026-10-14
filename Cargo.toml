@@ -9,6 +9,7 @@ members = [
     "libraries/tacacsrs_agent",
     "libraries/tacacsrs_config",
     "libraries/tacacsrs_credential_resolution",
+    "libraries/tacacsrs_credential_http",
     "libraries/tacacsrs_sonic",
     "libraries/tacacsrs_bash_plugin",
     "executables/tacon",

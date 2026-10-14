@@ -109,7 +109,8 @@ Configured trust excludes platform roots. Preparation does not modify the author
 
 This replaces the old combined-root behavior. Certificate renewal can require updating an exact `ee-certs` entry.
 Use CA trust only when authorizing other valid certificates issued by that authority is intended.
-General CRL and OCSP responder retrieval is not implemented. Optional required stapling is described below. Full RFC 9887 conformance remains unclaimed.
+Explicit HTTP CRL retrieval is available through a host-attached provider. Certificate-driven discovery and OCSP responder queries remain unimplemented.
+Optional required stapling is described below. Full RFC 9887 conformance remains unclaimed.
 
 ## Certificate Input Boundary
 
@@ -217,7 +218,7 @@ Supply either an inline `crl` array of base64-encoded DER lists or one opaque `e
 ```
 
 Provider references require an attached `CredentialResolver` that supports `CertificateRevocationLists`. The stock SONiC resolver does not yet supply this material kind.
-Inline CRL arrays can be supplied through existing canonical JSON sources. No HTTP or distribution-point fetcher is added by this mode.
+Inline CRL arrays can be supplied through existing canonical JSON sources. An embedding host can register HTTP sources through `tacacsrs-credential-http`.
 
 The maximum age defaults to 300 seconds and must be positive. Each list must contain exactly one complete DER CRL and include `nextUpdate`.
 The complete set is limited to 4 MiB and one list per issuer name. Empty, stale, future, duplicate-issuer, or trailing-DER inputs fail preparation.
@@ -237,8 +238,26 @@ Such a change can interrupt in-flight requests; an unknown delivery outcome must
 Identical evidence and rejected candidates do not trigger this cutoff. Unrelated configuration changes retain the ordinary drain budget.
 This is conservative retirement after an evidence change, not proof that every old peer was revoked. Physical closure still depends on runtime scheduling.
 
-Remote retrieval, responder revocation without No Check, scoped CRLs, and broader revocation orchestration remain S4-06 work.
+Daemon HTTP registration, certificate-driven retrieval, responder revocation without No Check, and scoped CRLs remain S4-06 work.
 This mode does not establish full RFC 9887 conformance.
+
+### HTTP CRL Provider
+
+The [HTTP credential provider](../libraries/tacacsrs_credential_http/README.md) maps opaque evidence references to explicit ordered URL sets.
+An embedding host registers trusted public locations and attaches the resolver to materialization or the agent supervisor.
+Canonical references remain unchanged. The stock daemon does not yet expose production HTTP source registration.
+
+Retrieval uses one whole-set timeout, an aggregate byte cap, and a shared concurrency cap.
+Defaults are 10 seconds, 4 MiB, and four active fetches. Each set contains at most 16 locations.
+All locations must succeed. Registered-source failures never fall back to another provider or return partial evidence.
+Redirects, environment proxies, decompression, credentials, query strings, and fragments are disabled or rejected.
+Locations must contain no secrets. Backend diagnostics can expose URLs even though provider errors and debug output omit them.
+Registration authorizes the host and its DNS results; it does not create a network sandbox.
+
+HTTPS verifies platform trust and host identity. Downloaded bytes remain untrusted until native CRL verification succeeds.
+HTTP cache headers cannot extend signed freshness. Unbounded provider validity does not remove native evidence deadlines.
+Cancellation drops active request I/O and releases capacity; blocking system DNS resolution can finish later.
+The provider does not follow certificate distribution points or perform OCSP queries.
 
 ## Provider Refresh
 
@@ -266,7 +285,8 @@ Unchanged provider validity bounds retain their earlier monotonic cutoff; reread
 Refresh uses the existing credential revision and atomic publication path without changing canonical references or source revisions.
 The supervisor owns the refresh future and cancels it on host stop. It creates no detached refresh worker.
 Without a resolver, or when the accepted source has no provider references, no automatic resolution occurs.
-Inline-only evidence still requires a new source snapshot. Built-in HTTP and distribution-point retrieval remain unimplemented.
+Inline-only evidence still requires a new source snapshot. An attached HTTP provider participates in this same refresh lifecycle.
+Certificate-driven distribution-point retrieval remains unimplemented.
 
 ## EPSK Presence
 

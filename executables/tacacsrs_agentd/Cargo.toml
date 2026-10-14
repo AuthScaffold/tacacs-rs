@@ -35,6 +35,7 @@ default = []
 console = ["console-subscriber"]
 
 [dev-dependencies]
+tacacsrs-credential-http = { path = "../../libraries/tacacsrs_credential_http" }
 foreign-types = "0.3.2"
 openssl = "0.10.80"
 openssl-sys = "0.9.116"
