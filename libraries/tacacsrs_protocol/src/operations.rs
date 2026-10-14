@@ -68,7 +68,9 @@ pub enum AuthorizationAuthenticationContext {
 ///                               +-----------------------------+
 ///                               | message: String             |
 ///                               | server: Option<String>      |
-///                               | retriable: bool             |
+///                               | facts: FailureFacts         |
+///                               | runtime_generation: Option  |
+///                               | attempt: Option<NonZeroU32> |
 ///                               +-----------------------------+
 /// ```
 ///

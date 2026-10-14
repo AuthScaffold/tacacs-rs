@@ -3,20 +3,19 @@
 Reusable building blocks for the central TACACS+ client service introduced for
 local IPC consumers such as TACON.
 
-The crate keeps the local listener, upstream failover logic, and persistent
-connection management together in one library while the runnable process lives
-in `executables/tacacsrs_agentd`. Transport-independent domain types and
-the checked-in protobuf IPC contract live in the companion
-[`tacacsrs-ipc`](../tacacsrs_ipc/) crate so
-that both the server and local consumers share the same protocol definitions.
+The crate owns configuration supervision, published routing generations, health,
+admission, shutdown, and the raw TACACS+ proxy. Networking owns upstream execution
+and conservative failover. The protocol crate owns transport-independent operations.
+The daemon composes the agent with the client and server transport from
+[`tacacsrs-ipc`](../tacacsrs_ipc/), which owns the protobuf contract.
+The agent has no production dependency on IPC bindings or tonic.
 
 ## Design goals
 
-- Expose a higher-level RPC contract instead of raw TACACS+ packet headers.
+- Expose domain operations independently of the local RPC transport.
 - Keep upstream TACACS+ connections persistent and reusable across IPC requests.
 - Support ordered failover independently for each TACACS+ operation.
-- Keep the IPC contract visible and versioned through a checked-in `.proto`
-  schema.
+- Accept host-composed listeners without moving routing or materialization into the host.
 - Make the same architecture documentation visible in both rustdoc and GitHub.
 
 ## Module hierarchy
@@ -27,11 +26,8 @@ tacacsrs_agent
 │   └── policy       - failover strategies and operation limits
 ├── runtime          - TacacsClientService lifecycle, hot reload, and drains
 ├── services         - internal service boundaries
-│   ├── client_api   - local client-facing gRPC service and IPC transports
-│   │   ├── service  - ClientApiService runtime dependency owner
-│   │   ├── grpc     - Tonic TacacsAgent adapter
-│   │   ├── listener - endpoint dispatch and shutdown drain
-│   │   │   └── unix - Unix socket binding and cleanup
+│   ├── client_api   - transport-independent operation ingress
+│   │   ├── handle   - concrete public operation handle for host adapters
 │   │   └── upstream_bridge
 │   │                - client API operation/protocol mapping and failover bridge
 │   └── tacacs_proxy - raw TACACS+ proxy service

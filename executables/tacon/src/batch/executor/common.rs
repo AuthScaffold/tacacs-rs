@@ -220,10 +220,16 @@ fn build_load_test_result(
 mod tests {
     use tacacsrs_ipc::ipc;
     use tacacsrs_protocol::accounting::reply::AccountingReply;
+    use tacacsrs_protocol::authentication::reply::AuthenticationReply;
     use tacacsrs_protocol::authorization::reply::AuthorizationReply;
-    use tacacsrs_protocol::enumerations::{TacacsAccountingStatus, TacacsAuthorizationStatus};
+    use tacacsrs_protocol::enumerations::{
+        TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
+        TacacsAuthorizationStatus,
+    };
     use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
-    use tacacsrs_protocol::operations::{AccountingOperationResponse, ServiceError};
+    use tacacsrs_protocol::operations::{
+        AccountingOperationResponse, PapAuthenticationOperationResponse, ServiceError,
+    };
 
     use super::*;
 
@@ -301,6 +307,30 @@ mod tests {
                 format_request_outcome("Accounting", Err::<(), _>(direct)),
                 format_request_outcome("Accounting", Err::<(), _>(remote)),
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn direct_and_ipc_pap_results_conform() -> anyhow::Result<()> {
+        for status in [
+            TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
+            TacacsAuthenticationStatus::TacPlusAuthenStatusFail,
+            TacacsAuthenticationStatus::TacPlusAuthenStatusError,
+        ] {
+            let direct = PapAuthenticationOperationResponse::from_reply(
+                "primary",
+                AuthenticationReply {
+                    status,
+                    flags: TacacsAuthenticationReplyFlags::empty(),
+                    server_msg: "status message".to_owned(),
+                    data: vec![0, 255],
+                },
+            )?;
+            let remote = PapAuthenticationOperationResponse::try_from(
+                ipc::PapAuthenticationResponse::from(direct.clone()),
+            )?;
+            assert_eq!(direct, remote);
         }
         Ok(())
     }
