@@ -345,7 +345,10 @@ module tacacsrs {
     container require-crls {
       presence "Require fresh CRLs for certificate TLS server authentication.";
       description
-        "Require complete CRLs for the verified server certificate path.
+        "Require complete CRL evidence for the verified server certificate path.
+         An unpartitioned base can advertise one explicitly supplied delta.
+         Both lists must be fresh and match issuer, scope, and authority key
+         identifier. CRL numbers must identify a compatible increasing update.
          Direct CRLs can restrict certificate type and distribution-point scope.
          Multiple scopes for one issuer must cover disjoint certificate types.
          Within each scope, reason partitions must be disjoint.
@@ -366,7 +369,7 @@ module tacacsrs {
           leaf-list crl {
             type binary { length "1..max"; }
             min-elements 1;
-            description "One complete DER CRL per entry.";
+            description "One full or delta DER CRL per entry.";
           }
         }
         case provider {

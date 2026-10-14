@@ -48,6 +48,7 @@ pub(super) struct CrlScope {
     identity: Option<Vec<u8>>,
     reasons: u16,
     certificates: CertificateScope,
+    pub(super) has_reason_flags: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +97,7 @@ impl CrlScope {
                     identity: None,
                     reasons: ALL_REASONS,
                     certificates: CertificateScope::All,
+                    has_reason_flags: false,
                 });
             }
             ensure!(
@@ -127,6 +129,7 @@ impl CrlScope {
                 matching_scope.only_ca,
                 matching_scope.only_attribute,
             )?;
+            let has_reason_flags = !matching_scope.reasons.is_null();
             let reasons = if matching_scope.reasons.is_null() {
                 ALL_REASONS
             } else {
@@ -164,6 +167,7 @@ impl CrlScope {
                 identity: Some(identity),
                 reasons,
                 certificates,
+                has_reason_flags,
             })
         }
     }
@@ -199,6 +203,7 @@ mod tests {
             identity: Some(vec![1]),
             reasons,
             certificates: CertificateScope::All,
+            has_reason_flags: true,
         }
     }
 
@@ -250,6 +255,7 @@ mod tests {
                 identity: Some(vec![2]),
                 reasons: 4,
                 certificates: CertificateScope::All,
+                has_reason_flags: true,
             })
             .is_err());
         assert!(scope
@@ -257,6 +263,7 @@ mod tests {
                 identity: None,
                 reasons: ALL_REASONS,
                 certificates: CertificateScope::All,
+                has_reason_flags: false,
             })
             .is_err());
         assert_eq!(scope.reasons, 2);

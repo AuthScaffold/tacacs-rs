@@ -61,5 +61,5 @@ Invalid bodies and size-limit failures map to `InvalidMaterial`.
 
 The provider does not treat HTTP cache headers as signed validity evidence.
 It returns unbounded provider validity; native CRL dates and canonical maximum age still constrain preparation and transport lifetime.
-It does not implement OCSP queries, certificate-driven distribution-point discovery, or delta assembly.
-Native verification owns direct CRL scope checks; the HTTP provider returns the supplied bytes unchanged.
+It does not implement OCSP queries or certificate-driven distribution-point discovery.
+Native preparation owns scope checks and explicit base/delta pairing; the HTTP provider returns the supplied bytes unchanged.

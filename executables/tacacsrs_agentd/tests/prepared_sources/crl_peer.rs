@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::Path;
 use std::pin::Pin;
 use std::time::Duration;
@@ -165,6 +166,19 @@ async fn make_extended_crl(
     stale: bool,
     extensions: Option<&str>,
 ) -> Result<Vec<u8>> {
+    make_numbered_crl(directory, issuer, key, revoked, stale, extensions, 1).await
+}
+
+pub(super) async fn make_numbered_crl(
+    directory: &Path,
+    issuer: &X509,
+    key: &PKey<openssl::pkey::Private>,
+    revoked: Option<&X509>,
+    stale: bool,
+    extensions: Option<&str>,
+    number: impl Into<Option<u32>>,
+) -> Result<Vec<u8>> {
+    let number = number.into();
     let index = match revoked {
         Some(peer) => format!(
             "R\t351231235959Z\t200101000000Z\t{}\tunknown\t/CN=test\n",
@@ -173,15 +187,24 @@ async fn make_extended_crl(
         None => String::new(),
     };
     std::fs::write(directory.join("index.txt"), index)?;
-    std::fs::write(directory.join("number"), "01\n")?;
+    if let Some(number) = number {
+        std::fs::write(directory.join("number"), format!("{number:02X}\n"))?;
+    }
     std::fs::write(directory.join("issuer.pem"), issuer.to_pem()?)?;
     std::fs::write(directory.join("issuer.key"), key.private_key_to_pem_pkcs8()?)?;
-    let mut configuration = format!("[ca]\ndefault_ca=issuer\n[issuer]\ndatabase={}\ncertificate={}\nprivate_key={}\ndefault_md=sha256\ndefault_crl_days=1\ncrlnumber={}\n", directory.join("index.txt").display(), directory.join("issuer.pem").display(), directory.join("issuer.key").display(), directory.join("number").display());
+    let mut configuration = format!("[ca]\ndefault_ca=issuer\n[issuer]\ndatabase={}\ncertificate={}\nprivate_key={}\ndefault_md=sha256\ndefault_crl_days=1\n", directory.join("index.txt").display(), directory.join("issuer.pem").display(), directory.join("issuer.key").display());
+    if number.is_some() {
+        writeln!(configuration, "crlnumber={}", directory.join("number").display())?;
+    }
     if let Some(extensions) = extensions {
         configuration.push_str("crl_extensions=crl_extensions\n[crl_extensions]\n");
         configuration.push_str(extensions);
     }
     std::fs::write(directory.join("ca.cnf"), configuration)?;
+    generate_crl(directory, stale).await
+}
+
+async fn generate_crl(directory: &Path, stale: bool) -> Result<Vec<u8>> {
     let mut command = tokio::process::Command::new("openssl");
     command
         .kill_on_drop(true)
@@ -527,6 +550,228 @@ async fn scoped_crls_reject_malformed_scope_even_with_valid_signature() -> Resul
         assert!(format!("{error:#}").contains(expected), "unexpected preparation failure: {error:#}");
         assert!(!probe(&[crl], false, false, false, None).await?, "invalid scope must not become an unscoped CRL: {extensions}");
         assert!(openssl::error::ErrorStack::get().errors().is_empty(), "rejected scope must not leave native errors for later TLS work");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn delta_crls_apply_explicit_updates_before_authentication() -> Result<()> {
+    let directory = Directory::new()?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let peer = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let base = make_numbered_crl(
+        &directory.0,
+        &issuer,
+        &key,
+        None,
+        false,
+        Some("freshestCRL=URI:http://pki.example.test/delta.crl\n"),
+        1,
+    )
+    .await?;
+    let delta = make_numbered_crl(
+        &directory.0,
+        &issuer,
+        &key,
+        None,
+        false,
+        Some("2.5.29.27=critical,DER:02:01:01\n"),
+        2,
+    )
+    .await?;
+    let source = source_for(&issuer, 449, &[base.clone(), delta.clone()], false, false)?;
+    prepare_endpoint(&source.server[0], PrepareOptions::default())?;
+    assert!(probe(&[base.clone(), delta.clone()], true, true, true, None).await?);
+    assert!(
+        probe(&[delta.clone(), base.clone()], false, false, false, None).await?,
+        "input order must not change delta application"
+    );
+    let revoked_base = make_numbered_crl(
+        &directory.0,
+        &issuer,
+        &key,
+        Some(&peer),
+        false,
+        Some("freshestCRL=URI:http://pki.example.test/delta.crl\n"),
+        1,
+    )
+    .await?;
+    assert!(
+        !probe(&[delta, revoked_base], true, false, false, None).await?,
+        "a clear delta must not erase base revocation"
+    );
+    let revoked = make_numbered_crl(
+        &directory.0,
+        &issuer,
+        &key,
+        Some(&peer),
+        false,
+        Some("2.5.29.27=critical,DER:02:01:01\n"),
+        2,
+    )
+    .await?;
+    assert!(
+        !probe(&[base, revoked], true, true, false, None).await?,
+        "delta revocation must reject before client authentication"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn delta_crls_preserve_direct_certificate_scope() -> Result<()> {
+    let directory = Directory::new()?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let peer = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let base = make_numbered_crl(&directory.0, &issuer, &key, None, false,
+        Some("freshestCRL=URI:http://pki.example.test/delta.crl\nissuingDistributionPoint=critical,@scope\n[scope]\nonlyuser=TRUE\n"), 1).await?;
+    let authorities =
+        make_scoped_crl(&directory.0, &issuer, &key, None, false, Some("onlyCA=TRUE\n")).await?;
+    for revoked in [false, true] {
+        let delta = make_numbered_crl(&directory.0, &issuer, &key, revoked.then_some(&peer), false,
+            Some("2.5.29.27=critical,DER:02:01:01\nissuingDistributionPoint=critical,@scope\n[scope]\nonlyuser=TRUE\n"), 2).await?;
+        assert_eq!(
+            probe(&[authorities.clone(), delta, base.clone()], true, true, !revoked, None).await?,
+            !revoked
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn delta_crls_release_holds_but_full_crls_cannot_remove_revocation() -> Result<()> {
+    let directory = Directory::new()?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let peer = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let serial = peer.serial_number().to_bn()?.to_hex_str()?;
+    make_numbered_crl(
+        &directory.0,
+        &issuer,
+        &key,
+        Some(&peer),
+        false,
+        Some("freshestCRL=URI:http://pki.example.test/delta.crl\n"),
+        1,
+    )
+    .await?;
+    std::fs::write(
+        directory.0.join("index.txt"),
+        format!("R\t351231235959Z\t200101000000Z,certificateHold\t{serial}\tunknown\t/CN=test\n"),
+    )?;
+    std::fs::write(directory.0.join("number"), "01\n")?;
+    let held = generate_crl(&directory.0, false).await?;
+    let clear = make_numbered_crl(
+        &directory.0,
+        &issuer,
+        &key,
+        None,
+        false,
+        Some("2.5.29.27=critical,DER:02:01:01\n"),
+        2,
+    )
+    .await?;
+    assert!(!probe(&[held.clone(), clear], false, false, false, None).await?);
+    let removal =
+        format!("R\t351231235959Z\t200101000000Z,removeFromCRL\t{serial}\tunknown\t/CN=test\n");
+    std::fs::write(directory.0.join("index.txt"), &removal)?;
+    std::fs::write(directory.0.join("number"), "02\n")?;
+    let released = generate_crl(&directory.0, false).await?;
+    assert!(probe(&[held, released], true, true, false, None).await?);
+    make_issuer_crl(&directory.0, &issuer, &key, None, false).await?;
+    std::fs::write(directory.0.join("index.txt"), removal)?;
+    std::fs::write(directory.0.join("number"), "01\n")?;
+    let invalid = generate_crl(&directory.0, false).await?;
+    let source = source_for(&issuer, 449, &[invalid], false, false)?;
+    assert!(format!(
+        "{:#}",
+        prepare_endpoint(&source.server[0], PrepareOptions::default())
+            .expect_err("removeFromCRL in full CRL")
+    )
+    .contains("removeFromCRL requires a delta"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn delta_crls_reject_incomplete_ambiguous_or_unusable_pairs() -> Result<()> {
+    let directory = Directory::new()?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let hint = "freshestCRL=URI:http://pki.example.test/delta.crl\n";
+    let update = "2.5.29.27=critical,DER:02:01:01\n";
+    let base = make_numbered_crl(&directory.0, &issuer, &key, None, false, Some(hint), 1).await?;
+    let delta =
+        make_numbered_crl(&directory.0, &issuer, &key, None, false, Some(update), 2).await?;
+    let duplicate =
+        make_numbered_crl(&directory.0, &issuer, &key, None, false, Some(update), 3).await?;
+    let plain = make_issuer_crl(&directory.0, &issuer, &key, None, false).await?;
+    for lists in [
+        vec![base.clone()],
+        vec![delta.clone()],
+        vec![plain, delta.clone()],
+        vec![base.clone(), delta.clone(), duplicate],
+    ] {
+        let source = source_for(&issuer, 449, &lists, false, false)?;
+        assert!(
+            prepare_endpoint(&source.server[0], PrepareOptions::default()).is_err(),
+            "incomplete or ambiguous delta set"
+        );
+    }
+    for (extension, number) in [(update, Some(1)), ("2.5.29.27=critical,DER:02:01:03\n", Some(4)), (update, None),
+        ("2.5.29.27=critical,DER:02:01:01\nauthorityKeyIdentifier=DER:30:03:80:01:01\n", Some(2)),
+        ("2.5.29.27=critical,DER:02:01:01\nissuingDistributionPoint=critical,DER:30:03:81:01:FF\n", Some(2))] {
+        let candidate = make_numbered_crl(&directory.0, &issuer, &key, None, false, Some(extension), number).await?;
+        let source = source_for(&issuer, 449, &[base.clone(), candidate], false, false)?;
+        assert!(prepare_endpoint(&source.server[0], PrepareOptions::default()).is_err(), "invalid pairing must fail preparation");
+    }
+    let mut forged_delta = delta.clone();
+    *forged_delta.last_mut().unwrap() ^= 1;
+    assert!(!probe(&[base.clone(), forged_delta], false, false, false, None).await?);
+    let mut forged_base = base.clone();
+    *forged_base.last_mut().unwrap() ^= 1;
+    assert!(!probe(&[forged_base, delta.clone()], false, false, false, None).await?);
+    let stale = make_numbered_crl(&directory.0, &issuer, &key, None, true, Some(update), 2).await?;
+    let source = source_for(&issuer, 449, &[base, stale], false, false)?;
+    assert!(format!(
+        "{:#}",
+        prepare_endpoint(&source.server[0], PrepareOptions::default()).expect_err("stale delta")
+    )
+    .contains("CRL is stale"));
+    let stale_base =
+        make_numbered_crl(&directory.0, &issuer, &key, None, true, Some(hint), 1).await?;
+    let source = source_for(&issuer, 449, &[stale_base, delta], false, false)?;
+    assert!(format!(
+        "{:#}",
+        prepare_endpoint(&source.server[0], PrepareOptions::default()).expect_err("stale base")
+    )
+    .contains("CRL is stale"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn delta_crls_reject_malformed_metadata_before_native_verification() -> Result<()> {
+    let directory = Directory::new()?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    for (extension, expected) in [
+        ("2.5.29.27=DER:02:01:01\n", "criticality"),
+        ("2.5.29.27=critical,DER:01:01:FF\n", "Malformed CRL number"),
+        ("2.5.29.27=critical,DER:02:01:01:00\n", "round-trip"),
+        ("2.5.29.27=critical,DER:02:01:FF\n", "nonnegative"),
+        ("freshestCRL=critical,URI:http://pki.example.test/delta\n", "noncritical"),
+        ("freshestCRL=DER:01:01:FF\n", "Malformed CRL authority or freshest"),
+        ("freshestCRL=DER:30:00\n", "Freshest CRL extension is empty"),
+        ("authorityKeyIdentifier=DER:01:01:FF\n", "Malformed CRL authority or freshest"),
+        ("2.5.29.27=critical,DER:02:01:01\nfreshestCRL=URI:http://pki.example.test/delta\n", "Delta CRLs cannot contain"),
+        ("freshestCRL=URI:http://pki.example.test/delta\nissuingDistributionPoint=critical,@scope\n[scope]\nonlysomereasons=keyCompromise\n", "reason flags"),
+    ] {
+        let candidate = make_numbered_crl(&directory.0, &issuer, &key, None, false, Some(extension), 2).await?;
+        assert!(X509Crl::from_der(&candidate)?.verify(&key)?);
+        let source = source_for(&issuer, 449, &[candidate], false, false)?;
+        let error = prepare_endpoint(&source.server[0], PrepareOptions::default()).expect_err("invalid delta metadata");
+        assert!(format!("{error:#}").contains(expected), "unexpected rejection: {error:#}");
+        assert!(openssl::error::ErrorStack::get().errors().is_empty());
     }
     Ok(())
 }

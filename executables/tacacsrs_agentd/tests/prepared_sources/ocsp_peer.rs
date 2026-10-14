@@ -475,6 +475,57 @@ async fn delegated_responder_without_no_check_uses_required_crls() -> Result<()>
 }
 
 #[tokio::test]
+async fn delegated_responder_revocation_uses_delta_crls() -> Result<()> {
+    let directory = Directory::new()?;
+    let server = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let issuer_key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let (responder, key) = delegated_responder(ResponderCase::MissingNoCheck)?;
+    let response = signed_response_with_responder(
+        &directory.0,
+        &server,
+        "good",
+        Some(1440),
+        Some((&responder, &key)),
+        None,
+    )
+    .await?;
+    let base = super::crl_peer::make_numbered_crl(
+        &directory.0,
+        &issuer,
+        &issuer_key,
+        None,
+        false,
+        Some("freshestCRL=URI:http://pki.example.test/delta.crl\n"),
+        1,
+    )
+    .await?;
+    for revoked in [false, true] {
+        let delta = super::crl_peer::make_numbered_crl(
+            &directory.0,
+            &issuer,
+            &issuer_key,
+            revoked.then_some(&responder),
+            false,
+            Some("2.5.29.27=critical,DER:02:01:01\n"),
+            2,
+        )
+        .await?;
+        assert_eq!(
+            probe_with_crls(
+                Some(response.clone()),
+                (!revoked).then_some(Duration::from_secs(61)),
+                Some(vec![base.clone(), delta]),
+                300
+            )
+            .await?,
+            !revoked
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn delegated_responder_uses_disjoint_certificate_scopes() -> Result<()> {
     let directory = Directory::new()?;
     let server = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;

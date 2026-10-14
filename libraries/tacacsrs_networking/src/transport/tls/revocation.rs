@@ -2,6 +2,7 @@
 
 mod responder;
 mod crl_scope;
+mod crl_delta;
 pub(in crate::transport::tls) mod crls;
 
 use std::num::NonZeroU32;

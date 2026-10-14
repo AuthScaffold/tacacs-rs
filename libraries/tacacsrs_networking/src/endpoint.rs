@@ -189,7 +189,7 @@ impl PreparedEndpoint {
             .map(|lifetime| lifetime.validity)
     }
 
-    /// Requires fresh full CRLs for the CA-authenticated server path.
+    /// Requires fresh full CRLs and explicitly paired deltas for the CA-authenticated server path.
     ///
     /// # Errors
     /// Returns an error for invalid evidence, non-certificate transports, pins, or incompatible verification modes.

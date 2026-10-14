@@ -1,4 +1,4 @@
-//! Prepared full CRLs and native verified-path revocation checks.
+//! Prepared full and delta CRLs with native verified-path revocation checks.
 //! Preparation validates scope encoding because native path verification can ignore malformed scope.
 
 use std::sync::{Arc, Mutex, OnceLock};
@@ -6,7 +6,6 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, ensure};
 use foreign_types::ForeignTypeRef;
-use openssl::nid::Nid;
 use openssl::ssl::{Ssl, SslRef};
 use openssl::stack::{Stack, StackRef};
 use openssl::x509::{X509, X509Ref, X509Crl, X509StoreContext, X509PurposeId};
@@ -16,6 +15,7 @@ use openssl::x509::verify::X509VerifyFlags;
 use super::super::{CertificateLifetime, CertificateValidity};
 use super::super::validity::system_time;
 use super::crl_scope::{CrlScope, ScopeSet};
+use super::crl_delta::{CrlMetadata, validate_pairs};
 
 /// Bounds parsing work and retained evidence for one prepared endpoint.
 const MAXIMUM_CRL_BYTES: usize = 4 * 1024 * 1024;
@@ -59,14 +59,22 @@ impl CrlEvidence {
         let mut lists = Vec::with_capacity(encoded.len());
         let mut validity: Option<CertificateValidity> = None;
         let mut scopes = ScopeSet::default();
+        let mut metadata = Vec::with_capacity(encoded.len());
         for data in encoded {
             let crl = X509Crl::from_der(data).context("Invalid DER CRL")?;
             ensure!(
                 crl.to_der()?.as_slice() == *data,
                 "CRL input must contain exactly one DER object"
             );
-            reject_delta_crl(&crl)?;
-            scopes.insert(crl.issuer_name(), CrlScope::read(&crl)?)?;
+            let scope = CrlScope::read(&crl)?;
+            let entry = CrlMetadata::read(&crl)?;
+            ensure!(
+                !entry.uses_delta() || !scope.has_reason_flags,
+                "Delta evidence with reason flags is not supported"
+            );
+            if !entry.is_delta() {
+                scopes.insert(crl.issuer_name(), scope)?;
+            }
             let start = system_time(crl.last_update())?;
             let next = system_time(
                 crl.next_update()
@@ -82,7 +90,9 @@ impl CrlEvidence {
                 None => current,
             });
             lists.push(crl);
+            metadata.push(entry);
         }
+        validate_pairs(&lists, &metadata)?;
         Ok(Self {
             lists,
             lifetime: CertificateLifetime::new(
@@ -111,7 +121,8 @@ impl CrlEvidence {
         let mut store = X509StoreBuilder::new()?;
         let mut flags = X509VerifyFlags::PARTIAL_CHAIN
             | X509VerifyFlags::CRL_CHECK
-            | X509VerifyFlags::EXTENDED_CRL_SUPPORT;
+            | X509VerifyFlags::EXTENDED_CRL_SUPPORT
+            | X509VerifyFlags::USE_DELTAS;
         if entire_chain {
             flags |= X509VerifyFlags::CRL_CHECK_ALL;
         }
@@ -141,18 +152,6 @@ impl CrlEvidence {
         ensure!(accepted, "Peer CRL validation failed: {}", verification.error());
         Ok(())
     }
-}
-
-#[allow(unsafe_code)]
-fn reject_delta_crl(crl: &X509Crl) -> anyhow::Result<()> {
-    for nid in [Nid::DELTA_CRL, Nid::FRESHEST_CRL] {
-        // SAFETY: This read-only lookup borrows the live native CRL and returns an index.
-        ensure!(
-            unsafe { openssl_sys::X509_CRL_get_ext_by_NID(crl.as_ptr(), nid.as_raw(), -1) } < 0,
-            "Delta CRLs and freshest-CRL references are not supported"
-        );
-    }
-    Ok(())
 }
 
 struct ConnectionEvidence {

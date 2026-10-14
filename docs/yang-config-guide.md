@@ -207,7 +207,8 @@ It does not claim complete revocation coverage or full RFC 9887 conformance.
 
 ## Required Full CRLs
 
-The `tacacsrs:require-crls` presence container selects full-CRL verification for CA-authenticated TLS servers.
+The `tacacsrs:require-crls` presence container selects CRL verification for CA-authenticated TLS servers.
+It accepts full lists and explicitly paired base/delta evidence.
 It works in per-server authentication and reusable `server-credentials` entries.
 Supply either an inline `crl` array of base64-encoded DER lists or one opaque `evidence-reference`, not both.
 
@@ -238,9 +239,9 @@ Each certificate-type group needs complete reason coverage independently. End-en
 Issuer names use native X.509 comparison, so equivalent encodings cannot bypass the overlap check.
 Empty reason sets, the unused reason bit, and unknown reason bits fail preparation.
 Native verification requires all reasons for each certificate. Missing partitions, forged evidence, or revocation in any contributing partition reject authentication.
-An unrestricted CRL covers every reason and cannot be mixed with another CRL for that issuer.
+An unrestricted full CRL covers every reason and cannot be mixed with another full CRL for that issuer.
 The same rules apply to non-exempt delegated OCSP responders. Every supplied partition still contributes to the evidence deadline.
-Delta CRLs, freshest-CRL references, and indirect CRLs remain rejected.
+Indirect CRLs remain rejected. Delta evidence follows the pairing rules below.
 Different distribution-point scopes with overlapping certificate types remain unsupported, even if their reason sets are disjoint.
 
 Native verification checks the accepted certificate path against the supplied lists before client authentication or TACACS+ data.
@@ -260,8 +261,32 @@ Such a change can interrupt in-flight requests; an unknown delivery outcome must
 Identical evidence and rejected candidates do not trigger this cutoff. Unrelated configuration changes retain the ordinary drain budget.
 This is conservative retirement after an evidence change, not proof that every old peer was revoked. Physical closure still depends on runtime scheduling.
 
-Certificate-driven retrieval, OCSP queries, delta CRLs, and broader scoped-evidence combinations remain S4-06 work.
+Certificate-driven retrieval, OCSP queries, reason-partitioned deltas, and broader scoped-evidence combinations remain S4-06 work.
 This mode does not establish full RFC 9887 conformance.
+
+### Explicit Delta CRLs
+
+A configured base with a noncritical `freshestCRL` extension requires exactly one explicitly supplied compatible delta.
+The extension must decode, contain at least one distribution point, and pass a DER round-trip check.
+Its URLs are not fetch authorization. The host must register both retrieval locations or supply both lists inline.
+Missing bases, missing advertised deltas, duplicate deltas, and ambiguous pairs fail preparation.
+
+The base and delta must have matching issuer names, identical issuing-distribution-point data, and identical authority-key-identifier data or mutual absence.
+Both lists require CRL numbers. The delta indicator must be critical and specify a minimum base number.
+The accepted base number must be at least that minimum and less than the delta's own number.
+Numbers must be nonnegative and fit 20 DER content octets. Duplicate, malformed, incorrectly critical, or trailing metadata fails preparation.
+The delta cannot predate its base or contain its own freshest-CRL extension.
+
+Every contributing list still needs a valid signature and fresh validity interval.
+A clear delta does not erase base revocations. An explicit `removeFromCRL` delta entry can release a certificate hold.
+Removal entries in full CRLs, unsupported entry reasons, and malformed reason extensions fail preparation.
+Native verification applies the pair to the peer path and to non-exempt delegated OCSP responders before client authentication.
+
+The earliest base or delta expiry still limits the prepared catalog and transport lifetime.
+A fresh delta cannot extend an expired base in this implementation. Repeated retrieval does not renew the signed dates.
+Unpartitioned direct scope, including separate CA-only and end-entity-only lists, is supported.
+Reason flags on a delta or its advertised base are rejected pending separate native-selection support.
+The 128-list and 4 MiB bounds count both base and delta objects. HTTP timeout and all-or-error fetch rules are unchanged.
 
 ### HTTP CRL Provider
 

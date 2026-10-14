@@ -341,7 +341,10 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
-        /// Require complete CRLs for the verified server certificate path.
+        /// Require complete CRL evidence for the verified server certificate path.
+        /// An unpartitioned base can advertise one explicitly supplied delta.
+        /// Both lists must be fresh and match issuer, scope, and authority key
+        /// identifier. CRL numbers must identify a compatible increasing update.
         /// Direct CRLs can restrict certificate type and distribution-point scope.
         /// Multiple scopes for one issuer must cover disjoint certificate types.
         /// Within each scope, reason partitions must be disjoint.
@@ -432,7 +435,10 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
-        /// Require complete CRLs for the verified server certificate path.
+        /// Require complete CRL evidence for the verified server certificate path.
+        /// An unpartitioned base can advertise one explicitly supplied delta.
+        /// Both lists must be fresh and match issuer, scope, and authority key
+        /// identifier. CRL numbers must identify a compatible increasing update.
         /// Direct CRLs can restrict certificate type and distribution-point scope.
         /// Multiple scopes for one issuer must cover disjoint certificate types.
         /// Within each scope, reason partitions must be disjoint.
@@ -1246,7 +1252,10 @@ pub mod tacacsrs {
 
     fn default_require_crls_max_age_seconds() -> u32 { 300 }
 
-    /// Require complete CRLs for the verified server certificate path.
+    /// Require complete CRL evidence for the verified server certificate path.
+    /// An unpartitioned base can advertise one explicitly supplied delta.
+    /// Both lists must be fresh and match issuer, scope, and authority key
+    /// identifier. CRL numbers must identify a compatible increasing update.
     /// Direct CRLs can restrict certificate type and distribution-point scope.
     /// Multiple scopes for one issuer must cover disjoint certificate types.
     /// Within each scope, reason partitions must be disjoint.
@@ -1262,7 +1271,7 @@ pub mod tacacsrs {
         #[serde(rename = "max-age-seconds")]
         #[serde(default = "default_require_crls_max_age_seconds")]
         pub max_age_seconds: u32,
-        /// One complete DER CRL per entry.
+        /// One full or delta DER CRL per entry.
         #[serde(with = "crate::serde_helpers::base64_binary::option_vec_bytes")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]

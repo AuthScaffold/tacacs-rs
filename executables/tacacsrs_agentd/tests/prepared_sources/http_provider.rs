@@ -97,6 +97,70 @@ async fn terminate(child: Child) -> Result<()> {
 }
 
 #[tokio::test]
+async fn daemon_http_loads_a_complete_delta_pair_without_rewriting_source() -> Result<()> {
+    for complete in [true, false] {
+        let directory = Directory::new()?;
+        let original = write_source(&directory.0).await?;
+        let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+        let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+        let base = super::crl_peer::make_numbered_crl(
+            &directory.0,
+            &issuer,
+            &key,
+            None,
+            false,
+            Some("freshestCRL=URI:http://pki.example.test/delta.crl\n"),
+            1,
+        )
+        .await?;
+        let delta = super::crl_peer::make_numbered_crl(
+            &directory.0,
+            &issuer,
+            &key,
+            None,
+            false,
+            Some("2.5.29.27=critical,DER:02:01:01\n"),
+            2,
+        )
+        .await?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let base_url = format!("http://{}/base.crl", listener.local_addr()?);
+        let delta_url = format!("http://{}/delta.crl", listener.local_addr()?);
+        let peer = tokio::spawn(async move {
+            for (path, body) in [("/base.crl", base), ("/delta.crl", delta)] {
+                let (mut stream, _) = listener.accept().await?;
+                let mut request = [0; 4096];
+                let length = stream.read(&mut request).await?;
+                assert!(String::from_utf8_lossy(&request[..length])
+                    .starts_with(&format!("GET {path} ")));
+                if path == "/delta.crl" && !complete {
+                    stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await?;
+                } else {
+                    stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await?;
+                    stream.write_all(&body).await?;
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+        let mut child = agent_command(&directory.0, &base_url)
+            .args(["--http-crl-source", "opaque-crls", &delta_url])
+            .spawn()?;
+        if complete {
+            wait_for_health(&directory.0, &mut child, ServingStatus::Serving).await?;
+            terminate(child).await?;
+        } else {
+            let output =
+                tokio::time::timeout(Duration::from_secs(5), child.wait_with_output()).await??;
+            assert!(!output.status.success());
+            assert!(!directory.0.join("agent.sock").exists());
+        }
+        tokio::time::timeout(Duration::from_secs(5), peer).await???;
+        assert_eq!(tokio::fs::read(directory.0.join("config.json")).await?, original);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn daemon_http_refresh_withdraws_recovers_and_cancels_pending_io() -> Result<()> {
     let directory = Directory::new()?;
     let original = write_source(&directory.0).await?;
