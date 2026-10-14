@@ -311,7 +311,8 @@ Commit `f55973a` applies an immediate per-server retirement cutoff when changed 
 Commit `5b9ba63` adds canonical proactive provider refresh, independent expiry enforcement, and deadline preservation for unchanged material.
 Commit `4248339` adds a bounded HTTP CRL provider with explicit host registration, cancellation, and native verification tests.
 Commit `f53b83f` adds daemon HTTP registration, provider composition, process-level refresh and recovery, and HTTPS trust and identity tests.
-Certificate-driven retrieval, responder revocation without No Check, and unsupported evidence forms remain open in S4-06.
+Commit `0651d7f` combines required staples with full CRLs and verifies delegated responders without No Check against configured issuer CRLs.
+Certificate-driven retrieval, OCSP queries, and unsupported evidence forms remain open in S4-06.
 Non-yielding code and started blocking I/O still require explicit deployment limits.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 

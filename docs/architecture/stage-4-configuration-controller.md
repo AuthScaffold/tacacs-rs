@@ -26,6 +26,7 @@ Commit `f55973a` immediately cuts off replaced endpoints when changed CRL policy
 Commit `5b9ba63` adds proactive provider revalidation before expiry without requiring credential notifications.
 Commit `4248339` adds bounded HTTP retrieval for explicitly registered CRL sets without changing canonical references.
 Commit `f53b83f` adds production daemon registration, provider composition, and native HTTP/HTTPS process tests.
+Commit `0651d7f` adds combined OCSP/CRL requirements and CRL-backed revocation checks for delegated responders without No Check.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
 
@@ -39,7 +40,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
-- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval; `f53b83f` completes daemon registration and HTTPS process validation. Certificate-driven retrieval and unsupported evidence forms remain open. See [daemon registration](#daemon-registration).
+- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval; `f53b83f` completes daemon registration and HTTPS process validation. Commit `0651d7f` combines OCSP and CRLs, including responders without No Check. Certificate-driven retrieval, OCSP queries, and unsupported evidence forms remain open. See [combined revocation requirements](#combined-revocation-requirements).
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
 ## Policy Observation
@@ -1548,3 +1549,52 @@ Artifact SHA-256 values:
 S4-06 remains open for built-in remote evidence retrieval, responder revocation without No Check, and other evidence forms or combinations.
 This increment orchestrates attached providers; it does not add an HTTP client or distribution-point discovery.
 S4-07 operational statistics remains open. No full RFC 9887 conformance claim is made.
+
+## Combined Revocation Requirements
+
+Commit `0651d7f` permits `require-stapled-ocsp` and `require-crls` together in per-server authentication and reusable server-credential bundles.
+The existing source fields remain canonical. No new configuration model or retrieval path is introduced.
+The failed-before native regression stopped at `CRL and stapled OCSP modes cannot be combined`.
+Canonical validation and both native builder-order guards now permit the combination.
+Exact peer pins, PSK, and disabled certificate verification remain incompatible with required CRLs.
+
+Both requirements must pass before client authentication or TACACS+ data.
+A valid staple cannot override CRL revocation, and valid CRLs cannot replace missing or rejected OCSP evidence.
+The peer CA path still uses full-chain CRL verification with the TLS server purpose and the selected trust anchor.
+
+Delegated responders still require direct issuance, a valid response signature, OCSP signing usage, and digital-signature key usage when present.
+A valid No Check extension retains its existing responder-revocation exemption.
+A present extension must be unique, noncritical, and DER NULL, even when CRL evidence is available.
+Without No Check, the callback requires configured CRLs and successful prior peer-path CRL verification on the same SSL connection.
+It checks the responder with the OCSP helper purpose and leaf CRL checking under its authenticated direct issuer.
+The issuer path already passed the full peer-path check. The responder check performs no retrieval I/O or recursive OCSP query.
+
+The prepared CRL lifetime and verified staple, signer, issuer, and peer-path bounds still constrain transport use.
+The earliest deadline wins, including for idle transports. Canonical source values remain unchanged.
+This reuses the existing CRL store bridge without changing native ownership or exposing borrowed certificate pointers.
+
+### Verification
+
+The native acceptance regression now accepts a responder without No Check when valid issuer CRLs are supplied, then closes at responder expiry.
+Further cases reject revoked responders, revoked peers, forged and stale CRLs, missing staples, and revoked or unknown OCSP status.
+CRLs do not bypass invalid responder usage or malformed, duplicate, or critical No Check extensions.
+Issuer-signed and exempt delegated staples still work with combined policy.
+Separate cases make CRL freshness, OCSP freshness, and responder validity the earliest bound and verify idle transport closure.
+Rejected evidence does not expose the client certificate.
+
+Canonical parser tests cover direct and reusable-bundle policy. All six native OCSP tests and the complete workspace suite pass.
+The suite includes 27 prepared-source tests, 195 agent tests, and 87 canonical parser tests.
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, book build, editor diagnostics, and whitespace checks pass.
+All nine independent TACACS+ peer cases pass against tac_plus-ng with OpenSSL 3.0.20.
+Both pure revocation tests pass under Miri. Native OpenSSL callbacks remain outside Miri support and use native test evidence instead.
+All 15 generator tests and deterministic regeneration pass. YANG changes affect descriptions, not field shape or tree structure.
+
+Artifact SHA-256 values:
+
+- Generated Rust: `98770aea3eacdfa7b2680c79306051021b11fbc2dd37e048fb67fabf1aabd45a`.
+- Expanded tree: `0c3ced4aacc7b3ec4253a823687f1cb998ae27858a7667e5917a11faf0ebcefa`.
+- Project module: `2caaf61b26ebba2648386bbafff234343f0ca360a8ceb95eaddaa089dfe42de9`.
+
+No dependency, lockfile, IPC schema, or native ABI changes occur. Native Redis, live SONiC, Windows, and container checks were not rerun.
+S4-06 remains open for certificate-driven retrieval, OCSP queries, and unsupported evidence forms or combinations.
+S4-07 operational statistics remains open. This increment does not establish full RFC 9887 conformance.
