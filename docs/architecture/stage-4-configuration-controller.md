@@ -24,6 +24,7 @@ Commit `d78cf06` adds delegated OCSP signer authorization and responder-certific
 Commit `a06fced` adds canonical full-CRL materialization, native CA-path validation, and evidence-bounded catalog lifetime.
 Commit `f55973a` immediately cuts off replaced endpoints when changed CRL policy or evidence commits, including older draining generations.
 Commit `5b9ba63` adds proactive provider revalidation before expiry without requiring credential notifications.
+Commit `4248339` adds bounded HTTP retrieval for explicitly registered CRL sets without changing canonical references.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
 
@@ -37,7 +38,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
-- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Built-in remote retrieval and unsupported evidence forms remain open. See [proactive provider refresh](#proactive-provider-refresh).
+- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval. Daemon registration, certificate-driven retrieval, and unsupported evidence forms remain open. See [HTTP CRL retrieval](#http-crl-retrieval).
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
 ## Policy Observation
@@ -1186,6 +1187,63 @@ S4-06 remains open. This mode covers issuer-signed peer-leaf staples, not comple
 Remaining work includes delegated responders, issuer/intermediate revocation, and controller/provider integration for broader OCSP or CRL retrieval and refresh.
 Future modes must retain explicit freshness, failure behavior, source authority, cancellation ownership, and native verification tests.
 S4-07 operational statistics remains open. No full RFC 9887 conformance claim is made.
+
+## HTTP CRL Retrieval
+
+Commit `4248339` adds the internal `tacacsrs-credential-http` adapter crate.
+The provider-neutral credential contract retains no runtime or HTTP dependency.
+Networking still owns native verification and has no dependency on the new provider.
+The host registers opaque reference names with ordered HTTP(S) locations, then attaches the resolver to materialization or the existing supervisor.
+This registration is provider infrastructure, not another desired-server configuration model.
+Canonical YANG snapshots and evidence references remain unchanged.
+
+### Execution and Security
+
+Each reference contains at most 16 locations. The default whole-set timeout is 10 seconds, with a 4 MiB aggregate body cap.
+Each resolver permits four active fetches by default; saturation fails immediately without a provider-owned waiting queue.
+All locations must succeed before the provider returns evidence. No response cache or partial evidence survives a failed fetch.
+Cancellation drops active request I/O and releases capacity. Started system DNS calls can finish later inside the runtime's blocking pool.
+Body limits do not claim to bound headers, TLS buffers, allocator overhead, or registered source storage.
+
+The client disables redirects, environment proxies, decompression, and idle pooling.
+Source validation rejects URL credentials, query strings, fragments, duplicates, and non-HTTP schemes.
+Registration authorizes requests to the configured hosts and their DNS results; it is not a network sandbox.
+Locations must contain no secrets because backend diagnostics can expose URLs.
+Provider errors and debug output omit source locations, reference names, and response bodies.
+
+HTTPS uses normal platform certificate and hostname verification.
+Downloaded bytes remain untrusted: native preparation and TLS verification check DER, signatures, freshness, path coverage, and revocation status.
+HTTP cache headers supply no signed validity. Unbounded provider validity does not remove the CRL's native expiry or canonical maximum age.
+The existing supervisor refresh loop drives repeated retrieval; this adapter adds no detached fetch worker.
+Fallback composition handles other kinds and unregistered references only. A registered-source failure never switches providers.
+
+### Verification
+
+Eight provider tests and one compiled registration example pass.
+Tests cover ordered retrieval, status mapping, empty and compressed bodies, declared and chunked size limits, aggregate limits, and partial-set rejection.
+They also cover redaction, invalid limits, source authorization, fallback isolation, redirect refusal, cancellation, socket closure, and capacity recovery.
+A forced two-location test proves that later requests do not renew the whole-set deadline.
+
+The native prepared-source test downloads signed CRLs through an opaque reference in a reusable credential bundle.
+Valid evidence permits mTLS; revoked, forged, and stale evidence fails before usable authentication.
+The test preserves canonical source equality and verifies idle retirement at the signed-evidence bound.
+
+The all-feature workspace suite passes, including 21 prepared-source tests, 195 agent tests, and 87 configuration tests.
+Rust 1.88 build, strict workspace Clippy, nightly formatting, warnings-as-errors rustdoc, and the documentation book build pass.
+All four CI dependency guards and the workspace unused-dependency check pass.
+The locked graph adds reqwest 0.12.28 with default features disabled and native TLS enabled.
+Dependency audit reports no vulnerabilities across 323 locked packages; the existing crates.io index-lock warning remains.
+
+No YANG, IPC schema, or project unsafe code changes occur. Generator, Miri, Windows, native Redis, and live SONiC checks were not rerun.
+The external TACACS+ peer matrix and external HTTP(S) endpoints were not tested in this increment.
+The local native test exercises HTTP delivery followed by TACACS+ TLS verification, not HTTPS retrieval trust fixtures.
+
+### Remaining Work
+
+The stock daemon does not yet expose production HTTP source registration. Embedding hosts can construct the provider directly.
+Daemon registration must retain canonical source references and explicit destination authorization, with process-level refresh and failure tests.
+Certificate-driven distribution-point discovery, OCSP queries, responder revocation without No Check, and unsupported evidence forms remain S4-06 work.
+S4-07 operational statistics remains open. This increment does not establish full RFC 9887 conformance.
 
 ## Delegated Responders
 
