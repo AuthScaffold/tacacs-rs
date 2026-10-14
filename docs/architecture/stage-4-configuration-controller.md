@@ -31,8 +31,9 @@ Commit `1b4616d` adds direct scoped CRLs and strict scope preparation. Commit `b
 Commit `c0cec59` adds disjoint reason partitions, native issuer-name matching, and bounded CRL-set admission.
 Commit `0616b8b` adds disjoint certificate-type scope sets and rejects contradictory or unsupported type flags during preparation.
 Commit `f2950ac` adds explicitly paired base/delta evidence, native delta application, and strict metadata and entry-reason validation.
+Commit `efcc503` completes S4-06 for the supported profile with authorized certificate discovery, online OCSP, and unified evidence retirement.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
-The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
+The publication, lifecycle, client-chain, and supported revocation contracts are complete. S4-07 statistics remains open.
 
 Fix nearby findings within each increment when practical. Keep completed items and their verification evidence.
 The startup race and closed-runtime publication fix belong to S4-01, not separate work items.
@@ -44,7 +45,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
-- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval; `f53b83f` completes daemon registration and HTTPS process validation. Commit `0651d7f` combines OCSP and CRLs, including responders without No Check. Commits `1b4616d` and `bf7b77e` add verified direct scope support. Commit `c0cec59` supports disjoint reason partitions; `0616b8b` adds disjoint certificate-type sets. Commit `f2950ac` supports explicit base/delta pairs. Certificate-driven retrieval, OCSP queries, and unsupported combinations remain open. See [explicit delta evidence](#explicit-delta-evidence).
+- [x] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval; `f53b83f` completes daemon registration and HTTPS process validation. Commit `0651d7f` combines OCSP and CRLs, including responders without No Check. Commits `1b4616d` and `bf7b77e` add verified direct scope support. Commit `c0cec59` supports disjoint reason partitions; `0616b8b` adds disjoint certificate-type sets. Commit `f2950ac` supports explicit base/delta pairs. Commit `efcc503` completes authorized discovery, online OCSP, and the supported-profile closure. See [S4-06 closure](#s4-06-closure).
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
 ## Policy Observation
@@ -1825,3 +1826,79 @@ Artifact SHA-256 values:
 No dependency, lockfile, or IPC schema changes occur. Native Redis, live SONiC, Windows, and container checks were not rerun.
 S4-06 remains open for certificate-driven retrieval, OCSP queries, reason-partitioned deltas, and broader evidence combinations.
 S4-07 operational statistics remains open. No full RFC 9887 conformance claim is made.
+
+## S4-06 Closure
+
+S4-06 is complete for the following supported profile as of 2026-10-14, with final implementation in `efcc503`.
+Earlier remainder sections record historical increment state. This closure supersedes their open-ended revocation scope without removing their implementation or test evidence.
+The user delegated the final scope decision while unavailable. The selected boundary favors explicit authorization and fail-closed behavior over unverified PKI combinations.
+This is not full RFC 9887 conformance or a claim to implement every RFC 5280 revocation mode.
+
+### Completed Profile
+
+| Requirement | Implementation and acceptance evidence |
+| --- | --- |
+| Mandatory stapling | Issuer and authorized delegated signatures, peer binding, status, freshness, and pre-client-auth rejection |
+| Fetched OCSP | Canonical `require-ocsp`, inline/provider choice, typed IPC-independent material, actual-peer verification, and independent mandatory-staple enforcement |
+| CRLs and supported deltas | Strict DER, metadata, scope, type/reason coverage, explicit base/delta pairing, revocation and hold release |
+| Explicit retrieval | Bounded HTTP(S), no redirects/proxies/decompression, complete results only, sanitized errors, HTTPS trust and identity checks |
+| Certificate-driven discovery | Host-supplied DER certificates, full URI distribution points or AIA responders, exact authorized URL matching, deduplication and input bounds |
+| Refresh and expiry | Owned scheduled revalidation, independent signed/provider deadlines, nonrenewing stale grace, catalog withdrawal and recovery |
+| Retirement and cancellation | Changed CRL, fetched OCSP, or staple policy triggers existing immediate per-server retirement; host stop cancels active fetches |
+| Canonical configuration | Source and reference immutability, generated YANG types, deterministic slot planning, bundle propagation and atomic revision-fenced publication |
+
+### Online Evidence Integration
+
+The provider-neutral contract adds `OcspResponse` request, reference, and material variants without runtime or native dependencies.
+The HTTP adapter constructs a SHA-256 certificate-ID request from a registered certificate and issuer, then POSTs to an explicitly authorized responder.
+Its response cap is 64 KiB, further limited by the configured byte budget. Existing timeout, concurrency, cancellation, and fallback boundaries remain.
+No nonce is used. Certificate binding and signed freshness permit bounded cached responses.
+
+Preparation accepts one successful DER response with one status and captures its signed interval before publication.
+Fresh revoked or unknown status can replace an older response; native TLS rejects it before client authentication.
+Wrong-peer and forged responses also fail native verification. A fetched response never substitutes for a mandatory server staple.
+Signer and peer validity further constrain active transport lifetime. Readiness remains a configuration signal, not proof of an upstream handshake.
+
+The daemon supports explicit OCSP registration and certificate-driven CRL/AIA registration through startup flags.
+Certificate inputs are bounded DER file reads. Registration and certificate changes require restart; URLs in live peer certificates never authorize network requests.
+The existing supervisor refreshes evidence without a separate HTTP worker and preserves the canonical source revision and reference values.
+
+### Explicit Exclusions
+
+These are supported-profile exclusions, not unchecked S4-06 acceptance items:
+
+- Unrestricted live-peer URL discovery or automatic authorization from certificate extensions.
+- Dynamic reload of host certificate registration, relative distribution-point discovery, or non-HTTP retrieval protocols.
+- Indirect or alternate-signer CRL arrangements beyond the configured authenticated path.
+- Reason-partitioned deltas or ambiguous overlapping distribution-point scopes. These combinations remain rejected.
+- Multi-certificate fetched OCSP responses, OCSP checks for every intermediate, or recursive responder OCSP retrieval.
+- CRL verification with exact peer pins, PSK authentication, or disabled certificate verification.
+
+Hosts that require excluded capabilities need a separately designed extension with its own security and interoperability gates.
+No existing exclusion is relaxed merely to mark the checklist complete.
+Started blocking filesystem or DNS work and non-yielding code retain the existing deployment limits; async cancellation is not hard process preemption.
+
+### Closure Evidence
+
+The final all-feature workspace suite passes, including 42 prepared-source tests, 196 agent tests, and five host-process tests.
+New regressions verify discovered URL authorization, AIA selection, duplicate-location handling, malformed DER, canonical materialization, and source immutability.
+Native TLS tests cover absent staples with fetched evidence, mandatory-staple independence, wrong-peer and forged responses, revoked status, and idle expiry.
+The actual daemon test verifies OCSP POST, scheduled refresh, failure withdrawal, recovery, stalled-I/O cancellation, and unchanged source files.
+A focused retirement test verifies changed and removed fetched evidence without treating an empty authentication container as revocation.
+
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, book build, editor diagnostics, and whitespace checks pass.
+All four CI dependency guards and unused-dependency analysis pass. Audit reports no vulnerabilities in 323 locked packages, with the existing index-lock warning.
+The only new dependency edge is OpenSSL in the HTTP adapter; locked package versions do not change.
+All nine independent TACACS+ peer cases pass with OpenSSL 3.0.20.
+Two pure freshness tests and the retirement-decision test pass under Miri. Native OCSP pointers and callbacks use real OpenSSL fixtures because Miri cannot execute that FFI.
+All 15 generator tests and deterministic regeneration pass for the new YANG resource.
+The existing nightly `fetch_update` warning remains; Rust 1.88 compatibility is retained.
+Live SONiC, native Redis, Windows, and container builds were not rerun for this provider/native-verification increment. No protobuf schema changed.
+
+Artifact SHA-256 values:
+
+- Generated Rust: `a4380d3fbb7e966299e66f6e7e215cc2d89f1819882a0cb48040cfe771632445`.
+- Expanded tree: `e1e321d7dc654fa3cdd1068a25b1942047a94461b59c716e800d7bd152e91107`.
+- Project module: `596cdd6d95c2be441ae63cc21b8f55eb434b5686849e56fd5574bcc13593af91`.
+
+S4-07 operational statistics is the next open Stage 4 item.

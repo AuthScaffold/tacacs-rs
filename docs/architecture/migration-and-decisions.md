@@ -316,7 +316,9 @@ Commit `1b4616d` adds direct scoped CRLs and explicit scope decoding. Commit `bf
 Commit `c0cec59` adds bounded, disjoint CRL reason partitions with semantic issuer matching and native completeness checks.
 Commit `0616b8b` admits disjoint CA-only and end-entity-only scope sets with independent reason coverage and early certificate-type validation.
 Commit `f2950ac` adds strict explicit base/delta CRL pairing, native delta application, entry-reason validation, and daemon HTTP pair tests.
-Certificate-driven retrieval, OCSP queries, and unsupported evidence forms remain open in S4-06.
+Commit `efcc503` completes S4-06's supported profile with host-authorized certificate discovery, online OCSP, signed response lifetimes, and unified evidence retirement.
+The [S4-06 closure](stage-4-configuration-controller.md#s4-06-closure) defines explicit exclusions rather than an open-ended full-PKI obligation.
+On 2026-10-14 the user delegated the closure-scope decision. Unrestricted peer-driven fetching and unsupported native combinations remain deliberately disabled.
 Non-yielding code and started blocking I/O still require explicit deployment limits.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
 
@@ -331,7 +333,7 @@ The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the comple
 Certificate provisioning and operational data have explicit Stage 4 acceptance contracts:
 
 - Client-chain provisioning belongs to configuration preparation and credential providers. Add canonical chain inputs before accepting multi-certificate client material. Native mTLS tests must cover complete, missing, and incorrect intermediate chains without changing source references.
-- Revocation policy belongs to the controller/provider lifecycle and TLS verifier integration. Required staples enforce leaf status; the separate full-CRL mode checks CA-authenticated paths before client authentication. Broader retrieval and evidence coverage remain incomplete; no full RFC 9887 conformance is claimed.
+- Revocation policy belongs to the controller/provider lifecycle and TLS verifier integration. S4-06 is complete for the documented supported profile: required staples, fetched OCSP, CRLs and supported deltas, authorized retrieval, refresh, expiry, and retirement. Excluded PKI modes fail closed; no full RFC 9887 conformance is claimed.
 - YANG operational statistics belong to the controller's health/publication boundary. Populate and export `ServerStatistics` from runtime events without putting read-only counters into desired configuration. Verify counter updates and generation association across reloads.
 
 Primary starting points:
