@@ -2,7 +2,7 @@
 
 ## Status
 
-Stage 5 started on 2026-10-14 from `76be797`, after the Stage 4 supported-profile closure.
+Stage 5 is complete as of 2026-10-14. Work started from `76be797`, after the Stage 4 supported-profile closure.
 The user authorizes autonomous implementation, breaking API changes, nearby corrections, and incremental local commits.
 Canonical YANG, source immutability, security, and retained capabilities remain requirements. No push is authorized.
 
@@ -26,10 +26,10 @@ CLI multi-server failover is not a prerequisite for removing duplicate execution
 
 - [x] S5-01: Commit `1ad1630` adds pure failure facts and preserves them through the agent, protobuf conversion, and SDK. Unknown delivery, invalid input, and known-unsent failures remain distinct. See [failure contract](#failure-contract).
 - [x] S5-02: Commit `726f805` consolidates IPC ownership and moves server adaptation outside the agent. All consumers use the reusable channel SDK and the same failure schema. See [IPC ownership](#ipc-ownership).
-- [x] S5-03: Commit `7785706` unifies direct and IPC domain responses and batch rendering. Shared request construction and canonical preparation remain unchanged. Four conformance tests cover response and failure projection.
+- [x] S5-03: Commit `7785706` unifies direct and IPC domain responses and batch rendering. Commit `4acf79b` completes PAP parity. Shared request construction and canonical preparation remain unchanged. Five conformance tests cover response and failure projection.
 - [x] S5-04: Commit `c3dcab9` shares 25 enforcement cases across Bash and the wrapper. Daemon composition contains no duplicate routing or materialization algorithm. Unsupported mandatory attributes remain denied.
-- [x] S5-05: Cargo defaults now select the 13 supported core packages. Experimental wrapper and Rego packages remain explicit workspace selections and CI test targets. Existing release product lists exclude them.
-- [ ] S5-06: Run matched-set process tests, dependency guards, native integration, and complete relevant workspace gates. Record supported capabilities, exceptions, and the final package graph.
+- [x] S5-05: Commit `f857268` makes Cargo defaults select the 13 supported core packages. Experimental wrapper and Rego packages remain explicit workspace selections and CI test targets. Existing release product lists exclude them.
+- [x] S5-06: Matched-set process tests, seven dependency guards, independent native peers, pure Miri tests, and all-feature workspace coverage pass. See [final integration evidence](#final-integration-evidence) for capabilities, ownership, and verification limits.
 
 Each increment runs its cheapest behavior check before wider checks or the next change.
 Code and checkpoint commits preserve completed evidence and state remaining work explicitly.
@@ -122,8 +122,9 @@ Direct accounting now prints a response like IPC mode. Batch modes share one ren
 The renderer labels a completed exchange as a response, not a policy success. Denial and protocol ERROR statuses remain visible.
 Batch summaries retain their existing exchange-completion semantics. Text rendering is the final CLI boundary, not a reusable error API.
 
-All 56 CLI tests pass, including four new conformance cases.
-The cases compare direct responses with IPC round trips for all accounting and authorization statuses, structured failure facts, and batch PAP rejection.
+All 57 CLI tests pass, including five new conformance cases.
+The cases compare direct responses with IPC round trips for accounting, authorization, and terminal PAP statuses, structured failure facts, and batch PAP rejection.
+PAP parity also preserves binary response data. Commit `4acf79b` adds this case and corrects stale public ownership and failure-model documentation.
 Targeted strict Clippy, build, formatting, and warnings-as-errors documentation pass.
 No connection mode, canonical preparation, retry rule, or password-input behavior changes.
 
@@ -149,3 +150,54 @@ No release-matrix redesign or new package versioning scheme was needed. That bro
 Cargo metadata verifies exactly 13 defaults and three retained experimental members.
 A CI dependency guard prevents wrapper, emulator, Rego, and seccomp dependencies from entering the default core graph.
 The default build, explicit experimental builds, warnings-as-errors emulator documentation, book build, and whitespace checks pass.
+
+## Final Integration Evidence
+
+The final all-feature workspace tests, strict Clippy, build, format check, and warnings-as-errors documentation pass.
+Matched-set validation includes 191 agent tests, 44 IPC tests, 70 daemon unit tests, 42 prepared-source tests, and eight process-lifecycle tests.
+Two manual networking performance baselines remain ignored. Opt-in external peer tests run separately through the independent peer matrix.
+The CLI has 57 tests. The wrapper has 36 tests and the Bash plugin has four tests, including their shared 25-case fixture.
+The standard health probe and the experimental emulator also pass their workspace tests.
+Editor diagnostics for the changed command, adapter, listener, and shared fixture files are clear.
+
+All nine independent TACACS+ peer cases pass against server revision `278d8c738cfb2ed8ba505fd1b60575fcc3fadca5` with OpenSSL 3.0.20.
+They exercise plain and obfuscated TCP, certificate TLS, mTLS, missing-client-certificate rejection, PSK-DHE, PSK-only, and SHA-384.
+The runner owns peer cleanup. Its local evidence is in `/tmp/tacacs-rs-peer-run-k96jd3vy`.
+The pure failure and unchanged-command invariants pass under Miri: three tests in total.
+Native OpenSSL and operating-system integration use real fixtures, not Miri. No new unsafe implementation is introduced by Stage 5.
+
+All seven CI dependency guards pass. They protect protocol, credentials, networking, configuration, agent, IPC, and supported-core boundaries.
+Structured parsing verifies that both release product lists contain only the supported products, with Windows limited to `tacon`.
+Unused-dependency analysis and the 46 version-computation tests pass. Audit finds no vulnerabilities in 323 locked packages.
+No locked package version changes. The existing audit index-lock and nightly `fetch_update` warnings remain.
+The protobuf compatibility check passes against `76be797` under `WIRE_JSON`. A local `main` ref is unavailable.
+Wire compatibility does not remove S5-01's matched-set semantic deployment requirement.
+
+Serial all-feature workspace coverage with isolated Redis integration passes.
+The report records 38,668 covered lines out of 43,453 instrumented lines, or 88.99%.
+Local artifacts are `target/tmp/s5-adapters.lcov` and `target/tmp/s5-adapters-coverage.log`.
+The Redis fixture used a private Unix socket with no TCP listener or persistence. It stopped and its private directory was removed after validation.
+Live SONiC, Windows execution, container builds, and release packaging were not rerun in this Linux development container.
+No live SONiC VM was restarted or modified. Broader delivery and artifact-reproduction work remains Stage 6.
+
+### Resulting Ownership
+
+| Owner | Retained responsibility |
+| --- | --- |
+| `tacacsrs-protocol` and `tacacsrs-secrets` | Pure wire/domain contracts, failure facts, shared enforcement interpretation, and secret-safe values |
+| `tacacsrs-networking` | Native transports, endpoint execution, routing, retry, admission primitives, and connection lifecycle |
+| `tacacsrs-config` | Canonical YANG, validation, observation contracts, and derived preparation |
+| Credential and SONiC adapters | Provider-neutral resolution and explicit host integration outside networking and IPC |
+| `tacacsrs-agent` | Configuration supervision, published generations, health, routed operations, raw proxy, and coordinated shutdown |
+| `tacacsrs-ipc` | Protobuf conversion, reusable channel SDK, domain handler, bounded listener, and standard gRPC health |
+| `tacacsrs-agentd` | Host composition, signals, credential registration, and adapter wiring |
+| CLI, health probe, and Bash plugin | Supported consumers of shared operations or IPC |
+| Wrapper and Rego packages | Explicit experimental builds and tests, outside the supported core release profile |
+
+Canonical YANG and credential references remain authoritative. No prepared runtime value becomes a second desired-configuration model.
+Direct and IPC consumers share domain responses. CLI text rendering remains an application boundary, not a loss of facts in the reusable SDK.
+Conformance checks compare domain results and encoded requests. Direct endpoint execution and agent failover retain their distinct routing policies and diagnostic context.
+Authorization adapters retain unchanged-command capability and deny unsupported mandatory changes.
+The Stage 4 supported-profile exclusions remain unchanged. Stage 5 does not claim full RFC 9887 conformance.
+
+Stage 6 delivery simplification is next and has not started. No source, credential store, or live deployment was migrated during this work.

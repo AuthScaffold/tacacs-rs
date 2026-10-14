@@ -359,7 +359,7 @@ No controller or provider rewrites authoritative credential references during pr
 
 **Scope:** daemon, CLI, IPC, proxy, health probe, host integration, and test scenarios.
 
-**Status:** in progress as of 2026-10-14. Claude Opus 4.8 reviewed the implementation plan before code changes.
+**Status:** complete as of 2026-10-14. Claude Opus 4.8 reviewed the implementation plan before code changes.
 The [Stage 5 checkpoint](stage-5-adapters.md) records the revised sequence, acceptance checks, and incremental evidence.
 The first change preserves failure facts before restructuring IPC ownership.
 Existing shared preparation and enforcement behavior require verification, not speculative replacement APIs.
@@ -367,8 +367,12 @@ Commit `1ad1630` completes the shared failure contract and its agent, protobuf, 
 Commit `726f805` completes IPC package and listener ownership. The agent has no production IPC or tonic dependency.
 The daemon composes the IPC handler and listener while the agent retains shutdown and raw-proxy ownership.
 Commit `7785706` unifies direct and IPC CLI responses. Commit `c3dcab9` shares unchanged-command enforcement fixtures across host adapters.
-Default Cargo selection now identifies the 13 supported core packages. Experimental wrapper and Rego products remain explicit builds and CI test targets.
-Workspace and matched-set process gates pass. The final Stage 5 integration checks remain in progress.
+Commit `f857268` identifies the 13 supported core packages through Cargo defaults. Experimental wrapper and Rego products remain explicit builds and CI test targets.
+Commit `4acf79b` completes PAP result parity and current ownership documentation.
+Workspace and matched-set process gates, seven dependency guards, nine independent peer cases, and three pure Miri tests pass.
+Serial all-feature coverage with isolated Redis reports 88.99% line coverage.
+The [final checkpoint](stage-5-adapters.md#final-integration-evidence) records ownership, deployment requirements, and unrun platform checks.
+Stage 6 has not started. The Stage 4 supported-profile exclusions remain unchanged.
 
 1. Finish the IPC package split and update the schema to preserve failure facts.
 2. Make the daemon a composition root with no independent routing or materialization algorithm.
