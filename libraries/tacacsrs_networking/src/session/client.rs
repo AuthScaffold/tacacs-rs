@@ -7,6 +7,8 @@ use super::{DedicatedSession, SharedFixedSession, SharedSession};
 /// Hides whether an operation uses a dedicated or shared transport.
 pub(crate) struct ClientSession {
     inner: ClientSessionInner,
+    counters: Option<crate::ServerCounters>,
+    counted: std::sync::atomic::AtomicBool,
 }
 
 enum ClientSessionInner {
@@ -19,18 +21,39 @@ impl ClientSession {
     pub(crate) fn shared(session: SharedSession) -> Self {
         Self {
             inner: ClientSessionInner::Shared(session),
+            counters: None,
+            counted: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     pub(crate) fn dedicated(session: DedicatedSession) -> Self {
         Self {
             inner: ClientSessionInner::Dedicated(session),
+            counters: None,
+            counted: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     pub(crate) fn shared_fixed(session: SharedFixedSession) -> Self {
         Self {
             inner: ClientSessionInner::SharedFixed(session),
+            counters: None,
+            counted: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn with_counters(mut self, counters: crate::ServerCounters) -> Self {
+        self.counters = Some(counters);
+        self
+    }
+
+    pub(crate) fn record_terminal_reply(&self, reply: &Packet) {
+        if crate::statistics::reply_classification(reply).is_some_and(|(_, terminal)| terminal)
+            && !self.counted.swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            if let Some(counters) = &self.counters {
+                counters.record(crate::statistics::CounterEvent::SessionCompleted);
+            }
         }
     }
 

@@ -34,6 +34,14 @@ The daemon captures the applied value once when cleanup begins. Later policy upd
 At expiry it cancels pending work and exits with an error. An earlier failure remains the primary reported error.
 Systemd notifications use owned asynchronous child processes, so a stalled helper is terminated when teardown aborts its task.
 
+## Operational Statistics
+
+Use `--statistics-file FILE` for private, atomically replaced read-only YANG statistics once per second.
+The report identifies the runtime generation and each counter epoch. It never includes credentials or command data.
+Unchanged endpoints retain counters across reloads; replacements start a new counter lifetime.
+The last report remains after shutdown. Check process health before treating it as current.
+See [operational statistics](../../docs/tacacsrs-agentd.md#operational-statistics) for counter semantics and failure behavior.
+
 ## Optional Profiling
 
 Tokio Console profiling requires the `console` feature and `RUSTFLAGS="--cfg tokio_unstable"` when building Tokio and the daemon.

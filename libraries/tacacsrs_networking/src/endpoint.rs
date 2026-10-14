@@ -46,6 +46,7 @@ pub struct PreparedEndpoint {
     pub(crate) transport: PreparedTransport,
     pub(crate) options: ConnectOptions,
     pub(crate) connection_guard: Option<Arc<dyn ConnectionGuard>>,
+    pub(crate) counters: crate::ServerCounters,
 }
 
 impl PreparedEndpoint {
@@ -143,6 +144,7 @@ impl PreparedEndpoint {
             transport: PreparedTransport::Tcp,
             options,
             connection_guard: None,
+            counters: crate::ServerCounters::default(),
         }
     }
 
@@ -157,6 +159,12 @@ impl PreparedEndpoint {
     #[must_use]
     pub fn address(&self) -> &str {
         &self.address
+    }
+
+    /// Returns the counter owner shared by this endpoint's clones and connections.
+    #[must_use]
+    pub fn counters(&self) -> crate::ServerCounters {
+        self.counters.clone()
     }
 
     /// Returns whether this endpoint requests TACACS+ single-connection mode.

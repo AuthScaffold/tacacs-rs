@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use tacacsrs_protocol::packet::Packet;
 
@@ -45,12 +45,13 @@ where
         T: Transport<ReadHalf = R, WriteHalf = W>,
     {
         let key = obfuscation_key.map(<[u8]>::to_vec);
+        let counters = transport.counters();
         let (reader_half, writer_half) = transport.split();
         Self {
             reader_half,
             writer_half,
-            reader: PacketReader::new(key.clone()),
-            writer: PacketWriter::new(key),
+            reader: PacketReader::new(key.clone()).with_counters(counters.clone()),
+            writer: PacketWriter::new(key).with_counters(counters),
         }
     }
 
@@ -103,6 +104,10 @@ where
         }
     }
 
+    pub(crate) async fn shutdown(&mut self) {
+        let _ = self.writer_half.shutdown().await;
+    }
+
     /// Consumes this dedicated connection and upgrades it to a multiplexed
     /// connection.
     ///
@@ -129,6 +134,7 @@ where
     {
         let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(
             self.writer.obfuscation_key(),
+            self.writer.counters(),
         ));
         connection.run_with_halves(self.reader_half, self.writer_half);
         connection

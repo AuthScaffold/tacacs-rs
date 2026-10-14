@@ -88,7 +88,7 @@ impl SingleConnectPromotion {
         self.response.store(response, Ordering::Release);
     }
 
-    async fn promote_if_confirmed(&self, connection: BoxedDedicatedConnection) {
+    async fn promote_if_confirmed(&self, mut connection: BoxedDedicatedConnection) {
         match self.response.load(Ordering::Acquire) {
             SINGLE_CONNECT_RESPONSE_SUPPORTED => {
                 if self.record_server_result(true).await {
@@ -103,8 +103,11 @@ impl SingleConnectPromotion {
             }
             SINGLE_CONNECT_RESPONSE_UNSUPPORTED => {
                 self.record_server_result(false).await;
+                connection.shutdown().await;
             }
-            SINGLE_CONNECT_RESPONSE_PENDING => {}
+            SINGLE_CONNECT_RESPONSE_PENDING => {
+                connection.shutdown().await;
+            }
             _ => unreachable!("invalid single-connect response state"),
         }
     }
@@ -255,12 +258,14 @@ impl DedicatedSession {
             return;
         }
 
-        let Some(connection) = self.connection.lock().await.take() else {
+        let Some(mut connection) = self.connection.lock().await.take() else {
             return;
         };
 
         if let Some(promotion) = &self.single_connect_promotion {
             promotion.promote_if_confirmed(connection).await;
+        } else {
+            connection.shutdown().await;
         }
     }
 }

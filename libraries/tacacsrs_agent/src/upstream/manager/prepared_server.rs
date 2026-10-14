@@ -10,6 +10,7 @@ pub(super) struct PreparedServer {
     pub(super) server: Arc<TacacsPlusServer>,
     pub(super) endpoint: Endpoint,
     pub(super) certificate_lifetime: crate::runtime::CredentialLifetime,
+    pub(super) counters: tacacsrs_networking::ServerCounters,
 }
 
 impl PreparedServer {
@@ -18,6 +19,7 @@ impl PreparedServer {
         options: PrepareOptions,
     ) -> anyhow::Result<Self> {
         let prepared = tacacsrs_config::prepare::prepare_endpoint(&server, options)?;
+        let counters = prepared.counters();
         let certificate_lifetime = match prepared.prepared_credential_validity() {
             Some(validity) => crate::runtime::CredentialLifetime::new(
                 tacacsrs_credential_resolution::CredentialValidity::new(
@@ -41,6 +43,7 @@ impl PreparedServer {
             server,
             endpoint,
             certificate_lifetime,
+            counters,
         })
     }
 

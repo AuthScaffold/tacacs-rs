@@ -81,6 +81,7 @@ impl ClientConversation {
         session.send_packet(request).await?;
         let response = session.receive_packet().await?;
         self.state.validate_response(response.header())?;
+        session.record_terminal_reply(&response);
         Ok(response)
     }
 }

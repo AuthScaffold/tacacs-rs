@@ -102,6 +102,26 @@ module tacacsrs {
     }
   }
 
+  augment "/sys:system/sys-tcs-plus:tacacs-plus" {
+    description "Generation association for operational snapshots.";
+    leaf runtime-generation {
+      config false;
+      type uint64;
+      description "Runtime generation captured for this operational snapshot.";
+    }
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/sys-tcs-plus:server" {
+    description "Counter lifetime identity independent of routing generations.";
+    leaf counter-epoch {
+      config false;
+      type uint64;
+      description
+        "Process-local counter lifetime identity. Unchanged endpoints retain it
+         across reloads; replaced endpoints receive a new identity and discontinuity time.";
+    }
+  }
+
   augment "/sys:system" {
     description
       "Local TACACS+ service policy, separate from the ordered upstream server list.";

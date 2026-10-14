@@ -30,8 +30,10 @@ mod runtime;
 mod session;
 mod single_connect;
 mod transport;
+mod statistics;
 
 pub use client::TacacsClient;
+pub use statistics::{ServerCounters, StatisticsSnapshot};
 pub use deadline::{DeadlineElapsed, RequestDeadline};
 pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use endpoint::{ConnectionGuard, PreparedEndpoint};

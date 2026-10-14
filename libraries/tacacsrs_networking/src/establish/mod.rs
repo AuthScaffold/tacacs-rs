@@ -87,8 +87,31 @@ impl ConnectOptions {
 /// - TCP connection fails or times out
 /// - the prepared backend fails to complete its handshake
 pub(crate) async fn establish_stream(endpoint: &PreparedEndpoint) -> Result<BoxedTransport> {
+    let mut attempt = crate::statistics::ConnectionAttempt::new(endpoint.counters());
+    let result = establish_transport(endpoint, &mut attempt).await;
+    match result {
+        Ok(transport) => {
+            attempt.succeeded();
+            Ok(transport.with_counters(endpoint.counters()))
+        }
+        Err(error) => {
+            attempt.failed(
+                error.is::<tokio::time::error::Elapsed>(),
+                error.is::<crate::statistics::CertificateFailure>(),
+            );
+            Err(error)
+        }
+    }
+}
+
+async fn establish_transport(
+    endpoint: &PreparedEndpoint,
+    attempt: &mut crate::statistics::ConnectionAttempt,
+) -> Result<BoxedTransport> {
     if let Some(lifetime) = endpoint.prepared_credential_lifetime() {
-        lifetime.check()?;
+        lifetime
+            .check()
+            .context(crate::statistics::CertificateFailure)?;
     }
     let address = endpoint.address();
     let options = &endpoint.options;
@@ -112,6 +135,7 @@ pub(crate) async fn establish_stream(endpoint: &PreparedEndpoint) -> Result<Boxe
     };
 
     log::debug!("TCP connection to {address} established");
+    attempt.connected();
 
     match &endpoint.transport {
         PreparedTransport::Tcp => Ok(BoxedTransport::new(tcp_stream)),

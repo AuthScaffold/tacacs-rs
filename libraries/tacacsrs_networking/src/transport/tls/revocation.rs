@@ -119,6 +119,20 @@ pub(super) fn verified_validity(ssl: &SslRef) -> anyhow::Result<Option<Certifica
     }
 }
 
+pub(super) fn verification_failed(ssl: &SslRef) -> bool {
+    index()
+        .ok()
+        .and_then(|index| ssl.ex_data(index))
+        .is_some_and(|connection| {
+            connection
+                .result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(Result::is_err)
+        })
+}
+
 /// Controls mandatory, fresh stapled OCSP evidence for a TLS peer leaf.
 ///
 /// The default disables OCSP requirements, not configured CRL checks. Required evidence fails closed.

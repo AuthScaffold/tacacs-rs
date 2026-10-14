@@ -312,6 +312,60 @@ Readiness reports configuration availability, not a completed upstream certifica
 | `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections |
 | `--runtime-policy <FILE>` | none | Optional live JSON policy for failover and request limits |
 
+### Operational Statistics
+
+`--statistics-file FILE` publishes a read-only RFC 7951 JSON snapshot once per second.
+The parent directory must already exist. Each write uses a private temporary file and atomic replacement, with mode `0600`.
+The destination cannot be a configuration input, discovery certificate, or local listener socket. Symlink destinations are rejected.
+No exporter runs when the flag is absent. An export error is a supervised failure and stops the daemon after normal cleanup.
+The last complete report remains after shutdown; consumers must check process health or file age before treating it as current.
+
+```json
+{
+    "ietf-system-tacacs-plus:tacacs-plus": {
+        "tacacsrs:runtime-generation": "4",
+        "server": [{
+            "name": "primary",
+            "tacacsrs:counter-epoch": "2",
+            "statistics": {
+                "discontinuity-time": "2026-10-14T12:00:00Z",
+                "connection-opens": "1",
+                "messages-sent": "2",
+                "messages-received": "2",
+                "sessions": "2"
+            }
+        }]
+    }
+}
+```
+
+The example omits other zero-valued counters. The actual report includes every supported counter.
+All 64-bit counters and identities are JSON strings. RPK counters are omitted because raw-public-key authentication is disabled.
+The file contains server names and statistics, not addresses, credential references, secrets, or command data.
+It is operational data, not a configuration file. Configuration parsing rejects it.
+
+Counters belong to prepared endpoint identities. Unchanged endpoints retain their epoch across configuration and policy reloads.
+Replacements receive a new epoch and discontinuity time. Removed endpoints leave the current report.
+Late events from an old endpoint update only its old counter owner, never the replacement.
+The report captures one routing generation. Each server snapshot is coherent, but different servers are not sampled at one global instant.
+
+| Counter | Recorded event |
+| --- | --- |
+| `connection-opens` | A logical establishment request for the configured server, including DNS and address selection |
+| `connection-failures` | An unsuccessful or cancelled establishment request |
+| `connection-timeouts` | A native configured connection-timeout failure; caller cancellation is a failure without a timeout classification |
+| `connection-closes` | Clean EOF or successful transport shutdown, recorded once when the transport closes |
+| `connection-aborts` | Forced closure, transport error, or failed/cancelled setup after TCP connects |
+| `messages-sent` | One fully written TACACS+ packet; queued or partial writes do not count |
+| `messages-received` | One complete, decoded packet frame; truncated or invalid frames do not count |
+| `errors-received` | A valid protocol `ERROR` reply, not an ordinary denial |
+| `sessions` | A validated terminal response, once per client session; abandoned or incomplete conversations do not count |
+| `cert-errors` | Establishment failures identified by local certificate or revocation verification |
+
+Single-connect negotiation and configured preflight traffic are included. IPC and proxy operations share the same per-endpoint counters.
+Counters wrap at 64 bits and are never reset in place. A new epoch marks a counter-lifetime discontinuity, not an ordinary counter wrap.
+Atomic replacement prevents partial reports but does not make filesystem I/O hard-cancellable. Temporary cleanup is best effort if underlying I/O outlives cancellation.
+
 ### Debugging
 
 | Flag | Description |

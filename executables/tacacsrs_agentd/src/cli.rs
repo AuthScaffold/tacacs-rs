@@ -89,6 +89,10 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "FILE")]
     pub(crate) runtime_policy: Option<PathBuf>,
 
+    /// Publish read-only YANG statistics atomically to this file once per second.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) statistics_file: Option<PathBuf>,
+
     /// Register a public HTTP(S) CRL URL for an opaque evidence reference.
     /// Repeat the reference to add issuer CRLs in fetch order. Locations must contain no secrets.
     #[arg(long, value_names = ["REFERENCE", "URL"], num_args = 2, action = clap::ArgAction::Append)]

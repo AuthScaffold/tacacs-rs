@@ -114,6 +114,142 @@ async fn stop(child: Child, signal: &str) {
 }
 
 #[tokio::test]
+async fn statistics_export_is_read_only_private_and_generation_bound() {
+    let directory = ProcessDirectory::new();
+    let endpoint = directory.0.join("agent.sock");
+    let output = directory.0.join("statistics.json");
+    let mut child = agent()
+        .args([
+            "--server-addr",
+            "192.0.2.10:49",
+            "--shared-secret",
+            "private-test-key",
+            "--host-integration",
+            "none",
+            "--listen-endpoint",
+        ])
+        .arg(&endpoint)
+        .arg("--statistics-file")
+        .arg(&output)
+        .spawn()
+        .unwrap();
+    wait_for_signal_registration(&mut child).await;
+    let data = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(child.try_wait().unwrap().is_none());
+            if let Ok(data) = tokio::fs::read_to_string(&output).await {
+                break data;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&data).unwrap();
+    let root = &json["ietf-system-tacacs-plus:tacacs-plus"];
+    assert!(root["tacacsrs:runtime-generation"].is_string());
+    assert!(root["server"][0]["tacacsrs:counter-epoch"].is_string());
+    assert_eq!(root["server"][0]["statistics"]["connection-opens"], "0");
+    assert!(root["server"][0]["statistics"]["discontinuity-time"].is_string());
+    assert!(!data.contains("private-test-key") && !data.contains("shared-secret"));
+    assert_eq!(
+        tokio::fs::metadata(&output)
+            .await
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    stop(child, "-TERM").await;
+    assert!(!endpoint.exists());
+    assert!(output.exists());
+    assert!(!std::fs::read_dir(&directory.0).unwrap().any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with(".tmp")));
+}
+
+#[tokio::test]
+async fn statistics_export_failure_stops_the_supervised_daemon() {
+    let directory = ProcessDirectory::new();
+    let endpoint = directory.0.join("agent.sock");
+    let report = directory.0.join("statistics.json");
+    let mut child = agent()
+        .args([
+            "--server-addr",
+            "192.0.2.10:49",
+            "--shared-secret",
+            "secret",
+            "--host-integration",
+            "none",
+            "--listen-endpoint",
+        ])
+        .arg(&endpoint)
+        .arg("--statistics-file")
+        .arg(&report)
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !report.exists() {
+            assert!(child.try_wait().unwrap().is_none());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::fs::remove_file(&report).await.unwrap();
+    tokio::fs::create_dir(&report).await.unwrap();
+    let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("operational statistics"));
+    assert!(!endpoint.exists());
+}
+
+#[tokio::test]
+async fn statistics_export_cannot_replace_inputs_or_listener() {
+    let directory = ProcessDirectory::new();
+    let config = directory.0.join("config.json");
+    let original = b"operator configuration remains unchanged";
+    tokio::fs::write(&config, original).await.unwrap();
+    let output = agent()
+        .arg("--config")
+        .arg(&config)
+        .arg("--statistics-file")
+        .arg(&config)
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot overwrite"));
+    assert_eq!(tokio::fs::read(&config).await.unwrap(), original);
+    let socket = directory.0.join("agent.sock");
+    let output = agent()
+        .args([
+            "--server-addr",
+            "192.0.2.10:49",
+            "--shared-secret",
+            "secret",
+            "--host-integration",
+            "none",
+            "--listen-endpoint",
+        ])
+        .arg(&socket)
+        .arg("--statistics-file")
+        .arg(&socket)
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot replace a listener"));
+    assert!(!socket.exists());
+}
+
+#[tokio::test]
 async fn host_signals_cancel_blocked_bootstrap_without_binding() {
     for signal in ["-TERM", "-INT"] {
         let directory = ProcessDirectory::new();

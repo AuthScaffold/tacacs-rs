@@ -169,6 +169,26 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         )
     }
 
+    pub(crate) fn statistics(&self) -> tacacsrs_config::OperationalStatistics {
+        let runtime = self.current_runtime();
+        tacacsrs_config::OperationalStatistics {
+            runtime_generation: runtime.generation,
+            servers: runtime
+                .server_set
+                .servers
+                .iter()
+                .map(|server| {
+                    let snapshot = server.counters.snapshot();
+                    tacacsrs_config::ServerOperationalStatistics {
+                        name: server.server.name.clone(),
+                        counter_epoch: snapshot.epoch,
+                        statistics: snapshot.into(),
+                    }
+                })
+                .collect(),
+        }
+    }
+
     pub(crate) fn retirement_deadline(
         &self,
     ) -> anyhow::Result<tacacsrs_networking::RequestDeadline> {
@@ -715,6 +735,54 @@ mod tests {
         let first = materialized_server(b"first-secret-material");
         let replacement = materialized_server(b"replacement-secret");
         assert_ne!(first, replacement);
+    }
+
+    #[tokio::test]
+    async fn operational_statistics_follow_published_endpoint_identity() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = test_server(&listener.local_addr().unwrap().to_string());
+        drop(listener);
+        let state = UpstreamManager::new(
+            vec![server.clone()],
+            Arc::new(FakeConnector::new(HashMap::new())),
+            Duration::from_secs(1),
+            test_health(),
+        );
+        let first = state.statistics();
+        let original_runtime = state.current_runtime();
+        let old_endpoint = original_runtime.server_set.servers[0]
+            .endpoint
+            .prepared()
+            .clone();
+        state.reload_servers(vec![server.clone()]).await.unwrap();
+        assert_eq!(state.statistics().servers[0].counter_epoch, first.servers[0].counter_epoch);
+        let mut changed = server.clone();
+        changed.timeout += 1;
+        state.reload_servers(vec![changed]).await.unwrap();
+        let replacement = state.statistics();
+        assert!(replacement.runtime_generation > first.runtime_generation);
+        assert_ne!(replacement.servers[0].counter_epoch, first.servers[0].counter_epoch);
+        let old_counters = old_endpoint.counters();
+        let client = tacacsrs_networking::TacacsClient::connect_prepared(old_endpoint)
+            .await
+            .unwrap();
+        assert!(client.open_conversation().await.is_err());
+        assert_eq!(old_counters.snapshot().connection_failures, 1);
+        assert_eq!(state.statistics().servers[0].statistics.connection_failures, 0);
+        let before_rejection = state.statistics();
+        let mut invalid = server;
+        invalid.source_interface = Some("unsupported".to_owned());
+        assert!(state.reload_servers(vec![invalid]).await.is_err());
+        assert_eq!(state.statistics(), before_rejection);
+        state.reload_servers(vec![]).await.unwrap();
+        assert!(state.statistics().servers.is_empty());
+        assert_eq!(
+            original_runtime.server_set.servers[0]
+                .counters
+                .snapshot()
+                .connection_failures,
+            1
+        );
     }
 
     #[tokio::test]

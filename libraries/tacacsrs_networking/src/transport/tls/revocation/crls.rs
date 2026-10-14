@@ -224,6 +224,20 @@ pub(in crate::transport::tls) fn require_verified(ssl: &SslRef) -> anyhow::Resul
     }
 }
 
+pub(in crate::transport::tls) fn verification_failed(ssl: &SslRef) -> bool {
+    index()
+        .ok()
+        .and_then(|index| ssl.ex_data(index))
+        .is_some_and(|connection| {
+            connection
+                .result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(Result::is_err)
+        })
+}
+
 pub(super) fn verify_responder(
     ssl: &SslRef,
     signer: &X509Ref,
