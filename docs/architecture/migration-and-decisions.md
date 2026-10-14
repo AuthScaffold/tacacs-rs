@@ -314,6 +314,7 @@ Commit `f53b83f` adds daemon HTTP registration, provider composition, process-le
 Commit `0651d7f` combines required staples with full CRLs and verifies delegated responders without No Check against configured issuer CRLs.
 Commit `1b4616d` adds direct scoped CRLs and explicit scope decoding. Commit `bf7b77e` verifies preparation rejection independently of handshake failure.
 Commit `c0cec59` adds bounded, disjoint CRL reason partitions with semantic issuer matching and native completeness checks.
+Commit `0616b8b` admits disjoint CA-only and end-entity-only scope sets with independent reason coverage and early certificate-type validation.
 Certificate-driven retrieval, OCSP queries, and unsupported evidence forms remain open in S4-06.
 Non-yielding code and started blocking I/O still require explicit deployment limits.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
