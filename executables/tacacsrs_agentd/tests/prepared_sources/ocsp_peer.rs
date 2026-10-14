@@ -418,9 +418,58 @@ async fn delegated_responder_without_no_check_uses_required_crls() -> Result<()>
     .await?;
     let crl = super::crl_peer::make_crl(&directory.0, false, false).await?;
     assert!(
-        probe_with_crls(Some(response), Some(Duration::from_secs(61)), Some(vec![crl]), 300)
-            .await?,
+        probe_with_crls(
+            Some(response.clone()),
+            Some(Duration::from_secs(61)),
+            Some(vec![crl]),
+            300
+        )
+        .await?,
         "a directly authorized responder can use a valid issuer CRL instead of No Check"
+    );
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let issuer_key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let first = super::crl_peer::make_scoped_crl(
+        &directory.0,
+        &issuer,
+        &issuer_key,
+        None,
+        false,
+        Some("onlysomereasons=keyCompromise\n"),
+    )
+    .await?;
+    let remaining = "onlysomereasons=CACompromise,affiliationChanged,superseded,cessationOfOperation,certificateHold,privilegeWithdrawn,AACompromise\n";
+    let second = super::crl_peer::make_scoped_crl(
+        &directory.0,
+        &issuer,
+        &issuer_key,
+        None,
+        false,
+        Some(remaining),
+    )
+    .await?;
+    assert!(
+        probe_with_crls(
+            Some(response.clone()),
+            Some(Duration::from_secs(61)),
+            Some(vec![first.clone(), second]),
+            300
+        )
+        .await?,
+        "reason partitions must cover the peer and its non-exempt responder"
+    );
+    let revoked = super::crl_peer::make_scoped_crl(
+        &directory.0,
+        &issuer,
+        &issuer_key,
+        Some(&responder),
+        false,
+        Some(remaining),
+    )
+    .await?;
+    assert!(
+        !probe_with_crls(Some(response), None, Some(vec![first, revoked]), 300).await?,
+        "responder revocation in any partition must reject authentication"
     );
     Ok(())
 }

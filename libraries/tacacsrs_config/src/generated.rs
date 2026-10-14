@@ -343,6 +343,8 @@ pub mod tacacs_plus {
         pub tls13_epsks: Option<crate::YangEmpty>,
         /// Require complete CRLs for the verified server certificate path.
         /// Direct CRLs can restrict certificate type and distribution-point scope.
+        /// Multiple lists for one issuer require identical scope except for
+        /// disjoint reason flags. At most 128 lists and 4 MiB are accepted.
         /// Native verification requires complete reason and path coverage.
         /// Exact peer pins and PSK authentication are not supported in this mode.
         /// Unavailable, invalid, stale, or incomplete evidence fails closed.
@@ -431,6 +433,8 @@ pub mod tacacs_plus {
         pub tls13_epsks: Option<crate::YangEmpty>,
         /// Require complete CRLs for the verified server certificate path.
         /// Direct CRLs can restrict certificate type and distribution-point scope.
+        /// Multiple lists for one issuer require identical scope except for
+        /// disjoint reason flags. At most 128 lists and 4 MiB are accepted.
         /// Native verification requires complete reason and path coverage.
         /// Exact peer pins and PSK authentication are not supported in this mode.
         /// Unavailable, invalid, stale, or incomplete evidence fails closed.
@@ -1242,6 +1246,8 @@ pub mod tacacsrs {
 
     /// Require complete CRLs for the verified server certificate path.
     /// Direct CRLs can restrict certificate type and distribution-point scope.
+    /// Multiple lists for one issuer require identical scope except for
+    /// disjoint reason flags. At most 128 lists and 4 MiB are accepted.
     /// Native verification requires complete reason and path coverage.
     /// Exact peer pins and PSK authentication are not supported in this mode.
     /// Unavailable, invalid, stale, or incomplete evidence fails closed.

@@ -5,25 +5,26 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, ensure};
-use foreign_types::{ForeignType, ForeignTypeRef};
+use foreign_types::ForeignTypeRef;
 use openssl::nid::Nid;
 use openssl::ssl::{Ssl, SslRef};
 use openssl::stack::{Stack, StackRef};
-use openssl::x509::{
-    X509, X509Ref, X509Crl, X509Extension, X509ExtensionRef, X509StoreContext, X509PurposeId,
-};
+use openssl::x509::{X509, X509Ref, X509Crl, X509StoreContext, X509PurposeId};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::verify::X509VerifyFlags;
 
 use super::super::{CertificateLifetime, CertificateValidity};
 use super::super::validity::system_time;
+use super::crl_scope::{CrlScope, ScopeSet};
 
 /// Bounds parsing work and retained evidence for one prepared endpoint.
 const MAXIMUM_CRL_BYTES: usize = 4 * 1024 * 1024;
 
+/// Bounds native issuer comparisons and retained CRL objects.
+const MAXIMUM_CRLS: usize = 128;
+
 #[allow(unsafe_code)]
 unsafe extern "C" {
-    fn ISSUING_DIST_POINT_free(scope: *mut std::ffi::c_void);
     fn X509_STORE_add_crl(
         store: *mut openssl_sys::X509_STORE,
         crl: *mut openssl_sys::X509_CRL,
@@ -41,6 +42,7 @@ impl CrlEvidence {
         maximum_age: Duration,
     ) -> anyhow::Result<Self> {
         ensure!(!encoded.is_empty(), "Required CRL set is empty");
+        ensure!(encoded.len() <= MAXIMUM_CRLS, "CRL set exceeds the 128-list limit");
         ensure!(
             maximum_age.subsec_nanos() == 0
                 && maximum_age.as_secs() > 0
@@ -56,7 +58,7 @@ impl CrlEvidence {
         );
         let mut lists = Vec::with_capacity(encoded.len());
         let mut validity: Option<CertificateValidity> = None;
-        let mut issuers = std::collections::BTreeSet::new();
+        let mut scopes = ScopeSet::default();
         for data in encoded {
             let crl = X509Crl::from_der(data).context("Invalid DER CRL")?;
             ensure!(
@@ -64,11 +66,7 @@ impl CrlEvidence {
                 "CRL input must contain exactly one DER object"
             );
             reject_delta_crl(&crl)?;
-            validate_scope(&crl)?;
-            ensure!(
-                issuers.insert(crl.issuer_name().to_der()?),
-                "CRL set contains multiple lists for one issuer"
-            );
+            scopes.insert(crl.issuer_name(), CrlScope::read(&crl)?)?;
             let start = system_time(crl.last_update())?;
             let next = system_time(
                 crl.next_update()
@@ -111,7 +109,9 @@ impl CrlEvidence {
             .next_back()
             .context("Verified peer anchor is missing")?;
         let mut store = X509StoreBuilder::new()?;
-        let mut flags = X509VerifyFlags::PARTIAL_CHAIN | X509VerifyFlags::CRL_CHECK;
+        let mut flags = X509VerifyFlags::PARTIAL_CHAIN
+            | X509VerifyFlags::CRL_CHECK
+            | X509VerifyFlags::EXTENDED_CRL_SUPPORT;
         if entire_chain {
             flags |= X509VerifyFlags::CRL_CHECK_ALL;
         }
@@ -141,45 +141,6 @@ impl CrlEvidence {
         ensure!(accepted, "Peer CRL validation failed: {}", verification.error());
         Ok(())
     }
-}
-
-#[allow(unsafe_code)]
-fn validate_scope(crl: &X509Crl) -> anyhow::Result<()> {
-    let nid = Nid::ISSUING_DISTRIBUTION_POINT.as_raw();
-    // SAFETY: The extension borrows the live CRL. Indices and pointers are
-    // checked before use. Native decoding owns a separate scope allocation.
-    unsafe {
-        let position = openssl_sys::X509_CRL_get_ext_by_NID(crl.as_ptr(), nid, -1);
-        if position < 0 {
-            return Ok(());
-        }
-        ensure!(
-            openssl_sys::X509_CRL_get_ext_by_NID(crl.as_ptr(), nid, position) < 0,
-            "CRL has duplicate issuing distribution points"
-        );
-        let extension = openssl_sys::X509_CRL_get_ext(crl.as_ptr(), position);
-        ensure!(!extension.is_null(), "CRL scope extension is missing");
-        ensure!(
-            openssl_sys::X509_EXTENSION_get_critical(extension) == 1,
-            "CRL scope must be critical"
-        );
-        let scope = std::ptr::NonNull::new(openssl_sys::X509V3_EXT_d2i(extension))
-            .ok_or_else(openssl::error::ErrorStack::get)
-            .context("CRL scope is malformed")?;
-        let encoded = openssl_sys::X509V3_EXT_i2d(nid, 1, scope.as_ptr());
-        // SAFETY: The verified NID selects ISSUING_DIST_POINT decoding. The
-        // encoder finishes all reads before this free; no Rust reference exists.
-        ISSUING_DIST_POINT_free(scope.as_ptr());
-        let encoded = std::ptr::NonNull::new(encoded)
-            .ok_or_else(openssl::error::ErrorStack::get)
-            .context("Could not encode CRL scope")?;
-        let encoded = X509Extension::from_ptr(encoded.as_ptr());
-        ensure!(
-            encoded.to_der()? == X509ExtensionRef::from_ptr(extension).to_der()?,
-            "CRL scope must round-trip as one DER value"
-        );
-    }
-    Ok(())
 }
 
 #[allow(unsafe_code)]

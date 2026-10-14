@@ -144,7 +144,7 @@ pub(super) async fn make_issuer_crl(
     make_scoped_crl(directory, issuer, key, revoked, stale, None).await
 }
 
-async fn make_scoped_crl(
+pub(super) async fn make_scoped_crl(
     directory: &Path,
     issuer: &X509,
     key: &PKey<openssl::pkey::Private>,
@@ -360,6 +360,9 @@ async fn probe_with_resolver(
     });
     let client = TacacsClient::connect_prepared(endpoint).await?;
     let session = client.open_conversation().await;
+    if let Err(error) = &session {
+        eprintln!("Native CRL handshake rejected: {error:#}");
+    }
     let accepted = session.is_ok();
     if accepted && expect_expiry {
         tokio::time::pause();
@@ -505,6 +508,11 @@ async fn scoped_crls_reject_malformed_scope_even_with_valid_signature() -> Resul
         ("issuingDistributionPoint=DER:30:03:81:01:FF\n", Some("CRL scope must be critical")),
         ("issuingDistributionPoint=critical,DER:30:03:81:01:FF\n2.5.29.28=critical,DER:30:03:81:01:FF\n", Some("duplicate issuing distribution points")),
         ("issuingDistributionPoint=critical,DER:30:06:81:01:FF:82:01:FF\n", None),
+        ("issuingDistributionPoint=critical,DER:30:03:84:01:FF\n", Some("Indirect CRLs are not supported")),
+        ("issuingDistributionPoint=critical,DER:30:03:83:01:00\n", Some("CRL reason flags are empty or unsupported")),
+        ("issuingDistributionPoint=critical,DER:30:04:83:02:00:80\n", Some("CRL reason flags are empty or unsupported")),
+        ("issuingDistributionPoint=critical,DER:30:05:83:03:06:00:40\n", Some("CRL reason flags are empty or unsupported")),
+        ("issuingDistributionPoint=critical,DER:30:06:83:04:00:00:00:80\n", Some("CRL reason flags exceed the supported range")),
     ] {
         let crl = make_extended_crl(&directory.0, &issuer, &key, None, false, Some(extensions)).await?;
         assert!(X509Crl::from_der(&crl)?.verify(&key)?);
@@ -519,6 +527,90 @@ async fn scoped_crls_reject_malformed_scope_even_with_valid_signature() -> Resul
         assert!(!probe(&[crl], false, false, false, None).await?, "invalid scope must not become an unscoped CRL: {extensions}");
         assert!(openssl::error::ErrorStack::get().errors().is_empty(), "rejected scope must not leave native errors for later TLS work");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn reason_partitioned_crls_require_complete_coverage() -> Result<()> {
+    let directory = Directory::new()?;
+    let root = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let intermediate = issued_peer(&root, &key, true, 530)?;
+    let mut leaf = issued_peer(&intermediate.certificate, &intermediate.key, false, 531)?;
+    leaf.chain.push(intermediate.certificate.clone());
+    let root_crl = make_issuer_crl(&directory.0, &root, &key, None, false).await?;
+    let first = make_scoped_crl(
+        &directory.0,
+        &intermediate.certificate,
+        &intermediate.key,
+        None,
+        false,
+        Some("onlyuser=TRUE\nonlysomereasons=keyCompromise\n"),
+    )
+    .await?;
+    let second = make_scoped_crl(&directory.0, &intermediate.certificate, &intermediate.key, None, false,
+        Some("onlyuser=TRUE\nonlysomereasons=CACompromise,affiliationChanged,superseded,cessationOfOperation,certificateHold,privilegeWithdrawn,AACompromise\n")).await?;
+    let source =
+        source_for(&root, 449, &[first.clone(), second.clone(), root_crl.clone()], false, false)?;
+    prepare_endpoint(&source.server[0], PrepareOptions::default())?;
+    assert!(
+        probe(&[first.clone(), second.clone(), root_crl.clone()], true, true, true, Some(&leaf))
+            .await?,
+        "complementary reason partitions must provide complete issuer evidence"
+    );
+    assert!(
+        probe(&[second.clone(), root_crl.clone(), first.clone()], true, false, false, Some(&leaf))
+            .await?,
+        "input order must not select different coverage"
+    );
+    for lists in [
+        vec![first.clone(), first.clone()],
+        vec![second.clone(), second.clone()],
+    ] {
+        let source = source_for(&root, 449, &lists, false, false)?;
+        assert!(format!(
+            "{:#}",
+            prepare_endpoint(&source.server[0], PrepareOptions::default())
+                .expect_err("duplicate partition")
+        )
+        .contains("overlap or repeat"));
+    }
+    let wrong_scope = make_scoped_crl(
+        &directory.0,
+        &intermediate.certificate,
+        &intermediate.key,
+        None,
+        false,
+        Some("onlyCA=TRUE\nonlysomereasons=CACompromise\n"),
+    )
+    .await?;
+    let source = source_for(&root, 449, &[first.clone(), wrong_scope], false, false)?;
+    assert!(format!(
+        "{:#}",
+        prepare_endpoint(&source.server[0], PrepareOptions::default()).expect_err("mixed scope")
+    )
+    .contains("same scope"));
+    let revoked = make_scoped_crl(&directory.0, &intermediate.certificate, &intermediate.key, Some(&leaf.certificate), false,
+        Some("onlyuser=TRUE\nonlysomereasons=CACompromise,affiliationChanged,superseded,cessationOfOperation,certificateHold,privilegeWithdrawn,AACompromise\n")).await?;
+    assert!(
+        !probe(&[first.clone(), revoked, root_crl.clone()], true, true, false, Some(&leaf)).await?,
+        "revocation in the later partition must fail"
+    );
+    let mut forged = second.clone();
+    *forged.last_mut().unwrap() ^= 1;
+    assert!(
+        !probe(&[first.clone(), forged, root_crl.clone()], false, false, false, Some(&leaf))
+            .await?,
+        "each contributing partition needs a valid signature"
+    );
+    let source = source_for(&root, 449, &vec![root_crl.clone(); 129], false, false)?;
+    assert!(format!(
+        "{:#}",
+        prepare_endpoint(&source.server[0], PrepareOptions::default()).expect_err("too many CRLs")
+    )
+    .contains("128-list limit"));
+    assert!(!probe(&[first, root_crl.clone()], true, false, false, Some(&leaf)).await?);
+    assert!(!probe(&[second, root_crl], true, false, false, Some(&leaf)).await?);
     Ok(())
 }
 

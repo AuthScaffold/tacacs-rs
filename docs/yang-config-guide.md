@@ -224,13 +224,20 @@ Provider references require an attached `CredentialResolver` that supports `Cert
 Inline CRL arrays can be supplied through existing canonical JSON sources. An embedding host can register HTTP sources through `tacacsrs-credential-http`.
 
 The maximum age defaults to 300 seconds and must be positive. Each list must contain exactly one complete DER CRL and include `nextUpdate`.
-The complete set is limited to 4 MiB and one list per issuer name. Empty, stale, future, duplicate-issuer, or trailing-DER inputs fail preparation.
+The complete set is limited to 4 MiB and 128 lists. Empty, stale, future, duplicate, or trailing-DER inputs fail preparation.
 Direct full CRLs can contain an `issuingDistributionPoint` extension.
 The extension must be unique, critical, decodable, and pass a native DER round-trip check during preparation.
 Native verification enforces certificate-type restrictions, distribution-point name matching, and complete revocation-reason coverage.
 A leaf-scoped list does not replace required issuer-path evidence. Scope does not relax signature, revocation, or freshness checks.
 Distribution-point URIs are scope identifiers here, not authorized retrieval destinations. TLS callbacks do not fetch those URIs.
-Delta CRLs and freshest-CRL references remain rejected. Multiple CRLs per issuer, including reason partitions, remain unsupported.
+Multiple lists for one issuer can provide disjoint revocation-reason partitions.
+Partitions must have identical encoded scope after removing `onlySomeReasons`. Overlapping reasons and mixed scopes fail preparation, regardless of input order.
+Issuer names use native X.509 comparison, so equivalent encodings cannot bypass the overlap check.
+Empty reason sets, the unused reason bit, and unknown reason bits fail preparation.
+Native verification requires all reasons for each certificate. Missing partitions, forged evidence, or revocation in any contributing partition reject authentication.
+An unrestricted CRL covers every reason and cannot be mixed with another CRL for that issuer.
+The same rules apply to non-exempt delegated OCSP responders. Every supplied partition still contributes to the evidence deadline.
+Delta CRLs, freshest-CRL references, and indirect CRLs remain rejected. Distinct scope sets for one issuer are not yet supported.
 
 Native verification checks the accepted certificate path against the supplied lists before client authentication or TACACS+ data.
 Bad signatures, revoked leaves or intermediates, and incomplete evidence reject the TLS connection. Missing CRLs never fall back to unchecked authentication.
