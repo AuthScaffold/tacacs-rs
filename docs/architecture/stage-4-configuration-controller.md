@@ -30,6 +30,7 @@ Commit `0651d7f` adds combined OCSP/CRL requirements and CRL-backed revocation c
 Commit `1b4616d` adds direct scoped CRLs and strict scope preparation. Commit `bf7b77e` strengthens the rejection-stage regression.
 Commit `c0cec59` adds disjoint reason partitions, native issuer-name matching, and bounded CRL-set admission.
 Commit `0616b8b` adds disjoint certificate-type scope sets and rejects contradictory or unsupported type flags during preparation.
+Commit `f2950ac` adds explicitly paired base/delta evidence, native delta application, and strict metadata and entry-reason validation.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
 
@@ -43,7 +44,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
-- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval; `f53b83f` completes daemon registration and HTTPS process validation. Commit `0651d7f` combines OCSP and CRLs, including responders without No Check. Commits `1b4616d` and `bf7b77e` add verified direct scope support. Commit `c0cec59` supports disjoint reason partitions; `0616b8b` adds disjoint certificate-type sets. Certificate-driven retrieval, OCSP queries, and unsupported evidence forms remain open. See [certificate-type scope sets](#certificate-type-scope-sets).
+- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval; `f53b83f` completes daemon registration and HTTPS process validation. Commit `0651d7f` combines OCSP and CRLs, including responders without No Check. Commits `1b4616d` and `bf7b77e` add verified direct scope support. Commit `c0cec59` supports disjoint reason partitions; `0616b8b` adds disjoint certificate-type sets. Commit `f2950ac` supports explicit base/delta pairs. Certificate-driven retrieval, OCSP queries, and unsupported combinations remain open. See [explicit delta evidence](#explicit-delta-evidence).
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
 ## Policy Observation
@@ -1764,4 +1765,63 @@ Artifact SHA-256 values:
 
 No dependency, lockfile, or IPC schema changes occur. Native Redis, live SONiC, Windows, and container checks were not rerun.
 S4-06 remains open for certificate-driven retrieval, OCSP queries, delta CRLs, and broader evidence combinations.
+S4-07 operational statistics remains open. No full RFC 9887 conformance claim is made.
+
+## Explicit Delta Evidence
+
+Commit `f2950ac` completes explicitly supplied base/delta CRLs through native preparation, verification, provider materialization, and daemon HTTP registration.
+The first regression failed at the blanket `Delta CRLs and freshest-CRL references are not supported` guard.
+The new `revocation::crl_delta` module owns metadata decoding and pair admission. Existing scope and lifetime owners remain authoritative.
+Canonical arrays and opaque references retain their shape. No callback performs retrieval or modifies canonical configuration.
+
+### Pair Contract
+
+A configured base with a noncritical, nonempty freshest-CRL extension requires exactly one compatible supplied delta.
+Freshest URLs are not retrieval authorization. HTTP hosts register both URLs explicitly; inline sources supply both DER values.
+Missing bases, missing advertised deltas, duplicate deltas, and ambiguous pairs fail preparation.
+
+Pairing requires native issuer-name equality, identical scope and authority-key-identifier data, and compatible CRL numbers.
+The base number must be at least the delta indicator and strictly less than the delta's own number.
+Both numbers are required for a pair. They must be nonnegative and fit 20 DER content octets.
+The delta indicator is critical; CRL numbers, authority identifiers, and freshest-CRL extensions are noncritical.
+Duplicate, malformed, trailing, or incorrectly critical metadata fails preparation. A delta cannot predate its base or advertise another delta.
+Each base participates in existing scope admission; a delta cannot act as independent full coverage.
+
+Native verification enables delta use and still validates both signatures and the verified CA path.
+A clear delta cannot erase a base revocation. An explicit delta removal entry can release a hold.
+Entry reasons require valid noncritical DER with a supported reason code. `removeFromCRL` in a full CRL fails preparation.
+Scope validation remains first, preserving its specific rejection contract before generic delta metadata parsing.
+
+Both lists must be fresh. The earliest base or delta deadline constrains preparation and existing transport/catalog lifetime.
+A fresh delta cannot extend an expired base in this implementation.
+Unpartitioned direct scope works, including separate CA-only and end-entity-only evidence. Non-exempt OCSP responders use the same verified pair.
+Reason flags on deltas or advertised bases remain rejected pending a separate native reason-selection contract.
+The 128-list, 4 MiB, and HTTP execution limits count both objects and remain unchanged.
+
+### Ownership and Verification
+
+Native integer and reason values use typed Rust OpenSSL owners. Opaque authority and freshest decoders use a closed decoder/free pairing and owned cleanup.
+A narrow `CRL_DIST_POINTS_free` bridge releases freshest-extension allocations. Only copied metadata leaves decoding; native errors are consumed on failure.
+No native pointer is stored in pair-selection metadata or returned through the provider contract.
+
+Seven delta-focused tests pass. They cover clear and revoking deltas, reverse ordering, base revocation preservation, hold release, and full-CRL removal rejection.
+They also cover missing or ambiguous pairs, invalid numbers, mismatched scope or authority metadata, malformed extensions, forged signatures, and stale base or delta evidence.
+Scoped delta tests and delegated-responder tests verify rejection before client authentication and idle expiry.
+The daemon process retrieves two explicitly registered URLs, becomes ready with a complete pair, and leaves its canonical source file unchanged.
+If delta retrieval fails, startup fails without an IPC listener. No partial evidence is published.
+
+The full all-feature workspace suite passes, including 40 prepared-source tests, 195 agent tests, and 175 passing networking tests with two opt-in cases ignored.
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, book build, editor diagnostics, and whitespace checks pass.
+All nine independent TACACS+ peer cases pass with OpenSSL 3.0.20. The pure pairing invariant passes under Miri.
+Native metadata decoding, cleanup, and TLS verification use real OpenSSL fixtures because Miri cannot execute that FFI.
+All 15 generator tests and deterministic regeneration pass. YANG descriptions changed; field shape and tree structure did not.
+
+Artifact SHA-256 values:
+
+- Generated Rust: `90aea958f7c3acd1fa9dfe30f965679e03675a6ec2825fb9ceb80db417cead32`.
+- Expanded tree: `0c3ced4aacc7b3ec4253a823687f1cb998ae27858a7667e5917a11faf0ebcefa`.
+- Project module: `6d3c6c9adc1b3b328be405ac473bc939d0ae5461997a82ad8901f8864e22b95b`.
+
+No dependency, lockfile, or IPC schema changes occur. Native Redis, live SONiC, Windows, and container checks were not rerun.
+S4-06 remains open for certificate-driven retrieval, OCSP queries, reason-partitioned deltas, and broader evidence combinations.
 S4-07 operational statistics remains open. No full RFC 9887 conformance claim is made.
