@@ -2,7 +2,7 @@
 
 ## Status
 
-Stage 4 is in progress as of 2026-10-14. Commit `6a11a83` completes the first increment.
+Stage 4 is complete for the documented supported profile as of 2026-10-14. Commit `6a11a83` completes the first increment.
 Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent.
 Commit `75aac8b` adds canonical observation sessions and file watcher ownership. The supervisor now uses observations for startup and recovery.
 Commit `8381d4f` completes S4-02 with owned SONiC observations and removal of transitional APIs.
@@ -32,8 +32,10 @@ Commit `c0cec59` adds disjoint reason partitions, native issuer-name matching, a
 Commit `0616b8b` adds disjoint certificate-type scope sets and rejects contradictory or unsupported type flags during preparation.
 Commit `f2950ac` adds explicitly paired base/delta evidence, native delta application, and strict metadata and entry-reason validation.
 Commit `efcc503` completes S4-06 for the supported profile with authorized certificate discovery, online OCSP, and unified evidence retirement.
+Commit `c38b1d8` completes S4-07 with runtime counters, generation-bound operational snapshots, and supervised daemon export.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
-The publication, lifecycle, client-chain, and supported revocation contracts are complete. S4-07 statistics remains open.
+The publication, lifecycle, client-chain, supported revocation, and operational statistics contracts are complete.
+The S4-06 exclusions and blocking-code limits remain explicit. This closure does not claim full RFC 9887 conformance.
 
 Fix nearby findings within each increment when practical. Keep completed items and their verification evidence.
 The startup race and closed-runtime publication fix belong to S4-01, not separate work items.
@@ -46,7 +48,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
 - [x] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval; `f53b83f` completes daemon registration and HTTPS process validation. Commit `0651d7f` combines OCSP and CRLs, including responders without No Check. Commits `1b4616d` and `bf7b77e` add verified direct scope support. Commit `c0cec59` supports disjoint reason partitions; `0616b8b` adds disjoint certificate-type sets. Commit `f2950ac` supports explicit base/delta pairs. Commit `efcc503` completes authorized discovery, online OCSP, and the supported-profile closure. See [S4-06 closure](#s4-06-closure).
-- [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
+- [x] S4-07: Commit `c38b1d8` populates YANG `ServerStatistics` from runtime events and exports generation-bound snapshots through the public API and daemon. Read-only counters remain outside desired configuration. Runtime, reload, process, and complete local Stage 4 gates pass. See [S4-07 closure](#s4-07-closure).
 
 ## Policy Observation
 
@@ -1901,4 +1903,83 @@ Artifact SHA-256 values:
 - Expanded tree: `e1e321d7dc654fa3cdd1068a25b1942047a94461b59c716e800d7bd152e91107`.
 - Project module: `596cdd6d95c2be441ae63cc21b8f55eb434b5686849e56fd5574bcc13593af91`.
 
-S4-07 operational statistics is the next open Stage 4 item.
+S4-07 operational statistics remained open at the S4-06 closure. The following section records its completion.
+
+## S4-07 Closure
+
+Commit `c38b1d8` completes operational statistics and the final Stage 4 item on 2026-10-14.
+Earlier remainder sections describe historical increments. Their completed evidence and the S4-06 supported-profile exclusions remain valid.
+
+### Counter Ownership
+
+Networking owns [schema-independent server counters](../../libraries/tacacsrs_networking/src/statistics.rs).
+Each prepared endpoint owns one counter epoch and a discontinuity timestamp. Endpoint clones share that owner.
+Counters wrap as unsigned 64-bit values. Ordinary wrap does not change the epoch.
+
+Connection attempts count logical establishment requests, including address selection, rather than individual IP connection attempts.
+Failed or cancelled setup counts as a failure. Recognized connection timeouts and local certificate-verification failures also update their respective subsets.
+A failed or cancelled setup after TCP connection also counts as an abort.
+Successful transports retain an exactly-once closure record through registration and dedicated-to-shared promotion.
+Clean EOF or successful shutdown counts as a close. Forced closure, I/O failure, and expiry count as aborts.
+
+Packet counters count complete writes and decoded frames, not queued messages or partial I/O.
+Typed protocol ERROR replies count as errors. Denials do not.
+A validated terminal reply counts one completed session. Authentication continuation replies do not complete the session.
+Negotiation and preflight traffic use the same counters.
+
+### Publication and Export
+
+`TacacsClientService::statistics()` captures one published routing snapshot before it samples that generation's server counters.
+Unchanged endpoints retain their epochs across reloads. Replaced endpoints receive new epochs and discontinuity timestamps.
+Rejected reloads preserve the published snapshot. Removed servers disappear from the current report.
+Late events from retained older endpoints update only their original counter owners. The controller retains no unbounded counter history.
+Each server snapshot is coherent, but the report does not sample all servers at one global instant.
+
+Configuration projects the counters into `ServerStatistics` and RFC 7951 operational JSON.
+Counter64 values and generation metadata use decimal strings. Discontinuity timestamps use UTC date-and-time values.
+Serialization returns an error for unrepresentable timestamps instead of panicking.
+The disabled RPK feature has no exported counter. Desired-configuration parsing rejects the operational report.
+
+The project YANG module adds only read-only `tacacsrs:runtime-generation` and `tacacsrs:counter-epoch` leaves.
+Generated desired-configuration Rust types remain unchanged. Canonical source snapshots and credential references remain authoritative and unchanged.
+
+The optional daemon `--statistics-file` exporter publishes once per second through a private temporary file and atomic rename.
+The destination parent must exist. Protected source inputs, Unix listeners, symlinks, and non-regular destinations are rejected.
+The exporter runs inside the owned host task. An export failure triggers supervised daemon shutdown.
+Cancellation stops future publication. Temporary-file cleanup is best effort because started filesystem operations retain the documented blocking-I/O limits.
+The last complete report remains after shutdown. Consumers must use process health and file age to detect stale reports.
+The [operator guide](../tacacsrs-agentd.md#operational-statistics) documents the format and counter meanings.
+
+### Closure Evidence
+
+The complete all-feature workspace test suite passes, including 197 agent tests, 88 configuration unit tests, and 182 networking tests.
+Two opt-in networking tests remain ignored in that command.
+All 42 prepared-source tests and eight process-lifecycle tests pass, including three new statistics-export process tests.
+The process tests verify private permissions, complete JSON, source protection, listener protection, cleanup, and supervised failure.
+Counter regressions verify cancellation, certificate failure classification, protocol errors, terminal sessions, shared connections, wrapping, and reload isolation.
+
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, editor diagnostics, and whitespace checks pass.
+All four CI dependency guards and unused-dependency analysis pass.
+Audit reports no vulnerabilities in 323 locked packages, with the existing crates.io index-lock warning.
+The new `jiff` dependency edge uses an already locked package. No resolved package version or protobuf schema changes.
+The existing nightly `fetch_update` warning remains. Rust 1.88 compatibility is retained.
+
+Serial all-feature workspace coverage passes with isolated Redis integration enabled.
+The LCOV report records 37,693 covered lines out of 42,357 instrumented lines, or 88.99%.
+Local evidence remains in `target/tmp/s4-statistics.lcov` and `target/tmp/s4-statistics-coverage.log`.
+The private Redis fixture uses only a Unix socket, with no persistence. It stopped and its temporary directory was removed after validation.
+All nine independent TACACS+ peer cases pass with OpenSSL 3.0.20.
+
+Three focused pure tests pass under Miri: counter ownership, timeout/closure accounting, and operational JSON serialization.
+The two clock-using tests require `MIRIFLAGS=-Zmiri-disable-isolation` for `SystemTime::now()`.
+Native OpenSSL cannot run under Miri. Real native fixtures cover TLS verification and transport behavior.
+All 15 generator tests and deterministic regeneration pass. The checkpoint documentation also passes the book build.
+Live SONiC, Windows, and container builds were not rerun. No live SONiC VM was restarted or modified.
+
+Artifact SHA-256 values:
+
+- Generated Rust, unchanged: `a4380d3fbb7e966299e66f6e7e215cc2d89f1819882a0cb48040cfe771632445`.
+- Expanded tree: `4765242ea102c31d25fb460690948c87ecfc395a29daf725836522d8945dd524`.
+- Project module: `80c6744631f88bc7de077f01cd876190dc50d941b54e19d7dd1ef3e5350504d4`.
+
+Stage 4 is complete for its documented supported profile. Stage 5 adapter and product simplification is next and has not started.

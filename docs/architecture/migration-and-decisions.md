@@ -287,7 +287,7 @@ Routing observations cannot silently override canonical policy or cause TLS-to-p
 
 **Scope:** source observation, materialization coordination, health, and process ownership.
 
-**Status:** in progress. Commit `6a11a83` completes owned canonical policy observation and agent policy supervision.
+**Status:** complete for the documented supported profile as of 2026-10-14. Commit `6a11a83` completes owned canonical policy observation and agent policy supervision.
 Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent with explicit host cancellation.
 Commit `75aac8b` introduces canonical configuration observations, owns file watcher lifetimes, and removes separate load/subscribe calls from runtime supervision.
 Commit `8381d4f` completes S4-02 with native SONiC observation ownership, credential-stream cleanup, and removal of transitional subscription APIs.
@@ -319,8 +319,12 @@ Commit `f2950ac` adds strict explicit base/delta CRL pairing, native delta appli
 Commit `efcc503` completes S4-06's supported profile with host-authorized certificate discovery, online OCSP, signed response lifetimes, and unified evidence retirement.
 The [S4-06 closure](stage-4-configuration-controller.md#s4-06-closure) defines explicit exclusions rather than an open-ended full-PKI obligation.
 On 2026-10-14 the user delegated the closure-scope decision. Unrestricted peer-driven fetching and unsupported native combinations remain deliberately disabled.
+Commit `c38b1d8` completes S4-07 with endpoint-owned counters, generation-bound operational YANG snapshots, and supervised atomic daemon export.
+Reload, cancellation, transport, and process regressions pass. Unchanged endpoints retain counters, while replacements isolate late events through distinct epochs.
 Non-yielding code and started blocking I/O still require explicit deployment limits.
-The [Stage 4 checkpoint](stage-4-configuration-controller.md) records the completed increment, its verification, and the remaining controller work.
+The [Stage 4 checkpoint](stage-4-configuration-controller.md#s4-07-closure) records the completed contracts, full local verification, and platform exceptions.
+All-feature coverage with isolated Redis reports 88.99% line coverage. All nine independent TACACS+ peer cases pass.
+Stage 5 is next and has not started.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.
 2. Move generic source and policy supervision into the agent runtime.
@@ -334,7 +338,7 @@ Certificate provisioning and operational data have explicit Stage 4 acceptance c
 
 - Client-chain provisioning belongs to configuration preparation and credential providers. Add canonical chain inputs before accepting multi-certificate client material. Native mTLS tests must cover complete, missing, and incorrect intermediate chains without changing source references.
 - Revocation policy belongs to the controller/provider lifecycle and TLS verifier integration. S4-06 is complete for the documented supported profile: required staples, fetched OCSP, CRLs and supported deltas, authorized retrieval, refresh, expiry, and retirement. Excluded PKI modes fail closed; no full RFC 9887 conformance is claimed.
-- YANG operational statistics belong to the controller's health/publication boundary. Populate and export `ServerStatistics` from runtime events without putting read-only counters into desired configuration. Verify counter updates and generation association across reloads.
+- YANG operational statistics belong to the controller's publication boundary. S4-07 exports `ServerStatistics` through the public Rust API and optional daemon file. Runtime-event counters, discontinuity timestamps, and generation association are verified across reloads. Read-only counters remain outside desired configuration.
 
 Primary starting points:
 
