@@ -499,15 +499,23 @@ async fn scoped_crls_reject_malformed_scope_even_with_valid_signature() -> Resul
     let directory = Directory::new()?;
     let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
     let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
-    for extensions in [
-        "issuingDistributionPoint=critical,DER:01:01:FF\n",
-        "issuingDistributionPoint=critical,DER:30:03:81:01:FF:00\n",
-        "issuingDistributionPoint=DER:30:03:81:01:FF\n",
-        "issuingDistributionPoint=critical,DER:30:03:81:01:FF\n2.5.29.28=critical,DER:30:03:81:01:FF\n",
-        "issuingDistributionPoint=critical,DER:30:06:81:01:FF:82:01:FF\n",
+    for (extensions, preparation_error) in [
+        ("issuingDistributionPoint=critical,DER:01:01:FF\n", Some("CRL scope is malformed")),
+        ("issuingDistributionPoint=critical,DER:30:03:81:01:FF:00\n", Some("CRL scope must round-trip")),
+        ("issuingDistributionPoint=DER:30:03:81:01:FF\n", Some("CRL scope must be critical")),
+        ("issuingDistributionPoint=critical,DER:30:03:81:01:FF\n2.5.29.28=critical,DER:30:03:81:01:FF\n", Some("duplicate issuing distribution points")),
+        ("issuingDistributionPoint=critical,DER:30:06:81:01:FF:82:01:FF\n", None),
     ] {
         let crl = make_extended_crl(&directory.0, &issuer, &key, None, false, Some(extensions)).await?;
         assert!(X509Crl::from_der(&crl)?.verify(&key)?);
+        let source = source_for(&issuer, 449, std::slice::from_ref(&crl), false, false)?;
+        let prepared = prepare_endpoint(&source.server[0], PrepareOptions::default());
+        if let Some(expected) = preparation_error {
+            let error = prepared.expect_err("invalid scope must fail before a handshake");
+            assert!(format!("{error:#}").contains(expected), "unexpected preparation failure: {error:#}");
+        } else {
+            assert!(prepared.is_ok(), "contradictory flags must reach native semantic validation");
+        }
         assert!(!probe(&[crl], false, false, false, None).await?, "invalid scope must not become an unscoped CRL: {extensions}");
         assert!(openssl::error::ErrorStack::get().errors().is_empty(), "rejected scope must not leave native errors for later TLS work");
     }
