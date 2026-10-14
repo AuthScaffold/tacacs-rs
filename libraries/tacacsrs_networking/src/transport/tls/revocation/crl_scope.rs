@@ -47,6 +47,33 @@ impl Drop for OwnedScope {
 pub(super) struct CrlScope {
     identity: Option<Vec<u8>>,
     reasons: u16,
+    certificates: CertificateScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CertificateScope {
+    All,
+    EndEntity,
+    Authority,
+}
+
+impl CertificateScope {
+    fn from_flags(user: c_int, ca: c_int, attribute: c_int) -> anyhow::Result<Self> {
+        match (user != 0, ca != 0, attribute != 0) {
+            (false, false, false) => Ok(Self::All),
+            (true, false, false) => Ok(Self::EndEntity),
+            (false, true, false) => Ok(Self::Authority),
+            (false, false, true) => anyhow::bail!("Attribute-certificate CRLs are not supported"),
+            _ => anyhow::bail!("CRL scope has contradictory certificate types"),
+        }
+    }
+
+    fn is_disjoint(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::EndEntity, Self::Authority) | (Self::Authority, Self::EndEntity)
+        )
+    }
 }
 
 impl CrlScope {
@@ -68,6 +95,7 @@ impl CrlScope {
                 return Ok(Self {
                     identity: None,
                     reasons: ALL_REASONS,
+                    certificates: CertificateScope::All,
                 });
             }
             ensure!(
@@ -94,6 +122,11 @@ impl CrlScope {
             );
             let mut matching_scope = scope.0.as_ptr().read();
             ensure!(matching_scope.indirect == 0, "Indirect CRLs are not supported");
+            let certificates = CertificateScope::from_flags(
+                matching_scope.only_user,
+                matching_scope.only_ca,
+                matching_scope.only_attribute,
+            )?;
             let reasons = if matching_scope.reasons.is_null() {
                 ALL_REASONS
             } else {
@@ -130,6 +163,7 @@ impl CrlScope {
             Ok(Self {
                 identity: Some(identity),
                 reasons,
+                certificates,
             })
         }
     }
@@ -142,7 +176,13 @@ impl ScopeSet {
     pub(super) fn insert(&mut self, issuer: &X509NameRef, scope: CrlScope) -> anyhow::Result<()> {
         for (existing_issuer, existing) in &mut self.0 {
             if existing_issuer.try_cmp(issuer)? == Ordering::Equal {
-                return existing.merge(&scope);
+                if existing.identity == scope.identity {
+                    return existing.merge(&scope);
+                }
+                ensure!(
+                    existing.certificates.is_disjoint(scope.certificates),
+                    "CRLs for one issuer must use the same scope or disjoint certificate types"
+                );
             }
         }
         self.0.push((issuer.to_owned()?, scope));
@@ -158,6 +198,45 @@ mod tests {
         CrlScope {
             identity: Some(vec![1]),
             reasons,
+            certificates: CertificateScope::All,
+        }
+    }
+
+    #[test]
+    fn certificate_scope_flags_and_disjointness_are_explicit() {
+        for (flags, expected) in [
+            ((0, 0, 0), CertificateScope::All),
+            ((255, 0, 0), CertificateScope::EndEntity),
+            ((0, -1, 0), CertificateScope::Authority),
+        ] {
+            assert_eq!(CertificateScope::from_flags(flags.0, flags.1, flags.2).unwrap(), expected);
+        }
+        for flags in [
+            (0, 0, 255),
+            (255, 255, 0),
+            (255, 0, 255),
+            (0, 255, 255),
+            (255, 255, 255),
+        ] {
+            assert!(CertificateScope::from_flags(flags.0, flags.1, flags.2).is_err());
+        }
+        for first in [
+            CertificateScope::All,
+            CertificateScope::EndEntity,
+            CertificateScope::Authority,
+        ] {
+            for second in [
+                CertificateScope::All,
+                CertificateScope::EndEntity,
+                CertificateScope::Authority,
+            ] {
+                assert_eq!(
+                    first.is_disjoint(second),
+                    first != CertificateScope::All
+                        && second != CertificateScope::All
+                        && first != second
+                );
+            }
         }
     }
 
@@ -169,13 +248,15 @@ mod tests {
         assert!(scope
             .merge(&CrlScope {
                 identity: Some(vec![2]),
-                reasons: 4
+                reasons: 4,
+                certificates: CertificateScope::All,
             })
             .is_err());
         assert!(scope
             .merge(&CrlScope {
                 identity: None,
-                reasons: ALL_REASONS
+                reasons: ALL_REASONS,
+                certificates: CertificateScope::All,
             })
             .is_err());
         assert_eq!(scope.reasons, 2);

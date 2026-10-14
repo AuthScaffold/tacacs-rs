@@ -475,6 +475,66 @@ async fn delegated_responder_without_no_check_uses_required_crls() -> Result<()>
 }
 
 #[tokio::test]
+async fn delegated_responder_uses_disjoint_certificate_scopes() -> Result<()> {
+    let directory = Directory::new()?;
+    let server = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let (responder, key) = delegated_responder(ResponderCase::MissingNoCheck)?;
+    let response = signed_response_with_responder(
+        &directory.0,
+        &server,
+        "good",
+        Some(1440),
+        Some((&responder, &key)),
+        None,
+    )
+    .await?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let issuer_key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let authorities = super::crl_peer::make_scoped_crl(
+        &directory.0,
+        &issuer,
+        &issuer_key,
+        None,
+        false,
+        Some("onlyCA=TRUE\n"),
+    )
+    .await?;
+    let end_entities = super::crl_peer::make_scoped_crl(
+        &directory.0,
+        &issuer,
+        &issuer_key,
+        None,
+        false,
+        Some("onlyuser=TRUE\n"),
+    )
+    .await?;
+    assert!(
+        probe_with_crls(
+            Some(response.clone()),
+            Some(Duration::from_secs(61)),
+            Some(vec![authorities.clone(), end_entities]),
+            300
+        )
+        .await?,
+        "separate certificate types must cover the peer, issuer, and non-exempt responder"
+    );
+    let revoked = super::crl_peer::make_scoped_crl(
+        &directory.0,
+        &issuer,
+        &issuer_key,
+        Some(&responder),
+        false,
+        Some("onlyuser=TRUE\n"),
+    )
+    .await?;
+    assert!(
+        !probe_with_crls(Some(response), None, Some(vec![authorities, revoked]), 300).await?,
+        "authority coverage must not hide responder revocation in end-entity scope"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn combined_evidence_rejects_revoked_responders_and_conflicting_peer_status() -> Result<()> {
     let directory = Directory::new()?;
     let server = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;

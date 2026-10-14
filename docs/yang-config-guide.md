@@ -230,14 +230,18 @@ The extension must be unique, critical, decodable, and pass a native DER round-t
 Native verification enforces certificate-type restrictions, distribution-point name matching, and complete revocation-reason coverage.
 A leaf-scoped list does not replace required issuer-path evidence. Scope does not relax signature, revocation, or freshness checks.
 Distribution-point URIs are scope identifiers here, not authorized retrieval destinations. TLS callbacks do not fetch those URIs.
-Multiple lists for one issuer can provide disjoint revocation-reason partitions.
-Partitions must have identical encoded scope after removing `onlySomeReasons`. Overlapping reasons and mixed scopes fail preparation, regardless of input order.
+One issuer can supply separate CA-only and end-entity-only scope sets because their certificate types are disjoint.
+Contradictory certificate-type flags and attribute-certificate scope fail preparation.
+Within each scope set, lists can provide disjoint revocation-reason partitions.
+Partitions must have identical encoded scope after removing `onlySomeReasons`. Overlapping reasons and ambiguous scope combinations fail preparation, regardless of input order.
+Each certificate-type group needs complete reason coverage independently. End-entity reasons cannot fill a gap in CA coverage, or the reverse.
 Issuer names use native X.509 comparison, so equivalent encodings cannot bypass the overlap check.
 Empty reason sets, the unused reason bit, and unknown reason bits fail preparation.
 Native verification requires all reasons for each certificate. Missing partitions, forged evidence, or revocation in any contributing partition reject authentication.
 An unrestricted CRL covers every reason and cannot be mixed with another CRL for that issuer.
 The same rules apply to non-exempt delegated OCSP responders. Every supplied partition still contributes to the evidence deadline.
-Delta CRLs, freshest-CRL references, and indirect CRLs remain rejected. Distinct scope sets for one issuer are not yet supported.
+Delta CRLs, freshest-CRL references, and indirect CRLs remain rejected.
+Different distribution-point scopes with overlapping certificate types remain unsupported, even if their reason sets are disjoint.
 
 Native verification checks the accepted certificate path against the supplied lists before client authentication or TACACS+ data.
 Bad signatures, revoked leaves or intermediates, and incomplete evidence reject the TLS connection. Missing CRLs never fall back to unchecked authentication.

@@ -507,7 +507,11 @@ async fn scoped_crls_reject_malformed_scope_even_with_valid_signature() -> Resul
         ("issuingDistributionPoint=critical,DER:30:03:81:01:FF:00\n", Some("CRL scope must round-trip")),
         ("issuingDistributionPoint=DER:30:03:81:01:FF\n", Some("CRL scope must be critical")),
         ("issuingDistributionPoint=critical,DER:30:03:81:01:FF\n2.5.29.28=critical,DER:30:03:81:01:FF\n", Some("duplicate issuing distribution points")),
-        ("issuingDistributionPoint=critical,DER:30:06:81:01:FF:82:01:FF\n", None),
+        ("issuingDistributionPoint=critical,DER:30:06:81:01:FF:82:01:FF\n", Some("contradictory certificate types")),
+        ("issuingDistributionPoint=critical,DER:30:06:81:01:FF:85:01:FF\n", Some("contradictory certificate types")),
+        ("issuingDistributionPoint=critical,DER:30:06:82:01:FF:85:01:FF\n", Some("contradictory certificate types")),
+        ("issuingDistributionPoint=critical,DER:30:09:81:01:FF:82:01:FF:85:01:FF\n", Some("contradictory certificate types")),
+        ("issuingDistributionPoint=critical,DER:30:03:85:01:FF\n", Some("Attribute-certificate CRLs are not supported")),
         ("issuingDistributionPoint=critical,DER:30:03:84:01:FF\n", Some("Indirect CRLs are not supported")),
         ("issuingDistributionPoint=critical,DER:30:03:83:01:00\n", Some("CRL reason flags are empty or unsupported")),
         ("issuingDistributionPoint=critical,DER:30:04:83:02:00:80\n", Some("CRL reason flags are empty or unsupported")),
@@ -518,15 +522,98 @@ async fn scoped_crls_reject_malformed_scope_even_with_valid_signature() -> Resul
         assert!(X509Crl::from_der(&crl)?.verify(&key)?);
         let source = source_for(&issuer, 449, std::slice::from_ref(&crl), false, false)?;
         let prepared = prepare_endpoint(&source.server[0], PrepareOptions::default());
-        if let Some(expected) = preparation_error {
-            let error = prepared.expect_err("invalid scope must fail before a handshake");
-            assert!(format!("{error:#}").contains(expected), "unexpected preparation failure: {error:#}");
-        } else {
-            assert!(prepared.is_ok(), "contradictory flags must reach native semantic validation");
-        }
+        let expected = preparation_error.expect("every invalid scope case must fail preparation");
+        let error = prepared.expect_err("invalid scope must fail before a handshake");
+        assert!(format!("{error:#}").contains(expected), "unexpected preparation failure: {error:#}");
         assert!(!probe(&[crl], false, false, false, None).await?, "invalid scope must not become an unscoped CRL: {extensions}");
         assert!(openssl::error::ErrorStack::get().errors().is_empty(), "rejected scope must not leave native errors for later TLS work");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn certificate_type_crls_for_one_issuer_cover_the_whole_path() -> Result<()> {
+    let directory = Directory::new()?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let end_entities =
+        make_scoped_crl(&directory.0, &issuer, &key, None, false, Some("onlyuser=TRUE\n")).await?;
+    let authorities =
+        make_scoped_crl(&directory.0, &issuer, &key, None, false, Some("onlyCA=TRUE\n")).await?;
+    let source =
+        source_for(&issuer, 449, &[end_entities.clone(), authorities.clone()], false, false)?;
+    prepare_endpoint(&source.server[0], PrepareOptions::default())?;
+    assert!(probe(&[end_entities.clone(), authorities.clone()], true, true, true, None).await?);
+    assert!(probe(&[authorities.clone(), end_entities.clone()], false, false, false, None).await?);
+    let unrestricted = make_issuer_crl(&directory.0, &issuer, &key, None, false).await?;
+    for lists in [
+        vec![
+            end_entities.clone(),
+            authorities.clone(),
+            end_entities.clone(),
+        ],
+        vec![
+            authorities.clone(),
+            end_entities.clone(),
+            authorities.clone(),
+        ],
+        vec![unrestricted.clone(), end_entities.clone()],
+        vec![authorities.clone(), unrestricted],
+    ] {
+        let source = source_for(&issuer, 449, &lists, false, false)?;
+        assert!(
+            prepare_endpoint(&source.server[0], PrepareOptions::default()).is_err(),
+            "overlapping scope sets must fail preparation"
+        );
+    }
+    let partial_authorities = make_scoped_crl(
+        &directory.0,
+        &issuer,
+        &key,
+        None,
+        false,
+        Some("onlyCA=TRUE\nonlysomereasons=keyCompromise\n"),
+    )
+    .await?;
+    assert!(
+        !probe(&[end_entities.clone(), partial_authorities.clone()], true, true, false, None)
+            .await?,
+        "end-entity reasons must not fill missing authority reasons"
+    );
+    let remaining_authorities = make_scoped_crl(&directory.0, &issuer, &key, None, false,
+        Some("onlyCA=TRUE\nonlysomereasons=CACompromise,affiliationChanged,superseded,cessationOfOperation,certificateHold,privilegeWithdrawn,AACompromise\n")).await?;
+    assert!(
+        probe(
+            &[
+                partial_authorities,
+                end_entities.clone(),
+                remaining_authorities
+            ],
+            true,
+            true,
+            false,
+            None
+        )
+        .await?,
+        "reason partitions must accumulate within their certificate-type group"
+    );
+    let peer = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let revoked_peer =
+        make_scoped_crl(&directory.0, &issuer, &key, Some(&peer), false, Some("onlyuser=TRUE\n"))
+            .await?;
+    assert!(!probe(&[authorities.clone(), revoked_peer], false, false, false, None).await?);
+    let revoked_authority =
+        make_scoped_crl(&directory.0, &issuer, &key, Some(&issuer), false, Some("onlyCA=TRUE\n"))
+            .await?;
+    assert!(!probe(&[end_entities.clone(), revoked_authority], false, false, false, None).await?);
+    assert!(
+        !probe(&[end_entities], false, false, false, None).await?,
+        "missing authority coverage must fail"
+    );
+    assert!(
+        !probe(&[authorities], false, false, false, None).await?,
+        "missing end-entity coverage must fail"
+    );
     Ok(())
 }
 
@@ -581,7 +668,7 @@ async fn reason_partitioned_crls_require_complete_coverage() -> Result<()> {
         &intermediate.key,
         None,
         false,
-        Some("onlyCA=TRUE\nonlysomereasons=CACompromise\n"),
+        Some("onlyuser=TRUE\nfullname=URI:http://pki.example.test/other.crl\nonlysomereasons=CACompromise\n"),
     )
     .await?;
     let source = source_for(&root, 449, &[first.clone(), wrong_scope], false, false)?;
