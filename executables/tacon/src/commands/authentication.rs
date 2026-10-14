@@ -56,6 +56,7 @@ pub async fn authenticate_service(
     client
         .authenticate_pap(pap_operation(args, privilege_level, password)?)
         .await
+        .map_err(Into::into)
 }
 
 fn pap_operation(

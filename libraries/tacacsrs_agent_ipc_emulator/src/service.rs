@@ -14,7 +14,7 @@ use crate::controller::tacacs_agent_mock_controller_server::TacacsAgentMockContr
 use crate::policy::{EmulatorPolicy, EmulatorResponse, IpcRpc, ResponseBody};
 use crate::protocol::{
     accounting_fields, accounting_response, authorization_fields, authorization_response,
-    service_error,
+    pap_unsupported_error, service_error,
 };
 use crate::state::{EmulatorState, EvaluatedDecision};
 
@@ -58,11 +58,9 @@ impl TacacsAgent for AgentService {
         let _request = PapAuthenticationOperation::try_from(request.into_inner())
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         Ok(Response::new(ipc::PapAuthenticationReply {
-            result: Some(ipc::pap_authentication_reply::Result::Error(ipc::ServiceError {
-                message: "PAP authentication is not supported by the policy emulator".to_owned(),
-                server: "ipc-emulator".to_owned(),
-                retriable: false,
-            })),
+            result: Some(ipc::pap_authentication_reply::Result::Error(
+                pap_unsupported_error().into(),
+            )),
         }))
     }
 

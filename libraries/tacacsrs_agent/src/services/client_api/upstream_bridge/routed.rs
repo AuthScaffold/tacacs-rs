@@ -1,7 +1,10 @@
 //! Shared operation helpers for [`UpstreamBridge`].
 
+use std::num::NonZeroU32;
+
 use async_trait::async_trait;
 use tacacsrs_networking::routed::EndpointConnector;
+use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
 use tacacsrs_protocol::operations::ServiceError;
 use tacacsrs_networking::retry::{
     Attempt, AttemptDisposition, FailoverAttempt, FailoverOutcome, run_with_failover,
@@ -53,7 +56,19 @@ where
     router: &'request OperationRouter<Connector>,
     routing: RequestRouting<Connector>,
     request: &'request Operation::Request,
-    outcome_unknown: bool,
+}
+
+impl<Operation: RoutedOperation, Connector: EndpointConnector>
+    RoutedAttempt<'_, Operation, Connector>
+{
+    fn with_attempt_context(&self, mut error: ServiceError, attempt_index: usize) -> ServiceError {
+        error.runtime_generation = Some(self.routing.generation());
+        error.attempt = u32::try_from(attempt_index)
+            .ok()
+            .and_then(|index| index.checked_add(1))
+            .and_then(NonZeroU32::new);
+        error
+    }
 }
 
 #[async_trait]
@@ -71,9 +86,15 @@ where
             Ok(bound_server) => bound_server,
             Err(error) => {
                 log::warn!("Failed to bind a client API request to a TACACS+ server: {error:#}");
-                return Attempt::Aborted(
-                    ServiceError::new(error.to_string()).retriable(!self.outcome_unknown),
+                let error = ServiceError::new(
+                    error.to_string(),
+                    FailureFacts::new(
+                        FailureCategory::Unavailable,
+                        FailurePhase::Routing,
+                        DeliveryState::NotSent,
+                    ),
                 );
+                return Attempt::Aborted(self.with_attempt_context(error, attempt_index));
             }
         };
 
@@ -87,7 +108,16 @@ where
 
         let deadline = self.routing.deadline();
         if let Err(error) = deadline.check() {
-            return Attempt::Aborted(ServiceError::new(error.to_string()).retriable(true));
+            let error = ServiceError::new(
+                error.to_string(),
+                FailureFacts::new(
+                    FailureCategory::Deadline,
+                    FailurePhase::Upstream,
+                    DeliveryState::NotSent,
+                ),
+            )
+            .with_server(bound_server.connection.server_address());
+            return Attempt::Aborted(self.with_attempt_context(error, attempt_index));
         }
         let attempt_deadline = deadline.capped(bound_server.timeout_duration());
         let response = attempt_deadline
@@ -104,9 +134,14 @@ where
                 let _reported = deadline.run(self.router.note_success(&bound_server)).await;
                 Attempt::Accepted(response)
             }
-            Err(error) if error.kind() == AttemptFailureKind::InvalidRequest => {
-                Attempt::Aborted(ServiceError::new(error.to_string()).retriable(false))
-            }
+            Err(error) if error.kind() == AttemptFailureKind::InvalidRequest => Attempt::Aborted(
+                self.with_attempt_context(
+                    error
+                        .into_service_error()
+                        .with_server(bound_server.connection.server_address()),
+                    attempt_index,
+                ),
+            ),
             Err(error) => {
                 log::warn!(
                     "{} request failed on {}: {error:#}",
@@ -120,12 +155,12 @@ where
                         unreachable!("invalid requests return before failure recording")
                     }
                 };
-                self.outcome_unknown |= error.kind() == AttemptFailureKind::OutcomeUnknown;
-                let service_error = ServiceError::new(error.to_string())
-                    .with_server(bound_server.connection.server_address())
-                    .retriable(
-                        !self.outcome_unknown && error.kind() == AttemptFailureKind::NotSent,
-                    );
+                let service_error = self.with_attempt_context(
+                    error
+                        .into_service_error()
+                        .with_server(bound_server.connection.server_address()),
+                    attempt_index,
+                );
                 let _reported = deadline.run(self.router.note_failure(&bound_server)).await;
                 Attempt::Failed {
                     error: service_error,
@@ -153,19 +188,20 @@ where
         Operation: RoutedOperation,
     {
         let body_length = Operation::request_body_length(&request)
-            .map_err(|error| ServiceError::new(error.to_string()).retriable(false))?;
+            .map_err(UpstreamRequestError::into_service_error)?;
         let routing = self.router.capture_request(Operation::OPERATION);
         let _admission_permit = routing.admit(body_length).await.map_err(|error| {
-            let retriable = error.is_retriable();
-            ServiceError::new(error.to_string()).retriable(retriable)
+            error
+                .into_service_error()
+                .with_runtime_generation(routing.generation())
         })?;
 
         let plan = routing.failover_plan();
+        let generation = routing.generation();
         let mut attempt = RoutedAttempt::<Operation, Connector> {
             router: &self.router,
             routing,
             request: &request,
-            outcome_unknown: false,
         };
 
         match run_with_failover(plan, &mut attempt).await {
@@ -173,11 +209,15 @@ where
                 Ok(response)
             }
             FailoverOutcome::Failed(error) | FailoverOutcome::Aborted(error) => Err(error),
-            FailoverOutcome::NoAttempt => Err(ServiceError::new(format!(
-                "No TACACS+ server completed the {} request",
-                Operation::NAME
-            ))
-            .retriable(true)),
+            FailoverOutcome::NoAttempt => Err(ServiceError::new(
+                format!("No TACACS+ server completed the {} request", Operation::NAME),
+                FailureFacts::new(
+                    FailureCategory::Unavailable,
+                    FailurePhase::Routing,
+                    DeliveryState::NotSent,
+                ),
+            )
+            .with_runtime_generation(generation)),
         }
     }
 }

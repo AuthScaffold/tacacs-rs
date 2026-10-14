@@ -66,7 +66,10 @@ pub(crate) fn authorize_command(
 
     let response = runtime.block_on(async move {
         let client = connect_client(flags, endpoint).await?;
-        client.send_authorization(request).await
+        client
+            .send_authorization(request)
+            .await
+            .map_err(anyhow::Error::from)
     });
 
     match response {

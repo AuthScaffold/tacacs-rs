@@ -1387,7 +1387,7 @@ mod tests {
             panic!("the ServiceError oneof must contain the authorization error");
         };
         assert_eq!(error.server, "primary:49");
-        assert!(!error.retriable);
+        assert_eq!(error.retry_advice, tacacsrs_agent_client::ipc::RetryAdvice::Never as i32);
         assert!(error.message.contains("Simulated failure"));
     }
 

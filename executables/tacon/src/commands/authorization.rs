@@ -32,6 +32,7 @@ pub async fn authorize_service(
     client
         .send_authorization(authorization_operation(args, privilege_level, context, mode)?)
         .await
+        .map_err(Into::into)
 }
 
 fn authorization_operation(

@@ -8,9 +8,13 @@ use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
     AuthenticationResponseStatus, AuthorizationArg, AuthorizationAuthenticationContext,
     AuthorizationOperation, AuthorizationOperationResponse, AuthorizationResponseStatus,
-    PapAuthenticationOperation, PapAuthenticationOperationResponse, ServiceError,
+    PapAuthenticationOperation, PapAuthenticationOperationResponse,
 };
 use crate::ipc;
+
+mod failure;
+
+pub(crate) use failure::{ipc_protocol_failure, ipc_transport_failure};
 
 fn authorization_status(value: i32) -> anyhow::Result<AuthorizationResponseStatus> {
     match u8::try_from(value).context("IPC authorization status value is out of u8 range")? {
@@ -59,26 +63,6 @@ fn decode_authentication_context(value: i32) -> anyhow::Result<AuthorizationAuth
         2 => Ok(AuthorizationAuthenticationContext::TacacsPap),
         3 => Ok(AuthorizationAuthenticationContext::Unauthenticated),
         _ => bail!("IPC authorization authentication context is not recognized"),
-    }
-}
-
-impl From<ServiceError> for ipc::ServiceError {
-    fn from(value: ServiceError) -> Self {
-        Self {
-            message: value.message,
-            server: value.server.unwrap_or_default(),
-            retriable: value.retriable,
-        }
-    }
-}
-
-impl From<ipc::ServiceError> for ServiceError {
-    fn from(proto: ipc::ServiceError) -> Self {
-        Self {
-            message: proto.message,
-            server: (!proto.server.is_empty()).then_some(proto.server),
-            retriable: proto.retriable,
-        }
     }
 }
 
@@ -553,15 +537,5 @@ mod tests {
 
         let error = AuthorizationOperationResponse::try_from(response).unwrap_err();
         assert!(error.to_string().contains("contains a separator"));
-    }
-
-    #[test]
-    fn test_service_error_proto_round_trip() {
-        let error = ServiceError::new("failed")
-            .with_server("server-a:49")
-            .retriable(true);
-
-        let decoded = ServiceError::from(ipc::ServiceError::from(error.clone()));
-        assert_eq!(decoded, error);
     }
 }

@@ -185,7 +185,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.server.as_deref(), Some("primary:49"));
-        assert!(!error.retriable);
+        assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
 
         let response = bridge
             .execute_authorization_request(build_authorization_request())
@@ -209,7 +209,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.retriable);
+        assert_eq!(
+            error.facts.retry_advice(),
+            tacacsrs_protocol::failure::RetryAdvice::AfterRecovery
+        );
         assert!(error.message.contains("waiting for initial configuration"));
     }
 }

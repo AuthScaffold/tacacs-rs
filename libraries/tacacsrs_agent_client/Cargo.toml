@@ -25,5 +25,8 @@ tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 protoc-bin-vendored = "3.2.0"
 tonic-prost-build = "0.14.6"
 
+[dev-dependencies]
+tokio-stream = { version = "0.1.18", features = ["net"] }
+
 [lints]
 workspace = true

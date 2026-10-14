@@ -10,6 +10,7 @@ pub mod authorization;
 pub mod traits;
 pub mod exchange;
 pub mod operations;
+pub mod failure;
 pub mod conversation;
 pub mod privilege;
 mod helpers;

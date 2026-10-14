@@ -2177,6 +2177,7 @@ dependencies = [
  "tacacsrs-protocol",
  "tacacsrs-secrets",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-health",
  "tonic-prost",
