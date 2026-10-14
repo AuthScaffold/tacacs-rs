@@ -5,10 +5,7 @@ use std::io::{IsTerminal, Read};
 use anyhow::Context;
 #[cfg(target_os = "linux")]
 use tacacsrs_ipc::{ServiceClient};
-use tacacsrs_protocol::operations::PapAuthenticationOperation;
-#[cfg(target_os = "linux")]
-use tacacsrs_protocol::operations::PapAuthenticationOperationResponse;
-use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::operations::{PapAuthenticationOperation, PapAuthenticationOperationResponse};
 use tacacsrs_secrets::SecretBytes;
 
 use crate::cli::RequestArgs;
@@ -40,10 +37,11 @@ pub async fn authenticate_direct(
     args: &RequestArgs,
     privilege_level: u8,
     password: SecretBytes,
-) -> anyhow::Result<AuthenticationReply> {
-    connection
+) -> anyhow::Result<PapAuthenticationOperationResponse> {
+    let reply = connection
         .execute(pap_operation(args, privilege_level, password)?.exchange()?)
-        .await
+        .await?;
+    PapAuthenticationOperationResponse::from_reply(connection.server_name(), reply)
 }
 
 #[cfg(target_os = "linux")]

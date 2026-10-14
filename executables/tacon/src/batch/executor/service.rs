@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tacacsrs_ipc::{ServiceClient};
 
 use super::common::{
-    authorization_operation, load_test_iterations, run_load_test, service_client,
-    to_service_accounting_request,
+    authorization_operation, format_request_outcome, load_test_iterations, pap_batch_unsupported,
+    run_load_test, service_client, to_service_accounting_request,
 };
 use super::super::progress::print_load_test_summary;
 use super::super::types::{BatchFile, BatchRequest, LoadTestConfig, RequestResult};
@@ -15,23 +15,20 @@ async fn execute_single_request_via_service(
     request: &BatchRequest,
 ) -> Result<String, String> {
     match request {
-        BatchRequest::Accounting(req) => client
-            .send_accounting(to_service_accounting_request(req))
-            .await
-            .map(|response| format!("Accounting success: {response:?}"))
-            .map_err(|error| format!("Accounting failed: {error}")),
-        BatchRequest::Authentication(req) => {
-            Err(format!(
-                "PAP authentication is not supported in batch files. Use the authentication command with a prompt or --password-stdin (user: {})",
-                req.user
-            ))
-        }
-        BatchRequest::Authorization(req) => {
+        BatchRequest::Accounting(req) => format_request_outcome(
+            "Accounting",
             client
-                .send_authorization(authorization_operation(req).map_err(|error| error.to_string())?)
-                .await
-                .map(|response| format!("Authorization success: {response:?}"))
-                .map_err(|error| format!("Authorization failed: {error}"))
+                .send_accounting(to_service_accounting_request(req))
+                .await,
+        ),
+        BatchRequest::Authentication(req) => Err(pap_batch_unsupported(&req.user)),
+        BatchRequest::Authorization(req) => {
+            let result = client
+                .send_authorization(
+                    authorization_operation(req).map_err(|error| error.to_string())?,
+                )
+                .await;
+            format_request_outcome("Authorization", result)
         }
     }
 }

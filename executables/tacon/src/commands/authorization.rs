@@ -2,10 +2,9 @@
 
 #[cfg(target_os = "linux")]
 use tacacsrs_ipc::{ServiceClient};
-use tacacsrs_protocol::operations::{AuthorizationAuthenticationContext, AuthorizationOperation};
-#[cfg(target_os = "linux")]
-use tacacsrs_protocol::operations::AuthorizationOperationResponse;
-use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::operations::{
+    AuthorizationAuthenticationContext, AuthorizationOperation, AuthorizationOperationResponse,
+};
 
 use crate::cli::{AuthorizationAuthContext, AuthorizationMode, RequestArgs};
 use crate::connection::Connection;
@@ -16,9 +15,10 @@ pub async fn authorize_direct(
     privilege_level: u8,
     context: AuthorizationAuthContext,
     mode: &AuthorizationMode,
-) -> anyhow::Result<AuthorizationReply> {
+) -> anyhow::Result<AuthorizationOperationResponse> {
     let operation = authorization_operation(args, privilege_level, context, mode)?;
-    connection.execute(operation.exchange()?).await
+    let reply = connection.execute(operation.exchange()?).await?;
+    AuthorizationOperationResponse::from_reply(connection.server_name(), reply)
 }
 
 #[cfg(target_os = "linux")]
