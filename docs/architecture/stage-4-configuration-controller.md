@@ -27,6 +27,7 @@ Commit `5b9ba63` adds proactive provider revalidation before expiry without requ
 Commit `4248339` adds bounded HTTP retrieval for explicitly registered CRL sets without changing canonical references.
 Commit `f53b83f` adds production daemon registration, provider composition, and native HTTP/HTTPS process tests.
 Commit `0651d7f` adds combined OCSP/CRL requirements and CRL-backed revocation checks for delegated responders without No Check.
+Commit `1b4616d` adds direct scoped CRLs and strict scope preparation. Commit `bf7b77e` strengthens the rejection-stage regression.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
 
@@ -40,7 +41,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
-- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval; `f53b83f` completes daemon registration and HTTPS process validation. Commit `0651d7f` combines OCSP and CRLs, including responders without No Check. Certificate-driven retrieval, OCSP queries, and unsupported evidence forms remain open. See [combined revocation requirements](#combined-revocation-requirements).
+- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval; `f53b83f` completes daemon registration and HTTPS process validation. Commit `0651d7f` combines OCSP and CRLs, including responders without No Check. Commits `1b4616d` and `bf7b77e` add verified direct scope support. Certificate-driven retrieval, OCSP queries, and unsupported evidence forms remain open. See [direct CRL scope](#direct-crl-scope).
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
 ## Policy Observation
@@ -1598,3 +1599,57 @@ Artifact SHA-256 values:
 No dependency, lockfile, IPC schema, or native ABI changes occur. Native Redis, live SONiC, Windows, and container checks were not rerun.
 S4-06 remains open for certificate-driven retrieval, OCSP queries, and unsupported evidence forms or combinations.
 S4-07 operational statistics remains open. This increment does not establish full RFC 9887 conformance.
+
+## Direct CRL Scope
+
+Commit `1b4616d` permits direct full CRLs with an issuing-distribution-point extension.
+The first regression showed that the previous blanket preparation restriction rejected valid end-entity scope.
+Native verification now enforces certificate-type scope, distribution-point names, and complete revocation-reason coverage.
+The existing full-chain check still requires issuer evidence, valid signatures, unrevoked certificates, and fresh lists before client authentication.
+Scope does not extend evidence lifetime. All supplied lists still constrain the prepared deadline and idle transport lifetime.
+
+Distribution-point URIs are scope identifiers, not retrieval authorization.
+The provider retains explicit location registration, and native callbacks perform no network retrieval.
+The one-list-per-issuer and 4 MiB limits remain. Delta indicators and freshest-CRL references still fail preparation.
+Multiple reason partitions and broader indirect or alternate-signer evidence are not completed by this increment.
+
+### Malformed Scope Safeguard
+
+Removing the blanket restriction exposed an OpenSSL 3.0.20 behavior during implementation.
+A correctly signed CRL with malformed issuing-distribution-point data passed native path verification as unscoped evidence.
+The new regression failed before explicit preparation validation was added. The previously committed blanket restriction already rejected that input.
+
+Preparation now requires a unique, critical, decodable scope extension and compares its native DER re-encoding with the original extension.
+Malformed, duplicate, noncritical, and trailing scope values fail before a handshake.
+OpenSSL still owns semantic scope validation, including rejection of contradictory certificate-type restrictions.
+Native decoding errors are consumed so rejected configuration does not leave errors for subsequent TLS work.
+
+The decoder allocates a private native scope object. A narrow `ISSUING_DIST_POINT_free` bridge releases it immediately after re-encoding, including encoding failure.
+The extension borrows the live CRL; the re-encoded extension has Rust-managed native ownership. No decoded pointer or native layout escapes preparation.
+Commit `bf7b77e` strengthens the regression to assert specific preparation failures separately from later TLS rejection.
+
+### Verification
+
+Three native scoped-CRL tests cover the following cases:
+
+- Valid end-entity and CA-only scope on their corresponding certificates, with reusable provider-backed credential bundles.
+- Rejection of mismatched certificate types, attribute-certificate scope, incomplete reasons, missing issuer evidence, and revoked leaves.
+- Matching and mismatched distribution-point URIs, valid-signature requirements, and idle expiry.
+- Signed malformed, duplicate, noncritical, trailing, and contradictory scope values, with an empty native error stack after rejection.
+
+The complete workspace suite passes, including 30 prepared-source tests, 195 agent tests, and five host-process tests.
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, book build, editor diagnostics, and whitespace checks pass.
+The final test-only strengthening also passes focused tests, Clippy, and formatting.
+All nine independent TACACS+ peer cases pass with OpenSSL 3.0.20. Both pure revocation tests pass under Miri.
+Native scope decoding and its free bridge are outside Miri support and use signed native fixtures and TLS tests instead.
+All 15 generator tests and deterministic regeneration pass. YANG changes affect descriptions only; the expanded tree is unchanged.
+
+Artifact SHA-256 values:
+
+- Generated Rust: `e5052fc9154cb453b8db345be1cad8a8cb777f295545d5f863919ec715d63674`.
+- Expanded tree: `0c3ced4aacc7b3ec4253a823687f1cb998ae27858a7667e5917a11faf0ebcefa`.
+- Project module: `ff2ce19dbc1f8dd8ab6c962887b2c2af382d107a4a00e6fd60cb612cd9cf361c`.
+
+No dependency, lockfile, or IPC schema changes occur. Native Redis, live SONiC, Windows, and container checks were not rerun.
+S4-06 remains open for certificate-driven retrieval, OCSP queries, delta CRLs, and broader scoped-evidence combinations.
+S4-07 operational statistics remains open. No full RFC 9887 conformance claim is made.
