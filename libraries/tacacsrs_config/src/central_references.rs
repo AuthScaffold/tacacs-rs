@@ -20,6 +20,8 @@ pub enum CentralCredentialUsage {
     ServerEeCertificateBag,
     /// Complete server certificate revocation evidence.
     ServerCertificateRevocationLists,
+    /// Independently fetched OCSP evidence.
+    ServerOcspResponse,
 }
 
 impl CentralCredentialUsage {
@@ -27,6 +29,7 @@ impl CentralCredentialUsage {
     #[must_use]
     pub const fn field_path(self) -> &'static str {
         match self {
+            Self::ServerOcspResponse => "server-authentication/tacacsrs:require-ocsp",
             Self::ClientCertificateWithKey => "client-identity/certificate",
             Self::ClientTls13Epsk => "client-identity/tls13-epsk",
             Self::ServerCaCertificateBag => "server-authentication/ca-certs",
@@ -52,11 +55,17 @@ pub enum CentralCredentialReference<'a> {
     CertificateBag(&'a str),
     /// Opaque provider reference to complete CRL evidence.
     CertificateRevocationLists(&'a str),
+    /// Opaque provider reference to an OCSP response.
+    OcspResponse(&'a str),
 }
 
 impl fmt::Debug for CentralCredentialReference<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OcspResponse(_) => formatter
+                .debug_tuple("OcspResponse")
+                .field(&"<redacted>")
+                .finish(),
             Self::CertificateRevocationLists(_) => formatter
                 .debug_tuple("CertificateRevocationLists")
                 .field(&"<redacted>")
@@ -263,6 +272,17 @@ pub fn inspect_central_references(
                 server_name: &server.name,
                 usage: CentralCredentialUsage::ServerCertificateRevocationLists,
                 reference: CentralCredentialReference::CertificateRevocationLists(reference),
+            });
+        }
+        if let Some(reference) = authentication
+            .require_ocsp
+            .as_ref()
+            .and_then(|policy| policy.evidence_reference.as_deref())
+        {
+            slots.push(CentralCredentialSlot {
+                server_name: &server.name,
+                usage: CentralCredentialUsage::ServerOcspResponse,
+                reference: CentralCredentialReference::OcspResponse(reference),
             });
         }
     }

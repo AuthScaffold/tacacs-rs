@@ -303,6 +303,7 @@ impl TacacsPlusServerBuilder {
         self.server.client_identity = None;
         self.server.server_authentication = Some(TlsClientServerAuthentication {
             require_crls: None,
+            require_ocsp: None,
             require_stapled_ocsp: None,
             credentials_reference: None,
             ca_certs: None,

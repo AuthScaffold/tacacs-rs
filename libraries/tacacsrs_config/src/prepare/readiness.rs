@@ -43,6 +43,10 @@ pub(super) fn validate_runtime_features(server: &TacacsPlusServer) -> anyhow::Re
         .and_then(|identity| identity.tls13_epsk.as_ref());
     if let Some(authentication) = &server.server_authentication {
         ensure!(
+            epsk.is_none() || authentication.require_ocsp.is_none(),
+            "Fetched OCSP cannot be combined with a client EPSK identity"
+        );
+        ensure!(
             epsk.is_none() || authentication.require_crls.is_none(),
             "Required CRLs cannot be combined with a client EPSK identity"
         );
@@ -136,6 +140,7 @@ mod tests {
         let mut direct = server.clone();
         direct.server_authentication = Some(crate::TlsClientServerAuthentication {
             require_crls: None,
+            require_ocsp: None,
             require_stapled_ocsp: None,
             tls13_epsks: Some(crate::YangEmpty::default()),
             ..Default::default()
@@ -155,6 +160,7 @@ mod tests {
             .credentials_reference = Some("client".to_owned());
         bundled.server_authentication = Some(crate::TlsClientServerAuthentication {
             require_crls: None,
+            require_ocsp: None,
             require_stapled_ocsp: None,
             credentials_reference: Some("server".to_owned()),
             ..Default::default()
@@ -167,6 +173,7 @@ mod tests {
         });
         source.server_credentials.push(crate::ServerCredentials {
             require_crls: None,
+            require_ocsp: None,
             require_stapled_ocsp: None,
             id: "server".to_owned(),
             ca_certs: None,

@@ -65,6 +65,7 @@ pub(crate) struct TlsClientConfig {
     pub(crate) revocation: super::CertificateRevocationPolicy,
     revocation_issuers: Vec<X509>,
     verification_disabled: bool,
+    provided_ocsp: Option<super::revocation::ProvidedResponse>,
 }
 
 impl TlsClientConfig {
@@ -153,6 +154,7 @@ impl TlsClientConfig {
             revocation: super::CertificateRevocationPolicy::disabled(),
             revocation_issuers,
             verification_disabled: disable_verification,
+            provided_ocsp: None,
             lifetime: prepared
                 .validity
                 .map(CertificateLifetime::new)
@@ -199,7 +201,11 @@ impl TlsClientConfig {
             &self.peer_identity,
             self.sni_name.as_deref(),
             self.peer_validity_index,
-            super::revocation::ConnectionRevocation::new(self.revocation, &self.revocation_issuers),
+            super::revocation::ConnectionRevocation::new(
+                self.revocation,
+                &self.revocation_issuers,
+                self.provided_ocsp.clone(),
+            ),
             self.crls.clone(),
         );
         let stream = match self.lifetime {
@@ -245,6 +251,24 @@ impl TlsClientConfig {
             .lifetime
             .map_or(Ok(peer_lifetime), |local| local.intersect(peer_lifetime))?;
         Ok(BoxedTransport::new(stream).with_certificate_lifetime(lifetime))
+    }
+
+    pub(crate) fn with_ocsp_response(
+        mut self,
+        encoded: &[u8],
+        maximum_age: std::time::Duration,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            !self.verification_disabled,
+            "Fetched OCSP requires certificate verification"
+        );
+        let response = super::revocation::ProvidedResponse::prepare(encoded, maximum_age)?;
+        self.lifetime = Some(match self.lifetime {
+            Some(current) => current.intersect(response.lifetime)?,
+            None => response.lifetime,
+        });
+        self.provided_ocsp = Some(response);
+        Ok(self)
     }
 }
 

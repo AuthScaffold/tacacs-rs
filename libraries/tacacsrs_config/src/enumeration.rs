@@ -136,6 +136,7 @@ fn enumerate_server_credentials(server: &mut TacacsPlusServer, config: &TacacsPl
             sa.tls13_epsks = bundle.tls13_epsks;
             sa.require_stapled_ocsp = bundle.require_stapled_ocsp.clone();
             sa.require_crls = bundle.require_crls.clone();
+            sa.require_ocsp = bundle.require_ocsp.clone();
             sa.credentials_reference = None;
         }
     }

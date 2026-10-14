@@ -47,7 +47,7 @@ pub(super) fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lde/containers/config/certificates")
 }
 
-async fn signed_response(
+pub(super) async fn signed_response(
     directory: &Path,
     certificate: &X509,
     status: &str,
@@ -313,6 +313,17 @@ async fn probe_with_crls(
     crls: Option<Vec<Vec<u8>>>,
     crl_maximum_age: u32,
 ) -> Result<bool> {
+    probe_with_evidence(staple, expiry, crls, crl_maximum_age, None, true).await
+}
+
+async fn probe_with_evidence(
+    staple: Option<Vec<u8>>,
+    expiry: Option<Duration>,
+    crls: Option<Vec<Vec<u8>>>,
+    crl_maximum_age: u32,
+    supplied: Option<Vec<u8>>,
+    require_staple: bool,
+) -> Result<bool> {
     let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
     let context = peer_context(staple, &issuer)?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -343,8 +354,14 @@ async fn probe_with_crls(
             }],
         }),
     });
-    authentication.require_stapled_ocsp = Some(tacacsrs_config::tacacsrs::RequireStapledOcsp {
+    authentication.require_stapled_ocsp =
+        require_staple.then_some(tacacsrs_config::tacacsrs::RequireStapledOcsp {
+            max_response_age_seconds: 300,
+        });
+    authentication.require_ocsp = supplied.map(|response| tacacsrs_config::tacacsrs::RequireOcsp {
         max_response_age_seconds: 300,
+        response: Some(response),
+        evidence_reference: None,
     });
     authentication.require_crls = crls.map(|lists| tacacsrs_config::tacacsrs::RequireCrls {
         max_age_seconds: crl_maximum_age,
@@ -400,6 +417,37 @@ async fn probe_with_crls(
         .await?;
     tokio::time::timeout(Duration::from_secs(5), peer).await???;
     Ok(accepted)
+}
+
+#[tokio::test]
+async fn fetched_ocsp_is_peer_bound_and_does_not_replace_mandatory_staples() -> Result<()> {
+    let directory = Directory::new()?;
+    let server = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let other = X509::from_pem(&std::fs::read(fixtures().join("client.crt"))?)?;
+    let good = signed_response(&directory.0, &server, "good", Some(1440)).await?;
+    assert!(
+        probe_with_evidence(
+            None,
+            Some(Duration::from_secs(301)),
+            None,
+            300,
+            Some(good.clone()),
+            false
+        )
+        .await?
+    );
+    assert!(!probe_with_evidence(None, None, None, 300, Some(good.clone()), true).await?);
+    assert!(
+        probe_with_evidence(Some(good.clone()), None, None, 300, Some(good.clone()), true).await?
+    );
+    let wrong = signed_response(&directory.0, &other, "good", Some(1440)).await?;
+    assert!(!probe_with_evidence(None, None, None, 300, Some(wrong), false).await?);
+    let mut forged = good;
+    *forged.last_mut().unwrap() ^= 1;
+    assert!(!probe_with_evidence(None, None, None, 300, Some(forged), false).await?);
+    let revoked = signed_response(&directory.0, &server, "revoked", Some(1440)).await?;
+    assert!(!probe_with_evidence(None, None, None, 300, Some(revoked), false).await?);
+    Ok(())
 }
 
 #[tokio::test]

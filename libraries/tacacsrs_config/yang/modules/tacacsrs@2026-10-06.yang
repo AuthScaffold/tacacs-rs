@@ -381,6 +381,25 @@ module tacacsrs {
         }
       }
     }
+    container require-ocsp {
+      presence "Require independently supplied OCSP evidence for the peer leaf.";
+      description
+        "Requires a fetched or inline response independently of any mandatory staple.
+         The actual peer, signer, status, and signed freshness are verified before client authentication.";
+      leaf max-response-age-seconds {
+        type uint32 { range "1..max"; }
+        default 300;
+      }
+      choice evidence {
+        mandatory true;
+        case inline {
+          leaf response { type binary { length "1..65536"; } mandatory true; }
+        }
+        case provider {
+          leaf evidence-reference { type string { length "1..max"; } mandatory true; }
+        }
+      }
+    }
     container require-stapled-ocsp {
       presence "Require fresh authenticated OCSP evidence for the peer leaf.";
       description

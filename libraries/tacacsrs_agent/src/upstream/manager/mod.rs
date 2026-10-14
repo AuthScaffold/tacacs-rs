@@ -529,7 +529,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             servers: new_server_slots,
             client,
         });
-        let urgent = previous.changed_crl_servers(&new_set);
+        let urgent = previous.changed_revocation_servers(&new_set);
 
         {
             let mut current = self

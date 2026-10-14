@@ -8,6 +8,9 @@ pub(in crate::transport::tls) mod crls;
 use std::num::NonZeroU32;
 use std::time::{Duration, SystemTime};
 use std::sync::{Mutex, OnceLock};
+use std::sync::Arc;
+
+use foreign_types::ForeignTypeRef;
 
 use anyhow::{Context, ensure};
 use openssl::hash::MessageDigest;
@@ -23,14 +26,20 @@ const MAXIMUM_STAPLE_BYTES: usize = 64 * 1024;
 pub(super) struct ConnectionRevocation {
     policy: CertificateRevocationPolicy,
     issuers: Vec<X509>,
+    provided: Option<ProvidedResponse>,
     result: Mutex<Option<Result<CertificateValidity, String>>>,
 }
 
 impl ConnectionRevocation {
-    pub(super) fn new(policy: CertificateRevocationPolicy, issuers: &[X509]) -> Option<Self> {
-        policy.maximum_response_age().map(|_| Self {
+    pub(super) fn new(
+        policy: CertificateRevocationPolicy,
+        issuers: &[X509],
+        provided: Option<ProvidedResponse>,
+    ) -> Option<Self> {
+        (policy.maximum_response_age().is_some() || provided.is_some()).then(|| Self {
             policy,
             issuers: issuers.to_vec(),
+            provided,
             result: Mutex::new(None),
         })
     }
@@ -56,6 +65,22 @@ pub(super) fn configure_verifier(builder: &mut SslContextBuilder) -> anyhow::Res
         let verified = connection
             .policy
             .verify(ssl, &connection.issuers)
+            .and_then(|current| {
+                let extra = connection
+                    .provided
+                    .as_ref()
+                    .map(|provided| {
+                        provided
+                            .policy
+                            .verify_encoded(ssl, &connection.issuers, &provided.encoded)
+                    })
+                    .transpose()?
+                    .flatten();
+                match (current, extra) {
+                    (Some(first), Some(second)) => Ok(Some(first.intersect(second)?)),
+                    (first, second) => Ok(first.or(second)),
+                }
+            })
             .and_then(|validity| validity.context("Required OCSP evidence was not verified"))
             .map_err(|error| format!("{error:#}"));
         let accepted = verified.is_ok();
@@ -141,12 +166,24 @@ impl CertificateRevocationPolicy {
         ssl: &SslRef,
         configured_issuers: &[X509],
     ) -> anyhow::Result<Option<CertificateValidity>> {
-        let Some(maximum_age) = self.maximum_age_seconds else {
+        if self.maximum_age_seconds.is_none() {
             return Ok(None);
-        };
+        }
         let encoded = ssl
             .ocsp_status()
             .context("Required stapled OCSP response is missing")?;
+        self.verify_encoded(ssl, configured_issuers, encoded)
+    }
+
+    fn verify_encoded(
+        self,
+        ssl: &SslRef,
+        configured_issuers: &[X509],
+        encoded: &[u8],
+    ) -> anyhow::Result<Option<CertificateValidity>> {
+        let Some(maximum_age) = self.maximum_age_seconds else {
+            return Ok(None);
+        };
         ensure!(
             encoded.len() <= MAXIMUM_STAPLE_BYTES,
             "Stapled OCSP response exceeds the size limit"
@@ -209,6 +246,100 @@ impl CertificateRevocationPolicy {
             "OCSP responder or evidence validity expired"
         );
         Ok(Some(validity))
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct ProvidedResponse {
+    encoded: Arc<[u8]>,
+    policy: CertificateRevocationPolicy,
+    pub(super) lifetime: super::CertificateLifetime,
+}
+
+#[allow(unsafe_code)]
+unsafe extern "C" {
+    fn OCSP_resp_count(response: *mut openssl_sys::OCSP_BASICRESP) -> std::ffi::c_int;
+    fn OCSP_resp_get0(
+        response: *mut openssl_sys::OCSP_BASICRESP,
+        index: std::ffi::c_int,
+    ) -> *mut std::ffi::c_void;
+    fn OCSP_single_get0_status(
+        single: *mut std::ffi::c_void,
+        reason: *mut std::ffi::c_int,
+        revoked: *mut *mut openssl_sys::ASN1_GENERALIZEDTIME,
+        this_update: *mut *mut openssl_sys::ASN1_GENERALIZEDTIME,
+        next_update: *mut *mut openssl_sys::ASN1_GENERALIZEDTIME,
+    ) -> std::ffi::c_int;
+}
+
+impl ProvidedResponse {
+    #[allow(unsafe_code)]
+    pub(super) fn prepare(encoded: &[u8], maximum_age: Duration) -> anyhow::Result<Self> {
+        let policy = CertificateRevocationPolicy::require_stapled_ocsp(maximum_age)?;
+        ensure!(
+            encoded.len() <= MAXIMUM_STAPLE_BYTES,
+            "Fetched OCSP response exceeds the size limit"
+        );
+        let response = OcspResponse::from_der(encoded)?;
+        ensure!(
+            response.to_der()?.as_slice() == encoded,
+            "Fetched OCSP response must contain one DER object"
+        );
+        ensure!(
+            response.status() == OcspResponseStatus::SUCCESSFUL,
+            "Fetched OCSP response is not successful"
+        );
+        let basic = response.basic()?;
+        let mut start = std::ptr::null_mut();
+        let mut next = std::ptr::null_mut();
+        // SAFETY: The decoded basic response owns all borrowed values. Count and
+        // pointers are checked before reading; only owned clock values escape.
+        let validity = unsafe {
+            ensure!(
+                OCSP_resp_count(basic.as_ptr()) == 1,
+                "Fetched OCSP response must cover exactly one certificate"
+            );
+            let single = OCSP_resp_get0(basic.as_ptr(), 0);
+            ensure!(!single.is_null(), "Fetched OCSP status is missing");
+            let status = OCSP_single_get0_status(
+                single,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &raw mut start,
+                &raw mut next,
+            );
+            ensure!(
+                [
+                    OcspCertStatus::GOOD.as_raw(),
+                    OcspCertStatus::REVOKED.as_raw(),
+                    OcspCertStatus::UNKNOWN.as_raw()
+                ]
+                .contains(&status),
+                "Invalid fetched OCSP status"
+            );
+            ensure!(!start.is_null(), "Fetched OCSP thisUpdate is missing");
+            let start =
+                generalized_system_time(openssl::asn1::Asn1GeneralizedTimeRef::from_ptr(start))?;
+            let next = if next.is_null() {
+                None
+            } else {
+                Some(generalized_system_time(openssl::asn1::Asn1GeneralizedTimeRef::from_ptr(
+                    next,
+                ))?)
+            };
+            freshness_interval(
+                start,
+                next,
+                NonZeroU32::new(u32::try_from(maximum_age.as_secs())?)
+                    .context("OCSP maximum age is zero")?,
+                SystemTime::now(),
+            )?
+        };
+        Ok(Self {
+            encoded: Arc::from(encoded),
+            policy,
+            lifetime: super::CertificateLifetime::new(validity)?,
+        })
     }
 }
 

@@ -67,6 +67,13 @@ module: ietf-system-tacacs-plus
        |  |     |  +--rw trs:crl*                  binary
        |  |     +--:(trs:provider)
        |  |        +--rw trs:evidence-reference    string
+       |  +--rw trs:require-ocsp!
+       |  |  +--rw trs:max-response-age-seconds?   uint32
+       |  |  +--rw (trs:evidence)
+       |  |     +--:(trs:inline)
+       |  |     |  +--rw trs:response              binary
+       |  |     +--:(trs:provider)
+       |  |        +--rw trs:evidence-reference    string
        |  +--rw trs:require-stapled-ocsp!
        |     +--rw trs:max-response-age-seconds?   uint32
        +--rw server* [name]
@@ -147,6 +154,13 @@ module: ietf-system-tacacs-plus
           |  |           |  +--rw (trs:evidence)
           |  |           |     +--:(trs:inline)
           |  |           |     |  +--rw trs:crl*                  binary
+          |  |           |     +--:(trs:provider)
+          |  |           |        +--rw trs:evidence-reference    string
+          |  |           +--rw trs:require-ocsp!
+          |  |           |  +--rw trs:max-response-age-seconds?   uint32
+          |  |           |  +--rw (trs:evidence)
+          |  |           |     +--:(trs:inline)
+          |  |           |     |  +--rw trs:response              binary
           |  |           |     +--:(trs:provider)
           |  |           |        +--rw trs:evidence-reference    string
           |  |           +--rw trs:require-stapled-ocsp!

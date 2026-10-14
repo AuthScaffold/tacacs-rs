@@ -24,6 +24,7 @@ pub fn resolution_plan(server: &TacacsPlusServer) -> Result<ResolutionPlan, Reso
     })?;
     ResolutionPlan::new(slots.into_iter().map(|slot| {
         let kind = match slot.usage() {
+            CentralCredentialUsage::ServerOcspResponse => CredentialKind::OcspResponse,
             CentralCredentialUsage::ClientCertificateWithKey => CredentialKind::CertificateWithKey,
             CentralCredentialUsage::ClientTls13Epsk => CredentialKind::SymmetricKey,
             CentralCredentialUsage::ServerCaCertificateBag => CredentialKind::CaCertificateBag,
@@ -33,6 +34,9 @@ pub fn resolution_plan(server: &TacacsPlusServer) -> Result<ResolutionPlan, Reso
             }
         };
         let reference = match slot.reference() {
+            CentralCredentialReference::OcspResponse(reference) => {
+                CredentialReference::OcspResponse(reference.to_owned())
+            }
             CentralCredentialReference::CertificateRevocationLists(reference) => {
                 CredentialReference::CertificateRevocationLists(reference.to_owned())
             }

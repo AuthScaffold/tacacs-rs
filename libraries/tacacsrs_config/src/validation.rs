@@ -285,6 +285,7 @@ fn validate_server_authentication(
                 || server_authentication.ee_certs.is_some()
                 || server_authentication.require_stapled_ocsp.is_some()
                 || server_authentication.require_crls.is_some()
+                || server_authentication.require_ocsp.is_some()
                 || server_authentication.tls13_epsks.is_some(),
         ],
     )?;
@@ -299,6 +300,10 @@ fn validate_server_authentication(
     validate_crl_policy(
         server_authentication.require_crls.as_ref(),
         server_authentication.ee_certs.is_some(),
+        server_authentication.tls13_epsks.is_some(),
+    )?;
+    validate_fetched_ocsp(
+        server_authentication.require_ocsp.as_ref(),
         server_authentication.tls13_epsks.is_some(),
     )?;
     validate_ocsp_policy(
@@ -350,6 +355,7 @@ fn validate_client_credentials(credentials: &ClientCredentials) -> anyhow::Resul
 }
 
 fn validate_server_credentials(credentials: &ServerCredentials) -> anyhow::Result<()> {
+    validate_fetched_ocsp(credentials.require_ocsp.as_ref(), credentials.tls13_epsks.is_some())?;
     validate_crl_policy(
         credentials.require_crls.as_ref(),
         credentials.ee_certs.is_some(),
@@ -364,6 +370,37 @@ fn validate_server_credentials(credentials: &ServerCredentials) -> anyhow::Resul
     }
     if let Some(ref ee_certs) = credentials.ee_certs {
         validate_trust_choice(&credentials.id, "server-credentials/ee-certs", ee_certs)?;
+    }
+    Ok(())
+}
+
+fn validate_fetched_ocsp(
+    policy: Option<&crate::tacacsrs::RequireOcsp>,
+    epsk: bool,
+) -> anyhow::Result<()> {
+    if let Some(policy) = policy {
+        anyhow::ensure!(
+            !epsk && policy.max_response_age_seconds > 0,
+            "Fetched OCSP requires certificate TLS and a positive maximum age"
+        );
+        anyhow::ensure!(
+            policy.response.is_some() != policy.evidence_reference.is_some(),
+            "OCSP requires exactly one evidence source"
+        );
+        anyhow::ensure!(
+            policy
+                .response
+                .as_ref()
+                .is_none_or(|value| !value.is_empty() && value.len() <= 65536),
+            "Invalid OCSP response size"
+        );
+        anyhow::ensure!(
+            policy
+                .evidence_reference
+                .as_ref()
+                .is_none_or(|value| !value.is_empty()),
+            "OCSP evidence reference must not be empty"
+        );
     }
     Ok(())
 }

@@ -35,6 +35,8 @@ pub enum CredentialKind {
     EeCertificateBag,
     /// Certificate revocation lists used for server-chain authentication.
     CertificateRevocationLists,
+    /// A fetched OCSP response for server certificate authentication.
+    OcspResponse,
 }
 
 /// Stable request context that contains no endpoint or raw reference value.
@@ -83,9 +85,20 @@ pub enum CredentialReference {
     CertificateBag(String),
     /// Opaque reference to a complete certificate revocation list set.
     CertificateRevocationLists(String),
+    /// Opaque reference to a fetched OCSP response.
+    OcspResponse(String),
 }
 
 impl CredentialReference {
+    /// Returns the opaque reference for online OCSP evidence.
+    #[must_use]
+    pub fn ocsp_response(&self) -> Option<&str> {
+        match self {
+            Self::OcspResponse(reference) => Some(reference),
+            _ => None,
+        }
+    }
+
     /// Returns the structured central certificate-with-key components.
     #[must_use]
     pub fn certificate_with_key(&self) -> Option<(Option<&str>, Option<&str>)> {
@@ -96,7 +109,8 @@ impl CredentialReference {
             } => Some((asymmetric_key.as_deref(), certificate.as_deref())),
             Self::SymmetricKey(_)
             | Self::CertificateBag(_)
-            | Self::CertificateRevocationLists(_) => None,
+            | Self::CertificateRevocationLists(_)
+            | Self::OcspResponse(_) => None,
         }
     }
 
@@ -107,7 +121,8 @@ impl CredentialReference {
             Self::SymmetricKey(reference) => Some(reference),
             Self::CertificateWithKey { .. }
             | Self::CertificateBag(_)
-            | Self::CertificateRevocationLists(_) => None,
+            | Self::CertificateRevocationLists(_)
+            | Self::OcspResponse(_) => None,
         }
     }
 
@@ -118,7 +133,8 @@ impl CredentialReference {
             Self::CertificateBag(reference) => Some(reference),
             Self::CertificateWithKey { .. }
             | Self::SymmetricKey(_)
-            | Self::CertificateRevocationLists(_) => None,
+            | Self::CertificateRevocationLists(_)
+            | Self::OcspResponse(_) => None,
         }
     }
 
@@ -135,6 +151,10 @@ impl CredentialReference {
 impl fmt::Debug for CredentialReference {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OcspResponse(_) => formatter
+                .debug_tuple("OcspResponse")
+                .field(&"<redacted>")
+                .finish(),
             Self::CertificateRevocationLists(_) => formatter
                 .debug_tuple("CertificateRevocationLists")
                 .field(&"<redacted>")
@@ -233,6 +253,7 @@ impl ResolutionPlan {
                         CredentialKind::CertificateRevocationLists,
                     )
                     | (CredentialReference::SymmetricKey(_), CredentialKind::SymmetricKey)
+                    | (CredentialReference::OcspResponse(_), CredentialKind::OcspResponse)
                     | (
                         CredentialReference::CertificateBag(_),
                         CredentialKind::CaCertificateBag | CredentialKind::EeCertificateBag,

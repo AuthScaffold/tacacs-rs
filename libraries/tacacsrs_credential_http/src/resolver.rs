@@ -13,7 +13,7 @@ use tacacsrs_credential_resolution::{
     CredentialValidity, ProviderErrorKind, PublicBytes, ResolutionError, ResolvedCredential,
 };
 
-use crate::{CrlFetchLimits, HttpCrlSource};
+use crate::{CrlFetchLimits, HttpCrlSource, HttpOcspSource};
 
 /// Retrieves complete CRL sets from explicitly registered HTTP(S) sources.
 ///
@@ -23,6 +23,7 @@ use crate::{CrlFetchLimits, HttpCrlSource};
 pub struct HttpCrlResolver {
     client: Client,
     sources: BTreeMap<String, Vec<Url>>,
+    ocsp_sources: BTreeMap<String, HttpOcspSource>,
     limits: CrlFetchLimits,
     capacity: Semaphore,
     fallback: Option<Arc<dyn CredentialResolver>>,
@@ -60,6 +61,7 @@ impl HttpCrlResolver {
         Ok(Self {
             client,
             sources: registered,
+            ocsp_sources: BTreeMap::new(),
             limits,
             capacity: Semaphore::new(limits.maximum_concurrent),
             fallback: None,
@@ -73,6 +75,70 @@ impl HttpCrlResolver {
     pub fn with_fallback(mut self, fallback: Arc<dyn CredentialResolver>) -> Self {
         self.fallback = Some(fallback);
         self
+    }
+
+    /// Adds online OCSP sources under the same execution limits.
+    /// # Errors
+    /// Rejects duplicate OCSP reference names.
+    pub fn with_ocsp_sources(
+        mut self,
+        sources: impl IntoIterator<Item = HttpOcspSource>,
+    ) -> anyhow::Result<Self> {
+        for source in sources {
+            anyhow::ensure!(
+                self.ocsp_sources
+                    .insert(source.reference.clone(), source)
+                    .is_none(),
+                "Duplicate OCSP reference"
+            );
+        }
+        Ok(self)
+    }
+
+    async fn fetch_ocsp(&self, source: &HttpOcspSource) -> Result<Vec<u8>, ProviderErrorKind> {
+        let mut response = self
+            .client
+            .post(source.location.clone())
+            .header(reqwest::header::CONTENT_TYPE, "application/ocsp-request")
+            .header(reqwest::header::ACCEPT, "application/ocsp-response")
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
+            .body(source.request.clone())
+            .send()
+            .await
+            .map_err(|_| ProviderErrorKind::Unavailable)?;
+        if response.status() != StatusCode::OK {
+            return Err(ProviderErrorKind::Unavailable);
+        }
+        if response
+            .headers()
+            .get_all(reqwest::header::CONTENT_ENCODING)
+            .iter()
+            .any(|value| value.as_bytes() != b"identity")
+        {
+            return Err(ProviderErrorKind::InvalidMaterial);
+        }
+        let maximum = self.limits.maximum_bytes.min(64 * 1024);
+        if response
+            .content_length()
+            .is_some_and(|length| length > maximum as u64)
+        {
+            return Err(ProviderErrorKind::InvalidMaterial);
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| ProviderErrorKind::Unavailable)?
+        {
+            if chunk.len() > maximum - bytes.len() {
+                return Err(ProviderErrorKind::InvalidMaterial);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if bytes.is_empty() {
+            return Err(ProviderErrorKind::InvalidMaterial);
+        }
+        Ok(bytes)
     }
 
     async fn fetch(&self, locations: &[Url]) -> Result<Vec<PublicBytes>, ProviderErrorKind> {
@@ -137,6 +203,29 @@ impl CredentialResolver for HttpCrlResolver {
         &self,
         request: &CredentialRequest,
     ) -> Result<ResolvedCredential, ResolutionError> {
+        if request.kind() == CredentialKind::OcspResponse {
+            if let Some(source) = request
+                .reference()
+                .ocsp_response()
+                .and_then(|reference| self.ocsp_sources.get(reference))
+            {
+                let _permit = self.capacity.try_acquire().map_err(|_| {
+                    ResolutionError::provider(ProviderErrorKind::Unavailable, request.context())
+                })?;
+                let response = tokio::time::timeout(self.limits.timeout, self.fetch_ocsp(source))
+                    .await
+                    .map_err(|_| {
+                        ResolutionError::provider(ProviderErrorKind::Unavailable, request.context())
+                    })?
+                    .map_err(|kind| ResolutionError::provider(kind, request.context()))?;
+                return Ok(ResolvedCredential::OcspResponse(
+                    tacacsrs_credential_resolution::OcspResponseMaterial {
+                        validity: CredentialValidity::unbounded(),
+                        response: PublicBytes::new(response),
+                    },
+                ));
+            }
+        }
         let source = (request.kind() == CredentialKind::CertificateRevocationLists)
             .then(|| request.reference().certificate_revocation_lists())
             .flatten()
@@ -170,6 +259,7 @@ impl fmt::Debug for HttpCrlResolver {
         formatter
             .debug_struct("HttpCrlResolver")
             .field("source_count", &self.sources.len())
+            .field("ocsp_source_count", &self.ocsp_sources.len())
             .field("limits", &self.limits)
             .field("has_fallback", &self.fallback.is_some())
             .finish_non_exhaustive()

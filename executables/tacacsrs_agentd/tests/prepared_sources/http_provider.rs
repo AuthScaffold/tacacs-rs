@@ -97,6 +97,77 @@ async fn terminate(child: Child) -> Result<()> {
 }
 
 #[tokio::test]
+async fn daemon_online_ocsp_refreshes_recovers_and_cancels_without_source_edits() -> Result<()> {
+    let directory = Directory::new()?;
+    let source = write_source(&directory.0).await?;
+    let mut source: serde_json::Value = serde_json::from_slice(&source)?;
+    let bundle = source["ietf-system-tacacs-plus:tacacs-plus"]["server-credentials"][0]
+        .as_object_mut()
+        .unwrap();
+    bundle.remove("tacacsrs:require-crls");
+    bundle.insert(
+        "tacacsrs:require-ocsp".to_owned(),
+        serde_json::json!({"evidence-reference":"online"}),
+    );
+    let original = serde_json::to_vec(&source)?;
+    tacacsrs_config::parse_yang_json(std::str::from_utf8(&original)?)?;
+    tokio::fs::write(directory.0.join("config.json"), &original).await?;
+    let certificate = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    tokio::fs::write(directory.0.join("peer.der"), certificate.to_der()?).await?;
+    tokio::fs::write(directory.0.join("issuer.der"), issuer.to_der()?).await?;
+    let body =
+        super::ocsp_peer::signed_response(&directory.0, &certificate, "good", Some(1440)).await?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}/ocsp", listener.local_addr()?);
+    let mode = Arc::new(AtomicU8::new(0));
+    let peer_mode = mode.clone();
+    let (events, mut observed) = tokio::sync::watch::channel((0u8, 0usize));
+    let peer = tokio::spawn(async move {
+        let mut count = 0;
+        loop {
+            let (mut stream, _) = listener.accept().await?;
+            let mut request = [0; 4096];
+            let length = stream.read(&mut request).await?;
+            assert!(String::from_utf8_lossy(&request[..length]).starts_with("POST /ocsp "));
+            let mode = peer_mode.load(Ordering::SeqCst);
+            count += 1;
+            events.send_replace((mode, count));
+            if mode == 2 {
+                assert_eq!(stream.read(&mut [0]).await?, 0);
+                break;
+            }
+            if mode == 1 {
+                stream.write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await?;
+            } else {
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/ocsp-response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await?;
+                stream.write_all(&body).await?;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+    let mut child = agent_command(&directory.0, &url)
+        .args(["--http-ocsp-source", "online", &url])
+        .arg(directory.0.join("peer.der"))
+        .arg(directory.0.join("issuer.der"))
+        .spawn()?;
+    wait_for_health(&directory.0, &mut child, ServingStatus::Serving).await?;
+    tokio::time::timeout(Duration::from_secs(5), observed.wait_for(|&(_, count)| count >= 2))
+        .await??;
+    mode.store(1, Ordering::SeqCst);
+    wait_for_health(&directory.0, &mut child, ServingStatus::NotServing).await?;
+    mode.store(0, Ordering::SeqCst);
+    wait_for_health(&directory.0, &mut child, ServingStatus::Serving).await?;
+    mode.store(2, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(5), observed.wait_for(|&(mode, _)| mode == 2))
+        .await??;
+    terminate(child).await?;
+    tokio::time::timeout(Duration::from_secs(1), peer).await???;
+    assert_eq!(tokio::fs::read(directory.0.join("config.json")).await?, original);
+    Ok(())
+}
+
+#[tokio::test]
 async fn daemon_http_loads_a_complete_delta_pair_without_rewriting_source() -> Result<()> {
     for complete in [true, false] {
         let directory = Directory::new()?;

@@ -16,7 +16,155 @@ pub struct HttpCrlSource {
     pub(crate) locations: Vec<Url>,
 }
 
+/// Host-authorized OCSP query for one certificate and its issuer.
+#[derive(Clone)]
+pub struct HttpOcspSource {
+    pub(crate) reference: String,
+    pub(crate) location: Url,
+    pub(crate) request: Vec<u8>,
+}
+
+impl HttpOcspSource {
+    /// Registers an explicit public responder URL and DER certificate pair.
+    /// # Errors
+    /// Rejects invalid URLs, malformed certificates, or an unrelated issuer.
+    pub fn new(
+        reference: impl Into<String>,
+        location: &str,
+        certificate: &[u8],
+        issuer: &[u8],
+    ) -> anyhow::Result<Self> {
+        let source = HttpCrlSource::new(reference, [location])?;
+        ensure!(
+            certificate.len() <= 1024 * 1024 && issuer.len() <= 1024 * 1024,
+            "OCSP certificate input exceeds the size limit"
+        );
+        let peer = openssl::x509::X509::from_der(certificate)?;
+        let authority = openssl::x509::X509::from_der(issuer)?;
+        ensure!(
+            peer.to_der()? == certificate && authority.to_der()? == issuer,
+            "OCSP certificates must contain one DER value"
+        );
+        ensure!(
+            authority.issued(&peer) == openssl::x509::X509VerifyResult::OK
+                && peer.verify(authority.public_key()?.as_ref())?,
+            "OCSP issuer does not match the certificate"
+        );
+        let mut request = openssl::ocsp::OcspRequest::new()?;
+        request.add_id(openssl::ocsp::OcspCertId::from_cert(
+            openssl::hash::MessageDigest::sha256(),
+            &peer,
+            &authority,
+        )?)?;
+        Ok(Self {
+            reference: source.reference,
+            location: source.locations[0].clone(),
+            request: request.to_der()?,
+        })
+    }
+
+    /// Selects the first certificate AIA URL present in the host allowlist.
+    /// # Errors
+    /// Rejects malformed input or the absence of an authorized responder.
+    pub fn from_certificate(
+        reference: impl Into<String>,
+        certificate: &[u8],
+        issuer: &[u8],
+        allowed_locations: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> anyhow::Result<Self> {
+        let allowed = HttpCrlSource::new(reference, allowed_locations)?;
+        ensure!(certificate.len() <= 1024 * 1024, "OCSP certificate input exceeds the size limit");
+        let peer = openssl::x509::X509::from_der(certificate)?;
+        for location in peer.ocsp_responders()? {
+            if let Ok(location) = Url::parse(&location) {
+                if allowed.locations.contains(&location) {
+                    return Self::new(allowed.reference, location.as_str(), certificate, issuer);
+                }
+            }
+        }
+        anyhow::bail!("Certificate has no authorized OCSP responder")
+    }
+}
+
+impl fmt::Debug for HttpOcspSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpOcspSource")
+            .field("reference", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
 impl HttpCrlSource {
+    /// Discovers CRL URLs from host-supplied DER certificates under an exact URL allowlist.
+    ///
+    /// # Errors
+    /// Rejects malformed certificates, unsupported distribution points, unapproved URLs,
+    /// empty results, or more than sixteen certificates or locations. Errors omit source values.
+    pub fn from_certificates(
+        reference: impl Into<String>,
+        certificates: &[&[u8]],
+        allowed_locations: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> anyhow::Result<Self> {
+        let allowed = Self::new(reference, allowed_locations)?;
+        ensure!(
+            !certificates.is_empty() && certificates.len() <= MAXIMUM_LOCATIONS,
+            "CRL discovery requires one to sixteen certificates"
+        );
+        ensure!(
+            certificates
+                .iter()
+                .try_fold(0usize, |total, certificate| total.checked_add(certificate.len()))
+                .is_some_and(|total| total <= 4 * 1024 * 1024),
+            "CRL discovery certificate set exceeds the size limit"
+        );
+        let mut locations = Vec::new();
+        for encoded in certificates {
+            let certificate = openssl::x509::X509::from_der(encoded)
+                .map_err(|_| anyhow::anyhow!("Invalid CRL discovery certificate"))?;
+            ensure!(
+                certificate.to_der()?.as_slice() == *encoded,
+                "Discovery certificate must contain one DER value"
+            );
+            if let Some(points) = certificate.crl_distribution_points() {
+                for point in points {
+                    let names = point
+                        .distpoint()
+                        .and_then(openssl::x509::DistPointNameRef::fullname)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("CRL discovery requires full URI distribution points")
+                        })?;
+                    let mut found = false;
+                    for name in names {
+                        let Some(location) = name.uri() else {
+                            continue;
+                        };
+                        found = true;
+                        let parsed = Self::new("discovery", [location])?;
+                        let location = &parsed.locations[0];
+                        ensure!(
+                            allowed.locations.contains(location),
+                            "Certificate CRL location is not authorized"
+                        );
+                        if !locations.contains(location) {
+                            ensure!(
+                                locations.len() < MAXIMUM_LOCATIONS,
+                                "CRL discovery has too many locations"
+                            );
+                            locations.push(location.clone());
+                        }
+                    }
+                    ensure!(found, "CRL distribution point has no URI");
+                }
+            }
+        }
+        ensure!(!locations.is_empty(), "Certificates contain no usable CRL locations");
+        Ok(Self {
+            reference: allowed.reference,
+            locations,
+        })
+    }
+
     /// Registers HTTP(S) locations in deterministic fetch order.
     ///
     /// # Errors

@@ -2315,6 +2315,7 @@ version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
+ "openssl",
  "reqwest",
  "tacacsrs-credential-resolution",
  "tokio",

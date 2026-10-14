@@ -283,6 +283,28 @@ Successful refresh restores an expired credential catalog without changing canon
 SIGINT and SIGTERM cancel pending retrieval during startup and live refresh.
 See [the YANG CRL guide](yang-config-guide.md#required-full-crls) for evidence requirements and unsupported modes.
 
+### Certificate Discovery and OCSP
+
+`--http-crl-certificate REFERENCE CERTIFICATE` selects certificate-driven CRL discovery for a registered CRL reference.
+The certificate file must contain one DER certificate. Repeat the option for a chain.
+For that reference, `--http-crl-source` URLs form an exact allowlist, not an instruction to fetch every URL.
+Every discovered full URI must be authorized. Relative distribution points are unsupported.
+
+`--http-ocsp-source REFERENCE URL CERTIFICATE ISSUER` registers an online OCSP query with an explicit responder and DER certificate files.
+Alternatively, `--http-ocsp-certificate REFERENCE CERTIFICATE ISSUER` selects an AIA responder from the certificate.
+Each eligible responder URL must be registered with `--http-ocsp-allow-url URL`.
+All URLs remain public, secret-free, and subject to the same proxy and redirect restrictions as CRL retrieval.
+
+The canonical `tacacsrs:require-ocsp/evidence-reference` selects the OCSP reference.
+The daemon periodically queries the responder through the existing credential refresh loop.
+Responses are limited to 64 KiB and use the shared provider timeout and concurrency cap.
+The supplied response does not replace a separately required TLS staple.
+
+Certificate files are bounded reads at startup. Changes to certificates or authorization maps require restart.
+The provider does not follow arbitrary URLs from live TLS peers. A renewed peer certificate must match freshly registered query material.
+Native verification rejects mismatched evidence before client authentication. Signed expiry still withdraws stale evidence while a fetch is pending.
+Readiness reports configuration availability, not a completed upstream certificate-status check.
+
 ### Timeouts and Failover
 
 | Flag | Default | Description |

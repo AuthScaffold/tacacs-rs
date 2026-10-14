@@ -194,7 +194,7 @@ impl<Connector: EndpointConnector> ServerSet<Connector> {
             });
     }
 
-    pub(super) fn changed_crl_servers(
+    pub(super) fn changed_revocation_servers(
         &self,
         replacement: &Self,
     ) -> std::collections::BTreeSet<&str> {
@@ -205,19 +205,70 @@ impl<Connector: EndpointConnector> ServerSet<Connector> {
                     .servers
                     .iter()
                     .find(|new| new.server.name == old.server.name)
-                    .is_some_and(|new| {
-                        old.server
-                            .server_authentication
-                            .as_ref()
-                            .and_then(|authentication| authentication.require_crls.as_ref())
-                            != new
-                                .server
-                                .server_authentication
-                                .as_ref()
-                                .and_then(|authentication| authentication.require_crls.as_ref())
-                    })
+                    .is_some_and(|new| revocation_changed(&old.server, &new.server))
             })
             .map(|old| old.server.name.as_str())
             .collect()
+    }
+}
+
+fn revocation_changed(
+    old: &tacacsrs_config::TacacsPlusServer,
+    new: &tacacsrs_config::TacacsPlusServer,
+) -> bool {
+    old.server_authentication
+        .as_ref()
+        .map(|auth| (&auth.require_crls, &auth.require_ocsp, &auth.require_stapled_ocsp))
+        != new
+            .server_authentication
+            .as_ref()
+            .map(|auth| (&auth.require_crls, &auth.require_ocsp, &auth.require_stapled_ocsp))
+        && (old.server_authentication.as_ref().is_some_and(|auth| {
+            auth.require_crls.is_some()
+                || auth.require_ocsp.is_some()
+                || auth.require_stapled_ocsp.is_some()
+        }) || new.server_authentication.as_ref().is_some_and(|auth| {
+            auth.require_crls.is_some()
+                || auth.require_ocsp.is_some()
+                || auth.require_stapled_ocsp.is_some()
+        }))
+}
+
+#[cfg(test)]
+mod revocation_tests {
+    use super::revocation_changed;
+
+    #[test]
+    fn fetched_evidence_changes_require_immediate_retirement() {
+        let old = tacacsrs_config::TacacsPlusServerBuilder::new(
+            "revocation",
+            tacacsrs_config::TacacsPlusServerType::all(),
+            "127.0.0.1",
+            300,
+        )
+        .build();
+        let mut changed = old.clone();
+        changed.server_authentication =
+            Some(tacacsrs_config::TlsClientServerAuthentication::default());
+        assert!(!revocation_changed(&old, &changed));
+        changed.server_authentication.as_mut().unwrap().require_ocsp =
+            Some(tacacsrs_config::tacacsrs::RequireOcsp {
+                response: Some(vec![1]),
+                evidence_reference: None,
+                max_response_age_seconds: 300,
+            });
+        assert!(revocation_changed(&old, &changed));
+        assert!(!revocation_changed(&changed, &changed));
+        let previous = changed.clone();
+        changed
+            .server_authentication
+            .as_mut()
+            .unwrap()
+            .require_ocsp
+            .as_mut()
+            .unwrap()
+            .response = Some(vec![2]);
+        assert!(revocation_changed(&previous, &changed));
+        assert!(revocation_changed(&changed, &old));
     }
 }

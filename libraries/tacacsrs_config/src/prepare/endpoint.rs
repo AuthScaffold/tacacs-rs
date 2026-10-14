@@ -169,9 +169,22 @@ pub fn prepare_endpoint(
 }
 
 fn apply_crl_evidence(
-    endpoint: PreparedEndpoint,
+    mut endpoint: PreparedEndpoint,
     server: &TacacsPlusServer,
 ) -> Result<PreparedEndpoint> {
+    if let Some(policy) = server
+        .server_authentication
+        .as_ref()
+        .and_then(|auth| auth.require_ocsp.as_ref())
+    {
+        endpoint = endpoint.with_certificate_ocsp_response(
+            policy
+                .response
+                .as_deref()
+                .context("Resolve OCSP evidence before endpoint preparation")?,
+            std::time::Duration::from_secs(u64::from(policy.max_response_age_seconds)),
+        )?;
+    }
     if let Some(policy) = server
         .server_authentication
         .as_ref()
@@ -397,6 +410,7 @@ mod tests {
             };
             server.server_authentication = Some(crate::TlsClientServerAuthentication {
                 require_crls: None,
+                require_ocsp: None,
                 require_stapled_ocsp: None,
                 ca_certs: (!end_entity).then(|| bag.clone()),
                 ee_certs: end_entity.then_some(bag),
@@ -656,6 +670,7 @@ mod tests {
         };
         crate::TlsClientServerAuthentication {
             require_crls: None,
+            require_ocsp: None,
             require_stapled_ocsp: None,
             credentials_reference: None,
             ca_certs: (!end_entity).then(|| trust.clone()),

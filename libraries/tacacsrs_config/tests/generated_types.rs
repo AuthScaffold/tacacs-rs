@@ -108,6 +108,7 @@ fn required_ocsp_policy_rejects_psk_authentication() {
             .build();
     server.server_authentication = Some(tacacsrs_config::TlsClientServerAuthentication {
         require_crls: None,
+        require_ocsp: None,
         require_stapled_ocsp: Some(tacacsrs_config::tacacsrs::RequireStapledOcsp::default()),
         ..Default::default()
     });
@@ -289,6 +290,7 @@ fn generated_central_trust_shape_is_shared_by_direct_and_bundle_ca_ee_fields() {
     };
     let bundle = tacacsrs_config::ServerCredentials {
         require_crls: None,
+        require_ocsp: None,
         require_stapled_ocsp: None,
         id: "bundle".to_owned(),
         ca_certs: Some(trust.clone()),

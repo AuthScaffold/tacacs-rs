@@ -188,14 +188,6 @@ mod tests {
 
         let responses = plan.requests().iter().map(|request| {
             let credential = match request.kind() {
-                CredentialKind::CertificateRevocationLists => {
-                    ResolvedCredential::CertificateRevocationLists(
-                        crate::CertificateRevocationListsMaterial {
-                            validity: crate::CredentialValidity::unbounded(),
-                            lists: Vec::new(),
-                        },
-                    )
-                }
                 CredentialKind::CertificateWithKey => {
                     ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
                         intermediates: Vec::new(),
@@ -225,8 +217,10 @@ mod tests {
                         }],
                     })
                 }
-                CredentialKind::SymmetricKey => {
-                    unreachable!("the test plan must not contain a symmetric key")
+                CredentialKind::SymmetricKey
+                | CredentialKind::CertificateRevocationLists
+                | CredentialKind::OcspResponse => {
+                    unreachable!("the test plan contains only a client identity and two trust bags")
                 }
             };
             ResolvedResponse::new(request.slot(), credential)

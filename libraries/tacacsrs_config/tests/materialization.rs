@@ -33,6 +33,7 @@ impl CredentialResolver for ValidityResolver {
         .resolve(request)
         .await?;
         match &mut credential {
+            ResolvedCredential::OcspResponse(material) => material.validity = self.trust,
             ResolvedCredential::CertificateRevocationLists(material) => {
                 material.validity = self.trust;
             }
@@ -43,6 +44,35 @@ impl CredentialResolver for ValidityResolver {
         }
         Ok(credential)
     }
+}
+
+#[tokio::test]
+async fn online_ocsp_materialization_preserves_canonical_reference_and_validity() {
+    let source = parse_yang_json(r#"{"ietf-system-tacacs-plus:tacacs-plus":{
+        "server-credentials":[{"id":"trust","tacacsrs:require-ocsp":{"evidence-reference":"opaque-ocsp"}}],
+        "server":[{"name":"online","server-type":"accounting","address":"127.0.0.1","port":300,
+        "server-authentication":{"credentials-reference":"trust"}}]}}"#).unwrap();
+    let original = source.clone();
+    let materialized = enumerate_materialized_servers(
+        &source,
+        &CompleteResolver {
+            failing_server: None,
+        },
+        &ValidationOptions::default(),
+    )
+    .await
+    .unwrap();
+    let policy = materialized[0]
+        .server()
+        .server_authentication
+        .as_ref()
+        .unwrap()
+        .require_ocsp
+        .as_ref()
+        .unwrap();
+    assert_eq!(policy.response.as_deref(), Some(b"resolved-ocsp".as_slice()));
+    assert!(policy.evidence_reference.is_none());
+    assert_eq!(source, original);
 }
 
 #[tokio::test]
@@ -111,6 +141,12 @@ impl CredentialResolver for CompleteResolver {
         }
 
         Ok(match request.kind() {
+            CredentialKind::OcspResponse => ResolvedCredential::OcspResponse(
+                tacacsrs_credential_resolution::OcspResponseMaterial {
+                    validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
+                    response: PublicBytes::new(b"resolved-ocsp".to_vec()),
+                },
+            ),
             CredentialKind::CertificateRevocationLists => {
                 ResolvedCredential::CertificateRevocationLists(
                     tacacsrs_credential_resolution::CertificateRevocationListsMaterial {

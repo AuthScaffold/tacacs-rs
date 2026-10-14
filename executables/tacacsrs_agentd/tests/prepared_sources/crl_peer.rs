@@ -304,6 +304,7 @@ pub(super) fn source_for(
                 id: "trust".to_owned(),
                 ca_certs: authentication.ca_certs.take(),
                 require_crls: authentication.require_crls.take(),
+                require_ocsp: None,
                 ee_certs: None,
                 tls13_epsks: None,
                 require_stapled_ocsp: None,

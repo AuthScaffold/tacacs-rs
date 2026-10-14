@@ -271,6 +271,20 @@ fn install_credential(
 ) -> Result<(), MaterializationError> {
     let server_name = server.name.clone();
     match credential {
+        ResolvedCredential::OcspResponse(material) => {
+            if field_path == "server-authentication/tacacsrs:require-ocsp" {
+                server
+                    .server_authentication
+                    .as_mut()
+                    .and_then(|auth| auth.require_ocsp.as_mut())
+                    .map(|policy| {
+                        policy.response = Some(material.response.into_bytes());
+                        policy.evidence_reference = None;
+                    })
+            } else {
+                None
+            }
+        }
         ResolvedCredential::CertificateRevocationLists(material) => {
             install_revocation_lists(server, field_path, material)
         }

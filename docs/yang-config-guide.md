@@ -202,8 +202,35 @@ The actual signer's certificate validity also bounds this interval. Unused certi
 Accurate system time remains necessary; runtime scheduling limits still apply to physical transport closure.
 
 Stapling checks the peer leaf. The full-CRL requirement below can also check the CA-authenticated path and non-exempt delegated responders.
-Background OCSP queries and certificate-driven responder-evidence retrieval remain unimplemented.
+Host-authorized online OCSP queries are supported separately from mandatory stapling.
 It does not claim complete revocation coverage or full RFC 9887 conformance.
+
+## Fetched OCSP
+
+`tacacsrs:require-ocsp` requires independently supplied evidence for the actual TLS peer.
+It works in per-server authentication and reusable server-credential bundles.
+Supply one inline base64 DER `response` or an opaque `evidence-reference`, not both.
+
+```json
+{
+  "tacacsrs:require-ocsp": {
+    "max-response-age-seconds": 300,
+    "evidence-reference": "primary-ocsp"
+  }
+}
+```
+
+The daemon registers query inputs through its [OCSP provider options](tacacsrs-agentd.md#certificate-discovery-and-ocsp).
+Materialization preserves the canonical reference and installs response bytes only in the derived configuration.
+Preparation requires one successful DER response with one certificate status and a fresh signed interval.
+The interval ends at the earlier of `nextUpdate` and `thisUpdate` plus maximum age. No `nextUpdate` means the maximum age still applies.
+The prepared interval constrains refresh, publication, connection setup, and transport lifetime.
+
+Native TLS verifies actual peer binding, signature, signer authorization, status, and freshness before client authentication.
+Wrong-certificate, forged, revoked, and unknown responses deny authentication. Required staples remain independent and cannot be replaced by fetched evidence.
+Fresh negative evidence can replace an older response and retire its connections immediately. Rejected or unavailable retrieval uses existing failure and expiry rules.
+Signer and peer certificate validity also bound the connection lifetime.
+PSK and disabled certificate verification cannot use this requirement.
 
 ## Required Full CRLs
 
@@ -261,7 +288,7 @@ Such a change can interrupt in-flight requests; an unknown delivery outcome must
 Identical evidence and rejected candidates do not trigger this cutoff. Unrelated configuration changes retain the ordinary drain budget.
 This is conservative retirement after an evidence change, not proof that every old peer was revoked. Physical closure still depends on runtime scheduling.
 
-Certificate-driven retrieval, OCSP queries, reason-partitioned deltas, and broader scoped-evidence combinations remain S4-06 work.
+The supported profile excludes reason-partitioned deltas, indirect CRLs, and broader overlapping-scope combinations.
 This mode does not establish full RFC 9887 conformance.
 
 ### Explicit Delta CRLs
@@ -307,7 +334,8 @@ Registration authorizes the host and its DNS results; it does not create a netwo
 HTTPS verifies platform trust and host identity. Downloaded bytes remain untrusted until native CRL verification succeeds.
 HTTP cache headers cannot extend signed freshness. Unbounded provider validity does not remove native evidence deadlines.
 Cancellation drops active request I/O and releases capacity; blocking system DNS resolution can finish later.
-The provider does not follow certificate distribution points or perform OCSP queries.
+The provider can select certificate distribution points or AIA responders from host-registered certificates under explicit URL authorization.
+It does not discover destinations from live TLS peers or expand authorization from certificate content.
 
 ## Provider Refresh
 

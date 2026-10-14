@@ -1,8 +1,8 @@
 # tacacsrs-credential-http
 
-This internal crate retrieves CRLs from explicitly registered HTTP or HTTPS locations.
+This internal crate retrieves CRLs and OCSP responses from explicitly authorized HTTP or HTTPS locations.
 Canonical server configuration retains opaque evidence references. The host maps those references to allowed provider locations.
-The provider does not discover URLs from certificates or interpret an unknown reference as a URL.
+Certificate discovery uses host-supplied DER certificates and an exact URL allowlist. Unknown references are never interpreted as URLs.
 
 Native preparation and TLS verification remain responsible for CRL signatures, freshness, path coverage, and revocation status.
 The provider returns untrusted bytes through the existing credential-resolution contract.
@@ -55,11 +55,26 @@ Oversized declared lengths and streamed bodies fail. Empty bodies and non-identi
 Concurrency saturation fails immediately without a provider-owned waiting queue.
 Dropping a resolution future cancels request I/O and releases capacity. System DNS calls can outlive cancellation inside the runtime's blocking pool.
 
-Only status 200 supplies evidence. Status 404 maps to `NotFound`; 401 and 403 map to `AccessDenied`.
+Only status 200 supplies evidence. For CRLs, status 404 maps to `NotFound`; 401 and 403 map to `AccessDenied`.
+For OCSP, non-200 statuses map to `Unavailable`.
 Other statuses, connection errors, truncated bodies, and timeout map to `Unavailable`.
 Invalid bodies and size-limit failures map to `InvalidMaterial`.
 
 The provider does not treat HTTP cache headers as signed validity evidence.
 It returns unbounded provider validity; native CRL dates and canonical maximum age still constrain preparation and transport lifetime.
-It does not implement OCSP queries or certificate-driven distribution-point discovery.
 Native preparation owns scope checks and explicit base/delta pairing; the HTTP provider returns the supplied bytes unchanged.
+
+## Certificate Discovery and OCSP
+
+`HttpCrlSource::from_certificates` extracts full URI distribution points from host-supplied DER certificates.
+Every selected location must occur in the supplied allowlist. Repeated locations are fetched once, in certificate order.
+The certificate set is limited to sixteen certificates and 4 MiB. Relative distribution points are not supported.
+Discovery does not inspect live TLS peers or authorize any new outbound destination.
+
+`HttpOcspSource::new` creates a SHA-256 certificate-ID request for an explicit responder and certificate/issuer pair.
+`HttpOcspSource::from_certificate` selects the first authorized AIA responder in a registered certificate.
+`HttpCrlResolver::with_ocsp_sources` adds these requests to the shared resolver.
+Requests use POST and OCSP content types. Responses are capped at 64 KiB, further limited by the configured byte cap.
+The same total timeout, concurrency, proxy, redirect, decoding, cancellation, and fallback rules apply.
+The provider returns untrusted `OcspResponseMaterial`; native TLS verifies the response against the actual peer before client authentication.
+No nonce is used. Signed freshness and certificate binding limit reuse of responses.

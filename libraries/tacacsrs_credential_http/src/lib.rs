@@ -3,5 +3,5 @@
 mod source;
 mod resolver;
 
-pub use source::{CrlFetchLimits, HttpCrlSource};
+pub use source::{CrlFetchLimits, HttpCrlSource, HttpOcspSource};
 pub use resolver::HttpCrlResolver;

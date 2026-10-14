@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
+openssl = "0.10.81"
 reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
 tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
 tokio = { version = "1.52.3", features = ["sync", "time"] }

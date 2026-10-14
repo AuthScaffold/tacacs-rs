@@ -356,6 +356,12 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub require_crls: Option<tacacsrs::RequireCrls>,
+        /// Requires a fetched or inline response independently of any mandatory staple.
+        /// The actual peer, signer, status, and signed freshness are verified before client authentication.
+        #[serde(rename = "tacacsrs:require-ocsp")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_ocsp: Option<tacacsrs::RequireOcsp>,
         /// Request a stapled OCSP response and fail closed if evidence is
         /// unavailable, invalid, stale, unknown, or revoked. Responses must
         /// be signed by the issuer or a responder issued directly by it.
@@ -450,6 +456,12 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub require_crls: Option<tacacsrs::RequireCrls>,
+        /// Requires a fetched or inline response independently of any mandatory staple.
+        /// The actual peer, signer, status, and signed freshness are verified before client authentication.
+        #[serde(rename = "tacacsrs:require-ocsp")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_ocsp: Option<tacacsrs::RequireOcsp>,
         /// Request a stapled OCSP response and fail closed if evidence is
         /// unavailable, invalid, stale, unknown, or revoked. Responses must
         /// be signed by the issuer or a responder issued directly by it.
@@ -470,7 +482,7 @@ pub mod tacacs_plus {
         /// Each inner slice is one case; at most one case may have fields set.
         pub const CHOICE_REF_OR_EXPLICIT: &[(&str, &[&str])] = &[
             ("ref", &["credentials-reference"]),
-            ("explicit", &["ca-certs", "ee-certs", "tls13-epsks", "require-crls", "require-stapled-ocsp"]),
+            ("explicit", &["ca-certs", "ee-certs", "tls13-epsks", "require-crls", "require-ocsp", "require-stapled-ocsp"]),
         ];
         pub const CHOICE_REF_OR_EXPLICIT_MANDATORY: bool = false;
     }
@@ -1300,6 +1312,48 @@ pub mod tacacsrs {
         /// Each inner slice is one case; at most one case may have fields set.
         pub const CHOICE_EVIDENCE: &[(&str, &[&str])] = &[
             ("inline", &["crl"]),
+            ("provider", &["evidence-reference"]),
+        ];
+        pub const CHOICE_EVIDENCE_MANDATORY: bool = true;
+    }
+
+    fn default_require_ocsp_max_response_age_seconds() -> u32 { 300 }
+
+    /// Requires a fetched or inline response independently of any mandatory staple.
+    /// The actual peer, signer, status, and signed freshness are verified before client authentication.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct RequireOcsp {
+        #[serde(rename = "max-response-age-seconds")]
+        #[serde(default = "default_require_ocsp_max_response_age_seconds")]
+        pub max_response_age_seconds: u32,
+        #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub response: Option<Vec<u8>>,
+        #[serde(rename = "evidence-reference")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub evidence_reference: Option<String>,
+    }
+
+    impl Default for RequireOcsp {
+        fn default() -> Self {
+            Self {
+                max_response_age_seconds: default_require_ocsp_max_response_age_seconds(),
+                response: None,
+                evidence_reference: None,
+            }
+        }
+    }
+
+    /// Choice constraints for [`RequireOcsp`].
+    impl RequireOcsp {
+        /// YANG choice `evidence` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_EVIDENCE: &[(&str, &[&str])] = &[
+            ("inline", &["response"]),
             ("provider", &["evidence-reference"]),
         ];
         pub const CHOICE_EVIDENCE_MANDATORY: bool = true;

@@ -94,6 +94,22 @@ pub(crate) struct Cli {
     #[arg(long, value_names = ["REFERENCE", "URL"], num_args = 2, action = clap::ArgAction::Append)]
     pub(crate) http_crl_source: Vec<String>,
 
+    /// Discover CRLs from a DER certificate, limited to this reference's registered URLs.
+    #[arg(long, value_names = ["REFERENCE", "CERTIFICATE"], num_args = 2, action = clap::ArgAction::Append, requires = "http_crl_source")]
+    pub(crate) http_crl_certificate: Vec<String>,
+
+    /// Query an explicitly authorized OCSP responder for a DER certificate and issuer.
+    #[arg(long, value_names = ["REFERENCE", "URL", "CERTIFICATE", "ISSUER"], num_args = 4, action = clap::ArgAction::Append)]
+    pub(crate) http_ocsp_source: Vec<String>,
+
+    /// Discover an OCSP responder from a DER certificate under the responder allowlist.
+    #[arg(long, value_names = ["REFERENCE", "CERTIFICATE", "ISSUER"], num_args = 3, action = clap::ArgAction::Append, requires = "http_ocsp_allow_url")]
+    pub(crate) http_ocsp_certificate: Vec<String>,
+
+    /// Authorize an exact public URL for certificate-driven OCSP discovery.
+    #[arg(long, value_name = "URL", requires = "http_ocsp_certificate")]
+    pub(crate) http_ocsp_allow_url: Vec<String>,
+
     /// Startup YANG JSON file containing a tacacsrs:local-services resource.
     #[arg(long, value_name = "FILE", conflicts_with_all = [
         "listen_endpoint", "proxy_endpoint", "service_mode", "socket_mode", "sonic", "proxy_credential_source",

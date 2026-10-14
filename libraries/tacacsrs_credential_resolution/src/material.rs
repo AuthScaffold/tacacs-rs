@@ -113,6 +113,15 @@ pub struct CertificateRevocationListsMaterial {
     pub lists: Vec<PublicBytes>,
 }
 
+/// A fetched DER OCSP response with independent provider validity.
+#[derive(Debug)]
+pub struct OcspResponseMaterial {
+    /// Absolute provider validity, independently constrained by native signed freshness.
+    pub validity: crate::CredentialValidity,
+    /// One DER OCSP response.
+    pub response: PublicBytes,
+}
+
 /// Resolved symmetric key and its encoding metadata.
 #[derive(Debug)]
 pub struct SymmetricKeyMaterial {
@@ -127,6 +136,8 @@ pub struct SymmetricKeyMaterial {
 /// Provider-neutral resolved credential variant.
 #[derive(Debug)]
 pub enum ResolvedCredential {
+    /// Fetched OCSP evidence, independently verified against the actual peer.
+    OcspResponse(OcspResponseMaterial),
     /// End-entity certificate and private key.
     CertificateWithKey(CertificateWithKeyMaterial),
     /// TLS 1.3 external pre-shared key.
@@ -144,6 +155,7 @@ impl ResolvedCredential {
     #[must_use]
     pub const fn validity(&self) -> crate::CredentialValidity {
         match self {
+            Self::OcspResponse(material) => material.validity,
             Self::CertificateRevocationLists(material) => material.validity,
             Self::CertificateWithKey(material) => material.validity,
             Self::SymmetricKey(material) => material.validity,
@@ -157,6 +169,7 @@ impl ResolvedCredential {
     #[must_use]
     pub const fn kind(&self) -> CredentialKind {
         match self {
+            Self::OcspResponse(_) => CredentialKind::OcspResponse,
             Self::CertificateRevocationLists(_) => CredentialKind::CertificateRevocationLists,
             Self::CertificateWithKey(_) => CredentialKind::CertificateWithKey,
             Self::SymmetricKey(_) => CredentialKind::SymmetricKey,

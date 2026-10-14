@@ -491,7 +491,7 @@ async fn run_until(
 }
 
 async fn prepare_service(cli: Cli) -> anyhow::Result<PreparedService> {
-    let credential_provider = credential_provider::build(&cli)?;
+    let credential_provider = credential_provider::build(&cli).await?;
     let host_integration = HostIntegration::from_environment(cli.host_integration)?;
     let sonic_forwarder = sonic_forwarder_from_cli(&cli).await?;
     let local_services = local_services::load(&cli, sonic_forwarder).await?;

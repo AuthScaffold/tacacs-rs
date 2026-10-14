@@ -207,6 +207,25 @@ impl PreparedEndpoint {
         Ok(self)
     }
 
+    /// Requires independently fetched OCSP evidence for the actual TLS peer.
+    ///
+    /// This does not replace a separately configured mandatory staple.
+    /// # Errors
+    /// Rejects invalid, stale, unsuccessful evidence or incompatible transports.
+    pub fn with_certificate_ocsp_response(
+        mut self,
+        response: &[u8],
+        maximum_age: Duration,
+    ) -> anyhow::Result<Self> {
+        self.transport = match self.transport {
+            PreparedTransport::Tls(config) => {
+                PreparedTransport::Tls(config.with_ocsp_response(response, maximum_age)?)
+            }
+            _ => anyhow::bail!("Fetched OCSP requires certificate TLS"),
+        };
+        Ok(self)
+    }
+
     pub(crate) fn prepared_credential_lifetime(
         &self,
     ) -> Option<crate::transport::tls::CertificateLifetime> {

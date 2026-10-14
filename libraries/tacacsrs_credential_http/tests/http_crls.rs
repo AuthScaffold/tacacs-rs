@@ -37,6 +37,74 @@ async fn reply(body: impl AsRef<[u8]>) -> (String, tokio::task::JoinHandle<()>) 
 }
 
 #[tokio::test]
+async fn certificate_discovery_requires_host_authorization_before_fetch() {
+    use openssl::asn1::Asn1Time;
+    use openssl::hash::MessageDigest;
+    use openssl::pkey::PKey;
+    use openssl::x509::{X509, X509Extension, X509NameBuilder};
+    let (url, task) =
+        reply(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\ncrl").await;
+    let key = PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+    let mut name = X509NameBuilder::new().unwrap();
+    name.append_entry_by_text("CN", "discovery-fixture")
+        .unwrap();
+    let name = name.build();
+    let mut certificate = X509::builder().unwrap();
+    certificate.set_version(2).unwrap();
+    certificate.set_subject_name(&name).unwrap();
+    certificate.set_issuer_name(&name).unwrap();
+    certificate.set_pubkey(&key).unwrap();
+    certificate
+        .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    certificate
+        .set_not_after(&Asn1Time::days_from_now(1).unwrap())
+        .unwrap();
+    #[allow(deprecated)]
+    let points =
+        X509Extension::new(None, None, "crlDistributionPoints", &format!("URI:{url}")).unwrap();
+    certificate.append_extension(points).unwrap();
+    #[allow(deprecated)]
+    let access =
+        X509Extension::new(None, None, "authorityInfoAccess", &format!("OCSP;URI:{url}")).unwrap();
+    certificate.append_extension(access).unwrap();
+    certificate.sign(&key, MessageDigest::sha256()).unwrap();
+    let der = certificate.build().to_der().unwrap();
+    assert!(tacacsrs_credential_http::HttpOcspSource::from_certificate(
+        "online",
+        &der,
+        &der,
+        ["https://not-authorized.test/ocsp"]
+    )
+    .is_err());
+    let online =
+        tacacsrs_credential_http::HttpOcspSource::from_certificate("online", &der, &der, [&url])
+            .unwrap();
+    assert!(!format!("{online:?}").contains(&url));
+    let error = HttpCrlSource::from_certificates(
+        "private-reference",
+        &[&der],
+        ["http://example.test/not-authorized"],
+    )
+    .unwrap_err();
+    assert!(!format!("{error:#}").contains(&url));
+    assert!(HttpCrlSource::from_certificates("set", &[b"invalid"], [&url]).is_err());
+    let mut trailing = der.clone();
+    trailing.push(0);
+    assert!(HttpCrlSource::from_certificates("set", &[&trailing], [&url]).is_err());
+    let source = HttpCrlSource::from_certificates("set", &[&der, &der], [&url]).unwrap();
+    let provider = HttpCrlResolver::new([source], CrlFetchLimits::default()).unwrap();
+    let ResolvedCredential::CertificateRevocationLists(material) =
+        resolve(&provider, "set").await.unwrap()
+    else {
+        panic!("wrong material kind");
+    };
+    assert_eq!(material.lists.len(), 1);
+    assert_eq!(material.lists[0].as_bytes(), b"crl");
+    task.await.unwrap();
+}
+
+#[tokio::test]
 async fn retrieves_all_locations_in_order_without_exposing_source_values() {
     let (first, first_task) =
         reply(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\none").await;
