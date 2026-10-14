@@ -1,7 +1,7 @@
 //! Explicit shell session and command authorization.
 
 #[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{ServiceClient};
+use tacacsrs_ipc::{ServiceClient};
 use tacacsrs_protocol::operations::{AuthorizationAuthenticationContext, AuthorizationOperation};
 #[cfg(target_os = "linux")]
 use tacacsrs_protocol::operations::AuthorizationOperationResponse;

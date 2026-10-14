@@ -55,7 +55,7 @@ The following inventory describes package roles, not review completion.
 | Configuration | `tacacsrs-config`, `tacacsrs-datastore`, `tacacsrs-cli-datastore` | YANG model, source contract, and CLI/file inputs |
 | Credentials | `tacacsrs-secrets`, `tacacsrs-credential-resolution` | Secret types and credential resolution contracts |
 | Runtime | `tacacsrs-agent`, `tacacsrs-agentd` | Request services, upstream management, and daemon supervision |
-| Local API | `tacacsrs-agent-client`, `tacacsrs-agent-health` | IPC contract, clients, and health command |
+| Local API | `tacacsrs-ipc`, `tacacsrs-agent-health` | IPC contract, clients, and health command |
 | SONiC | `tacacsrs-sonic` | ConfigDB and credential integration |
 | Host integrations | `tacacsrs-bash-plugin`, `session-wrapper` | Shell integration and Linux session interception |
 | CLI | `tacon` | Direct and agent-backed operations |
@@ -114,7 +114,7 @@ Thus, the package combines the service contract with one transport implementatio
 
 Evidence:
 
-- [Client package exports](../../libraries/tacacsrs_agent_client/src/lib.rs#L17)
+- [Client package exports](../../libraries/tacacsrs_ipc/src/lib.rs#L17)
 - [Agent dependencies](../../libraries/tacacsrs_agent/Cargo.toml)
 
 **Candidate direction:** give service operations and outcomes an explicit transport-independent owner.

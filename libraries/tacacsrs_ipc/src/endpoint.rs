@@ -38,7 +38,7 @@ const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 /// as a socket path; otherwise the value is parsed as a `SocketAddr`.
 ///
 /// ```
-/// # use tacacsrs_agent_client::IpcEndpoint;
+/// # use tacacsrs_ipc::IpcEndpoint;
 /// let tcp: IpcEndpoint = "127.0.0.1:9049".parse().unwrap();
 /// assert!(matches!(tcp, IpcEndpoint::Tcp(_)));
 /// ```

@@ -139,7 +139,7 @@ A separate proxy crate is unnecessary until a real consumer needs independent pa
 | `tacacsrs-cli-datastore` | Merge file and input adapters into configuration modules. Keep clap out of the library. |
 | `tacacsrs-sonic` | Retain as an optional Linux integration. Normalize ConfigDB into canonical YANG snapshots before preparation. |
 | `tacacsrs-agent` | Move reusable routing down to the client. Absorb generic supervision from the daemon. |
-| `tacacsrs-agent-client` | Become `tacacsrs-ipc`. Move logical operation types into the protocol package. |
+| `tacacsrs-ipc` | Become `tacacsrs-ipc`. Move logical operation types into the protocol package. |
 | `tacacsrs-agentd` | Retain as the composition root and process host. |
 | `tacacsrs-agent-health` | Retain as a small IPC-only probe. A lightweight probe has a separate operational purpose. |
 | `tacon` | Retain. Build each logical operation once, then select direct or IPC execution. |

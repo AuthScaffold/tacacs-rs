@@ -59,7 +59,7 @@ use crate::IpcEndpoint;
 /// # Examples
 ///
 /// ```rust,no_run
-/// # use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+/// # use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
 /// # use tacacsrs_protocol::operations::AccountingOperation;
 /// # async fn example() -> anyhow::Result<()> {
 /// let client = ServiceClient::connect(IpcEndpoint::default_local()).await?;

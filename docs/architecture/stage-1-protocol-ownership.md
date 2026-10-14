@@ -24,7 +24,7 @@ Temporary compatibility re-exports are removed.
 | Agent-client protobuf conversion | Private `convert` module in agent-client | `From` and `TryFrom` between domain values and generated messages |
 
 The [protocol package guide](../../libraries/tacacsrs_protocol/README.md) documents its public modules and an executable operation example.
-The [IPC client guide](../../libraries/tacacsrs_agent_client/README.md) documents its reduced responsibility.
+The [IPC client guide](../../libraries/tacacsrs_ipc/README.md) documents its reduced responsibility.
 
 ## API Changes
 

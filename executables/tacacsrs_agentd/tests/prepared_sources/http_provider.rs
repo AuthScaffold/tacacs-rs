@@ -14,8 +14,8 @@ use tokio::process::{Child, Command};
 use tokio_openssl::SslStream;
 use tonic_health::pb::health_check_response::ServingStatus;
 
-use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_agent_client::health::{HealthClient, READINESS_HEALTH_SERVICE};
+use tacacsrs_ipc::IpcEndpoint;
+use tacacsrs_ipc::health::{HealthClient, READINESS_HEALTH_SERVICE};
 
 use super::crl_peer::{make_crl, source_for};
 use super::ocsp_peer::{Directory, fixtures};

@@ -597,14 +597,10 @@ async fn uncertain_accounting_failure_does_not_retry() {
         .execute_accounting_request(accounting())
         .await
         .expect_err("an uncertain accounting result must not be replayed");
-    let decoded = tacacsrs_protocol::operations::ServiceError::try_from(
-        tacacsrs_agent_client::ipc::ServiceError::from(error),
-    )
-    .unwrap();
-    assert_eq!(decoded.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
-    assert_eq!(decoded.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::OutcomeUnknown);
-    assert_eq!(decoded.runtime_generation, Some(0));
-    assert_eq!(decoded.attempt.map(std::num::NonZeroU32::get), Some(1));
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::OutcomeUnknown);
+    assert_eq!(error.runtime_generation, Some(0));
+    assert_eq!(error.attempt.map(std::num::NonZeroU32::get), Some(1));
 
     assert_eq!(
         connector
@@ -708,15 +704,8 @@ async fn unsent_accounting_bind_failure_remains_retriable() {
         .execute_accounting_request(accounting())
         .await
         .unwrap_err();
-    let decoded = tacacsrs_protocol::operations::ServiceError::try_from(
-        tacacsrs_agent_client::ipc::ServiceError::from(error),
-    )
-    .unwrap();
-    assert_eq!(
-        decoded.facts.retry_advice(),
-        tacacsrs_protocol::failure::RetryAdvice::AfterRecovery
-    );
-    assert_eq!(decoded.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::NotSent);
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::AfterRecovery);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::NotSent);
 }
 
 #[tokio::test]

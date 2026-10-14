@@ -65,7 +65,7 @@ that drives an authorization denylist from fixed policy data.
 
 ```rust,no_run
 # async fn example() -> anyhow::Result<()> {
-use tacacsrs_agent_client::ServiceClient;
+use tacacsrs_ipc::ServiceClient;
 use tacacsrs_agent_ipc_emulator::{EmulatorPolicy, IpcEmulator};
 
 let policy = EmulatorPolicy::new(

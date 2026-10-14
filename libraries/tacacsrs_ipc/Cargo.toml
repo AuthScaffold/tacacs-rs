@@ -1,5 +1,5 @@
 [package]
-name = "tacacsrs-agent-client"
+name = "tacacsrs-ipc"
 version = "0.0.0-dev"
 edition.workspace = true
 license.workspace = true
@@ -10,10 +10,14 @@ build = "build.rs"
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
+async-trait = "0.1.89"
 http = "1.4.1"
 hyper-util = "0.1.20"
+log = "0.4.30"
 prost = "0.14.3"
-tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
+rustix = { version = "1.1.4", features = ["fs"] }
+tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-stream = { version = "0.1.18", features = ["net"] }
 tonic = "0.14.6"
 tonic-health = "0.14.6"
 tonic-prost = "0.14.6"
@@ -26,7 +30,7 @@ protoc-bin-vendored = "3.2.0"
 tonic-prost-build = "0.14.6"
 
 [dev-dependencies]
-tokio-stream = { version = "0.1.18", features = ["net"] }
+tokio = { version = "1.52.3", features = ["test-util"] }
 
 [lints]
 workspace = true

@@ -1,26 +1,40 @@
-//! Standard `grpc.health.v1.Health` mapping for the client API listener.
+//! Standard `grpc.health.v1.Health` mapping for the IPC listener.
 
-use tacacsrs_agent_client::health::{
-    LIVENESS_HEALTH_SERVICE, OVERALL_HEALTH_SERVICE, READINESS_HEALTH_SERVICE,
-    STARTUP_HEALTH_SERVICE, TACACS_AGENT_HEALTH_SERVICE,
-};
 use tokio::sync::watch;
 use tonic_health::ServingStatus;
 use tonic_health::pb::health_server::HealthServer;
 use tonic_health::server::{HealthReporter, HealthService};
 
-use crate::runtime::{RuntimeHealthSnapshot, ShutdownReceiver};
+use crate::health::{
+    LIVENESS_HEALTH_SERVICE, OVERALL_HEALTH_SERVICE, READINESS_HEALTH_SERVICE,
+    STARTUP_HEALTH_SERVICE, TACACS_AGENT_HEALTH_SERVICE,
+};
 
-/// Standard health service and its runtime snapshot reporter.
+/// Neutral startup, liveness, and readiness state for the IPC listener.
+///
+/// The host projects its own runtime health into this transport-neutral form.
+/// The IPC listener maps each field to the standard gRPC health service names.
+/// This type contains no secret values and no host-specific reasons.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub struct HealthStatus {
+    /// Whether startup probes report serving.
+    pub startup_serving: bool,
+    /// Whether liveness probes report serving.
+    pub liveness_serving: bool,
+    /// Whether readiness, overall, and business probes report serving.
+    pub readiness_serving: bool,
+}
+
+/// Standard health service and its neutral status reporter.
 pub(super) struct StandardHealth {
     reporter: HealthReporter,
-    receiver: watch::Receiver<RuntimeHealthSnapshot>,
+    receiver: watch::Receiver<HealthStatus>,
 }
 
 impl StandardHealth {
     /// Creates and initializes each supported health service name.
     pub(super) async fn new(
-        receiver: watch::Receiver<RuntimeHealthSnapshot>,
+        receiver: watch::Receiver<HealthStatus>,
     ) -> (Self, HealthServer<HealthService>) {
         let reporter = HealthReporter::new();
         let service = HealthService::from_health_reporter(reporter.clone());
@@ -30,13 +44,24 @@ impl StandardHealth {
     }
 
     /// Publishes changes until the listener stops.
-    pub(super) async fn run(mut self, shutdown: ShutdownReceiver) {
+    ///
+    /// On shutdown the listener withdraws every health service before it clears
+    /// the service names. Withdrawal does not depend on the host's last readiness
+    /// value, so a draining listener never reports serving.
+    pub(super) async fn run(mut self, mut shutdown: watch::Receiver<bool>) {
+        if *shutdown.borrow() {
+            self.withdraw().await;
+            self.close_watches().await;
+            return;
+        }
         loop {
             tokio::select! {
-                () = shutdown.clone().wait() => {
-                    self.publish_current().await;
-                    self.close_watches().await;
-                    return;
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        self.withdraw().await;
+                        self.close_watches().await;
+                        return;
+                    }
                 }
                 result = self.receiver.changed() => {
                     if result.is_err() {
@@ -49,17 +74,30 @@ impl StandardHealth {
     }
 
     async fn publish_current(&self) {
-        let snapshot = self.receiver.borrow().clone();
-        self.set_status(STARTUP_HEALTH_SERVICE, snapshot.is_startup_serving())
+        let status = *self.receiver.borrow();
+        self.set_status(STARTUP_HEALTH_SERVICE, status.startup_serving)
             .await;
-        self.set_status(LIVENESS_HEALTH_SERVICE, snapshot.is_liveness_serving())
+        self.set_status(LIVENESS_HEALTH_SERVICE, status.liveness_serving)
             .await;
-        self.set_status(READINESS_HEALTH_SERVICE, snapshot.is_readiness_serving())
+        self.set_status(READINESS_HEALTH_SERVICE, status.readiness_serving)
             .await;
-        self.set_status(OVERALL_HEALTH_SERVICE, snapshot.is_readiness_serving())
+        self.set_status(OVERALL_HEALTH_SERVICE, status.readiness_serving)
             .await;
-        self.set_status(TACACS_AGENT_HEALTH_SERVICE, snapshot.is_readiness_serving())
+        self.set_status(TACACS_AGENT_HEALTH_SERVICE, status.readiness_serving)
             .await;
+    }
+
+    /// Reports every supported health service as not serving.
+    async fn withdraw(&self) {
+        for service_name in [
+            STARTUP_HEALTH_SERVICE,
+            LIVENESS_HEALTH_SERVICE,
+            READINESS_HEALTH_SERVICE,
+            OVERALL_HEALTH_SERVICE,
+            TACACS_AGENT_HEALTH_SERVICE,
+        ] {
+            self.set_status(service_name, false).await;
+        }
     }
 
     async fn set_status(&self, service_name: &str, serving: bool) {
@@ -86,17 +124,12 @@ impl StandardHealth {
 
 #[cfg(test)]
 mod tests {
-    use tacacsrs_agent_client::health::{
-        LIVENESS_HEALTH_SERVICE, READINESS_HEALTH_SERVICE, STARTUP_HEALTH_SERVICE,
-    };
     use tonic::Request;
     use tonic_health::pb::HealthCheckRequest;
     use tonic_health::pb::health_check_response::ServingStatus as WireServingStatus;
     use tonic_health::pb::health_server::Health;
 
     use super::*;
-    use crate::runtime::{ListenerState, RuntimeHealthPublisher, RuntimeService, ShutdownCoordinator};
-    use crate::EnabledServices;
 
     async fn check(service: &HealthService, service_name: &str) -> WireServingStatus {
         let response = service
@@ -111,17 +144,25 @@ mod tests {
 
     #[tokio::test]
     async fn check_maps_startup_liveness_and_readiness_independently() {
-        let publisher = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
-        let (health, _) = StandardHealth::new(publisher.subscribe()).await;
+        let (sender, receiver) = watch::channel(HealthStatus {
+            startup_serving: false,
+            liveness_serving: true,
+            readiness_serving: false,
+        });
+        let (health, _) = StandardHealth::new(receiver).await;
         let service = HealthService::from_health_reporter(health.reporter.clone());
 
         assert_eq!(check(&service, STARTUP_HEALTH_SERVICE).await, WireServingStatus::NotServing,);
         assert_eq!(check(&service, LIVENESS_HEALTH_SERVICE).await, WireServingStatus::Serving,);
         assert_eq!(check(&service, READINESS_HEALTH_SERVICE).await, WireServingStatus::NotServing,);
 
-        publisher.set_applied_configuration(true);
-        publisher.set_eligible_server_count(1);
-        assert!(publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        sender
+            .send(HealthStatus {
+                startup_serving: true,
+                liveness_serving: true,
+                readiness_serving: true,
+            })
+            .expect("the receiver must stay open");
         health.publish_current().await;
 
         assert_eq!(check(&service, STARTUP_HEALTH_SERVICE).await, WireServingStatus::Serving,);
@@ -130,8 +171,8 @@ mod tests {
 
     #[tokio::test]
     async fn watch_receives_readiness_transition_and_shutdown_withdrawal() {
-        let publisher = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
-        let (health, _) = StandardHealth::new(publisher.subscribe()).await;
+        let (status_sender, status_receiver) = watch::channel(HealthStatus::default());
+        let (health, _) = StandardHealth::new(status_receiver).await;
         let service = HealthService::from_health_reporter(health.reporter.clone());
         let mut stream = service
             .watch(Request::new(HealthCheckRequest {
@@ -140,8 +181,8 @@ mod tests {
             .await
             .expect("the health watch must open")
             .into_inner();
-        let shutdown = ShutdownCoordinator::new(publisher.clone());
-        let bridge = tokio::spawn(health.run(shutdown.subscribe()));
+        let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+        let bridge = tokio::spawn(health.run(shutdown_receiver));
 
         let initial = tokio_stream::StreamExt::next(&mut stream)
             .await
@@ -152,9 +193,13 @@ mod tests {
             WireServingStatus::NotServing,
         );
 
-        publisher.set_applied_configuration(true);
-        publisher.set_eligible_server_count(1);
-        assert!(publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        status_sender
+            .send(HealthStatus {
+                startup_serving: true,
+                liveness_serving: true,
+                readiness_serving: true,
+            })
+            .expect("the receiver must stay open");
         let serving = tokio_stream::StreamExt::next(&mut stream)
             .await
             .expect("the stream must contain a serving status")
@@ -164,7 +209,9 @@ mod tests {
             WireServingStatus::Serving,
         );
 
-        shutdown.initiate_shutdown();
+        shutdown_sender
+            .send(true)
+            .expect("the receiver must stay open");
         let withdrawn = tokio_stream::StreamExt::next(&mut stream)
             .await
             .expect("the stream must contain a withdrawn status")

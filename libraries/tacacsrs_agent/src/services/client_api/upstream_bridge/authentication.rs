@@ -57,7 +57,7 @@ impl<Connector: tacacsrs_networking::routed::EndpointConnector> UpstreamBridge<C
 where
     Connector::Connection: UpstreamConnection,
 {
-    pub(in crate::services::client_api) async fn execute_pap_authentication_request(
+    pub(crate) async fn execute_pap_authentication_request(
         &self,
         request: PapAuthenticationOperation,
     ) -> Result<PapAuthenticationOperationResponse, ServiceError> {

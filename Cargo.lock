@@ -2010,7 +2010,7 @@ dependencies = [
  "libc",
  "libseccomp",
  "log",
- "tacacsrs-agent-client",
+ "tacacsrs-ipc",
  "tacacsrs-protocol",
  "tempfile",
  "tokio",
@@ -2152,37 +2152,15 @@ dependencies = [
  "log",
  "rand",
  "rustix",
- "tacacsrs-agent-client",
  "tacacsrs-config",
  "tacacsrs-credential-resolution",
+ "tacacsrs-ipc",
  "tacacsrs-networking",
  "tacacsrs-protocol",
  "tacacsrs-secrets",
  "tokio",
  "tokio-stream",
  "tokio-util",
- "tonic",
- "tonic-health",
-]
-
-[[package]]
-name = "tacacsrs-agent-client"
-version = "0.0.0-dev"
-dependencies = [
- "anyhow",
- "http",
- "hyper-util",
- "prost",
- "protoc-bin-vendored",
- "tacacsrs-protocol",
- "tacacsrs-secrets",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-health",
- "tonic-prost",
- "tonic-prost-build",
- "tower",
 ]
 
 [[package]]
@@ -2190,7 +2168,7 @@ name = "tacacsrs-agent-health"
 version = "0.0.0-dev"
 dependencies = [
  "clap",
- "tacacsrs-agent-client",
+ "tacacsrs-ipc",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -2211,7 +2189,7 @@ dependencies = [
  "regorus",
  "serde",
  "serde_json",
- "tacacsrs-agent-client",
+ "tacacsrs-ipc",
  "tacacsrs-protocol",
  "tempfile",
  "tokio",
@@ -2230,8 +2208,8 @@ dependencies = [
  "clap",
  "env_logger",
  "log",
- "tacacsrs-agent-client",
  "tacacsrs-agent-ipc-emulator",
+ "tacacsrs-ipc",
  "tokio",
 ]
 
@@ -2255,10 +2233,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tacacsrs-agent",
- "tacacsrs-agent-client",
  "tacacsrs-config",
  "tacacsrs-credential-http",
  "tacacsrs-credential-resolution",
+ "tacacsrs-ipc",
  "tacacsrs-networking",
  "tacacsrs-protocol",
  "tacacsrs-secrets",
@@ -2277,7 +2255,7 @@ version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "libc",
- "tacacsrs-agent-client",
+ "tacacsrs-ipc",
  "tacacsrs-protocol",
  "tokio",
 ]
@@ -2332,6 +2310,29 @@ dependencies = [
  "serde",
  "static_assertions",
  "tacacsrs-secrets",
+]
+
+[[package]]
+name = "tacacsrs-ipc"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "http",
+ "hyper-util",
+ "log",
+ "prost",
+ "protoc-bin-vendored",
+ "rustix",
+ "tacacsrs-protocol",
+ "tacacsrs-secrets",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-health",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tower",
 ]
 
 [[package]]
@@ -2412,8 +2413,8 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
- "tacacsrs-agent-client",
  "tacacsrs-config",
+ "tacacsrs-ipc",
  "tacacsrs-networking",
  "tacacsrs-protocol",
  "tacacsrs-secrets",

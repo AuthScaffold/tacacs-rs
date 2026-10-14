@@ -50,6 +50,139 @@ mod crl_peer;
 #[path = "prepared_sources/http_provider.rs"]
 mod http_provider;
 
+/// Composes the IPC client API listener with the agent runtime for tests.
+///
+/// Integration tests of the daemon binary cannot reach the daemon's internal
+/// composition module, so this mirrors it over the public agent and IPC APIs.
+mod client_api {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use tokio::sync::watch;
+    use tokio::task::JoinHandle;
+
+    use tacacsrs_agent::{
+        ClientApiHandle, ListenerRegistration, ListenerState, RuntimeHealthPublisher,
+        RuntimeHealthSnapshot, RuntimeListenerService, RuntimeService, ShutdownReceiver,
+        TacacsClientService,
+    };
+    use tacacsrs_ipc::server::{self, HealthStatus, ListenerOptions};
+    use tacacsrs_protocol::operations::{
+        AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
+        AuthorizationOperationResponse, PapAuthenticationOperation,
+        PapAuthenticationOperationResponse, ServiceError,
+    };
+
+    pub(crate) fn client_api_listeners(
+        service: &TacacsClientService,
+    ) -> Vec<Box<dyn RuntimeListenerService>> {
+        match service.client_api_socket_path() {
+            Some(path) => {
+                let settings = service.client_api_listener_settings();
+                vec![Box::new(ClientApiListener {
+                    handler: Arc::new(AgentHandler {
+                        handle: service.client_api_handle(),
+                    }),
+                    path,
+                    options: ListenerOptions {
+                        socket_mode: settings.socket_mode,
+                        max_connections: settings.max_connections,
+                        max_client_api_streams: settings.max_client_api_streams,
+                        connection_lifetime: settings.connection_lifetime,
+                    },
+                })]
+            }
+            None => Vec::new(),
+        }
+    }
+
+    struct AgentHandler {
+        handle: ClientApiHandle,
+    }
+
+    #[async_trait]
+    impl server::Handler for AgentHandler {
+        async fn authenticate_pap(
+            &self,
+            request: PapAuthenticationOperation,
+        ) -> Result<PapAuthenticationOperationResponse, ServiceError> {
+            self.handle.authenticate_pap(request).await
+        }
+
+        async fn accounting(
+            &self,
+            request: AccountingOperation,
+        ) -> Result<AccountingOperationResponse, ServiceError> {
+            self.handle.accounting(request).await
+        }
+
+        async fn authorization(
+            &self,
+            request: AuthorizationOperation,
+        ) -> Result<AuthorizationOperationResponse, ServiceError> {
+            self.handle.authorization(request).await
+        }
+    }
+
+    struct ClientApiListener {
+        handler: Arc<AgentHandler>,
+        path: PathBuf,
+        options: ListenerOptions,
+    }
+
+    #[async_trait]
+    impl RuntimeListenerService for ClientApiListener {
+        async fn serve(
+            self: Box<Self>,
+            shutdown: ShutdownReceiver,
+            health: RuntimeHealthPublisher,
+        ) -> anyhow::Result<()> {
+            let Self {
+                handler,
+                path,
+                options,
+            } = *self;
+            let registration = ListenerRegistration::new(health.clone(), RuntimeService::ClientApi);
+            let mut snapshot = health.subscribe();
+            let (sender, receiver) = watch::channel(status(&snapshot.borrow()));
+            let forwarder = Forwarder(tokio::spawn(async move {
+                while snapshot.changed().await.is_ok() {
+                    if sender.send(status(&snapshot.borrow())).is_err() {
+                        break;
+                    }
+                }
+            }));
+            let bound = health.clone();
+            let on_bound = move || {
+                let _ = bound.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
+            };
+            let result =
+                server::serve_unix(&path, options, handler, receiver, shutdown.flag(), on_bound)
+                    .await;
+            drop(forwarder);
+            drop(registration);
+            result
+        }
+    }
+
+    struct Forwarder(JoinHandle<()>);
+
+    impl Drop for Forwarder {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    fn status(snapshot: &RuntimeHealthSnapshot) -> HealthStatus {
+        HealthStatus {
+            startup_serving: snapshot.is_startup_serving(),
+            liveness_serving: snapshot.is_liveness_serving(),
+            readiness_serving: snapshot.is_readiness_serving(),
+        }
+    }
+}
+
 /// OpenSSL option bit 10 permits TLS 1.3 PSK exchange without DHE.
 const ALLOW_NO_DHE_KEX: SslOptions = SslOptions::from_bits_retain(1 << 10);
 /// A peer group absent from the client's default list forces the no-DHE path.

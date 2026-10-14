@@ -112,18 +112,18 @@ tacacsrs-flows -> tacacsrs-flow-abstractions, tacacsrs-messages, tacacsrs-networ
 tacacsrs-datastore -> tacacsrs-config
 tacacsrs-sonic -> tacacsrs-config, tacacsrs-datastore
 
-tacacsrs-agent -> tacacsrs-agent-client, tacacsrs-config, tacacsrs-flows,
+tacacsrs-agent -> tacacsrs-ipc, tacacsrs-config, tacacsrs-flows,
                   tacacsrs-messages, tacacsrs-networking
-tacacsrs-agent-ipc-emulator -> tacacsrs-agent-client
-tacacsrs-libtac -> tacacsrs-agent-client
-tacacsrs-bash-plugin -> tacacsrs-agent-client
+tacacsrs-agent-ipc-emulator -> tacacsrs-ipc
+tacacsrs-libtac -> tacacsrs-ipc
+tacacsrs-bash-plugin -> tacacsrs-ipc
 
-tacon -> tacacsrs-agent-client, tacacsrs-config, tacacsrs-flows,
+tacon -> tacacsrs-ipc, tacacsrs-config, tacacsrs-flows,
          tacacsrs-messages, tacacsrs-networking
-tacacsrs-agentd -> tacacsrs-agent, tacacsrs-agent-client, tacacsrs-config,
+tacacsrs-agentd -> tacacsrs-agent, tacacsrs-ipc, tacacsrs-config,
                    tacacsrs-datastore, tacacsrs-networking, tacacsrs-sonic
-tacacsrs-agent-ipc-emulatord -> tacacsrs-agent-client, tacacsrs-agent-ipc-emulator
-session-wrapper -> tacacsrs-agent-client
+tacacsrs-agent-ipc-emulatord -> tacacsrs-ipc, tacacsrs-agent-ipc-emulator
+session-wrapper -> tacacsrs-ipc
 ```
 
 ### Libraries
@@ -138,7 +138,7 @@ session-wrapper -> tacacsrs-agent-client
 - `tacacsrs-networking` owns transports, packet reader/writer plumbing,
   `TacacsConnection`, `DedicatedConnection`, session multiplexing, single-connect
   tracking, and configuration-driven connection establishment.
-- `tacacsrs-agent-client` owns the protobuf/gRPC IPC contract, `IpcEndpoint`,
+- `tacacsrs-ipc` owns the protobuf/gRPC IPC contract, `IpcEndpoint`,
   domain request/response types, and `ServiceClient`. `ServiceClient` holds a
   reusable tonic channel. Do not describe it as stateless.
 - `tacacsrs-agent` coordinates central service behavior: upstream connection
@@ -379,6 +379,6 @@ supports the preferred shape.
 - For `libraries/tacacsrs_sonic/**`, `executables/tacacsrs_agentd/**`, SONiC
   docs, or QEMU smoke work, use
   `.github/instructions/sonic-qemu-testing.instructions.md`.
-- For protobuf IPC changes, keep `libraries/tacacsrs_agent_client/proto` as the
+- For protobuf IPC changes, keep `libraries/tacacsrs_ipc/proto` as the
   source contract, update domain/protobuf conversions together, and run or note
   the `buf breaking` compatibility check.

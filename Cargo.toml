@@ -4,7 +4,7 @@ members = [
     "libraries/tacacsrs_protocol",
     "libraries/tacacsrs_secrets",
     "libraries/tacacsrs_networking",
-    "libraries/tacacsrs_agent_client",
+    "libraries/tacacsrs_ipc",
     "libraries/tacacsrs_agent_ipc_emulator",
     "libraries/tacacsrs_agent",
     "libraries/tacacsrs_config",

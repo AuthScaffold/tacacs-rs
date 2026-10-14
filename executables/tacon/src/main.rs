@@ -19,7 +19,7 @@ use anyhow::bail;
 use anyhow::Context;
 use clap::Parser;
 #[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
 use tacacsrs_config::prepare::PrepareOptions;
 

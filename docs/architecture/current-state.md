@@ -300,7 +300,7 @@ This ledger distinguishes detailed boundary review from remaining specialist val
 | `tacacsrs-cli-datastore` | File watcher lifecycle and snapshot sequence | Forced watch-registration races and filesystem variants |
 | `tacacsrs-sonic` | Snapshot read, provider confinement, binding inputs | Live ConfigDB/QEMU behavior and platform policy |
 | `tacacsrs-agent` | Routing, retry, admission, generation updates, listeners, health, and shutdown ownership | End-to-end cancellation and concurrent reload stress |
-| `tacacsrs-agent-client` | Domain ownership, protobuf conversion surface, error model | Wire conformance and connection deadline tests |
+| `tacacsrs-ipc` | Domain ownership, protobuf conversion surface, error model | Wire conformance and connection deadline tests |
 | `tacacsrs-agentd` | Bootstrap, configuration/policy supervision, materialization, host integration | Real process manager and credential-revocation scenarios |
 | `tacacsrs-agent-health` | Exit statuses, health lookup, and process-test inventory | Deployment contract across service modes |
 | `tacon` | Mode dispatch and direct/IPC authorization construction | Full batch equivalence and output stability |

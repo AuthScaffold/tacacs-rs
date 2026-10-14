@@ -50,21 +50,21 @@ For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Tran
 ## Workspace Architecture
 
 ```text
-tacon (CLI)  ──────┬──► tacacsrs-agent-client
+tacon (CLI)  ──────┬──► tacacsrs-ipc
                    ├──► tacacsrs-config
                    ├──► tacacsrs-protocol
                    └──► tacacsrs-networking
 
 tacacsrs-agentd ───┬──► tacacsrs-agent
-                   ├──► tacacsrs-agent-client
+                   ├──► tacacsrs-ipc
                    └──► tacacsrs-config
 
-tacacsrs-agent ────┬──► tacacsrs-agent-client
+tacacsrs-agent ────┬──► tacacsrs-ipc
                    ├──► tacacsrs-protocol
                    └──► tacacsrs-networking
 
 tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
-                                  └──► tacacsrs-agent-client
+                                  └──► tacacsrs-ipc
 
 tacacsrs-credential-resolution ──► tacacsrs-config
                               └──► tacacsrs-secrets

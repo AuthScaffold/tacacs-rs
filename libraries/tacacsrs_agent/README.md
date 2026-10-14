@@ -7,7 +7,7 @@ The crate keeps the local listener, upstream failover logic, and persistent
 connection management together in one library while the runnable process lives
 in `executables/tacacsrs_agentd`. Transport-independent domain types and
 the checked-in protobuf IPC contract live in the companion
-[`tacacsrs-agent-client`](../tacacsrs_agent_client/) crate so
+[`tacacsrs-ipc`](../tacacsrs_ipc/) crate so
 that both the server and local consumers share the same protocol definitions.
 
 ## Design goals
@@ -416,13 +416,13 @@ Each accepted IPC connection currently carries a single unary RPC exchange:
 ## Protocol source of truth
 
 The maintainable split between this crate and
-[`tacacsrs-agent-client`](../tacacsrs_agent_client/) is:
+[`tacacsrs-ipc`](../tacacsrs_ipc/) is:
 
 - Define the wire contract in the client crate's
-  [`proto/tacacsrs_agent.proto`](../tacacsrs_agent_client/proto/tacacsrs_agent.proto).
+  [`proto/tacacsrs_agent.proto`](../tacacsrs_ipc/proto/tacacsrs_agent.proto).
 - Generate the Rust gRPC/protobuf bindings at build time in the client crate.
 - Keep the operation-centric domain types in the client crate's
-  [`protocol`](../tacacsrs_agent_client/src/protocol.rs) module.
+  [`protocol`](../tacacsrs_ipc/src/protocol.rs) module.
 - Keep focused conversion tests between the domain types and protobuf messages.
 
 This keeps the on-the-wire IPC schema explicit and type-safe while still

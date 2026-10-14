@@ -92,7 +92,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use libseccomp::{ScmpFd, ScmpNotifReq, ScmpNotifResp, ScmpNotifRespFlags, notify_id_valid};
-use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
 use tacacsrs_protocol::operations::{AuthorizationOperation, AuthorizationOperationResponse};
 #[cfg(test)]
 use tacacsrs_protocol::operations::{AuthorizationArg, AuthorizationResponseStatus};

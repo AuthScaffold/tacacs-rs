@@ -4,7 +4,7 @@ use std::io::{IsTerminal, Read};
 
 use anyhow::Context;
 #[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{ServiceClient};
+use tacacsrs_ipc::{ServiceClient};
 use tacacsrs_protocol::operations::PapAuthenticationOperation;
 #[cfg(target_os = "linux")]
 use tacacsrs_protocol::operations::PapAuthenticationOperationResponse;

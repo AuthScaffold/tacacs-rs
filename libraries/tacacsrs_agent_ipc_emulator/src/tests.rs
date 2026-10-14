@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tacacsrs_agent_client::{ServiceClient};
+use tacacsrs_ipc::{ServiceClient};
 use tacacsrs_protocol::failure::{DeliveryState, FailurePhase, RetryAdvice};
 use tacacsrs_protocol::operations::{
     AccountingOperation, AuthorizationKey, AuthorizationOperation, AuthorizationResponseStatus,

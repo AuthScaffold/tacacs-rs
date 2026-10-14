@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
-use tacacsrs_agent_client::ipc;
+use tacacsrs_ipc::ipc;
 use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
 use tacacsrs_protocol::operations::{
     AccountingOperationResponse, AccountingResponseStatus, AuthorizationArg,

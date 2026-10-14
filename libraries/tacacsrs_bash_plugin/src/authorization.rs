@@ -1,6 +1,6 @@
 use std::os::raw::c_int;
 
-use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
 use tacacsrs_protocol::operations::{
     AuthorizationArg, AuthorizationAuthenticationContext, AuthorizationKey, AuthorizationOperation,
     AuthorizationResponseStatus,

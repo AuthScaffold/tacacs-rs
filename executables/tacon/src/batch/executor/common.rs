@@ -7,7 +7,7 @@ use std::time::Instant;
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 #[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
 #[cfg(target_os = "linux")]
 use tacacsrs_protocol::operations::{AccountingOperation};
 use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;

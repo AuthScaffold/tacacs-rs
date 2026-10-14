@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
-use tacacsrs_agent_client::ipc;
-use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
+use tacacsrs_ipc::ipc;
+use tacacsrs_ipc::ipc::tacacs_agent_server::TacacsAgent;
 use tacacsrs_protocol::operations::PapAuthenticationOperation;
 use tokio::sync::{oneshot, Mutex};
 use tonic::{Request, Response, Status};

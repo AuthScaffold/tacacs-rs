@@ -1,7 +1,7 @@
 use futures::future::join_all;
 use std::sync::Arc;
 
-use tacacsrs_agent_client::{ServiceClient};
+use tacacsrs_ipc::{ServiceClient};
 
 use super::common::{
     authorization_operation, load_test_iterations, run_load_test, service_client,
