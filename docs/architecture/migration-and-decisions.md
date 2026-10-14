@@ -324,7 +324,7 @@ Reload, cancellation, transport, and process regressions pass. Unchanged endpoin
 Non-yielding code and started blocking I/O still require explicit deployment limits.
 The [Stage 4 checkpoint](stage-4-configuration-controller.md#s4-07-closure) records the completed contracts, full local verification, and platform exceptions.
 All-feature coverage with isolated Redis reports 88.99% line coverage. All nine independent TACACS+ peer cases pass.
-Stage 5 is next and has not started.
+Stage 5 starts from this completed supported profile.
 
 1. Replace separate load/subscribe startup with owned observation sessions that supply canonical YANG snapshots.
 2. Move generic source and policy supervision into the agent runtime.
@@ -358,6 +358,11 @@ No controller or provider rewrites authoritative credential references during pr
 ### Stage 5. Simplify adapters and supported products
 
 **Scope:** daemon, CLI, IPC, proxy, health probe, host integration, and test scenarios.
+
+**Status:** in progress as of 2026-10-14. Claude Opus 4.8 reviewed the implementation plan before code changes.
+The [Stage 5 checkpoint](stage-5-adapters.md) records the revised sequence, acceptance checks, and incremental evidence.
+The first change preserves failure facts before restructuring IPC ownership.
+Existing shared preparation and enforcement behavior require verification, not speculative replacement APIs.
 
 1. Finish the IPC package split and update the schema to preserve failure facts.
 2. Make the daemon a composition root with no independent routing or materialization algorithm.
