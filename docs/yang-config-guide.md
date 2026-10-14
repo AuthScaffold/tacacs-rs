@@ -225,7 +225,12 @@ Inline CRL arrays can be supplied through existing canonical JSON sources. An em
 
 The maximum age defaults to 300 seconds and must be positive. Each list must contain exactly one complete DER CRL and include `nextUpdate`.
 The complete set is limited to 4 MiB and one list per issuer name. Empty, stale, future, duplicate-issuer, or trailing-DER inputs fail preparation.
-Delta CRLs, issuing-distribution-point extensions, and freshest-CRL references are rejected because scoped or delta evidence is not supported.
+Direct full CRLs can contain an `issuingDistributionPoint` extension.
+The extension must be unique, critical, decodable, and pass a native DER round-trip check during preparation.
+Native verification enforces certificate-type restrictions, distribution-point name matching, and complete revocation-reason coverage.
+A leaf-scoped list does not replace required issuer-path evidence. Scope does not relax signature, revocation, or freshness checks.
+Distribution-point URIs are scope identifiers here, not authorized retrieval destinations. TLS callbacks do not fetch those URIs.
+Delta CRLs and freshest-CRL references remain rejected. Multiple CRLs per issuer, including reason partitions, remain unsupported.
 
 Native verification checks the accepted certificate path against the supplied lists before client authentication or TACACS+ data.
 Bad signatures, revoked leaves or intermediates, and incomplete evidence reject the TLS connection. Missing CRLs never fall back to unchecked authentication.
@@ -244,7 +249,7 @@ Such a change can interrupt in-flight requests; an unknown delivery outcome must
 Identical evidence and rejected candidates do not trigger this cutoff. Unrelated configuration changes retain the ordinary drain budget.
 This is conservative retirement after an evidence change, not proof that every old peer was revoked. Physical closure still depends on runtime scheduling.
 
-Certificate-driven retrieval, OCSP queries, and scoped CRLs remain S4-06 work.
+Certificate-driven retrieval, OCSP queries, delta CRLs, and broader scoped-evidence combinations remain S4-06 work.
 This mode does not establish full RFC 9887 conformance.
 
 ### HTTP CRL Provider

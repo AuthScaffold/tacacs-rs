@@ -342,6 +342,8 @@ pub mod tacacs_plus {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
         /// Require complete CRLs for the verified server certificate path.
+        /// Direct CRLs can restrict certificate type and distribution-point scope.
+        /// Native verification requires complete reason and path coverage.
         /// Exact peer pins and PSK authentication are not supported in this mode.
         /// Unavailable, invalid, stale, or incomplete evidence fails closed.
         #[serde(rename = "tacacsrs:require-crls")]
@@ -428,6 +430,8 @@ pub mod tacacs_plus {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
         /// Require complete CRLs for the verified server certificate path.
+        /// Direct CRLs can restrict certificate type and distribution-point scope.
+        /// Native verification requires complete reason and path coverage.
         /// Exact peer pins and PSK authentication are not supported in this mode.
         /// Unavailable, invalid, stale, or incomplete evidence fails closed.
         #[serde(rename = "tacacsrs:require-crls")]
@@ -1237,6 +1241,8 @@ pub mod tacacsrs {
     fn default_require_crls_max_age_seconds() -> u32 { 300 }
 
     /// Require complete CRLs for the verified server certificate path.
+    /// Direct CRLs can restrict certificate type and distribution-point scope.
+    /// Native verification requires complete reason and path coverage.
     /// Exact peer pins and PSK authentication are not supported in this mode.
     /// Unavailable, invalid, stale, or incomplete evidence fails closed.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

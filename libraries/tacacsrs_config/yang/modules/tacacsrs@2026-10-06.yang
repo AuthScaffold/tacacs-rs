@@ -346,6 +346,8 @@ module tacacsrs {
       presence "Require fresh CRLs for certificate TLS server authentication.";
       description
         "Require complete CRLs for the verified server certificate path.
+         Direct CRLs can restrict certificate type and distribution-point scope.
+         Native verification requires complete reason and path coverage.
          Exact peer pins and PSK authentication are not supported in this mode.
          Unavailable, invalid, stale, or incomplete evidence fails closed.";
       leaf max-age-seconds {

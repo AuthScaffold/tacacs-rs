@@ -141,6 +141,30 @@ pub(super) async fn make_issuer_crl(
     revoked: Option<&X509>,
     stale: bool,
 ) -> Result<Vec<u8>> {
+    make_scoped_crl(directory, issuer, key, revoked, stale, None).await
+}
+
+async fn make_scoped_crl(
+    directory: &Path,
+    issuer: &X509,
+    key: &PKey<openssl::pkey::Private>,
+    revoked: Option<&X509>,
+    stale: bool,
+    scope: Option<&str>,
+) -> Result<Vec<u8>> {
+    let extensions =
+        scope.map(|scope| format!("issuingDistributionPoint=critical,@scope\n[scope]\n{scope}"));
+    make_extended_crl(directory, issuer, key, revoked, stale, extensions.as_deref()).await
+}
+
+async fn make_extended_crl(
+    directory: &Path,
+    issuer: &X509,
+    key: &PKey<openssl::pkey::Private>,
+    revoked: Option<&X509>,
+    stale: bool,
+    extensions: Option<&str>,
+) -> Result<Vec<u8>> {
     let index = match revoked {
         Some(peer) => format!(
             "R\t351231235959Z\t200101000000Z\t{}\tunknown\t/CN=test\n",
@@ -152,7 +176,11 @@ pub(super) async fn make_issuer_crl(
     std::fs::write(directory.join("number"), "01\n")?;
     std::fs::write(directory.join("issuer.pem"), issuer.to_pem()?)?;
     std::fs::write(directory.join("issuer.key"), key.private_key_to_pem_pkcs8()?)?;
-    let configuration = format!("[ca]\ndefault_ca=issuer\n[issuer]\ndatabase={}\ncertificate={}\nprivate_key={}\ndefault_md=sha256\ndefault_crl_days=1\ncrlnumber={}\n", directory.join("index.txt").display(), directory.join("issuer.pem").display(), directory.join("issuer.key").display(), directory.join("number").display());
+    let mut configuration = format!("[ca]\ndefault_ca=issuer\n[issuer]\ndatabase={}\ncertificate={}\nprivate_key={}\ndefault_md=sha256\ndefault_crl_days=1\ncrlnumber={}\n", directory.join("index.txt").display(), directory.join("issuer.pem").display(), directory.join("issuer.key").display(), directory.join("number").display());
+    if let Some(extensions) = extensions {
+        configuration.push_str("crl_extensions=crl_extensions\n[crl_extensions]\n");
+        configuration.push_str(extensions);
+    }
     std::fs::write(directory.join("ca.cnf"), configuration)?;
     let mut command = tokio::process::Command::new("openssl");
     command
@@ -464,6 +492,163 @@ fn issued_peer(
         key,
         chain: Vec::new(),
     })
+}
+
+#[tokio::test]
+async fn scoped_crls_reject_malformed_scope_even_with_valid_signature() -> Result<()> {
+    let directory = Directory::new()?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    for extensions in [
+        "issuingDistributionPoint=critical,DER:01:01:FF\n",
+        "issuingDistributionPoint=critical,DER:30:03:81:01:FF:00\n",
+        "issuingDistributionPoint=DER:30:03:81:01:FF\n",
+        "issuingDistributionPoint=critical,DER:30:03:81:01:FF\n2.5.29.28=critical,DER:30:03:81:01:FF\n",
+        "issuingDistributionPoint=critical,DER:30:06:81:01:FF:82:01:FF\n",
+    ] {
+        let crl = make_extended_crl(&directory.0, &issuer, &key, None, false, Some(extensions)).await?;
+        assert!(X509Crl::from_der(&crl)?.verify(&key)?);
+        assert!(!probe(&[crl], false, false, false, None).await?, "invalid scope must not become an unscoped CRL: {extensions}");
+        assert!(openssl::error::ErrorStack::get().errors().is_empty(), "rejected scope must not leave native errors for later TLS work");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn scoped_crls_enforce_certificate_type_and_complete_path_coverage() -> Result<()> {
+    let directory = Directory::new()?;
+    let root = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let intermediate = issued_peer(&root, &key, true, 510)?;
+    let mut leaf = issued_peer(&intermediate.certificate, &intermediate.key, false, 511)?;
+    leaf.chain.push(intermediate.certificate.clone());
+    let root_crl =
+        make_scoped_crl(&directory.0, &root, &key, None, false, Some("onlyCA=TRUE\n")).await?;
+    for (scope, accepted) in [
+        ("onlyuser=TRUE\n", true),
+        ("onlyCA=TRUE\n", false),
+        ("onlyAA=TRUE\n", false),
+        ("onlysomereasons=keyCompromise\n", false),
+    ] {
+        let scoped = make_scoped_crl(
+            &directory.0,
+            &intermediate.certificate,
+            &intermediate.key,
+            None,
+            false,
+            Some(scope),
+        )
+        .await?;
+        assert_eq!(
+            probe(&[scoped, root_crl.clone()], true, true, false, Some(&leaf)).await?,
+            accepted,
+            "{scope}"
+        );
+    }
+    let scoped = make_scoped_crl(
+        &directory.0,
+        &intermediate.certificate,
+        &intermediate.key,
+        None,
+        false,
+        Some("onlyuser=TRUE\n"),
+    )
+    .await?;
+    let mut forged = scoped.clone();
+    *forged.last_mut().unwrap() ^= 1;
+    assert!(
+        !probe(&[forged, root_crl.clone()], false, false, false, Some(&leaf)).await?,
+        "scoped evidence still requires a valid signature"
+    );
+    assert!(
+        !probe(&[scoped], false, false, false, Some(&leaf)).await?,
+        "leaf coverage cannot replace missing CA evidence"
+    );
+    let revoked = make_scoped_crl(
+        &directory.0,
+        &intermediate.certificate,
+        &intermediate.key,
+        Some(&leaf.certificate),
+        false,
+        Some("onlyuser=TRUE\n"),
+    )
+    .await?;
+    assert!(
+        !probe(&[revoked, root_crl], false, false, false, Some(&leaf)).await?,
+        "scope does not override a revoked leaf"
+    );
+    Ok(())
+}
+
+async fn add_distribution_point(
+    directory: &Path,
+    identity: &mut PeerIdentity,
+    issuer: &X509,
+    key: &PKey<openssl::pkey::Private>,
+) -> Result<()> {
+    let mut request = openssl::x509::X509Req::builder()?;
+    request.set_subject_name(identity.certificate.subject_name())?;
+    request.set_pubkey(&identity.key)?;
+    request.sign(&identity.key, openssl::hash::MessageDigest::sha256())?;
+    std::fs::write(directory.join("scope-peer.pem"), request.build().to_pem()?)?;
+    std::fs::write(directory.join("scope-issuer.pem"), issuer.to_pem()?)?;
+    std::fs::write(directory.join("scope-key.pem"), key.private_key_to_pem_pkcs8()?)?;
+    std::fs::write(directory.join("scope.cnf"), "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1,DNS:localhost\ncrlDistributionPoints=URI:http://pki.example.test/leaf.crl\n")?;
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new("openssl")
+            .kill_on_drop(true)
+            .args(["x509", "-req", "-in"])
+            .arg(directory.join("scope-peer.pem"))
+            .arg("-CA")
+            .arg(directory.join("scope-issuer.pem"))
+            .arg("-CAkey")
+            .arg(directory.join("scope-key.pem"))
+            .args(["-set_serial", "521", "-days", "1", "-extfile"])
+            .arg(directory.join("scope.cnf"))
+            .output(),
+    )
+    .await??;
+    anyhow::ensure!(
+        output.status.success(),
+        "Scoped certificate generation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    identity.certificate = X509::from_pem(&output.stdout)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn scoped_crls_require_matching_distribution_points_and_bound_lifetime() -> Result<()> {
+    let directory = Directory::new()?;
+    let root = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let intermediate = issued_peer(&root, &key, true, 520)?;
+    let mut leaf = issued_peer(&intermediate.certificate, &intermediate.key, false, 521)?;
+    add_distribution_point(&directory.0, &mut leaf, &intermediate.certificate, &intermediate.key)
+        .await?;
+    leaf.chain.push(intermediate.certificate.clone());
+    let root_crl = make_issuer_crl(&directory.0, &root, &key, None, false).await?;
+    for (scope, accepted) in [
+        ("fullname=URI:http://pki.example.test/leaf.crl\nonlyuser=TRUE\n", true),
+        ("fullname=URI:http://pki.example.test/other.crl\nonlyuser=TRUE\n", false),
+    ] {
+        let scoped = make_scoped_crl(
+            &directory.0,
+            &intermediate.certificate,
+            &intermediate.key,
+            None,
+            false,
+            Some(scope),
+        )
+        .await?;
+        assert_eq!(
+            probe(&[scoped, root_crl.clone()], true, true, accepted, Some(&leaf)).await?,
+            accepted,
+            "{scope}"
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test]
