@@ -25,7 +25,7 @@ CLI multi-server failover is not a prerequisite for removing duplicate execution
 ## Implementation Plan
 
 - [x] S5-01: Commit `1ad1630` adds pure failure facts and preserves them through the agent, protobuf conversion, and SDK. Unknown delivery, invalid input, and known-unsent failures remain distinct. See [failure contract](#failure-contract).
-- [ ] S5-02: Consolidate IPC ownership in `tacacsrs-ipc`. Move server adaptation outside the agent, preserve a reusable channel SDK, and carry failure facts through the schema. Update all consumers as a matched set. Record intentional protobuf compatibility breaks.
+- [x] S5-02: Commit `726f805` consolidates IPC ownership and moves server adaptation outside the agent. All consumers use the reusable channel SDK and the same failure schema. See [IPC ownership](#ipc-ownership).
 - [ ] S5-03: Unify CLI direct and IPC operation results and remove proven command or batch duplication. Keep canonical preparation and existing connection modes. Add direct/IPC conformance cases as the acceptance gate for the failure and IPC changes.
 - [ ] S5-04: Verify daemon composition and retained enforcement adapters. Remove only named duplicate algorithms. Verify shared unchanged-command interpretation and fail-closed handling of unsupported mandatory attributes.
 - [ ] S5-05: Mark experimental wrapper and Rego products explicitly and exclude them from supported core release artifacts. Retain their source, opt-in builds, and tests. Leave the broader delivery redesign to Stage 6.
@@ -82,3 +82,31 @@ This checkout has no local `main` ref, so the standard compatibility command can
 The removed retry field's tag and name are reserved. Wire compatibility does not imply semantic compatibility: updated error decoding requires the new facts.
 The daemon, SDK, clients, and emulator therefore remain one matched deployment set.
 No native TLS, YANG, or FFI implementation changes occur in this increment.
+
+## IPC Ownership
+
+Commit `726f805` renames the former client package to `tacacsrs-ipc` and consolidates its client and server transport ownership.
+The package owns generated bindings, conversion, the reusable channel SDK, bounded Unix listeners, and standard gRPC health publication.
+Its server `Handler` uses protocol-domain operations. It has no dependency on agent routing, generated configuration, or networking connectors.
+The agent exposes a domain `ClientApiHandle` and accepts host-composed listeners through `RuntimeListenerService`.
+The daemon maps prepared listener values and health into IPC inputs. Agent shutdown, admission, and raw TACACS+ proxy ownership remain unchanged.
+
+MAI reviewed the inversion before implementation. After restart recovery, Claude Opus 4.8 reviewed the completed extraction and found no blocking defects.
+The follow-up removes a spawned health forwarder. The listener now owns that future directly and drops it on cancellation.
+No duplicate routing or materialization algorithm was added to the daemon.
+Production dependency guards prohibit IPC or tonic in the agent and agent or configuration dependencies in IPC.
+Agent tests can compose IPC through development dependencies.
+
+### Verification
+
+All-feature workspace tests, strict Clippy, build, formatting, and warnings-as-errors rustdoc pass.
+The extracted packages have 191 agent tests and 44 IPC tests. Moved tests retain listener limits, health, cancellation, and socket-cleanup coverage.
+All 70 daemon unit tests, 42 prepared-source tests, and eight process-lifecycle tests pass.
+Health-probe, emulator, CLI, wrapper, and Bash adapter tests pass as part of the matched workspace.
+Both new production dependency guards, unused-dependency analysis, audit, and all 46 version-computation tests pass.
+Audit reports no vulnerabilities in 323 locked packages. Existing index-lock and nightly `fetch_update` warnings remain.
+
+`buf breaking --against '.git#ref=76be797'` passes. The schema package and wire file contents do not change in this extraction.
+Only the Cargo package and source directory move. S5-01's matched-set semantic deployment requirement remains in effect.
+No locked package version, YANG model, protocol parser, or native FFI implementation changes.
+Live SONiC, isolated Redis, external TACACS+ peer, Windows, and container checks were not rerun for this ownership increment.
