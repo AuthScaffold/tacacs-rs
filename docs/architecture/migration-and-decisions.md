@@ -363,6 +363,8 @@ No controller or provider rewrites authoritative credential references during pr
 The [Stage 5 checkpoint](stage-5-adapters.md) records the revised sequence, acceptance checks, and incremental evidence.
 The first change preserves failure facts before restructuring IPC ownership.
 Existing shared preparation and enforcement behavior require verification, not speculative replacement APIs.
+Commit `1ad1630` completes the shared failure contract and its agent, protobuf, SDK, and emulator propagation.
+Workspace gates pass. The IPC package and listener ownership changes remain open.
 
 1. Finish the IPC package split and update the schema to preserve failure facts.
 2. Make the daemon a composition root with no independent routing or materialization algorithm.

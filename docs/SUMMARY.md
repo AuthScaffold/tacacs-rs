@@ -40,3 +40,4 @@
 - [Stage 2 Prepared Endpoints](architecture/stage-2-prepared-endpoints.md)
 - [Stage 3 Routed Client](architecture/stage-3-routed-client.md)
 - [Stage 4 Configuration Controller](architecture/stage-4-configuration-controller.md)
+- [Stage 5 Adapters and Products](architecture/stage-5-adapters.md)
