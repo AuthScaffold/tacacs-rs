@@ -81,6 +81,16 @@ runs:
           }
           END { exit failed }'
 
+    - name: Check supported core dependencies
+      shell: bash
+      run: |
+        cargo tree --edges normal --prefix none |
+          awk '/^(session-wrapper|tacacsrs-agent-ipc-emulator|tacacsrs-agent-ipc-emulatord|regorus|libseccomp)[ -]/ {
+            print "Experimental dependency in supported core: " $0
+            failed = 1
+          }
+          END { exit failed }'
+
     - name: Run unit tests
       shell: bash
       run: |

@@ -366,7 +366,9 @@ Existing shared preparation and enforcement behavior require verification, not s
 Commit `1ad1630` completes the shared failure contract and its agent, protobuf, SDK, and emulator propagation.
 Commit `726f805` completes IPC package and listener ownership. The agent has no production IPC or tonic dependency.
 The daemon composes the IPC handler and listener while the agent retains shutdown and raw-proxy ownership.
-Workspace and matched-set process gates pass. CLI conformance and the remaining product-profile work follow.
+Commit `7785706` unifies direct and IPC CLI responses. Commit `c3dcab9` shares unchanged-command enforcement fixtures across host adapters.
+Default Cargo selection now identifies the 13 supported core packages. Experimental wrapper and Rego products remain explicit builds and CI test targets.
+Workspace and matched-set process gates pass. The final Stage 5 integration checks remain in progress.
 
 1. Finish the IPC package split and update the schema to preserve failure facts.
 2. Make the daemon a composition root with no independent routing or materialization algorithm.
