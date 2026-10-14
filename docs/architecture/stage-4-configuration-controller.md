@@ -2,7 +2,7 @@
 
 ## Status
 
-Stage 4 is in progress as of 2026-10-13. Commit `6a11a83` completes the first increment.
+Stage 4 is in progress as of 2026-10-14. Commit `6a11a83` completes the first increment.
 Commit `1cca6a4` moves configuration recovery and materialization coordination into the agent.
 Commit `75aac8b` adds canonical observation sessions and file watcher ownership. The supervisor now uses observations for startup and recovery.
 Commit `8381d4f` completes S4-02 with owned SONiC observations and removal of transitional APIs.
@@ -25,6 +25,7 @@ Commit `a06fced` adds canonical full-CRL materialization, native CA-path validat
 Commit `f55973a` immediately cuts off replaced endpoints when changed CRL policy or evidence commits, including older draining generations.
 Commit `5b9ba63` adds proactive provider revalidation before expiry without requiring credential notifications.
 Commit `4248339` adds bounded HTTP retrieval for explicitly registered CRL sets without changing canonical references.
+Commit `f53b83f` adds production daemon registration, provider composition, and native HTTP/HTTPS process tests.
 Canonical YANG remains authoritative. Prepared runtime policy remains a derived value.
 The publication, lifecycle, and client-chain contracts are complete. Revocation and statistics remain open.
 
@@ -38,7 +39,7 @@ The startup race and closed-runtime publication fix belong to S4-01, not separat
 - [x] S4-03: Commits `899ca75` and `a3f1727` unify runtime, health, and materialization commits. Commit `044518c` adds revision fencing, and `3f72a8f` coordinates source admission and health. Commit `907cff1` completes policy admission and atomic policy-health publication. See [S4-03 closure](#s4-03-closure).
 - [x] S4-04: Commits `36d9cbc` and `37faec2` establish host signals and teardown budgets. Commits `e91fe02` and `ed47f41` enforce independent source and credential staleness budgets. Commit `8ff62cd` enforces provider validity; `23e7f98` enforces configured client-certificate validity. Commit `7b3eed7` completes peer-path expiry and owned transport retirement. Blocking-code limits remain explicit. See [S4-04 closure](#s4-04-closure).
 - [x] S4-05: Commit `3897414` adds canonical client-chain inputs and provider/PEM adapters. Native mTLS tests cover complete, missing, incorrect, and out-of-order intermediates. Source references remain unchanged. See [S4-05 closure](#s4-05-closure).
-- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval. Daemon registration, certificate-driven retrieval, and unsupported evidence forms remain open. See [HTTP CRL retrieval](#http-crl-retrieval).
+- [ ] S4-06: Commits `567ec16` and `d78cf06` enforce required stapling and authorized delegated responders. Commit `a06fced` adds full CRLs; `f55973a` adds refresh retirement, and `5b9ba63` adds proactive provider revalidation. Commit `4248339` adds explicit HTTP retrieval; `f53b83f` completes daemon registration and HTTPS process validation. Certificate-driven retrieval and unsupported evidence forms remain open. See [daemon registration](#daemon-registration).
 - [ ] S4-07: Populate and export YANG `ServerStatistics` from runtime events. Keep read-only counters outside desired configuration. Verify counters and generation association, then run the complete Stage 4 gates.
 
 ## Policy Observation
@@ -1236,12 +1237,52 @@ Dependency audit reports no vulnerabilities across 323 locked packages; the exis
 
 No YANG, IPC schema, or project unsafe code changes occur. Generator, Miri, Windows, native Redis, and live SONiC checks were not rerun.
 The external TACACS+ peer matrix and external HTTP(S) endpoints were not tested in this increment.
-The local native test exercises HTTP delivery followed by TACACS+ TLS verification, not HTTPS retrieval trust fixtures.
+The initial native test exercises HTTP delivery followed by TACACS+ TLS verification, not HTTPS retrieval trust fixtures.
+
+### Daemon Registration
+
+Commit `f53b83f` exposes `--http-crl-source REFERENCE URL` as a repeatable daemon startup option.
+Matching references form one ordered URL set. Registration retains the provider's location validation and default execution limits.
+The map authorizes locations but does not enable revocation verification or change canonical evidence references.
+URL-map changes require restart. Live canonical source updates can select registered references without authorizing new destinations.
+
+The daemon's `credential_provider` module now owns provider composition.
+HTTP resolution works with canonical file sources and SONiC sources through the same configuration supervisor.
+SONiC resolution remains the fallback for other credential kinds and unregistered references, with its original notification source retained.
+Registered HTTP failures never switch providers. Without registrations, the daemon retains its previous provider selection.
+
+Registration validation precedes source bootstrap and listener binding.
+This prevents an invalid URL map from waiting indefinitely behind an unavailable SONiC source.
+Provider errors omit raw reference and URL values. Locations still must contain no secrets because process arguments and backend diagnostics can expose them.
+
+The existing refresh loop owns HTTP retrieval, failure handling, expiry, and recovery. No separate daemon HTTP worker or desired-policy schema is added.
+The provider is now a normal daemon dependency rather than a test-only dependency. Locked versions remain unchanged.
+The runtime container already includes OpenSSL and CA certificates; this increment does not change its image definition.
+
+#### Process Verification
+
+The native fixture starts the real daemon with a canonical credential bundle and opaque CRL reference.
+It observes repeated HTTP fetches, then serves failures until readiness reports `NOT_SERVING` after credential-catalog withdrawal.
+Restored evidence returns readiness to `SERVING` without restart. The canonical source file remains byte-for-byte unchanged.
+SIGTERM during a stalled refresh closes the HTTP socket, removes the IPC socket, and completes process shutdown.
+
+Startup tests verify that retrieval failure exits without an IPC listener and that SIGTERM cancels a blocked initial fetch.
+A separate process test rejects invalid registration before an unavailable SONiC bootstrap and verifies sanitized errors.
+HTTPS tests accept a trusted matching certificate and reject both an untrusted CA and a mismatched peer address before listener startup.
+Trust overrides are confined to child-process environment variables; the tests do not change host trust stores.
+
+The all-feature workspace suite passes, including 70 daemon unit tests, 24 prepared-source tests, and five host-process tests.
+Strict workspace Clippy, build, nightly formatting, warnings-as-errors rustdoc, book build, editor diagnostics, and whitespace checks pass.
+All four CI dependency guards and unused-dependency analysis pass. Audit reports no vulnerabilities across 323 locked packages.
+The existing audit index-lock warning and nightly `fetch_update` deprecation remain; the Rust 1.88 API is retained.
+
+No YANG, IPC schema, protocol, or project unsafe code changes occur. Generator, Miri, and fuzz checks were not rerun.
+The container image, live SONiC, native Redis, Windows, and independent TACACS+ peer matrix were not rerun.
+HTTP and HTTPS process tests use local peers, not external PKI services.
 
 ### Remaining Work
 
-The stock daemon does not yet expose production HTTP source registration. Embedding hosts can construct the provider directly.
-Daemon registration must retain canonical source references and explicit destination authorization, with process-level refresh and failure tests.
+Explicit HTTP retrieval, daemon registration, and their process lifecycle gates are complete in `4248339` and `f53b83f`.
 Certificate-driven distribution-point discovery, OCSP queries, responder revocation without No Check, and unsupported evidence forms remain S4-06 work.
 S4-07 operational statistics remains open. This increment does not establish full RFC 9887 conformance.
 
