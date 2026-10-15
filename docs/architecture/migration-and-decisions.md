@@ -141,18 +141,24 @@ Each additional host integration has a maintenance and security obligation.
 **Success measure:** shipping products have named acceptance tests and support scope.
 Experimental components do not force native dependencies into core builds.
 
-### D8. Coordinate releases across the workspace
+### D8. Retain computed package versions
 
-**Decision:** use one release version and source tag for the shipped toolkit/application set.
-Prefer a normal version-update commit on the development line followed by immutable artifact builds.
-Retire independent internal-library version propagation and the generated release-source branch after a successful rehearsal.
+**Decision:** retain computed per-library semantic versions, dependency-aware propagation, and computed executable versions.
+The user selected this approach on 2026-10-15 to preserve the option of future crates.io publication.
+This replaces the earlier proposal for one coordinated workspace version.
+Existing version hydration and generated release-source machinery remain supported. Historical tags and artifacts remain intact.
 
-**Rejected alternative:** maintain independent library compatibility analysis without independently supported consumers.
-The current packages are internal and unpublished.
+API analysis should distinguish breaking changes, compatible API additions, and changes that require only a patch increment.
+The current implementation uses `cargo-semver-checks` to distinguish compatible changes from breaking changes.
+Breaking changes increment the major version, or the minor version before 1.0. Compatible changes currently increment the patch version.
+Separate detection of compatible API additions for minor increments is an improvement goal, not an existing capability.
 
-**Cost:** release consumers must adopt the new artifact/version contract.
-**Success measure:** one source commit reproduces one release set, including manifests, binaries, symbols, SBOMs, and checksums.
-Historical tags and artifacts remain intact.
+**Rejected alternative:** remove independent library versions because no external consumers exist today.
+That discards useful release automation and makes later independent publication harder.
+
+**Cost:** maintain accurate API classification, dependency metadata, and tests for computed version increments.
+**Success measure:** an identified source commit and recorded computed versions reproduce one release set, including binaries, symbols, SBOMs, and checksums.
+A matched deployment set does not require every package to share the same version.
 
 ## Staged Implementation
 
@@ -394,16 +400,19 @@ There is no dual-schema support requirement.
 
 ### Stage 6. Simplify delivery and enforce architecture
 
-**Scope:** release versions, CI, generation, packaging, and documentation.
+**Scope:** release verification, CI, generation, packaging, and documentation.
 
-1. Generate package inventories from Cargo metadata, including dependency kind and target conditions.
-2. Enforce the production dependency allowlist from the target architecture.
-3. Run protocol-only, direct-client, IPC, and full Linux profiles in CI.
+**Versioning constraint:** retain computed package versions and API compatibility analysis under D8.
+The former item 5, replacing independent versions with one workspace version, is dropped.
+Improve major/minor classification within the existing model rather than replacing it. Publishing packages to crates.io is not authorized by this scope change.
+
+1. Ask Cargo for the workspace package and dependency inventory. Record normal, build, and test dependencies, including platform conditions.
+2. Check production dependencies against the architecture rules. For example, protocol code must not acquire Tokio or OpenSSL dependencies, and IPC must not depend on the agent.
+3. Build and test the supported package selections separately: pure protocol, direct client, IPC, and the complete Linux workspace. These are CI selections, not new products.
 4. Add authentication and authorization parser fuzz targets for implemented bodies.
-5. Replace independent internal-library version propagation with one coordinated release version.
-6. Rehearse source-to-artifact reproduction, SBOM generation, native dependencies, and rollback.
-7. Remove obsolete crates, scripts, generated release-branch machinery, and architecture guidance only after their replacement gates pass.
-8. Verify pinned YANG generation, supported features, augmentations, and field-to-behavior tests in the relevant configuration gates.
+5. Perform a local release dry run from a known source commit and recorded computed versions. Build archives, checksums, and SBOMs; verify native dependencies and a matched-set rollback procedure.
+6. Remove obsolete crates, scripts, and architecture guidance only after their replacements pass validation. Retained computed-version and release-source machinery are not obsolete merely because they use generated release commits.
+7. Verify pinned YANG generation, supported features, augmentations, and field-to-behavior tests in the relevant configuration gates.
 
 Primary starting points:
 
@@ -413,7 +422,8 @@ Primary starting points:
 - [Container recipe](../../containers/tacacsrs-agentd/Dockerfile)
 - [Schema generation guidance](../../DEVELOPMENT.md#L225)
 
-**Exit gate:** one release rehearsal produces the complete artifact set from an identified source commit.
+**Exit gate:** one release rehearsal produces the complete artifact set from an identified source commit and recorded computed package versions.
+The rehearsal does not publish releases, move existing tags, or change live deployments.
 No completed temporary adapter remains.
 The documentation names actual owners and matches the package graph.
 Dependency rules isolate generated-model interpretation from client execution without prohibiting its use in configuration APIs.
@@ -500,7 +510,7 @@ The redesign is successful when these observable conditions hold:
 - Repeated reloads and canceled operations return resource counts to a bounded baseline.
 - Each retained host adapter applies the same authorization interpretation rules.
 - Every shipping product has a defined support scope and process-level acceptance tests.
-- The release set has one source identity and no unnecessary internal compatibility cascade.
+- The release set records one source identity, computed package versions, and justified dependency-aware version increments.
 
 File count and line count are not acceptance metrics.
 Neither is a smaller number of tests.
@@ -517,7 +527,7 @@ These decisions do not block the architecture recommendation, but they block spe
 | Bash plugin support owner and fork contract | Stage 5 product retention | Retain only with native ABI and host tests |
 | Wrapper threat model and support owner | Any return to supported status | Keep experimental until those requirements exist |
 | Rego scenarios that cannot use deterministic fixtures | Stage 5 test migration | Retain only demonstrated policy needs |
-| Public crates.io distribution intent | Stage 6 release policy | Keep one coordinated version until independent distribution is required |
+| Public crates.io distribution intent | Any public package publication | Retain computed per-library semantic versions and API analysis; decide publication separately |
 
 ## Deliverable Boundary
 
