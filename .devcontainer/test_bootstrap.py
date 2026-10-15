@@ -164,6 +164,36 @@ class ContainerConfigurationTests(unittest.TestCase):
         initializer = (self.directory / "initialize-workspace.sh").read_text(encoding="utf-8")
         self.assertIn("chown -R vscode:vscode /usr/local/cargo/registry /usr/local/cargo/git", initializer)
 
+    def test_image_provides_recent_validation_tools(self):
+        dockerfile = (self.directory / "Dockerfile").read_text(encoding="utf-8")
+        for toolchain in ("1.88.0", "1.91.0", "nightly-2025-11-23"):
+            self.assertIn(f"rustup toolchain install {toolchain} --profile minimal", dockerfile)
+        nightly = next(line for line in dockerfile.splitlines() if "install nightly --" in line)
+        for component in ("rustfmt", "clippy", "miri", "rust-src"):
+            self.assertIn(f"--component {component}", nightly)
+        self.assertIn("rustup default 1.88.0", dockerfile)
+        self.assertIn("python3 -m venv /opt/tacacs-python", dockerfile)
+        for dependency in ("pyang==2.7.1", "pytest==8.4.2", "PyYAML==6.0.3"):
+            self.assertIn(dependency, dockerfile)
+        self.assertIn('ENV PATH="/home/vscode/.local/bin:/opt/tacacs-python/bin:/opt/tacacs-tools/bin:${PATH}"', dockerfile)
+        self.assertIn("cargo-cyclonedx --version 0.5.9 --locked", dockerfile)
+
+    def test_image_provides_native_test_and_release_tools(self):
+        dockerfile = (self.directory / "Dockerfile").read_text(encoding="utf-8")
+        packages = set(dockerfile.split())
+        for package in (
+            "binutils", "build-essential", "libcrypt-dev", "libpcre2-dev",
+            "libseccomp-dev", "libssl-dev", "openssl", "perl", "pkg-config",
+            "redis-server", "redis-tools", "zlib1g-dev",
+        ):
+            self.assertIn(package, packages)
+
+    def test_post_create_installs_the_repository_api_tool(self):
+        script = (self.directory / "post-create.sh").read_text(encoding="utf-8")
+        self.assertIn("cargo +1.91.0 install --path .github/tools/api-classifier --locked", script)
+        self.assertIn('--root "$HOME/.local"', script)
+        self.assertIn('--target-dir "${CARGO_TARGET_DIR:-target}/api-classifier"', script)
+
 
 if __name__ == "__main__":
     unittest.main()
