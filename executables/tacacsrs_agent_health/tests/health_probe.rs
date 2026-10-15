@@ -13,6 +13,30 @@ use tonic_health::ServingStatus;
 const EXIT_NOT_SERVING: i32 = 1;
 const EXIT_CHECK_ERROR: i32 = 3;
 
+#[tokio::test]
+async fn informational_flags_succeed_without_contacting_the_agent() {
+    for flag in ["--help", "--version"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_tacacsrs-agent-health"))
+            .arg(flag)
+            .output()
+            .await
+            .expect("probe must run");
+        assert!(output.status.success(), "{flag} returned {:?}", output.status.code());
+        assert!(!output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn invalid_flags_remain_invocation_errors() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tacacsrs-agent-health"))
+        .arg("--invalid-option")
+        .output()
+        .await
+        .expect("probe must run");
+    assert_eq!(output.status.code(), Some(2));
+}
+
 async fn run_probe(endpoint: &str, check: &str, timeout_seconds: u64) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tacacsrs-agent-health"))
         .args([
