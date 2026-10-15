@@ -46,9 +46,13 @@ RUN cargo +stable install cargo-cyclonedx --version 0.5.9 --locked --root /opt/t
 
 COPY --from=bufbuild/buf:1.47.2 /usr/local/bin/buf /usr/local/bin/buf
 
-ENV PATH="/home/vscode/.local/bin:/opt/tacacs-python/bin:/opt/tacacs-tools/bin:${PATH}"
+ENV PATH="/home/vscode/.local/bin:/opt/tacacs-python/bin:/opt/tacacs-tools/bin:/opt/tacacs-test-server/sbin:${PATH}"
+ENV TACPLUS_SERVER_BINARY=/opt/tacacs-test-server/sbin/tac_plus-ng \
+    TACPLUS_LIBRARY_DIR=/opt/tacacs-test-server/lib
 
-COPY bootstrap-source.sh initialize-workspace.sh post-create.sh /usr/local/share/tacacs-rs/
+COPY bootstrap-source.sh initialize-workspace.sh post-create.sh install-tacplus.sh /usr/local/share/tacacs-rs/
 RUN chmod 755 /usr/local/share/tacacs-rs/*.sh \
     && mkdir -p /workspaces/tacacs-rs /home/vscode/.vscode-server \
     && chown vscode:vscode /workspaces/tacacs-rs /home/vscode/.vscode-server
+
+RUN bash /usr/local/share/tacacs-rs/install-tacplus.sh

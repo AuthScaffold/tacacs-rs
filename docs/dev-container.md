@@ -105,6 +105,10 @@ It keeps Python packages separate from Debian's managed Python environment.
 Native dependencies include the C/C++ toolchain, Perl, OpenSSL, libseccomp, PCRE2, libcrypt, and zlib headers.
 Binutils supplies `objcopy`, `strip`, `nm`, and `readelf` for release checks.
 Redis server and client tools support private local test fixtures. Post-create setup does not start Redis or other test services.
+The image also builds `tac_plus-ng` revision `70bf938b542d63bca00d50be0874a38a290319e0` under `/opt/tacacs-test-server`, including MAVIS libraries and modules.
+The installation records the upstream commit in `source-revision` and removes the temporary build tree.
+`TACPLUS_SERVER_BINARY` and `TACPLUS_LIBRARY_DIR` select this installation for the [native interoperability runner](tacplus-interop.md#devcontainer-server).
+The server does not start automatically. The runner owns temporary loopback listeners and stops them after each scenario.
 It also installs `cargo-audit`, `cargo-fuzz`, `cargo-llvm-cov`, `cargo-outdated`, `cargo-udeps`, and `mdbook`.
 The SBOM generator is pinned to `cargo-cyclonedx` 0.5.9, matching CI.
 Buf comes from the versioned upstream container image.
