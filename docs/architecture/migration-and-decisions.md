@@ -402,6 +402,8 @@ There is no dual-schema support requirement.
 
 **Scope:** release verification, CI, generation, packaging, and documentation.
 
+**Status:** in progress on 2026-10-15. The [Stage 6 checkpoint](stage-6-delivery.md) contains the independently reviewed implementation plan and verification evidence.
+
 **Versioning constraint:** retain computed package versions and API compatibility analysis under D8.
 The former item 5, replacing independent versions with one workspace version, is dropped.
 Improve major/minor classification within the existing model rather than replacing it. Publishing packages to crates.io is not authorized by this scope change.
@@ -410,7 +412,7 @@ Improve major/minor classification within the existing model rather than replaci
 2. Check production dependencies against the architecture rules. For example, protocol code must not acquire Tokio or OpenSSL dependencies, and IPC must not depend on the agent.
 3. Build and test the supported package selections separately: pure protocol, direct client, IPC, and the complete Linux workspace. These are CI selections, not new products.
 4. Add authentication and authorization parser fuzz targets for implemented bodies.
-5. Perform a local release dry run from a known source commit and recorded computed versions. Build archives, checksums, and SBOMs; verify native dependencies and a matched-set rollback procedure.
+5. Use the existing no-release CI path as the release rehearsal, including computed version hydration. Verify archives, checksums, SBOMs, native dependencies, and matched-set rollback instructions. Local checks use isolated source exports and the same packaging operations.
 6. Remove obsolete crates, scripts, and architecture guidance only after their replacements pass validation. Retained computed-version and release-source machinery are not obsolete merely because they use generated release commits.
 7. Verify pinned YANG generation, supported features, augmentations, and field-to-behavior tests in the relevant configuration gates.
 
