@@ -3,7 +3,7 @@
 ## Status
 
 The original Stage 5 work completed on 2026-10-14. Its evidence remains below.
-The human-maintainability follow-up started on 2026-10-15 from `8051b44` after a cross-module review and independent second opinions.
+The human-maintainability follow-up completed on 2026-10-15 from baseline `8051b44`, after implementation and independent final reviews.
 The user authorizes autonomous implementation, breaking API changes, nearby corrections, and incremental local commits.
 Canonical YANG, source immutability, security, and retained capabilities remain requirements. No push is authorized.
 
@@ -21,13 +21,65 @@ The success criterion is fewer unrelated files to understand one behavior, not a
 - [x] S5-M04: Protocol operations have domain-specific homes, service errors live with failure facts, and body/wire names are explicit. IPC bindings use `proto`. Consumers are migrated without compatibility aliases.
 - [x] S5-M05: One private backend and one scheduling path handle CLI direct/IPC operations. Connection modes, password handling, and domain responses remain intact. All 64 CLI tests pass.
 - [x] S5-M06: Publication write methods are co-located, facade/engine and supervision responsibilities are separated, and cache mutation is private. A shared Unix socket leaf crate replaces both copies. Client, connection, session, and catalog lifetimes remain distinct.
-- [ ] S5-M07: Run focused and full validation, independent final review, native integration, and corrected private rustdoc gates. Address further concrete findings or record justified exclusions before closure.
+- [x] S5-M07: Full workspace checks, Rust 1.88, private rustdoc, eight dependency guards, five blocking fuzz targets, nine native peer cases, and isolated Redis coverage pass. Final review findings are resolved below.
 
 Configuration snapshots and credential references remain authoritative. Prepared values remain derived.
 Client, catalog, connection, and session lifetimes stay distinct. Existing revision fences and atomic publication remain intact.
 The concrete production connector and generic internal Send proof remain unchanged.
 Native security boundaries remain explicit. No broad shared-state module or generic framework replaces clear owners.
 Release versioning and artifact-reproduction redesign remain Stage 6.
+
+### Follow-up Evidence
+
+Progress commits are `0347205` (plan), `8bffb19` (API and dispatch ownership), `bcae2a2` (lifecycle and validation), and `6fdb1e2` (final review corrections).
+The configuration facade now delegates parsing to one module. Source contracts and local backends share a home.
+Protocol operations have separate AAA and argument responsibilities. Service errors live with failure facts, and IPC generated bindings use `proto`.
+The CLI uses one backend dispatcher and one batch scheduler. Direct connection modes and IPC channel reuse remain distinct.
+
+The agent separates its public facade, generic engine, observation, refresh, expiry, and tests.
+Catalog and policy writes live beside publication control. Snapshot replacement, health, and coordinator bookkeeping remain one non-awaiting commit.
+Networking separates client selection, exchange, preflight, connection drivers, sessions, and catalog lifetime.
+Only the single-connect owner mutates its cache. Closed or stale publication rejects the upgrade closure before it starts a driver.
+The first valid reply fixes the sharing decision. Both later-flag orderings have a failed-before regression.
+
+A reviewed `tacacsrs-unix-socket` leaf crate replaces duplicated binding, advisory locking, and owned-path cleanup.
+It contains six lifecycle tests and no protocol, configuration, networking, or IPC dependency.
+Its documented trusted-directory assumption remains explicit. Inode checks do not promise atomic protection against hostile path replacement.
+The workspace now has 17 packages and 14 supported-core defaults. Experimental selections remain available.
+
+Three independent final reviewers examined lifecycle behavior, API/CLI behavior, and validation/documentation policy.
+Their concrete findings produced these corrections:
+
+- Load-test concurrency uses `NonZeroUsize`. A failed-before parsing regression now rejects zero rather than permitting a non-progressing engine.
+- Batch errors preserve the cause chain through the final rendering boundary.
+- The Bash plugin inherits workspace lints. Unsafe permissions remain local to native adapters, and pointer-copy helpers expose explicit unsafe contracts.
+- Two C-string ownership tests pass natively and under Miri. They cover null pointers and copied values that outlive host buffers.
+- The aggregate CI result includes the Rust 1.88 job. Every package inherits the workspace MSRV.
+- Contributor instructions and networking documentation match current module names, one-driver ownership, and contiguous frame writes.
+
+The reviews found no blocking lifecycle defect after these changes.
+Runtime and upstream modules still share explicit health/revision vocabulary. No generic shared-state framework replaces those contracts.
+The concrete production connector and generic internal Send proof remain intact.
+
+Final checks pass: workspace tests, blocking Clippy, format check, build, Rust 1.88 checks, warnings-as-errors private rustdoc, book build, and editor diagnostics.
+Tests include 187 agent tests, 185 active networking tests with two manual baselines ignored, 92 configuration unit tests, 38 IPC tests, and six socket tests.
+The daemon retains 70 unit tests, 42 prepared-source tests, and eight process-lifecycle tests. CLI tests total 66, and Bash tests total six.
+Unused-dependency analysis and all eight architectural dependency guards pass.
+Audit reports no vulnerabilities in 324 locked packages, with the existing crates.io index-lock warning.
+The protobuf compatibility check passes against `8051b44`. No wire schema, canonical YANG artifact, or resolved dependency version changes.
+
+All five parser fuzz targets pass 30-second sanitizer runs, with private writable corpora and unchanged checked-in seeds.
+Their logs are `target/tmp/s5m-fuzz_*.log`.
+All nine independent TACACS+ peer cases pass against revision `278d8c738cfb2ed8ba505fd1b60575fcc3fadca5` with OpenSSL 3.0.20.
+Serial all-feature workspace coverage with isolated Redis passes: 33,000 of 37,317 lines, or 88.43%.
+The artifacts are `target/tmp/s5-maintainability.lcov` and `target/tmp/s5-maintainability-coverage.log`.
+The coverage denominator changed after test-module extraction, so it is not directly comparable with the original Stage 5 report.
+The private Redis fixture stopped and its directory was removed after validation.
+
+Windows execution, live SONiC, container release builds, and the host-container-backed health shell smoke were not run.
+The health script's syntax and both build inputs were checked. Native daemon and health-probe process tests passed.
+Native OpenSSL remains outside Miri coverage. Existing Stage 4 supported-profile exclusions remain unchanged.
+No live VM was restarted or modified. Stage 6 has not started.
 
 ### Original Review
 
