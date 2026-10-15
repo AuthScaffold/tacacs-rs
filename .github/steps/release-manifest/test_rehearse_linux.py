@@ -170,7 +170,10 @@ def test_build_cache_never_writes_into_source_checkout(tmp_path):
     output = tmp_path / "rehearsal"
     assert build_directory(source, output, None) == output / "build"
     assert build_directory(source, output, str(tmp_path / "cache")) == tmp_path / "cache"
-    for forbidden in (source, source / "target", output, output / "source"):
+    forbidden_paths = [source, source / "target", output]
+    for name in ("source", "staging", "packaged", "release", "rollback"):
+        forbidden_paths.extend((output / name, output / name / "target"))
+    for forbidden in forbidden_paths:
         with pytest.raises(RehearsalError, match="build cache"):
             build_directory(source, output, str(forbidden))
 

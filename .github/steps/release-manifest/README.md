@@ -107,7 +107,8 @@ temporary directory, then cover the digest map, symbolic-link rejection,
 basename collisions, the versions map, schema identities, and assembly tools.
 They also check build evidence against TAR and ZIP contents, reject inconsistent
 records, and preserve the self-hash exclusion. The shared SBOM tests cover JSON
-and XML sanitization. They never call Cargo or reach the network.
+and XML sanitization. Identity tests use Cargo metadata with temporary manifests.
+The tests never compile crates or reach the network.
 
 ## Linux release rehearsal
 
@@ -124,6 +125,11 @@ The rehearsal and CI share `stage-sbom-files/stage_sbom.py` and
 `build_provenance.py`. JSON and XML SBOMs are required. The output directory must
 be new or empty. Existing files are never deleted. The helpers require Python
 3.11 or later.
+
+The output directory must be outside the source checkout. `--build-cache` accepts
+a trusted Cargo target directory for repeated builds. The default is
+`<output>/build`. The cache cannot overlap source, staging, packaged, release,
+or rollback directories. Release output remains separate and must be empty.
 
 ```bash
 python3 .github/steps/release-manifest/rehearse_linux.py \

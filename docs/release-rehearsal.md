@@ -150,6 +150,13 @@ The output directory must be new or empty. The tool rejects nonempty directories
 including directories from failed or completed rehearsals. It never deletes their
 contents. Use a new directory for each run to exclude stale archives.
 
+The output directory must be outside the source checkout. The default Cargo
+target directory is `<output>/build`. For repeated builds, `--build-cache` accepts
+a trusted existing Cargo target directory. It cannot overlap the source checkout
+or the exported source, staging, packaged, release, or rollback directories.
+The tool does not delete the cache. A shared cache does not permit existing
+release output.
+
 ```bash
 python3 .github/steps/release-manifest/rehearse_linux.py \
   --source . \

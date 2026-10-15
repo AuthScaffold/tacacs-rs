@@ -765,8 +765,14 @@ def require_empty_output(output: Path) -> None:
 def build_directory(source: Path, output: Path, cache: str | None) -> Path:
     """Select a Cargo cache without permitting writes into the source checkout."""
     candidate = (Path(cache) if cache else output / "build").resolve()
-    if candidate.is_relative_to(source.resolve()) or candidate == output.resolve() or candidate == (output / "source").resolve():
-        raise RehearsalError("build cache must be separate from the source checkout and exported source")
+    protected_roots = [
+        source,
+        *(output / name for name in ("source", "staging", "packaged", "release", "rollback")),
+    ]
+    if candidate == output.resolve() or any(
+        candidate.is_relative_to(root.resolve()) for root in protected_roots
+    ):
+        raise RehearsalError("build cache must be separate from source and release directories")
     return candidate
 
 
