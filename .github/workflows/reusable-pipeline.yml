@@ -98,7 +98,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: ./.github/steps/setup-rust
         with:
-          toolchain: '1.88.0'
+          toolchain: '1.91.0'
           components: clippy rustfmt
           cache-key: delivery-tools
           install-libseccomp-dev: 'false'
@@ -107,13 +107,20 @@ jobs:
         shell: bash
         run: |
           python3 -m pip install pytest==8.4.2 PyYAML==6.0.3
-          rustup toolchain install nightly-2025-08-02 --profile minimal
+          rustup toolchain install nightly-2025-11-23 --profile minimal
       - name: Test delivery scripts and workflow contracts
         shell: bash
         run: python3 -m pytest .github/steps/cargo-metadata .github/steps/check-architecture .github/steps/compute-versions .github/steps/inject-versions .github/steps/release-manifest
       - name: Test API classification against real Git fixtures
         shell: bash
-        run: cargo test --manifest-path .github/tools/api-classifier/Cargo.toml --locked
+        run: env -u CARGO_TARGET_DIR cargo +1.91.0 test --manifest-path .github/tools/api-classifier/Cargo.toml --locked
+      - name: Install dependency auditor
+        uses: taiki-e/install-action@7be9fd86bd1707236395105d6e9329dd1511a7e1 # v2.79.0
+        with:
+          tool: cargo-audit
+      - name: Audit API classifier dependencies
+        shell: bash
+        run: cargo audit --file .github/tools/api-classifier/Cargo.lock
 
   msrv:
     name: Minimum Rust 1.88

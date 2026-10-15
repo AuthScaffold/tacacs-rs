@@ -26,7 +26,7 @@ DEFAULT_BINARY = "api-classifier"
 
 # The toolchain the binary uses to render rustdoc JSON for both engines. It must
 # emit a rustdoc JSON format that the pinned analysis libraries understand.
-DEFAULT_TOOLCHAIN = "nightly-2025-08-02"
+DEFAULT_TOOLCHAIN = "nightly-2025-11-23"
 
 
 class ApiBump(enum.Enum):

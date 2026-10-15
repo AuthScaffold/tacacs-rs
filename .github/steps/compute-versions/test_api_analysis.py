@@ -70,7 +70,6 @@ class TestClassifyApiChangeSuccess:
             classify_api_change(
                 "tacacsrs-protocol", "tacacsrs-protocol-v0.3.0",
                 workspace_root=tmp_path, binary="/opt/api-classifier",
-                toolchain="nightly-2025-08-02",
             )
         command = run.call_args.args[0]
         assert command[0] == "/opt/api-classifier"
@@ -78,7 +77,7 @@ class TestClassifyApiChangeSuccess:
         assert "--baseline-rev" in command and "tacacsrs-protocol-v0.3.0" in command
         assert "--manifest-path" in command
         assert str(tmp_path / "Cargo.toml") in command
-        assert "--toolchain" in command and "nightly-2025-08-02" in command
+        assert "--toolchain" in command and "nightly-2025-11-23" in command
 
 
 # ---------------------------------------------------------------------------

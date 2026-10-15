@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const TOOLCHAIN: &str = "nightly-2025-08-02";
+const TOOLCHAIN: &str = "nightly-2025-11-23";
 const BASELINE_TAG: &str = "fixture-lib-v1.0.0";
 
 fn toolchain_available() -> bool {
@@ -153,6 +153,14 @@ fn setup_feature_change(baseline_features: &str, current_features: &str) -> Temp
 /// a path dependency. rustdoc cannot inline the foreign module, so `public-api`
 /// reports a missing item ID and the adapter must fail closed.
 fn setup_foreign_module_reexport() -> TempRepo {
+    setup_with_dependency(
+        "pub mod inner {\n    pub fn helper() {}\n}\n",
+        "pub use dep::inner;\n",
+        "pub use dep::inner;\npub fn extra() {}\n",
+    )
+}
+
+fn setup_with_dependency(dependency: &str, baseline_lib: &str, current_lib: &str) -> TempRepo {
     let repo = TempRepo::new();
     let root = &repo.path;
 
@@ -164,12 +172,12 @@ fn setup_foreign_module_reexport() -> TempRepo {
         &root.join("dep/Cargo.toml"),
         "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
     );
-    write(&root.join("dep/src/lib.rs"), "pub mod inner {\n    pub fn helper() {}\n}\n");
+    write(&root.join("dep/src/lib.rs"), dependency);
     write(
         &root.join("fixture-lib/Cargo.toml"),
         "[package]\nname = \"fixture-lib\"\nversion = \"1.0.0\"\nedition = \"2021\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
     );
-    write(&root.join("fixture-lib/src/lib.rs"), "pub use dep::inner;\n");
+    write(&root.join("fixture-lib/src/lib.rs"), baseline_lib);
 
     git(root, &["init", "-q"]);
     git(root, &["config", "user.email", "test@example.com"]);
@@ -178,12 +186,56 @@ fn setup_foreign_module_reexport() -> TempRepo {
     git(root, &["commit", "-qm", "baseline"]);
     git(root, &["tag", BASELINE_TAG]);
 
-    // Add an item so there is a current-vs-baseline diff to classify.
-    write(&root.join("fixture-lib/src/lib.rs"), "pub use dep::inner;\npub fn extra() {}\n");
-    git(root, &["add", "-A"]);
-    git(root, &["commit", "-qm", "change"]);
+    if baseline_lib != current_lib {
+        write(&root.join("fixture-lib/src/lib.rs"), current_lib);
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-qm", "change"]);
+    }
 
     repo
+}
+
+fn render_api(
+    repo: &Path,
+    document_private_items: bool,
+) -> (public_api::PublicApi, serde_json::Value) {
+    let target = tempfile::tempdir().unwrap();
+    let mut stderr = Vec::new();
+    let json_path = rustdoc_json::Builder::default()
+        .toolchain(TOOLCHAIN.to_owned())
+        .manifest_path(repo.join("Cargo.toml"))
+        .package("fixture-lib")
+        .all_features(true)
+        .document_private_items(document_private_items)
+        .target_dir(target.path())
+        .build_with_captured_output(std::io::sink(), &mut stderr)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&stderr)));
+    let api = public_api::Builder::from_rustdoc_json(&json_path)
+        .build()
+        .unwrap();
+    let json = serde_json::from_reader(std::fs::File::open(json_path).unwrap()).unwrap();
+    (api, json)
+}
+
+fn assert_external_default_is_missing(api: &public_api::PublicApi, json: &serde_json::Value) {
+    let (trait_id, _) = json["paths"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, path)| path["path"] == serde_json::json!(["dep", "Wire"]))
+        .expect("external trait has a path summary");
+    let trait_id: u32 = trait_id.parse().unwrap();
+    assert!(json["index"][trait_id.to_string()].is_null());
+    assert!(api.missing_item_ids().any(|id| *id == trait_id));
+    let implementation = json["index"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|item| &item["inner"]["impl"])
+        .find(|implementation| implementation["trait"]["id"] == trait_id)
+        .expect("implementation is present even though its trait definition is absent");
+    assert_eq!(implementation["provided_trait_methods"], serde_json::json!(["sequence"]));
+    assert_eq!(implementation["items"], serde_json::json!([]));
 }
 
 fn run_tool(repo: &Path) -> Output {
@@ -191,7 +243,6 @@ fn run_tool(repo: &Path) -> Output {
         .args(["--package", "fixture-lib", "--baseline-rev", BASELINE_TAG])
         .arg("--manifest-path")
         .arg(repo.join("Cargo.toml"))
-        .args(["--toolchain", TOOLCHAIN])
         .current_dir(repo)
         .output()
         .expect("run api-classifier")
@@ -230,11 +281,80 @@ fn new_public_function_is_minor() {
 }
 
 #[test]
+fn protocol_style_derived_trait_api_fails_closed() {
+    require_toolchain();
+    let lib = r#"
+use bitflags::bitflags;
+use num_enum::TryFromPrimitive;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
+pub enum PacketType { Authentication = 1, Authorization = 2 }
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Flags: u8 { const SINGLE_CONNECT = 4; }
+}
+
+pub trait Body {
+    fn bytes(&self) -> Vec<u8>;
+    fn length(&self) -> usize { self.bytes().len() }
+}
+
+#[derive(Debug, Clone)]
+pub struct Header { pub packet_type: PacketType, pub flags: Flags, pub sequence: u8 }
+
+impl Body for Header {
+    fn bytes(&self) -> Vec<u8> { vec![self.sequence] }
+}
+"#;
+    let repo = setup_with_features(
+        lib,
+        lib,
+        "\n[dependencies]\nbitflags = \"=2.13.2\"\nnum_enum = \"=0.7.6\"\n",
+    );
+    let output = run_tool(&repo.path);
+    assert_incomplete(&output);
+}
+
+#[test]
 fn removed_public_function_is_major() {
     require_toolchain();
     let repo = setup("pub fn alpha() {}\npub fn beta() {}\n", "pub fn alpha() {}\n");
     let output = run_tool(&repo.path);
     assert_eq!(bump_of(&output), "major");
+}
+
+#[test]
+fn external_default_method_change_fails_closed_even_when_rendered_api_matches() {
+    require_toolchain();
+    let lib = "pub struct Header;\nimpl dep::Wire for Header {}\n";
+    let repo =
+        setup_with_dependency("pub trait Wire { fn sequence(&self) -> u8 { 0 } }\n", lib, lib);
+    let baselines: Vec<_> = [false, true]
+        .into_iter()
+        .map(|private| {
+            let (api, json) = render_api(&repo.path, private);
+            assert_eq!(json["includes_private"], private);
+            assert_external_default_is_missing(&api, &json);
+            (private, api)
+        })
+        .collect();
+
+    write(
+        &repo.path.join("dep/src/lib.rs"),
+        "pub trait Wire { fn sequence(&self) -> u16 { 0 } }\n",
+    );
+    git(&repo.path, &["add", "-A"]);
+    git(&repo.path, &["commit", "-qm", "change inherited return type"]);
+
+    for (private, baseline) in baselines {
+        let (current, json) = render_api(&repo.path, private);
+        assert_external_default_is_missing(&current, &json);
+        let diff = public_api::diff::PublicApiDiff::between(baseline, current);
+        assert!(diff.added.is_empty() && diff.removed.is_empty() && diff.changed.is_empty());
+    }
+    assert_incomplete(&run_tool(&repo.path));
 }
 
 #[test]
@@ -332,6 +452,10 @@ fn foreign_module_reexport_fails_closed() {
     // closed with no JSON on standard output rather than risk a too-low bump.
     let repo = setup_foreign_module_reexport();
     let output = run_tool(&repo.path);
+    assert_incomplete(&output);
+}
+
+fn assert_incomplete(output: &Output) {
     assert!(!output.status.success(), "expected a non-zero exit for an incomplete surface");
     assert!(
         output.stdout.is_empty(),

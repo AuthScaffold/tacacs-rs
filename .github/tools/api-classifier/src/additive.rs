@@ -14,9 +14,9 @@
 //!   breaking result, never a silent patch.
 //!
 //! It fails closed on an incomplete surface. If the rendered API references
-//! items that are missing from the rustdoc JSON (for example a re-export of a
-//! foreign module), the diff cannot be trusted, so the analysis returns an
-//! error instead of a possibly wrong verdict.
+//! items that are missing from the rustdoc JSON, the analysis returns an error.
+//! Missing items include foreign module re-exports and external trait
+//! definitions needed to expand inherited default methods.
 
 use std::path::Path;
 
@@ -118,31 +118,33 @@ fn render_public_api(manifest_path: &Path, package: &str, toolchain: &str) -> Re
 
 /// Fail closed when a rendered public API is incomplete.
 ///
-/// `public-api` records the rustdoc JSON IDs of items that are referenced from
-/// the public API but missing from the JSON. This happens for re-exports of
-/// foreign modules (cargo-public-api issue 103): rustdoc records the re-export
-/// but cannot inline the foreign module's items, so they are referenced yet
-/// absent. When that happens, the diff cannot see additions, removals, or
-/// changes inside the re-exported module, so an additive-or-patch verdict would
-/// be unsound. This analysis therefore refuses to classify an incomplete
-/// surface rather than risk a wrong, silently-too-low bump.
+/// `public-api` 0.52.0 records every failed item lookup, including repeated
+/// lookups of external traits while it expands inherited default methods.
+/// These are not necessarily missing implementation records. An implementation
+/// can be present while its trait definition and default-method signatures are
+/// absent. Private-item documentation does not supply external definitions.
 ///
-/// This is deliberately specific. It keys off `missing_item_ids`, which is
-/// populated only when a referenced item is genuinely absent from the JSON. A
-/// complete surface, including one that re-exports individual foreign items that
-/// rustdoc does inline, reports no missing IDs and classifies normally.
+/// Foreign module re-exports can also leave unresolved IDs. Neither case is
+/// safe to ignore: an unchanged rendered API does not prove that the missing
+/// surface is unchanged. Keep the guard until a structured analysis can cover
+/// those definitions. Deduplication below affects diagnostics only.
 fn reject_incomplete_surface(api: &PublicApi, package: &str) -> Result<()> {
     let missing: Vec<u32> = api.missing_item_ids().copied().collect();
     if !missing.is_empty() {
+        let count = missing.len();
+        let mut distinct = missing;
+        distinct.sort_unstable();
+        distinct.dedup();
         bail!(
             "the public API of `{package}` is incomplete: `public-api` could not \
-             resolve {count} referenced item(s) in the rustdoc JSON. This happens \
-             when the crate re-exports a foreign module (`pub use other_crate::some_module`), \
-             whose items rustdoc cannot inline. The surface diff cannot see changes \
-             inside such a re-export, so this adapter refuses to classify it rather \
-             than risk a too-low bump. Re-export the specific items instead of the \
-             whole foreign module. Unresolved rustdoc IDs: {missing:?}",
-            count = missing.len(),
+             resolve {count} referenced lookup(s) ({unique} distinct IDs) in the \
+             rustdoc JSON. Missing definitions can include external traits needed \
+             to expand inherited default methods, or foreign module re-exports. \
+             Implementation records and unchanged rendered text do not establish \
+             that this missing surface is unchanged. The adapter refuses to \
+             classify it rather than risk a too-low bump. Unresolved rustdoc IDs: \
+             {distinct:?}",
+            unique = distinct.len(),
         );
     }
     Ok(())

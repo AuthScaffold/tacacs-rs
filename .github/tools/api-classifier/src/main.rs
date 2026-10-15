@@ -63,7 +63,7 @@ struct Args {
 
     /// Toolchain used to render rustdoc JSON for both engines. It must emit a
     /// rustdoc JSON format that the pinned analysis libraries understand.
-    #[arg(long, default_value = "nightly-2025-08-02")]
+    #[arg(long, default_value = "nightly-2025-11-23")]
     toolchain: String,
 }
 

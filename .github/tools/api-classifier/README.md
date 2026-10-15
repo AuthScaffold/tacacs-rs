@@ -76,7 +76,7 @@ api-classifier \
   --package tacacsrs-protocol \
   --baseline-rev tacacsrs-protocol-v0.3.0 \
   --manifest-path /path/to/workspace/Cargo.toml \
-  --toolchain nightly-2025-08-02
+  --toolchain nightly-2025-11-23
 ```
 
 ## Toolchain and rustdoc format
@@ -86,10 +86,10 @@ analysis libraries understand:
 
 | Component | Version | rustdoc JSON format |
 | --- | --- | --- |
-| `cargo-semver-checks` | `0.44.0` | supports 45, 53, 55, 56 |
-| `public-api` | `0.50.1` (via `rustdoc-types` 0.55.0) | 55 (min nightly `nightly-2025-08-02`) |
+| `cargo-semver-checks` | `0.47.0` | supports 56, 57 |
+| `public-api` | `0.52.0` (via `rustdoc-types` 0.57.4) | 57 |
 
-`nightly-2025-08-02` emits rustdoc JSON **format 55**, which both engines
+`nightly-2025-11-23` emits rustdoc JSON **format 57**, which both engines
 accept, so one toolchain serves both. The adapter sets `RUSTUP_TOOLCHAIN` for
 its subprocesses, so `cargo-semver-checks` and the rustdoc build both use
 `--toolchain`.
@@ -97,15 +97,48 @@ its subprocesses, so `cargo-semver-checks` and the rustdoc build both use
 Install it with:
 
 ```bash
-rustup toolchain install nightly-2025-08-02 --profile minimal
+rustup toolchain install nightly-2025-11-23 --profile minimal
 ```
 
-The adapter binary itself builds on the workspace toolchain (`1.88`). The pinned
-`Cargo.lock` uses MSRV-aware resolution to keep every dependency buildable on
-`1.88`.
+The adapter binary requires Rust **1.91**. The product workspace still requires
+Rust **1.88**. The separate tool lockfile uses MSRV-aware resolution for Rust 1.91.
+
+`cargo-semver-checks` 0.44 and 0.45 depend on vulnerable `gix-date` 0.10.
+Version 0.46 depends on vulnerable `gix-date` 0.11.
+Version 0.47 requires Rust 1.91 and resolves to fixed `gix-date` 0.13.0.
+This upgrade fixes RUSTSEC-2025-0140 and removes the transitive `atty` dependency.
+It also removes JSON 55 support, so callers must use the new nightly pin.
+
+The exact `public-api` pin matters: version 0.52.2 reads JSON 59, not JSON 57.
+The minimum-nightly constant in version 0.52.0 is stale. Use the verified pin above.
+
+## Validation
+
+Run these commands from the repository root:
+
+```bash
+rustup toolchain install 1.91.0 --profile minimal --component clippy
+env -u CARGO_TARGET_DIR cargo +1.91.0 test --manifest-path .github/tools/api-classifier/Cargo.toml --locked
+cargo audit --file .github/tools/api-classifier/Cargo.lock
+cargo +nightly fmt --manifest-path .github/tools/api-classifier/Cargo.toml -- --check
+cargo +1.91.0 clippy --manifest-path .github/tools/api-classifier/Cargo.toml --all-targets --all-features --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo +1.91.0 doc --manifest-path .github/tools/api-classifier/Cargo.toml --no-deps --all-features --document-private-items --locked
+```
+
+The twelve integration fixtures use temporary Git repositories and real compiler output.
+They fail when the pinned nightly is missing. Most fixtures exercise the CLI default;
+the missing-baseline fixture also exercises an explicit `--toolchain`.
+Do not export `CARGO_TARGET_DIR` for these tests. Child builds can inherit it and collide.
 
 ## Limitations
 
+- Automatic classification is not ready for the product workspace. The real
+  protocol package fails closed because rustdoc omits external trait definitions.
+  Its 1,134 unresolved lookups refer to 49 external traits. Private-item output
+  does not resolve them. A regression proves that an inherited default method
+  can change its return type without a rendered diff. The completeness guard
+  must remain until an analyzer resolves these definitions and cross-crate
+  identities. A manual release decision needs explicit review.
 - Both API engines analyze every feature. `cargo-semver-checks` runs with
   `--all-features`, and the surface (`public-api`) check renders its rustdoc
   JSON with `--all-features` too, so an addition behind a non-default feature is
