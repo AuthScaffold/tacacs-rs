@@ -13,6 +13,10 @@
 - [tacacsrs-agentd Daemon](tacacsrs-agentd.md)
 - [YANG Configuration](yang-config-guide.md)
 
+# Release
+
+- [Release Rehearsal](release-rehearsal.md)
+
 # Migration
 
 - [Plain TACACS+ to TACACS+ over TLS](tacacs-plus-tls-transition.md)

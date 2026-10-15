@@ -1,0 +1,38 @@
+# Standalone, CI-only tool. It is intentionally its own workspace so it never
+# joins the product workspace graph, lockfile, or release member set.
+[workspace]
+# MSRV-aware resolution keeps the locked dependency versions buildable on the
+# workspace toolchain instead of silently requiring a newer compiler.
+resolver = "3"
+
+[package]
+name = "api-classifier"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+license = "MIT"
+description = "CI-only typed adapter that classifies a crate's public-API change as patch, minor, or major."
+
+[[bin]]
+name = "api-classifier"
+path = "src/main.rs"
+
+[dependencies]
+cargo-semver-checks = "=0.44.0"
+# public-api 0.50.1 reads rustdoc JSON format 55, which both nightly-2025-08-02
+# and cargo-semver-checks 0.44 agree on, so one toolchain serves both engines.
+# (0.52 moved to format 57, which cargo-semver-checks 0.44 cannot read.)
+public-api = "=0.50.1"
+rustdoc-json = "=0.9.10"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Owned temporary directories for rustdoc target dirs and the baseline worktree.
+# Already resolved in the locked graph transitively; this makes the edge direct.
+tempfile = "3"
+
+[profile.release]
+# The tool is short-lived in CI. Favour fast builds over runtime micro-gains.
+opt-level = 0

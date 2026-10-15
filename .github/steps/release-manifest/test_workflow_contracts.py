@@ -1,0 +1,81 @@
+"""Check the publication boundary and required delivery gates in real workflows."""
+
+from pathlib import Path
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def workflow(name):
+    return yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
+
+
+def test_no_release_computes_and_hydrates_without_publication():
+    jobs = workflow("ci.yml")["jobs"]
+    assert jobs["compute-versions"]["if"] == "github.event_name == 'push'"
+    assert "skip-release" not in jobs["pipeline"]["with"]["versions"]
+    assert "compute-versions.outputs.versions" in jobs["pipeline"]["with"]["versions"]
+    assert "skip-release == 'true'" in jobs["pipeline"]["with"]["include-container-build"]
+    for name in ("release", "container-stage"):
+        assert "skip-release != 'true'" in jobs[name]["if"]
+        assert "github.event_name == 'push'" in jobs[name]["if"]
+    assert {"compute-versions", "release-policy"} <= set(jobs["ci-success"]["needs"])
+
+
+def test_delivery_gates_and_profiles_are_required():
+    jobs = workflow("reusable-pipeline.yml")["jobs"]
+    assert {"automation-tests", "msrv", "consumer-profiles", "finalize-release-assets"} <= set(jobs["ci-success"]["needs"])
+    profiles = jobs["consumer-profiles"]["strategy"]["matrix"]["config"]
+    assert len(profiles) == 3
+    steps = jobs["finalize-release-assets"]["steps"]
+    uses = [step.get("uses", "") for step in steps]
+    assert uses.index("./.github/steps/release-manifest") < uses.index("./.github/steps/generate-checksums")
+
+
+def test_rehearsal_container_does_not_publish_by_default():
+    action = yaml.load((ROOT / ".github/steps/container-image/action.yml").read_text(), Loader=yaml.BaseLoader)
+    assert action["inputs"]["publish"]["default"] == "false"
+    container_steps = workflow("reusable-pipeline.yml")["jobs"]["container-build"]["steps"]
+    for step in container_steps:
+        if step.get("uses") == "./.github/steps/container-image":
+            assert step["with"].get("publish", "false") == "false"
+
+
+def test_build_provenance_precedes_archives_and_uses_build_inputs():
+    steps = workflow("reusable-pipeline.yml")["jobs"]["official-build"]["steps"]
+    names = [step.get("name", "") for step in steps]
+    capture_index = names.index("Capture build provenance")
+    assert names.index("Package SBOMs") < capture_index
+    assert names.index("Package debug symbols") < capture_index
+    assert names.index("Collect OpenSSL runtime DLLs") < capture_index
+    assert capture_index < names.index("Create Linux archive")
+    assert capture_index < names.index("Create Windows archive")
+    capture = steps[capture_index]
+    assert ".github/steps/release-manifest/build_provenance.py" in capture["run"]
+    for flag in ("--package-dir", "--package-root", "--source", "--target", "--profile", "--features", "--versions-json", "--upload-dir packaged"):
+        assert flag in capture["run"]
+    assert capture["env"]["PROVENANCE_SOURCE"] == "${{ github.sha }}"
+    assert capture["env"]["PROVENANCE_VERSIONS"] == "${{ inputs.versions }}"
+    upload = next(step for step in steps if step.get("name") == "Upload packaged artifact")
+    assert upload["with"]["path"] == "packaged/*"
+
+
+def test_manifest_receives_records_between_staging_and_checksums():
+    steps = workflow("reusable-pipeline.yml")["jobs"]["finalize-release-assets"]["steps"]
+    uses = [step.get("uses", "") for step in steps]
+    index = uses.index("./.github/steps/release-manifest")
+    assert uses.index("./.github/steps/stage-release-assets") < index < uses.index("./.github/steps/generate-checksums")
+    assert steps[index]["with"]["provenance-directory"] == "raw/packages"
+    action = yaml.load((ROOT / ".github/steps/release-manifest/action.yml").read_text(), Loader=yaml.BaseLoader)
+    assert action["inputs"]["provenance-directory"]["required"] == "true"
+    assert '--provenance-dir "$INPUT_PROVENANCE_DIRECTORY"' in action["runs"]["steps"][0]["run"]
+
+
+def test_ci_uses_shared_sbom_helper():
+    action = yaml.load((ROOT / ".github/steps/stage-sbom-files/action.yml").read_text(), Loader=yaml.BaseLoader)
+    command = action["runs"]["steps"][0]["run"]
+    assert '"$ACTION_PATH/stage_sbom.py"' in command
+    assert "jq " not in command
+    assert "sed " not in command

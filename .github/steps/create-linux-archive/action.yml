@@ -11,9 +11,9 @@ runs:
   steps:
     - name: Create Linux archive
       shell: bash
-      run: |
-        mkdir -p packaged
-        tar \
-          -C "$(dirname "$PACKAGE_DIR")" \
-          -czf "packaged/${{ inputs.asset-name }}.tar.gz" \
-          "$(basename "$PACKAGE_DIR")"
+      env:
+        # Pass the caller input through the environment so it never reaches the
+        # shell as code. PACKAGE_DIR already lives in the job environment from
+        # compute-package-names.
+        ASSET_NAME: ${{ inputs.asset-name }}
+      run: bash "${{ github.action_path }}/run.sh"
