@@ -359,7 +359,10 @@ No controller or provider rewrites authoritative credential references during pr
 
 **Scope:** daemon, CLI, IPC, proxy, health probe, host integration, and test scenarios.
 
-**Status:** complete as of 2026-10-14. Claude Opus 4.8 reviewed the implementation plan before code changes.
+**Status:** original implementation complete on 2026-10-14; human-maintainability follow-up in progress on 2026-10-15.
+The user approved the cross-module review recommendations, autonomous implementation, breaking APIs, and incremental progress commits.
+The [follow-up checklist](stage-5-adapters.md#human-maintainability-follow-up) tracks correctness, lint policy, API layout, ownership, and final independent review.
+Claude Opus 4.8 reviewed the original implementation plan before code changes.
 The [Stage 5 checkpoint](stage-5-adapters.md) records the revised sequence, acceptance checks, and incremental evidence.
 The first change preserves failure facts before restructuring IPC ownership.
 Existing shared preparation and enforcement behavior require verification, not speculative replacement APIs.

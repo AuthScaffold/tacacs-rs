@@ -2,11 +2,34 @@
 
 ## Status
 
-Stage 5 is complete as of 2026-10-14. Work started from `76be797`, after the Stage 4 supported-profile closure.
+The original Stage 5 work completed on 2026-10-14. Its evidence remains below.
+The human-maintainability follow-up started on 2026-10-15 from `8051b44` after a cross-module review and independent second opinions.
 The user authorizes autonomous implementation, breaking API changes, nearby corrections, and incremental local commits.
 Canonical YANG, source immutability, security, and retained capabilities remain requirements. No push is authorized.
 
 ## Independent Plan Review
+
+### Human-Maintainability Follow-up
+
+The user approved implementation of the reviewed layout improvements, breaking APIs, autonomous progress, and local progress commits.
+Four Claude area reviews and an independent challenge review informed this plan.
+The success criterion is fewer unrelated files to understand one behavior, not a universal file or function length limit.
+
+- [ ] S5-M01: Reproduce and fix first-reply single-connect promotion. Keep multi-round regressions before reorganizing ownership. Correct the clean-build health smoke input.
+- [ ] S5-M02: Inherit the MSRV consistently, make supported fuzz failures blocking, align local private documentation checks with CI, and make cohesion-related lints non-blocking.
+- [ ] S5-M03: Make configuration a documented facade with one canonical parsing API. Remove obsolete aliases and mapping commentary. Group observation contracts and their local backends coherently.
+- [ ] S5-M04: Organize protocol operations by domain responsibility, clarify wire/body names, and make the IPC generated boundary explicit. Update consumers without compatibility-only layers.
+- [ ] S5-M05: Use one CLI command and batch dispatch path over explicit direct/IPC backends. Preserve connection modes, password handling, and result semantics.
+- [ ] S5-M06: Improve agent publication and networking cache locality. Name locks and owners by purpose, separate large test bodies, document state flows, and consolidate duplicate Unix socket ownership without restoring agent-to-IPC coupling.
+- [ ] S5-M07: Run focused and full validation, independent final review, native integration, and corrected private rustdoc gates. Address further concrete findings or record justified exclusions before closure.
+
+Configuration snapshots and credential references remain authoritative. Prepared values remain derived.
+Client, catalog, connection, and session lifetimes stay distinct. Existing revision fences and atomic publication remain intact.
+The concrete production connector and generic internal Send proof remain unchanged.
+Native security boundaries remain explicit. No broad shared-state module or generic framework replaces clear owners.
+Release versioning and artifact-reproduction redesign remain Stage 6.
+
+### Original Review
 
 Claude Opus 4.8 reviewed this plan before any code change.
 The review identified failure information loss as the first substantive problem, not the mechanical IPC package move.
