@@ -54,7 +54,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -230,7 +229,12 @@ def sbom_command(
     manifest_path: Path, describe: str, target: str, output_format: str,
     features: str = "",
 ) -> list[str]:
-    """Return the ``cargo cyclonedx`` command, matching the generate-sbom action."""
+    """Return the ``cargo cyclonedx`` command, matching the generate-sbom action.
+
+    The release path generates SBOMs with ``--target-in-filename``, so the
+    rehearsal passes it next to ``--target``. ``features`` is reserved for future
+    configured features; every supported product currently requests none.
+    """
     command = ["cargo", "cyclonedx", "--format", output_format]
     if manifest_path:
         command += ["--manifest-path", str(manifest_path)]
@@ -238,94 +242,10 @@ def sbom_command(
         command += ["--describe", describe]
     if target:
         command += ["--target", target]
+        command.append("--target-in-filename")
     if features.strip():
         command += ["--features", features]
     return command
-
-
-def _local_tag(tag: str) -> str:
-    """Return the local name of a namespaced XML tag."""
-    return tag.rsplit("}", 1)[-1]
-
-
-def _json_root_component(path: Path) -> tuple[str | None, str | None]:
-    with open(path, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    component = (data.get("metadata") or {}).get("component") or {}
-    return component.get("name"), component.get("version")
-
-
-def _xml_root_component(path: Path) -> tuple[str | None, str | None]:
-    root = ET.parse(path).getroot()
-    metadata = next(
-        (child for child in root if _local_tag(child.tag) == "metadata"), None
-    )
-    if metadata is None:
-        return None, None
-    component = next(
-        (child for child in metadata if _local_tag(child.tag) == "component"), None
-    )
-    if component is None:
-        return None, None
-    name = None
-    version = None
-    for child in component:
-        tag = _local_tag(child.tag)
-        if tag == "name":
-            name = (child.text or "").strip() or None
-        elif tag == "version":
-            version = (child.text or "").strip() or None
-    return name, version
-
-
-def cyclonedx_root_component(path: Path) -> tuple[str | None, str | None]:
-    """Return the ``(name, version)`` of a CycloneDX SBOM root component.
-
-    The format is chosen by suffix. XML parsing uses ``ElementTree`` and ignores
-    the schema namespace, so it reads any CycloneDX schema version.
-    """
-    path = Path(path)
-    suffix = path.suffix.lower()
-    try:
-        if suffix == ".json":
-            return _json_root_component(path)
-        if suffix == ".xml":
-            return _xml_root_component(path)
-    except (OSError, json.JSONDecodeError, ET.ParseError) as error:
-        raise RehearsalError(f"cannot parse SBOM {path}: {error}") from error
-    raise RehearsalError(f"unsupported SBOM format: {path.name}")
-
-
-def verify_sbom_component(
-    name: str | None,
-    version: str | None,
-    expected_name: str | None,
-    expected_version: str | None,
-) -> list[str]:
-    """Return SBOM mismatch errors, or an empty list when the SBOM is consistent.
-
-    The version check is strict only when a computed version is known. The root
-    component must always carry some version.
-    """
-    errors: list[str] = []
-    if version is None:
-        errors.append(
-            f"SBOM for {expected_name} has no root component version"
-        )
-    if expected_name is not None and name != expected_name:
-        errors.append(
-            f"SBOM root component name {name!r} does not match {expected_name!r}"
-        )
-    if (
-        expected_version is not None
-        and version is not None
-        and version != expected_version
-    ):
-        errors.append(
-            f"SBOM root version {version!r} does not match the computed version "
-            f"{expected_version!r} for {expected_name}"
-        )
-    return errors
 
 
 def parse_dynamic_exports(nm_output: str) -> set[str]:
@@ -543,20 +463,6 @@ def hydrate_versions(
     )
 
 
-def _select_sbom(files: Sequence[Path], package_name: str) -> Path | None:
-    """Return the SBOM whose root component is the product, or the only SBOM."""
-    for path in files:
-        try:
-            name, _version = cyclonedx_root_component(path)
-        except RehearsalError:
-            continue
-        if name == package_name:
-            return path
-    if len(files) == 1:
-        return files[0]
-    return None
-
-
 def generate_and_stage_sbom(
     product: dict[str, str],
     *,
@@ -568,18 +474,20 @@ def generate_and_stage_sbom(
     env: dict[str, str],
     python: str = sys.executable,
 ) -> list[Path]:
-    """Generate, verify, and stage the SBOM files for one product.
+    """Generate both required SBOM formats, then stage them with the shared helper.
 
-    JSON and XML are required, matching CI. Each generated SBOM root version must
-    match the computed version when one is known.
+    JSON and XML are both required, matching CI. The committed
+    ``stage-sbom-files`` helper is the single authority: it selects the product
+    SBOM by Cargo metadata, enforces the version, sanitizes paths, and writes the
+    staged copies. The rehearsal only generates the two formats, so one staging
+    bug fails in both CI and the rehearsal.
     """
     manifest_path = Path(export_dir) / product["package_root"] / "Cargo.toml"
     package_name = product["package_name"]
     expected_version = versions.get(package_name)
-    staged: list[Path] = []
+    package_dir = manifest_path.parent
 
     for output_format in ("json", "xml"):
-        package_dir = manifest_path.parent
         for previous in package_dir.glob(f"*.cdx.{output_format}"):
             previous.unlink()
         command = sbom_command(
@@ -587,23 +495,10 @@ def generate_and_stage_sbom(
             product.get("features", ""),
         )
         _run(command, cwd=export_dir, env=env)
-        new_files = sorted(package_dir.glob(f"*.cdx.{output_format}"))
-        chosen = _select_sbom(new_files, package_name)
-        if chosen is None:
-            raise RehearsalError(f"no {output_format} SBOM root component found for {package_name}")
-
-        name, version = cyclonedx_root_component(chosen)
-        errors = verify_sbom_component(name, version, package_name, expected_version)
-        if errors:
-            raise RehearsalError("; ".join(errors))
-
-        destination = staging_dir / f"sbom-{suffix}.{output_format}"
-        staged.append(destination)
-        print(f"  SBOM {output_format}: root {name} {version} verified")
 
     command = [
         python, str(Path(export_dir) / SBOM_STAGE_TOOL_RELPATH),
-        "--package-root", str(manifest_path.parent),
+        "--package-root", str(package_dir),
         "--package-dir", str(staging_dir),
         "--basename", f"sbom-{suffix}",
         "--package-name", package_name,
@@ -615,7 +510,7 @@ def generate_and_stage_sbom(
     if expected_version is not None:
         command += ["--expected-version", expected_version]
     _run(command, cwd=export_dir, env=env)
-    return staged
+    return [staging_dir / f"sbom-{suffix}.{fmt}" for fmt in ("json", "xml")]
 
 
 def validate_artifact(
@@ -867,6 +762,14 @@ def require_empty_output(output: Path) -> None:
         raise RehearsalError(f"output must be a new or empty directory: {output}")
 
 
+def build_directory(source: Path, output: Path, cache: str | None) -> Path:
+    """Select a Cargo cache without permitting writes into the source checkout."""
+    candidate = (Path(cache) if cache else output / "build").resolve()
+    if candidate.is_relative_to(source.resolve()) or candidate == output.resolve() or candidate == (output / "source").resolve():
+        raise RehearsalError("build cache must be separate from the source checkout and exported source")
+    return candidate
+
+
 def rehearse(
     *,
     source: str,
@@ -875,12 +778,15 @@ def rehearse(
     output: str,
     target: str = DEFAULT_TARGET,
     profile: str = "release",
+    build_cache: str | None = None,
     python: str = sys.executable,
 ) -> dict[str, object]:
     """Run the full Linux release rehearsal and return a summary."""
     source_path = Path(source).resolve()
     require_empty_output(Path(output))
     output_path = Path(output).resolve()
+    if output_path.is_relative_to(source_path):
+        raise RehearsalError("rehearsal output must be outside the source checkout")
     versions_file = Path(versions_path).resolve()
 
     missing = preflight_tools(REQUIRED_TOOLS)
@@ -898,7 +804,7 @@ def rehearse(
     commit = resolve_commit(source_path, revision)
 
     export_dir = output_path / "source"
-    build_dir = output_path / "build"
+    build_dir = build_directory(source_path, output_path, build_cache)
     release_dir = output_path / "release"
     install_dir = output_path / "rollback"
     for directory in (output_path, export_dir, build_dir, release_dir):
@@ -1005,6 +911,10 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Rust target triple (default: {DEFAULT_TARGET}).",
     )
     parser.add_argument(
+        "--build-cache",
+        help="Optional trusted Cargo target directory outside the source checkout; release output must still be empty.",
+    )
+    parser.add_argument(
         "--profile",
         default="release",
         choices=["release", "debug"],
@@ -1020,6 +930,7 @@ def main(argv: list[str] | None = None) -> int:
             output=args.output,
             target=args.target,
             profile=args.profile,
+            build_cache=args.build_cache,
         )
     except RehearsalError as error:
         print(f"Error: {error}", file=sys.stderr)

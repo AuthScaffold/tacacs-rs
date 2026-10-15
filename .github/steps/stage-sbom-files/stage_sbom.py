@@ -11,9 +11,73 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
+# The Cargo metadata helper lives in a sibling step directory. Cargo is the
+# package authority, so this module uses it to resolve the target names and the
+# version that a product SBOM root component may carry.
+_CARGO_METADATA_DIR = Path(__file__).resolve().parent.parent / "cargo-metadata"
+if str(_CARGO_METADATA_DIR) not in sys.path:
+    sys.path.insert(0, str(_CARGO_METADATA_DIR))
+
+from workspace import MetadataError, load_metadata  # noqa: E402
+
 
 class SbomError(RuntimeError):
     """The required SBOM files are missing or invalid."""
+
+
+# Cargo target kinds whose target name can be an SBOM root component name.
+# Example, test, bench, and build-script targets are never a release SBOM root.
+_COMPONENT_TARGET_KINDS = frozenset(
+    {"bin", "lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
+)
+
+
+def _default_metadata_loader(package_root: Path) -> dict:
+    """Return Cargo metadata for the workspace that owns ``package_root``.
+
+    ``--no-deps`` keeps this hermetic: Cargo reads the workspace manifests only,
+    so it never resolves dependencies or reaches the network.
+    """
+    return load_metadata(Path(package_root), no_deps=True, locked=False)
+
+
+def package_identity(metadata: dict, package_name: str) -> tuple[set[str], str]:
+    """Return the accepted SBOM root names and the version for a package.
+
+    The accepted names are the package name and every non-example binary or
+    library target name. Cargo derives a library crate name from the package
+    name by replacing hyphens, so ``tacacsrs-bash-plugin`` owns the library
+    target ``tacacsrs_bash_plugin``. Because Cargo metadata is the authority, a
+    custom target name is accepted and an unrelated name is rejected.
+    """
+    packages = metadata.get("packages") if isinstance(metadata, dict) else None
+    if not isinstance(packages, list):
+        raise SbomError("cargo metadata did not return a package list")
+    matches = [
+        package
+        for package in packages
+        if isinstance(package, dict) and package.get("name") == package_name
+    ]
+    if len(matches) != 1:
+        raise SbomError(
+            f"cargo metadata did not identify exactly one package named "
+            f"{package_name!r} (found {len(matches)})"
+        )
+    package = matches[0]
+    version = package.get("version")
+    if not isinstance(version, str) or not version:
+        raise SbomError(f"cargo metadata has no version for {package_name!r}")
+    accepted = {package_name}
+    for target in package.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        name = target.get("name")
+        kinds = target.get("kind") or []
+        if isinstance(name, str) and any(
+            kind in _COMPONENT_TARGET_KINDS for kind in kinds
+        ):
+            accepted.add(name)
+    return accepted, version
 
 
 def sanitize_string(value: str, workspaces: list[str], repository: str) -> str:
@@ -82,10 +146,25 @@ def component_identity(document, output_format: str) -> tuple[str | None, str | 
 def stage_sboms(
     *, package_root: Path, package_dir: Path, basename: str, package_name: str,
     workspaces: list[str], repository: str, expected_version: str | None = None,
+    metadata_loader=_default_metadata_loader,
 ) -> list[Path]:
-    """Validate both required formats before writing sanitized copies."""
+    """Validate both required formats before writing sanitized copies.
+
+    Cargo metadata is the authority for the accepted root component names and
+    the version. An SBOM root may be the package name or a non-example target
+    name. When ``expected_version`` is given it must equal the package version;
+    otherwise the package version from Cargo metadata is used.
+    """
     if not basename or Path(basename).name != basename or "\\" in basename:
         raise SbomError("SBOM basename must be a file name")
+    accepted_names, package_version = package_identity(
+        metadata_loader(Path(package_root)), package_name
+    )
+    if expected_version is not None and expected_version != package_version:
+        raise SbomError(
+            f"--expected-version {expected_version!r} does not match the "
+            f"{package_name} package version {package_version!r}"
+        )
     prepared = []
     identities = []
     for output_format in ("json", "xml"):
@@ -95,13 +174,16 @@ def stage_sboms(
                 raise SbomError(f"SBOM must be a regular file: {path}")
             document = json.loads(path.read_text(encoding="utf-8")) if output_format == "json" else ET.parse(path).getroot()
             identity = component_identity(document, output_format)
-            if identity[0] == package_name:
+            if identity[0] in accepted_names:
                 candidates.append((document, identity))
         if len(candidates) != 1:
             raise SbomError(f"expected one {output_format} SBOM root component for {package_name}, found {len(candidates)}")
         document, identity = candidates[0]
-        if not identity[1] or (expected_version is not None and identity[1] != expected_version):
-            raise SbomError(f"SBOM version does not match {package_name}: {identity[1]!r}")
+        if identity[1] != package_version:
+            raise SbomError(
+                f"SBOM version does not match {package_name}: {identity[1]!r} "
+                f"(expected {package_version!r})"
+            )
         identities.append(identity)
         if output_format == "json":
             content = (json.dumps(sanitize_json(document, workspaces, repository), indent=2) + "\n").encode()
@@ -140,7 +222,7 @@ def main(argv=None) -> int:
             workspaces=args.workspace, repository=args.repository,
             expected_version=args.expected_version,
         )
-    except (SbomError, OSError, ValueError, ET.ParseError) as error:
+    except (SbomError, MetadataError, OSError, ValueError, ET.ParseError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
     return 0

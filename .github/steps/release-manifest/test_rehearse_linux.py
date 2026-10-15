@@ -27,7 +27,6 @@ from rehearse_linux import (
     RehearsalError,
     asset_suffix,
     build_product_command,
-    cyclonedx_root_component,
     export_source,
     ldd_missing_libraries,
     linux_artifact_names,
@@ -41,10 +40,8 @@ from rehearse_linux import (
     sbom_command,
     sha256_file,
     verify_recorded_digests,
-    verify_sbom_component,
     version_output_matches,
     write_checksums,
-    _select_sbom,
 )
 
 
@@ -167,6 +164,17 @@ def test_rehearsal_rejects_repeated_output_before_tools(tmp_path, monkeypatch, e
     assert stale.read_text() == "keep this file"
 
 
+def test_build_cache_never_writes_into_source_checkout(tmp_path):
+    from rehearse_linux import build_directory
+    source = tmp_path / "source"
+    output = tmp_path / "rehearsal"
+    assert build_directory(source, output, None) == output / "build"
+    assert build_directory(source, output, str(tmp_path / "cache")) == tmp_path / "cache"
+    for forbidden in (source, source / "target", output, output / "source"):
+        with pytest.raises(RehearsalError, match="build cache"):
+            build_directory(source, output, str(forbidden))
+
+
 def test_output_rejects_file_and_symlink(tmp_path):
     regular = _write(tmp_path / "file", "keep")
     link = tmp_path / "link"
@@ -231,97 +239,19 @@ def test_sbom_command_matches_generate_sbom_flags() -> None:
         "binaries",
         "--target",
         DEFAULT_TARGET,
+        "--target-in-filename",
     ]
 
 
-# ---------------------------------------------------------------------------
-# SBOM parsing and verification.
-# ---------------------------------------------------------------------------
-
-
-def test_cyclonedx_root_component_json(tmp_path: Path) -> None:
-    path = _write(
-        tmp_path / "sbom.cdx.json",
-        json.dumps(
-            {
-                "metadata": {
-                    "component": {
-                        "type": "application",
-                        "name": "tacon",
-                        "version": "2026.424.0",
-                    }
-                }
-            }
-        ),
+def test_sbom_command_appends_features_after_target_in_filename() -> None:
+    command = sbom_command(
+        Path("/w/libraries/tacacsrs_bash_plugin/Cargo.toml"),
+        "all-cargo-targets",
+        DEFAULT_TARGET,
+        "xml",
+        "feat-a feat-b",
     )
-    assert cyclonedx_root_component(path) == ("tacon", "2026.424.0")
-
-
-def test_cyclonedx_root_component_xml(tmp_path: Path) -> None:
-    path = _write(
-        tmp_path / "sbom.cdx.xml",
-        """<?xml version="1.0" encoding="UTF-8"?>
-<bom xmlns="http://cyclonedx.org/schema/bom/1.5" version="1">
-  <metadata>
-    <component type="application">
-      <name>tacacsrs-bash-plugin</name>
-      <version>0.1.3</version>
-    </component>
-  </metadata>
-</bom>
-""",
-    )
-    assert cyclonedx_root_component(path) == ("tacacsrs-bash-plugin", "0.1.3")
-
-
-def test_cyclonedx_root_component_rejects_unknown_format(tmp_path: Path) -> None:
-    path = _write(tmp_path / "sbom.txt", "nope")
-    with pytest.raises(RehearsalError):
-        cyclonedx_root_component(path)
-
-
-def test_verify_sbom_component_matches() -> None:
-    assert verify_sbom_component("tacon", "2026.424.0", "tacon", "2026.424.0") == []
-
-
-def test_verify_sbom_component_detects_version_mismatch() -> None:
-    errors = verify_sbom_component("tacon", "1.0.0", "tacon", "2026.424.0")
-    assert errors and "does not match the computed version" in errors[0]
-
-
-def test_verify_sbom_component_detects_name_mismatch() -> None:
-    errors = verify_sbom_component("other", "2026.424.0", "tacon", "2026.424.0")
-    assert errors and "does not match" in errors[0]
-
-
-def test_verify_sbom_component_requires_a_version() -> None:
-    errors = verify_sbom_component("tacon", None, "tacon", "2026.424.0")
-    assert errors and "no root component version" in errors[0]
-
-
-def test_verify_sbom_component_skips_unknown_expected_version() -> None:
-    # The package is absent from the computed map, so only presence is required.
-    assert verify_sbom_component("tacon", "0.0.0-dev", "tacon", None) == []
-
-
-def test_select_sbom_prefers_matching_root(tmp_path: Path) -> None:
-    other = _write(
-        tmp_path / "dep.cdx.json",
-        json.dumps({"metadata": {"component": {"name": "dep", "version": "1.0"}}}),
-    )
-    product = _write(
-        tmp_path / "tacon.cdx.json",
-        json.dumps({"metadata": {"component": {"name": "tacon", "version": "2.0"}}}),
-    )
-    assert _select_sbom([other, product], "tacon") == product
-
-
-def test_select_sbom_falls_back_to_single_file(tmp_path: Path) -> None:
-    only = _write(
-        tmp_path / "only.cdx.json",
-        json.dumps({"metadata": {"component": {"name": "x", "version": "1"}}}),
-    )
-    assert _select_sbom([only], "tacon") == only
+    assert command[-3:] == ["--target-in-filename", "--features", "feat-a feat-b"]
 
 
 # ---------------------------------------------------------------------------
@@ -502,48 +432,39 @@ def test_validate_artifact_rejects_every_ldd_failure(tmp_path, monkeypatch, outp
         rehearse_linux.validate_artifact(PRODUCTS[0], staging_dir=tmp_path, artifact_filename="tacon", versions={})
 
 
-@pytest.mark.parametrize("missing", [None, "json-name", "xml"])
-def test_local_sbom_cli_contract_and_required_formats(tmp_path, monkeypatch, missing):
+def test_local_sbom_generates_both_formats_then_delegates_to_shared_helper(tmp_path, monkeypatch):
     export = tmp_path / "source"
     package_root = export / PRODUCTS[0]["package_root"]
     package_root.mkdir(parents=True)
     commands = []
     product = dict(PRODUCTS[0], features="feature-a")
 
-    def run(command, **kwargs):
-        commands.append(command)
-        if command[:2] != ["cargo", "cyclonedx"]:
-            return
-        output_format = command[command.index("--format") + 1]
-        if output_format == "json":
-            component = {"version": "1.2.3"}
-            if missing != "json-name":
-                component["name"] = "tacon"
-            _write(package_root / "product.cdx.json", json.dumps({"metadata": {"component": component}}))
-        elif missing != "xml":
-            _write(package_root / "product.cdx.xml", '<bom><metadata><component><name>tacon</name><version>1.2.3</version></component></metadata></bom>')
-
-    monkeypatch.setattr(rehearse_linux, "_run", run)
-    args = dict(
+    monkeypatch.setattr(rehearse_linux, "_run", lambda command, **kwargs: commands.append(command))
+    staged = rehearse_linux.generate_and_stage_sbom(
         product=product, export_dir=export, staging_dir=tmp_path / "staged",
         suffix="linux", target=DEFAULT_TARGET, versions={"tacon": "1.2.3"},
         env={"GITHUB_WORKSPACE": "/private/checkout", "GITHUB_REPOSITORY": "AuthScaffold/tacacs-rs"},
         python="python-fixture",
     )
-    if missing:
-        with pytest.raises(RehearsalError):
-            rehearse_linux.generate_and_stage_sbom(**args)
-        assert all(command[:2] == ["cargo", "cyclonedx"] for command in commands)
-        return
-    staged = rehearse_linux.generate_and_stage_sbom(**args)
-    assert {path.suffix for path in staged} == {".json", ".xml"}
-    assert all(command[-2:] == ["--features", "feature-a"] for command in commands[:2])
+    # Two generation commands (JSON, XML), then the shared staging helper.
+    assert [command[:2] for command in commands] == [
+        ["cargo", "cyclonedx"],
+        ["cargo", "cyclonedx"],
+        ["python-fixture", str(export / rehearse_linux.SBOM_STAGE_TOOL_RELPATH)],
+    ]
+    # Each generation command matches CI: --target-in-filename then --features.
+    for generate in commands[:2]:
+        assert generate[-3:] == ["--target-in-filename", "--features", "feature-a"]
+    # The rehearsal performs no name or version check itself. The shared helper is
+    # the single authority and receives the package name and the computed version.
     helper = commands[-1]
-    assert helper[:2] == ["python-fixture", str(export / rehearse_linux.SBOM_STAGE_TOOL_RELPATH)]
+    assert helper[helper.index("--package-root") + 1] == str(package_root)
     assert helper[helper.index("--package-name") + 1] == "tacon"
     assert helper[helper.index("--expected-version") + 1] == "1.2.3"
     assert helper.count("--workspace") == 2
     assert str(export) in helper and "/private/checkout" in helper
+    assert [path.name for path in staged] == ["sbom-linux.json", "sbom-linux.xml"]
+    assert all(path.parent == tmp_path / "staged" for path in staged)
 
 
 def test_local_product_uses_capture_cli_before_archive(tmp_path, monkeypatch):
