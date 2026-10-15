@@ -9,7 +9,6 @@ use openssl::x509::X509;
 use tokio::net::TcpStream;
 
 use super::{connect_tls, TlsConfigurationBuilder, CertificateLifetime};
-use crate::helpers::data_contains_pem_header;
 use crate::transport::BoxedTransport;
 
 /// DER encoding of a client private key.
@@ -272,6 +271,18 @@ impl TlsClientConfig {
     }
 }
 
+/// Returns whether `data` contains a PEM block marker.
+///
+/// Certificate and private-key inputs must be DER. A PEM marker means the caller
+/// supplied the wrong encoding, so the DER parsers reject it before OpenSSL runs.
+#[must_use]
+fn data_contains_pem_header(data: &[u8]) -> bool {
+    const PEM_HEADER: &[u8] = b"-----BEGIN";
+
+    data.windows(PEM_HEADER.len())
+        .any(|window| window == PEM_HEADER)
+}
+
 fn parse_certificate_data(data: &[u8]) -> Result<X509> {
     anyhow::ensure!(!data.is_empty(), "certificate DER data is empty");
     anyhow::ensure!(
@@ -450,5 +461,21 @@ mod tests {
         let der = ec.private_key_to_der().unwrap();
         assert!(parse_private_key_data(&der, PrivateKeyEncoding::EcSec1).is_ok());
         assert!(parse_private_key_data(&der, PrivateKeyEncoding::RsaPkcs1).is_err());
+    }
+
+    #[test]
+    fn data_contains_pem_header_accepts_plain_pem() {
+        assert!(data_contains_pem_header(b"-----BEGIN CERTIFICATE-----\n..."));
+    }
+
+    #[test]
+    fn data_contains_pem_header_finds_marker_after_leading_noise() {
+        assert!(data_contains_pem_header(b"\n\t \xEF\xBB\xBF-----BEGIN PRIVATE KEY-----\n..."));
+    }
+
+    #[test]
+    fn data_contains_pem_header_rejects_der_and_empty_data() {
+        assert!(!data_contains_pem_header(b"\x30\x82\x01\x00fake-der"));
+        assert!(!data_contains_pem_header(b"\n\t "));
     }
 }

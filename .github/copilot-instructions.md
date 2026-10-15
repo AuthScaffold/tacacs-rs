@@ -54,7 +54,7 @@ cargo +nightly fmt --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Docs (PowerShell: set $env:RUSTDOCFLAGS="-D warnings" first)
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
 
 # Build and test
 cargo build --workspace

@@ -9,7 +9,7 @@ use tacacsrs_config::TacacsPlusServerType;
 
 /// Batch file structure containing metadata and requests
 #[derive(Debug, Deserialize)]
-pub struct BatchFile {
+pub(crate) struct BatchFile {
     /// Metadata that controls the batch run
     #[serde(default)]
     pub metadata: BatchMetadata,
@@ -21,7 +21,7 @@ pub struct BatchFile {
 impl BatchFile {
     /// Returns the combined TACACS+ server type required to run all requests.
     #[must_use]
-    pub fn required_server_type(&self) -> Option<TacacsPlusServerType> {
+    pub(crate) fn required_server_type(&self) -> Option<TacacsPlusServerType> {
         let required_type = self
             .requests
             .iter()
@@ -33,7 +33,7 @@ impl BatchFile {
 
 /// Metadata that controls how the batch runs
 #[derive(Debug, Deserialize, Default)]
-pub struct BatchMetadata {
+pub(crate) struct BatchMetadata {
     /// If true, the batch sends all requests in parallel. If false, it sends them one at a time.
     #[serde(default)]
     pub parallel: bool,
@@ -49,7 +49,7 @@ pub struct BatchMetadata {
 
 /// Configuration for load testing mode
 #[derive(Debug, Deserialize, Clone)]
-pub struct LoadTestConfig {
+pub(crate) struct LoadTestConfig {
     /// Number of times to repeat all requests
     pub repetitions: usize,
 
@@ -65,7 +65,7 @@ const fn default_max_parallel() -> usize {
 /// A single request in the batch file
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum BatchRequest {
+pub(crate) enum BatchRequest {
     /// Accounting request
     Accounting(AccountingRequest),
 
@@ -78,7 +78,7 @@ pub enum BatchRequest {
 
 impl BatchRequest {
     /// Returns the type name of this request
-    pub const fn type_name(&self) -> &'static str {
+    pub(crate) const fn type_name(&self) -> &'static str {
         match self {
             Self::Accounting(_) => "accounting",
             Self::Authentication(_) => "authentication",
@@ -87,7 +87,7 @@ impl BatchRequest {
     }
 
     /// Returns the TACACS+ server type required to run this request.
-    pub const fn server_type(&self) -> TacacsPlusServerType {
+    pub(crate) const fn server_type(&self) -> TacacsPlusServerType {
         match self {
             Self::Accounting(_) => TacacsPlusServerType::ACCOUNTING,
             Self::Authentication(_) => TacacsPlusServerType::AUTHENTICATION,
@@ -99,7 +99,7 @@ impl BatchRequest {
 /// Arguments for an accounting request
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AccountingRequest {
+pub(crate) struct AccountingRequest {
     /// Username that runs the command
     pub user: String,
 
@@ -121,7 +121,7 @@ pub struct AccountingRequest {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)] // Fields will be used when authentication is implemented
-pub struct AuthenticationRequest {
+pub(crate) struct AuthenticationRequest {
     /// Username to authenticate
     pub user: String,
 
@@ -134,7 +134,7 @@ pub struct AuthenticationRequest {
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
-pub enum AuthorizationAuthenticationContext {
+pub(crate) enum AuthorizationAuthenticationContext {
     Ascii,
     Pap,
     Unauthenticated,
@@ -144,7 +144,7 @@ pub enum AuthorizationAuthenticationContext {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)] // Fields will be used when authorization is implemented
-pub struct AuthorizationRequest {
+pub(crate) struct AuthorizationRequest {
     /// Username requesting authorization
     pub user: String,
 
@@ -174,7 +174,7 @@ const fn default_privilege_level() -> u8 {
 
 /// Result of a single batch request
 #[derive(Debug)]
-pub struct RequestResult {
+pub(crate) struct RequestResult {
     /// Index of the request in the batch
     pub index: usize,
 
@@ -187,7 +187,7 @@ pub struct RequestResult {
 
 /// Result of a load test
 #[derive(Debug)]
-pub struct LoadTestResult {
+pub(super) struct LoadTestResult {
     /// Total number of requests that ran
     pub total_requests: usize,
 
@@ -209,7 +209,7 @@ pub struct LoadTestResult {
 
 impl LoadTestResult {
     /// Returns true if the load test completed without failures
-    pub const fn is_success(&self) -> bool {
+    pub(super) const fn is_success(&self) -> bool {
         self.first_failure.is_none()
     }
 }

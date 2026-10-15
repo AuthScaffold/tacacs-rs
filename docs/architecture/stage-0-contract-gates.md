@@ -31,7 +31,7 @@ Implementation owners:
 
 - [Bash authorization](../../libraries/tacacsrs_bash_plugin/src/authorization.rs)
 - [Session registry](../../libraries/tacacsrs_networking/src/session/manager.rs)
-- [Connection contract tests](../../libraries/tacacsrs_networking/src/runtime/multiplexed/tests.rs)
+- [Connection contract tests](../../libraries/tacacsrs_networking/src/connection/multiplexed/tests.rs)
 - [File datastore](../../libraries/tacacsrs_config/src/input/datastore.rs)
 - [Routed operations](../../libraries/tacacsrs_agent/src/services/client_api/upstream_bridge/routed.rs)
 - [Retry contract tests](../../libraries/tacacsrs_agent/src/services/client_api/upstream_bridge/routing_tests.rs)

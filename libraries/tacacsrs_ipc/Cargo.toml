@@ -2,6 +2,7 @@
 name = "tacacsrs-ipc"
 version = "0.0.0-dev"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "An IPC client and protocol types for the central TACACS+ client service."
@@ -15,7 +16,7 @@ http = "1.4.1"
 hyper-util = "0.1.20"
 log = "0.4.30"
 prost = "0.14.3"
-rustix = { version = "1.1.4", features = ["fs"] }
+tacacsrs-unix-socket = { path = "../tacacsrs_unix_socket" }
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }
 tonic = "0.14.6"

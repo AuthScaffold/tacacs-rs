@@ -7,7 +7,7 @@ use tacacsrs_protocol::exchange::FixedExchange;
 
 /// Represents an active TACACS+ connection (either plain TCP or TLS)
 #[derive(Clone)]
-pub struct Connection {
+pub(crate) struct Connection {
     inner: Arc<TacacsClient>,
     server_name: String,
 }
@@ -26,7 +26,10 @@ impl Connection {
     /// # Errors
     ///
     /// Returns an error if the underlying exchange fails.
-    pub async fn execute<Exchange>(&self, exchange: Exchange) -> anyhow::Result<Exchange::Reply>
+    pub(crate) async fn execute<Exchange>(
+        &self,
+        exchange: Exchange,
+    ) -> anyhow::Result<Exchange::Reply>
     where
         Exchange: FixedExchange,
     {
@@ -42,7 +45,7 @@ impl Connection {
 /// - TCP connection cannot be established
 /// - TLS is requested but certificate/key are missing or invalid
 /// - TLS handshake fails
-pub async fn establish_connection(
+pub(crate) async fn establish_connection(
     server: &TacacsPlusServer,
     options: PrepareOptions,
 ) -> anyhow::Result<Connection> {
@@ -61,7 +64,7 @@ pub async fn establish_connection(
 /// # Errors
 ///
 /// Returns an error if the underlying connection cannot be established.
-pub async fn establish_dedicated_connection(
+pub(crate) async fn establish_dedicated_connection(
     server: &TacacsPlusServer,
     options: PrepareOptions,
 ) -> anyhow::Result<Connection> {

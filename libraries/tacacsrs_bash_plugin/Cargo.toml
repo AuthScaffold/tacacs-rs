@@ -2,6 +2,7 @@
 name = "tacacsrs-bash-plugin"
 version = "0.0.0-dev"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "A SONiC Bash execve plug-in that uses the tacacsrs-agentd IPC endpoint."

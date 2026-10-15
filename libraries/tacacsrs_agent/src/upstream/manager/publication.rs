@@ -1,12 +1,42 @@
 //! Publication owner for one runtime generation.
 //!
-//! [`PublicationController`] is the final owner in the publication write path.
-//! The service and the manager prepare a new catalog, then call into this
-//! controller while they hold the active snapshot write lock. The controller
-//! commits the runtime generation, server count, and health in one health
-//! mutation. The caller-supplied commit callback runs inside that mutation. It
-//! swaps the active snapshot and runs coordinator bookkeeping. The commit never
-//! awaits and never reacquires the snapshot or health locks.
+//! This module hosts the upstream manager's snapshot-write methods next to the
+//! [`PublicationController`], so the whole atomic write path lives in one file.
+//!
+//! [`PublicationController`] owns the publication state and the final health
+//! commit for the upstream manager. It holds the observation and policy-revision
+//! state, serializes availability observations, and runs the single atomic
+//! health mutation that makes a new runtime generation visible. The adjacent
+//! [`UpstreamManager`] owns the active catalog
+//! (`active_snapshot`) and prepares each replacement. This controller owns when,
+//! and whether, that preparation becomes visible.
+//!
+//! # Write path
+//!
+//! One reload travels in one direction through fixed owners:
+//!
+//! 1. The service holds its reload-publication lock, so only one publication
+//!    runs end to end. It validates and prepares the inputs.
+//! 2. The manager holds its `catalog_reload_lock`, prepares the new server set,
+//!    then takes the `active_snapshot` write lock.
+//! 3. While the manager holds that write lock, it calls [`publish_runtime`] or
+//!    [`publish_policy`] on this controller. The controller takes its own state
+//!    lock and commits the runtime generation, server count, and health in one
+//!    health mutation.
+//! 4. The manager-supplied commit callback runs inside that health mutation. It
+//!    swaps `active_snapshot` and runs coordinator bookkeeping. The commit never
+//!    awaits and never reacquires the snapshot, state, or health locks.
+//!
+//! Upstream retirement awaits only after the write lock is released, so a
+//! cancelled retirement cannot leave bookkeeping behind the applied snapshot.
+//!
+//! [`publish_runtime`]: PublicationController::publish_runtime
+//! [`publish_policy`]: PublicationController::publish_policy
+//!
+//! # Lock order
+//!
+//! Acquire locks only in this order: `active_snapshot` write lock (manager) ->
+//! publication state lock (this controller) -> health watch.
 //!
 //! # Availability observations
 //!
@@ -21,8 +51,15 @@
 //! stale success or rejection that names an older revision returns
 //! [`crate::PolicyUpdate::Superseded`] and does not mutate health.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use tacacsrs_config::TacacsPlusServer;
+use tacacsrs_networking::routed::EndpointConnector;
+
+use super::server_set::{RuntimeRoutingSnapshot, ServerSet};
+use super::prepared_server::PreparedServer;
+use super::UpstreamManager;
+use crate::config::{PreparedProxyPolicy, RuntimePolicy};
 use crate::runtime::{RuntimeGeneration, RuntimeHealthPublisher, UpstreamAvailability};
 
 /// Identity of one connection attempt in a server-set generation.
@@ -46,6 +83,11 @@ struct ObservationState {
 pub(super) struct PublicationController {
     health: RuntimeHealthPublisher,
     state: Mutex<ObservationState>,
+    /// Test-only hook that pauses one publication between its atomic health
+    /// commit and upstream retirement. The owning module arms it and the reload
+    /// path awaits it.
+    #[cfg(test)]
+    publication_pause: Mutex<Option<std::sync::Arc<tokio::sync::Notify>>>,
 }
 
 impl PublicationController {
@@ -71,6 +113,12 @@ impl PublicationController {
         crate::PolicyUpdate::Rejected(revision)
     }
 
+    /// Commits a policy update if its revision is still current.
+    ///
+    /// The caller must already hold the `active_snapshot` write lock. The
+    /// `publish` callback swaps the snapshot inside the atomic health mutation
+    /// and must not await or reacquire these locks. A stale revision returns
+    /// [`crate::PolicyUpdate::Superseded`] without mutating health.
     pub(super) fn publish_policy(
         &self,
         revision: crate::PolicyRevision,
@@ -93,6 +141,27 @@ impl PublicationController {
         Self {
             health,
             state: Mutex::new(ObservationState::default()),
+            #[cfg(test)]
+            publication_pause: Mutex::new(None),
+        }
+    }
+
+    /// Arms a one-shot pause for the next publication. The reload path awaits the
+    /// returned notify after the atomic commit and before upstream retirement.
+    #[cfg(test)]
+    pub(super) fn pause_next_publication(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        let pause = std::sync::Arc::new(tokio::sync::Notify::new());
+        *self.publication_pause.lock().unwrap() = Some(pause.clone());
+        pause
+    }
+
+    /// Awaits an armed publication pause, if any. This runs after the write lock
+    /// is released, so it never holds the snapshot or health locks.
+    #[cfg(test)]
+    pub(super) async fn wait_for_publication_pause(&self) {
+        let pause = self.publication_pause.lock().unwrap().take();
+        if let Some(pause) = pause {
+            pause.notified().await;
         }
     }
 
@@ -130,8 +199,14 @@ impl PublicationController {
         state.generation
     }
 
-    /// Serializes catalog publication with availability observations.
-    /// The runtime write lock must already be held before this method is called.
+    /// Commits one runtime generation with its availability observations.
+    ///
+    /// The caller must already hold the `active_snapshot` write lock. A
+    /// materially changed catalog advances the availability generation and
+    /// resets the observation sequence. The `publish` callback receives that
+    /// availability generation, swaps the snapshot, and runs coordinator
+    /// bookkeeping inside the atomic health mutation. It must not await or
+    /// reacquire these locks.
     pub(super) fn publish_runtime(
         &self,
         generation: u64,
@@ -172,6 +247,157 @@ impl PublicationController {
 
         state.last_observed_sequence = attempt.sequence;
         self.health.set_upstream_availability(availability);
+    }
+}
+
+/// Snapshot-write methods for the [`UpstreamManager`]. They are co-located with
+/// the [`PublicationController`] so the whole atomic write path stays in one
+/// file. Each takes the `active_snapshot` write lock and commits through the
+/// controller in one health mutation.
+impl<Connector: EndpointConnector> UpstreamManager<Connector> {
+    pub(crate) fn publish_policy(
+        &self,
+        revision: crate::PolicyRevision,
+        runtime_policy: RuntimePolicy,
+    ) -> anyhow::Result<crate::PolicyUpdate> {
+        let mut current = self
+            .active_snapshot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_open()?;
+        let generation = current.generation.wrapping_add(1);
+        Ok(self.publication.publish_policy(revision, generation, || {
+            current.admission.update(&runtime_policy);
+            *current = Arc::new(RuntimeRoutingSnapshot {
+                generation,
+                availability_generation: current.availability_generation,
+                server_set: Arc::clone(&current.server_set),
+                proxy_downstream_obfuscation: current.proxy_downstream_obfuscation.clone(),
+                admission: Arc::clone(&current.admission),
+                runtime_policy: Arc::new(runtime_policy),
+                credential_lifetime: current.credential_lifetime,
+            });
+        }))
+    }
+
+    pub(crate) fn publish_initial_health(&self, applied: bool) {
+        let current = self
+            .active_snapshot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.publication.publish_runtime(
+            current.generation,
+            current.server_set.server_count(),
+            Some(applied),
+            false,
+            |_| None,
+        );
+    }
+
+    pub(crate) async fn reload_shared_servers_with_retirement(
+        &self,
+        servers: Vec<Arc<TacacsPlusServer>>,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
+        retirement: Option<tacacsrs_networking::RequestDeadline>,
+        validity: Option<crate::runtime::CredentialLifetime>,
+        commit: impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
+    ) -> anyhow::Result<()> {
+        let _reload = self.catalog_reload_lock.lock().await;
+        anyhow::ensure!(
+            !self.closed.load(std::sync::atomic::Ordering::Acquire),
+            "The TACACS+ service is closed"
+        );
+        let retirement_deadline = retirement.unwrap_or(self.retirement_deadline()?);
+        let previous = self.current_server_set();
+        let materially_changed = previous.server_count() != servers.len()
+            || previous
+                .servers
+                .iter()
+                .zip(&servers)
+                .any(|(old, new)| old.server.as_ref() != new.as_ref());
+        let mut new_server_slots = Vec::with_capacity(servers.len());
+        for server in servers {
+            let reusable = previous
+                .servers
+                .iter()
+                .find(|state| state.server.as_ref() == server.as_ref())
+                .cloned();
+            let slot = match reusable {
+                Some(slot) => slot,
+                None => Arc::new(PreparedServer::new(server, self.connect_options)?),
+            };
+            new_server_slots.push(slot);
+        }
+
+        let validity = new_server_slots.iter().try_fold(
+            validity.unwrap_or(crate::runtime::CredentialLifetime::unbounded()),
+            |lifetime, server| lifetime.intersect(server.certificate_lifetime),
+        )?;
+
+        let client = previous
+            .client
+            .with_endpoints(
+                new_server_slots
+                    .iter()
+                    .map(|server| server.endpoint.clone())
+                    .collect(),
+            )
+            .await;
+        let new_set = Arc::new(ServerSet {
+            servers: new_server_slots,
+            client,
+        });
+        let urgent = previous.changed_revocation_servers(&new_set);
+
+        {
+            let mut current = self
+                .active_snapshot
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            anyhow::ensure!(
+                !self.closed.load(std::sync::atomic::Ordering::Acquire),
+                "The TACACS+ service closed during preparation"
+            );
+            anyhow::ensure!(validity.is_valid(), "Credential validity expired before publication");
+            let generation = current.generation.wrapping_add(1);
+            previous.retire_replaced_until(&new_set, retirement_deadline, &urgent);
+            self.publication.publish_runtime(
+                generation,
+                new_set.server_count(),
+                Some(true),
+                materially_changed,
+                |availability_generation| {
+                    *current = Arc::new(RuntimeRoutingSnapshot {
+                        generation,
+                        availability_generation,
+                        server_set: Arc::clone(&new_set),
+                        proxy_downstream_obfuscation,
+                        admission: Arc::clone(&current.admission),
+                        runtime_policy: Arc::clone(&current.runtime_policy),
+                        credential_lifetime: validity,
+                    });
+                    let mut materialization = commit();
+                    if let Some(commit) = &mut materialization {
+                        if commit.expired == crate::runtime::ExpiredMaterial::None {
+                            commit.validity = validity;
+                        }
+                    }
+                    materialization
+                },
+            );
+        }
+
+        if new_set.server_count() == 0 {
+            log::warn!("Reloaded an empty TACACS+ server set; waiting for configuration");
+        } else {
+            log::info!("Reloaded the TACACS+ server set: {} server(s)", new_set.server_count());
+        }
+
+        #[cfg(test)]
+        self.publication.wait_for_publication_pause().await;
+        previous.client.retire_replaced(&new_set.client).await;
+
+        Ok(())
     }
 }
 

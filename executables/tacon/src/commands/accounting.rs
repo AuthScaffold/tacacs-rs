@@ -23,7 +23,7 @@ pub(crate) async fn send_direct(
 }
 
 /// Builds an [`AccountingOperation`] from CLI-level arguments.
-pub fn accounting_operation(
+pub(crate) fn accounting_operation(
     user: &str,
     port: &str,
     rem_address: &str,

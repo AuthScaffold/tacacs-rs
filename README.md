@@ -52,7 +52,8 @@ For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Tran
 
 ## Supported Core
 
-The workspace `default-members` defines the supported core. Plain `cargo build` and `cargo test` select these 13 packages.
+The workspace `default-members` defines the supported core. Plain `cargo build` and `cargo test` select these 14 packages.
+The internal `tacacsrs-unix-socket` package owns shared listener binding and cleanup without depending on TACACS+ or IPC.
 The release products are `tacon`, `tacacsrs-agentd`, `tacacsrs-agent-health`, and the Bash plugin.
 Windows releases contain only `tacon` direct mode. Linux GNU supports the complete core.
 

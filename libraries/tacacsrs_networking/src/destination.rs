@@ -1,6 +1,9 @@
-//! Helper functions for TACACS+ networking.
+//! TACACS+ server destination resolution and TCP connection setup.
 //!
-//! This module resolves server addresses and opens TCP connections.
+//! This module resolves a configured host name to socket addresses off the
+//! runtime worker threads, then connects to the first reachable destination. An
+//! optional [`ConnectionGuard`] checks each destination before connect and the
+//! connected socket before any TLS or TACACS+ traffic.
 
 use std::net::{SocketAddr, ToSocketAddrs};
 
@@ -69,13 +72,13 @@ async fn connect_after_resolution(
                     )?;
                 }
                 log::info!(
-                    target: "tacacsrs_networking::helpers::connect_tcp",
+                    target: "tacacsrs_networking::destination::connect_tcp",
                     "Connected to TACACS+ server {server_address}");
                 return Ok(stream);
             }
             Err(e) => {
                 log::error!(
-                    target: "tacacsrs_networking::helpers::connect_tcp",
+                    target: "tacacsrs_networking::destination::connect_tcp",
                     "Failed to connect to TACACS+ server {server_address}: {e}");
             }
         }
@@ -95,19 +98,8 @@ async fn resolve_server_addresses(hostname: &str) -> anyhow::Result<Vec<SocketAd
         .context("The TACACS+ address resolution task failed")?
 }
 
-/// Returns whether `data` contains a PEM block marker.
-#[must_use]
-pub(crate) fn data_contains_pem_header(data: &[u8]) -> bool {
-    const PEM_HEADER: &[u8] = b"-----BEGIN";
-
-    data.windows(PEM_HEADER.len())
-        .any(|window| window == PEM_HEADER)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::data_contains_pem_header;
-
     #[tokio::test]
     async fn changed_resolution_cannot_bypass_destination_guard() {
         use super::{ConnectionGuard, SocketAddr, connect_after_resolution};
@@ -138,21 +130,5 @@ mod tests {
         assert!(tokio::time::timeout(std::time::Duration::from_millis(25), excluded.accept())
             .await
             .is_err());
-    }
-
-    #[test]
-    fn test_data_contains_pem_header_accepts_plain_pem() {
-        assert!(data_contains_pem_header(b"-----BEGIN CERTIFICATE-----\n..."));
-    }
-
-    #[test]
-    fn test_data_contains_pem_header_finds_marker_after_leading_noise() {
-        assert!(data_contains_pem_header(b"\n\t \xEF\xBB\xBF-----BEGIN PRIVATE KEY-----\n..."));
-    }
-
-    #[test]
-    fn test_data_contains_pem_header_rejects_der_and_empty_data() {
-        assert!(!data_contains_pem_header(b"\x30\x82\x01\x00fake-der"));
-        assert!(!data_contains_pem_header(b"\n\t "));
     }
 }

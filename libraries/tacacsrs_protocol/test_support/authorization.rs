@@ -2,7 +2,7 @@ use tacacsrs_protocol::operations::{
     AuthorizationArg, AuthorizationOperationResponse, AuthorizationResponseStatus,
 };
 
-pub fn unchanged_execution_cases() -> Vec<(String, AuthorizationOperationResponse, bool)> {
+pub(super) fn unchanged_execution_cases() -> Vec<(String, AuthorizationOperationResponse, bool)> {
     let mut cases = Vec::new();
     for status in [
         AuthorizationResponseStatus::PassAdd,

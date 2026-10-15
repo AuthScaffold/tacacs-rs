@@ -29,7 +29,9 @@ use tacacsrs_protocol::failure::ServiceError;
 ///
 /// Returns one IPC listener when the client API is enabled, otherwise an empty
 /// set. The raw TACACS+ proxy remains an internal agent runtime listener.
-pub fn client_api_listeners(service: &TacacsClientService) -> Vec<Box<dyn RuntimeListenerService>> {
+pub(crate) fn client_api_listeners(
+    service: &TacacsClientService,
+) -> Vec<Box<dyn RuntimeListenerService>> {
     match service.client_api_socket_path() {
         Some(path) => {
             let settings = service.client_api_listener_settings();

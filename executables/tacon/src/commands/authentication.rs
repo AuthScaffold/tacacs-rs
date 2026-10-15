@@ -9,7 +9,7 @@ use tacacsrs_secrets::SecretBytes;
 use crate::cli::RequestArgs;
 use crate::connection::Connection;
 
-pub fn read_password(from_stdin: bool) -> anyhow::Result<SecretBytes> {
+pub(crate) fn read_password(from_stdin: bool) -> anyhow::Result<SecretBytes> {
     let bytes = if from_stdin {
         let mut bytes = Vec::new();
         std::io::stdin()

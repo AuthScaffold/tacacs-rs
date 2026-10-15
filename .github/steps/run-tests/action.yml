@@ -81,6 +81,16 @@ runs:
           }
           END { exit failed }'
 
+    - name: Check Unix socket ownership dependencies
+      shell: bash
+      run: |
+        cargo tree --package tacacsrs-unix-socket --edges normal --prefix none |
+          awk '/^(tonic|prost|redis|openssl|tacacsrs-protocol|tacacsrs-config|tacacsrs-networking|tacacsrs-agent|tacacsrs-ipc)[ -]/ {
+            print "Forbidden Unix socket dependency: " $0
+            failed = 1
+          }
+          END { exit failed }'
+
     - name: Check supported core dependencies
       shell: bash
       run: |

@@ -1,8 +1,8 @@
 //! File-backed configuration source for CLI and YANG-file inputs.
 //!
-//! [`CliFileDatastore`] implements the [`ConfigDatastore`](super::ConfigDatastore)
+//! [`CliFileDatastore`] implements the [`ConfigDatastore`]
 //! contract over parsed CLI inputs. It rebuilds the canonical
-//! [`TacacsPlus`](crate::TacacsPlus) snapshot from the normalized input model in
+//! [`TacacsPlus`] snapshot from the normalized input model in
 //! [`crate::input`], watches the referenced files, and republishes validated
 //! snapshots. Raw CLI and credential-file normalization stays in
 //! [`crate::input`]; this module owns only the observation backend.

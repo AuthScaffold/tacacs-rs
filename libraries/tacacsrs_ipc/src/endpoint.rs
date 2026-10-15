@@ -105,7 +105,7 @@ impl FromStr for IpcEndpoint {
 ///
 /// Returns an error when the endpoint cannot be represented as a gRPC
 /// transport or the local socket cannot be reached.
-pub async fn connect_channel(endpoint: &IpcEndpoint) -> anyhow::Result<Channel> {
+pub(crate) async fn connect_channel(endpoint: &IpcEndpoint) -> anyhow::Result<Channel> {
     match endpoint {
         IpcEndpoint::Unix(path) => {
             let path = path.clone();

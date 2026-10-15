@@ -32,7 +32,7 @@ same trait.
               +------------------+                   +-----------------------+
 ```
 
-`tacacsrs_config::input::CliFileDatastore` handles file-based and CLI-based configuration. CLI-only
+`tacacsrs_config::source::CliFileDatastore` handles file-based and CLI-based configuration. CLI-only
 input returns one snapshot. Watched YANG, certificate, and key files emit
 change events. `SonicConfigDb` reads `TACPLUS|global`,
 `TACPLUS_SERVER|*`, `TACPLUS_SERVER_TLS|*`, and

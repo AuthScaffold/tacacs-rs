@@ -6,7 +6,7 @@ use anyhow::{Context, ensure};
 use tokio::sync::oneshot;
 
 use crate::{PreparedEndpoint, RequestDeadline};
-use crate::runtime::task::DriverTask;
+use crate::connection::task::DriverTask;
 
 use super::{EndpointConnector, OperationKind};
 

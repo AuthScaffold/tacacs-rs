@@ -15,12 +15,12 @@ The user approved implementation of the reviewed layout improvements, breaking A
 Four Claude area reviews and an independent challenge review informed this plan.
 The success criterion is fewer unrelated files to understand one behavior, not a universal file or function length limit.
 
-- [ ] S5-M01: Reproduce and fix first-reply single-connect promotion. Keep multi-round regressions before reorganizing ownership. Correct the clean-build health smoke input.
-- [ ] S5-M02: Inherit the MSRV consistently, make supported fuzz failures blocking, align local private documentation checks with CI, and make cohesion-related lints non-blocking.
-- [ ] S5-M03: Make configuration a documented facade with one canonical parsing API. Remove obsolete aliases and mapping commentary. Group observation contracts and their local backends coherently.
-- [ ] S5-M04: Organize protocol operations by domain responsibility, clarify wire/body names, and make the IPC generated boundary explicit. Update consumers without compatibility-only layers.
-- [ ] S5-M05: Use one CLI command and batch dispatch path over explicit direct/IPC backends. Preserve connection modes, password handling, and result semantics.
-- [ ] S5-M06: Improve agent publication and networking cache locality. Name locks and owners by purpose, separate large test bodies, document state flows, and consolidate duplicate Unix socket ownership without restoring agent-to-IPC coupling.
+- [x] S5-M01: The first-reply regression failed before correction and passes with a write-once observation. The health smoke command now builds both executables.
+- [x] S5-M02: All 17 packages inherit Rust 1.88 and pass its check. Fuzz failures block CI. Private documentation matches CI. Broad style groups are advisory; visibility and unsafe-block documentation are enforced.
+- [x] S5-M03: Configuration exposes canonical root parsing functions and source-owned backends. Obsolete aliases and the empty mapping module are removed. Tests and examples use the new paths.
+- [x] S5-M04: Protocol operations have domain-specific homes, service errors live with failure facts, and body/wire names are explicit. IPC bindings use `proto`. Consumers are migrated without compatibility aliases.
+- [x] S5-M05: One private backend and one scheduling path handle CLI direct/IPC operations. Connection modes, password handling, and domain responses remain intact. All 64 CLI tests pass.
+- [x] S5-M06: Publication write methods are co-located, facade/engine and supervision responsibilities are separated, and cache mutation is private. A shared Unix socket leaf crate replaces both copies. Client, connection, session, and catalog lifetimes remain distinct.
 - [ ] S5-M07: Run focused and full validation, independent final review, native integration, and corrected private rustdoc gates. Address further concrete findings or record justified exclusions before closure.
 
 Configuration snapshots and credential references remain authoritative. Prepared values remain derived.

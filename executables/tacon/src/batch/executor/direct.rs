@@ -52,7 +52,7 @@ fn determine_execution_mode(dedicated: bool, single_connection_enabled: bool) ->
 /// # Errors
 ///
 /// Returns an error if the connection fails or if a load test records a failure.
-pub async fn execute_batch(
+pub(crate) async fn execute_batch(
     server: &TacacsPlusServer,
     dedicated: bool,
     batch: &BatchFile,

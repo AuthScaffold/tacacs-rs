@@ -14,7 +14,7 @@ use super::super::types::{BatchFile, LoadTestConfig, RequestResult};
 ///
 /// Returns an error if the service cannot be reached or if a load test records
 /// a failure.
-pub async fn execute_batch_via_service(
+pub(crate) async fn execute_batch_via_service(
     endpoint: &str,
     batch: &BatchFile,
 ) -> anyhow::Result<Vec<RequestResult>> {

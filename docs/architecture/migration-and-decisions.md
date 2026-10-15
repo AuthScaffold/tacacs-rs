@@ -274,7 +274,7 @@ Primary starting points:
 - [Upstream manager](../../libraries/tacacsrs_agent/src/upstream/manager/mod.rs)
 - [Routed client](../../libraries/tacacsrs_networking/src/routed/client.rs)
 - [Shared executor](../../libraries/tacacsrs_networking/src/retry/executor.rs)
-- [Connection driver](../../libraries/tacacsrs_networking/src/runtime/multiplexed/mod.rs)
+- [Connection driver](../../libraries/tacacsrs_networking/src/connection/multiplexed/mod.rs)
 - [Session routes](../../libraries/tacacsrs_networking/src/session/manager.rs)
 
 **Completed boundary:** networking owns routing, retry, admission, and connection lifetime mechanics. The agent retains configuration projection and ingress-specific behavior.

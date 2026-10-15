@@ -55,7 +55,7 @@ The public stop method removes the cached connection and disables new sessions.
 The session-close notification only fires for `NotSupported`, not for a retired, supported single-connect connection.
 An idle retired connection can therefore retain its driver until another event, such as peer closure, terminates it.
 
-- [Driver task ownership](../../libraries/tacacsrs_networking/src/runtime/multiplexed/mod.rs#L78)
+- [Driver task ownership](../../libraries/tacacsrs_networking/src/connection/multiplexed/mod.rs)
 - [Client retirement](../../libraries/tacacsrs_networking/src/client/mod.rs#L315)
 - [Session removal and close notification](../../libraries/tacacsrs_networking/src/session/manager.rs#L383)
 

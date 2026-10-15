@@ -1,7 +1,7 @@
 //! Startup composition for the daemon.
 //!
 //! [`prepare_service`] turns parsed CLI arguments into a
-//! [`PreparedService`](crate::supervision::PreparedService). It selects the
+//! [`PreparedService`]. It selects the
 //! datastore, resolves the local service listeners, loads the optional runtime
 //! policy, builds credential providers, and constructs the waiting client
 //! service. The host then supervises the result.

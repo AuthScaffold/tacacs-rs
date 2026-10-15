@@ -6,7 +6,6 @@
 
 pub(crate) mod client_api;
 pub(crate) mod tacacs_proxy;
-pub(crate) mod unix_socket;
 
 /// Platform-specific listener settings for the raw TACACS+ proxy.
 #[derive(Clone, Copy)]

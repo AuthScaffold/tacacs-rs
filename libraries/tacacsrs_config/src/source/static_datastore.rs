@@ -1,8 +1,8 @@
 //! In-memory configuration backend for CLI, file, and test workflows.
 //!
-//! [`StaticDatastore`] serves one validated [`TacacsPlus`](crate::TacacsPlus)
+//! [`StaticDatastore`] serves one validated [`TacacsPlus`]
 //! snapshot for the process lifetime. It implements the
-//! [`ConfigDatastore`](super::ConfigDatastore) contract defined in the parent
+//! [`ConfigDatastore`] contract defined in the parent
 //! module. Observation yields the snapshot once as a baseline, then ends
 //! without a worker task.
 

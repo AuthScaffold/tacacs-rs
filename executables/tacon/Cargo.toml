@@ -2,6 +2,7 @@
 name = "tacon"
 version = "0.0.0-dev"
 edition.workspace = true
+rust-version.workspace = true
 description = "TACACS+ client CLI for authentication, authorization, and accounting"
 readme = "README.md"
 keywords = ["tacacs", "tacacs+", "network", "authentication", "cli"]

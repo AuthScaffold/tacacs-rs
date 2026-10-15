@@ -6,7 +6,7 @@ use tacacsrs_protocol::packet::Packet;
 use super::{DuplexChannel, SessionManager};
 
 pub(crate) struct SharedSession {
-    pub(crate) connection_owner: Option<Arc<crate::runtime::MultiplexedConnection>>,
+    pub(crate) connection_owner: Option<Arc<crate::connection::MultiplexedConnection>>,
     id: u32,
     duplex_channel: DuplexChannel,
 
