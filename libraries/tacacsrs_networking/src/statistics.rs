@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn denial_is_a_terminal_reply_not_a_protocol_error() {
         use tacacsrs_protocol::packet::Packet;
-        use tacacsrs_protocol::traits::TacacsBodyTrait;
+        use tacacsrs_protocol::body::TacacsBodyTrait;
         use tacacsrs_protocol::enumerations::{TacacsType, TacacsAuthenticationStatus};
         let reply = tacacsrs_protocol::authentication::reply::AuthenticationReply {
             status: TacacsAuthenticationStatus::TacPlusAuthenStatusFail,

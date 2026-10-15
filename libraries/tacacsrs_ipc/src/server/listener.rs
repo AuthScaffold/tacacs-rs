@@ -14,7 +14,7 @@ use super::grpc::GrpcService;
 use super::health::{HealthStatus, StandardHealth};
 use super::limited_incoming::LimitedIncoming;
 use super::request_tracker::RequestTracker;
-use crate::ipc::tacacs_agent_server::TacacsAgentServer;
+use crate::proto::tacacs_agent_server::TacacsAgentServer;
 
 /// Allows protobuf framing overhead while rejecting multi-megabyte envelopes.
 const MAX_IPC_MESSAGE_BYTES: usize =

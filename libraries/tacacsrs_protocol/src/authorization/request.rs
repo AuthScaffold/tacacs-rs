@@ -7,9 +7,9 @@ use num_enum::TryFromPrimitive;
 use crate::enumerations::{
     TacacsAuthenticationMethod, TacacsAuthenticationService, TacacsAuthenticationType,
 };
-use crate::helpers::read_string;
+use crate::wire_io::read_string;
 use crate::packet::{Packet, PacketTrait};
-use crate::traits::TacacsBodyTrait;
+use crate::body::TacacsBodyTrait;
 
 const AUTHORIZATION_REQUEST_MIN_LENGTH: usize = 8;
 const AUTHORIZATION_ARG_SIZE_OFFSET: usize = 8;

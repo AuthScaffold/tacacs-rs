@@ -52,7 +52,7 @@ tacacsrs_agent
 │   ├── proxy_transport
 │   │                - downstream settings published with the server set
 │   ├── manager      - source snapshots, policy publication, and health
-│   │   ├── availability - generation-aware upstream observations
+│   │   ├── publication - commits one generation with generation-scoped availability
 │   │   ├── binding  - networking bindings paired with source metadata
 │   │   ├── server_set
 │   │   │            - generic request snapshots and networking catalog handles

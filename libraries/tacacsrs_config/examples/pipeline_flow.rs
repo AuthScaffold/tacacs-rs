@@ -48,10 +48,10 @@ fn main() -> anyhow::Result<()> {
 
     // Step 3: Use this sequence in production:
     // 1. Call enumerate_server(s) to inline shared credential bundles.
-    // 2. Hand the enumerated server to runtime code directly.
-    // 3. If external secret providers are added, resolve credentials at the
-    //    runtime provider boundary before opening a connection.
-    println!("\n3. Production flow: enumerate bundles, then resolve external secrets at a separate runtime boundary only if that feature is introduced");
+    // 2. Materialize the plan, resolving central credential references through
+    //    the provider boundary (for example the SONiC or HTTP adapter crates).
+    // 3. Prepare the materialized server into a native endpoint, then connect.
+    println!("\n3. Production flow: enumerate bundles, resolve central references through the provider boundary, then materialize and prepare the endpoint");
 
     Ok(())
 }

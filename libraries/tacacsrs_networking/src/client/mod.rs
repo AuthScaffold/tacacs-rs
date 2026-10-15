@@ -17,7 +17,7 @@ use tacacsrs_protocol::enumerations::{
 };
 use tacacsrs_protocol::header::Header;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
-use tacacsrs_protocol::traits::TacacsBodyTrait;
+use tacacsrs_protocol::body::TacacsBodyTrait;
 
 use crate::endpoint::PreparedEndpoint;
 use crate::establish::ConnectPreflight;
@@ -972,7 +972,7 @@ mod tests {
     };
     use tacacsrs_protocol::header::Header;
     use tacacsrs_protocol::packet::{Packet, PacketTrait};
-    use tacacsrs_protocol::traits::TacacsBodyTrait;
+    use tacacsrs_protocol::body::TacacsBodyTrait;
 
     use super::{TacacsClient, accounting_watchdog_preflight_request};
     use crate::PreparedEndpoint;

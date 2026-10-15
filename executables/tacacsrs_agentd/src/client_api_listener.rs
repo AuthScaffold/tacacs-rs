@@ -22,8 +22,8 @@ use tacacsrs_ipc::server::{self, HealthStatus, ListenerOptions};
 use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
     AuthorizationOperationResponse, PapAuthenticationOperation, PapAuthenticationOperationResponse,
-    ServiceError,
 };
+use tacacsrs_protocol::failure::ServiceError;
 
 /// Builds the injected runtime listeners for the local client API.
 ///

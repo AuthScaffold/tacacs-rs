@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use tacacsrs_config::{
-    enumerate_server as resolve_server, parse_yang_json, parse_yang_json_file, pipeline,
-    validate_credential_references, PskDheKeSupportedGroup, YangConfigRoot, TacacsPlusServerType,
+    enumerate_server as resolve_server, parse_yang_json, parse_yang_json_file,
+    parse_root_json_file, validate_credential_references, PskDheKeSupportedGroup, YangConfigRoot,
+    TacacsPlusServerType,
 };
 
 fn write_temp_json_file(json: &str) -> PathBuf {
@@ -555,7 +556,7 @@ fn parse_yang_json_file_parses_and_validates_config() {
 }
 
 #[test]
-fn pipeline_parse_root_json_file_reads_root_without_validation() {
+fn parse_root_json_file_reads_root_without_validation() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
             "server": [
@@ -571,7 +572,7 @@ fn pipeline_parse_root_json_file_reads_root_without_validation() {
     }"#;
 
     let path = write_temp_json_file(json);
-    let result = pipeline::parse_root_json_file(&path);
+    let result = parse_root_json_file(&path);
     let _ = std::fs::remove_file(&path);
 
     let root = result.expect("root parse from the file must succeed");
@@ -580,11 +581,11 @@ fn pipeline_parse_root_json_file_reads_root_without_validation() {
 }
 
 #[test]
-fn pipeline_parse_root_json_file_reports_missing_file() {
+fn parse_root_json_file_reports_missing_file() {
     let mut missing = std::env::temp_dir();
     missing.push("tacacsrs-config-test-does-not-exist.json");
 
-    let err = pipeline::parse_root_json_file(&missing).unwrap_err();
+    let err = parse_root_json_file(&missing).unwrap_err();
     assert!(
         err.to_string()
             .contains("failed to read configuration file"),

@@ -2,13 +2,25 @@
 //!
 //! Networking owns route selection, circuits, cached connections, and reconnect
 //! serialization. The manager retains source metadata and projects YANG inputs.
+//!
+//! # Atomic publication commit
+//!
+//! [`reload_shared_servers_with_retirement`](UpstreamManager::reload_shared_servers_with_retirement)
+//! is the catalog write path. It holds `catalog_reload_lock`, prepares the new
+//! server set, then takes the active snapshot write lock. Inside that lock the
+//! [`publication controller`](self::publication) commits generation, server
+//! count, and health in one health mutation. The commit callback swaps the
+//! snapshot and runs coordinator bookkeeping. It never awaits and never
+//! reacquires these locks. Upstream retirement awaits only after the write lock
+//! is released, so a cancelled retirement cannot leave bookkeeping behind the
+//! applied snapshot.
 
 use std::sync::{Arc, RwLock as StdRwLock};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_config::prepare::PrepareOptions;
 use tacacsrs_networking::routed::EndpointConnector;
 
-use self::availability::PublicationController;
+use self::publication::PublicationController;
 use self::server_set::{RuntimeRoutingSnapshot, ServerSet};
 use self::prepared_server::PreparedServer;
 use crate::config::{PreparedProxyPolicy, RuntimePolicy};
@@ -26,7 +38,7 @@ pub(crate) use self::server_set::ServiceConnector;
 
 mod server_set;
 mod prepared_server;
-mod availability;
+mod publication;
 mod binding;
 
 /// Publishes catalogs and captures request policy for both local services.
@@ -37,9 +49,12 @@ pub(crate) struct UpstreamManager<
     Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
 > {
     closed: std::sync::atomic::AtomicBool,
-    reload_lock: tokio::sync::Mutex<()>,
-    /// Current immutable routing generation for new requests.
-    runtime: StdRwLock<Arc<RuntimeRoutingSnapshot<Connector>>>,
+    /// Serializes catalog preparation and the snapshot swap. It is the inner
+    /// lock, held after the service publication lock.
+    catalog_reload_lock: tokio::sync::Mutex<()>,
+    /// Active routing snapshot for new requests. Readers clone the `Arc`;
+    /// publication swaps it under the write lock.
+    active_snapshot: StdRwLock<Arc<RuntimeRoutingSnapshot<Connector>>>,
     connect_options: PrepareOptions,
     /// Serializes generation publication and server-availability observations.
     publication: PublicationController,
@@ -143,8 +158,8 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         let server_set = Arc::new(ServerSet::new(servers, connector));
         Ok(Self {
             closed: std::sync::atomic::AtomicBool::new(false),
-            reload_lock: tokio::sync::Mutex::new(()),
-            runtime: StdRwLock::new(Arc::new(RuntimeRoutingSnapshot {
+            catalog_reload_lock: tokio::sync::Mutex::new(()),
+            active_snapshot: StdRwLock::new(Arc::new(RuntimeRoutingSnapshot {
                 generation: 0,
                 availability_generation: 0,
                 server_set,
@@ -163,7 +178,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     fn current_runtime(&self) -> Arc<RuntimeRoutingSnapshot<Connector>> {
         Arc::clone(
             &self
-                .runtime
+                .active_snapshot
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
@@ -243,7 +258,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
 
     pub(crate) fn close(&self) {
         let runtime = self
-            .runtime
+            .active_snapshot
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.closed
@@ -308,7 +323,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
 
     pub(crate) fn admit_policy(&self) -> anyhow::Result<crate::PolicyRevision> {
         let _runtime = self
-            .runtime
+            .active_snapshot
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.ensure_open()?;
@@ -320,7 +335,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         revision: crate::PolicyRevision,
     ) -> anyhow::Result<crate::PolicyUpdate> {
         let _runtime = self
-            .runtime
+            .active_snapshot
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.ensure_open()?;
@@ -333,7 +348,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         runtime_policy: RuntimePolicy,
     ) -> anyhow::Result<crate::PolicyUpdate> {
         let mut current = self
-            .runtime
+            .active_snapshot
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.ensure_open()?;
@@ -354,7 +369,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
 
     pub(crate) fn publish_initial_health(&self, applied: bool) {
         let current = self
-            .runtime
+            .active_snapshot
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.publication.publish_runtime(
@@ -504,7 +519,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         validity: Option<crate::runtime::CredentialLifetime>,
         commit: impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
-        let _reload = self.reload_lock.lock().await;
+        let _reload = self.catalog_reload_lock.lock().await;
         anyhow::ensure!(
             !self.closed.load(std::sync::atomic::Ordering::Acquire),
             "The TACACS+ service is closed"
@@ -553,7 +568,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
 
         {
             let mut current = self
-                .runtime
+                .active_snapshot
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             anyhow::ensure!(
@@ -1152,7 +1167,7 @@ mod tests {
         assert_eq!(captured.deadline().expires_at(), lifetime.deadline.unwrap());
         state.bind_request(&captured).await.unwrap();
         let generation = state.current_runtime().generation;
-        let guard = state.reload_lock.lock().await;
+        let guard = state.catalog_reload_lock.lock().await;
         let pending = state.reload_shared_servers_with_retirement(
             vec![Arc::new(test_server("server-a:49"))],
             PreparedProxyPolicy::unobfuscated(),

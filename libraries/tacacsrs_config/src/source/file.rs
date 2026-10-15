@@ -1,3 +1,12 @@
+//! File-backed configuration source for CLI and YANG-file inputs.
+//!
+//! [`CliFileDatastore`] implements the [`ConfigDatastore`](super::ConfigDatastore)
+//! contract over parsed CLI inputs. It rebuilds the canonical
+//! [`TacacsPlus`](crate::TacacsPlus) snapshot from the normalized input model in
+//! [`crate::input`], watches the referenced files, and republishes validated
+//! snapshots. Raw CLI and credential-file normalization stays in
+//! [`crate::input`]; this module owns only the observation backend.
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,13 +19,12 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use crate::input::{tacacs_plus_from_cli_input, CliDatastoreInput};
 use crate::TacacsPlus;
-use crate::source::{
+use super::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
     ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy,
 };
-use super::builder::tacacs_plus_from_cli_input;
-use super::model::CliDatastoreInput;
 
 /// File-backed datastore for CLI-supplied TACACS+ configuration inputs.
 ///
@@ -246,7 +254,7 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     use crate::source::ConfigDatastore;
-    use super::super::model::{
+    use crate::input::{
         CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
     };
     use super::*;

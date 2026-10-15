@@ -9,10 +9,32 @@
 //!       +-- failure -> retain known good ------+-> health stale/unavailable
 //! ```
 //!
-//! Datastore policy determines whether initial failure is fatal and whether a
-//! observation must be continuously restored. Each session supplies a baseline
-//! after observation starts. Coordinated generation/health publication remains
-//! a separate migration step.
+//! Datastore policy determines whether an initial failure is fatal and whether
+//! an observation must be continuously restored. Each session supplies a
+//! baseline after observation starts. Generation and health publication is
+//! atomic: the service reload commits the generation, catalog, and health in one
+//! step through the upstream manager publication controller.
+//!
+//! # Concurrent supervision loops
+//!
+//! [`ConfigSupervisor`] joins independent owned futures. No loop spawns a
+//! detached task, and the host stop future cancels all of them together:
+//!
+//! - Source observation applies each new candidate and retains the last known
+//!   good set on failure.
+//! - Provider refresh re-resolves credentials before their prepared lifetime
+//!   ends, without waiting for a change notification.
+//! - Expiry monitors withdraw the catalog when the source or credentials pass
+//!   their stale budget.
+//!
+//! # Expiry and recovery
+//!
+//! Each expiry monitor captures a deadline from the first stale or non-empty
+//! applied catalog. Repeated failures, credential refreshes, and policy changes
+//! do not renew that deadline. A valid new source or credential publication
+//! clears the stale state and resets the deadline. Withdrawal publishes an empty
+//! catalog with immediate endpoint retirement, but keeps the runtime
+//! recoverable.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -2399,7 +2421,8 @@ mod tests {
 
     #[tokio::test]
     async fn file_change_between_initialization_and_serving_is_reconciled() {
-        use tacacsrs_config::input::{CliConfigSource, CliDatastoreInput, CliFileDatastore};
+        use tacacsrs_config::input::{CliConfigSource, CliDatastoreInput};
+        use tacacsrs_config::source::CliFileDatastore;
 
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

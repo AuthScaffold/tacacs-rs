@@ -1,3 +1,5 @@
+//! Cursor helpers for reading length-prefixed TACACS+ wire fields.
+
 use std::io::{Cursor, Read};
 use anyhow::Context;
 

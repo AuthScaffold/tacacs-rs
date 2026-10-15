@@ -3,8 +3,6 @@
 use std::io::{IsTerminal, Read};
 
 use anyhow::Context;
-#[cfg(target_os = "linux")]
-use tacacsrs_ipc::{ServiceClient};
 use tacacsrs_protocol::operations::{PapAuthenticationOperation, PapAuthenticationOperationResponse};
 use tacacsrs_secrets::SecretBytes;
 
@@ -32,32 +30,25 @@ pub fn read_password(from_stdin: bool) -> anyhow::Result<SecretBytes> {
     Ok(SecretBytes::new(bytes))
 }
 
-pub async fn authenticate_direct(
+/// Sends a prepared PAP authentication operation over a direct TACACS+ connection.
+///
+/// # Errors
+///
+/// Returns an error if the exchange fails or the reply is nonterminal.
+pub(crate) async fn send_direct(
     connection: &Connection,
-    args: &RequestArgs,
-    privilege_level: u8,
-    password: SecretBytes,
+    operation: &PapAuthenticationOperation,
 ) -> anyhow::Result<PapAuthenticationOperationResponse> {
-    let reply = connection
-        .execute(pap_operation(args, privilege_level, password)?.exchange()?)
-        .await?;
+    let reply = connection.execute(operation.exchange()?).await?;
     PapAuthenticationOperationResponse::from_reply(connection.server_name(), reply)
 }
 
-#[cfg(target_os = "linux")]
-pub async fn authenticate_service(
-    client: &ServiceClient,
-    args: &RequestArgs,
-    privilege_level: u8,
-    password: SecretBytes,
-) -> anyhow::Result<PapAuthenticationOperationResponse> {
-    client
-        .authenticate_pap(pap_operation(args, privilege_level, password)?)
-        .await
-        .map_err(Into::into)
-}
-
-fn pap_operation(
+/// Builds a validated [`PapAuthenticationOperation`] from CLI arguments.
+///
+/// # Errors
+///
+/// Returns an error if the privilege level or the assembled operation is invalid.
+pub(crate) fn pap_operation(
     args: &RequestArgs,
     privilege_level: u8,
     password: SecretBytes,

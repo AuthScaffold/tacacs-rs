@@ -1,56 +1,24 @@
-use futures::stream::{self, StreamExt};
 use std::future::Future;
-#[cfg(target_os = "linux")]
-use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
-#[cfg(target_os = "linux")]
-use anyhow::Context;
-#[cfg(target_os = "linux")]
-use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
-#[cfg(target_os = "linux")]
-use tacacsrs_protocol::operations::{AccountingOperation};
-use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
+
+use futures::future::join_all;
+use futures::stream::{self, StreamExt};
+
 use tacacsrs_protocol::operations::{
     AuthorizationAuthenticationContext as ProtocolAuthenticationContext, AuthorizationOperation,
-    AuthorizationOperationResponse,
 };
 
-use crate::commands::accounting::send_accounting_request;
-use crate::connection::Connection;
+use crate::backend::Backend;
+use crate::commands::accounting::accounting_operation;
 
-use super::super::progress::{ProgressConfig, ProgressTracker};
-#[cfg(target_os = "linux")]
-use super::super::types::AccountingRequest;
+use super::super::progress::{print_load_test_summary, ProgressConfig, ProgressTracker};
 use super::super::types::{
-    AuthorizationAuthenticationContext, AuthorizationRequest, BatchRequest, LoadTestResult,
+    AuthorizationAuthenticationContext, AuthorizationRequest, BatchFile, BatchRequest,
+    LoadTestConfig, LoadTestResult, RequestResult,
 };
 
-#[cfg(target_os = "linux")]
-pub(super) async fn service_client(endpoint: &str) -> anyhow::Result<ServiceClient> {
-    let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
-    ServiceClient::connect(endpoint)
-        .await
-        .context("Failed to connect to TACACS+ service")
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn to_service_accounting_request(request: &AccountingRequest) -> AccountingOperation {
-    crate::commands::accounting::accounting_operation(
-        &request.user,
-        &request.port,
-        &request.rem_addr,
-        &request.cmd,
-        Some(&request.cmd_args),
-    )
-}
-
-pub(super) fn direct_authorization_exchange(
-    request: &AuthorizationRequest,
-) -> anyhow::Result<AuthorizationExchange> {
-    authorization_operation(request)?.exchange()
-}
-
+/// Builds an [`AuthorizationOperation`] from a batch authorization request.
 pub(super) fn authorization_operation(
     request: &AuthorizationRequest,
 ) -> anyhow::Result<AuthorizationOperation> {
@@ -78,34 +46,122 @@ pub(super) fn authorization_operation(
     builder.build()
 }
 
-/// Runs a single batch request over a connection.
-pub(super) async fn execute_single_request(
-    connection: &Connection,
+/// Runs one batch request against the resolved backend and formats its outcome.
+///
+/// This is the single per-request dispatcher shared by direct and IPC batch
+/// execution. PAP authentication requests are rejected before any backend call.
+pub(super) async fn execute_batch_request(
+    backend: &Backend,
     request: &BatchRequest,
 ) -> Result<String, String> {
     match request {
         BatchRequest::Accounting(req) => {
-            let result = send_accounting_request(
-                connection,
+            let operation = accounting_operation(
                 &req.user,
                 &req.port,
                 &req.rem_addr,
                 &req.cmd,
                 Some(&req.cmd_args),
-            )
-            .await;
-            format_request_outcome("Accounting", result)
+            );
+            format_request_outcome("Accounting", backend.accounting(&operation).await)
         }
         BatchRequest::Authentication(req) => Err(pap_batch_unsupported(&req.user)),
         BatchRequest::Authorization(req) => {
-            let result = connection
-                .execute(direct_authorization_exchange(req).map_err(|error| error.to_string())?)
-                .await
-                .and_then(|reply| {
-                    AuthorizationOperationResponse::from_reply(connection.server_name(), reply)
-                });
-            format_request_outcome("Authorization", result)
+            let operation = authorization_operation(req).map_err(|error| error.to_string())?;
+            format_request_outcome("Authorization", backend.authorization(&operation).await)
         }
+    }
+}
+
+/// Logs and prints the batch description, if the file provides one.
+pub(super) fn announce_batch(batch: &BatchFile) {
+    if let Some(description) = &batch.metadata.description {
+        log::info!("Running batch: {description}");
+        println!("Batch: {description}");
+    }
+}
+
+/// Runs every request against the backend, sequentially or in parallel.
+///
+/// Parallel runs clone the backend per request. A cloned [`Backend`] shares the
+/// same direct connection or persistent IPC channel, so no new transport opens.
+pub(super) async fn run_requests(
+    backend: &Backend,
+    requests: &[BatchRequest],
+    parallel: bool,
+) -> Vec<RequestResult> {
+    if parallel {
+        let futures = requests.iter().enumerate().map(|(index, request)| {
+            let backend = backend.clone();
+            async move {
+                RequestResult {
+                    index,
+                    request_type: request.type_name(),
+                    result: execute_batch_request(&backend, request).await,
+                }
+            }
+        });
+        join_all(futures).await
+    } else {
+        let mut results = Vec::with_capacity(requests.len());
+        for (index, request) in requests.iter().enumerate() {
+            log::info!("Running request {}/{}", index + 1, requests.len());
+            results.push(RequestResult {
+                index,
+                request_type: request.type_name(),
+                result: execute_batch_request(backend, request).await,
+            });
+        }
+        results
+    }
+}
+
+/// Runs a load test against the backend with controlled concurrency.
+///
+/// The test repeats every request `repetitions` times and stops after the first
+/// failure. It reuses one backend for the whole run.
+pub(super) async fn run_batch_load_test(
+    backend: &Backend,
+    requests: &[BatchRequest],
+    config: &LoadTestConfig,
+) -> LoadTestResult {
+    run_load_test(
+        requests.len() * config.repetitions,
+        load_test_iterations(requests, config.repetitions),
+        config.max_parallel,
+        move |rep, idx, request| {
+            let backend = backend.clone();
+            async move {
+                execute_batch_request(&backend, request)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| {
+                        format!(
+                            "Request failed at rep {}, request {} ({}): {}",
+                            rep + 1,
+                            idx + 1,
+                            request.type_name(),
+                            error
+                        )
+                    })
+            }
+        },
+    )
+    .await
+}
+
+/// Prints the load test summary and maps the result to the batch return value.
+///
+/// # Errors
+///
+/// Returns an error when the load test recorded a failure.
+pub(super) fn finish_load_test(result: LoadTestResult) -> anyhow::Result<Vec<RequestResult>> {
+    print_load_test_summary(&result);
+
+    if result.is_success() {
+        Ok(vec![])
+    } else {
+        anyhow::bail!("Load test failed: {}", result.first_failure.unwrap_or_default())
     }
 }
 
@@ -218,7 +274,7 @@ fn build_load_test_result(
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use tacacsrs_ipc::ipc;
+    use tacacsrs_ipc::proto;
     use tacacsrs_protocol::accounting::reply::AccountingReply;
     use tacacsrs_protocol::authentication::reply::AuthenticationReply;
     use tacacsrs_protocol::authorization::reply::AuthorizationReply;
@@ -226,9 +282,12 @@ mod tests {
         TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
         TacacsAuthorizationStatus,
     };
-    use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
+    use tacacsrs_protocol::failure::{
+        DeliveryState, FailureCategory, FailureFacts, FailurePhase, ServiceError,
+    };
     use tacacsrs_protocol::operations::{
-        AccountingOperationResponse, PapAuthenticationOperationResponse, ServiceError,
+        AccountingOperationResponse, AuthorizationOperationResponse,
+        PapAuthenticationOperationResponse,
     };
 
     use super::*;
@@ -248,7 +307,7 @@ mod tests {
                     data: "data".to_owned(),
                 },
             );
-            let remote = AccountingOperationResponse::try_from(ipc::AccountingResponse::from(
+            let remote = AccountingOperationResponse::try_from(proto::AccountingResponse::from(
                 direct.clone(),
             ))?;
             assert_eq!(direct, remote);
@@ -279,7 +338,7 @@ mod tests {
                 },
             )?;
             let remote = AuthorizationOperationResponse::try_from(
-                ipc::AuthorizationResponse::from(direct.clone()),
+                proto::AuthorizationResponse::from(direct.clone()),
             )?;
             assert_eq!(direct, remote);
             assert_eq!(
@@ -301,7 +360,7 @@ mod tests {
                 ServiceError::new("operation failed", FailureFacts::new(category, phase, delivery))
                     .with_server("primary")
                     .with_runtime_generation(7);
-            let remote = ServiceError::try_from(ipc::ServiceError::from(direct.clone()))?;
+            let remote = ServiceError::try_from(proto::ServiceError::from(direct.clone()))?;
             assert_eq!(direct, remote);
             assert_eq!(
                 format_request_outcome("Accounting", Err::<(), _>(direct)),
@@ -328,7 +387,7 @@ mod tests {
                 },
             )?;
             let remote = PapAuthenticationOperationResponse::try_from(
-                ipc::PapAuthenticationResponse::from(direct.clone()),
+                proto::PapAuthenticationResponse::from(direct.clone()),
             )?;
             assert_eq!(direct, remote);
         }
@@ -339,5 +398,88 @@ mod tests {
     fn batch_pap_rejection_never_contains_a_password() {
         assert_eq!(pap_batch_unsupported("alice"),
             "PAP authentication is not supported in batch files. Use the authentication command with a prompt or --password-stdin (user: alice)");
+    }
+}
+
+#[cfg(test)]
+mod load_test_tests {
+    use std::time::Instant;
+
+    use crate::batch::types::{AccountingRequest, BatchRequest};
+
+    use super::{build_load_test_result, load_test_iterations, run_load_test};
+
+    fn accounting_request(cmd: &str) -> BatchRequest {
+        BatchRequest::Accounting(AccountingRequest {
+            user: "alice".to_owned(),
+            port: "tty0".to_owned(),
+            rem_addr: "192.0.2.1".to_owned(),
+            cmd: cmd.to_owned(),
+            cmd_args: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn load_test_iterations_expand_requests_by_repetition() {
+        let requests = vec![accounting_request("a"), accounting_request("b")];
+        let expanded: Vec<_> = load_test_iterations(&requests, 3)
+            .map(|(rep, idx, _)| (rep, idx))
+            .collect();
+        assert_eq!(expanded, vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]);
+    }
+
+    #[test]
+    fn build_load_test_result_reports_success_without_failures() {
+        let result = build_load_test_result(Instant::now(), 4, &[true, true, true, true], None);
+        assert!(result.is_success());
+        assert_eq!(result.successful_requests, 4);
+        assert_eq!(result.failed_requests, 0);
+    }
+
+    #[test]
+    fn build_load_test_result_counts_a_single_failure() {
+        let result = build_load_test_result(
+            Instant::now(),
+            4,
+            &[true, false, true],
+            Some("boom".to_owned()),
+        );
+        assert!(!result.is_success());
+        assert_eq!(result.successful_requests, 2);
+        assert_eq!(result.failed_requests, 1);
+        assert_eq!(result.first_failure.as_deref(), Some("boom"));
+    }
+
+    #[tokio::test]
+    async fn load_test_reports_success_when_all_requests_pass() {
+        let requests = vec![accounting_request("a"), accounting_request("b")];
+        let result = run_load_test(
+            requests.len() * 2,
+            load_test_iterations(&requests, 2),
+            4,
+            |_, _, _| async { Ok::<(), String>(()) },
+        )
+        .await;
+        assert!(result.is_success());
+        assert_eq!(result.successful_requests, 4);
+        assert_eq!(result.failed_requests, 0);
+        assert_eq!(result.total_requests, 4);
+    }
+
+    #[tokio::test]
+    async fn load_test_stops_after_first_failure() {
+        let requests = vec![accounting_request("a")];
+        let result =
+            run_load_test(5, load_test_iterations(&requests, 5), 1, |rep, _, _| async move {
+                if rep == 2 {
+                    Err(format!("boom at rep {}", rep + 1))
+                } else {
+                    Ok(())
+                }
+            })
+            .await;
+        assert!(!result.is_success());
+        assert_eq!(result.failed_requests, 1);
+        assert_eq!(result.first_failure.as_deref(), Some("boom at rep 3"));
     }
 }

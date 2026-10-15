@@ -85,7 +85,12 @@ impl SingleConnectPromotion {
             SINGLE_CONNECT_RESPONSE_UNSUPPORTED
         };
 
-        self.response.store(response, Ordering::Release);
+        let _ = self.response.compare_exchange(
+            SINGLE_CONNECT_RESPONSE_PENDING,
+            response,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
     }
 
     async fn promote_if_confirmed(&self, mut connection: BoxedDedicatedConnection) {
@@ -410,6 +415,61 @@ mod tests {
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
         assert!(shared_connection.slot.read().await.is_none());
         assert_eq!(*single_connection_state.read().await, SingleConnectionState::NotSupported);
+    }
+
+    #[tokio::test]
+    async fn first_reply_controls_multi_round_promotion() {
+        for first_supports_sharing in [true, false] {
+            let mock = MockTransport::new();
+            let coordinator = mock.coordinator();
+            let shared_connection = Arc::default();
+            let state = Arc::new(RwLock::new(SingleConnectionState::Initial));
+            let session = DedicatedSession::new(
+                BoxedTransport::new(mock),
+                None,
+                Some(SingleConnectPromotion::new(
+                    Arc::clone(&shared_connection),
+                    Arc::clone(&state),
+                )),
+            );
+            for (request_sequence, supports_sharing) in
+                [(1, first_supports_sharing), (3, !first_supports_sharing)]
+            {
+                let mut reply_flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
+                if supports_sharing {
+                    reply_flags |= TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
+                }
+                coordinator
+                    .add_reply(test_packet(
+                        session.session_id(),
+                        request_sequence + 1,
+                        reply_flags,
+                        b"reply",
+                    ))
+                    .await
+                    .unwrap();
+                session
+                    .send_packet(test_packet(
+                        session.session_id(),
+                        request_sequence,
+                        TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                        b"request",
+                    ))
+                    .await
+                    .unwrap();
+                session.receive_packet().await.unwrap();
+            }
+            session.complete().await;
+            assert_eq!(shared_connection.slot.read().await.is_some(), first_supports_sharing);
+            assert_eq!(
+                *state.read().await,
+                if first_supports_sharing {
+                    SingleConnectionState::Supported
+                } else {
+                    SingleConnectionState::NotSupported
+                }
+            );
+        }
     }
 
     #[tokio::test]

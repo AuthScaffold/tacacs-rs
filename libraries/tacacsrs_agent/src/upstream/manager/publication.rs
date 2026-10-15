@@ -1,4 +1,25 @@
-//! Runtime publication serialized with generation-scoped availability observations.
+//! Publication owner for one runtime generation.
+//!
+//! [`PublicationController`] is the final owner in the publication write path.
+//! The service and the manager prepare a new catalog, then call into this
+//! controller while they hold the active snapshot write lock. The controller
+//! commits the runtime generation, server count, and health in one health
+//! mutation. The caller-supplied commit callback runs inside that mutation. It
+//! swaps the active snapshot and runs coordinator bookkeeping. The commit never
+//! awaits and never reacquires the snapshot or health locks.
+//!
+//! # Availability observations
+//!
+//! Each connection attempt takes an [`AvailabilityAttempt`] token scoped to the
+//! current availability generation. A materially changed catalog advances that
+//! generation and resets the sequence. The controller then ignores a late or
+//! stale observation that names a replaced generation or an older sequence.
+//!
+//! # Policy admission
+//!
+//! A policy update advances a [`crate::PolicyRevision`] before validation. A
+//! stale success or rejection that names an older revision returns
+//! [`crate::PolicyUpdate::Superseded`] and does not mutate health.
 
 use std::sync::Mutex;
 

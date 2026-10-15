@@ -50,9 +50,9 @@ This crate implements a three-layer design to support both round-tripping (for c
 ### 1) Raw YANG (non-destructive)
 
 ```rust
-use tacacsrs_config::pipeline;
+use tacacsrs_config::parse_root_json;
 
-let raw_config = pipeline::parse_root_json(json_str)?;
+let raw_config = parse_root_json(json_str)?;
 // raw_config is unchanged; credential references are still present as-is
 // Safe for round-tripping, logging, and reporting
 ```
@@ -162,30 +162,28 @@ Runtime preparation rejects `source-ip`, `source-interface`, and `vrf-instance` 
 It also rejects PSK derivation fields and `one-symmetric-key-format`, which the native PSK path does not implement.
 Schema-valid source values remain available for reports and round trips. Validation relaxations do not enable these unsupported transport capabilities.
 
-### Module-oriented API (recommended for most users)
+### Module map
 
-This crate also exposes grouped modules so callers can choose APIs by intent:
+This crate exposes grouped modules alongside curated crate-root exports:
 
+- `generated` — YANG-generated types and namespaces (do not edit by hand)
 - `builders` — programmatic construction helpers for `TacacsPlusServer`
-- `model` — YANG-generated types and namespaces
 - `extensions` — helper traits layered over generated model types
-- `pipeline` — step-by-step processing
-- `runtime` — bundle enumeration (`enumerate_server`, `enumerate_servers`)
 - `prepare` — provider request planning, materialization, candidate validation, and native endpoint projection
-- `source` — configuration source contract, snapshot deltas, runtime policy, and change streams
-- `input` — parsed CLI inputs, PEM/DER normalization, YANG file loading, and file-backed sources
-- `stats` — runtime stats types
+- `source` — observation contracts and their backends (`StaticDatastore`, `CliFileDatastore`, and runtime-policy observation)
+- `input` — parsed CLI inputs, PEM/DER normalization, and YANG file loading
+- `validation`, `policy`, `local_services`, `proxy_policy` — validation and resource preparation
 
-For simple end-to-end usage with credential bundles defined directly in the configuration:
+The crate root re-exports the common parsing, enumeration, builder, statistics, and generated types directly. Most callers use those root exports:
 
 ```rust
-use tacacsrs_config::{parse_yang_json, runtime};
+use tacacsrs_config::{enumerate_servers, parse_yang_json};
 
 let config = parse_yang_json(json_str)?;
-let servers = runtime::enumerate_servers(&config)?;
+let servers = enumerate_servers(&config)?;
 ```
 
-The existing flat root exports remain available for compatibility.
+For the raw generated model without validation, use `parse_root_json` with the `generated` module.
 
 ## Runtime Policy Resource
 
@@ -238,10 +236,10 @@ This contract uses existing inline and source-row material. It does not add a ne
 
 ## Configuration Sources
 
-`source::ConfigDatastore` supplies canonical YANG snapshots through `load` and change events through `subscribe`.
+`source::ConfigDatastore` supplies canonical YANG snapshots through `load` and change events through `observe`.
 Every accepted change contains the complete snapshot. Consumers can use its delta, but the delta does not replace authoritative configuration.
-`source::StaticDatastore` holds one caller-validated snapshot and returns an empty subscription stream.
-The source contract also carries validation options and initial-load and subscription policies.
+`source::StaticDatastore` holds one caller-validated snapshot and returns an empty observation stream.
+The source contract also carries validation options and initial-load and change-notification policies.
 
 `input::CliDatastoreInput` accepts parsed executable inputs without depending on clap.
 `input::tacacs_plus_from_cli_input` converts those inputs into a validated YANG snapshot through the canonical builders and validation rules.
@@ -251,16 +249,16 @@ For an omitted input port, shared configuration defaults select 49 for legacy TC
 Explicit ports remain unchanged. Malformed explicit ports fail instead of selecting a default.
 The pinned YANG model requires a port, so canonical snapshots and programmatic server builders retain explicit port values.
 
-`input::CliFileDatastore` implements the same source contract for CLI and file inputs.
+`source::CliFileDatastore` implements the same source contract for CLI and file inputs.
 It watches a YANG file or referenced CLI certificate and key files when applicable.
-Subscriptions install observation before loading and publishing their baseline snapshot.
+Observation installs the watcher before loading and publishing its baseline snapshot.
 Rejected reloads emit `CandidateRejected` without replacing the previous accepted snapshot.
-When a subscriber disappears, the idle watcher task stops.
-Inputs with no watched paths have an empty subscription stream.
+When the observation session is dropped, the watcher stops.
+Inputs with no watched paths yield an empty observation stream.
 
 ```rust
-use tacacsrs_config::input::{CliConfigSource, CliDatastoreInput, CliFileDatastore};
-use tacacsrs_config::source::ConfigDatastore;
+use tacacsrs_config::input::{CliConfigSource, CliDatastoreInput};
+use tacacsrs_config::source::{CliFileDatastore, ConfigDatastore};
 
 # async fn load() -> anyhow::Result<()> {
 let source = CliFileDatastore::new(CliDatastoreInput::new(
@@ -328,9 +326,9 @@ This separation keeps the generated configuration model suitable for round trips
 
 The crate includes runnable examples under `examples/`:
 
-- `quick_start.rs` — parse + validate + enumerate using the root exports plus `runtime`
+- `quick_start.rs` — parse + validate + enumerate using the crate-root exports
 - `quick_start_credential_refs.rs` — minimal end-to-end example showing bundle validation and enumeration
-- `pipeline_flow.rs` — explicit step-by-step parse/enumerate/external-resolution pipeline
+- `pipeline_flow.rs` — step-by-step parse and inspect, with the production enumerate/resolve/materialize/prepare flow
 - `model_access.rs` — direct access to generated model types and flags
 - `central_resolution.rs` — YANG planning and provider-neutral resolution with a fake resolver
 - `single_transaction.rs` and `multiple_transactions.rs` — configured accounting clients
@@ -404,12 +402,12 @@ This is the supported way to create `TacacsPlusServer` values in application cod
 `secp384r1,secp256r1`. Use `with_tls13_epsk_psk_only(...)` only for
 interoperability with peers that cannot negotiate PSK-DHE.
 
-### 2) Advanced: Generated YANG model and pipeline API
+### 2) Advanced: Generated YANG model and raw parsing
 
 For advanced use cases, these lower-level functions are available:
 
-- `pipeline::parse_root_json()` - Parse JSON into raw generated types without validation
-- `pipeline::parse_root_json_file()` - File-based raw parse into the generated root type without validation
+- `parse_root_json()` - Parse JSON into raw generated types without validation
+- `parse_root_json_file()` - File-based raw parse into the generated root type without validation
 - `generated` module - Full generated type graph for schema-aware integrations
 
 ### 3) Runtime types
@@ -421,7 +419,7 @@ Programmatic construction helpers for the generated server model live in `Tacacs
 Runtime statistics are exposed separately via:
 
 - `ServerStatistics`
-- `stats` module
+- `OperationalStatistics` and `ServerOperationalStatistics`
 
 ### 4) Generated YANG model (advanced use)
 

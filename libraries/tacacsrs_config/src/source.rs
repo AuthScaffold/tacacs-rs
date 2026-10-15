@@ -1,7 +1,18 @@
-//! Canonical YANG configuration sources, snapshot deltas, and change streams.
+//! Canonical configuration observation contracts and their backends.
+//!
+//! This module defines two distinct observation contracts and their local
+//! backends:
+//!
+//! - [`ConfigDatastore`] and [`ConfigObservation`] observe the canonical
+//!   TACACS+ configuration ([`TacacsPlus`]). The [`StaticDatastore`] backend
+//!   serves one validated snapshot, and [`CliFileDatastore`] watches CLI and
+//!   YANG files.
+//! - [`policy::PolicyObservation`] observes the separate runtime-policy
+//!   resource. It is not a [`ConfigDatastore`]; keep the two contracts distinct.
 //!
 //! Sources supply complete snapshots. Deltas describe changes but do not replace
-//! the authoritative snapshot. Static sources never emit change events.
+//! the authoritative snapshot. Static sources never emit change events. SONiC
+//! and other host adapters implement [`ConfigDatastore`] in their own crates.
 #![allow(clippy::doc_markdown)]
 
 use std::pin::Pin;
@@ -16,6 +27,11 @@ use tokio_stream::StreamExt;
 use crate::{TacacsPlus, ValidationOptions};
 
 pub mod policy;
+mod file;
+mod static_datastore;
+
+pub use file::CliFileDatastore;
+pub use static_datastore::StaticDatastore;
 
 /// Description of how the configuration changed between two snapshots.
 ///
@@ -143,20 +159,6 @@ pub trait ConfigObservation: Send {
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>>;
 }
 
-struct StaticObservation(Option<Arc<TacacsPlus>>);
-
-#[async_trait]
-impl ConfigObservation for StaticObservation {
-    async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
-        Ok(self.0.take().map(|config| {
-            ConfigChangeEvent::Changed(ConfigChange {
-                delta: ConfigDelta::diff(None, &config),
-                config,
-            })
-        }))
-    }
-}
-
 /// Behavior the runtime applies when the initial datastore load fails.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum InitialLoadPolicy {
@@ -248,54 +250,6 @@ pub trait ConfigDatastore: Send + Sync + 'static {
     fn label(&self) -> &'static str;
 }
 
-/// In-memory [`ConfigDatastore`] for CLI/file/test workflows.
-///
-/// `StaticDatastore` holds one `TacacsPlus` snapshot for the process lifetime.
-/// Observation yields that snapshot once, then ends without a worker task.
-#[derive(Debug, Clone)]
-pub struct StaticDatastore {
-    config: Arc<TacacsPlus>,
-    label: &'static str,
-}
-
-impl StaticDatastore {
-    /// Creates a static datastore with validated configuration.
-    #[must_use]
-    pub fn new(config: TacacsPlus) -> Self {
-        Self::with_label(config, "static")
-    }
-
-    /// Creates a static datastore with a caller-supplied label.
-    ///
-    /// [`ConfigDatastore::label`] returns this label for operator logs.
-    #[must_use]
-    pub fn with_label(config: TacacsPlus, label: &'static str) -> Self {
-        Self {
-            config: Arc::new(config),
-            label,
-        }
-    }
-}
-
-#[async_trait]
-impl ConfigDatastore for StaticDatastore {
-    async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
-        Ok(Box::new(StaticObservation(Some(self.config.clone()))))
-    }
-
-    fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None)
-    }
-
-    async fn load(&self) -> anyhow::Result<TacacsPlus> {
-        Ok((*self.config).clone())
-    }
-
-    fn label(&self) -> &'static str {
-        self.label
-    }
-}
-
 /// Converts a `tokio::sync::watch` channel into a change stream.
 ///
 /// The first channel value is the initial snapshot. The stream does not publish
@@ -334,27 +288,6 @@ mod tests {
             )
             .build()
             .expect("sample configuration must be valid")
-    }
-
-    #[tokio::test]
-    async fn static_datastore_returns_config_and_empty_stream() {
-        let config = sample_config("192.0.2.1");
-        let store = StaticDatastore::new(config.clone());
-        let loaded = store.load().await.expect("load must succeed");
-        assert_eq!(loaded.server.len(), 1);
-        assert_eq!(store.label(), "static");
-        assert_eq!(
-            store.runtime_policy(),
-            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None,)
-        );
-
-        let mut observation = store.observe().await.unwrap();
-        let Some(ConfigChangeEvent::Changed(baseline)) = observation.next().await.unwrap() else {
-            panic!("static observation must yield its canonical baseline");
-        };
-        assert_eq!(*baseline.config, config);
-        assert_eq!(baseline.delta.added_servers, ["primary"]);
-        assert!(observation.next().await.unwrap().is_none());
     }
 
     #[test]

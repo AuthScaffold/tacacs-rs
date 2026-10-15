@@ -18,12 +18,12 @@ use tonic::Status;
 use tonic::transport::Channel;
 
 use crate::convert::{ipc_protocol_failure, ipc_transport_failure};
-use crate::ipc;
-use crate::ipc::tacacs_agent_client::TacacsAgentClient;
+use crate::proto;
+use crate::proto::tacacs_agent_client::TacacsAgentClient;
+use tacacsrs_protocol::failure::ServiceError;
 use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
     AuthorizationOperationResponse, PapAuthenticationOperation, PapAuthenticationOperationResponse,
-    ServiceError,
 };
 use crate::endpoint::connect_channel;
 use crate::IpcEndpoint;
@@ -122,7 +122,7 @@ impl ServiceClient {
         request: AccountingOperation,
     ) -> Result<AccountingOperationResponse, ServiceError> {
         let mut client = TacacsAgentClient::new(self.channel.clone());
-        let rpc_request: ipc::AccountingRequest = (&request).into();
+        let rpc_request: proto::AccountingRequest = (&request).into();
         let reply = client
             .accounting(rpc_request)
             .await
@@ -131,7 +131,7 @@ impl ServiceClient {
 
         match reply.result {
             None => Err(malformed_reply("Accounting", "returned no result")),
-            Some(ipc::accounting_reply::Result::Response(response)) => {
+            Some(proto::accounting_reply::Result::Response(response)) => {
                 AccountingOperationResponse::try_from(response).map_err(|error| {
                     malformed_reply(
                         "Accounting",
@@ -139,7 +139,7 @@ impl ServiceClient {
                     )
                 })
             }
-            Some(ipc::accounting_reply::Result::Error(error)) => {
+            Some(proto::accounting_reply::Result::Error(error)) => {
                 Err(remote_service_error("Accounting", error))
             }
         }
@@ -159,14 +159,14 @@ impl ServiceClient {
     ) -> Result<PapAuthenticationOperationResponse, ServiceError> {
         let mut client = TacacsAgentClient::new(self.channel.clone());
         let reply = client
-            .authenticate_pap(ipc::PapAuthenticationRequest::from(request))
+            .authenticate_pap(proto::PapAuthenticationRequest::from(request))
             .await
             .map_err(|status| rpc_status_failure("PAP authentication", &status))?
             .into_inner();
 
         match reply.result {
             None => Err(malformed_reply("PAP authentication", "returned no result")),
-            Some(ipc::pap_authentication_reply::Result::Response(response)) => {
+            Some(proto::pap_authentication_reply::Result::Response(response)) => {
                 PapAuthenticationOperationResponse::try_from(response).map_err(|error| {
                     malformed_reply(
                         "PAP authentication",
@@ -174,7 +174,7 @@ impl ServiceClient {
                     )
                 })
             }
-            Some(ipc::pap_authentication_reply::Result::Error(error)) => {
+            Some(proto::pap_authentication_reply::Result::Error(error)) => {
                 Err(remote_service_error("PAP authentication", error))
             }
         }
@@ -197,7 +197,7 @@ impl ServiceClient {
         request: AuthorizationOperation,
     ) -> Result<AuthorizationOperationResponse, ServiceError> {
         let mut client = TacacsAgentClient::new(self.channel.clone());
-        let rpc_request: ipc::AuthorizationRequest = (&request).into();
+        let rpc_request: proto::AuthorizationRequest = (&request).into();
         let reply = client
             .authorization(rpc_request)
             .await
@@ -206,7 +206,7 @@ impl ServiceClient {
 
         match reply.result {
             None => Err(malformed_reply("Authorization", "returned no result")),
-            Some(ipc::authorization_reply::Result::Response(response)) => {
+            Some(proto::authorization_reply::Result::Response(response)) => {
                 AuthorizationOperationResponse::try_from(response).map_err(|error| {
                     malformed_reply(
                         "Authorization",
@@ -214,7 +214,7 @@ impl ServiceClient {
                     )
                 })
             }
-            Some(ipc::authorization_reply::Result::Error(error)) => {
+            Some(proto::authorization_reply::Result::Error(error)) => {
                 Err(remote_service_error("Authorization", error))
             }
         }
@@ -243,7 +243,7 @@ fn malformed_reply(rpc: &str, detail: &str) -> ServiceError {
 ///
 /// A payload that fails validation is treated as a malformed reply so a buggy
 /// or hostile peer cannot assert an unsafe retry outcome.
-fn remote_service_error(rpc: &str, error: ipc::ServiceError) -> ServiceError {
+fn remote_service_error(rpc: &str, error: proto::ServiceError) -> ServiceError {
     ServiceError::try_from(error).unwrap_or_else(|decode_error| {
         malformed_reply(rpc, &format!("returned a malformed service error: {decode_error}"))
     })
@@ -267,7 +267,7 @@ mod sdk_tests {
     use tonic::transport::Server;
     use tonic::{Request, Response, Status};
 
-    use crate::ipc::tacacs_agent_server::{TacacsAgent, TacacsAgentServer};
+    use crate::proto::tacacs_agent_server::{TacacsAgent, TacacsAgentServer};
 
     /// Scripted agent that selects a reply from the request discriminator.
     ///
@@ -280,59 +280,61 @@ mod sdk_tests {
     impl TacacsAgent for ScriptedAgent {
         async fn authenticate_pap(
             &self,
-            request: Request<ipc::PapAuthenticationRequest>,
-        ) -> Result<Response<ipc::PapAuthenticationReply>, Status> {
+            request: Request<proto::PapAuthenticationRequest>,
+        ) -> Result<Response<proto::PapAuthenticationReply>, Status> {
             let result = match request.into_inner().user.as_str() {
                 "status-failure" => return Err(Status::unavailable("upstream IPC dropped")),
                 "structured-error" => {
-                    Some(ipc::pap_authentication_reply::Result::Error(structured_wire_error()))
+                    Some(proto::pap_authentication_reply::Result::Error(structured_wire_error()))
                 }
                 "missing-result" => None,
-                _ => Some(ipc::pap_authentication_reply::Result::Response(
-                    ipc::PapAuthenticationResponse {
+                _ => Some(proto::pap_authentication_reply::Result::Response(
+                    proto::PapAuthenticationResponse {
                         server: "primary".to_owned(),
-                        status: ipc::AuthenticationStatus::Pass as i32,
+                        status: proto::AuthenticationStatus::Pass as i32,
                         server_message: String::new(),
                         data: Vec::new(),
                     },
                 )),
             };
-            Ok(Response::new(ipc::PapAuthenticationReply { result }))
+            Ok(Response::new(proto::PapAuthenticationReply { result }))
         }
 
         async fn accounting(
             &self,
-            request: Request<ipc::AccountingRequest>,
-        ) -> Result<Response<ipc::AccountingReply>, Status> {
+            request: Request<proto::AccountingRequest>,
+        ) -> Result<Response<proto::AccountingReply>, Status> {
             let result = match request.into_inner().command.as_str() {
                 "status-failure" => return Err(Status::unavailable("upstream IPC dropped")),
                 "structured-error" => {
-                    Some(ipc::accounting_reply::Result::Error(structured_wire_error()))
+                    Some(proto::accounting_reply::Result::Error(structured_wire_error()))
                 }
-                "invalid-error" => Some(ipc::accounting_reply::Result::Error(ipc::ServiceError {
-                    message: "unvalidated error payload".to_owned(),
-                    ..Default::default()
-                })),
+                "invalid-error" => {
+                    Some(proto::accounting_reply::Result::Error(proto::ServiceError {
+                        message: "unvalidated error payload".to_owned(),
+                        ..Default::default()
+                    }))
+                }
                 "missing-result" => None,
-                _ => Some(ipc::accounting_reply::Result::Response(ipc::AccountingResponse {
+                _ => Some(proto::accounting_reply::Result::Response(proto::AccountingResponse {
                     server: "primary".to_owned(),
-                    status: ipc::AccountingStatus::Success as i32,
+                    status: proto::AccountingStatus::Success as i32,
                     server_message: String::new(),
                     data: String::new(),
                 })),
             };
-            Ok(Response::new(ipc::AccountingReply { result }))
+            Ok(Response::new(proto::AccountingReply { result }))
         }
 
         async fn authorization(
             &self,
-            _request: Request<ipc::AuthorizationRequest>,
-        ) -> Result<Response<ipc::AuthorizationReply>, Status> {
-            Ok(Response::new(ipc::AuthorizationReply {
-                result: Some(ipc::authorization_reply::Result::Response(
-                    ipc::AuthorizationResponse {
+            _request: Request<proto::AuthorizationRequest>,
+        ) -> Result<Response<proto::AuthorizationReply>, Status> {
+            Ok(Response::new(proto::AuthorizationReply {
+                result: Some(proto::authorization_reply::Result::Response(
+                    proto::AuthorizationResponse {
                         server: "primary".to_owned(),
-                        status: ipc::AuthorizationStatus::PassAdd as i32,
+                        status: proto::AuthorizationStatus::PassAdd as i32,
                         server_message: String::new(),
                         args: Vec::new(),
                         data: String::new(),
@@ -343,13 +345,13 @@ mod sdk_tests {
     }
 
     /// Builds a wire error whose derived advice is `AfterRecovery` (unsent).
-    fn structured_wire_error() -> ipc::ServiceError {
+    fn structured_wire_error() -> proto::ServiceError {
         let facts = FailureFacts::new(
             FailureCategory::Unavailable,
             FailurePhase::Routing,
             DeliveryState::NotSent,
         );
-        ipc::ServiceError::from(
+        proto::ServiceError::from(
             ServiceError::new("no responsive TACACS+ servers are currently available", facts)
                 .with_server("tacacs-a:49")
                 .with_runtime_generation(11)

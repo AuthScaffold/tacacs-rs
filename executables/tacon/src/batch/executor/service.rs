@@ -1,51 +1,29 @@
-use futures::future::join_all;
-use std::sync::Arc;
+//! Service-mode (agent IPC) batch orchestration.
+//!
+//! This module establishes the persistent IPC backend and delegates request
+//! scheduling and outcome formatting to the shared engine in [`super::common`].
 
-use tacacsrs_ipc::{ServiceClient};
+use crate::backend::{connect_service, Backend};
 
-use super::common::{
-    authorization_operation, format_request_outcome, load_test_iterations, pap_batch_unsupported,
-    run_load_test, service_client, to_service_accounting_request,
-};
-use super::super::progress::print_load_test_summary;
-use super::super::types::{BatchFile, BatchRequest, LoadTestConfig, RequestResult};
+use super::common::{announce_batch, finish_load_test, run_batch_load_test, run_requests};
+use super::super::types::{BatchFile, LoadTestConfig, RequestResult};
 
-async fn execute_single_request_via_service(
-    client: &ServiceClient,
-    request: &BatchRequest,
-) -> Result<String, String> {
-    match request {
-        BatchRequest::Accounting(req) => format_request_outcome(
-            "Accounting",
-            client
-                .send_accounting(to_service_accounting_request(req))
-                .await,
-        ),
-        BatchRequest::Authentication(req) => Err(pap_batch_unsupported(&req.user)),
-        BatchRequest::Authorization(req) => {
-            let result = client
-                .send_authorization(
-                    authorization_operation(req).map_err(|error| error.to_string())?,
-                )
-                .await;
-            format_request_outcome("Authorization", result)
-        }
-    }
-}
-
+/// Runs a batch file through the central agent over its IPC channel.
+///
+/// # Errors
+///
+/// Returns an error if the service cannot be reached or if a load test records
+/// a failure.
 pub async fn execute_batch_via_service(
     endpoint: &str,
     batch: &BatchFile,
 ) -> anyhow::Result<Vec<RequestResult>> {
-    let client = service_client(endpoint).await?;
+    let backend = Backend::Service(connect_service(endpoint).await?);
 
-    if let Some(description) = &batch.metadata.description {
-        log::info!("Running batch: {description}");
-        println!("Batch: {description}");
-    }
+    announce_batch(batch);
 
     if let Some(load_config) = &batch.metadata.load_test {
-        return execute_batch_load_test_via_service(endpoint, batch, load_config).await;
+        return run_service_load_test(&backend, batch, load_config).await;
     }
 
     let request_count = batch.requests.len();
@@ -54,85 +32,26 @@ pub async fn execute_batch_via_service(
         batch.metadata.parallel
     );
 
-    if batch.metadata.parallel {
-        let futures: Vec<_> = batch
-            .requests
-            .iter()
-            .enumerate()
-            .map(|(index, request)| {
-                let client = client.clone();
-                async move {
-                    let result = execute_single_request_via_service(&client, request).await;
-                    RequestResult {
-                        index,
-                        request_type: request.type_name(),
-                        result,
-                    }
-                }
-            })
-            .collect();
-        Ok(join_all(futures).await)
-    } else {
-        let mut results = Vec::with_capacity(batch.requests.len());
-        for (index, request) in batch.requests.iter().enumerate() {
-            let result = execute_single_request_via_service(&client, request).await;
-            results.push(RequestResult {
-                index,
-                request_type: request.type_name(),
-                result,
-            });
-        }
-        Ok(results)
-    }
+    Ok(run_requests(&backend, &batch.requests, batch.metadata.parallel).await)
 }
 
-async fn execute_batch_load_test_via_service(
-    endpoint: &str,
+/// Runs a load test through the central agent.
+async fn run_service_load_test(
+    backend: &Backend,
     batch: &BatchFile,
     load_config: &LoadTestConfig,
 ) -> anyhow::Result<Vec<RequestResult>> {
-    let client = Arc::new(service_client(endpoint).await?);
-
     log::info!(
         "Service load testing mode enabled: {} repetitions, max {} parallel",
         load_config.repetitions,
         load_config.max_parallel
     );
     println!(
-        "\n=== Load Testing Mode ===\nRepetitions: {}\nMax parallel: {}\nTotal requests: {}",
+        "\n=== Load Testing Mode (Central Service) ===\nRepetitions: {}\nMax parallel: {}\nTotal requests: {}",
         load_config.repetitions,
         load_config.max_parallel,
         load_config.repetitions * batch.requests.len()
     );
 
-    let result = run_load_test(
-        batch.requests.len() * load_config.repetitions,
-        load_test_iterations(&batch.requests, load_config.repetitions),
-        load_config.max_parallel,
-        move |rep, idx, request| {
-            let client = Arc::clone(&client);
-            async move {
-                execute_single_request_via_service(client.as_ref(), request)
-                    .await
-                    .map(|_| ())
-                    .map_err(|error| {
-                        format!(
-                            "Request failed at rep {}, request {} ({}): {}",
-                            rep + 1,
-                            idx + 1,
-                            request.type_name(),
-                            error
-                        )
-                    })
-            }
-        },
-    )
-    .await;
-    print_load_test_summary(&result);
-
-    if result.is_success() {
-        Ok(vec![])
-    } else {
-        anyhow::bail!("Load test failed: {}", result.first_failure.unwrap_or_default())
-    }
+    finish_load_test(run_batch_load_test(backend, &batch.requests, load_config).await)
 }

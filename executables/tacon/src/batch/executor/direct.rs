@@ -1,23 +1,36 @@
+//! Direct-mode batch orchestration.
+//!
+//! This module selects the direct execution mode (multiplexed or dedicated),
+//! establishes the backend, and delegates request scheduling and outcome
+//! formatting to the shared engine in [`super::common`].
+
 use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_config::prepare::PrepareOptions;
 
-use super::dedicated::{execute_requests_dedicated, run_dedicated_load_test};
-use super::multiplexed::{
-    execute_load_test_multiplexed, execute_parallel_multiplexed, execute_sequential_multiplexed,
-};
-use super::super::progress::print_load_test_summary;
+use super::common::{announce_batch, finish_load_test, run_batch_load_test, run_requests};
+use super::dedicated::{connection_failure_results, establish_dedicated_backend};
+use super::multiplexed::establish_multiplexed_backend;
 use super::super::types::{BatchFile, LoadTestConfig, RequestResult};
 
+#[derive(Clone, Copy)]
 enum ExecutionMode {
     Multiplexed,
     Dedicated,
 }
 
-/// Determines the run mode for the batch.
+impl ExecutionMode {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Multiplexed => "Multiplexed Connections",
+            Self::Dedicated => "Dedicated Connections",
+        }
+    }
+}
+
+/// Selects the direct execution mode.
 ///
-/// When `dedicated` is `true`, dedicated mode is used unconditionally.
-/// Otherwise the server configuration decides whether the batch can use the
-/// adaptive single-connection path.
+/// A `--dedicated` flag forces dedicated mode. Otherwise the server's
+/// single-connection setting decides between the adaptive and dedicated paths.
 fn determine_execution_mode(dedicated: bool, single_connection_enabled: bool) -> ExecutionMode {
     if dedicated {
         log::info!("Dedicated mode forced by CLI flag");
@@ -33,68 +46,64 @@ fn determine_execution_mode(dedicated: bool, single_connection_enabled: bool) ->
 
 /// Runs a batch file over a direct server connection.
 ///
-/// Unless `dedicated` is `true`, the server configuration decides whether
-/// batch requests use the adaptive single-connection path or dedicated streams.
+/// Unless `dedicated` is `true`, the server configuration decides whether batch
+/// requests use the adaptive single-connection path or dedicated streams.
+///
+/// # Errors
+///
+/// Returns an error if the connection fails or if a load test records a failure.
 pub async fn execute_batch(
     server: &TacacsPlusServer,
     dedicated: bool,
     batch: &BatchFile,
     options: PrepareOptions,
 ) -> anyhow::Result<Vec<RequestResult>> {
-    if let Some(description) = &batch.metadata.description {
-        log::info!("Running batch: {description}");
-        println!("Batch: {description}");
-    }
+    announce_batch(batch);
 
     if batch.requests.is_empty() {
         return Ok(vec![]);
     }
 
-    let execution_mode = determine_execution_mode(dedicated, server.single_connection);
+    let mode = determine_execution_mode(dedicated, server.single_connection);
 
     if let Some(load_config) = &batch.metadata.load_test {
-        return execute_batch_load_test(server, batch, load_config, execution_mode, options).await;
+        return run_direct_load_test(server, batch, load_config, mode, options).await;
     }
 
     let request_count = batch.requests.len();
     log::info!("Processing {request_count} requests (parallel: {})", batch.metadata.parallel);
 
-    let results = match execution_mode {
+    let results = match mode {
         ExecutionMode::Multiplexed => {
-            let connection = crate::connection::establish_connection(server, options).await?;
-            if batch.metadata.parallel {
-                execute_parallel_multiplexed(connection, &batch.requests).await?
-            } else {
-                execute_sequential_multiplexed(connection, &batch.requests).await?
-            }
+            let backend = establish_multiplexed_backend(server, options).await?;
+            run_requests(&backend, &batch.requests, batch.metadata.parallel).await
         }
         ExecutionMode::Dedicated => {
             log::info!(
                 "Running {request_count} requests with dedicated connections (parallel: {})",
                 batch.metadata.parallel,
             );
-            execute_requests_dedicated(server, &batch.requests, batch.metadata.parallel, options)
-                .await
+            match establish_dedicated_backend(server, options).await {
+                Ok(backend) => {
+                    run_requests(&backend, &batch.requests, batch.metadata.parallel).await
+                }
+                Err(error) => connection_failure_results(&batch.requests, &error),
+            }
         }
     };
 
     Ok(results)
 }
 
-/// Runs a load test from a batch file.
-///
-/// The run mode is already set by `determine_execution_mode`.
-async fn execute_batch_load_test(
+/// Runs a load test from a batch file over the selected direct mode.
+async fn run_direct_load_test(
     server: &TacacsPlusServer,
     batch: &BatchFile,
     load_config: &LoadTestConfig,
-    execution_mode: ExecutionMode,
+    mode: ExecutionMode,
     options: PrepareOptions,
 ) -> anyhow::Result<Vec<RequestResult>> {
-    let mode_label = match execution_mode {
-        ExecutionMode::Multiplexed => "Multiplexed Connections",
-        ExecutionMode::Dedicated => "Dedicated Connections",
-    };
+    let mode_label = mode.label();
     log::info!(
         "Load testing mode ({mode_label}): {} repetitions, max {} parallel",
         load_config.repetitions,
@@ -107,19 +116,27 @@ async fn execute_batch_load_test(
         load_config.repetitions * batch.requests.len()
     );
 
-    let result = match execution_mode {
-        ExecutionMode::Multiplexed => {
-            execute_load_test_multiplexed(server, &batch.requests, load_config, options).await?
-        }
-        ExecutionMode::Dedicated => {
-            run_dedicated_load_test(server, &batch.requests, load_config, options).await?
-        }
+    let backend = match mode {
+        ExecutionMode::Multiplexed => establish_multiplexed_backend(server, options).await?,
+        ExecutionMode::Dedicated => establish_dedicated_backend(server, options).await?,
     };
-    print_load_test_summary(&result);
 
-    if result.is_success() {
-        Ok(vec![])
-    } else {
-        anyhow::bail!("Load test failed: {}", result.first_failure.unwrap_or_default())
+    finish_load_test(run_batch_load_test(&backend, &batch.requests, load_config).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{determine_execution_mode, ExecutionMode};
+
+    #[test]
+    fn dedicated_flag_forces_dedicated_mode() {
+        assert!(matches!(determine_execution_mode(true, true), ExecutionMode::Dedicated));
+        assert!(matches!(determine_execution_mode(true, false), ExecutionMode::Dedicated));
+    }
+
+    #[test]
+    fn single_connection_selects_multiplexed_when_not_forced() {
+        assert!(matches!(determine_execution_mode(false, true), ExecutionMode::Multiplexed));
+        assert!(matches!(determine_execution_mode(false, false), ExecutionMode::Dedicated));
     }
 }
