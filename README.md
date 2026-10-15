@@ -213,7 +213,8 @@ Both `tacon` and `tacacsrs-agentd` can load server definitions from an RFC 7951 
 
 Use `--config <file>` with either executable to load this configuration. The `tacacsrs-config` crate owns the generated YANG types and validation.
 
-The crate maps YANG JSON to the runtime `ServerConnectionConfig` values. The CLI and the agent daemon use these values.
+The crate validates canonical YANG and prepares derived `PreparedEndpoint` values for networking.
+The CLI and daemon share this preparation path without replacing the authoritative configuration or credential references.
 
 ## Local Testing
 

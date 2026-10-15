@@ -4,6 +4,7 @@
 //! and request/result types.
 
 use serde::Deserialize;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 use tacacsrs_config::TacacsPlusServerType;
 
@@ -55,11 +56,11 @@ pub(crate) struct LoadTestConfig {
 
     /// Maximum number of parallel requests at any time
     #[serde(default = "default_max_parallel")]
-    pub max_parallel: usize,
+    pub max_parallel: NonZeroUsize,
 }
 
-const fn default_max_parallel() -> usize {
-    10
+const fn default_max_parallel() -> NonZeroUsize {
+    NonZeroUsize::MIN.saturating_add(9)
 }
 
 /// A single request in the batch file
@@ -219,6 +220,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn load_test_rejects_zero_parallelism() {
+        assert!(serde_json::from_str::<LoadTestConfig>(r#"{"repetitions":1,"max_parallel":0}"#)
+            .is_err());
+    }
+
+    #[test]
     fn test_parse_batch_file_accounting() {
         let json = r#"{
             "metadata": {
@@ -346,7 +353,7 @@ mod tests {
         assert!(batch.metadata.load_test.is_some());
         let load_config = batch.metadata.load_test.as_ref().unwrap();
         assert_eq!(load_config.repetitions, 100);
-        assert_eq!(load_config.max_parallel, 20);
+        assert_eq!(load_config.max_parallel.get(), 20);
     }
 
     #[test]
@@ -372,7 +379,7 @@ mod tests {
 
         let load_config = batch.metadata.load_test.as_ref().unwrap();
         assert_eq!(load_config.repetitions, 50);
-        assert_eq!(load_config.max_parallel, 10); // default value
+        assert_eq!(load_config.max_parallel.get(), 10); // default value
     }
 
     #[test]

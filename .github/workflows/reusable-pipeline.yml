@@ -471,6 +471,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - msrv
       - cache-preflight
       - pre-tests
       - testing

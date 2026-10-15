@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -177,7 +178,7 @@ pub(super) fn format_request_outcome<Response: std::fmt::Debug, Error: std::fmt:
 ) -> Result<String, String> {
     result
         .map(|response| format!("{operation} response: {response:?}"))
-        .map_err(|error| format!("{operation} failed: {error}"))
+        .map_err(|error| format!("{operation} failed: {error:#}"))
 }
 
 pub(super) fn load_test_iterations(
@@ -196,7 +197,7 @@ pub(super) fn load_test_iterations(
 pub(super) async fn run_load_test<'a, I, F, Fut>(
     total_requests: usize,
     iterations: I,
-    max_parallel: usize,
+    max_parallel: NonZeroUsize,
     send_request: F,
 ) -> LoadTestResult
 where
@@ -237,7 +238,7 @@ where
                 }
             }
         })
-        .buffer_unordered(max_parallel)
+        .buffer_unordered(max_parallel.get())
         .collect::<Vec<_>>()
         .await;
 
@@ -403,11 +404,12 @@ mod tests {
 
 #[cfg(test)]
 mod load_test_tests {
+    use std::num::NonZeroUsize;
     use std::time::Instant;
 
     use crate::batch::types::{AccountingRequest, BatchRequest};
 
-    use super::{build_load_test_result, load_test_iterations, run_load_test};
+    use super::{build_load_test_result, format_request_outcome, load_test_iterations, run_load_test};
 
     fn accounting_request(cmd: &str) -> BatchRequest {
         BatchRequest::Accounting(AccountingRequest {
@@ -426,6 +428,15 @@ mod load_test_tests {
             .map(|(rep, idx, _)| (rep, idx))
             .collect();
         assert_eq!(expanded, vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]);
+    }
+
+    #[test]
+    fn batch_failure_rendering_preserves_the_cause() {
+        let error =
+            anyhow::anyhow!("connection refused").context("Failed to send accounting request");
+        let message = format_request_outcome("Accounting", Err::<(), _>(error)).unwrap_err();
+        assert!(message.contains("Failed to send accounting request"));
+        assert!(message.contains("connection refused"));
     }
 
     #[test]
@@ -456,7 +467,7 @@ mod load_test_tests {
         let result = run_load_test(
             requests.len() * 2,
             load_test_iterations(&requests, 2),
-            4,
+            NonZeroUsize::new(4).unwrap(),
             |_, _, _| async { Ok::<(), String>(()) },
         )
         .await;
@@ -469,15 +480,19 @@ mod load_test_tests {
     #[tokio::test]
     async fn load_test_stops_after_first_failure() {
         let requests = vec![accounting_request("a")];
-        let result =
-            run_load_test(5, load_test_iterations(&requests, 5), 1, |rep, _, _| async move {
+        let result = run_load_test(
+            5,
+            load_test_iterations(&requests, 5),
+            NonZeroUsize::MIN,
+            |rep, _, _| async move {
                 if rep == 2 {
                     Err(format!("boom at rep {}", rep + 1))
                 } else {
                     Ok(())
                 }
-            })
-            .await;
+            },
+        )
+        .await;
         assert!(!result.is_success());
         assert_eq!(result.failed_requests, 1);
         assert_eq!(result.first_failure.as_deref(), Some("boom at rep 3"));

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "An IPC client and protocol types for the central TACACS+ client service."
+description = "TACACS+ IPC schema, reusable channel client, and bounded server adapter."
 readme = "README.md"
 build = "build.rs"
 

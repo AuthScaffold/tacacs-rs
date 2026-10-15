@@ -18,5 +18,5 @@ tacacsrs-ipc = { path = "../tacacsrs_ipc" }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 
-[lints.rust]
-unsafe_code = "allow"
+[lints]
+workspace = true

@@ -35,7 +35,7 @@ RESTART, and terminal reply handling.
 
 ## Shared Connection Runtime
 
-One reader task and one writer task own each confirmed single-connect stream.
+One owned driver polls the reader and writer futures for each confirmed single-connect stream.
 The writer consumes a bounded outbound queue because bytes on one TCP/TLS stream
 must be serialized. The reader can receive server replies in any cross-session
 order and routes each packet by its TACACS+ session ID.
@@ -96,10 +96,9 @@ the shared runtime.
 
 ## Packet Ownership
 
-Networking exposes packet bodies as byte slices, formats them as redacted
-metadata, and zeroizes them on drop. Obfuscation and deobfuscation mutate
-owned bodies in place. The writer emits the 12-byte header and body
-separately rather than allocating a second combined packet buffer.
+Networking exposes packet bodies as byte slices and formats them as redacted metadata.
+`Packet::drop` zeroizes the owned body. This does not guarantee that every temporary serialization buffer is zeroized.
+The writer serializes the 12-byte header and body into one contiguous buffer and writes the complete frame.
 
 TACACS+ shared-secret obfuscation is not confidentiality. PAP is allowed over
 the operator-configured transport for interoperability. Prefer TACACS+ over TLS

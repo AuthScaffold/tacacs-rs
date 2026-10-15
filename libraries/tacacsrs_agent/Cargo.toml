@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Components for the central TACACS+ client service and IPC handling."
+description = "TACACS+ configuration supervision, routed operations, and service lifecycle."
 readme = "README.md"
 
 [dependencies]
