@@ -148,10 +148,13 @@ The user selected this approach on 2026-10-15 to preserve the option of future c
 This replaces the earlier proposal for one coordinated workspace version.
 Existing version hydration and generated release-source machinery remain supported. Historical tags and artifacts remain intact.
 
-API analysis should distinguish breaking changes, compatible API additions, and changes that require only a patch increment.
-The current implementation uses `cargo-semver-checks` to distinguish compatible changes from breaking changes.
-Breaking changes increment the major version, or the minor version before 1.0. Compatible changes currently increment the patch version.
-Separate detection of compatible API additions for minor increments is an improvement goal, not an existing capability.
+API analysis distinguishes breaking changes, compatible API additions, and changes that require only a patch increment.
+Stage 6 uses a pinned, typed `cargo-semver-checks` and `public-api` adapter. Failed or incomplete analysis stops computation.
+The current adapter cannot resolve external trait definitions in the real protocol package. Automatic classification remains blocked pending complete analysis.
+Breaking changes increment the major version, or the minor version before 1.0.
+Compatible additions increment the minor version at or after 1.0, and the patch position before 1.0 under the retained Rust compatibility policy.
+Changed or removed public items and incompatible normal-dependency updates receive a conservative breaking classification when privacy or compatibility is not proven.
+This can over-bump private dependencies, but it avoids silently under-versioning re-exported public types.
 
 **Rejected alternative:** remove independent library versions because no external consumers exist today.
 That discards useful release automation and makes later independent publication harder.
@@ -183,7 +186,7 @@ Primary starting points:
 
 - [Packet constructors](../../libraries/tacacsrs_protocol/src/packet.rs)
 - [Client retirement](../../libraries/tacacsrs_networking/src/client/mod.rs)
-- [Source subscription](../../libraries/tacacsrs_config/src/input/datastore.rs)
+- [Source observation](../../libraries/tacacsrs_config/src/source/file.rs)
 - [IPC failure conversion](../../libraries/tacacsrs_agent/src/services/client_api/upstream_bridge/routed.rs)
 - [Bash authorization](../../libraries/tacacsrs_bash_plugin/src/authorization.rs)
 
@@ -403,6 +406,7 @@ There is no dual-schema support requirement.
 **Scope:** release verification, CI, generation, packaging, and documentation.
 
 **Status:** in progress on 2026-10-15. The [Stage 6 checkpoint](stage-6-delivery.md) contains the independently reviewed implementation plan and verification evidence.
+The four-product Linux rehearsal passed. S6-03 remains blocked by incomplete external-trait analysis, and S6-07 remains open.
 
 **Versioning constraint:** retain computed package versions and API compatibility analysis under D8.
 The former item 5, replacing independent versions with one workspace version, is dropped.

@@ -14,8 +14,8 @@ Prefer extraction and consolidation of proven code over replacement of working a
 The design removes misplaced ownership, not all existing abstractions.
 It introduces no distributed control service, general plugin framework, dependency-injection container, or custom asynchronous runtime.
 
-Status: proposed architecture, not implemented APIs.
-The [current-state assessment](current-state.md) supplies the evidence.
+Status: runtime and adapter boundaries are implemented through Stage 5. Stage 6 adds delivery verification and architecture gates.
+The [current-state assessment](current-state.md) records the historical review baseline.
 The [runtime contracts](runtime-contracts.md) define behavioral requirements.
 The [migration plan](migration-and-decisions.md) defines deployable stages and decision rationale.
 
@@ -94,27 +94,28 @@ Credential change:
 No source or provider publishes directly into active connection state.
 The publication controller rejects stale work before the routed client accepts a new generation.
 
-## Proposed package layout
+## Package layout
 
-Package names below identify the proposed destinations.
-They are not claims that these packages already exist.
+These are the implemented package names. Cargo metadata is the membership and dependency authority.
+The machine-checked production allowlist lives in `.github/steps/check-architecture/rules.json`.
 Modules remain the default unit of internal decomposition.
 
 | Package | Main modules and types | Production workspace dependencies |
 | --- | --- | --- |
-| `tacacsrs-secrets` | `SecretBytes`, `SecretString`, protected ownership | None |
-| `tacacsrs-protocol` | `wire`, `operations`, `exchange`, `conversation`, `authorization`, `failure` | `secrets` |
-| `tacacsrs-client` | `endpoint`, `transport`, `connection`, `session`, `routing`, `execution` | `protocol`, `secrets` |
-| `tacacsrs-credentials` | `reference`, `request`, `material`, `resolver`, `change` | `secrets` |
-| `tacacsrs-config` | `yang`, `snapshot`, `source`, `prepare`, `files` | `client`, `credentials`, `protocol`, `secrets` |
-| `tacacsrs-agent` | `controller`, `runtime`, `health`, `proxy` | `client`, `config`, `credentials`, `protocol` |
-| `tacacsrs-ipc` | `generated`, `convert`, `client`, `server`, `health`, `endpoint` | `protocol`, `secrets` |
-| `tacacsrs-sonic` | `configdb`, `mapping`, `credentials`, `binding` | `config`, `credentials`, `secrets` |
-| `tacacsrs-test-support` | Wire peer, operation fixtures, source/provider doubles, scenario runner | Selected toolkit and adapter packages, development use only |
+| `tacacsrs-secrets` | `SecretBytes`, protected ownership and redaction | None |
+| `tacacsrs-protocol` | `body`, wire messages, `operations`, `exchange`, `conversation`, `failure` | `secrets` |
+| `tacacsrs-networking` | `endpoint`, `transport`, `connection`, `session`, `routed`, `client` | `protocol`, `secrets` |
+| `tacacsrs-credential-resolution` | `request`, `material`, resolver contracts, `change`, `validity` | `secrets` |
+| `tacacsrs-config` | `generated`, parsing, `source`, `input`, `prepare`, policy and statistics | `networking`, `credential-resolution`, `protocol`, `secrets` |
+| `tacacsrs-agent` | Supervision, atomic publication, health, domain ingress, raw proxy and shutdown | `networking`, `config`, `credential-resolution`, `protocol`, `secrets`, `unix-socket` |
+| `tacacsrs-ipc` | `proto`, `convert`, `client`, `server`, `health`, `endpoint` | `protocol`, `secrets`, `unix-socket` |
+| `tacacsrs-unix-socket` | Trusted-directory binding, advisory lock and owned-path cleanup | None |
+| `tacacsrs-sonic` | ConfigDB observations, mapping and credential provider | `config`, `credential-resolution`, `secrets` |
+| `tacacsrs-credential-http` | Explicitly authorized, bounded HTTP evidence retrieval | `credential-resolution`, `secrets` |
 
 Dependency names in the final column omit the `tacacsrs-` prefix for readability.
 The dependency table is an allowlist, not a requirement to add unused imports or dependencies.
-No shipping library depends on `tacacsrs-test-support` in its production dependency section.
+Test support remains in crate-local modules and shared fixtures. It is not a separate shipping framework.
 
 The IPC server owns a small operation-handler interface expressed in protocol-domain types.
 The daemon supplies an adapter from that interface to the agent handle.
@@ -131,22 +132,22 @@ A separate proxy crate is unnecessary until a real consumer needs independent pa
 | --- | --- |
 | `tacacsrs-messages` | Become the wire portion of `tacacsrs-protocol`. Harden public construction and parsing. |
 | `tacacsrs-flows` | Merge pure operation descriptors into `tacacsrs-protocol`. Remove the separate package. |
-| `tacacsrs-networking` | Become `tacacsrs-client`. Remove the configuration-schema dependency and add reusable routing. |
+| `tacacsrs-networking` | Retained name. Configuration-schema dependency removed; reusable routing and owned lifecycle implemented. |
 | `tacacsrs-secrets` | Retain as a small leaf package. Move format-specific serialization to adapters. |
 | `tacacsrs-config` | Retain the canonical YANG model and builders. Own snapshot validation and the preparation pipeline. |
-| `tacacsrs-credential-resolution` | Become `tacacsrs-credentials`. Move generated-model projection into configuration code. |
+| `tacacsrs-credential-resolution` | Retained name. Generated-model projection belongs to configuration. |
 | `tacacsrs-datastore` | Merge the source contract into `tacacsrs-config::source`. Remove the package. |
 | `tacacsrs-cli-datastore` | Merge file and input adapters into configuration modules. Keep clap out of the library. |
 | `tacacsrs-sonic` | Retain as an optional Linux integration. Normalize ConfigDB into canonical YANG snapshots before preparation. |
 | `tacacsrs-agent` | Move reusable routing down to the client. Absorb generic supervision from the daemon. |
-| `tacacsrs-ipc` | Become `tacacsrs-ipc`. Move logical operation types into the protocol package. |
+| `tacacsrs-agent-client` | Replaced by `tacacsrs-ipc`. Logical operations moved to protocol; client and server transport share the IPC package. |
 | `tacacsrs-agentd` | Retain as the composition root and process host. |
 | `tacacsrs-agent-health` | Retain as a small IPC-only probe. A lightweight probe has a separate operational purpose. |
 | `tacon` | Retain. Build each logical operation once, then select direct or IPC execution. |
 | `tacacsrs-bash-plugin` | Retain only as an optional host adapter after the authorization and ABI gates pass. |
 | `session-wrapper` | Remove from the supported product path. Preserve as an explicitly experimental component pending a threat model. |
-| `tacacsrs-agent-ipc-emulator` | Move deterministic scenarios into development support. Keep Rego only if required scenarios justify it. |
-| `tacacsrs-agent-ipc-emulatord` | Replace the separate product with a development scenario executable when process tests need it. |
+| `tacacsrs-agent-ipc-emulator` | Retained for explicit experimental builds and scenario tests, outside core defaults and release products. |
+| `tacacsrs-agent-ipc-emulatord` | Retained as an explicit experimental process-test executable, outside supported release products. |
 
 The wrapper recommendation is not a claim that seccomp supervision has no value.
 Its fork, process-tree, mutable-memory, and enforcement concerns form a separate security product.
@@ -194,12 +195,12 @@ Shell command builders are convenience APIs over the same operation model used b
 ### Response interpretation
 
 The toolkit exposes the server response independently of a host enforcement decision.
-A pure interpreter applies the RFC-defined addition or replacement rules and produces effective authorization attributes.
-The host adapter declares which attributes and changes it can enforce.
+A pure interpreter decides whether an unchanged-command host can accept the response.
+The retained Bash and seccomp adapters cannot inject or replace command arguments.
 
 Unknown mandatory attributes fail authorization.
-Known mandatory changes must be applied before execution.
-Recognized attributes that leave the effective command unchanged do not require a fake mutation.
+Mandatory response changes are rejected because these adapters cannot apply them.
+Replacement-capable interpretation needs a separately designed consumer and its own conformance tests.
 Optional attributes can be ignored only where the protocol permits that behavior.
 
 This contract replaces adapter-specific status-only decisions.
