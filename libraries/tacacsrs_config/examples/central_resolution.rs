@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     else {
         unreachable!("the closed result set already validated the credential variant");
     };
-    assert_ne!(client_identity.private_key.expose_secret().len(), 0);
+    assert!(!client_identity.private_key.expose_secret().is_empty());
     println!("resolved {} credential slots", result_set.len());
 
     Ok(())

@@ -367,8 +367,8 @@ mod tests {
         let new = sample_config("192.0.2.1");
         let delta = ConfigDelta::diff(None, &new);
         assert_eq!(delta.added_servers, vec!["primary"]);
-        assert_eq!(delta.removed_servers, [] as [std::string::String; 0]);
-        assert_eq!(delta.modified_servers, [] as [std::string::String; 0]);
+        assert!(delta.removed_servers.is_empty());
+        assert!(delta.modified_servers.is_empty());
         assert!(!delta.root_metadata_changed);
     }
 
