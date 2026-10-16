@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(header.tacacs_type as u8, 3_u8, "TACACS+ types differ");
         assert_eq!(header.seq_no, 1, "sequence numbers differ");
         assert_eq!(header.flags.bits(), (0xff & 0x01) as u8, "flags differ");
-        assert_eq!(header.session_id as u32, 0xdead_beef_u32, "session IDs differ");
+        assert_eq!(header.session_id, 0xdead_beef_u32, "session IDs differ");
         assert_eq!(header.length, 1, "lengths differ");
     }
 
