@@ -123,6 +123,7 @@ pub struct RuntimeHealthSnapshot {
     applied_policy_revision: Option<super::PolicyRevision>,
     credential_lifetime: Option<super::CredentialLifetime>,
     materialization_revision: Option<super::MaterializationRevision>,
+    source_recovery_revision: Option<super::SourceRevision>,
     lifecycle: RuntimeLifecycle,
     applied_configuration: bool,
     datastore: DatastoreState,
@@ -160,6 +161,14 @@ impl RuntimeHealthSnapshot {
     #[must_use]
     pub const fn materialization_revision(&self) -> Option<super::MaterializationRevision> {
         self.materialization_revision
+    }
+
+    /// Returns the source revision that last established a current runtime.
+    ///
+    /// Stale credential publication and failed source candidates preserve this identity.
+    #[must_use]
+    pub const fn source_recovery_revision(&self) -> Option<super::SourceRevision> {
+        self.source_recovery_revision
     }
 
     /// Returns the runtime generation associated with this health snapshot.
@@ -300,6 +309,7 @@ impl RuntimeHealthPublisher {
             applied_policy_revision: None,
             credential_lifetime: None,
             materialization_revision: None,
+            source_recovery_revision: None,
             lifecycle: RuntimeLifecycle::Starting,
             applied_configuration: false,
             datastore: DatastoreState::Loading,
@@ -463,6 +473,7 @@ impl RuntimeHealthPublisher {
                         }
                     }
                     if commit.source_current && commit.expired == super::ExpiredMaterial::None {
+                        snapshot.source_recovery_revision = Some(commit.revision.source());
                         snapshot.datastore = DatastoreState::Current;
                         snapshot
                             .degradation_reasons

@@ -34,6 +34,8 @@ There is no separate reload worker. Cancelling `next()` retains the pending read
 Dropping the observation cancels the pump and drops the pending Redis operation.
 Loss of the Pub/Sub connection returns an observation error. The agent opens a new session before it reads a recovery baseline.
 Rejected mappings retain the previous accepted snapshot and its delta history.
+The first valid snapshot after a rejection emits a recovery change, even when its TACACS+ delta is empty.
+The matching restart-required event follows that recovery change.
 The native tests verify idle cleanup, pending-read cleanup, cancellation, disconnect recovery, and removal of the final server.
 
 `ConfigDatastore` requires an explicit observation implementation. Its former `subscribe()` method and default observation adapter are removed.
