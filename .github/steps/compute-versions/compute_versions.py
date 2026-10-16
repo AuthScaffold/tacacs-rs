@@ -1,11 +1,12 @@
 """Compute crate versions from Git tags, the dependency graph, and SemVer
 validation.
 
-The script finds all library crates in the ``libraries/`` directory. It builds
-the workspace dependency graph from ``path = "..."`` entries in each
-``Cargo.toml``. Then it sorts the crates by dependency. The script compares the
-current HEAD to the last release tag. This comparison determines the next
-SemVer version for each crate.
+The script discovers workspace library crates from Cargo metadata. A library
+crate is a workspace member that builds a ``lib``, ``rlib``, or ``cdylib``
+target. It builds the workspace dependency graph from the normal and build path
+edges that Cargo reports between those members. Then it sorts the crates by
+dependency. The script compares the current HEAD to the last release tag. This
+comparison determines the next SemVer version for each crate.
 
 The script computes CalVer (``YYYY.MMDD.BUILD``) for the configured executable
 in the ``executables/`` directory.
@@ -28,6 +29,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
+# The Cargo metadata helper lives in a sibling step directory.
+_CARGO_METADATA_DIR = Path(__file__).resolve().parent.parent / "cargo-metadata"
+if str(_CARGO_METADATA_DIR) not in sys.path:
+    sys.path.insert(0, str(_CARGO_METADATA_DIR))
+
+from workspace import inventory, load_metadata  # noqa: E402
+
+from api_analysis import ApiBump, classify_api_change  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -35,11 +45,18 @@ from typing import Sequence
 
 @dataclass
 class Crate:
-    """A workspace crate discovered from a Cargo.toml."""
+    """A workspace library crate discovered from Cargo metadata."""
 
     name: str
     directory: Path
+    # Normal and build path edges to other library members. Both propagate a
+    # release, because both rebuild a dependent crate.
     workspace_deps: list[str] = field(default_factory=list)
+    # The subset of normal (non-build) path edges. Only these can surface a
+    # dependency's items through this crate's public API, so only these drive
+    # the conservative breaking floor.
+    normal_deps: list[str] = field(default_factory=list)
+    relative_dir: str = ""  # Directory relative to the workspace root.
 
 
 @dataclass
@@ -54,54 +71,17 @@ class VersionResult:
 
 
 # ---------------------------------------------------------------------------
-# Cargo.toml parsing is intentionally simple. No TOML library is necessary.
+# Library target detection. Cargo decides what is a library.
 # ---------------------------------------------------------------------------
 
-_NAME_RE = re.compile(r'^name\s*=\s*"([^"]+)"')
-_PATH_DEP_RE = re.compile(
-    r'^([a-zA-Z0-9_-]+)\s*=\s*\{.*?path\s*=\s*"([^"]+)"'
-)
+# A workspace member is a library when it builds one of these target kinds. A
+# dual library such as ``crate-type = ["cdylib", "rlib"]`` reports more than one.
+LIBRARY_TARGET_KINDS = frozenset({"lib", "rlib", "cdylib"})
 
 
-def parse_cargo_toml(path: Path) -> tuple[str, list[str]]:
-    """Return ``(crate_name, [workspace_dep_names])`` from a Cargo.toml.
-
-    Normal and build ``path = "..."`` dependencies in the workspace
-    ``libraries/`` directory are workspace dependencies. Development
-    dependencies do not propagate releases. Cargo also permits reverse
-    development-dependency edges.
-    """
-    text = path.read_text(encoding="utf-8")
-    name = ""
-    deps: list[str] = []
-    in_deps = False
-
-    for line in text.splitlines():
-        stripped = line.strip()
-
-        # Get the package name, which is always before [dependencies].
-        if not name:
-            m = _NAME_RE.match(stripped)
-            if m:
-                name = m.group(1)
-
-        # Track the section headers.
-        if stripped.startswith("["):
-            in_deps = stripped in (
-                "[dependencies]",
-                "[build-dependencies]",
-            ) or stripped.startswith("[dependencies.")
-            continue
-
-        if in_deps:
-            m = _PATH_DEP_RE.match(stripped)
-            if m:
-                dep_path = (path.parent / m.group(2)).resolve()
-                # Count only dependencies in libraries/.
-                if "libraries" in dep_path.parts:
-                    deps.append(m.group(1))
-
-    return name, deps
+def _is_library_package(package: dict) -> bool:
+    """Return ``True`` when an inventory package builds a library target."""
+    return any(kind in LIBRARY_TARGET_KINDS for kind in package["target_kinds"])
 
 
 # ---------------------------------------------------------------------------
@@ -109,19 +89,59 @@ def parse_cargo_toml(path: Path) -> tuple[str, list[str]]:
 # ---------------------------------------------------------------------------
 
 def discover_libraries(workspace_root: Path) -> dict[str, Crate]:
-    """Discover all library crates under ``workspace_root/libraries/``."""
-    libs_dir = workspace_root / "libraries"
-    crates: dict[str, Crate] = {}
+    """Discover workspace library crates from Cargo metadata.
 
-    for cargo_toml in sorted(libs_dir.glob("*/Cargo.toml")):
-        name, deps = parse_cargo_toml(cargo_toml)
-        if not name:
-            print(f"WARNING: No crate name in {cargo_toml}", file=sys.stderr)
+    Cargo decides workspace membership and dependency identity. A library is a
+    workspace member that builds a ``lib``, ``rlib``, or ``cdylib`` target,
+    including a crate that builds more than one of these. Normal and build path
+    edges to other library members propagate releases. Development edges do not.
+    The metadata uses ``--no-deps``, so it reads only the workspace manifests
+    and needs no native build. It is also unlocked, because without resolution
+    there is no dependency graph to check against ``Cargo.lock``.
+    """
+    inv = inventory(load_metadata(workspace_root, no_deps=True, locked=False))
+    root = Path(inv["workspace_root"])
+
+    library_names = {
+        package["name"]
+        for package in inv["packages"]
+        if _is_library_package(package)
+    }
+
+    crates: dict[str, Crate] = {}
+    for package in inv["packages"]:
+        if package["name"] not in library_names:
             continue
-        crates[name] = Crate(
-            name=name,
-            directory=cargo_toml.parent,
-            workspace_deps=deps,
+        member_deps = [
+            dependency
+            for dependency in package["dependencies"]
+            if dependency["workspace_member"] in library_names
+        ]
+        # Both normal and build edges propagate a release, because both rebuild
+        # a dependent crate.
+        workspace_deps = sorted(
+            {
+                dependency["workspace_member"]
+                for dependency in member_deps
+                if dependency["kind"] in (None, "build")
+            }
+        )
+        # Only normal edges can surface a dependency's items in this crate's
+        # public API. A build dependency never appears in the public API, so it
+        # cannot break a re-export.
+        normal_deps = sorted(
+            {
+                dependency["workspace_member"]
+                for dependency in member_deps
+                if dependency["kind"] is None
+            }
+        )
+        crates[package["name"]] = Crate(
+            name=package["name"],
+            directory=root / package["directory"],
+            relative_dir=package["directory"],
+            workspace_deps=workspace_deps,
+            normal_deps=normal_deps,
         )
 
     return crates
@@ -165,8 +185,25 @@ def topological_sort(crates: dict[str, Crate]) -> list[str]:
 # Git helpers
 # ---------------------------------------------------------------------------
 
+# Workspace-wide files that can change a crate's build inputs or resolved
+# dependency versions without touching its own directory. A change to any of
+# these selects every library and executable for release, so a lockfile-only
+# security update still produces a version map and tags.
+ROOT_WATCH_PATHS = ("Cargo.toml", "Cargo.lock", ".cargo/")
+
+
+class GitError(RuntimeError):
+    """A Git command exited non-zero."""
+
+
 def git(*args: str, cwd: Path | None = None) -> str:
-    """Run a Git command and return standard output without surrounding whitespace."""
+    """Run a Git command and return stdout without surrounding whitespace.
+
+    Raises :class:`GitError` on a non-zero exit, so a failed command never looks
+    like empty output. Callers that legitimately expect an empty result (no
+    matching tags, no diff) still get it, because those commands exit zero with
+    empty output.
+    """
     result = subprocess.run(
         ["git", *args],
         capture_output=True,
@@ -174,6 +211,11 @@ def git(*args: str, cwd: Path | None = None) -> str:
         cwd=cwd,
         check=False,
     )
+    if result.returncode != 0:
+        raise GitError(
+            f"`git {' '.join(args)}` failed (exit {result.returncode}): "
+            f"{result.stderr.strip()}"
+        )
     return result.stdout.strip()
 
 
@@ -197,12 +239,15 @@ def source_ref_for_tag(tag: str, cwd: Path | None = None) -> str:
     if not matches:
         return tag
 
-    source_ref = git(
-        "rev-parse",
-        "--verify",
-        f"{matches[0]}^{{commit}}",
-        cwd=cwd,
-    )
+    try:
+        source_ref = git(
+            "rev-parse",
+            "--verify",
+            f"{matches[0]}^{{commit}}",
+            cwd=cwd,
+        )
+    except GitError as error:
+        raise ValueError(f"Tag {tag} records an invalid Source-Commit") from error
     if not source_ref:
         raise ValueError(f"Tag {tag} records an invalid Source-Commit")
     return source_ref
@@ -244,30 +289,23 @@ def bump_patch(major: int, minor: int, patch: int) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
+def bump_minor(major: int, minor: int, patch: int) -> str:
+    """Increment for an additive, backward-compatible API change.
+
+    At or after 1.0, this is a minor bump. Before 1.0 the minor position is
+    reserved for breaking changes, so an additive change takes a patch bump and
+    stays within the same compatibility range.
+    """
+    if major == 0:
+        return f"0.{minor}.{patch + 1}"
+    return f"{major}.{minor + 1}.0"
+
+
 def bump_breaking(major: int, minor: int, _patch: int) -> str:
     """Increment the minor part before 1.0. Increment the major part at or after 1.0."""
     if major == 0:
         return f"0.{minor + 1}.0"
     return f"{major + 1}.0.0"
-
-
-def run_semver_checks(
-    package: str,
-    baseline_rev: str,
-    cwd: Path | None = None,
-) -> bool:
-    """Run ``cargo semver-checks`` and return ``True`` for a compatible API."""
-    result = subprocess.run(
-        [
-            "cargo", "semver-checks", "check-release",
-            "--package", package,
-            "--baseline-rev", baseline_rev,
-        ],
-        capture_output=True,
-        text=True,
-        cwd=cwd,
-    )
-    return result.returncode == 0
 
 
 # ---------------------------------------------------------------------------
@@ -279,15 +317,30 @@ def compute_calver(
     watch_paths: Sequence[str],
     cwd: Path | None = None,
     now: datetime | None = None,
-) -> VersionResult | None:
-    """Compute CalVer for an executable, or ``None`` if unchanged."""
+) -> VersionResult:
+    """Compute CalVer for an executable.
+
+    When the executable changed since its last release, this returns a new
+    CalVer with a tag. When it did not change, it returns the existing CalVer
+    with no tag, so the version map still carries the executable at its released
+    version. The result is therefore never ``None``.
+    """
     tag_prefix = f"{binary_name}-"
     latest = latest_tag(tag_prefix, cwd=cwd)
 
     if latest is not None:
         source_ref = source_ref_for_tag(latest, cwd=cwd)
         if not has_changes_since(source_ref, list(watch_paths), cwd=cwd):
-            return None
+            # Unchanged. Carry the existing CalVer in the version map so the
+            # executable's manifest still hydrates to its released version, but
+            # create no new tag.
+            return VersionResult(
+                name=binary_name,
+                version=latest[len(tag_prefix):],
+                tag=None,
+                reason="unchanged",
+                previous_tag=latest,
+            )
 
     if now is None:
         now = datetime.now(timezone.utc)
@@ -344,8 +397,7 @@ def compute_prerelease_library_versions(
         latest = latest_tag(tag_prefix, cwd=cwd)
 
         if latest is None:
-            n = commit_count_since("", cwd=cwd)  # The total commit count.
-            # Use git rev-list --count HEAD instead.
+            # No tag yet: use the total commit count reachable from HEAD.
             count_str = git("rev-list", "--count", "HEAD", cwd=cwd)
             n = int(count_str) if count_str else 0
             version = f"0.0.0-{pre_release_label}.{n}"
@@ -415,6 +467,10 @@ def compute_library_versions(
     """
     results: list[VersionResult] = []
     bumped: set[str] = set()
+    # Crates whose bump was incompatible: a major bump, or a 0.x bump that moved
+    # the minor position. A normal dependent of one of these takes the
+    # conservative breaking floor.
+    breaking_bumped: set[str] = set()
 
     for name in order:
         crate = crates[name]
@@ -423,9 +479,14 @@ def compute_library_versions(
 
         # Determine whether a workspace dependency received a new version.
         dep_bumped = any(d in bumped for d in crate.workspace_deps)
+        # A normal dependency with an incompatible bump can break a re-export of
+        # its items even when this crate's own source is unchanged, so it forces
+        # the conservative breaking floor below.
+        normal_dep_broke = any(d in breaking_bumped for d in crate.normal_deps)
 
         if latest is None:
-            # This is the first release.
+            # This is the first release. A 0.1.0 is not an incompatible bump of
+            # an existing dependency, so it does not enter breaking_bumped.
             version = "0.1.0"
             results.append(VersionResult(
                 name=name,
@@ -437,9 +498,14 @@ def compute_library_versions(
             continue
 
         current = latest[len(tag_prefix):]
-        dir_rel = str(crate.directory.relative_to(crate.directory.parents[1]))
+        dir_rel = crate.relative_dir
         source_ref = source_ref_for_tag(latest, cwd=cwd)
-        source_changed = has_changes_since(source_ref, [f"{dir_rel}/"], cwd=cwd)
+        # Watch the crate's own directory and the workspace-wide files that can
+        # change its build or resolved dependencies: the root manifest, the
+        # lockfile, and Cargo configuration. A lockfile-only security update
+        # therefore still selects the library for release.
+        watch = [f"{dir_rel}/", *ROOT_WATCH_PATHS]
+        source_changed = has_changes_since(source_ref, watch, cwd=cwd)
 
         if not source_changed and not dep_bumped:
             # Nothing changed. Keep the current version.
@@ -453,21 +519,44 @@ def compute_library_versions(
 
         # Something changed. Determine the increment level.
         major, minor, patch = parse_semver(current)
+        is_breaking = False
 
         if skip_semver_checks:
-            # If semver-checks is unavailable, use a patch increment.
-            is_compatible = True
-        else:
-            is_compatible = run_semver_checks(name, latest, cwd=cwd)
-
-        if is_compatible:
+            # Documented explicit bypass: skip API analysis and treat every
+            # change as a patch. It is faster but never produces a minor or
+            # major bump, so use it only when API analysis is unavailable. In
+            # this mode no crate is breaking, so the breaking floor never fires.
             version = bump_patch(major, minor, patch)
-            reason = "patch"
-            if dep_bumped and not source_changed:
-                reason = "patch (dependency version changed)"
+            reason = "patch (API analysis skipped)"
         else:
-            version = bump_breaking(major, minor, patch)
-            reason = "breaking"
+            # Classify every change, whether it is in the crate's own source or
+            # only in a workspace dependency. A dependency revision can still
+            # alter this crate's public API, because a re-exported dependency
+            # item is part of this crate's surface. The baseline is the hydrated
+            # release tag, so the comparison reflects the released public API,
+            # not the 0.0.0-dev manifest. A tool error raises ApiAnalysisError
+            # and fails the whole release computation rather than guessing a bump.
+            bump = classify_api_change(name, latest, workspace_root=cwd)
+            if bump is ApiBump.MAJOR:
+                version = bump_breaking(major, minor, patch)
+                reason = "breaking"
+                is_breaking = True
+            elif bump is ApiBump.MINOR:
+                version = bump_minor(major, minor, patch)
+                reason = "minor (additive API)"
+            else:
+                version = bump_patch(major, minor, patch)
+                reason = "patch"
+
+            # Conservative breaking floor. A normal dependency broke, so a
+            # re-exported item of that dependency can break downstream even when
+            # this crate's own analyzed surface looks compatible or textually
+            # unchanged. Over-bump a dependency that turns out to be private
+            # rather than risk an unsafe under-bump.
+            if normal_dep_broke and not is_breaking:
+                version = bump_breaking(major, minor, patch)
+                reason = "breaking (normal dependency breaking change)"
+                is_breaking = True
 
         results.append(VersionResult(
             name=name,
@@ -476,6 +565,8 @@ def compute_library_versions(
             reason=reason,
         ))
         bumped.add(name)
+        if is_breaking:
+            breaking_bumped.add(name)
 
     return results
 
@@ -518,6 +609,10 @@ def compute_all_versions(
             for name in shared_executable_names
         )
         executable_watch_paths.append("libraries/")
+        # Workspace-wide files can change the executable's build inputs or
+        # resolved dependencies, so a lockfile-only security update still
+        # selects it for a new CalVer.
+        executable_watch_paths.extend(ROOT_WATCH_PATHS)
 
     # Discover and sort libraries
     crates = discover_libraries(workspace_root)
@@ -530,7 +625,7 @@ def compute_all_versions(
             pre_release_label=pre_release,
             cwd=workspace_root,
         )
-        calver_result: VersionResult | None = compute_prerelease_calver(
+        calver_result: VersionResult = compute_prerelease_calver(
             binary_name,
             pre_release_label=pre_release,
             cwd=workspace_root,
@@ -561,19 +656,19 @@ def compute_all_versions(
 
     calver_tag = ""
     previous_calver_tag = ""
-    if calver_result is not None:
-        versions[calver_result.name] = calver_result.version
-        for shared_name in shared_executable_names:
-            versions[shared_name] = calver_result.version
-        if calver_result.tag:
-            new_tags.append(calver_result.tag)
-            calver_tag = calver_result.tag
-            previous_calver_tag = calver_result.previous_tag or ""
-        print(f"  {calver_result.name}: {calver_result.version} ({calver_result.reason})")
-        for shared_name in shared_executable_names:
-            print(f"  {shared_name}: {calver_result.version} (shared executable version)")
-    else:
-        print(f"  {binary_name}: unchanged (no CalVer)")
+    # The executable is always in the version map, whether or not it changed. An
+    # unchanged executable carries its existing CalVer with no new tag, so
+    # hydration still sets its manifest to the released version.
+    versions[calver_result.name] = calver_result.version
+    for shared_name in shared_executable_names:
+        versions[shared_name] = calver_result.version
+    if calver_result.tag:
+        new_tags.append(calver_result.tag)
+        calver_tag = calver_result.tag
+        previous_calver_tag = calver_result.previous_tag or ""
+    print(f"  {calver_result.name}: {calver_result.version} ({calver_result.reason})")
+    for shared_name in shared_executable_names:
+        print(f"  {shared_name}: {calver_result.version} (shared executable version)")
 
     return {
         "versions": versions,

@@ -3,9 +3,11 @@
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 BOOTSTRAP = Path(__file__).with_name("bootstrap-source.sh")
@@ -154,7 +156,7 @@ class ContainerConfigurationTests(unittest.TestCase):
         self.assertEqual(self.config["build"]["context"], ".")
         self.assertEqual(self.config["waitFor"], "postCreateCommand")
         dockerfile = (self.directory / "Dockerfile").read_text(encoding="utf-8")
-        for name in ["bootstrap-source.sh", "initialize-workspace.sh", "post-create.sh"]:
+        for name in ["bootstrap-source.sh", "initialize-workspace.sh", "post-create.sh", "install-tacplus.sh"]:
             self.assertTrue((self.directory / name).is_file())
             self.assertIn(name, dockerfile)
             subprocess.run(["bash", "-n", str(self.directory / name)], check=True)
@@ -163,6 +165,81 @@ class ContainerConfigurationTests(unittest.TestCase):
         self.assertEqual(self.config["postCreateCommand"], ["bash", "/usr/local/share/tacacs-rs/post-create.sh"])
         initializer = (self.directory / "initialize-workspace.sh").read_text(encoding="utf-8")
         self.assertIn("chown -R vscode:vscode /usr/local/cargo/registry /usr/local/cargo/git", initializer)
+
+    def test_image_provides_recent_validation_tools(self):
+        dockerfile = (self.directory / "Dockerfile").read_text(encoding="utf-8")
+        for toolchain in ("1.88.0", "1.91.0", "nightly-2025-11-23"):
+            self.assertIn(f"rustup toolchain install {toolchain} --profile minimal", dockerfile)
+        nightly = next(line for line in dockerfile.splitlines() if "install nightly --" in line)
+        for component in ("rustfmt", "clippy", "miri", "rust-src"):
+            self.assertIn(f"--component {component}", nightly)
+        self.assertIn("rustup default 1.88.0", dockerfile)
+        self.assertIn("python3 -m venv /opt/tacacs-python", dockerfile)
+        for dependency in ("pyang==2.7.1", "pytest==8.4.2", "PyYAML==6.0.3"):
+            self.assertIn(dependency, dockerfile)
+        self.assertIn('ENV PATH="/home/vscode/.local/bin:/opt/tacacs-python/bin:/opt/tacacs-tools/bin:/opt/tacacs-test-server/sbin:${PATH}"', dockerfile)
+        self.assertIn("cargo-cyclonedx --version 0.5.9 --locked", dockerfile)
+
+    def test_image_provides_native_test_and_release_tools(self):
+        dockerfile = (self.directory / "Dockerfile").read_text(encoding="utf-8")
+        packages = set(dockerfile.split())
+        for package in (
+            "binutils", "build-essential", "libcrypt-dev", "libpcre2-dev",
+            "libseccomp-dev", "libssl-dev", "openssl", "perl", "pkg-config",
+            "redis-server", "redis-tools", "zlib1g-dev",
+        ):
+            self.assertIn(package, packages)
+
+    def test_post_create_installs_the_repository_api_tool(self):
+        script = (self.directory / "post-create.sh").read_text(encoding="utf-8")
+        self.assertIn("cargo +1.91.0 install --path .github/tools/api-classifier --locked", script)
+        self.assertIn('--root "$HOME/.local"', script)
+        self.assertIn('--target-dir "${CARGO_TARGET_DIR:-target}/api-classifier"', script)
+
+    def test_image_installs_a_pinned_server_without_starting_it(self):
+        dockerfile = (self.directory / "Dockerfile").read_text(encoding="utf-8")
+        installer = (self.directory / "install-tacplus.sh").read_text(encoding="utf-8")
+        self.assertIn("RUN bash /usr/local/share/tacacs-rs/install-tacplus.sh", dockerfile)
+        self.assertIn("TACPLUS_SERVER_BINARY=/opt/tacacs-test-server/sbin/tac_plus-ng", dockerfile)
+        self.assertIn("TACPLUS_LIBRARY_DIR=/opt/tacacs-test-server/lib", dockerfile)
+        self.assertIn("revision=70bf938b542d63bca00d50be0874a38a290319e0", installer)
+        self.assertIn('rev-parse HEAD)" == "$revision"', installer)
+        self.assertIn('"$prefix/sbin/tac_plus-ng" -v', installer)
+        self.assertNotIn("EXPOSE", dockerfile)
+        self.assertNotIn("install-tacplus.sh", (self.directory / "post-create.sh").read_text(encoding="utf-8"))
+
+    def test_server_installer_preserves_nonempty_destination(self):
+        with tempfile.TemporaryDirectory(prefix="tacacs-install-test-") as directory:
+            sentinel = Path(directory) / "keep.txt"
+            sentinel.write_text("existing installation\n", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", str(self.directory / "install-tacplus.sh"), directory],
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("new or empty", result.stderr)
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "existing installation\n")
+
+    def test_interop_runner_uses_image_defaults_and_accepts_overrides(self):
+        runner = runpy.run_path(str(self.directory.parent / "lde/run-tacplus-interop.py"))
+        with patch.dict(os.environ, {
+            "TACPLUS_SERVER_BINARY": "/opt/tacacs-test-server/sbin/tac_plus-ng",
+            "TACPLUS_LIBRARY_DIR": "/opt/tacacs-test-server/lib",
+        }, clear=True):
+            args = runner["parse_args"]([])
+            self.assertEqual(args.server_binary, Path(os.environ["TACPLUS_SERVER_BINARY"]))
+            self.assertEqual(args.library_dir, Path(os.environ["TACPLUS_LIBRARY_DIR"]))
+            self.assertEqual(args.mode, "all")
+            override = runner["parse_args"]([
+                "--server-binary", "/tmp/custom-server", "--library-dir", "/tmp/custom-libs", "--mode", "baseline",
+            ])
+            self.assertEqual(override.server_binary, Path("/tmp/custom-server"))
+            self.assertEqual(override.library_dir, Path("/tmp/custom-libs"))
+            self.assertEqual(override.mode, "baseline")
+        with patch.dict(os.environ, {}, clear=True):
+            explicit = runner["parse_args"](["--server-binary", "/tmp/custom-server"])
+            self.assertEqual(explicit.server_binary, Path("/tmp/custom-server"))
+            self.assertIsNone(explicit.library_dir)
 
 
 if __name__ == "__main__":

@@ -101,12 +101,23 @@ def run_mode(binary, mode, work, environment):
                     process.wait(timeout=5)
 
 
-def main():
+def parse_args(arguments=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--server-binary", required=True, type=Path)
-    parser.add_argument("--library-dir", type=Path, help="Directory containing the native libmavis build")
+    default_binary = os.environ.get("TACPLUS_SERVER_BINARY")
+    parser.add_argument(
+        "--server-binary", required=not default_binary, default=default_binary, type=Path,
+        help="Server executable (default: TACPLUS_SERVER_BINARY)",
+    )
+    parser.add_argument(
+        "--library-dir", default=os.environ.get("TACPLUS_LIBRARY_DIR"), type=Path,
+        help="Native libmavis directory (default: TACPLUS_LIBRARY_DIR)",
+    )
     parser.add_argument("--mode", choices=["all", *CASES], default="all")
-    args = parser.parse_args()
+    return parser.parse_args(arguments)
+
+
+def main():
+    args = parse_args()
     environment = os.environ.copy()
     if args.library_dir:
         environment["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None, [

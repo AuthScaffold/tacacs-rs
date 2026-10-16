@@ -1,5 +1,5 @@
 name: Stage Binary Package
-description: Stage the built binary into the package directory
+description: Stage the built binary into the package directory without stripping it
 
 inputs:
   target:
@@ -11,20 +11,9 @@ runs:
   steps:
     - name: Stage binary package contents
       shell: bash
-      run: |
-        mkdir -p "$PACKAGE_DIR" packaged
-        ARTIFACT_PATH="target/${{ inputs.target }}/${PROFILE}/${ARTIFACT_FILENAME}"
-
-        if [ ! -f "$ARTIFACT_PATH" ]; then
-          echo "Error: The expected artifact does not exist at $ARTIFACT_PATH."
-          exit 1
-        fi
-
-        cp "$ARTIFACT_PATH" "$PACKAGE_DIR/${ARTIFACT_FILENAME}"
-
-        if [[ "${{ runner.os }}" != "Windows" ]]; then
-          chmod +x "$PACKAGE_DIR/${ARTIFACT_FILENAME}"
-          if [ "$PROFILE" = "release" ]; then
-            strip "$PACKAGE_DIR/${ARTIFACT_FILENAME}"
-          fi
-        fi
+      env:
+        # Pass the caller input through the environment so it never reaches the
+        # shell as code. PROFILE, ARTIFACT_FILENAME, and PACKAGE_DIR already live
+        # in the job environment from compute-package-names.
+        TARGET: ${{ inputs.target }}
+      run: bash "${{ github.action_path }}/run.sh"
