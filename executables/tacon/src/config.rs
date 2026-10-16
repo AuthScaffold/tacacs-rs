@@ -708,7 +708,7 @@ mod tests {
             "show",
         ]);
 
-        assert_eq!(tls13_epsk_groups(&cli), [] as [tacacsrs_config::PskDheKeSupportedGroup; 0]);
+        assert!(tls13_epsk_groups(&cli).is_empty());
     }
 
     #[test]
