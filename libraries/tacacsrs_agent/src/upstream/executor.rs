@@ -184,7 +184,7 @@ mod tests {
             run_with_failover(plan(FailoverStrategy::DeferredFailover, 3), &mut runner).await;
 
         assert!(matches!(outcome, FailoverOutcome::Rejected("only")));
-        assert_eq!(runner.discarded, [] as [&str; 0]);
+        assert!(runner.discarded.is_empty());
     }
 
     #[tokio::test]
