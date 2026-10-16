@@ -343,14 +343,7 @@ async fn overload_is_retriable_without_upstream_io_and_cancellation_releases_cap
             );
         }
         release.notify_one();
-        assert_eq!(
-            bridge
-                .execute_accounting_request(accounting())
-                .await
-                .unwrap()
-                .server,
-            "primary:49"
-        );
+        let _released_capacity = proxy.admit(1).await.unwrap();
         assert_eq!(
             connector
                 .attempts("primary:49", OperationKind::Accounting)
@@ -509,6 +502,11 @@ async fn deadline_includes_admission_and_retry_and_survives_policy_reload() {
             .await,
         1
     );
+    assert!(bridge
+        .execute_accounting_request(accounting())
+        .await
+        .is_err());
+    tokio::time::advance(Duration::from_secs(30)).await;
     assert_eq!(
         bridge
             .execute_accounting_request(accounting())
@@ -517,6 +515,61 @@ async fn deadline_includes_admission_and_retry_and_survives_policy_reload() {
             .server,
         "backup:49"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_upstream_attempt_routes_the_next_request_to_backup() {
+    use crate::config::RequestLimits;
+
+    let primary = Arc::new(ScriptedConnection {
+        accounting_delay: Duration::from_secs(60),
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary,
+        backup,
+        OperationKind::Accounting,
+    )));
+    let limits = RequestLimits::new(1024, 1)
+        .unwrap()
+        .with_request_timeout(Duration::from_secs(1))
+        .unwrap();
+    let policy = RuntimePolicy::new(
+        FailoverStrategy::default(),
+        FailoverStrategy::default(),
+        OperationPolicies::new(limits, limits, limits),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let manager = Arc::new(
+        UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+            vec![server("primary"), server("backup")],
+            PreparedProxyPolicy::unobfuscated(),
+            policy,
+            connector.clone(),
+            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+            tacacsrs_config::prepare::PrepareOptions::default(),
+        )
+        .unwrap(),
+    );
+    let bridge = UpstreamBridge::new(manager);
+    let error = bridge
+        .execute_accounting_request(accounting())
+        .await
+        .unwrap_err();
+    assert!(!error.retriable);
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Accounting)
+            .await,
+        0
+    );
+    let response = bridge
+        .execute_accounting_request(accounting())
+        .await
+        .unwrap();
+    assert_eq!(response.server, "backup:49");
 }
 
 #[tokio::test]

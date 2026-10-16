@@ -91,17 +91,24 @@ where
         }
         let attempt_deadline = deadline.capped(bound_server.timeout_duration());
         let response = attempt_deadline
-            .run(Operation::send(&*bound_server.connection, self.request, attempt_deadline))
+            .run(async {
+                let mut observation = bound_server.observe_failure();
+                let response = Operation::send(&*bound_server.connection, self.request, attempt_deadline).await;
+                if response.is_ok() || matches!(&response, Err(error) if error.kind() == AttemptFailureKind::InvalidRequest) {
+                    observation.disarm();
+                }
+                response
+            })
             .await
             .map_err(UpstreamRequestError::outcome_unknown)
             .and_then(std::convert::identity);
         match response {
             Ok(response) if Operation::is_server_error(&response) => {
-                let _reported = deadline.run(self.router.note_failure(&bound_server)).await;
+                self.router.note_failure(&bound_server).await;
                 Attempt::Rejected(response)
             }
             Ok(response) => {
-                let _reported = deadline.run(self.router.note_success(&bound_server)).await;
+                self.router.note_success(&bound_server).await;
                 Attempt::Accepted(response)
             }
             Err(error) if error.kind() == AttemptFailureKind::InvalidRequest => {
@@ -126,7 +133,7 @@ where
                     .retriable(
                         !self.outcome_unknown && error.kind() == AttemptFailureKind::NotSent,
                     );
-                let _reported = deadline.run(self.router.note_failure(&bound_server)).await;
+                self.router.note_failure(&bound_server).await;
                 Attempt::Failed {
                     error: service_error,
                     disposition,

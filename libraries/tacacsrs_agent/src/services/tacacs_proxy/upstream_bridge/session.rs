@@ -152,12 +152,16 @@ where
         request: &Self::Request,
     ) -> anyhow::Result<Self::Conversation> {
         let bound_server = request.bind().await?;
+        let mut observation = bound_server.observe_failure();
         match bound_server.connection.open_conversation().await {
-            Ok(conversation) => Ok(ManagedProxyConversation {
-                router: self.router.clone(),
-                bound_server,
-                conversation,
-            }),
+            Ok(conversation) => {
+                observation.disarm();
+                Ok(ManagedProxyConversation {
+                    router: self.router.clone(),
+                    bound_server,
+                    conversation,
+                })
+            }
             Err(error) => {
                 self.router.note_failure(&bound_server).await;
                 Err(error)
@@ -197,7 +201,12 @@ impl<Connector: EndpointConnector> ProxyConversation for ManagedProxyConversatio
     }
 
     async fn round_trip(&mut self, packet: Packet) -> anyhow::Result<Packet> {
-        self.conversation.round_trip(packet).await
+        let mut observation = self.bound_server.observe_failure();
+        let result = self.conversation.round_trip(packet).await;
+        if result.is_ok() {
+            observation.disarm();
+        }
+        result
     }
 
     async fn complete(&mut self) {
