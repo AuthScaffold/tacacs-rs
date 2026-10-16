@@ -1,8 +1,8 @@
 /// Runtime statistics counters for a TACACS+ server.
 ///
 /// This type maps to the YANG `grouping statistics` container. All counters are
-/// `config false` (read-only) in the YANG model. Runtime events populate these
-/// counters when connections open and packets move.
+/// `config false` (read-only) in the YANG model. This type is reserved for
+/// operational-data publication. The current agent does not populate or export it.
 #[derive(Debug, Clone, Default)]
 pub struct ServerStatistics {
     /// Number of requests to open a connection.

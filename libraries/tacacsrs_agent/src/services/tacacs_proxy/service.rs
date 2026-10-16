@@ -9,7 +9,7 @@ use super::listener;
 use super::upstream_bridge::UpstreamBridge;
 use crate::runtime::{
     ListenerRegistration, RequestGuard, RequestTracker, RuntimeHealthPublisher, RuntimeService,
-    ShutdownReceiver,
+    ShutdownReceiver, ProxyLoopGuard, ProxyListenerBinding,
 };
 use crate::services::ListenerOptions;
 use crate::upstream::manager::UpstreamManager;
@@ -19,6 +19,7 @@ use crate::upstream::manager::UpstreamManager;
 pub(crate) struct TacacsProxyService {
     request_tracker: Arc<RequestTracker>,
     upstream_bridge: UpstreamBridge,
+    proxy_loop_guard: ProxyLoopGuard,
 }
 
 impl TacacsProxyService {
@@ -26,11 +27,20 @@ impl TacacsProxyService {
     pub(crate) fn new(
         upstream_manager: Arc<UpstreamManager>,
         request_tracker: Arc<RequestTracker>,
+        proxy_loop_guard: ProxyLoopGuard,
     ) -> Self {
         Self {
             request_tracker,
             upstream_bridge: UpstreamBridge::new(upstream_manager),
+            proxy_loop_guard,
         }
+    }
+
+    pub(super) fn bind_proxy_listener(
+        &self,
+        address: std::net::SocketAddr,
+    ) -> anyhow::Result<ProxyListenerBinding> {
+        self.proxy_loop_guard.bind(address)
     }
 
     /// Runs the TACACS+ proxy listener until the process receives a shutdown signal.

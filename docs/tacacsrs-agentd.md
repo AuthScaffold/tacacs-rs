@@ -57,10 +57,13 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--listen-endpoint <ENDPOINT>` | `/run/tacacs/tacacs.sock` | Unix domain socket path (Linux) or TCP address (other platforms) |
-| `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Optional TACACS+ proxy listener on a Unix domain socket path or loopback TCP address |
+| `--local-services <FILE>` | none | Startup YANG listener resource, exclusive with listener flags and SONiC mode |
+| `--listen-endpoint <ENDPOINT>` | `/run/tacacs/tacacs.sock` | Absolute Unix domain socket path |
+| `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Absolute Unix socket path or numeric IP socket address |
 | `--service-mode <MODE>` | `client-api`, or `both` when `--proxy-endpoint` is set | Runtime services to host: `client-api`, `tacacs-proxy`, or `both` |
 | `--socket-mode <MODE>` | `660` | File permission mode for the Unix domain socket (octal) |
+| `--proxy-credential-source <SOURCE>` | `unobfuscated`, `inline` with a CLI secret, or `local-proxy-row` in SONiC mode | Canonical downstream credential source |
+| `--proxy-shared-secret <SECRET>` | none | Nonempty inline downstream secret. Requires a proxy endpoint and conflicts with SONiC mode. |
 | `--worker-threads <COUNT>` | `1` | Tokio worker threads. TACACS+ requests are small and I/O bound, so extra workers mainly add cross-thread task migration. |
 | `--host-integration <MODE>` | `auto` | Host adapter: `auto`, `none`, or strict `systemd` |
 
@@ -75,6 +78,66 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | `both` | client API and raw TACACS+ proxy | `--proxy-endpoint` required, `--listen-endpoint` optional |
 
 If `--service-mode` is omitted, the daemon preserves the old behavior: it runs `client-api` by default, and switches to `both` when `--proxy-endpoint` is supplied. Configurations with no hosted services are rejected.
+
+### Canonical Listener Resource
+
+Service selection, listener endpoints, and Unix socket permissions belong to `tacacsrs:local-services` under `ietf-system:system`.
+The daemon normalizes listener flags into this generated YANG resource. It derives omitted values from the YANG defaults.
+The service validates the same source for library callers before binding sockets.
+Worker threads, verbosity, and host integration remain process bootstrap inputs, not listener configuration.
+
+Example resource for `--local-services`:
+
+```json
+{
+    "tacacsrs:local-services": {
+        "client-api-enabled": true,
+        "client-api-endpoint": "/run/tacacs/tacacs.sock",
+        "tacacs-proxy-enabled": true,
+        "tacacs-proxy-endpoint": "127.0.0.1:49",
+        "unix-socket-mode": 432
+    }
+}
+```
+
+The default document is `{"tacacsrs:local-services":{}}`. It enables only the client API with permissions `0660`.
+YANG JSON encodes permission bits as a decimal number from 0 through 511. The CLI `--socket-mode` input remains octal.
+The resource file loads once at startup. Listener changes require a restart.
+It cannot be combined with listener flags, `--proxy-credential-source`, or `--sonic`.
+SONiC mode still loads its forwarder row and normalizes the result into the canonical resource.
+
+All endpoint paths must be absolute. Unix paths cannot contain NUL, parent traversal, or more than 107 bytes.
+These rules apply even to a disabled client API endpoint. Relative paths previously accepted by the IPC parser are no longer valid listener inputs.
+Preparation normalizes repeated separators and current-directory components to detect lexical Unix path collisions. It does not resolve filesystem symlinks.
+Proxy TCP targets must use numeric addresses. IPv6 addresses require brackets. Port zero requests an ephemeral port.
+Wildcard proxy addresses remain supported. Deployments must restrict access to trusted clients.
+
+The resource also selects downstream credentials through `proxy-credential-source`:
+
+| Value | Credential contract |
+| --- | --- |
+| `unobfuscated` | No secret is configured or inferred from upstream rows. This is the YANG default. |
+| `inline` | `proxy-shared-secret` must contain a nonempty string. Matching upstream rows cannot override it. |
+| `local-proxy-row` | A numeric TCP endpoint is required. The highest-priority matching upstream row must exist and contain a nonempty shared secret. |
+
+An inline resource can contain these fields alongside its listener controls:
+
+```json
+{
+    "tacacsrs:local-services": {
+        "tacacs-proxy-enabled": true,
+        "tacacs-proxy-endpoint": "127.0.0.1:49",
+        "proxy-credential-source": "inline",
+        "proxy-shared-secret": "replace-with-local-secret"
+    }
+}
+```
+
+CAUTION: Restrict access to files containing inline secrets. JSON serialization contains the configured secret, even though debug output is redacted.
+CLI arguments can also appear in process listings. A protected resource file avoids placing the secret in the command line.
+Changes to this startup resource, including inline secret rotation, require a restart.
+With `local-proxy-row`, accepted upstream source updates can rotate the derived secret without changing the credential-source selection.
+Existing downstream connections retain their captured credentials until they close. This change does not force credential revocation on established connections.
 
 ### TACACS+ Proxy Mode
 
@@ -109,11 +172,28 @@ Other containers on the same Docker network can reach the wildcard listener. Use
 
 Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. When both services run, their endpoints must be different.
 
+Before publication, the shared loop filter checks upstreams on the proxy's configured TCP port.
+It removes matching classic rows after downstream credential preparation and rejects matching TLS rows.
+Wildcard listeners include current interface addresses and loopback destinations. IPv6 wildcard checks conservatively include dual-stack binding.
+DNS failures, empty answers, unspecified destinations, and lookup timeouts reject the candidate instead of retaining an unchecked upstream.
+The agent also guards each upstream connection after DNS resolution and before TCP connect.
+It checks the connected socket again before any TLS handshake or TACACS+ bytes.
+The TCP proxy registers its actual bound address before accepting clients, including the port selected by an ephemeral bind.
+Wildcard checks refresh interface addresses and inspect the connected socket's local address.
+While the TCP proxy is unbound or closed, new upstream connections fail closed. Disabled and Unix-only proxies do not restrict upstream TCP targets.
+Cached clients retain the same live guard across reconnects and configuration reloads. These checks do not rewrite canonical configuration.
+
 Downstream TACACS+ obfuscation is independent of the selected upstream transport. In SONiC mode, the daemon filters rows that target its loopback proxy.
 
-The daemon uses the highest-priority row's resolved `passkey` for the local hop. Outside SONiC mode, use `--proxy-shared-secret`.
+SONiC mode selects `local-proxy-row` by default. The selected row's mapped `passkey` supplies downstream material.
+For intentional plaintext downstream traffic, select `--proxy-credential-source unobfuscated` explicitly.
+Outside SONiC mode, `--proxy-shared-secret` selects inline policy unless an explicit source selector conflicts with it.
 
-If neither source provides a local-hop secret, downstream clients must send unobfuscated TACACS+ packets. Upstream failover never changes the downstream shared secret.
+This replaces the previous implicit local-row override and missing-secret fallback.
+A missing row, missing secret, or empty secret rejects the candidate generation in row-derived mode.
+Rejected updates retain the previous upstream set and downstream credentials, even if the candidate removed the local row.
+Before the first valid generation, the proxy rejects connections without reading packets. It never substitutes unobfuscated traffic for unresolved credentials.
+Upstream failover does not change downstream credentials. Source preparation publishes valid credential and upstream changes together.
 
 TACACS+ has no general in-band request to drain an established single-connect connection. Clearing the single-connect flag after negotiation has no effect. In this proxy, a TACACS+ `ERROR` is session-scoped and does not close the downstream connection.
 
@@ -139,12 +219,24 @@ A server can enforce its own drain by returning `ERROR` for new sessions, finish
 
 ### TLS Client Certificates and Keys
 
+Without an explicit server port, TLS inputs now select port 300 instead of the previous CLI default of 49.
+Legacy TCP still defaults to 49. Explicit configured ports are preserved.
+
 When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemon present a TLS client identity to upstream TACACS+ servers.
 
 - Provide both flags together.
 - Both files can be PEM or DER. The daemon detects PEM input and converts it to DER before it builds the runtime connection configuration.
 - Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags. Provide PEM or DER certificate and private-key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If upstream TLS material is loaded through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
+
+Certificate verification now checks the peer's DNS/IP SAN as well as certificate trust.
+The expected identity is `domain-name` when configured, otherwise `address`. SNI selection is independent of that check.
+Previously accepted CN-only or mismatched certificates now fail before TACACS+ traffic.
+See [certificate peer identity](yang-config-guide.md#certificate-peer-identity) for the full identity-selection contract.
+
+Configured CA trust and exact end-entity trust are now separate. Empty explicit trust bags fail before publication instead of selecting platform roots.
+A rejected replacement leaves the previous prepared generation active.
+See [certificate trust](yang-config-guide.md#certificate-trust) for exact-match renewal behavior and additive trust rules.
 
 ### Timeouts and Failover
 
@@ -224,32 +316,44 @@ accounting watchdog to test authentication or authorization routes.
 
 ## Runtime Policy
 
-The optional policy file contains no credentials. The daemon watches the file
+The optional policy file contains a `tacacsrs:runtime-policy` YANG resource with no credentials. The daemon watches the file
 and atomically applies each valid update. An invalid update leaves the
 last-known-good policy active and marks runtime health as degraded.
 
-An omitted field uses its safe default. This example enables same-request
+An omitted field uses its generated YANG default. This example enables same-request
 failover for both local services:
 
 ```json
 {
-  "failover-recovery-interval-seconds": 30,
-  "client-api-failover-strategy": "ordered-safe-retry",
-  "tacacs-proxy-failover-strategy": "ordered-safe-retry",
-  "authentication": {
-    "max-body-length": 4096,
-    "max-concurrent-requests": 64
-  },
-  "authorization": {
-    "max-body-length": 16384,
-    "max-concurrent-requests": 64
-  },
-  "accounting": {
-    "max-body-length": 16384,
-    "max-concurrent-requests": 64
+    "tacacsrs:runtime-policy": {
+        "failover-recovery-interval-seconds": 30,
+        "client-api-failover-strategy": "ordered-safe-retry",
+        "tacacs-proxy-failover-strategy": "ordered-safe-retry",
+        "authentication": {
+            "max-body-length": 4096,
+            "max-concurrent-requests": 64
+        },
+        "authorization": {
+            "max-body-length": 16384,
+            "max-concurrent-requests": 64
+        },
+        "accounting": {
+            "max-body-length": 16384,
+            "max-concurrent-requests": 64
+        }
   }
 }
 ```
+
+This replaces the old flat policy JSON format. Wrap existing fields in `tacacsrs:runtime-policy` before upgrading.
+The default document is `{"tacacsrs:runtime-policy":{}}`; a bare `{}` is no longer accepted.
+Unknown fields, trailing JSON, zero intervals, and zero concurrency limits are rejected.
+Body limits range from 1 through 65536 bytes. Recovery seconds and concurrent-request limits are unsigned 32-bit values.
+An omitted operation or field uses the corresponding YANG default, including authentication's smaller body limit.
+
+The resource is defined by the [project YANG augmentation](../libraries/tacacsrs_config/yang/modules/tacacsrs@2026-10-06.yang) under `ietf-system:system`.
+It is a sibling of the upstream `tacacs-plus` resource, not a field inside the server list.
+The policy file remains an independently watched resource. This change does not combine its publication with server-generation publication.
 
 Each operation has one packet-size limit and one concurrency limit. IPC and
 proxy clients share that capacity. A request waits for capacity for no longer

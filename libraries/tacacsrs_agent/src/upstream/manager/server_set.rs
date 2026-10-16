@@ -8,14 +8,14 @@ use tokio::sync::RwLock;
 
 use super::server_slot::ServerSlot;
 use super::circuit::RecoveryPermit;
-use crate::config::{ProxyDownstreamObfuscation, RuntimePolicy};
+use crate::config::{PreparedProxyPolicy, RuntimePolicy};
 use crate::upstream::admission::AdmissionRegistry;
 use crate::upstream::{OperationKind, UpstreamConnection};
 
 /// Immutable routing inputs published as one generation.
 pub(super) struct RuntimeRoutingSnapshot {
     pub(super) server_set: Arc<ServerSet>,
-    pub(super) proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+    pub(super) proxy_downstream_obfuscation: PreparedProxyPolicy,
     pub(super) runtime_policy: Arc<RuntimePolicy>,
     pub(super) admission: Arc<AdmissionRegistry>,
 }

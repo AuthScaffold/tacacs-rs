@@ -19,11 +19,12 @@
 
 use std::sync::{Arc, RwLock as StdRwLock};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
+use tacacsrs_config::prepare::PrepareOptions;
 
 use self::availability::AvailabilityTracker;
 use self::server_set::{RuntimeRoutingSnapshot, ServerSet};
 use self::server_slot::ServerSlot;
-use crate::config::{ProxyDownstreamObfuscation, RuntimePolicy};
+use crate::config::{PreparedProxyPolicy, RuntimePolicy};
 #[cfg(test)]
 use crate::config::{FailoverStrategy, OperationPolicies};
 use crate::runtime::RuntimeHealthPublisher;
@@ -51,6 +52,7 @@ pub(crate) struct UpstreamManager {
     runtime: StdRwLock<Arc<RuntimeRoutingSnapshot>>,
     /// Factory for new server connections.
     connector: Arc<dyn UpstreamConnector>,
+    connect_options: PrepareOptions,
     /// Race-safe aggregate server-availability publisher.
     availability: AvailabilityTracker,
 }
@@ -71,7 +73,7 @@ impl UpstreamManager {
         let servers = servers.into_iter().map(Arc::new).collect();
         Self::new_shared_with_proxy_downstream_obfuscation(
             servers,
-            ProxyDownstreamObfuscation::default(),
+            PreparedProxyPolicy::unobfuscated(),
             RuntimePolicy::new(
                 FailoverStrategy::default(),
                 FailoverStrategy::default(),
@@ -81,7 +83,9 @@ impl UpstreamManager {
             .expect("test recovery interval must be nonzero"),
             connector,
             health,
+            PrepareOptions::default(),
         )
+        .expect("test endpoints must prepare")
     }
 
     #[cfg(test)]
@@ -93,7 +97,7 @@ impl UpstreamManager {
     ) -> Self {
         Self::new_shared_with_proxy_downstream_obfuscation(
             servers,
-            ProxyDownstreamObfuscation::default(),
+            PreparedProxyPolicy::unobfuscated(),
             RuntimePolicy::new(
                 FailoverStrategy::default(),
                 FailoverStrategy::default(),
@@ -103,23 +107,25 @@ impl UpstreamManager {
             .expect("test recovery interval must be nonzero"),
             connector,
             health,
+            PrepareOptions::default(),
         )
+        .expect("test endpoints must prepare")
     }
 
     pub(crate) fn new_shared_with_proxy_downstream_obfuscation(
         servers: Vec<Arc<TacacsPlusServer>>,
-        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
         runtime_policy: RuntimePolicy,
         connector: Arc<dyn UpstreamConnector>,
         health: RuntimeHealthPublisher,
-    ) -> Self {
+        connect_options: PrepareOptions,
+    ) -> anyhow::Result<Self> {
         let servers = servers
             .into_iter()
-            .map(ServerSlot::new)
-            .map(Arc::new)
-            .collect();
+            .map(|server| ServerSlot::new(server, connect_options).map(Arc::new))
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let server_set = Arc::new(ServerSet::new(servers));
-        Self {
+        Ok(Self {
             runtime: StdRwLock::new(Arc::new(RuntimeRoutingSnapshot {
                 server_set,
                 proxy_downstream_obfuscation,
@@ -127,8 +133,9 @@ impl UpstreamManager {
                 runtime_policy: Arc::new(runtime_policy),
             })),
             connector,
+            connect_options,
             availability: AvailabilityTracker::new(health),
-        }
+        })
     }
 
     fn current_runtime(&self) -> Arc<RuntimeRoutingSnapshot> {
@@ -287,7 +294,7 @@ impl UpstreamManager {
     pub(crate) async fn reload_shared_servers_with_proxy_downstream_obfuscation(
         &self,
         servers: Vec<Arc<TacacsPlusServer>>,
-        proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
         let previous = self.current_server_set();
         let materially_changed = previous.server_count() != servers.len()
@@ -313,7 +320,11 @@ impl UpstreamManager {
                 .iter()
                 .find(|state| state.server.as_ref() == server.as_ref())
                 .cloned();
-            new_server_slots.push(reusable.unwrap_or_else(|| Arc::new(ServerSlot::new(server))));
+            let slot = match reusable {
+                Some(slot) => slot,
+                None => Arc::new(ServerSlot::new(server, self.connect_options)?),
+            };
+            new_server_slots.push(slot);
         }
 
         let new_set = Arc::new(ServerSet::new(new_server_slots));
@@ -375,9 +386,7 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::{BoundServer, UpstreamManager};
-    use crate::config::{
-        FailoverStrategy, OperationPolicies, ProxyDownstreamObfuscation, RuntimePolicy,
-    };
+    use crate::config::{FailoverStrategy, OperationPolicies, PreparedProxyPolicy, RuntimePolicy};
     use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
     use crate::EnabledServices;
     use crate::test_support::{FakeConnection, FakeConnector};
@@ -394,7 +403,7 @@ mod tests {
     impl UpstreamConnector for BlockingConnector {
         async fn connect(
             &self,
-            _server: Arc<TacacsPlusServer>,
+            _endpoint: tacacsrs_networking::PreparedEndpoint,
             _operation: OperationKind,
         ) -> anyhow::Result<Arc<dyn crate::upstream::UpstreamConnection>> {
             self.started.notify_one();
@@ -468,6 +477,56 @@ mod tests {
         let first = materialized_server(b"first-secret-material");
         let replacement = materialized_server(b"replacement-secret");
         assert_ne!(first, replacement);
+    }
+
+    #[tokio::test]
+    async fn failed_preparation_keeps_routes_policy_and_cached_connections() {
+        let server = test_server("192.0.2.70:49");
+        let connection = Arc::new(FakeConnection {
+            address: "192.0.2.70:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            connection.address.clone(),
+            Arc::clone(&connection),
+        )])));
+        let state = UpstreamManager::new(
+            vec![server.clone()],
+            connector.clone(),
+            Duration::from_secs(1),
+            test_health(),
+        );
+        let bound = state.bind_server_for_new_session().await.unwrap();
+        let previous = state.current_runtime();
+        let mut changed = server.clone();
+        changed.timeout = 9;
+        let invalid = tacacsrs_config::TacacsPlusServerBuilder::new(
+            "invalid",
+            REQUIRED_SERVER_TYPES,
+            "192.0.2.71",
+            449,
+        )
+        .with_tls13_epsk_psk_only("client", b"short".to_vec())
+        .build();
+        assert!(state
+            .reload_shared_servers_with_proxy_downstream_obfuscation(
+                vec![Arc::new(changed), Arc::new(invalid)],
+                PreparedProxyPolicy::unobfuscated(),
+            )
+            .await
+            .is_err());
+        assert!(Arc::ptr_eq(&previous, &state.current_runtime()));
+        assert!(connection.usable.load(Ordering::Relaxed));
+        let current = state.bind_server_for_new_session().await.unwrap();
+        assert!(Arc::ptr_eq(&bound.connection, &current.connection));
+        assert_eq!(connector.connect_attempts_for("192.0.2.70:49").await, 1);
+
+        state.reload_servers(vec![server]).await.unwrap();
+        assert!(Arc::ptr_eq(
+            &previous.server_set.servers[0],
+            &state.current_runtime().server_set.servers[0]
+        ));
     }
 
     #[test]
@@ -549,25 +608,40 @@ mod tests {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
         });
-        let first_policy = ProxyDownstreamObfuscation::SharedSecret(
-            tacacsrs_secrets::SecretString::new("first-proxy-secret".to_owned()),
-        );
-        let second_policy = ProxyDownstreamObfuscation::SharedSecret(
-            tacacsrs_secrets::SecretString::new("second-proxy-secret".to_owned()),
-        );
-        let state = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
-            vec![first],
-            first_policy.clone(),
-            RuntimePolicy::new(
-                FailoverStrategy::default(),
-                FailoverStrategy::default(),
-                OperationPolicies::default(),
-                Duration::from_secs(1),
+        let prepare = |secret: &str| {
+            tacacsrs_config::proxy_policy::prepare_proxy_policy(
+                &tacacsrs_config::tacacsrs::LocalServices {
+                    tacacs_proxy_enabled: true,
+                    proxy_credential_source:
+                        tacacsrs_config::tacacsrs::ProxyCredentialSource::Inline,
+                    proxy_shared_secret: Some(tacacsrs_secrets::SecretString::new(
+                        secret.to_owned(),
+                    )),
+                    ..Default::default()
+                },
+                None,
             )
-            .expect("test runtime policy"),
-            connector,
-            test_health(),
-        ));
+            .unwrap()
+        };
+        let first_policy = prepare("first-proxy-secret");
+        let second_policy = prepare("second-proxy-secret");
+        let state = Arc::new(
+            UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+                vec![first],
+                first_policy.clone(),
+                RuntimePolicy::new(
+                    FailoverStrategy::default(),
+                    FailoverStrategy::default(),
+                    OperationPolicies::default(),
+                    Duration::from_secs(1),
+                )
+                .expect("test runtime policy"),
+                connector,
+                test_health(),
+                tacacsrs_config::prepare::PrepareOptions::default(),
+            )
+            .expect("test endpoints must prepare"),
+        );
 
         let binding = {
             let state = Arc::clone(&state);

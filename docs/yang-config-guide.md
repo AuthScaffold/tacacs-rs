@@ -71,6 +71,82 @@ The module-oriented API is also available for callers that want grouped imports:
 - `runtime` - bundle enumeration helpers.
 - `stats` - runtime statistics types.
 
+## Certificate Peer Identity
+
+For certificate TLS, `domain-name` selects the expected peer identity when configured. Otherwise, verification uses `address`.
+DNS names match certificate DNS SANs, and numeric addresses match IP SANs.
+The client also performs its existing certificate trust verification. Setting SNI alone is not identity verification.
+
+`sni-enabled` controls the DNS name sent in the TLS `ClientHello`, not whether the peer identity is verified.
+When it is true, `domain-name` is required and sent as SNI. An omitted or false value sends no SNI.
+A configured domain remains the verification identity even when SNI is disabled.
+IP addresses are not sent as certificate-TLS SNI names.
+
+The implementation disables CN fallback and partial-label wildcards. A complete leftmost-label wildcard can match one label, not multiple nested labels.
+This follows the DNS/IP identity rules referenced by RFC 9887 Section 3.4.2 and RFC 9525.
+It does not establish full RFC 9887 conformance, including revocation, certificate-chain provisioning, or other profile requirements.
+
+Migration can require certificates with matching SAN entries. Chain trust alone no longer permits a certificate for a different identity.
+The explicit development-only verification override still bypasses certificate verification and permits server impersonation.
+
+## Certificate Trust
+
+The pinned TLS YANG model gives CA and end-entity bags different meanings:
+
+| Selection | Accepted certificate |
+| --- | --- |
+| `server-authentication/ca-certs` | A peer with a valid path to a configured authority |
+| `server-authentication/ee-certs` | A peer whose DER certificate exactly matches a configured entry |
+| Both | A peer accepted by either trust rule |
+
+An end-entity entry is not a CA grant. It cannot authorize another leaf, including a renewed certificate with the same public key.
+A CA-signed exact entry works without its issuer in the authority bag. Identity, time validity, and server-purpose checks still apply.
+When both bags are configured, a separate valid authority path remains sufficient even if an exact entry shortens OpenSSL's initial path.
+
+Explicitly selected bags must contain materialized certificates. Empty selections fail during preparation and cannot silently enable platform trust.
+With neither bag selected, the existing server-authentication-only API retains its platform-trust behavior.
+Configured trust excludes platform roots. Preparation does not modify the authoritative bags or their references.
+
+This replaces the old combined-root behavior. Certificate renewal can require updating an exact `ee-certs` entry.
+Use CA trust only when authorizing other valid certificates issued by that authority is intended.
+Certificate revocation retrieval and client-chain provisioning are not implemented by this change. Full RFC 9887 conformance remains unclaimed.
+
+## Certificate Input Boundary
+
+Each `cert-data` value must contain exactly one DER certificate. Concatenated certificates and trailing bytes fail before runtime publication.
+This rule also applies to each CA or end-entity trust-bag entry. Multiple entries remain supported.
+CLI client certificate PEM files must contain exactly one certificate. The native decoder no longer silently ignores trailing DER material.
+The development verification override does not relax certificate framing.
+
+If separate `public-key` metadata is supplied, `public-key-format` must also be present, and vice versa.
+TLS preparation supports `ietf-crypto-types:subject-public-key-info-format` with exactly one DER SPKI value that matches the certificate's public key.
+The private key must still match the certificate. SSH public-key encoding is explicitly unsupported for TLS certificate metadata.
+Malformed, incomplete, mismatched, and trailing public-key data fail before publication, including when certificate verification is disabled for development.
+
+The current client-identity contract supports one leaf certificate and its matching private key, not a supplied intermediate chain.
+Stage 4 owns a canonical chain-provisioning contract and its provider and mTLS acceptance tests.
+Until that contract exists, multi-certificate client inputs are rejected. Revocation retrieval is also a named Stage 4 requirement, not a current capability.
+
+## EPSK Presence
+
+`server-authentication/tls13-epsks` is a YANG `empty` leaf, not a boolean.
+A present leaf uses RFC 7951 JSON `[null]`. Omit the field when it is absent.
+Boolean values, bare `null`, and arrays with the wrong shape are rejected for direct fields and server-credential bundles.
+Rust callers use `Some(YangEmpty::default())` for presence.
+
+```json
+{
+  "server-authentication": {
+    "tls13-epsks": [null]
+  }
+}
+```
+
+This selector requires a client EPSK identity after credential-bundle expansion. It cannot select certificate TLS implicitly.
+Client EPSK configuration still works without the optional server selector.
+The current PSK transport cannot apply CA or end-entity trust bags alongside a client EPSK identity, so preparation rejects that combination.
+Root configuration parsing also rejects trailing JSON after the first complete document.
+
 ## Three-layer processing model
 
 The crate separates parsing and runtime preparation into three layers.

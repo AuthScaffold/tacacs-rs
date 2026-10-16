@@ -1,0 +1,239 @@
+//! Shared schema and capability checks before runtime publication.
+
+use anyhow::{ensure, Context};
+
+use crate::{TacacsPlusServer, ValidationOptions};
+use crate::crypto_types::SymmetricKeyFormat;
+
+/// Validates a complete materialized server set with the source's schema policy.
+///
+/// An empty set is valid for a runtime that waits for configuration. This does
+/// not relax the nonempty server-list constraint for parsed YANG documents.
+/// Native context construction must also succeed before publication.
+///
+/// # Errors
+///
+/// Returns an error for invalid schema choices, duplicate names or endpoints,
+/// unresolved credentials, or unsupported runtime fields.
+pub fn validate_materialized_servers<'a>(
+    servers: impl IntoIterator<Item = &'a TacacsPlusServer>,
+    options: &ValidationOptions,
+) -> anyhow::Result<()> {
+    let servers = servers.into_iter().collect::<Vec<_>>();
+    crate::validation::validate_server_set(servers.iter().copied(), options)?;
+    for server in servers {
+        validate_runtime_features(server)?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_runtime_features(server: &TacacsPlusServer) -> anyhow::Result<()> {
+    let references = crate::inspect_central_references(server)
+        .context("Expand credential bundles before endpoint preparation")?;
+    ensure!(references.is_empty(), "Resolve central credentials before endpoint preparation");
+    ensure!(server.source_ip.is_none(), "source-ip is not supported by the client transport");
+    ensure!(
+        server.source_interface.is_none(),
+        "source-interface is not supported by the client transport"
+    );
+    ensure!(server.vrf_instance.is_none(), "vrf-instance is not supported by the client transport");
+    let epsk = server
+        .client_identity
+        .as_ref()
+        .and_then(|identity| identity.tls13_epsk.as_ref());
+    if let Some(authentication) = &server.server_authentication {
+        ensure!(
+            authentication.tls13_epsks.is_none() || epsk.is_some(),
+            "server-authentication/tls13-epsks requires client-identity/tls13-epsk"
+        );
+        ensure!(
+            epsk.is_none()
+                || (authentication.ca_certs.is_none() && authentication.ee_certs.is_none()),
+            "Certificate server authentication is not supported alongside a client EPSK identity"
+        );
+    }
+    if let Some(epsk) = epsk {
+        crate::validation::reject_unsupported_epsk_derivation(&server.name, epsk)?;
+        let format = epsk
+            .inline_definition
+            .as_ref()
+            .and_then(|inline| inline.key_format);
+        ensure!(
+            format != Some(SymmetricKeyFormat::OneSymmetricKeyFormat),
+            "TLS PSK one-symmetric-key-format is not supported by the client transport"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{TacacsPlusServerBuilder, TacacsPlusServerType, ValidationRelaxation};
+
+    fn server() -> TacacsPlusServer {
+        TacacsPlusServerBuilder::new("primary", TacacsPlusServerType::all(), "192.0.2.1", 49)
+            .with_shared_secret("test-secret")
+            .build()
+    }
+
+    #[test]
+    fn policy_relaxation_is_explicit_and_cannot_enable_unsupported_transport_fields() {
+        let mut server = server();
+        server.shared_secret = None;
+        assert!(validate_materialized_servers([&server], &ValidationOptions::default()).is_err());
+        let options = ValidationOptions::new()
+            .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret);
+        validate_materialized_servers([&server], &options).unwrap();
+        server.source_interface = Some("private-interface".to_owned());
+        let error = validate_materialized_servers([&server], &options).unwrap_err();
+        assert!(error.to_string().contains("source-interface"));
+        assert!(!format!("{error:#}").contains("private-interface"));
+    }
+
+    #[test]
+    fn duplicate_server_names_fail_before_publication() {
+        let first = server();
+        let mut second = first.clone();
+        second.address = "192.0.2.2".to_owned();
+        assert!(validate_materialized_servers([&first, &second], &ValidationOptions::default())
+            .is_err());
+    }
+
+    #[test]
+    fn empty_runtime_set_is_valid() {
+        validate_materialized_servers([], &ValidationOptions::default()).unwrap();
+    }
+
+    #[test]
+    fn epsk_server_presence_requires_applicable_client_credentials() {
+        let mut server =
+            TacacsPlusServerBuilder::new("test", TacacsPlusServerType::all(), "192.0.2.1", 300)
+                .with_tls_server_authentication()
+                .build();
+        server.server_authentication.as_mut().unwrap().tls13_epsks =
+            Some(crate::YangEmpty::default());
+        assert!(validate_materialized_servers([&server], &ValidationOptions::default()).is_err());
+        assert!(super::super::prepare_endpoint(&server, super::super::PrepareOptions::default())
+            .is_err());
+    }
+
+    #[test]
+    fn direct_and_bundled_epsk_presence_prepare_without_mutating_sources() {
+        use crate::prepare::{prepare_endpoint, PrepareOptions};
+        let server =
+            TacacsPlusServerBuilder::new("test", TacacsPlusServerType::all(), "192.0.2.1", 300)
+                .with_tls13_epsk_psk_only("test-client", b"protected-test-psk".to_vec())
+                .build();
+        let mut direct = server.clone();
+        direct.server_authentication = Some(crate::TlsClientServerAuthentication {
+            tls13_epsks: Some(crate::YangEmpty::default()),
+            ..Default::default()
+        });
+        let original = direct.clone();
+        validate_materialized_servers([&direct], &ValidationOptions::default()).unwrap();
+        prepare_endpoint(&direct, PrepareOptions::default()).unwrap();
+        assert_eq!(direct, original);
+
+        let mut source = crate::TacacsPlus::empty();
+        let mut bundled = server;
+        let epsk = bundled.client_identity.as_mut().unwrap().tls13_epsk.take();
+        bundled
+            .client_identity
+            .as_mut()
+            .unwrap()
+            .credentials_reference = Some("client".to_owned());
+        bundled.server_authentication = Some(crate::TlsClientServerAuthentication {
+            credentials_reference: Some("server".to_owned()),
+            ..Default::default()
+        });
+        source.server.push(bundled);
+        source.client_credentials.push(crate::ClientCredentials {
+            id: "client".to_owned(),
+            certificate: None,
+            tls13_epsk: epsk,
+        });
+        source.server_credentials.push(crate::ServerCredentials {
+            id: "server".to_owned(),
+            ca_certs: None,
+            ee_certs: None,
+            tls13_epsks: Some(crate::YangEmpty::default()),
+        });
+        let original = source.clone();
+        let enumerated = crate::enumerate_servers(&source).unwrap();
+        assert_eq!(enumerated[0], direct);
+        validate_materialized_servers(enumerated.iter(), &ValidationOptions::default()).unwrap();
+        prepare_endpoint(&enumerated[0], PrepareOptions::default()).unwrap();
+        assert_eq!(source, original);
+
+        for certificates_are_ca in [true, false] {
+            let mut invalid = direct.clone();
+            let authentication = invalid.server_authentication.as_mut().unwrap();
+            let bag = crate::ServerAuthenticationCaCerts {
+                inline_definition: Some(crate::truststore::CertsInlineDefinition {
+                    certificate: Vec::new(),
+                }),
+                central_truststore_reference: None,
+            };
+            if certificates_are_ca {
+                authentication.ca_certs = Some(bag);
+            } else {
+                authentication.ee_certs = Some(bag);
+            }
+            assert!(prepare_endpoint(&invalid, PrepareOptions::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn unsupported_fields_fail_direct_preparation_without_changing_the_source() {
+        use crate::prepare::PrepareOptions;
+
+        for field in [
+            "source-ip",
+            "source-interface",
+            "vrf-instance",
+            "context",
+            "target-protocol",
+            "target-kdf",
+            "one-symmetric-key-format",
+        ] {
+            let mut server = TacacsPlusServerBuilder::new(
+                "primary",
+                TacacsPlusServerType::all(),
+                "192.0.2.1",
+                449,
+            )
+            .with_tls13_epsk_psk_only("client", b"protected-psk-material".to_vec())
+            .build();
+            let epsk = server
+                .client_identity
+                .as_mut()
+                .unwrap()
+                .tls13_epsk
+                .as_mut()
+                .unwrap();
+            match field {
+                "source-ip" => server.source_ip = Some("192.0.2.200".to_owned()),
+                "source-interface" => server.source_interface = Some("private-source".to_owned()),
+                "vrf-instance" => server.vrf_instance = Some("private-source".to_owned()),
+                "context" => epsk.context = Some("private-source".to_owned()),
+                "target-protocol" => epsk.target_protocol = Some(7),
+                "target-kdf" => epsk.target_kdf = Some(1),
+                "one-symmetric-key-format" => {
+                    epsk.inline_definition.as_mut().unwrap().key_format =
+                        Some(SymmetricKeyFormat::OneSymmetricKeyFormat);
+                }
+                _ => unreachable!(),
+            }
+            let original = server.clone();
+            let error =
+                super::super::prepare_endpoint(&server, PrepareOptions::default()).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains(field));
+            assert!(!message.contains("private-source"));
+            assert!(!message.contains("protected-psk-material"));
+            assert!(!message.contains("192.0.2.200"));
+            assert_eq!(server, original);
+        }
+    }
+}

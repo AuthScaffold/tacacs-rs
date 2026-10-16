@@ -9,7 +9,7 @@ use super::server_set::ServerSet;
 use super::server_slot::ServerSlot;
 use super::{BoundServer, UpstreamManager};
 #[cfg(test)]
-use crate::config::ProxyDownstreamObfuscation;
+use crate::config::PreparedProxyPolicy;
 use crate::upstream::{OperationKind, UpstreamConnection};
 
 impl UpstreamManager {
@@ -34,7 +34,7 @@ impl UpstreamManager {
     pub(crate) async fn bind_proxy_server_for_new_session(
         &self,
         operation: OperationKind,
-    ) -> anyhow::Result<(BoundServer, ProxyDownstreamObfuscation)> {
+    ) -> anyhow::Result<(BoundServer, PreparedProxyPolicy)> {
         let runtime = self.current_runtime();
         let bound_server = self
             .bind_server_from_set(Arc::clone(&runtime.server_set), operation)
@@ -201,7 +201,7 @@ impl UpstreamManager {
         );
         match self
             .connector
-            .connect(Arc::clone(&server_slot.server), operation)
+            .connect(server_slot.endpoint.clone(), operation)
             .await
         {
             Ok(connection) => {

@@ -98,16 +98,22 @@ secret. The repository's `tacacsrs` augmentation adds
 `tacacsrs:psk-dhe-ke-groups`. When this leaf-list is present, the transport
 translates the ordered values into OpenSSL supported-group names and uses
 them to send TLS 1.3 `psk_dhe_ke` key shares. When the leaf-list is empty, the
-transport leaves the OpenSSL group list unchanged and preserves the existing
-PSK-only behaviour.
+transport leaves the OpenSSL group list unchanged and permits no-DHE negotiation.
+It accepts the connection only when the negotiated exchange is PSK-only.
 
-At runtime, networking owns an `Arc<TacacsPlusServer>` that already passed
-credential materialization and final validation. Networking reads only
-`inline-definition.cleartext-symmetric-key`. Central references never cross
-the agent boundary. The OpenSSL context stores another clone of the server
-`Arc` in ex-data and borrows the zeroizing generated secret during the PSK
-callback. The callback state therefore remains valid for the full `SSL_CTX`
-lifetime without copying the key into separate runtime state.
+Configuration preparation borrows a materialized YANG server without changing its fields.
+The public preparation entry point rejects unresolved central and bundle references.
+It reads `inline-definition.cleartext-symmetric-key` once and constructs a reusable OpenSSL context.
+The context stores owned identity bytes, a zeroizing `SecretBytes` key, a native digest, and a cipher name in ex-data.
+The callback does not retain or interpret the generated server model.
+OpenSSL owns this callback state for the `SSL_CTX` lifetime.
+
+`PreparedEndpoint` owns the context and derived connection values.
+`TacacsClient::connect_prepared` consumes those values without reading YANG fields.
+Endpoint clones share native contexts, but each client owns its connection and session state.
+YANG callers use `tacacsrs_config::prepare::prepare_endpoint`, then `TacacsClient::connect_prepared`.
+The old YANG client constructors no longer exist.
+Networking has no dependency on the configuration crate.
 
 ### `server-authentication/tls13-epsks` — Model Placeholder
 
@@ -142,10 +148,9 @@ transport — it does not enable mixed PSK + certificate authentication. RFC 844
 > **but not both**. Future documents may define how to use them together."
 
 When the server accepts a PSK, it MUST NOT send Certificate or CertificateVerify
-messages (RFC 8446 §2.2). Configuring `ca-certs` alongside a PSK client-identity
-activates only if the server *rejects* the offered PSK and falls back to a
-full (EC)DHE + certificate handshake. At that point, the client no longer
-authenticates via PSK either.
+messages (RFC 8446 §2.2). The PSK transport rejects certificate-authenticated
+fallback before sending TACACS+ data. Adding `ca-certs` does not enable fallback
+for a PSK client identity.
 
 ### PSK with (EC)DHE vs PSK-only
 
@@ -167,10 +172,22 @@ Adding `key_share` alongside `pre_shared_key` means traffic keys incorporate an
 ephemeral Diffie-Hellman exchange. If the PSK later leaks, past sessions with
 unique DH keys remain protected. The authentication mechanism stays unchanged.
 
-By default, the implementation preserves PSK-only mode for existing
-configurations. To request forward secrecy, configure one or more
-`tacacsrs:psk-dhe-ke-groups` values under `client-identity/tls13-epsk`. The
-client passes those groups to OpenSSL in the same order. Supported mappings are:
+An empty group list requires an accepted connection to use PSK without DHE.
+The client enables OpenSSL's no-DHE allowance, then checks the negotiated result before it exposes the stream to TACACS+ packet I/O.
+A nonempty group list requires PSK-DHE. Either mode rejects a different negotiated mode.
+
+This is a connection-acceptance rule, not a guarantee about the offered ClientHello modes.
+OpenSSL can still offer DHE with an empty configured group list. If the peer selects DHE, the client closes the connection without sending TACACS+ data.
+The transport does not depend on OpenSSL's version-specific no-DHE preference bit.
+PSK preparation requires OpenSSL 3.0 or newer, which provides the negotiated-group query used by the acceptance check.
+Older native libraries fail preparation before an endpoint becomes available.
+Operators who require PSK-only must use a peer that negotiates no-DHE, or select PSK-DHE when the peer requires DHE.
+
+The client also verifies that the handshake authenticated with the configured PSK.
+OpenSSL reports external-PSK handshakes as session reuse. Certificate-authenticated fallback does not satisfy this check, even if the native TLS handshake succeeds.
+
+To require forward secrecy, configure one or more `tacacsrs:psk-dhe-ke-groups` values under `client-identity/tls13-epsk`.
+The client passes those groups to OpenSSL in the same order. Supported mappings are:
 
 | YANG value | OpenSSL group name |
 |------------|--------------------|
@@ -185,8 +202,7 @@ client passes those groups to OpenSSL in the same order. Supported mappings are:
 | `ffdhe8192` | `ffdhe8192` |
 
 If the linked OpenSSL library rejects the configured list, connection setup fails
-with an error that includes the OpenSSL group list and points at
-`psk-dhe-ke-groups`.
+with an error that includes the OpenSSL group list.
 
 ### Practical Guidance
 
@@ -201,9 +217,7 @@ tls_psk/
 ├── mod.rs              — crate-internal API surface + Transport impl
 ├── context.rs          — OpenSSL SslContext construction + hash/group projections
 ├── config.rs           — PskClientConfig: validated SslContext → SslStream
-├── from_server.rs      — TacacsPlusServer PSK selection + connection establishment
-├── tls13_epsk.rs       — validation/accessors for the YANG TLS 1.3 EPSK node
-├── ffi/ — OpenSSL TLS 1.3 PSK callback + SSL_SESSION FFI bridge
+├── ffi/ — PSK callback, SSL_SESSION construction, and negotiated-group query
 └── readme.md           — this file
 ```
 
@@ -213,18 +227,18 @@ tls_psk/
 TacacsPlusServer (YANG config)
         │
         ▼
-from_server::establish_from_server()
-        │  selects client-identity.tls13-epsk
+tacacsrs_config::prepare::prepare_endpoint()
+  │  projects identity, key, hash, groups, and optional server name
         ▼
-PskClientConfig::prepare(epsk)
-        │  validates EPSK fields and builds the OpenSSL context before async handshake work
+PreparedEndpoint::with_psk(identity, key, hash, groups, server_name)
+  │  validates native inputs without reading YANG fields
         │
         ▼
       context::create_psk_ssl_context()
         │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK use-session callback,
         │  hash-matched ciphersuite, optional psk-dhe-ke groups
         ▼
-PskClientConfig::connect(address, tcp_stream)
+PskClientConfig::connect(address, server_name, tcp_stream)
         │  OpenSSL performs TLS 1.3 PSK handshake
         ▼
 SslStream<TcpStream> implements Transport
@@ -266,9 +280,9 @@ because `SslStream` does not support owned splitting.
 |---------|-----------|
 | Key length | EPSK validation rejects keys shorter than 16 bytes (128 bits) per RFC 9257 §6 |
 | Identity injection | The transport rejects NUL bytes in the identity before OpenSSL callback registration |
-| Forward secrecy | An empty `tacacsrs:psk-dhe-ke-groups` list configures OpenSSL to allow and prefer PSK-only key exchange. Configure one or more groups to negotiate `psk_dhe_ke` and add ephemeral (EC)DHE key material. |
+| Forward secrecy | A nonempty group list requires negotiated PSK-DHE. An empty list requires negotiated PSK-only. Mode mismatches are rejected before TACACS+ data. |
 | Unsupported groups | The transport surfaces OpenSSL group-list setup errors before the handshake, with the configured group list in the message. |
-| Certificate verification | Explicitly set to `SslVerifyMode::NONE` — intentional for PSK, where authentication comes from the shared secret, not certificates |
+| Certificate verification | PSK authentication replaces certificate verification. The transport checks the negotiated authentication and rejects certificate fallback before TACACS+ data. |
 | Key logging | The PSK transport does not log key material. The generated `Tls13Epsk` model contains inline key bytes, so do not debug-log the full model. |
 | Ciphersuites | Restricted to the configured EPSK hash. SHA-256 uses `TLS_AES_128_GCM_SHA256`, and SHA-384 uses `TLS_AES_256_GCM_SHA384`. |
 

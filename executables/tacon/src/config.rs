@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use tacacsrs_cli_datastore::{
+use tacacsrs_config::input::{
     CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
     tacacs_plus_from_cli_input, tacacs_plus_from_file as shared_tacacs_plus_from_file,
 };
-use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
+use tacacsrs_config::input::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
 use tacacsrs_config::{
     TacacsPlus, TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType, ValidationOptions,
     YangConfigRoot,
@@ -219,7 +219,7 @@ mod tests {
     use crate::cli::Cli;
     use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::{TacacsPlusServerType, ValidationOptions, crypto_types::PrivateKeyFormat};
-    use tacacsrs_cli_datastore::tacacs_plus_from_str;
+    use tacacsrs_config::input::tacacs_plus_from_str;
 
     fn sample_path(file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

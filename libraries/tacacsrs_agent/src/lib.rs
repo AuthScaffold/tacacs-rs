@@ -23,8 +23,8 @@ pub mod upstream;
 mod test_support;
 
 pub use config::{
-    EnabledServices, FailoverStrategy, OperationPolicies, PolicyService,
-    ProxyDownstreamObfuscation, RequestLimits, RuntimePolicy, ServiceConfig,
+    EnabledServices, FailoverStrategy, OperationPolicies, PolicyService, PreparedProxyPolicy,
+    RequestLimits, RuntimePolicy, ServiceConfig,
 };
 pub use upstream::OperationKind;
 pub use runtime::{

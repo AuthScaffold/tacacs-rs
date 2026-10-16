@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
@@ -11,35 +10,38 @@ use tacacsrs_protocol::accounting::request::AccountingRequest;
 use tacacsrs_protocol::authentication::reply::AuthenticationReply;
 use tacacsrs_protocol::authorization::reply::AuthorizationReply;
 use tacacsrs_protocol::authorization::request::AuthorizationRequest;
-use tacacsrs_networking::{ConnectOptions, TacacsClient};
+use tacacsrs_networking::{PreparedEndpoint, TacacsClient};
 
 use super::connection::{UpstreamConnection, UpstreamConnector};
 use super::{OperationKind, UpstreamRequestError};
+use crate::runtime::ProxyLoopGuard;
 
 /// Production connector backed by [`tacacsrs_networking`].
 ///
-/// Reads the connection parameters from
-/// [`tacacsrs_config::TacacsPlusServer`] for each connection attempt.
+/// Reuses the native transport context prepared before generation publication.
 #[derive(Debug, Clone)]
 pub(crate) struct NetworkUpstreamConnector {
-    /// Disables TLS certificate verification for server connections.
-    ///
-    /// This option is dangerous. Use it only for development and tests.
-    pub disable_certificate_verification: bool,
+    proxy_loop_guard: ProxyLoopGuard,
+}
+
+impl NetworkUpstreamConnector {
+    pub(crate) const fn new(proxy_loop_guard: ProxyLoopGuard) -> Self {
+        Self { proxy_loop_guard }
+    }
 }
 
 #[async_trait]
 impl UpstreamConnector for NetworkUpstreamConnector {
     async fn connect(
         &self,
-        server: Arc<TacacsPlusServer>,
+        endpoint: PreparedEndpoint,
         operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        let address = server.socket_address();
-        let options = ConnectOptions::default()
-            .with_certificate_verification_disabled(self.disable_certificate_verification)
-            .with_timeout(server.timeout_duration());
-        let connection = TacacsClient::connect_shared(server, options).await?;
+        let address = endpoint.address().to_owned();
+        let connection = TacacsClient::connect_prepared(
+            endpoint.with_connection_guard(self.proxy_loop_guard.clone()),
+        )
+        .await?;
 
         Ok(Arc::new(TacacsUpstreamConnection {
             server_address: address,

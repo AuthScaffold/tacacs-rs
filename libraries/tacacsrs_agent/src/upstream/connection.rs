@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_protocol::accounting::reply::AccountingReply;
 use tacacsrs_protocol::authentication::reply::AuthenticationReply;
 use tacacsrs_protocol::accounting::request::AccountingRequest;
 use tacacsrs_protocol::authorization::reply::AuthorizationReply;
 use tacacsrs_protocol::authorization::request::AuthorizationRequest;
-use tacacsrs_networking::ClientConversation;
+use tacacsrs_networking::{ClientConversation, PreparedEndpoint};
 use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 
 use super::OperationKind;
@@ -83,7 +82,7 @@ pub(crate) trait UpstreamConnector: Send + Sync {
     /// connection setup fails.
     async fn connect(
         &self,
-        server: Arc<TacacsPlusServer>,
+        endpoint: PreparedEndpoint,
         operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
 }

@@ -13,6 +13,7 @@ clap = { version = "4.6.1", features = ["derive"] }
 console-subscriber = { version = "0.5.0", optional = true }
 env_logger = "0.11.10"
 futures-util = { version = "0.3", default-features = false }
+if-addrs = "0.15.0"
 log = "0.4"
 notify = "8.2.0"
 rand = "0.10.0"
@@ -21,10 +22,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
 tacacsrs-agent = { path = "../../libraries/tacacsrs_agent" }
-tacacsrs-cli-datastore = { path = "../../libraries/tacacsrs_cli_datastore" }
 tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
 tacacsrs-credential-resolution = { path = "../../libraries/tacacsrs_credential_resolution" }
-tacacsrs-datastore = { path = "../../libraries/tacacsrs_datastore" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
 tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
 tacacsrs-sonic = { path = "../../libraries/tacacsrs_sonic" }
@@ -38,6 +37,11 @@ default = []
 console = ["console-subscriber"]
 
 [dev-dependencies]
+foreign-types = "0.3.2"
+openssl = "0.10.80"
+openssl-sys = "0.9.116"
+tokio-openssl = "0.6.5"
+tacacsrs-protocol = { path = "../../libraries/tacacsrs_protocol" }
 tokio = { version = "1.52.3", features = ["test-util"] }
 tonic = "0.14.6"
 
@@ -45,6 +49,7 @@ tonic = "0.14.6"
 clap = { version = "4.6.1", features = ["derive"] }
 clap_mangen = "0.3.0"
 tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
+tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
 
 [package.metadata.cargo-udeps.ignore]
 normal = ["env_logger"]

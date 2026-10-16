@@ -2,6 +2,22 @@
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
+/// Presence of a YANG `empty` leaf, encoded as `[null]` in RFC 7951 JSON.
+///
+/// Use `Some(YangEmpty::default())` for a present optional leaf and `None` for absence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct YangEmpty([(); 1]);
+
+pub(crate) fn deserialize_present_empty<'de, D>(
+    deserializer: D,
+) -> Result<Option<YangEmpty>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <YangEmpty as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+
 pub(crate) mod base64_binary {
     use super::BASE64;
 

@@ -4,23 +4,21 @@
 compile_error!("tacacsrs-agentd supports Linux GNU only");
 
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
 use tacacsrs_agent::{
-    EnabledServices, ProxyDownstreamObfuscation, RuntimeHealthPublisher, RuntimeLifecycle,
-    RuntimePolicy, ServiceConfig, TacacsClientService,
+    EnabledServices, RuntimeHealthPublisher, RuntimeLifecycle, RuntimePolicy, ServiceConfig,
+    TacacsClientService,
 };
-use tacacsrs_agent_client::IpcEndpoint;
-use tacacsrs_cli_datastore::{
+use tacacsrs_config::input::{
     CliConfigSource, CliDatastoreInput, CliFileDatastore, CliSecurity, CliSecurityInputs,
     CliServerInput,
 };
-use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
-use tacacsrs_datastore::{ConfigDatastore, InitialLoadPolicy};
+use tacacsrs_config::input::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
+use tacacsrs_config::source::{ConfigDatastore, InitialLoadPolicy};
 use tacacsrs_credential_resolution::{CredentialChangeSource, CredentialResolver};
 use tacacsrs_sonic::{
     SonicConfigDb, SonicConnection, SonicCredentialChangeSource, SonicCredentialPolicy,
@@ -32,21 +30,18 @@ mod cli;
 mod config_filter;
 mod config_supervisor;
 mod host_integration;
+mod local_services;
 mod materialization_coordinator;
 mod policy_file;
 mod policy_supervisor;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
-use crate::config_filter::{TacacsPlusFilter, config_filter_from_runtime_options};
+use crate::config_filter::{TacacsPlusFilter, config_filter_from_local_services};
 use crate::config_supervisor::ConfigSupervisor;
 use crate::host_integration::HostIntegration;
 use crate::policy_file::PolicyFile;
 use crate::policy_supervisor::PolicySupervisor;
-
-fn parse_socket_mode(mode: &str) -> anyhow::Result<u32> {
-    u32::from_str_radix(mode, 8).with_context(|| format!("Invalid socket mode: {mode}"))
-}
 
 /// Initializes the logger based on verbosity level.
 ///
@@ -74,23 +69,6 @@ fn init_logger(verbose: u8) {
         .is_ok()
     {
         log::debug!("Logging initialized at level: {level}");
-    }
-}
-
-fn enabled_services_from_cli(cli: &Cli) -> EnabledServices {
-    if cli.sonic {
-        return EnabledServices::BOTH;
-    }
-    match cli.service_mode.unwrap_or_else(|| {
-        if cli.proxy_endpoint.is_some() {
-            ServiceMode::Both
-        } else {
-            ServiceMode::ClientApi
-        }
-    }) {
-        ServiceMode::ClientApi => EnabledServices::CLIENT_API,
-        ServiceMode::TacacsProxy => EnabledServices::TACACS_PROXY,
-        ServiceMode::Both => EnabledServices::BOTH,
     }
 }
 
@@ -422,65 +400,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     init_logger(cli.verbose);
     let host_integration = HostIntegration::from_environment(cli.host_integration)?;
     let sonic_forwarder = sonic_forwarder_from_cli(&cli).await?;
-    let enabled_services = enabled_services_from_cli(&cli);
-
-    let endpoint = cli
-        .listen_endpoint
-        .as_deref()
-        .map(IpcEndpoint::from_str)
-        .transpose()?
-        .unwrap_or_else(IpcEndpoint::default_local);
-
-    if enabled_services.client_api() {
-        log::info!("Client API endpoint: {endpoint:?}");
-    } else {
-        log::info!("Client API service disabled");
-    }
-
-    if enabled_services.client_api() && matches!(endpoint, IpcEndpoint::Tcp(_)) {
-        anyhow::bail!("Linux deployments must use a Unix domain socket endpoint");
-    }
-
-    let configured_proxy_endpoint = cli
-        .proxy_endpoint
-        .as_deref()
-        .map(IpcEndpoint::from_str)
-        .transpose()?;
-    let proxy_endpoint = match sonic_forwarder {
-        Some(forwarder) => {
-            let endpoint = IpcEndpoint::Tcp(forwarder.socket_address());
-            if configured_proxy_endpoint
-                .as_ref()
-                .is_some_and(|configured| configured != &endpoint)
-            {
-                anyhow::bail!("CLI proxy endpoint conflicts with TACPLUS_FORWARDER|global");
-            }
-            Some(endpoint)
-        }
-        None => configured_proxy_endpoint,
-    };
-
-    if let Some(proxy_endpoint) = &proxy_endpoint {
-        if enabled_services.client_api() && proxy_endpoint == &endpoint {
-            anyhow::bail!("Proxy endpoint must be different from the IPC endpoint");
-        }
-    }
-
-    if enabled_services.tacacs_proxy() {
-        let Some(proxy_endpoint) = &proxy_endpoint else {
-            anyhow::bail!("The TACACS+ proxy service requires --proxy-endpoint");
-        };
-        log::info!("TACACS+ proxy endpoint: {proxy_endpoint:?}");
-    } else if proxy_endpoint.is_some() {
-        anyhow::bail!(
-            "--proxy-endpoint requires --service-mode tacacs-proxy or --service-mode both"
-        );
-    }
-    let config_filter = config_filter_from_runtime_options(
-        enabled_services,
-        proxy_endpoint.as_ref(),
-        cli.proxy_shared_secret.clone(),
-    );
+    let local_services = local_services::load(&cli, sonic_forwarder).await?;
+    let prepared = tacacsrs_config::local_services::prepare_local_services(&local_services)?;
+    let enabled_services =
+        EnabledServices::new(prepared.client_api().is_some(), prepared.tacacs_proxy().is_some());
+    log::info!("Local service listeners: {prepared:?}");
+    let config_filter = config_filter_from_local_services(&local_services)?;
 
     let datastore = build_datastore(&cli, sonic_forwarder);
     let policy_file = cli.runtime_policy.clone().map(PolicyFile::new);
@@ -497,13 +422,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let service = Arc::new(
         TacacsClientService::waiting_for_configuration(
             ServiceConfig {
-                enabled_services,
-                endpoint,
-                proxy_endpoint,
-                proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
+                local_services,
                 tacacs_plus: empty_tacacs_plus,
+                validation_options: datastore.validation_options(),
                 runtime_policy,
-                socket_mode: parse_socket_mode(&cli.socket_mode)?,
                 disable_certificate_verification: cli.insecure_disable_certificate_verification,
             },
             health.clone(),
@@ -698,13 +620,12 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{Cli, cli_datastore_input_from_cli, enabled_services_from_cli};
+    use super::{Cli, cli_datastore_input_from_cli};
     use crate::cli::HostIntegrationMode;
-    use tacacsrs_agent::EnabledServices;
     use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::crypto_types::PrivateKeyFormat;
     use tacacsrs_config::ValidationOptions;
-    use tacacsrs_cli_datastore::{tacacs_plus_from_cli_input, tacacs_plus_from_file};
+    use tacacsrs_config::input::{tacacs_plus_from_cli_input, tacacs_plus_from_file};
 
     fn sample_path(file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -727,7 +648,7 @@ mod tests {
     fn equivalent_cli_sonic_and_yang_inputs_preserve_canonical_values() {
         use std::collections::BTreeMap;
 
-        use tacacsrs_cli_datastore::{
+        use tacacsrs_config::input::{
             CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
         };
         use tacacsrs_sonic::{SonicTacacsTables, map_sonic_tables_to_tacacs_plus};
@@ -786,6 +707,35 @@ mod tests {
         assert_eq!(cli, parsed);
         assert_eq!(sonic, parsed);
         assert_eq!(sonic.server[0].address, "192.0.2.21");
+        for source in [&cli, &sonic, &parsed] {
+            tacacsrs_config::prepare::validate_materialized_servers(
+                source.server.iter(),
+                &ValidationOptions::default(),
+            )
+            .unwrap();
+            let endpoints = source
+                .server
+                .iter()
+                .map(|server| {
+                    tacacsrs_config::prepare::prepare_endpoint(
+                        server,
+                        tacacsrs_config::prepare::PrepareOptions::default(),
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                endpoints
+                    .iter()
+                    .map(tacacsrs_networking::PreparedEndpoint::address)
+                    .collect::<Vec<_>>(),
+                ["192.0.2.21:49", "192.0.2.20:49"]
+            );
+            assert!(endpoints
+                .iter()
+                .all(|endpoint| !endpoint.single_connection()));
+            assert_eq!(source, &parsed);
+        }
     }
 
     #[test]
@@ -891,7 +841,9 @@ mod tests {
             "secret1",
         ]);
 
-        assert_eq!(enabled_services_from_cli(&cli), EnabledServices::CLIENT_API);
+        let services = crate::local_services::from_cli(&cli, None).unwrap();
+        assert!(services.client_api_enabled);
+        assert!(!services.tacacs_proxy_enabled);
         assert_eq!(cli.host_integration, HostIntegrationMode::Auto);
     }
 
@@ -926,7 +878,9 @@ mod tests {
             "127.0.0.1:9050",
         ]);
 
-        assert_eq!(enabled_services_from_cli(&cli), EnabledServices::BOTH);
+        let services = crate::local_services::from_cli(&cli, None).unwrap();
+        assert!(services.client_api_enabled);
+        assert!(services.tacacs_proxy_enabled);
     }
 
     #[test]
@@ -943,14 +897,9 @@ mod tests {
             "127.0.0.1:9050",
         ]);
 
-        assert_eq!(enabled_services_from_cli(&cli), EnabledServices::TACACS_PROXY);
-    }
-
-    #[test]
-    fn sonic_mode_always_enables_client_api_and_proxy() {
-        let cli = Cli::parse_from(["tacacsrs-agentd", "--sonic"]);
-
-        assert_eq!(enabled_services_from_cli(&cli), EnabledServices::BOTH);
+        let services = crate::local_services::from_cli(&cli, None).unwrap();
+        assert!(!services.client_api_enabled);
+        assert!(services.tacacs_proxy_enabled);
     }
 
     #[test]
