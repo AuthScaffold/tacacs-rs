@@ -1,8 +1,8 @@
-//! Persistent upstream TACACS+ connection management.
+//! Service adapters for prepared upstream catalogs and TACACS+ exchanges.
 //!
-//! This module adapts lower-level connection and session APIs to the service
-//! operation model. The service controls failover and the connection lifecycle.
-//! It can reuse each server connection for many IPC requests.
+//! Networking owns route selection, circuits, reconnect serialization, and the
+//! conservative retry executor. The agent projects canonical configuration and
+//! retains admission, source metadata, health, and local service policy.
 //!
 //! # Transport selection
 //!
@@ -14,33 +14,29 @@
 //! | `shared-secret` only | Plain TCP |
 //! | No TLS fields and no `shared-secret` | Plain TCP without TACACS+ obfuscation |
 //! | `client-identity` / `server-authentication` (certificate) | mTLS (X.509) |
-//! | `client-identity` with `tls13-epsk` | TLS-PSK (feature-gated) |
+//! | `client-identity` with `tls13-epsk` | TLS-PSK |
 //!
 //! # Connection reuse
 //!
-//! Each server connection wraps one persistent TCP/TLS connection
-//! to one TACACS+ server. The TACACS+ protocol supports multiplexed sessions
-//! on one connection when both peers negotiate single-connection mode. If the
-//! server does not support reuse, the connection stops accepting new sessions.
-//! The service reconnects for the next IPC request.
+//! Each operation has an adaptive client. It caches a shared TCP/TLS connection
+//! when both peers negotiate single-connection mode. Otherwise, each session
+//! opens a dedicated connection. Prepared endpoint identities control cache
+//! reuse across published catalogs.
 
 mod admission;
 mod attempt;
 mod connection;
-mod executor;
-mod failover;
-mod operation;
 pub(crate) mod manager;
 mod network;
 mod proxy_transport;
 mod router;
 
-pub(crate) use connection::{UpstreamConnection, UpstreamConnector};
+pub(crate) use connection::UpstreamConnection;
+#[cfg(test)]
+pub(crate) use connection::UpstreamConnector;
 pub(crate) use attempt::{AttemptFailureKind, UpstreamRequestError};
 pub(crate) use admission::{AdmissionError, AdmissionPermit};
-pub(crate) use executor::{Attempt, FailoverAttempt, FailoverOutcome, run_with_failover};
-pub(crate) use failover::{AttemptDisposition, FailoverPlan};
 pub(crate) use network::NetworkUpstreamConnector;
 pub(crate) use proxy_transport::ProxyTransportSettings;
-pub(crate) use router::OperationRouter;
-pub use operation::OperationKind;
+pub(crate) use router::{OperationRouter, RequestRouting};
+pub use tacacsrs_networking::routed::OperationKind;

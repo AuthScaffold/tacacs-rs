@@ -55,10 +55,25 @@ pub fn validate_runtime_policy(policy: &RuntimePolicy) -> anyhow::Result<()> {
     let authentication = policy.authentication.clone().unwrap_or_default();
     let authorization = policy.authorization.clone().unwrap_or_default();
     let accounting = policy.accounting.clone().unwrap_or_default();
-    for (operation, body, concurrency) in [
-        ("authentication", authentication.max_body_length, authentication.max_concurrent_requests),
-        ("authorization", authorization.max_body_length, authorization.max_concurrent_requests),
-        ("accounting", accounting.max_body_length, accounting.max_concurrent_requests),
+    for (operation, body, concurrency, timeout) in [
+        (
+            "authentication",
+            authentication.max_body_length,
+            authentication.max_concurrent_requests,
+            authentication.request_timeout_seconds,
+        ),
+        (
+            "authorization",
+            authorization.max_body_length,
+            authorization.max_concurrent_requests,
+            authorization.request_timeout_seconds,
+        ),
+        (
+            "accounting",
+            accounting.max_body_length,
+            accounting.max_concurrent_requests,
+            accounting.request_timeout_seconds,
+        ),
     ] {
         ensure!(
             (1..=TACACS_MAX_BODY_LENGTH).contains(&body),
@@ -67,6 +82,10 @@ pub fn validate_runtime_policy(policy: &RuntimePolicy) -> anyhow::Result<()> {
         ensure!(
             concurrency > 0,
             "runtime-policy/{operation}/max-concurrent-requests must be greater than zero"
+        );
+        ensure!(
+            timeout > 0,
+            "runtime-policy/{operation}/request-timeout-seconds must be greater than zero"
         );
     }
     Ok(())
@@ -83,6 +102,7 @@ mod tests {
         assert!(policy.authentication.is_none());
         assert_eq!(crate::tacacsrs::Authentication::default().max_body_length, 4096);
         assert_eq!(crate::tacacsrs::Authorization::default().max_body_length, 16384);
+        assert_eq!(crate::tacacsrs::Authentication::default().request_timeout_seconds, 30);
     }
 
     #[test]
@@ -108,6 +128,7 @@ mod tests {
             r#"{"tacacsrs:runtime-policy":{"failover-recovery-interval-seconds":0}}"#,
             r#"{"tacacsrs:runtime-policy":{"accounting":{"max-body-length":65537}}}"#,
             r#"{"tacacsrs:runtime-policy":{"authorization":{"max-concurrent-requests":0}}}"#,
+            r#"{"tacacsrs:runtime-policy":{"authentication":{"request-timeout-seconds":0}}}"#,
         ] {
             assert!(parse_runtime_policy(input.as_bytes()).is_err(), "accepted {input}");
         }

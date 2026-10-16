@@ -1,12 +1,16 @@
 //! Shared operation helpers for [`UpstreamBridge`].
 
 use async_trait::async_trait;
+use tacacsrs_networking::routed::EndpointConnector;
 use tacacsrs_protocol::operations::ServiceError;
+use tacacsrs_networking::retry::{
+    Attempt, AttemptDisposition, FailoverAttempt, FailoverOutcome, run_with_failover,
+};
 
 use super::UpstreamBridge;
 use crate::upstream::{
-    Attempt, AttemptDisposition, AttemptFailureKind, FailoverAttempt, FailoverOutcome,
-    OperationKind, OperationRouter, UpstreamConnection, UpstreamRequestError, run_with_failover,
+    AttemptFailureKind, OperationKind, OperationRouter, RequestRouting, UpstreamConnection,
+    UpstreamRequestError,
 };
 
 /// Operation-specific hooks used by the client API upstream bridge.
@@ -28,9 +32,10 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
     /// TACACS+ operation used for routing and connection isolation.
     const OPERATION: OperationKind;
     /// Sends the operation through the selected server connection.
-    async fn send(
-        connection: &dyn UpstreamConnection,
+    async fn send<Connection: UpstreamConnection + ?Sized>(
+        connection: &Connection,
         request: &Self::Request,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError>;
 
     /// Returns whether a valid response reports an operational server error.
@@ -41,25 +46,28 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
 }
 
 /// One client API request that the failover executor can retry.
-struct RoutedAttempt<'request, Operation>
+struct RoutedAttempt<'request, Operation, Connector: EndpointConnector>
 where
     Operation: RoutedOperation,
 {
-    router: &'request OperationRouter,
+    router: &'request OperationRouter<Connector>,
+    routing: RequestRouting<Connector>,
     request: &'request Operation::Request,
     outcome_unknown: bool,
 }
 
 #[async_trait]
-impl<Operation> FailoverAttempt for RoutedAttempt<'_, Operation>
+impl<Operation, Connector: EndpointConnector> FailoverAttempt
+    for RoutedAttempt<'_, Operation, Connector>
 where
     Operation: RoutedOperation,
+    Connector::Connection: UpstreamConnection,
 {
     type Value = Operation::Response;
     type Error = ServiceError;
 
     async fn attempt(&mut self, attempt_index: usize) -> Attempt<Self::Value, Self::Error> {
-        let bound_server = match self.router.bind(Operation::OPERATION).await {
+        let bound_server = match self.routing.bind().await {
             Ok(bound_server) => bound_server,
             Err(error) => {
                 log::warn!("Failed to bind a client API request to a TACACS+ server: {error:#}");
@@ -77,13 +85,23 @@ where
             attempt_index + 1,
         );
 
-        match Operation::send(&*bound_server.connection, self.request).await {
+        let deadline = self.routing.deadline();
+        if let Err(error) = deadline.check() {
+            return Attempt::Aborted(ServiceError::new(error.to_string()).retriable(true));
+        }
+        let attempt_deadline = deadline.capped(bound_server.timeout_duration());
+        let response = attempt_deadline
+            .run(Operation::send(&*bound_server.connection, self.request, attempt_deadline))
+            .await
+            .map_err(UpstreamRequestError::outcome_unknown)
+            .and_then(std::convert::identity);
+        match response {
             Ok(response) if Operation::is_server_error(&response) => {
-                self.router.note_failure(&bound_server).await;
+                let _reported = deadline.run(self.router.note_failure(&bound_server)).await;
                 Attempt::Rejected(response)
             }
             Ok(response) => {
-                self.router.note_success(&bound_server).await;
+                let _reported = deadline.run(self.router.note_success(&bound_server)).await;
                 Attempt::Accepted(response)
             }
             Err(error) if error.kind() == AttemptFailureKind::InvalidRequest => {
@@ -108,7 +126,7 @@ where
                     .retriable(
                         !self.outcome_unknown && error.kind() == AttemptFailureKind::NotSent,
                     );
-                self.router.note_failure(&bound_server).await;
+                let _reported = deadline.run(self.router.note_failure(&bound_server)).await;
                 Attempt::Failed {
                     error: service_error,
                     disposition,
@@ -118,7 +136,10 @@ where
     }
 }
 
-impl UpstreamBridge {
+impl<Connector: EndpointConnector> UpstreamBridge<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
     /// Runs one client API operation against the selected TACACS+ server.
     ///
     /// The networking layer selects dedicated or single-connection behavior.
@@ -133,18 +154,16 @@ impl UpstreamBridge {
     {
         let body_length = Operation::request_body_length(&request)
             .map_err(|error| ServiceError::new(error.to_string()).retriable(false))?;
-        let _admission_permit = self
-            .router
-            .admit(Operation::OPERATION, body_length)
-            .await
-            .map_err(|error| {
-                let retriable = error.is_retriable();
-                ServiceError::new(error.to_string()).retriable(retriable)
-            })?;
+        let routing = self.router.capture_request(Operation::OPERATION);
+        let _admission_permit = routing.admit(body_length).await.map_err(|error| {
+            let retriable = error.is_retriable();
+            ServiceError::new(error.to_string()).retriable(retriable)
+        })?;
 
-        let plan = self.router.failover_plan(Operation::OPERATION);
-        let mut attempt = RoutedAttempt::<Operation> {
+        let plan = routing.failover_plan();
+        let mut attempt = RoutedAttempt::<Operation, Connector> {
             router: &self.router,
+            routing,
             request: &request,
             outcome_unknown: false,
         };

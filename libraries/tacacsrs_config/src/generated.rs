@@ -1190,6 +1190,9 @@ pub mod tacacsrs {
         }
     }
 
+    fn default_local_services_max_connections() -> u16 { 64 }
+    fn default_local_services_max_client_api_streams() -> u16 { 64 }
+    fn default_local_services_connection_lifetime_seconds() -> u32 { 300 }
     fn default_local_services_client_api_enabled() -> bool { true }
     fn default_local_services_client_api_endpoint() -> String { "/run/tacacs/tacacs.sock".to_owned() }
     fn default_local_services_unix_socket_mode() -> u16 { 432 }
@@ -1199,6 +1202,19 @@ pub mod tacacsrs {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct LocalServices {
+        /// Maximum served connections per enabled listener.
+        #[serde(rename = "max-connections")]
+        #[serde(default = "default_local_services_max_connections")]
+        pub max_connections: u16,
+        /// Maximum concurrent HTTP/2 streams on one client API connection.
+        #[serde(rename = "max-client-api-streams")]
+        #[serde(default = "default_local_services_max_client_api_streams")]
+        pub max_client_api_streams: u16,
+        /// Maximum lifetime of a served local connection, including setup and reply delivery.
+        /// The listener closes the connection at expiry, even when requests remain active.
+        #[serde(rename = "connection-lifetime-seconds")]
+        #[serde(default = "default_local_services_connection_lifetime_seconds")]
+        pub connection_lifetime_seconds: u32,
         /// Enables the local client API.
         #[serde(rename = "client-api-enabled")]
         #[serde(default = "default_local_services_client_api_enabled")]
@@ -1235,6 +1251,9 @@ pub mod tacacsrs {
     impl Default for LocalServices {
         fn default() -> Self {
             Self {
+                max_connections: default_local_services_max_connections(),
+                max_client_api_streams: default_local_services_max_client_api_streams(),
+                connection_lifetime_seconds: default_local_services_connection_lifetime_seconds(),
                 client_api_enabled: default_local_services_client_api_enabled(),
                 client_api_endpoint: default_local_services_client_api_endpoint(),
                 tacacs_proxy_enabled: Default::default(),
@@ -1246,6 +1265,7 @@ pub mod tacacsrs {
         }
     }
 
+    fn default_authentication_request_timeout_seconds() -> u32 { 30 }
     fn default_authentication_max_body_length() -> u32 { 4096 }
     fn default_authentication_max_concurrent_requests() -> u32 { 64 }
 
@@ -1253,6 +1273,13 @@ pub mod tacacsrs {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct Authentication {
+        /// Total request budget from capture before admission through completion.
+        /// Includes admission, connection setup, retries, and proxy continuations.
+        /// Server timeouts can shorten individual stages but cannot extend this budget.
+        /// Reload does not change the deadline of an existing request.
+        #[serde(rename = "request-timeout-seconds")]
+        #[serde(default = "default_authentication_request_timeout_seconds")]
+        pub request_timeout_seconds: u32,
         /// Maximum encoded TACACS+ request body length.
         #[serde(rename = "max-body-length")]
         #[serde(default = "default_authentication_max_body_length")]
@@ -1266,12 +1293,14 @@ pub mod tacacsrs {
     impl Default for Authentication {
         fn default() -> Self {
             Self {
+                request_timeout_seconds: default_authentication_request_timeout_seconds(),
                 max_body_length: default_authentication_max_body_length(),
                 max_concurrent_requests: default_authentication_max_concurrent_requests(),
             }
         }
     }
 
+    fn default_authorization_request_timeout_seconds() -> u32 { 30 }
     fn default_authorization_max_body_length() -> u32 { 16384 }
     fn default_authorization_max_concurrent_requests() -> u32 { 64 }
 
@@ -1279,6 +1308,13 @@ pub mod tacacsrs {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct Authorization {
+        /// Total request budget from capture before admission through completion.
+        /// Includes admission, connection setup, retries, and proxy continuations.
+        /// Server timeouts can shorten individual stages but cannot extend this budget.
+        /// Reload does not change the deadline of an existing request.
+        #[serde(rename = "request-timeout-seconds")]
+        #[serde(default = "default_authorization_request_timeout_seconds")]
+        pub request_timeout_seconds: u32,
         /// Maximum encoded TACACS+ request body length.
         #[serde(rename = "max-body-length")]
         #[serde(default = "default_authorization_max_body_length")]
@@ -1292,6 +1328,7 @@ pub mod tacacsrs {
     impl Default for Authorization {
         fn default() -> Self {
             Self {
+                request_timeout_seconds: default_authorization_request_timeout_seconds(),
                 max_body_length: default_authorization_max_body_length(),
                 max_concurrent_requests: default_authorization_max_concurrent_requests(),
             }

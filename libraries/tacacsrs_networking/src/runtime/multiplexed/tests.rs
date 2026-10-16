@@ -59,6 +59,50 @@ fn test_connection_without_obfuscation() {
 }
 
 #[tokio::test]
+async fn final_driver_owner_drop_closes_transport_without_a_join_caller() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    drop(connection);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), peer.read(&mut [0; 1]))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn explicit_close_joins_idle_driver_and_is_repeatable() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    let deadline = crate::RequestDeadline::after(Duration::from_secs(1)).unwrap();
+    connection.close_and_join(deadline).await.unwrap();
+    connection.close_and_join(deadline).await.unwrap();
+    assert!(connection.create_session().is_err());
+    assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn forced_close_joins_driver_and_wakes_active_session() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let session = connection.create_session().unwrap();
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    connection
+        .close_and_join(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+        .await
+        .unwrap();
+    assert!(session.receive_packet().await.is_err());
+    assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn retirement_closes_idle_transport_without_peer_cooperation() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
     let (client, mut peer) = tokio::io::duplex(256);
