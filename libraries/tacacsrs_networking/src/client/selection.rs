@@ -124,22 +124,32 @@ impl TacacsClient {
     /// Returns an error if no shared session can be created and a fresh
     /// dedicated transport cannot be opened.
     pub(super) async fn create_session(&self) -> anyhow::Result<ClientSession> {
-        self.create_session_for(None).await
+        self.create_session_for(None, None).await
     }
 
     pub(super) async fn create_fixed_session(
         &self,
         expected: ExpectedResponseHeader,
     ) -> anyhow::Result<ClientSession> {
-        self.create_session_for(Some(expected)).await
+        self.create_session_for(Some(expected), None).await
+    }
+
+    pub(super) async fn create_fixed_session_until(
+        &self,
+        expected: ExpectedResponseHeader,
+        deadline: crate::RequestDeadline,
+    ) -> anyhow::Result<ClientSession> {
+        self.create_session_for(Some(expected), Some(deadline))
+            .await
     }
 
     async fn create_session_for(
         &self,
         expected: Option<ExpectedResponseHeader>,
+        deadline: Option<crate::RequestDeadline>,
     ) -> anyhow::Result<ClientSession> {
         self.lifecycle.ensure_open()?;
-        let operation = Box::pin(self.create_open_session(expected));
+        let operation = Box::pin(self.create_open_session(expected, deadline));
         let session = match self.endpoint.prepared_credential_lifetime() {
             Some(lifetime) => lifetime.run(operation).await?,
             None => operation.await?,
@@ -151,9 +161,12 @@ impl TacacsClient {
     async fn create_open_session(
         &self,
         expected: Option<ExpectedResponseHeader>,
+        deadline: Option<crate::RequestDeadline>,
     ) -> anyhow::Result<ClientSession> {
         if !self.endpoint.single_connection() {
-            return Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?));
+            return Ok(ClientSession::dedicated(
+                self.create_fresh_dedicated_session(None, deadline).await?,
+            ));
         }
 
         // Stage 1: unknown capability and active negotiation are decided before
@@ -163,14 +176,16 @@ impl TacacsClient {
         // owns it.
         match self.single_connection_state().await {
             SingleConnectionState::Initial => {
-                return self.create_single_connect_negotiation_session().await;
+                return self
+                    .create_single_connect_negotiation_session(deadline)
+                    .await;
             }
             SingleConnectionState::Negotiating | SingleConnectionState::NotSupported => {
                 // Negotiating means another session already owns the probe.
                 // NotSupported means that the probe denied support. In both
                 // cases, open a fresh dedicated connection without promotion.
                 return Ok(ClientSession::dedicated(
-                    self.create_fresh_dedicated_session(None).await?,
+                    self.create_fresh_dedicated_session(None, deadline).await?,
                 ));
             }
             SingleConnectionState::Supported => {}
@@ -182,7 +197,8 @@ impl TacacsClient {
             return Ok(session);
         }
 
-        self.create_session_after_shared_miss(expected).await
+        self.create_session_after_shared_miss(expected, deadline)
+            .await
     }
 
     /// Opens a sequential packet conversation for transparent proxying and
@@ -200,18 +216,21 @@ impl TacacsClient {
     async fn create_session_after_shared_miss(
         &self,
         expected: Option<ExpectedResponseHeader>,
+        deadline: Option<crate::RequestDeadline>,
     ) -> anyhow::Result<ClientSession> {
         // Stage 3: a rejected shared connection returns the client to Initial
         // after transport loss. The next connection must negotiate again.
         match self.single_connection_state().await {
             SingleConnectionState::Initial => {
-                return self.create_single_connect_negotiation_session().await;
+                return self
+                    .create_single_connect_negotiation_session(deadline)
+                    .await;
             }
             SingleConnectionState::Negotiating | SingleConnectionState::NotSupported => {
                 // Active negotiation and terminal denial both use new
                 // dedicated connections without promotion.
                 return Ok(ClientSession::dedicated(
-                    self.create_fresh_dedicated_session(None).await?,
+                    self.create_fresh_dedicated_session(None, deadline).await?,
                 ));
             }
             SingleConnectionState::Supported => {}
@@ -234,25 +253,34 @@ impl TacacsClient {
             SingleConnectionState::NotSupported => {
                 // Another task can record denial while this task waits
                 // on recovery. Keep terminal NotSupported on fresh streams.
-                Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?))
+                Ok(ClientSession::dedicated(
+                    self.create_fresh_dedicated_session(None, deadline).await?,
+                ))
             }
-            SingleConnectionState::Negotiating => {
-                Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?))
-            }
+            SingleConnectionState::Negotiating => Ok(ClientSession::dedicated(
+                self.create_fresh_dedicated_session(None, deadline).await?,
+            )),
             SingleConnectionState::Initial | SingleConnectionState::Supported => {
-                self.create_single_connect_negotiation_session().await
+                self.create_single_connect_negotiation_session(deadline)
+                    .await
             }
         }
     }
 
     pub(super) async fn create_single_connect_negotiation_session(
         &self,
+        deadline: Option<crate::RequestDeadline>,
     ) -> anyhow::Result<ClientSession> {
         let Some(promotion) = self.begin_single_connection_negotiation().await else {
-            return Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?));
+            return Ok(ClientSession::dedicated(
+                self.create_fresh_dedicated_session(None, deadline).await?,
+            ));
         };
 
-        Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(Some(promotion)).await?))
+        Ok(ClientSession::dedicated(
+            self.create_fresh_dedicated_session(Some(promotion), deadline)
+                .await?,
+        ))
     }
 
     pub(super) async fn single_connection_state(&self) -> SingleConnectionState {
@@ -397,8 +425,12 @@ impl TacacsClient {
     async fn create_fresh_dedicated_session(
         &self,
         single_connect_promotion: Option<SingleConnectPromotion>,
+        deadline: Option<crate::RequestDeadline>,
     ) -> anyhow::Result<DedicatedSession> {
-        let transport = self.establish_stream().await?;
+        let transport = self
+            .lifecycle
+            .establish(self.endpoint.clone(), deadline)
+            .await?;
 
         Ok(self.create_dedicated_session_with_transport(transport, single_connect_promotion))
     }
@@ -414,9 +446,5 @@ impl TacacsClient {
             .as_ref()
             .map(tacacsrs_secrets::SecretBytes::expose_secret);
         DedicatedSession::new(transport, obfuscation_key, single_connect_promotion)
-    }
-
-    async fn establish_stream(&self) -> anyhow::Result<BoxedTransport> {
-        self.lifecycle.establish(self.endpoint.clone()).await
     }
 }

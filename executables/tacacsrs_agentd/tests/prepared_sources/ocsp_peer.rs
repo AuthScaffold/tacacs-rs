@@ -400,9 +400,16 @@ async fn probe_with_evidence(
         let _ = closed.send(());
         Ok::<(), anyhow::Error>(())
     });
+    let counters = endpoint.counters();
     let client = TacacsClient::connect_prepared(endpoint).await?;
     let conversation = client.open_conversation().await;
     let accepted = conversation.is_ok();
+    if let Err(error) = &conversation {
+        if format!("{error:#}").contains("revoked") {
+            assert_eq!(counters.snapshot().diagnostics.tls_revoked_certificates, 1);
+        }
+    }
+    assert_eq!(counters.snapshot().diagnostics.handshake_successes, u64::from(accepted));
     if let Some(expiry) = expiry.filter(|_| accepted) {
         tokio::time::pause();
         tokio::time::advance(expiry).await;

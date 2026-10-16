@@ -53,6 +53,7 @@ impl ClientSession {
         {
             if let Some(counters) = &self.counters {
                 counters.record(crate::statistics::CounterEvent::SessionCompleted);
+                counters.terminal_reply(reply);
             }
         }
     }
@@ -62,6 +63,21 @@ impl ClientSession {
             ClientSessionInner::Shared(session) => session.session_id(),
             ClientSessionInner::SharedFixed(session) => session.session_id(),
             ClientSessionInner::Dedicated(session) => session.session_id(),
+        }
+    }
+
+    pub(crate) fn awaiting_reply(&self, packet: &Packet) -> Option<crate::statistics::ReplyWait> {
+        self.counters
+            .as_ref()
+            .map(|counters| counters.awaiting_reply(packet))
+    }
+
+    pub(crate) fn record_timeout(&self) {
+        if let Some(counters) = &self.counters {
+            counters.request_timeout();
+        }
+        if let ClientSessionInner::Dedicated(session) = &self.inner {
+            session.record_timeout();
         }
     }
 

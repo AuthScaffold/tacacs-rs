@@ -2151,6 +2151,7 @@ dependencies = [
  "if-addrs",
  "log",
  "rand",
+ "serde_json",
  "tacacsrs-config",
  "tacacsrs-credential-resolution",
  "tacacsrs-ipc",
@@ -2167,7 +2168,9 @@ dependencies = [
 name = "tacacsrs-agent-health"
 version = "0.0.0-dev"
 dependencies = [
+ "anyhow",
  "clap",
+ "serde_json",
  "tacacsrs-ipc",
  "tokio",
  "tokio-stream",

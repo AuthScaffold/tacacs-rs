@@ -33,7 +33,10 @@ mod transport;
 mod statistics;
 
 pub use client::TacacsClient;
-pub use statistics::{ServerCounters, StatisticsSnapshot};
+pub use statistics::{
+    ConnectionDetails, DiagnosticsSnapshot, DisconnectReason, OperationStatistics, ServerCounters,
+    StatisticsSnapshot, TlsDetails,
+};
 pub use deadline::{DeadlineElapsed, RequestDeadline};
 pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use endpoint::{ConnectionGuard, PreparedEndpoint};

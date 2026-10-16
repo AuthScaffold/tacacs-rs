@@ -12,6 +12,7 @@ compile_error!("tacacsrs-ipc supports Linux GNU only");
 pub mod client;
 
 mod endpoint;
+pub mod diagnostics;
 
 /// Stable names used by standard gRPC health checks.
 pub mod health;
@@ -29,3 +30,4 @@ pub mod server;
 pub use client::ServiceClient;
 pub use endpoint::IpcEndpoint;
 pub use health::HealthClient;
+pub use diagnostics::{DiagnosticsClient, DiagnosticsProvider};

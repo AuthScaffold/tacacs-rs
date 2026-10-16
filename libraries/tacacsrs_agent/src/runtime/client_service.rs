@@ -111,7 +111,33 @@ pub struct TacacsClientService {
     runtime: ServiceRuntime<NetworkUpstreamConnector>,
 }
 
+/// Read-only access to operational snapshots. Cloning does not own listeners or initiate traffic.
+#[derive(Clone)]
+pub struct DiagnosticsHandle {
+    manager: std::sync::Weak<crate::upstream::manager::UpstreamManager<NetworkUpstreamConnector>>,
+}
+
+impl DiagnosticsHandle {
+    /// Reads bounded RFC 7951 operational JSON, optionally selecting an exact server name.
+    /// # Errors
+    /// Returns an error for an unknown server, oversized metadata, or an oversized response.
+    pub fn statistics_json(&self, server: Option<&str>, limit: usize) -> anyhow::Result<String> {
+        self.manager
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("The agent runtime is no longer available"))?
+            .diagnostics_json(server, limit)
+    }
+}
+
 impl TacacsClientService {
+    /// Returns a read-only handle to the current published generation.
+    #[must_use]
+    pub fn diagnostics_handle(&self) -> DiagnosticsHandle {
+        DiagnosticsHandle {
+            manager: Arc::downgrade(&self.runtime.manager),
+        }
+    }
+
     /// Captures read-only server counters associated with one published runtime generation.
     /// Unchanged endpoints retain their counter epoch across reloads. Replacements start a new epoch.
     #[must_use]

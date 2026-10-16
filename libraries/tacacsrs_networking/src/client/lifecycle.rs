@@ -77,6 +77,7 @@ impl ClientLifecycle {
     pub(super) async fn establish(
         self: &Arc<Self>,
         endpoint: PreparedEndpoint,
+        deadline: Option<RequestDeadline>,
     ) -> anyhow::Result<BoxedTransport> {
         let (sender, receiver) = oneshot::channel();
         let task = {
@@ -88,7 +89,7 @@ impl ClientLifecycle {
             state.setups.retain(|task| !task.is_finished());
             let lifecycle = Arc::downgrade(self);
             let task = Arc::new(DriverTask::spawn(async move {
-                let result = crate::establish::establish_stream(&endpoint)
+                let result = crate::establish::establish_stream_until(&endpoint, deadline)
                     .await
                     .with_context(|| {
                         format!("Failed to connect to TACACS+ server {}", endpoint.address())

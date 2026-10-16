@@ -88,7 +88,12 @@ impl PacketWriter {
                 }
                 PacketWriteResult::Success
             }
-            Err(error) => PacketWriteResult::WriteError(error),
+            Err(error) => {
+                if let Some(counters) = &self.counters {
+                    counters.io_error(&error, true);
+                }
+                PacketWriteResult::WriteError(error)
+            }
         }
     }
 }

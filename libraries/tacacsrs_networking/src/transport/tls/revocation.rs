@@ -23,11 +23,36 @@ use super::validity::{CertificateValidity, generalized_system_time};
 /// Bounds untrusted OCSP parsing work during the TLS handshake.
 const MAXIMUM_STAPLE_BYTES: usize = 64 * 1024;
 
+#[derive(Clone)]
+pub(super) struct VerificationFailure {
+    message: String,
+    code: Option<i32>,
+}
+
+impl VerificationFailure {
+    pub(super) fn capture(error: &anyhow::Error) -> Self {
+        Self {
+            message: format!("{error:#}"),
+            code: error
+                .downcast_ref::<crate::statistics::CertificateVerificationCode>()
+                .map(|code| code.0),
+        }
+    }
+
+    pub(super) fn error(&self) -> anyhow::Error {
+        let error = anyhow::anyhow!(self.message.clone());
+        match self.code {
+            Some(code) => error.context(crate::statistics::CertificateVerificationCode(code)),
+            None => error,
+        }
+    }
+}
+
 pub(super) struct ConnectionRevocation {
     policy: CertificateRevocationPolicy,
     issuers: Vec<X509>,
     provided: Option<ProvidedResponse>,
-    result: Mutex<Option<Result<CertificateValidity, String>>>,
+    result: Mutex<Option<Result<CertificateValidity, VerificationFailure>>>,
 }
 
 impl ConnectionRevocation {
@@ -82,7 +107,7 @@ pub(super) fn configure_verifier(builder: &mut SslContextBuilder) -> anyhow::Res
                 }
             })
             .and_then(|validity| validity.context("Required OCSP evidence was not verified"))
-            .map_err(|error| format!("{error:#}"));
+            .map_err(|error| VerificationFailure::capture(&error));
         let accepted = verified.is_ok();
         *connection
             .result
@@ -114,7 +139,7 @@ pub(super) fn verified_validity(ssl: &SslRef) -> anyhow::Result<Option<Certifica
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match result.as_ref() {
         Some(Ok(validity)) => Ok(Some(*validity)),
-        Some(Err(error)) => anyhow::bail!("OCSP verification failed: {error}"),
+        Some(Err(error)) => Err(error.error().context("OCSP verification failed")),
         None => anyhow::bail!("Required stapled OCSP response was not verified"),
     }
 }
@@ -243,7 +268,13 @@ impl CertificateRevocationPolicy {
             }
         }
         let status = status.context("OCSP response does not cover the TLS peer certificate")?;
-        ensure!(status.status != OcspCertStatus::REVOKED, "TLS peer certificate is revoked");
+        if status.status == OcspCertStatus::REVOKED {
+            return Err(anyhow::anyhow!("TLS peer certificate is revoked").context(
+                crate::statistics::CertificateVerificationCode(
+                    openssl_sys::X509_V_ERR_CERT_REVOKED,
+                ),
+            ));
+        }
         ensure!(status.status == OcspCertStatus::GOOD, "OCSP peer certificate status is unknown");
         status
             .check_validity(0, Some(maximum_age.get()))

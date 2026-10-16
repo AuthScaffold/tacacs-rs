@@ -6,7 +6,7 @@
 //! - `tls` for crate-internal TLS transport, and
 //! - `tls_psk` for crate-internal TLS-PSK transport.
 //!
-//! [`crate::establish::establish_stream`] constructs TLS transports.
+//! [`crate::establish::establish_stream_until`] constructs TLS transports.
 
 pub(crate) mod abstractions;
 pub(crate) mod boxed;

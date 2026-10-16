@@ -28,10 +28,10 @@ pub use config::{
 };
 pub use upstream::OperationKind;
 pub use runtime::{
-    PolicyRevision, PolicyUpdate, CredentialRevision, MaterializationRevision, SourceRevision,
-    DatastoreState, DegradationReason, ListenerRegistration, ListenerSettings, ListenerState,
-    RuntimeHealthPublisher, RuntimeGeneration, RuntimeHealthSnapshot, RuntimeLifecycle,
-    RuntimeListenerService, RuntimeService, ShutdownReceiver, TacacsClientService,
-    UpstreamAvailability,
+    DiagnosticsHandle, PolicyRevision, PolicyUpdate, CredentialRevision, MaterializationRevision,
+    SourceRevision, DatastoreState, DegradationReason, ListenerRegistration, ListenerSettings,
+    ListenerState, RuntimeHealthPublisher, RuntimeGeneration, RuntimeHealthSnapshot,
+    RuntimeLifecycle, RuntimeListenerService, RuntimeService, ShutdownReceiver,
+    TacacsClientService, UpstreamAvailability,
 };
 pub use services::client_api::ClientApiHandle;

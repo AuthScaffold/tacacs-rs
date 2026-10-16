@@ -32,13 +32,14 @@ pub(crate) struct BoxedTransport(
     Option<super::tls::CertificateLifetime>,
     Option<crate::ServerCounters>,
     Option<std::sync::Arc<crate::statistics::ConnectionRecord>>,
+    Option<crate::TlsDetails>,
 );
 
 impl BoxedTransport {
     /// Wraps a concrete transport in a type-erased wrapper.
     pub(crate) fn new<T: Transport>(transport: T) -> Self {
         let counters = transport.counters();
-        Self(Box::new(transport), None, counters, None)
+        Self(Box::new(transport), None, counters, None, None)
     }
 
     pub(crate) fn with_counters(mut self, counters: crate::ServerCounters) -> Self {
@@ -52,6 +53,15 @@ impl BoxedTransport {
         &self,
     ) -> Option<std::sync::Arc<crate::statistics::ConnectionRecord>> {
         self.3.clone()
+    }
+
+    pub(crate) fn with_tls_details(mut self, details: crate::TlsDetails) -> Self {
+        self.4 = Some(details);
+        self
+    }
+
+    pub(crate) fn tls_details(&self) -> Option<crate::TlsDetails> {
+        self.4.clone()
     }
 
     pub(crate) fn with_certificate_lifetime(

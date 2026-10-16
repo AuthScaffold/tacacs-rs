@@ -149,14 +149,19 @@ impl CrlEvidence {
             &untrusted,
             openssl::x509::X509StoreContextRef::verify_cert,
         )?;
-        ensure!(accepted, "Peer CRL validation failed: {}", verification.error());
+        if !accepted {
+            return Err(anyhow::anyhow!("Peer CRL validation failed: {}", verification.error())
+                .context(crate::statistics::CertificateVerificationCode(
+                    verification.error().as_raw(),
+                )));
+        }
         Ok(())
     }
 }
 
 struct ConnectionEvidence {
     evidence: Arc<CrlEvidence>,
-    result: Mutex<Option<Result<(), String>>>,
+    result: Mutex<Option<Result<(), super::VerificationFailure>>>,
 }
 
 type EvidenceIndex = openssl::ex_data::Index<Ssl, ConnectionEvidence>;
@@ -201,7 +206,7 @@ pub(in crate::transport::tls) fn verify(
             result
                 .as_ref()
                 .copied()
-                .map_err(|error| format!("{error:#}")),
+                .map_err(super::VerificationFailure::capture),
         );
         result?;
     }
@@ -219,7 +224,7 @@ pub(in crate::transport::tls) fn require_verified(ssl: &SslRef) -> anyhow::Resul
         .as_ref()
     {
         Some(Ok(())) => Ok(()),
-        Some(Err(error)) => anyhow::bail!("CRL verification failed: {error}"),
+        Some(Err(error)) => Err(error.error().context("CRL verification failed")),
         None => anyhow::bail!("Required CRL evidence was not verified"),
     }
 }
