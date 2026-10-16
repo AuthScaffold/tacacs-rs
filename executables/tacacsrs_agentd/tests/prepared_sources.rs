@@ -545,19 +545,17 @@ fn certificate_source(address: SocketAddr) -> Result<(TacacsPlus, SslContext)> {
         .join("../../lde/containers/config/certificates");
     let template = X509::from_pem(&std::fs::read(samples.join("client.crt"))?)?;
     let key = PKey::private_key_from_pem(&std::fs::read(samples.join("client.key"))?)?;
-    let now = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs(),
-    )?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
     let mut certificate = X509::builder()?;
     certificate.set_version(2)?;
     certificate.set_serial_number(template.serial_number())?;
     certificate.set_subject_name(template.subject_name())?;
     certificate.set_issuer_name(template.subject_name())?;
     certificate.set_pubkey(&key)?;
-    certificate.set_not_before(Asn1Time::from_unix(now - 60)?.as_ref())?;
-    certificate.set_not_after(Asn1Time::from_unix(now + 60)?.as_ref())?;
+    certificate.set_not_before(Asn1Time::from_unix((now - 60).try_into()?)?.as_ref())?;
+    certificate.set_not_after(Asn1Time::from_unix((now + 60).try_into()?)?.as_ref())?;
     let names = openssl::x509::extension::SubjectAlternativeName::new()
         .dns("localhost")
         .build(&certificate.x509v3_context(None, None))?;
