@@ -866,6 +866,11 @@ mod tests {
                 .admit(&next, provider.reserve(&next, 1).unwrap())
                 .await
                 .unwrap();
+            assert_eq!(
+                next.bind().await.unwrap().index,
+                0,
+                "downstream waiting must not open the upstream circuit"
+            );
         })
         .await
         .expect("expired proxy conversation must release its transport and capacity");
@@ -977,6 +982,131 @@ mod tests {
         })
         .await
         .expect("proxy reload scenario must finish");
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep both native timeout scenarios and their cleanup in one test."
+    )]
+    async fn expired_proxy_round_trip_routes_the_next_request_to_backup() {
+        use crate::config::RequestLimits;
+        use crate::runtime::{ProxyLoopGuard, RuntimeHealthPublisher};
+        use crate::upstream::NetworkUpstreamConnector;
+        use crate::EnabledServices;
+
+        for continuation in [false, true] {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                let primary = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let backup = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let manager = Arc::new(UpstreamManager::new(
+                    vec![native_server(&primary), native_server(&backup)],
+                    NetworkUpstreamConnector::new(ProxyLoopGuard::new(None)).erased(),
+                    Duration::from_secs(30),
+                    RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
+                ));
+                let limits = RequestLimits::new(1024, 2)
+                    .unwrap()
+                    .with_request_timeout(Duration::from_millis(200))
+                    .unwrap();
+                manager.reload_runtime_policy(
+                    RuntimePolicy::new(
+                        FailoverStrategy::default(),
+                        FailoverStrategy::default(),
+                        OperationPolicies::new(limits, limits, limits),
+                        Duration::from_secs(30),
+                    )
+                    .unwrap(),
+                );
+                let provider = Arc::new(UpstreamConversationProvider::new(OperationRouter::new(
+                    manager,
+                    PolicyService::TacacsProxy,
+                )));
+                let (mut client, downstream) = tokio::io::duplex(4096);
+                let proxy = tokio::spawn(proxy_multiplexed_connection(
+                    downstream,
+                    Duration::from_secs(5),
+                    None,
+                    provider.clone(),
+                ));
+                write_packet(
+                    &mut client,
+                    &test_packet_with_sequence(
+                        TacacsType::TacPlusAuthentication,
+                        1,
+                        1,
+                        TacacsFlags::empty(),
+                        vec![1],
+                    ),
+                )
+                .await;
+                let (mut upstream, _) = primary.accept().await.unwrap();
+                let request = read_packet(&mut upstream).await;
+                if continuation {
+                    write_authentication_reply(
+                        &mut upstream,
+                        &request,
+                        TacacsAuthenticationStatus::TacPlusAuthenStatusGetdata,
+                    )
+                    .await;
+                    read_packet(&mut client).await;
+                    write_packet(
+                        &mut client,
+                        &test_packet_with_sequence(
+                            TacacsType::TacPlusAuthentication,
+                            1,
+                            3,
+                            TacacsFlags::empty(),
+                            vec![1],
+                        ),
+                    )
+                    .await;
+                    read_packet(&mut upstream).await;
+                }
+                assert!(proxy.await.unwrap().is_err());
+                let unexpected_backup = backup.accept();
+                tokio::pin!(unexpected_backup);
+                std::future::poll_fn(|context| {
+                    assert!(
+                        std::future::Future::poll(unexpected_backup.as_mut(), context).is_pending(),
+                        "expired request must not be replayed"
+                    );
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                let (mut next_client, downstream) = tokio::io::duplex(4096);
+                let next_proxy = tokio::spawn(proxy_multiplexed_connection(
+                    downstream,
+                    Duration::from_secs(5),
+                    None,
+                    provider,
+                ));
+                write_packet(
+                    &mut next_client,
+                    &test_packet_with_sequence(
+                        TacacsType::TacPlusAuthentication,
+                        2,
+                        1,
+                        TacacsFlags::empty(),
+                        vec![1],
+                    ),
+                )
+                .await;
+                let (mut peer, _) = backup.accept().await.unwrap();
+                let request = read_packet(&mut peer).await;
+                write_authentication_reply(
+                    &mut peer,
+                    &request,
+                    TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
+                )
+                .await;
+                assert_eq!(read_packet(&mut next_client).await.header().session_id, 2);
+                drop(next_client);
+                assert!(next_proxy.await.unwrap().is_err());
+            })
+            .await
+            .expect("proxy timeout and failover must finish");
+        }
     }
 
     #[test]

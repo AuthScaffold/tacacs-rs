@@ -8,6 +8,10 @@
 //!
 //! Use [`BoundEndpoint::connection`] for typed exchanges or raw conversations.
 //! Report outcomes through the binding, not through a newly published catalog.
+//! Arm [`BoundEndpoint::observe_failure`] only during upstream I/O. Disarm it
+//! after a valid reply or local validation failure. Dropping an armed guard
+//! invalidates the captured connection before the next bind and schedules owned,
+//! bounded retirement. Do not keep it armed during downstream waits.
 //! Combine bindings with [`crate::retry`] for conservative, bounded retries.
 //! Schedule [`RoutedClient::retire_replaced_until`] when publishing a replacement.
 //! Removed endpoints remain usable by captured catalogs until that cutoff.
@@ -29,6 +33,6 @@ mod lifecycle;
 mod operation;
 
 pub use catalog::Endpoint;
-pub use client::{BoundEndpoint, RoutedClient};
+pub use client::{BoundEndpoint, FailureObservation, RoutedClient};
 pub use connector::{EndpointConnector, NativeConnector};
 pub use operation::OperationKind;
