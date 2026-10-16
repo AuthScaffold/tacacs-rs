@@ -5,6 +5,8 @@
 //! publish credential materializations, and maintain credential-change
 //! subscriptions. The parent module owns the run loop that joins them.
 
+use futures_util::future::BoxFuture;
+
 use super::{
     CancellationToken, ChangeNotificationMode, ConfigChangeEvent, ConfigSupervisor,
     CredentialChangeEvent, CredentialChangeScope, DegradationReason, MaterializationCoordinator,
@@ -20,37 +22,44 @@ impl ConfigSupervisor {
         }
 
         let mut attempt = 0u32;
+        let mut candidate: Option<BoxFuture<'_, Result<PublicationOutcome, ()>>> = None;
         loop {
-            let event = tokio::select! {
+            tokio::select! {
                 biased;
                 () = cancellation.cancelled() => return,
-                event = self.next_observation_event() => event,
-            };
-            match event {
-                Ok(ConfigChangeEvent::Changed(change)) => {
-                    let _ = tokio::select! {
-                        biased;
-                        () = cancellation.cancelled() => return,
-                        result = self.apply_candidate((*change.config).clone()) => result,
-                    };
-                    attempt = 0;
-                }
-                Ok(ConfigChangeEvent::CandidateRejected) => {
-                    self.materialization_coordinator
-                        .reject_observation(&self.health)
-                        .await;
-                }
-                Ok(ConfigChangeEvent::RestartRequired { required }) => self
-                    .health
-                    .set_degraded(DegradationReason::RestartRequired, required),
-                Err(()) => {
-                    self.observation.lock().await.take();
-                    attempt = attempt.saturating_add(1);
-                    if !self.wait_for_retry(attempt, cancellation).await {
-                        return;
+                event = self.next_observation_event() => match event {
+                    Ok(ConfigChangeEvent::Changed(change)) => {
+                        drop(candidate.take());
+                        candidate = Some(Box::pin(self.apply_candidate((*change.config).clone())));
+                        attempt = 0;
                     }
+                    Ok(ConfigChangeEvent::CandidateRejected) => {
+                        drop(candidate.take());
+                        self.materialization_coordinator
+                            .reject_observation(&self.health)
+                            .await;
+                    }
+                    Ok(ConfigChangeEvent::RestartRequired { required }) => self
+                        .health
+                        .set_degraded(DegradationReason::RestartRequired, required),
+                    Err(()) => {
+                        drop(candidate.take());
+                        self.observation.lock().await.take();
+                        attempt = attempt.saturating_add(1);
+                        if !self.wait_for_retry(attempt, cancellation).await {
+                            return;
+                        }
+                    }
+                },
+                _ = async {
+                    candidate
+                        .as_mut()
+                        .expect("the candidate branch requires pending work")
+                        .await
+                }, if candidate.is_some() => {
+                    drop(candidate.take());
                 }
-            }
+            };
         }
     }
 

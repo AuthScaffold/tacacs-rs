@@ -81,6 +81,7 @@ impl ConfigSupervisor {
         let mut changes = self.health.subscribe();
         let mut deadline: Option<tokio::time::Instant> = None;
         let mut last_revision: Option<crate::MaterializationRevision> = None;
+        let mut last_source_recovery: Option<crate::SourceRevision> = None;
         loop {
             let snapshot = changes.borrow_and_update().clone();
             let stale = match kind {
@@ -99,16 +100,26 @@ impl ConfigSupervisor {
             if !stale || expired {
                 deadline = None;
             }
+            let source_recovered = match kind {
+                MaterialExpiry::Source => {
+                    let recovery = snapshot.source_recovery_revision();
+                    let recovered = last_source_recovery.is_some_and(|last| Some(last) != recovery);
+                    last_source_recovery = recovery;
+                    recovered
+                }
+                MaterialExpiry::Credentials => false,
+            };
+            if source_recovered {
+                deadline = None;
+            }
             if let Some(revision) = snapshot.materialization_revision() {
                 if snapshot.eligible_server_count() == 0 {
                     deadline = None;
                     last_revision = None;
                 } else {
-                    let recovered = last_revision.is_some_and(|last| match kind {
-                        MaterialExpiry::Source => last.source() != revision.source(),
-                        MaterialExpiry::Credentials => last != revision,
-                    });
-                    if recovered {
+                    if matches!(kind, MaterialExpiry::Credentials)
+                        && last_revision.is_some_and(|last| last != revision)
+                    {
                         deadline = None;
                     }
                     last_revision = Some(revision);
