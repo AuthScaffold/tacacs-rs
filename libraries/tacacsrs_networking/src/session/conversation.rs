@@ -12,6 +12,10 @@ use super::ClientSession;
 /// packet and waits for the corresponding even-sequence server reply. The
 /// conversation enforces one session identifier, packet type, protocol
 /// version, and monotonically increasing sequence numbers.
+///
+/// Keep the originating [`crate::TacacsClient`] alive while using a conversation.
+/// Dropping that client closes its transports. Terminal client shutdown can also
+/// force a retained conversation closed when its drain deadline expires.
 pub struct ClientConversation {
     session: Option<ClientSession>,
     state: ConversationState,

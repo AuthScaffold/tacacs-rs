@@ -51,41 +51,48 @@ tacacsrs_agent
 │           └── error - downstream/upstream connection error boundary
 ├── upstream         - TACACS+ upstream service boundary
 │   ├── router       - per-service facade over the upstream manager
-│   ├── executor     - the one retry loop that applies a failover plan
-│   ├── failover     - shared strategy and replay-safety decisions
 │   ├── admission    - shared operation-size and concurrency admission
-│   ├── operation    - authentication, authorization, and accounting identity
 │   ├── attempt      - transmission-aware request failures
 │   ├── proxy_transport
 │   │                - downstream settings published with the server set
-│   ├── manager      - server snapshots and operation routing
-│   │   ├── circuit  - server-operation recovery state
-│   │   ├── routing  - route selection and connection invalidation
+│   ├── manager      - source snapshots, policy publication, and health
+│   │   ├── availability - generation-aware upstream observations
+│   │   ├── binding  - networking bindings paired with source metadata
 │   │   ├── server_set
-│   │   │            - immutable catalogs and operation cursors
-│   │   └── server_slot
-│   │                - operation-scoped connection ownership
-│   ├── connection   - upstream connection and connector traits
+│   │   │            - generic request snapshots and networking catalog handles
+│   │   └── prepared_server
+│   │                - source metadata and prepared endpoint identity
+│   ├── connection   - agent exchange interface
 │   └── network      - production TCP/TLS upstream connector
 └── test_support     - fake upstream fixtures for tests
 ```
 
 ## Failover ownership
 
-Only two modules read the failover configuration:
+`config::RuntimePolicy` projects canonical service policy into a `FailoverPlan` attempt budget.
+`tacacsrs_networking::retry` applies the conservative replay rules and owns the retry loop.
+The networking `routed` module owns endpoint catalogs, operation identities, circuits, reconnect serialization, and lifecycle state.
+The agent does not keep duplicate routing or retry state.
 
-- `upstream::failover` turns a `RuntimePolicy` into a `FailoverPlan`. The plan
-  holds the attempt budget and the replay-safety rule for one operation.
-- `upstream::executor` applies that plan. It is the only retry loop.
-
-A service does not read the plan. It implements `FailoverAttempt` and returns
-one `Attempt` value for each try. This keeps strategy interpretation out of the
-client API bridge and out of the raw proxy bridge.
+Each ingress path implements `FailoverAttempt` and returns one `Attempt` value for each try.
+The networking executor decides whether another attempt is permitted. Unknown outcomes are never replayed automatically.
 
 Services reach routing and admission through `upstream::OperationRouter`. The
 router binds one `PolicyService` identity at construction. A service therefore
 cannot read another service's state, cannot change the runtime configuration,
 and does not pass a service identity on each call.
+
+## Connector Composition
+
+`TacacsClientService` is the public, nongeneric service facade.
+It contains `ServiceRuntime<NetworkUpstreamConnector>`, whose connector returns the concrete `TacacsUpstreamConnection` type.
+Snapshots, request routers, both ingress services, listeners, and exchange adapters remain generic over the connector internally.
+This keeps the async `Send` proof in generic implementations and avoids the specialized erased shape described in the architecture investigation.
+
+Production and fake factories implement networking's `EndpointConnector` contract.
+The former agent `UpstreamConnector` trait is removed; that name now identifies a test-only trait-object alias.
+The erased `ServiceConnector` adapter also compiles only in tests. No dynamic connector or dynamic connection is stored on the production routing path.
+The agent exchange interface remains because it owns protocol-to-service error conversion and operation-specific diagnostics.
 
 ## Generation Readiness
 
@@ -265,7 +272,22 @@ The listener follows this startup sequence:
 6. begin serving IPC clients
 ```
 
-One coordinator receives SIGTERM or Ctrl-C, changes the shared lifecycle to `Draining`, and then broadcasts shutdown to every listener. Registration guards publish `Binding`, `Bound`, and `Stopped` on every return path. Shutdown stops accepting new local work, waits for active gRPC and raw proxy requests to finish, removes Unix domain socket paths, and finally publishes `Stopped`. A listener bind or accept-loop failure marks fatal health, cancels siblings, and waits for their guards and cleanup before returning.
+`serve()` waits for SIGTERM or Ctrl-C in its owned serving future.
+Embedded hosts use `serve_until(stop_future)` without installing signal handlers.
+Shutdown changes health to `Draining`, closes admission and upstream connection creation, and stops listeners from accepting new work.
+The maximum current operation request budget supplies one absolute deadline for listener drain and all current and historical upstream cleanup.
+At expiry, remaining listener tasks are cancelled and joined, and upstream sockets are forced closed.
+Owned Unix socket paths are removed before successful shutdown publishes `Stopped`.
+A listener failure cancels its siblings and uses the same cleanup path.
+
+Reload schedules removed endpoints for terminal retirement under one cutoff derived from the maximum operation budget at preparation start.
+Captured requests can still use their old endpoints before that cutoff; the retirement owner then cancels setup, closes sockets, and joins drivers.
+Unchanged endpoint identities retain their caches. A later reload cannot extend an earlier retirement cutoff.
+Terminal shutdown also reaches retired endpoints retained by old requests. A stopped service rejects reload and cannot be served again.
+
+Cancelling the serving future schedules immediate upstream cleanup and drops listener-owned transport guards.
+Use `close_and_join(deadline)` to confirm upstream cleanup after cancellation or when the service has not started listeners.
+For an active listener run, request shutdown through the future passed to `serve_until` and await that run's result.
 
 The same typed watch-backed snapshot drives startup, liveness, readiness, datastore freshness, upstream availability, standard gRPC health, host integration, and operator status. It contains only typed flags and counts. Configuration values, server identities, credential references, and raw errors stay outside the shared state.
 

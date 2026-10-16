@@ -22,12 +22,13 @@ impl RoutedOperation for PapAuthenticationRoute {
     const NAME: &'static str = "PAP authentication";
     const DISPLAY_NAME: &'static str = "PAP authentication";
     const OPERATION: OperationKind = OperationKind::Authentication;
-    async fn send(
-        connection: &dyn UpstreamConnection,
+    async fn send<Connection: UpstreamConnection + ?Sized>(
+        connection: &Connection,
         request: &Self::Request,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError> {
         let exchange = pap_exchange(request)?;
-        let reply = connection.authenticate_pap(exchange).await?;
+        let reply = connection.authenticate_pap(exchange, deadline).await?;
         PapAuthenticationOperationResponse::from_reply(connection.server_address(), reply)
             .map_err(UpstreamRequestError::outcome_unknown)
     }
@@ -52,7 +53,10 @@ fn pap_exchange(
         .map_err(UpstreamRequestError::invalid_request)
 }
 
-impl UpstreamBridge {
+impl<Connector: tacacsrs_networking::routed::EndpointConnector> UpstreamBridge<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
     pub(in crate::services::client_api) async fn execute_pap_authentication_request(
         &self,
         request: PapAuthenticationOperation,

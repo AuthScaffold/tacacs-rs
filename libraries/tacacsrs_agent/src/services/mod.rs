@@ -11,11 +11,19 @@ pub(crate) mod tacacs_proxy;
 #[derive(Clone, Copy)]
 pub(crate) struct ListenerOptions {
     socket_mode: u32,
+    pub(crate) max_connections: usize,
+    pub(crate) max_client_api_streams: u32,
+    pub(crate) connection_lifetime: std::time::Duration,
 }
 
 impl ListenerOptions {
-    pub(crate) const fn new(socket_mode: u32) -> Self {
-        Self { socket_mode }
+    pub(crate) fn new(prepared: &tacacsrs_config::local_services::PreparedLocalServices) -> Self {
+        Self {
+            socket_mode: prepared.unix_socket_mode(),
+            max_connections: prepared.max_connections(),
+            max_client_api_streams: prepared.max_client_api_streams(),
+            connection_lifetime: prepared.connection_lifetime(),
+        }
     }
 
     pub(crate) fn socket_mode(self) -> u32 {

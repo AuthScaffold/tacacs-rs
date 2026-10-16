@@ -12,21 +12,33 @@ use tonic::{Request, Response, Status};
 use crate::runtime::RequestTracker;
 use crate::services::client_api::upstream_bridge::UpstreamBridge;
 use crate::upstream::manager::UpstreamManager;
+use crate::upstream::UpstreamConnection;
+use tacacsrs_networking::routed::EndpointConnector;
 
 /// Delegates each gRPC request to the client API upstream bridge.
 ///
 /// Each [`tonic`] handler registers an active request. It then sends the decoded
 /// request to the upstream bridge.
-#[derive(Clone)]
-pub(crate) struct GrpcService {
-    upstream_bridge: UpstreamBridge,
+pub(crate) struct GrpcService<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    upstream_bridge: UpstreamBridge<Connector>,
     request_tracker: Arc<RequestTracker>,
 }
 
-impl GrpcService {
+impl<Connector: EndpointConnector> Clone for GrpcService<Connector> {
+    fn clone(&self) -> Self {
+        Self {
+            upstream_bridge: self.upstream_bridge.clone(),
+            request_tracker: self.request_tracker.clone(),
+        }
+    }
+}
+
+impl<Connector: EndpointConnector> GrpcService<Connector> {
     /// Creates a gRPC adapter for the shared upstream manager.
     pub(crate) fn new(
-        upstream_manager: Arc<UpstreamManager>,
+        upstream_manager: Arc<UpstreamManager<Connector>>,
         request_tracker: Arc<RequestTracker>,
     ) -> Self {
         Self {
@@ -37,7 +49,10 @@ impl GrpcService {
 }
 
 #[tonic::async_trait]
-impl TacacsAgent for GrpcService {
+impl<Connector: EndpointConnector> TacacsAgent for GrpcService<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
     async fn authenticate_pap(
         &self,
         request: Request<ipc::PapAuthenticationRequest>,

@@ -10,6 +10,7 @@
 
 pub(crate) mod abstractions;
 pub(crate) mod boxed;
+pub(crate) mod managed;
 #[cfg(test)]
 pub(crate) mod mock;
 pub(crate) mod tcp;

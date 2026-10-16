@@ -13,19 +13,35 @@ use crate::runtime::{
 };
 use crate::services::ListenerOptions;
 use crate::upstream::manager::UpstreamManager;
+use crate::upstream::UpstreamConnection;
+use tacacsrs_networking::routed::EndpointConnector;
 
 /// Owns the raw TACACS+ proxy runtime dependencies.
-#[derive(Clone)]
-pub(crate) struct TacacsProxyService {
+pub(crate) struct TacacsProxyService<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
     request_tracker: Arc<RequestTracker>,
-    upstream_bridge: UpstreamBridge,
+    upstream_bridge: UpstreamBridge<Connector>,
     proxy_loop_guard: ProxyLoopGuard,
 }
 
-impl TacacsProxyService {
+impl<Connector: EndpointConnector> Clone for TacacsProxyService<Connector> {
+    fn clone(&self) -> Self {
+        Self {
+            request_tracker: self.request_tracker.clone(),
+            upstream_bridge: self.upstream_bridge.clone(),
+            proxy_loop_guard: self.proxy_loop_guard.clone(),
+        }
+    }
+}
+
+impl<Connector: EndpointConnector> TacacsProxyService<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
     /// Creates a raw TACACS+ proxy service with shared runtime state.
     pub(crate) fn new(
-        upstream_manager: Arc<UpstreamManager>,
+        upstream_manager: Arc<UpstreamManager<Connector>>,
         request_tracker: Arc<RequestTracker>,
         proxy_loop_guard: ProxyLoopGuard,
     ) -> Self {

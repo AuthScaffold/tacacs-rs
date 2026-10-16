@@ -3,5 +3,5 @@
 mod state;
 mod tracker;
 
-pub(crate) use state::SingleConnectionState;
+pub(crate) use state::{NegotiationState, SingleConnectionState};
 pub(crate) use tracker::{LocalSingleConnectState, SingleConnectFlag};

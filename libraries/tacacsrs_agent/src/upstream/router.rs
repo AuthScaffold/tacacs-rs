@@ -13,72 +13,98 @@ use std::sync::Arc;
 use crate::config::PolicyService;
 
 use super::admission::{AdmissionError, AdmissionPermit};
-use super::failover::FailoverPlan;
-use super::manager::{BoundServer, UpstreamManager};
-use super::operation::OperationKind;
+use tacacsrs_networking::retry::FailoverPlan;
+use tacacsrs_networking::routed::EndpointConnector;
+use super::manager::{BoundServer, RoutingLease, UpstreamManager};
+use super::OperationKind;
 
 /// Routing and admission entry point for one local service.
-#[derive(Clone)]
-pub(crate) struct OperationRouter {
-    manager: Arc<UpstreamManager>,
+pub(crate) struct OperationRouter<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    manager: Arc<UpstreamManager<Connector>>,
     service: PolicyService,
 }
 
-impl OperationRouter {
+/// Captures one request's routing inputs across all of its attempts.
+pub(crate) struct RequestRouting<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    manager: Arc<UpstreamManager<Connector>>,
+    lease: RoutingLease<Connector>,
+}
+
+impl<Connector: EndpointConnector> Clone for OperationRouter<Connector> {
+    fn clone(&self) -> Self {
+        Self {
+            manager: self.manager.clone(),
+            service: self.service,
+        }
+    }
+}
+
+impl<Connector: EndpointConnector> RequestRouting<Connector> {
+    pub(crate) fn reserve(
+        &self,
+        body_length: usize,
+    ) -> Result<tacacsrs_networking::admission::AdmissionReservation, AdmissionError> {
+        UpstreamManager::reserve_request(&self.lease, body_length)
+    }
+
+    pub(crate) async fn admit_reserved(
+        &self,
+        reservation: tacacsrs_networking::admission::AdmissionReservation,
+    ) -> Result<AdmissionPermit, AdmissionError> {
+        self.manager.admit_reserved(&self.lease, reservation).await
+    }
+
+    pub(crate) fn deadline(&self) -> tacacsrs_networking::RequestDeadline {
+        self.lease.deadline()
+    }
+
+    pub(crate) fn failover_plan(&self) -> FailoverPlan {
+        self.lease.failover_plan()
+    }
+
+    pub(crate) async fn bind(&self) -> anyhow::Result<BoundServer<Connector>> {
+        self.manager.bind_request(&self.lease).await
+    }
+
+    pub(crate) async fn admit(
+        &self,
+        body_length: usize,
+    ) -> Result<AdmissionPermit, AdmissionError> {
+        self.manager.admit_request(&self.lease, body_length).await
+    }
+
+    pub(crate) fn validate_body_length(&self, body_length: usize) -> Result<(), AdmissionError> {
+        self.lease.validate_body_length(body_length)
+    }
+}
+
+impl<Connector: EndpointConnector> OperationRouter<Connector> {
     /// Binds a service identity to the shared upstream manager.
-    pub(crate) const fn new(manager: Arc<UpstreamManager>, service: PolicyService) -> Self {
+    pub(crate) const fn new(
+        manager: Arc<UpstreamManager<Connector>>,
+        service: PolicyService,
+    ) -> Self {
         Self { manager, service }
     }
 
-    /// Waits for shared operation capacity and validates the request size.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the body exceeds the configured operation limit or
-    /// no capacity became available within the upstream server timeout.
-    pub(crate) async fn admit(
-        &self,
-        operation: OperationKind,
-        body_length: usize,
-    ) -> Result<AdmissionPermit, AdmissionError> {
-        self.manager.admit_request(operation, body_length).await
-    }
-
-    /// Validates one packet body without acquiring another concurrency permit.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the body exceeds the configured operation limit.
-    pub(crate) fn validate_body_length(
-        &self,
-        operation: OperationKind,
-        body_length: usize,
-    ) -> Result<(), AdmissionError> {
-        self.manager.validate_request_size(operation, body_length)
-    }
-
-    /// Builds the retry plan for one request of this service.
-    pub(crate) fn failover_plan(&self, operation: OperationKind) -> FailoverPlan {
-        self.manager.failover_plan(self.service, operation)
-    }
-
-    /// Selects an eligible server and its operation-scoped connection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no configured server supports the operation or no
-    /// eligible server accepted a connection.
-    pub(crate) async fn bind(&self, operation: OperationKind) -> anyhow::Result<BoundServer> {
-        self.manager.bind_server_for_operation(operation).await
+    pub(crate) fn capture_request(&self, operation: OperationKind) -> RequestRouting<Connector> {
+        RequestRouting {
+            manager: Arc::clone(&self.manager),
+            lease: self.manager.capture_request(self.service, operation),
+        }
     }
 
     /// Records a successful request and completes a recovery trial when present.
-    pub(crate) async fn note_success(&self, bound_server: &BoundServer) {
+    pub(crate) async fn note_success(&self, bound_server: &BoundServer<Connector>) {
         self.manager.note_bound_server_success(bound_server).await;
     }
 
     /// Records a request failure and moves the operation cursor when needed.
-    pub(crate) async fn note_failure(&self, bound_server: &BoundServer) {
+    pub(crate) async fn note_failure(&self, bound_server: &BoundServer<Connector>) {
         self.manager.note_bound_server_failure(bound_server).await;
     }
 }

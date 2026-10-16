@@ -2158,6 +2158,7 @@ name = "tacacsrs-networking"
 version = "0.0.0-dev"
 dependencies = [
  "anyhow",
+ "async-trait",
  "foreign-types",
  "futures",
  "log",

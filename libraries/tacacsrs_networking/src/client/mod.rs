@@ -20,16 +20,48 @@ use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_protocol::traits::TacacsBodyTrait;
 
 use crate::endpoint::PreparedEndpoint;
-use crate::establish::{self, ConnectPreflight};
+use crate::establish::ConnectPreflight;
 use tacacsrs_protocol::exchange::FixedExchange;
 use crate::exchange_error::FixedExchangeError;
 use crate::runtime::MultiplexedConnection;
-use crate::single_connect::SingleConnectionState;
+use crate::single_connect::{NegotiationState, SingleConnectionState};
 use crate::session::{
     ClientConversation, ClientSession, DedicatedSession, ExpectedResponseHeader,
     SingleConnectPromotion,
 };
 use crate::transport::BoxedTransport;
+
+mod lifecycle;
+use lifecycle::ClientLifecycle;
+
+/// Retires the shared connection when the last client or promotion owner drops.
+#[derive(Default)]
+pub(crate) struct SharedConnectionCache {
+    pub(crate) slot: RwLock<Option<Arc<MultiplexedConnection>>>,
+    pub(crate) generation: std::sync::atomic::AtomicU64,
+    pub(crate) closed: std::sync::atomic::AtomicBool,
+    retiring: std::sync::Mutex<Vec<Arc<MultiplexedConnection>>>,
+}
+
+impl SharedConnectionCache {
+    fn retain_retiring(&self, connection: Arc<MultiplexedConnection>) {
+        let mut retiring = self
+            .retiring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        retiring.retain(|connection| !connection.driver_finished());
+        connection.disable_new_sessions();
+        retiring.push(connection);
+    }
+}
+
+impl Drop for SharedConnectionCache {
+    fn drop(&mut self) {
+        if let Some(connection) = self.slot.get_mut().take() {
+            connection.disable_new_sessions();
+        }
+    }
+}
 
 /// A configured TACACS+ client that selects a dedicated or shared connection.
 ///
@@ -40,10 +72,16 @@ use crate::transport::BoxedTransport;
 /// sessions. If single-connection mode is disabled in configuration or
 /// unsupported by the server, future operations continue to use dedicated
 /// connections.
+///
+/// [`Self::close`] permanently rejects new work. [`Self::close_and_join`]
+/// drains existing sessions until its deadline, then forces transport closure
+/// and joins owned tasks. Dropping the client requests immediate cleanup;
+/// retained conversations do not extend the client's transport lifetime.
 pub struct TacacsClient {
     endpoint: PreparedEndpoint,
-    shared_connection: Arc<RwLock<Option<Arc<MultiplexedConnection>>>>,
-    single_connection_state: Arc<RwLock<SingleConnectionState>>,
+    lifecycle: Arc<ClientLifecycle>,
+    shared_connection: Arc<SharedConnectionCache>,
+    single_connection_state: Arc<NegotiationState>,
     /// Serializes recovery when the cached shared connection is not available.
     ///
     /// The normal shared-session path does not take this lock. It only protects
@@ -52,18 +90,28 @@ pub struct TacacsClient {
     shared_recovery_lock: Mutex<()>,
 }
 
+impl Drop for TacacsClient {
+    fn drop(&mut self) {
+        self.close();
+        self.lifecycle.force_close_transports();
+    }
+}
+
 impl TacacsClient {
     /// Creates a client without opening a network connection.
     fn from_prepared(endpoint: PreparedEndpoint) -> Self {
         let single_connection_enabled = endpoint.single_connection();
         Self {
             endpoint,
-            shared_connection: Arc::new(RwLock::new(None)),
-            single_connection_state: Arc::new(RwLock::new(if single_connection_enabled {
-                SingleConnectionState::Initial
-            } else {
-                SingleConnectionState::NotSupported
-            })),
+            lifecycle: Arc::default(),
+            shared_connection: Arc::default(),
+            single_connection_state: Arc::new(NegotiationState::new(
+                if single_connection_enabled {
+                    SingleConnectionState::Initial
+                } else {
+                    SingleConnectionState::NotSupported
+                },
+            )),
             shared_recovery_lock: Mutex::new(()),
         }
     }
@@ -206,6 +254,16 @@ impl TacacsClient {
         &self,
         expected: Option<ExpectedResponseHeader>,
     ) -> anyhow::Result<ClientSession> {
+        self.lifecycle.ensure_open()?;
+        let session = self.create_open_session(expected).await?;
+        self.lifecycle.ensure_open()?;
+        Ok(session)
+    }
+
+    async fn create_open_session(
+        &self,
+        expected: Option<ExpectedResponseHeader>,
+    ) -> anyhow::Result<ClientSession> {
         if !self.endpoint.single_connection() {
             return Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?));
         }
@@ -215,7 +273,7 @@ impl TacacsClient {
         // disabled or after a cached shared connection disconnected. Only Initial
         // can start the capability probe. Negotiating means another session already
         // owns it.
-        match self.single_connection_state().await {
+        match self.single_connection_state() {
             SingleConnectionState::Initial => {
                 return self.create_single_connect_negotiation_session().await;
             }
@@ -282,6 +340,36 @@ impl TacacsClient {
         result
     }
 
+    /// Executes a fixed exchange within one absolute request deadline.
+    ///
+    /// # Errors
+    /// Returns a classified expiry before transmission or an unknown outcome
+    /// after the exchange starts. The deadline includes session establishment.
+    pub async fn execute_classified_until<Exchange>(
+        &self,
+        exchange: Exchange,
+        deadline: crate::RequestDeadline,
+    ) -> Result<Exchange::Reply, FixedExchangeError>
+    where
+        Exchange: FixedExchange,
+    {
+        let expected =
+            ExpectedResponseHeader::fixed(exchange.packet_type(), exchange.minor_version());
+        let session = deadline
+            .run(self.create_fixed_session(expected))
+            .await
+            .map_err(FixedExchangeError::not_sent)?
+            .map_err(FixedExchangeError::not_sent)?;
+        deadline.check().map_err(FixedExchangeError::not_sent)?;
+        let result = deadline
+            .run(execute_on_session(&session, exchange))
+            .await
+            .map_err(FixedExchangeError::outcome_unknown)
+            .and_then(std::convert::identity);
+        let _completed = deadline.run(session.complete()).await;
+        result
+    }
+
     /// Opens a sequential packet conversation for transparent proxying and
     /// interactive TACACS+ authentication.
     ///
@@ -298,10 +386,83 @@ impl TacacsClient {
     /// drain. If a shared connection exists, it is removed from the cache and told
     /// to reject future session creation while already-created sessions finish.
     pub async fn stop_accepting_new_sessions(&self) {
-        let connection = self.shared_connection.write().await.take();
-        if let Some(connection) = connection {
-            connection.disable_new_sessions();
+        let mut slot = self.shared_connection.slot.write().await;
+        self.shared_connection
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if let Some(connection) = slot.take() {
+            self.shared_connection.retain_retiring(connection);
         }
+    }
+
+    /// Permanently rejects new work and cancels in-progress connection setup.
+    ///
+    /// Existing sessions can finish until [`Self::close_and_join`] forces cleanup.
+    /// Closing is idempotent. A closed client cannot be reopened.
+    pub fn close(&self) {
+        self.lifecycle.close();
+        self.shared_connection
+            .closed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Closes the client, drains existing sessions, and joins owned setup and driver tasks.
+    ///
+    /// At `deadline`, remaining transports close even if callers retain idle
+    /// conversations or do not poll their I/O futures. Cancelled joins can be retried;
+    /// the client remains closed. Final client drop also requests immediate cleanup.
+    ///
+    /// # Errors
+    /// Returns a setup or driver task failure after completing other cleanup.
+    pub async fn close_and_join(&self, deadline: crate::RequestDeadline) -> anyhow::Result<()> {
+        self.close();
+        self.stop_accepting_new_sessions().await;
+        let setup_result = self.lifecycle.join_setups(deadline).await;
+        let _drained = deadline.run(self.lifecycle.wait_for_transports()).await;
+        let driver_result = self.retire_shared_until(deadline).await;
+        self.lifecycle.force_close_transports();
+        self.lifecycle.wait_for_transports().await;
+        setup_result.and(driver_result)
+    }
+
+    /// Retires and joins the currently cached and previously retired shared drivers.
+    ///
+    /// New sessions on those connections are disabled. Active sessions can drain
+    /// until `deadline`; expiry aborts the drivers and waits for their cleanup.
+    /// Cancellation retains the driver handles, so this method can be retried.
+    ///
+    /// This is shared-connection retirement, not client shutdown. Dedicated
+    /// sessions and new session creation through this client remain permitted.
+    /// The caller must quiesce new operations when using this as a shutdown step.
+    /// Negotiations captured before retirement cannot repopulate the shared cache.
+    ///
+    /// # Errors
+    /// Returns a driver I/O error or task failure after joining its task.
+    pub async fn retire_shared_until(
+        &self,
+        deadline: crate::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        self.stop_accepting_new_sessions().await;
+        let retiring = self
+            .shared_connection
+            .retiring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut failure = None;
+        for connection in retiring {
+            if let Err(error) = connection.close_and_join(deadline).await {
+                if failure.is_none() {
+                    failure = Some(error);
+                }
+            }
+        }
+        self.shared_connection
+            .retiring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|connection| !connection.driver_finished());
+        failure.map_or(Ok(()), Err)
     }
 
     async fn create_session_after_shared_miss(
@@ -310,7 +471,7 @@ impl TacacsClient {
     ) -> anyhow::Result<ClientSession> {
         // Stage 3: a rejected shared connection returns the client to Initial
         // after transport loss. The next connection must negotiate again.
-        match self.single_connection_state().await {
+        match self.single_connection_state() {
             SingleConnectionState::Initial => {
                 return self.create_single_connect_negotiation_session().await;
             }
@@ -337,7 +498,7 @@ impl TacacsClient {
         // Stage 6: final fallback. This opens at most one fresh dedicated
         // session on this path. It opens a connection without a probe for
         // NotSupported, or a probe that can promote the completed connection.
-        match self.single_connection_state().await {
+        match self.single_connection_state() {
             SingleConnectionState::NotSupported => {
                 // Another task can record denial while this task waits
                 // on recovery. Keep terminal NotSupported on fresh streams.
@@ -353,15 +514,15 @@ impl TacacsClient {
     }
 
     async fn create_single_connect_negotiation_session(&self) -> anyhow::Result<ClientSession> {
-        let Some(promotion) = self.begin_single_connection_negotiation().await else {
+        let Some(promotion) = self.begin_single_connection_negotiation() else {
             return Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?));
         };
 
         Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(Some(promotion)).await?))
     }
 
-    async fn single_connection_state(&self) -> SingleConnectionState {
-        *self.single_connection_state.read().await
+    fn single_connection_state(&self) -> SingleConnectionState {
+        self.single_connection_state.snapshot()
     }
 
     /// Starts or joins single-connection negotiation for a dedicated session.
@@ -376,33 +537,15 @@ impl TacacsClient {
     /// [Supported] ---- retry --> [Negotiating] -- returns promotion
     /// [NotSupported] ----------> [NotSupported] -- no promotion
     /// ```
-    async fn begin_single_connection_negotiation(&self) -> Option<SingleConnectPromotion> {
-        let mut state = self.single_connection_state.write().await;
-        match *state {
-            SingleConnectionState::NotSupported | SingleConnectionState::Negotiating => None,
-            SingleConnectionState::Initial | SingleConnectionState::Supported => {
-                *state = SingleConnectionState::Negotiating;
-                Some(SingleConnectPromotion::new(
-                    Arc::clone(&self.shared_connection),
-                    Arc::clone(&self.single_connection_state),
-                ))
-            }
-        }
+    fn begin_single_connection_negotiation(&self) -> Option<SingleConnectPromotion> {
+        SingleConnectPromotion::begin(
+            self.shared_connection.clone(),
+            self.single_connection_state.clone(),
+        )
     }
 
-    async fn update_single_connection_state(&self, new_state: SingleConnectionState) {
-        let mut state = self.single_connection_state.write().await;
-        if *state == new_state {
-            return;
-        }
-
-        log::info!(
-            target: "tacacsrs_networking::client::single_connection_state",
-            "Single-connection state changed from {:?} to {:?}",
-            *state,
-            new_state,
-        );
-        *state = new_state;
+    fn update_single_connection_state(&self, new_state: SingleConnectionState) {
+        self.single_connection_state.update(new_state);
     }
 
     /// Updates the client state after the cached shared connection is rejected.
@@ -437,20 +580,18 @@ impl TacacsClient {
     /// The second path is the load-balancer-safe path: after a shared
     /// connection closes, the client does not assume that the next backend has the
     /// same single-connection capability.
-    async fn update_state_after_shared_connection_rejection(
+    fn update_state_after_shared_connection_rejection(
         &self,
         connection: &Arc<MultiplexedConnection>,
     ) {
         match connection.single_connection_state() {
             SingleConnectionState::NotSupported => {
-                self.update_single_connection_state(SingleConnectionState::NotSupported)
-                    .await;
+                self.update_single_connection_state(SingleConnectionState::NotSupported);
             }
             SingleConnectionState::Initial
             | SingleConnectionState::Negotiating
             | SingleConnectionState::Supported => {
-                self.update_single_connection_state(SingleConnectionState::Initial)
-                    .await;
+                self.update_single_connection_state(SingleConnectionState::Initial);
             }
         }
     }
@@ -459,11 +600,9 @@ impl TacacsClient {
         &self,
         expected: Option<ExpectedResponseHeader>,
     ) -> Option<ClientSession> {
-        let connection = self.shared_connection.read().await.clone()?;
+        let connection = self.shared_connection.slot.read().await.clone()?;
 
         if !connection.can_create_sessions() {
-            self.update_state_after_shared_connection_rejection(&connection)
-                .await;
             self.clear_shared_connection(&connection).await;
             return None;
         }
@@ -482,8 +621,6 @@ impl TacacsClient {
                     "Cached connection to TACACS+ server {} failed to create a session: {error:#}",
                     self.endpoint.address(),
                 );
-                self.update_state_after_shared_connection_rejection(&connection)
-                    .await;
                 self.clear_shared_connection(&connection).await;
                 None
             }
@@ -491,12 +628,15 @@ impl TacacsClient {
     }
 
     async fn clear_shared_connection(&self, connection: &Arc<MultiplexedConnection>) {
-        let mut cached = self.shared_connection.write().await;
+        let mut cached = self.shared_connection.slot.write().await;
         if cached
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, connection))
         {
-            *cached = None;
+            self.update_state_after_shared_connection_rejection(connection);
+            if let Some(connection) = cached.take() {
+                self.shared_connection.retain_retiring(connection);
+            }
         }
     }
 
@@ -546,10 +686,7 @@ impl TacacsClient {
     }
 
     async fn establish_stream(&self) -> anyhow::Result<BoxedTransport> {
-        let address = self.endpoint.address();
-        establish::establish_stream(&self.endpoint)
-            .await
-            .with_context(|| format!("Failed to connect to TACACS+ server {address}"))
+        self.lifecycle.establish(self.endpoint.clone()).await
     }
 }
 
@@ -853,7 +990,7 @@ mod tests {
 
         let client = TacacsClient::connect_prepared(server).await.unwrap();
 
-        assert_eq!(client.single_connection_state().await, SingleConnectionState::Initial);
+        assert_eq!(client.single_connection_state(), SingleConnectionState::Initial);
     }
 
     #[test]
@@ -867,6 +1004,405 @@ mod tests {
         .with_certificate_tls("10.0.0.1", None, crate::CertificateTrust::Platform, None)
         .unwrap();
         assert_eq!(endpoint.obfuscation_key.unwrap().expose_secret(), b"legacy-secret");
+    }
+
+    #[tokio::test]
+    async fn terminal_close_drains_dedicated_and_shared_conversations() {
+        use tokio::io::AsyncReadExt;
+        use crate::RequestDeadline;
+
+        for shared in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let client = TacacsClient::connect_prepared(PreparedEndpoint::tcp(
+                listener.local_addr().unwrap().to_string(),
+                shared,
+                None,
+                ConnectOptions::default(),
+            ))
+            .await
+            .unwrap();
+            let mut conversation = client.open_conversation().await.unwrap();
+            let (mut peer, _) = listener.accept().await.unwrap();
+            if shared {
+                let request = test_packet(
+                    conversation.session_id().unwrap(),
+                    1,
+                    TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                );
+                let exchange = conversation.round_trip(request);
+                let reply = async {
+                    let PacketReadResult::Success(request) =
+                        PacketReader::new(None).read_packet(&mut peer).await
+                    else {
+                        panic!("expected request");
+                    };
+                    peer.write_all(
+                        &accounting_success_reply(
+                            &request,
+                            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+                        )
+                        .to_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                };
+                let (result, ()) = tokio::join!(exchange, reply);
+                result.unwrap();
+                conversation.complete().await;
+                conversation = client.open_conversation().await.unwrap();
+            }
+            let closing =
+                client.close_and_join(RequestDeadline::after(Duration::from_secs(5)).unwrap());
+            tokio::pin!(closing);
+            assert!(futures::poll!(&mut closing).is_pending());
+            assert!(client.open_conversation().await.is_err());
+            conversation.complete().await;
+            tokio::time::timeout(Duration::from_secs(1), closing)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shorter_terminal_join_closes_transport_for_all_waiters() {
+        use tokio::io::AsyncReadExt;
+        use crate::RequestDeadline;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TacacsClient::connect_prepared(PreparedEndpoint::tcp(
+            listener.local_addr().unwrap().to_string(),
+            false,
+            None,
+            ConnectOptions::default(),
+        ))
+        .await
+        .unwrap();
+        let _conversation = client.open_conversation().await.unwrap();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        let longer =
+            client.close_and_join(RequestDeadline::after(Duration::from_secs(60)).unwrap());
+        tokio::pin!(longer);
+        assert!(futures::poll!(&mut longer).is_pending());
+        client
+            .close_and_join(RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+        longer.await.unwrap();
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn terminal_close_releases_a_parked_dedicated_read_and_rejects_new_work() {
+        use tokio::io::AsyncReadExt;
+        use crate::{RequestDeadline, TransmissionState};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = PreparedEndpoint::tcp(
+            listener.local_addr().unwrap().to_string(),
+            false,
+            None,
+            ConnectOptions::default(),
+        );
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let session = client.create_session().await.unwrap();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        session
+            .send_packet(test_packet(
+                session.session_id(),
+                1,
+                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            PacketReader::new(None).read_packet(&mut peer).await,
+            PacketReadResult::Success(_)
+        ));
+        let read = session.receive_packet();
+        tokio::pin!(read);
+        assert!(futures::poll!(&mut read).is_pending());
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            client.close_and_join(RequestDeadline::after(Duration::ZERO).unwrap()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+        assert!(read.await.is_err());
+        assert!(client.open_conversation().await.is_err());
+        let error = client
+            .execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request()))
+            .await
+            .unwrap_err();
+        assert_eq!(error.transmission_state(), TransmissionState::NotSent);
+        client
+            .close_and_join(RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn terminal_close_cancels_stalled_tls_setup_without_polling_its_caller() {
+        use tokio::io::AsyncReadExt;
+        use crate::{CertificateTrust, RequestDeadline};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = PreparedEndpoint::tcp(
+            listener.local_addr().unwrap().to_string(),
+            false,
+            None,
+            ConnectOptions::default(),
+        )
+        .with_certificate_tls("localhost", None, CertificateTrust::Platform, None)
+        .unwrap();
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let opening = client.open_conversation();
+        tokio::pin!(opening);
+        assert!(futures::poll!(&mut opening).is_pending());
+        let (mut peer, _) = listener.accept().await.unwrap();
+        let mut hello = [0; 4096];
+        assert!(peer.read(&mut hello).await.unwrap() > 0);
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            client.close_and_join(RequestDeadline::after(Duration::from_secs(5)).unwrap()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let mut remaining = Vec::new();
+        peer.read_to_end(&mut remaining).await.unwrap();
+        assert!(opening.await.is_err());
+        assert!(client.open_conversation().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn client_drop_prevents_an_old_negotiation_from_starting_a_driver() {
+        use std::sync::Arc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_requests, server_task) = spawn_single_stream_accounting_server(
+            listener,
+            1,
+            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+        );
+        let client = TacacsClient::connect_prepared(PreparedEndpoint::tcp(
+            address.to_string(),
+            true,
+            None,
+            ConnectOptions::default(),
+        ))
+        .await
+        .unwrap();
+        let session = client.create_session().await.unwrap();
+        run_session_exchange(&session).await;
+        let cache = Arc::clone(&client.shared_connection);
+        drop(client);
+        session.complete().await;
+        assert!(cache.slot.read().await.is_none());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dropping_client_closes_retained_idle_dedicated_conversation() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TacacsClient::connect_prepared(PreparedEndpoint::tcp(
+            listener.local_addr().unwrap().to_string(),
+            false,
+            None,
+            ConnectOptions::default(),
+        ))
+        .await
+        .unwrap();
+        let mut conversation = client.open_conversation().await.unwrap();
+        let session_id = conversation.session_id().unwrap();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        drop(client);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer.read(&mut [0; 1]))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert!(conversation
+            .round_trip(test_packet(session_id, 1, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_terminal_join_remains_closed_and_can_be_retried() {
+        use tokio::io::AsyncReadExt;
+        use crate::RequestDeadline;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TacacsClient::connect_prepared(PreparedEndpoint::tcp(
+            listener.local_addr().unwrap().to_string(),
+            false,
+            None,
+            ConnectOptions::default(),
+        ))
+        .await
+        .unwrap();
+        let _conversation = client.open_conversation().await.unwrap();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        {
+            let closing =
+                client.close_and_join(RequestDeadline::after(Duration::from_secs(10)).unwrap());
+            tokio::pin!(closing);
+            assert!(futures::poll!(&mut closing).is_pending());
+        }
+        assert!(client.open_conversation().await.is_err());
+        client
+            .close_and_join(RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn shared_retirement_drains_active_session_and_releases_driver() {
+        use std::sync::Arc;
+        use tokio::io::AsyncReadExt;
+        use crate::runtime::MultiplexedConnection;
+
+        let client = TacacsClient::from_prepared(server_template());
+        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+        let session = connection.create_session().unwrap();
+        let (transport, mut peer) = tokio::io::duplex(256);
+        let (reader, writer) = tokio::io::split(transport);
+        connection.run_with_halves(reader, writer);
+        *client.shared_connection.slot.write().await = Some(connection.clone());
+        let retirement = client
+            .retire_shared_until(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap());
+        tokio::pin!(retirement);
+        assert!(futures::poll!(&mut retirement).is_pending());
+        assert!(connection.create_session().is_err());
+        session.complete();
+        retirement.await.unwrap();
+        assert!(connection.driver_finished());
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_shared_retirement_can_be_retried_without_losing_drivers() {
+        use std::sync::Arc;
+        use tokio::io::AsyncReadExt;
+        use crate::runtime::MultiplexedConnection;
+
+        let client = TacacsClient::from_prepared(server_template());
+        for _cycle in 0..8 {
+            let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+            let session = connection.create_session().unwrap();
+            let (transport, mut peer) = tokio::io::duplex(256);
+            let (reader, writer) = tokio::io::split(transport);
+            connection.run_with_halves(reader, writer);
+            *client.shared_connection.slot.write().await = Some(connection.clone());
+            {
+                let retirement = client.retire_shared_until(
+                    crate::RequestDeadline::after(Duration::from_secs(10)).unwrap(),
+                );
+                tokio::pin!(retirement);
+                assert!(futures::poll!(&mut retirement).is_pending());
+            }
+            client
+                .retire_shared_until(crate::RequestDeadline::after(Duration::ZERO).unwrap())
+                .await
+                .unwrap();
+            assert!(connection.driver_finished());
+            assert!(session.receive_packet().await.is_err());
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+            assert!(client.shared_connection.retiring.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_retirement_prevents_late_promotion() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_requests, server_task) = spawn_single_stream_accounting_server(
+            listener,
+            1,
+            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+        );
+        let mut endpoint = server_template();
+        endpoint.address = address.to_string();
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let session = client.create_session().await.unwrap();
+        run_session_exchange(&session).await;
+        client
+            .retire_shared_until(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+            .await
+            .unwrap();
+        session.complete().await;
+        assert!(client.shared_connection.slot.read().await.is_none());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dropping_client_retires_idle_cached_transport() {
+        use std::sync::Arc;
+
+        use tokio::io::AsyncReadExt;
+
+        use crate::runtime::MultiplexedConnection;
+
+        let client = TacacsClient::from_prepared(server_template());
+        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+        let (transport, mut peer) = tokio::io::duplex(256);
+        let (reader, writer) = tokio::io::split(transport);
+        connection.run_with_halves(reader, writer);
+        *client.shared_connection.slot.write().await = Some(connection);
+
+        drop(client);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer.read(&mut [0; 1]))
+                .await
+                .expect("the last cache owner must retire the transport")
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_client_preserves_active_session_until_completion() {
+        use std::sync::Arc;
+
+        use tokio::io::AsyncReadExt;
+
+        use crate::runtime::MultiplexedConnection;
+
+        let client = TacacsClient::from_prepared(server_template());
+        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+        let session = connection.create_session().unwrap();
+        let (transport, mut peer) = tokio::io::duplex(256);
+        let (reader, writer) = tokio::io::split(transport);
+        connection.run_with_halves(reader, writer);
+        *client.shared_connection.slot.write().await = Some(Arc::clone(&connection));
+        drop(client);
+        assert!(connection.create_session().is_err());
+        let mut byte = [0; 1];
+        let read = peer.read(&mut byte);
+        tokio::pin!(read);
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(read.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(session);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), read)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -894,6 +1430,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_exchange_does_not_open_a_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut endpoint = server_template();
+        endpoint.address = listener.local_addr().unwrap().to_string();
+        endpoint.single_connection = false;
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let error = client
+            .execute_classified_until(
+                TestAccountingExchange(accounting_watchdog_preflight_request()),
+                crate::RequestDeadline::after(Duration::ZERO).unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.transmission_state(), crate::TransmissionState::NotSent);
+        let accept = listener.accept();
+        tokio::pin!(accept);
+        assert!(futures::poll!(&mut accept).is_pending());
+    }
+
+    #[tokio::test]
+    async fn deadline_classifies_stalled_tls_and_sent_requests() {
+        use tokio::io::AsyncReadExt;
+        use crate::{
+            CertificateTrust, PacketReader, PacketReadResult, RequestDeadline, TransmissionState,
+        };
+
+        for tls in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut endpoint = server_template();
+            endpoint.address = listener.local_addr().unwrap().to_string();
+            endpoint.single_connection = false;
+            if tls {
+                endpoint = endpoint
+                    .with_certificate_tls("localhost", None, CertificateTrust::Platform, None)
+                    .unwrap();
+            }
+            let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+            let deadline = RequestDeadline::after(Duration::from_millis(200)).unwrap();
+            let exchange = client.execute_classified_until(
+                TestAccountingExchange(accounting_watchdog_preflight_request()),
+                deadline,
+            );
+            let peer = async {
+                let (mut peer, _) = listener.accept().await.unwrap();
+                if !tls {
+                    assert!(matches!(
+                        PacketReader::new(None).read_packet(&mut peer).await,
+                        PacketReadResult::Success(_)
+                    ));
+                }
+                let mut remaining = Vec::new();
+                peer.read_to_end(&mut remaining).await.unwrap();
+                if tls {
+                    assert!(!remaining.is_empty(), "the client must start its TLS handshake");
+                }
+            };
+            let (result, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+                tokio::join!(exchange, peer)
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                result.unwrap_err().transmission_state(),
+                if tls {
+                    TransmissionState::NotSent
+                } else {
+                    TransmissionState::OutcomeUnknown
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn accounting_watchdog_preflight_establishes_shared_connection_when_echoed() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let listener_address = listener.local_addr().unwrap();
@@ -918,8 +1527,8 @@ mod tests {
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
-        assert_eq!(client.single_connection_state().await, SingleConnectionState::Supported);
-        assert!(client.shared_connection.read().await.is_some());
+        assert_eq!(client.single_connection_state(), SingleConnectionState::Supported);
+        assert!(client.shared_connection.slot.read().await.is_some());
 
         let reply = tokio::time::timeout(
             Duration::from_secs(1),
@@ -935,6 +1544,61 @@ mod tests {
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn timed_out_probe_recovers_and_promotes_on_the_same_client() {
+        use tokio::io::AsyncReadExt;
+        use crate::{PacketReader, PacketReadResult, RequestDeadline, TransmissionState};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut endpoint = server_template();
+        endpoint.address = listener.local_addr().unwrap().to_string();
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let request = client.execute_classified_until(
+            TestAccountingExchange(accounting_watchdog_preflight_request()),
+            RequestDeadline::after(Duration::from_millis(100)).unwrap(),
+        );
+        let peer = async {
+            let (mut peer, _) = listener.accept().await.unwrap();
+            assert!(matches!(
+                PacketReader::new(None).read_packet(&mut peer).await,
+                PacketReadResult::Success(_)
+            ));
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+        };
+        let (result, ()) =
+            tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(request, peer) })
+                .await
+                .unwrap();
+        assert_eq!(result.unwrap_err().transmission_state(), TransmissionState::OutcomeUnknown);
+        assert_eq!(client.single_connection_state(), SingleConnectionState::Initial);
+        let (mut requests, server_task) = spawn_single_stream_accounting_server(
+            listener,
+            2,
+            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+        );
+        for _ in 0..2 {
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                client.execute(TestAccountingExchange(accounting_watchdog_preflight_request())),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        }
+        assert!(receive_request(&mut requests)
+            .await
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        assert!(!receive_request(&mut requests)
+            .await
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        assert_eq!(client.single_connection_state(), SingleConnectionState::Supported);
         server_task.await.unwrap();
     }
 
@@ -964,8 +1628,8 @@ mod tests {
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
-        assert_eq!(client.single_connection_state().await, SingleConnectionState::NotSupported);
-        assert!(client.shared_connection.read().await.is_none());
+        assert_eq!(client.single_connection_state(), SingleConnectionState::NotSupported);
+        assert!(client.shared_connection.slot.read().await.is_none());
 
         let session = client.create_session().await.unwrap();
         run_session_exchange(&session).await;
@@ -1020,7 +1684,7 @@ mod tests {
                 .flags
                 .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
         }
-        assert_eq!(client.single_connection_state().await, SingleConnectionState::Supported);
+        assert_eq!(client.single_connection_state(), SingleConnectionState::Supported);
 
         server_task.await.unwrap();
     }
@@ -1045,7 +1709,7 @@ mod tests {
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
 
-        assert_eq!(client.single_connection_state().await, SingleConnectionState::NotSupported);
+        assert_eq!(client.single_connection_state(), SingleConnectionState::NotSupported);
 
         let second_session = client.create_session().await.unwrap();
         run_session_exchange(&second_session).await;
@@ -1057,7 +1721,7 @@ mod tests {
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
 
         server_task.await.unwrap();
-        assert_eq!(client.single_connection_state().await, SingleConnectionState::NotSupported);
+        assert_eq!(client.single_connection_state(), SingleConnectionState::NotSupported);
     }
 
     #[tokio::test]
@@ -1071,9 +1735,7 @@ mod tests {
         server.address = listener_address.to_string();
         let client = TacacsClient::from_prepared(server);
 
-        client
-            .update_single_connection_state(SingleConnectionState::NotSupported)
-            .await;
+        client.update_single_connection_state(SingleConnectionState::NotSupported);
 
         let session = client
             .create_single_connect_negotiation_session()
@@ -1102,7 +1764,7 @@ mod tests {
         let client = TacacsClient::from_prepared(server);
 
         let first_session = client.create_session().await.unwrap();
-        assert_eq!(client.single_connection_state().await, SingleConnectionState::Negotiating);
+        assert_eq!(client.single_connection_state(), SingleConnectionState::Negotiating);
 
         let second_session = client.create_session().await.unwrap();
         run_session_exchange(&second_session).await;
@@ -1113,7 +1775,7 @@ mod tests {
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
-        assert_eq!(client.single_connection_state().await, SingleConnectionState::Negotiating);
+        assert_eq!(client.single_connection_state(), SingleConnectionState::Negotiating);
 
         run_session_exchange(&first_session).await;
         first_session.complete().await;

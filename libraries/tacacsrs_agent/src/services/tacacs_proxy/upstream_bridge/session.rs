@@ -5,26 +5,28 @@
 //! exchange cannot move to another server without losing protocol state.
 //!
 //! This module does not read the failover strategy. It builds one
-//! [`crate::upstream::FailoverPlan`] and gives one [`ProxyAttempt`] to the
+//! [`tacacsrs_networking::retry::FailoverPlan`] and gives one [`ProxyAttempt`] to the
 //! shared failover executor.
 
 use std::time::Duration;
 
 use async_trait::async_trait;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
-use tacacsrs_networking::ClientConversation;
-use tokio::sync::mpsc;
+use tacacsrs_networking::{ClientConversation, RequestDeadline};
+use tacacsrs_networking::retry::{
+    Attempt, AttemptDisposition, FailoverAttempt, FailoverOutcome, FailoverPlan, run_with_failover,
+};
+use tokio::sync::{mpsc, oneshot};
 
 use super::error::ProxyConnectionError;
 use super::error_reply::local_error_reply;
 use super::packet_io;
 use super::reply_action::{ReplyAction, is_error_reply, reply_action};
 use super::session_mapping::rewrite_session_id;
-use crate::upstream::{
-    AdmissionError, AdmissionPermit, Attempt, AttemptDisposition, FailoverAttempt, FailoverOutcome,
-    FailoverPlan, OperationKind, OperationRouter, run_with_failover,
-};
+use crate::upstream::{AdmissionError, AdmissionPermit, OperationKind, OperationRouter, RequestRouting};
 use crate::upstream::manager::BoundServer;
+use crate::upstream::UpstreamConnection;
+use tacacsrs_networking::routed::EndpointConnector;
 
 /// One TACACS+ conversation with a selected upstream server.
 #[async_trait]
@@ -59,64 +61,107 @@ pub(super) trait ProxyConversation: Send + Sync {
 pub(super) trait ProxyConversationProvider: Send + Sync + 'static {
     /// Conversation type produced by this provider.
     type Conversation: ProxyConversation;
+    /// Immutable routing inputs captured for the first packet and its continuations.
+    type Request: Send + Sync;
+    type Reservation: Send + Sync;
+
+    fn capture_request(&self, operation: OperationKind) -> Self::Request;
+
+    fn deadline(&self, request: &Self::Request) -> RequestDeadline;
+
+    fn reserve(
+        &self,
+        request: &Self::Request,
+        body_length: usize,
+    ) -> Result<Self::Reservation, AdmissionError>;
 
     /// Selects a server and opens a conversation for one operation.
     async fn open_conversation(
         &self,
-        operation: OperationKind,
+        request: &Self::Request,
     ) -> anyhow::Result<Self::Conversation>;
 
     /// Waits for shared operation capacity and validates the request size.
     async fn admit(
         &self,
-        operation: OperationKind,
-        body_length: usize,
+        request: &Self::Request,
+        reservation: Self::Reservation,
     ) -> Result<Option<AdmissionPermit>, AdmissionError>;
 
     /// Validates one continuing packet without acquiring another permit.
     fn validate_body_length(
         &self,
-        operation: OperationKind,
+        request: &Self::Request,
         body_length: usize,
     ) -> Result<(), AdmissionError>;
 
     /// Builds the retry plan for one proxy request.
-    fn failover_plan(&self, operation: OperationKind) -> FailoverPlan;
+    fn failover_plan(&self, request: &Self::Request) -> FailoverPlan;
 }
 
 /// Provides proxy conversations through the shared upstream router.
-pub(super) struct UpstreamConversationProvider {
-    router: OperationRouter,
+pub(super) struct UpstreamConversationProvider<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    router: OperationRouter<Connector>,
 }
 
-impl UpstreamConversationProvider {
-    pub(super) const fn new(router: OperationRouter) -> Self {
+impl<Connector: EndpointConnector> UpstreamConversationProvider<Connector> {
+    pub(super) const fn new(router: OperationRouter<Connector>) -> Self {
         Self { router }
     }
 }
 
 /// A proxy conversation bound to one server, operation, and routing generation.
-pub(super) struct ManagedProxyConversation {
-    router: OperationRouter,
-    bound_server: BoundServer,
+pub(super) struct ManagedProxyConversation<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    router: OperationRouter<Connector>,
+    bound_server: BoundServer<Connector>,
     conversation: ClientConversation,
 }
 
 #[async_trait]
-impl ProxyConversationProvider for UpstreamConversationProvider {
-    type Conversation = ManagedProxyConversation;
+impl<Connector: EndpointConnector> ProxyConversationProvider
+    for UpstreamConversationProvider<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
+    type Conversation = ManagedProxyConversation<Connector>;
+    type Request = RequestRouting<Connector>;
+    type Reservation = tacacsrs_networking::admission::AdmissionReservation;
+
+    fn reserve(
+        &self,
+        request: &Self::Request,
+        body_length: usize,
+    ) -> Result<Self::Reservation, AdmissionError> {
+        request.reserve(body_length)
+    }
+
+    fn capture_request(&self, operation: OperationKind) -> Self::Request {
+        self.router.capture_request(operation)
+    }
+
+    fn deadline(&self, request: &Self::Request) -> RequestDeadline {
+        request.deadline()
+    }
 
     async fn open_conversation(
         &self,
-        operation: OperationKind,
+        request: &Self::Request,
     ) -> anyhow::Result<Self::Conversation> {
-        let bound_server = self.router.bind(operation).await?;
+        let bound_server = request.bind().await?;
+        let mut observation = bound_server.observe_failure();
         match bound_server.connection.open_conversation().await {
-            Ok(conversation) => Ok(ManagedProxyConversation {
-                router: self.router.clone(),
-                bound_server,
-                conversation,
-            }),
+            Ok(conversation) => {
+                observation.disarm();
+                Ok(ManagedProxyConversation {
+                    router: self.router.clone(),
+                    bound_server,
+                    conversation,
+                })
+            }
             Err(error) => {
                 self.router.note_failure(&bound_server).await;
                 Err(error)
@@ -126,27 +171,27 @@ impl ProxyConversationProvider for UpstreamConversationProvider {
 
     async fn admit(
         &self,
-        operation: OperationKind,
-        body_length: usize,
+        request: &Self::Request,
+        reservation: Self::Reservation,
     ) -> Result<Option<AdmissionPermit>, AdmissionError> {
-        self.router.admit(operation, body_length).await.map(Some)
+        request.admit_reserved(reservation).await.map(Some)
     }
 
     fn validate_body_length(
         &self,
-        operation: OperationKind,
+        request: &Self::Request,
         body_length: usize,
     ) -> Result<(), AdmissionError> {
-        self.router.validate_body_length(operation, body_length)
+        request.validate_body_length(body_length)
     }
 
-    fn failover_plan(&self, operation: OperationKind) -> FailoverPlan {
-        self.router.failover_plan(operation)
+    fn failover_plan(&self, request: &Self::Request) -> FailoverPlan {
+        request.failover_plan()
     }
 }
 
 #[async_trait]
-impl ProxyConversation for ManagedProxyConversation {
+impl<Connector: EndpointConnector> ProxyConversation for ManagedProxyConversation<Connector> {
     fn session_id(&self) -> Option<u32> {
         self.conversation.session_id()
     }
@@ -156,7 +201,12 @@ impl ProxyConversation for ManagedProxyConversation {
     }
 
     async fn round_trip(&mut self, packet: Packet) -> anyhow::Result<Packet> {
-        self.conversation.round_trip(packet).await
+        let mut observation = self.bound_server.observe_failure();
+        let result = self.conversation.round_trip(packet).await;
+        if result.is_ok() {
+            observation.disarm();
+        }
+        result
     }
 
     async fn complete(&mut self) {
@@ -181,11 +231,14 @@ pub(super) struct SessionPacket {
 pub(super) struct SessionReply {
     pub(super) packet: Packet,
     pub(super) obfuscation: packet_io::DownstreamObfuscation,
+    pub(super) deadline: RequestDeadline,
+    pub(super) delivered: Option<oneshot::Sender<()>>,
 }
 
 /// The first proxy packet, which is the only packet failover can replay.
-struct ProxyAttempt<'session, Provider> {
+struct ProxyAttempt<'session, Provider: ProxyConversationProvider> {
     provider: &'session Provider,
+    routing: &'session Provider::Request,
     operation: OperationKind,
     /// Held only while another attempt can still replay this packet.
     request: Option<Packet>,
@@ -207,7 +260,7 @@ where
             self.operation.name(),
             attempt_index + 1,
         );
-        let mut conversation = match self.provider.open_conversation(self.operation).await {
+        let mut conversation = match self.provider.open_conversation(self.routing).await {
             Ok(conversation) => conversation,
             Err(error) => {
                 return Attempt::Failed {
@@ -283,21 +336,44 @@ pub(super) async fn run_proxy_session<Provider>(
     downstream_session_id: u32,
     timeout: Duration,
     provider: &Provider,
-    mut packets: mpsc::Receiver<SessionPacket>,
+    routing: Provider::Request,
+    reservation: Provider::Reservation,
+    packets: mpsc::Receiver<SessionPacket>,
     replies: mpsc::Sender<SessionReply>,
 ) -> Result<(), ProxyConnectionError>
 where
     Provider: ProxyConversationProvider,
 {
+    provider
+        .deadline(&routing)
+        .run(run_captured_proxy_session(
+            downstream_session_id,
+            timeout,
+            provider,
+            routing,
+            reservation,
+            packets,
+            replies,
+        ))
+        .await
+        .map_err(|error| ProxyConnectionError::Upstream(error.into()))?
+}
+
+async fn run_captured_proxy_session<Provider: ProxyConversationProvider>(
+    downstream_session_id: u32,
+    timeout: Duration,
+    provider: &Provider,
+    routing: Provider::Request,
+    reservation: Provider::Reservation,
+    mut packets: mpsc::Receiver<SessionPacket>,
+    replies: mpsc::Sender<SessionReply>,
+) -> Result<(), ProxyConnectionError> {
     let Some(first_request) = packets.recv().await else {
         return Ok(());
     };
     let operation = OperationKind::try_from(first_request.packet.header().tacacs_type)
         .expect("each TACACS+ packet type maps to an operation");
-    let _admission_permit = match provider
-        .admit(operation, first_request.packet.body().len())
-        .await
-    {
+    let _admission_permit = match provider.admit(&routing, reservation).await {
         Ok(permit) => permit,
         Err(error) => {
             log::warn!(
@@ -313,13 +389,14 @@ where
                 reply,
                 downstream_session_id,
                 false,
+                provider.deadline(&routing),
             )
             .await?;
             return Ok(());
         }
     };
 
-    let plan = provider.failover_plan(operation);
+    let plan = provider.failover_plan(&routing);
     let max_attempts = plan.max_attempts();
     let SessionPacket {
         packet: first_packet,
@@ -328,6 +405,7 @@ where
     } = first_request;
     let mut attempt = ProxyAttempt {
         provider,
+        routing: &routing,
         operation,
         request: Some(first_packet),
         max_attempts,
@@ -354,6 +432,7 @@ where
         first_reply,
         downstream_session_id,
         true,
+        provider.deadline(&routing),
     )
     .await?;
 
@@ -374,7 +453,7 @@ where
             let result = run_pinned_proxy_session(
                 downstream_session_id,
                 timeout,
-                operation,
+                &routing,
                 provider,
                 &mut conversation,
                 &mut packets,
@@ -387,17 +466,18 @@ where
     }
 }
 
-async fn run_pinned_proxy_session<Conversation>(
+async fn run_pinned_proxy_session<Conversation, Provider>(
     downstream_session_id: u32,
     timeout: Duration,
-    operation: OperationKind,
-    provider: &impl ProxyConversationProvider,
+    routing: &Provider::Request,
+    provider: &Provider,
     conversation: &mut Conversation,
     packets: &mut mpsc::Receiver<SessionPacket>,
     replies: &mpsc::Sender<SessionReply>,
 ) -> Result<(), ProxyConnectionError>
 where
     Conversation: ProxyConversation,
+    Provider: ProxyConversationProvider,
 {
     let upstream_session_id = conversation.session_id().ok_or_else(|| {
         ProxyConnectionError::Upstream(anyhow::anyhow!(
@@ -410,7 +490,7 @@ where
             reply_obfuscation,
             advertise_single_connect,
         } = request;
-        if let Err(error) = provider.validate_body_length(operation, request_packet.body().len()) {
+        if let Err(error) = provider.validate_body_length(routing, request_packet.body().len()) {
             let reply = local_error_reply(&request_packet, &error.to_string())
                 .map_err(ProxyConnectionError::Downstream)?;
             send_proxy_reply(
@@ -420,6 +500,7 @@ where
                 reply,
                 downstream_session_id,
                 false,
+                provider.deadline(routing),
             )
             .await?;
             return Ok(());
@@ -452,6 +533,7 @@ where
             upstream_reply,
             downstream_session_id,
             true,
+            provider.deadline(routing),
         )
         .await?;
 
@@ -477,6 +559,7 @@ async fn send_proxy_reply(
     reply: Packet,
     downstream_session_id: u32,
     rewrite_id: bool,
+    deadline: RequestDeadline,
 ) -> Result<(), ProxyConnectionError> {
     let mut flags = reply.header().flags;
     flags.set(
@@ -489,15 +572,23 @@ async fn send_proxy_reply(
     } else {
         reply
     };
+    let (delivered, delivery) = oneshot::channel();
     replies
         .send(SessionReply {
             packet,
             obfuscation,
+            deadline,
+            delivered: Some(delivered),
         })
         .await
         .map_err(|_| {
             ProxyConnectionError::Downstream(anyhow::anyhow!(
                 "The downstream TACACS+ reply writer stopped"
             ))
-        })
+        })?;
+    delivery.await.map_err(|_| {
+        ProxyConnectionError::Downstream(anyhow::anyhow!(
+            "The downstream TACACS+ reply was not delivered"
+        ))
+    })
 }
