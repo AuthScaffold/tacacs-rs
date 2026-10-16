@@ -129,7 +129,7 @@ impl ResolvedCredentialSet {
     }
 
     /// Consumes the closed result set into slot-associated credentials.
-    #[must_use]
+    #[must_use = "Consume the iterator to access the resolved credentials."]
     pub fn into_credentials(
         self,
     ) -> impl ExactSizeIterator<Item = (RequestSlot, RequestContext, ResolvedCredential)> {

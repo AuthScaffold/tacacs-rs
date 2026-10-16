@@ -691,7 +691,7 @@ mod tests {
         else {
             panic!("empty snapshot expected");
         };
-        assert!(empty.config.server.is_empty());
+        assert_eq!(empty.config.server.len(), 0);
         assert_eq!(empty.delta.removed_servers.len(), 2);
     }
 }

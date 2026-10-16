@@ -737,7 +737,7 @@ mod tests {
         tokio::time::advance(Duration::from_secs(2)).await;
         let service = service();
         assert!(coordinator.publish(prepared, &service).await.is_err());
-        assert!(coordinator.active_servers().await.is_empty());
+        assert_eq!(coordinator.active_servers().await.len(), 0);
         assert_eq!(service.server_count(), 0);
     }
 
@@ -947,7 +947,7 @@ mod tests {
         }
         drop(held);
         assert_eq!(service.server_count(), 0);
-        assert!(coordinator.active_servers().await.is_empty());
+        assert_eq!(coordinator.active_servers().await.len(), 0);
         assert_eq!(health.snapshot(), previous_health);
     }
 
