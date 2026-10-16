@@ -127,10 +127,7 @@ pub fn validate_config_with_options(
         anyhow::bail!("server list must contain at least one entry");
     }
 
-    let mut seen_endpoints = HashSet::new();
-    for server in &config.server {
-        validate_server(server, &mut seen_endpoints, options)?;
-    }
+    validate_server_set(config.server.iter(), options)?;
 
     validate_unique_ids(
         config.client_credentials.iter().map(|c| c.id.as_str()),
@@ -151,8 +148,27 @@ pub fn validate_config_with_options(
 
     crate::enumeration::validate_credential_references(config)?;
 
-    validate_key_formats(config)?;
+    for cred in &config.client_credentials {
+        let context = format!("client-credentials '{}'", cred.id);
+        validate_client_credential_key_formats(cred, &context)?;
+    }
 
+    Ok(())
+}
+
+pub(crate) fn validate_server_set<'a>(
+    servers: impl IntoIterator<Item = &'a TacacsPlusServer>,
+    options: &ValidationOptions,
+) -> anyhow::Result<()> {
+    let mut seen_endpoints = HashSet::new();
+    let mut seen_names = HashSet::new();
+    for server in servers {
+        if !seen_names.insert(&server.name) {
+            anyhow::bail!("server list contains duplicate names");
+        }
+        validate_server(server, &mut seen_endpoints, options)?;
+        validate_server_key_formats(server)?;
+    }
     Ok(())
 }
 
@@ -440,7 +456,10 @@ fn reject_unsupported_credentials_features(
     Ok(())
 }
 
-fn reject_unsupported_epsk_derivation(context: &str, epsk: &Tls13Epsk) -> anyhow::Result<()> {
+pub(crate) fn reject_unsupported_epsk_derivation(
+    context: &str,
+    epsk: &Tls13Epsk,
+) -> anyhow::Result<()> {
     if epsk.context.is_some() {
         anyhow::bail!(
             "'{context}': tls13-epsk 'context' for additional key derivation is not yet supported"
@@ -463,24 +482,14 @@ fn reject_unsupported_epsk_derivation(context: &str, epsk: &Tls13Epsk) -> anyhow
 // Inline key material validation
 // ---------------------------------------------------------------------------
 
-/// Make sure that all inline definitions contain valid key material.
-pub(crate) fn validate_key_formats(config: &TacacsPlus) -> anyhow::Result<()> {
-    for server in &config.server {
-        let ctx = format!("server '{}'", server.name);
-
-        if let Some(ref ci) = server.client_identity {
-            validate_client_identity_key_formats(ci, &ctx)?;
-        }
-        if let Some(ref sa) = server.server_authentication {
-            validate_server_auth_key_formats(sa, &ctx)?;
-        }
+fn validate_server_key_formats(server: &TacacsPlusServer) -> anyhow::Result<()> {
+    let context = format!("server '{}'", server.name);
+    if let Some(ref ci) = server.client_identity {
+        validate_client_identity_key_formats(ci, &context)?;
     }
-
-    for cred in &config.client_credentials {
-        let ctx = format!("client-credentials '{}'", cred.id);
-        validate_client_credential_key_formats(cred, &ctx)?;
+    if let Some(ref sa) = server.server_authentication {
+        validate_server_auth_key_formats(sa, &context)?;
     }
-
     Ok(())
 }
 

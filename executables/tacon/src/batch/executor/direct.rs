@@ -1,5 +1,5 @@
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_networking::ConnectOptions;
+use tacacsrs_config::prepare::PrepareOptions;
 
 use super::dedicated::{execute_requests_dedicated, run_dedicated_load_test};
 use super::multiplexed::{
@@ -39,7 +39,7 @@ pub async fn execute_batch(
     server: &TacacsPlusServer,
     dedicated: bool,
     batch: &BatchFile,
-    options: &ConnectOptions,
+    options: PrepareOptions,
 ) -> anyhow::Result<Vec<RequestResult>> {
     if let Some(description) = &batch.metadata.description {
         log::info!("Running batch: {description}");
@@ -89,7 +89,7 @@ async fn execute_batch_load_test(
     batch: &BatchFile,
     load_config: &LoadTestConfig,
     execution_mode: ExecutionMode,
-    options: &ConnectOptions,
+    options: PrepareOptions,
 ) -> anyhow::Result<Vec<RequestResult>> {
     let mode_label = match execution_mode {
         ExecutionMode::Multiplexed => "Multiplexed Connections",

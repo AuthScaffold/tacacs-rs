@@ -12,7 +12,7 @@ host is covered in [Running tacacsrs-agentd as a SONiC Docker container](sonic-a
 
 ## Architecture
 
-The agent does not depend directly on Redis. The `tacacsrs-datastore::ConfigDatastore`
+The agent does not depend directly on Redis. The `tacacsrs_config::source::ConfigDatastore`
 trait abstracts configuration sources, and the SONiC bridge
 (`tacacsrs-sonic::SonicConfigDb`) is one concrete backend.
 Any future vendor datastore (for example a different NOS, a YAML configuration
@@ -32,7 +32,7 @@ same trait.
               +------------------+                   +-----------------------+
 ```
 
-`CliFileDatastore` handles file-based and CLI-based configuration. CLI-only
+`tacacsrs_config::input::CliFileDatastore` handles file-based and CLI-based configuration. CLI-only
 input returns one snapshot. Watched YANG, certificate, and key files emit
 change events. `SonicConfigDb` reads `TACPLUS|global`,
 `TACPLUS_SERVER|*`, `TACPLUS_SERVER_TLS|*`, and
@@ -77,6 +77,11 @@ Compatibility rows accept these project extension keys:
 | `src_intf`          | `source-interface` | Falls back to the global `TACPLUS` row |
 | `server_type`       | `server-type`      | Defaults to `all` |
 
+The mapper preserves `vrf_name`, `src_ip`, and `src_intf` in canonical YANG for reporting.
+The client transport does not implement these binding controls, so runtime preparation rejects configurations that select them.
+This also applies when `src_intf` comes from `TACPLUS|global`.
+The daemon keeps the previous active generation instead of silently ignoring the requested binding.
+
 The bridge tolerates unknown compatibility fields and logs their names. It
 does not log their values. Compatibility rows reject `use_tls`, `domain_name`,
 and `sni_enabled`. Put TLS configuration in `TACPLUS_SERVER_TLS`.
@@ -91,7 +96,7 @@ server:
 | `psk_identity` | Required external identity |
 | `psk_secret_ref` | Required opaque EPSK object ID |
 | `priority` | Optional value from `1` through `64`; default `1` |
-| `tcp_port` | Optional TLS port; default `449` |
+| `tcp_port` | Optional TLS port; default `300` |
 | `timeout` | Optional timeout from `1` through `60` seconds; default `5` |
 | `domain_name` | Optional SNI name |
 | `sni_enabled` | Optional boolean; requires `domain_name` when true |
@@ -99,6 +104,15 @@ server:
 | `psk_hash` | `sha-256` or `sha-384`; default `sha-256` |
 | `psk_key_exchange` | `psk-dhe` or `psk-only`; default `psk-dhe` |
 | `psk_key_exchange_groups` | Optional colon-separated groups for `psk-dhe` |
+
+The client accepts a connection only when the negotiated PSK key exchange matches `psk_key_exchange`.
+A `psk-only` row rejects a peer-selected DHE exchange, even if the native TLS handshake succeeds.
+Both modes reject certificate-authenticated fallback before sending TACACS+ data.
+The ClientHello can still advertise both modes, so a PSK-only peer must select no-DHE exchange.
+
+The omitted TLS port now defaults to 300, as specified by RFC 9887 and the pinned YANG module.
+This replaces the previous SONiC TLS default of 449. An explicit `tcp_port` remains unchanged.
+Compatibility server rows and the local forwarder still default to legacy TCP port 49.
 
 The production resolver reads `psk_secret_ref` from
 `/etc/sonic/tacacs/credentials/epsk/<id>`. The credential file must satisfy
@@ -109,6 +123,16 @@ the ownership, permission, link-count, and size checks in
 `local_listen_address` field is required and must be loopback.
 `local_listen_port` is optional and defaults to `49`. The TLS and forwarder
 tables reject unknown fields.
+
+`SonicForwarderSettings::local_services` produces the canonical `tacacsrs:local-services` resource.
+It enables both services and selects downstream credentials from the local proxy row.
+The generated YANG model supplies default IPC paths and socket permissions. The daemon no longer duplicates these SONiC profile choices.
+Equivalent CLI, SONiC, and YANG inputs use the same listener preparation checks.
+
+Canonical server snapshots now retain rows that target the local forwarder, including their mapped shared secrets.
+The runtime filter removes classic self-targets only after downstream credential preparation. It rejects TLS self-targets before publication.
+Previously, mapper-side deletion could remove the row needed by `local-proxy-row` policy.
+The mapper no longer treats all loopback addresses as aliases. `127.0.0.1`, `127.0.0.2`, and `::1` can identify different destinations.
 
 ## Running on SONiC
 
@@ -228,7 +252,7 @@ done
 redis-cli -n 4 HSET 'TACPLUS_FORWARDER|global' \
     local_listen_address 127.0.0.1 local_listen_port 49
 redis-cli -n 4 HSET 'TACPLUS|global' \
-    timeout 5 passkey shared-secret auth_type pap src_intf Management0
+    timeout 5 passkey shared-secret auth_type pap
 redis-cli -n 4 HSET 'TACPLUS_SERVER|192.0.2.10' \
     priority 64 tcp_port 49 timeout 10 passkey server-secret \
     single_connection true
@@ -292,6 +316,16 @@ When a TACPLUS-prefixed key changes in CONFIG_DB, the runtime:
 4. If the server configuration changed, emits `Changed`.
 5. Filters proxy self-loops and atomically applies a valid changed server set.
 6. Emits `RestartRequired` when the forwarder row differs from the bound listener.
+
+Loop validation checks every DNS answer when the upstream port matches the proxy port.
+Lookup failure, empty answers, unspecified destinations, and timeout reject the candidate while the previous runtime generation remains active.
+The lookup deadline uses the canonical server timeout.
+Wildcard listeners also check current interface addresses. IPv4-mapped addresses compare as IPv4, and IPv6 wildcard checks conservatively include dual-stack binding.
+
+The agent supplements this publication-time snapshot with a live connection guard.
+The guard checks each resolved destination before TCP connect and the resulting socket before TLS or TACACS+ traffic.
+It uses actual listener ports, refreshed interface addresses, and connected socket addresses. DNS changes after publication cannot bypass the connection check.
+Unbound or closed TCP proxies block new upstream connections. Listener shutdown and task cancellation retire the guard registration.
 
 A forwarder-only change does not replace the server set. After a rejected
 reload, the datastore waits for the next ConfigDB notification.

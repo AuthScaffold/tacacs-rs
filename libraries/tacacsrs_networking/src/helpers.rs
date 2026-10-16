@@ -5,6 +5,7 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 
 use anyhow::Context as _;
+use crate::endpoint::ConnectionGuard;
 
 /// Resolves a host name and optional port to a list of socket addresses.
 ///
@@ -40,10 +41,33 @@ pub(crate) fn get_server_addresses(hostname: &str) -> anyhow::Result<Vec<SocketA
 /// # Errors
 ///
 /// Returns an error if all connection attempts fail.
-pub(crate) async fn connect_tcp(hostname: &str) -> anyhow::Result<tokio::net::TcpStream> {
-    for server_address in resolve_server_addresses(hostname).await? {
+pub(crate) async fn connect_tcp(
+    hostname: &str,
+    guard: Option<&dyn ConnectionGuard>,
+) -> anyhow::Result<tokio::net::TcpStream> {
+    connect_after_resolution(resolve_server_addresses(hostname), guard).await
+}
+
+async fn connect_after_resolution(
+    resolution: impl std::future::Future<Output = anyhow::Result<Vec<SocketAddr>>> + Send,
+    guard: Option<&dyn ConnectionGuard>,
+) -> anyhow::Result<tokio::net::TcpStream> {
+    for server_address in resolution.await? {
+        if let Some(guard) = guard {
+            guard.check_destination(server_address)?;
+        }
         match tokio::net::TcpStream::connect(server_address).await {
             Ok(stream) => {
+                if let Some(guard) = guard {
+                    guard.check_connected(
+                        stream
+                            .peer_addr()
+                            .context("inspect connected TACACS+ peer")?,
+                        stream
+                            .local_addr()
+                            .context("inspect connected TACACS+ local address")?,
+                    )?;
+                }
                 log::info!(
                     target: "tacacsrs_networking::helpers::connect_tcp",
                     "Connected to TACACS+ server {server_address}");
@@ -71,34 +95,6 @@ async fn resolve_server_addresses(hostname: &str) -> anyhow::Result<Vec<SocketAd
         .context("The TACACS+ address resolution task failed")?
 }
 
-/// Extracts the TLS server name from a configured `host[:port]` address string.
-///
-/// This function accepts plain host names, IPv4 `host:port`, and bracketed IPv6
-/// `[addr]:port` formats. It returns the host portion for SNI and certificate
-/// name checks.
-#[must_use]
-pub(crate) fn tls_server_name(server_addr: &str) -> &str {
-    if let Some(stripped) = server_addr
-        .strip_prefix('[')
-        .and_then(|value| value.split_once(']').map(|(host, _)| host))
-    {
-        return stripped;
-    }
-
-    // Split host:port only when the value contains exactly one colon.
-    // A valid IPv6 literal contains at least two colons. This check prevents
-    // the function from interpreting an unbracketed IPv6 address as host:port.
-    if server_addr.matches(':').count() == 1 {
-        if let Some((host, port)) = server_addr.rsplit_once(':') {
-            if port.parse::<u16>().is_ok() {
-                return host;
-            }
-        }
-    }
-
-    server_addr
-}
-
 /// Returns whether `data` contains a PEM block marker.
 #[must_use]
 pub(crate) fn data_contains_pem_header(data: &[u8]) -> bool {
@@ -110,54 +106,38 @@ pub(crate) fn data_contains_pem_header(data: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{data_contains_pem_header, tls_server_name};
+    use super::data_contains_pem_header;
 
-    #[test]
-    fn test_tls_server_name_plain_hostname() {
-        assert_eq!(tls_server_name("example.com"), "example.com");
-    }
+    #[tokio::test]
+    async fn changed_resolution_cannot_bypass_destination_guard() {
+        use super::{ConnectionGuard, SocketAddr, connect_after_resolution};
 
-    #[test]
-    fn test_tls_server_name_ipv4_with_port() {
-        assert_eq!(tls_server_name("192.0.2.10:49"), "192.0.2.10");
-    }
-
-    #[test]
-    fn test_tls_server_name_ipv6_with_port() {
-        assert_eq!(tls_server_name("[2001:db8::1]:49"), "2001:db8::1");
-    }
-
-    #[test]
-    fn test_tls_server_name_unbracketed_ipv6_literal_is_unchanged() {
-        assert_eq!(tls_server_name("2001:db8::1"), "2001:db8::1");
-    }
-
-    #[test]
-    fn test_tls_server_name_unbracketed_ipv6_localhost_is_unchanged() {
-        assert_eq!(tls_server_name("::1"), "::1");
-    }
-
-    #[test]
-    fn test_tls_server_name_unbracketed_ipv6_full_is_unchanged() {
-        assert_eq!(
-            tls_server_name("2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
-            "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
+        struct Exclude(SocketAddr);
+        impl ConnectionGuard for Exclude {
+            fn check_destination(&self, destination: SocketAddr) -> anyhow::Result<()> {
+                anyhow::ensure!(destination != self.0, "excluded destination");
+                Ok(())
+            }
+            fn check_connected(&self, peer: SocketAddr, _: SocketAddr) -> anyhow::Result<()> {
+                self.check_destination(peer)
+            }
+        }
+        let allowed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let excluded = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let guard = Exclude(excluded.local_addr().unwrap());
+        let initial = async { Ok(vec![allowed.local_addr().unwrap()]) };
+        drop(
+            connect_after_resolution(initial, Some(&guard))
+                .await
+                .unwrap(),
         );
-    }
-
-    #[test]
-    fn test_tls_server_name_bracketed_ipv6_without_port() {
-        assert_eq!(tls_server_name("[2001:db8::1]"), "2001:db8::1");
-    }
-
-    #[test]
-    fn test_tls_server_name_hostname_with_port() {
-        assert_eq!(tls_server_name("tacacs.example.com:49"), "tacacs.example.com");
-    }
-
-    #[test]
-    fn test_tls_server_name_hostname_with_non_numeric_port_is_unchanged() {
-        assert_eq!(tls_server_name("host:notaport"), "host:notaport");
+        let changed = async { Ok(vec![excluded.local_addr().unwrap()]) };
+        assert!(connect_after_resolution(changed, Some(&guard))
+            .await
+            .is_err());
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(25), excluded.accept())
+            .await
+            .is_err());
     }
 
     #[test]

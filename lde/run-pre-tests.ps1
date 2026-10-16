@@ -320,9 +320,7 @@ function Get-MatrixConfigs {
             MetadataChecks = $false
             PackageArgs = @(
                 '--package', 'tacon',
-                '--package', 'tacacsrs-cli-datastore',
                 '--package', 'tacacsrs-config',
-                '--package', 'tacacsrs-datastore',
                 '--package', 'tacacsrs-protocol',
                 '--package', 'tacacsrs-networking',
                 '--package', 'tacacsrs-secrets'

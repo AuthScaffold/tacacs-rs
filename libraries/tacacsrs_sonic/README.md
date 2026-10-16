@@ -4,7 +4,7 @@ SONiC ConfigDB datastore backend for the central TACACS+ client service
 (`tacacsrs-agentd`).
 
 This crate is one concrete implementation of the
-[`tacacsrs_datastore::ConfigDatastore`] trait. It bridges between SONiC's
+[`tacacsrs_config::source::ConfigDatastore`] trait. It bridges between SONiC's
 Redis-backed Configuration Database (`CONFIG_DB`, database index `4`) and the
 shared `ietf-system-tacacs-plus` YANG configuration consumed by the agent.
 
@@ -14,16 +14,33 @@ shared `ietf-system-tacacs-plus` YANG configuration consumed by the agent.
    `TACPLUS_SERVER_TLS|<addr>`, and `TACPLUS_FORWARDER|global` as one snapshot.
 2. Parses raw Redis hashes into private typed rows before producing any RFC
    configuration.
-3. Filters normalized loopback self-targets, rejects cross-table ambiguity,
-   and orders mixed candidates by descending priority plus a stable normalized
-   name/endpoint tie-breaker.
+3. Preserves all source rows, rejects cross-table ambiguity, and orders mixed
+   candidates by descending priority plus a stable normalized name/endpoint tie-breaker.
 4. Maps compatibility rows into [`tacacsrs_config::TacacsPlusServer`] values.
 5. Subscribes to Redis keyspace notifications (`__keyspace@4__:TACPLUS*`) and
-   re-emits a [`tacacsrs_datastore::ConfigChange`] when relevant keys change.
+   re-emits a [`tacacsrs_config::source::ConfigChange`] when relevant keys change.
 
 The [`mapping`] module implements parsing and field mapping as pure functions
 and fully unit-tests them without a live Redis. The Redis client only handles
 I/O.
+
+## Forwarder Ownership
+
+`SonicForwarderSettings::local_services` normalizes the validated forwarder row into generated `LocalServices`.
+The SONiC profile enables both services and selects `local-proxy-row` credentials.
+Generated YANG defaults supply the client API path and socket permissions.
+The optional ConfigDB listener port still defaults to 49 as a SONiC input rule. The canonical resource contains the explicit endpoint.
+
+Mapping no longer deletes local compatibility rows or rejects TLS self-targets.
+Canonical snapshots retain those rows and their credentials. The daemon's shared runtime filter performs both decisions before publication.
+This preserves the local row needed for downstream credential preparation without adding it to the applied upstream set.
+Distinct loopback addresses remain distinct hosts. IPv4-mapped addresses normalize to their IPv4 equivalents, but hostnames do not imply a particular IP address.
+
+The daemon checks resolved destinations against the bound listener configuration and current local interfaces.
+Uncertain DNS results reject the candidate instead of bypassing loop validation.
+The agent also applies a connection-time guard using the actual bound proxy address, refreshed interfaces, and connected socket addresses.
+Every resolved destination is checked before TCP connect. The connected socket is checked again before TLS or TACACS+ I/O.
+These runtime checks supplement publication-time validation without changing the canonical SONiC snapshot.
 
 ## Version-1 TLS boundary
 

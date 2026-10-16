@@ -23,7 +23,7 @@ use tacacsrs_secrets::SecretBytes;
 use tokio::sync::Mutex;
 
 use super::UpstreamBridge;
-use crate::config::{FailoverStrategy, OperationPolicies, ProxyDownstreamObfuscation, RuntimePolicy};
+use crate::config::{FailoverStrategy, OperationPolicies, PreparedProxyPolicy, RuntimePolicy};
 use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
 use crate::upstream::manager::UpstreamManager;
 use crate::upstream::{OperationKind, UpstreamConnection, UpstreamConnector, UpstreamRequestError};
@@ -134,10 +134,10 @@ impl OperationConnector {
 impl UpstreamConnector for OperationConnector {
     async fn connect(
         &self,
-        server: Arc<TacacsPlusServer>,
+        endpoint: tacacsrs_networking::PreparedEndpoint,
         operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        let address = tacacsrs_config::TacacsPlusServerExt::socket_address(server.as_ref());
+        let address = endpoint.address().to_owned();
         *self
             .attempts
             .lock()
@@ -182,13 +182,17 @@ fn policy(strategy: FailoverStrategy) -> RuntimePolicy {
 }
 
 fn bridge(connector: Arc<OperationConnector>, strategy: FailoverStrategy) -> UpstreamBridge {
-    let manager = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
-        vec![server("primary"), server("backup")],
-        ProxyDownstreamObfuscation::default(),
-        policy(strategy),
-        connector,
-        RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
-    ));
+    let manager = Arc::new(
+        UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+            vec![server("primary"), server("backup")],
+            PreparedProxyPolicy::unobfuscated(),
+            policy(strategy),
+            connector,
+            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+            tacacsrs_config::prepare::PrepareOptions::default(),
+        )
+        .expect("test endpoints must prepare"),
+    );
     UpstreamBridge::new(manager)
 }
 

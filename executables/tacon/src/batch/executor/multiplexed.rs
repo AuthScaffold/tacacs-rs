@@ -2,7 +2,7 @@ use anyhow::Context;
 use futures::future::join_all;
 
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_networking::ConnectOptions;
+use tacacsrs_config::prepare::PrepareOptions;
 
 use crate::connection::{establish_connection, Connection};
 
@@ -72,7 +72,7 @@ pub(super) async fn execute_load_test_multiplexed(
     server: &TacacsPlusServer,
     requests: &[BatchRequest],
     config: &LoadTestConfig,
-    options: &ConnectOptions,
+    options: PrepareOptions,
 ) -> anyhow::Result<LoadTestResult> {
     let total_requests = requests.len() * config.repetitions;
 

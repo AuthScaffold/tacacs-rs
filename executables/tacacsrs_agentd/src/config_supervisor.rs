@@ -23,7 +23,7 @@ use tacacsrs_config::TacacsPlus;
 use tacacsrs_credential_resolution::{
     CredentialChangeEvent, CredentialChangeScope, CredentialChangeSource, CredentialResolver,
 };
-use tacacsrs_datastore::{
+use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChangeEvent, ConfigDatastore, InitialLoadPolicy,
 };
 use tokio_util::sync::CancellationToken;
@@ -559,8 +559,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use tacacsrs_agent::{EnabledServices, ProxyDownstreamObfuscation, ServiceConfig};
-    use tacacsrs_agent_client::IpcEndpoint;
+    use tacacsrs_agent::{EnabledServices, ServiceConfig};
     use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
     use tacacsrs_config::{EpskSupportedHash, Tls13Epsk, TlsClientClientIdentity};
     use tacacsrs_credential_resolution::{
@@ -568,7 +567,7 @@ mod tests {
         CredentialChangeSource, CredentialChangeStream, CredentialKind, CredentialReference,
         CredentialRequest, ProviderErrorKind, ResolutionError, ResolvedCredential, SecretBytes,
     };
-    use tacacsrs_datastore::{ConfigChangeStream, DatastoreRuntimePolicy};
+    use tacacsrs_config::source::{ConfigChangeStream, DatastoreRuntimePolicy};
     use tokio::time::timeout;
 
     use super::*;
@@ -853,11 +852,9 @@ mod tests {
         let service = Arc::new(
             TacacsClientService::waiting_for_configuration(
                 ServiceConfig {
-                    enabled_services: EnabledServices::CLIENT_API,
-                    endpoint: IpcEndpoint::default_local(),
-                    proxy_endpoint: None,
-                    proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
+                    local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
                     tacacs_plus: TacacsPlus::empty(),
+                    validation_options: datastore.validation_options(),
                     runtime_policy: tacacsrs_agent::RuntimePolicy::new(
                         tacacsrs_agent::FailoverStrategy::default(),
                         tacacsrs_agent::FailoverStrategy::default(),
@@ -865,7 +862,6 @@ mod tests {
                         Duration::from_secs(1),
                     )
                     .expect("test runtime policy"),
-                    socket_mode: 0o660,
                     disable_certificate_verification: false,
                 },
                 health.clone(),

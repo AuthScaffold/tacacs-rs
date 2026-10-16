@@ -1,6 +1,7 @@
 # tacacsrs-credential-resolution
 
-`tacacsrs-credential-resolution` defines provider-neutral contracts for planning and resolving central credential references found in an enumerated `tacacsrs-config` server.
+`tacacsrs-credential-resolution` defines provider-neutral credential requests, results, and change events.
+It has no dependency on configuration, generated YANG types, native TLS, or an async runtime.
 
 The crate owns:
 
@@ -8,7 +9,6 @@ The crate owns:
 - an asynchronous resolver trait
 - typed certificate, private-key, symmetric-key, and trust-bag material
 - a closed result set that validates request/response slots and variants
-- materialization APIs that consume results into generated inline fields
 - provider-neutral credential change events and subscriptions
 - sanitized typed failures
 - a deterministic fake resolver for tests
@@ -16,7 +16,7 @@ The crate owns:
 It performs no filesystem, `SONiC`, `ConfigDB`, watcher, permission, retry, or runtime connection work. Providers inspect opaque references only through explicit request accessors. Debug and public error output omit opaque references and secret bytes.
 
 ```text
-enumerated server
+typed references and diagnostic context
        |
        v
 ResolutionPlan -> CredentialResolver -> ResolvedCredentialSet
@@ -24,23 +24,24 @@ ResolutionPlan -> CredentialResolver -> ResolvedCredentialSet
        +-- stable server/field context         +-- validated slots and variants
 ```
 
-`materialize_server` and `materialize_servers` consume complete closed result
-sets into cloned generated `TacacsPlusServer` values. The functions clear
-matching central references only after populating the protected inline
-fields, and they run final validation before returning a candidate. The
-original `TacacsPlus` source remains unchanged. Networking receives only
-validated materialized generated servers.
+`ResolutionPlan::new` accepts typed references and diagnostic context.
+It assigns deterministic slots in input order and rejects references that do not match the requested material kind.
+Provider key-format types describe byte encodings. They contain no YANG serialization or configuration defaults.
+
+The [configuration preparation module](../tacacsrs_config/src/prepare/mod.rs) owns YANG inspection and materialization.
+It maps provider metadata to generated YANG identities and validates complete candidates before returning them.
+The source configuration remains unchanged.
 
 ## Workflow
 
-1. Parse and validate RFC 7951 JSON with `tacacsrs-config`.
-2. Enumerate configuration-local client and server credential bundles.
-3. Build a `ResolutionPlan` for each enumerated server.
-4. Submit the plan to a `CredentialResolver`.
-5. Consume the validated results into generated inline fields and clear references.
-6. Validate and publish the complete materialized server transaction.
+1. Construct typed references and diagnostic context.
+2. Build a closed plan with `ResolutionPlan::new`.
+3. Submit the plan to a `CredentialResolver`.
+4. Consume the validated result set in the calling adapter.
 
-Planning emits deterministic requests for certificate-with-key, TLS 1.3 symmetric key, CA certificate bag, and end-entity certificate bag usages. It rejects unexpanded local bundle references and structurally incomplete central certificate requests. Result-set construction rejects missing, duplicate, unexpected, and wrong-variant responses.
+Requests support certificate-with-key, TLS 1.3 symmetric key, CA certificate bag, and end-entity certificate bag usages.
+Result-set construction rejects missing, duplicate, unexpected, and wrong-variant responses.
+For YANG servers, use `tacacsrs_config::prepare::resolution_plan` or its materialization functions instead of constructing requests manually.
 
 Central reference strings stay opaque. The generic API does not impose provider grammar or convert a reference into a path.
 
@@ -54,10 +55,11 @@ The P2 test suite enforces these properties with compile-time negative trait ass
 
 ## Example
 
-The runnable example uses `FakeCredentialResolver` to demonstrate the generic handoff without choosing a provider:
+The configuration package contains a runnable example with `FakeCredentialResolver`:
 
 ```bash
-cargo run -p tacacsrs-credential-resolution --example central_resolution
+cargo run -p tacacsrs-config --example central_resolution
 ```
 
-A production resolver implements `CredentialResolver`, reads references only through explicit request accessors, and returns the material variant requested by each slot. The higher-order coordinator owns provider notifications, invokes materialization, and publishes generated servers to networking.
+A production resolver implements `CredentialResolver`, reads references through explicit accessors, and returns the material variant requested by each slot.
+The coordinator owns provider notifications and publication. Configuration owns YANG materialization.

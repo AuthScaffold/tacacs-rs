@@ -38,15 +38,11 @@ use tacacsrs_config::{
     ValidationOptions, ValidationRelaxation,
 };
 
-/// Default TACACS+ TCP port when `tcp_port` is missing.
-pub const DEFAULT_TACACS_TCP_PORT: u16 = 49;
+pub use tacacsrs_config::builders::{DEFAULT_TACACS_TCP_PORT, DEFAULT_TACACS_TLS_PORT};
 
 /// Default per-server timeout (seconds) when neither the global nor per-server
 /// `timeout` field is set.
 pub const DEFAULT_TIMEOUT_SECONDS: u16 = 5;
-
-/// Default TCP port for TACACS+ over TLS.
-pub const DEFAULT_TACACS_TLS_PORT: u16 = 449;
 
 /// Hash table keyed by ConfigDB column name.
 ///
@@ -113,7 +109,6 @@ impl SonicTacacsTables {
 
 #[derive(Debug, Clone, Eq, Ord, PartialEq, PartialOrd)]
 enum NormalizedHost {
-    Loopback,
     Ip(IpAddr),
     Name(String),
 }
@@ -153,6 +148,7 @@ impl SonicForwarderSettings {
         let listen_address = listen_address
             .parse::<IpAddr>()
             .context("TACPLUS_FORWARDER|global.local_listen_address must be an IP address")?;
+        let listen_address = listen_address.to_canonical();
         if !listen_address.is_loopback() {
             bail!("TACPLUS_FORWARDER|global.local_listen_address must be loopback");
         }
@@ -185,10 +181,19 @@ impl SonicForwarderSettings {
         std::net::SocketAddr::new(self.listen_address, self.listen_port)
     }
 
-    fn endpoint(self) -> EndpointIdentity {
-        EndpointIdentity {
-            host: NormalizedHost::Loopback,
-            port: self.listen_port,
+    /// Normalizes the SONiC forwarder profile into canonical local-service controls.
+    ///
+    /// SONiC enables both services and selects credentials from its local proxy row.
+    /// The generated model supplies IPC path and Unix permission defaults.
+    #[must_use]
+    pub fn local_services(self) -> tacacsrs_config::tacacsrs::LocalServices {
+        tacacsrs_config::tacacsrs::LocalServices {
+            client_api_enabled: true,
+            tacacs_proxy_enabled: true,
+            tacacs_proxy_endpoint: Some(self.socket_address().to_string()),
+            proxy_credential_source:
+                tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow,
+            ..Default::default()
         }
     }
 }
@@ -421,28 +426,16 @@ struct ParsedSonicTables {
 impl ParsedSonicTables {
     fn from_tables(tables: &SonicTacacsTables) -> anyhow::Result<Self> {
         let global = SonicGlobal::from_hash(&tables.global)?;
-        let forwarder = SonicForwarderSettings::from_hash(&tables.forwarder)?;
+        SonicForwarderSettings::from_hash(&tables.forwarder)?;
         let mut candidates = Vec::with_capacity(tables.servers.len() + tables.tls_servers.len());
 
         for (address, fields) in &tables.servers {
             let row = SonicServerRow::from_hash(address, fields)?;
-            if forwarder
-                .as_ref()
-                .is_some_and(|settings| row.endpoint() == settings.endpoint())
-            {
-                continue;
-            }
             candidates.push(SonicCandidateRow::Compatibility(row));
         }
 
         for (address, fields) in &tables.tls_servers {
             let row = SonicTlsServerRow::from_hash(address, fields)?;
-            if forwarder
-                .as_ref()
-                .is_some_and(|settings| row.endpoint() == settings.endpoint())
-            {
-                bail!("TACPLUS_SERVER_TLS|{address} targets the local forwarder endpoint");
-            }
             candidates.push(SonicCandidateRow::Tls(row));
         }
 
@@ -666,19 +659,8 @@ pub fn sonic_server_name(address: &str) -> String {
 
 fn normalize_host(value: &str) -> NormalizedHost {
     let normalized = value.trim().trim_end_matches('.').to_ascii_lowercase();
-    if normalized == "localhost" {
-        return NormalizedHost::Loopback;
-    }
     if let Ok(address) = normalized.parse::<IpAddr>() {
-        let address = match address {
-            IpAddr::V6(ipv6) => ipv6.to_ipv4_mapped().map_or(IpAddr::V6(ipv6), IpAddr::V4),
-            ipv4 @ IpAddr::V4(_) => ipv4,
-        };
-        if address.is_loopback() {
-            NormalizedHost::Loopback
-        } else {
-            NormalizedHost::Ip(address)
-        }
+        NormalizedHost::Ip(address.to_canonical())
     } else {
         NormalizedHost::Name(normalized)
     }
@@ -828,7 +810,7 @@ fn parse_server_type(value: &str) -> anyhow::Result<TacacsPlusServerType> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tacacsrs_datastore::ConfigDelta;
+    use tacacsrs_config::source::ConfigDelta;
 
     fn h(pairs: &[(&str, &str)]) -> SonicHash {
         pairs
@@ -997,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn normalized_loopback_compatibility_alias_is_filtered() {
+    fn normalized_loopback_compatibility_alias_remains_in_canonical_source() {
         let mut compatibility = BTreeMap::new();
         compatibility.insert("localhost".to_owned(), h(&[("priority", "64")]));
         compatibility.insert("192.0.2.10".to_owned(), h(&[("priority", "16")]));
@@ -1008,20 +990,24 @@ mod tests {
             h(&[("local_listen_address", "::1"), ("local_listen_port", "49")]),
         ))
         .expect("typed snapshot");
-        assert_eq!(parsed.candidates.len(), 1);
+        assert_eq!(parsed.candidates.len(), 2);
         assert_eq!(
             parsed.candidates[0].normalized_host(),
+            &NormalizedHost::Name("localhost".to_owned())
+        );
+        assert_eq!(
+            parsed.candidates[1].normalized_host(),
             &NormalizedHost::Ip("192.0.2.10".parse().expect("IPv4"))
         );
     }
 
     #[test]
-    fn compatibility_loopback_forms_filter_only_the_active_forwarder_port() {
+    fn compatibility_loopback_forms_preserve_ports_and_source_rows() {
         for address in ["127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"] {
             let mut compatibility = BTreeMap::new();
             compatibility.insert(address.to_owned(), h(&[("priority", "64"), ("tcp_port", "49")]));
             compatibility
-                .insert("127.0.0.1".to_owned(), h(&[("priority", "32"), ("tcp_port", "50")]));
+                .insert("192.0.2.30".to_owned(), h(&[("priority", "32"), ("tcp_port", "50")]));
             let parsed = ParsedSonicTables::from_tables(&SonicTacacsTables::with_extended_tables(
                 SonicHash::new(),
                 compatibility,
@@ -1033,26 +1019,30 @@ mod tests {
             ))
             .expect("loopback compatibility snapshot");
 
-            assert_eq!(parsed.candidates.len(), 1, "address {address}");
-            assert_eq!(parsed.candidates[0].endpoint().port, 50);
+            assert_eq!(parsed.candidates.len(), 2, "address {address}");
+            assert_eq!(parsed.candidates[0].endpoint().port, 49);
+            assert_eq!(parsed.candidates[1].endpoint().port, 50);
         }
     }
 
     #[test]
-    fn tls_self_target_and_cross_table_duplicates_are_rejected() {
+    fn mapping_preserves_tls_self_target_and_rejects_cross_table_duplicates() {
         let mut tls = BTreeMap::new();
         tls.insert("::ffff:127.0.0.1".to_owned(), tls_fields("48"));
-        let error = ParsedSonicTables::from_tables(&SonicTacacsTables::with_extended_tables(
+        let parsed = ParsedSonicTables::from_tables(&SonicTacacsTables::with_extended_tables(
             SonicHash::new(),
             BTreeMap::new(),
             tls,
             h(&[
                 ("local_listen_address", "127.0.0.1"),
-                ("local_listen_port", "449"),
+                ("local_listen_port", "300"),
             ]),
         ))
-        .expect_err("mapped loopback TLS target must fail");
-        assert!(error.to_string().contains("local forwarder endpoint"));
+        .expect("runtime filtering owns TLS self-target rejection");
+        assert_eq!(parsed.candidates.len(), 1);
+        assert!(
+            matches!(&parsed.candidates[0], SonicCandidateRow::Tls(row) if row.psk_secret_ref == "epsk-object")
+        );
 
         let mut compatibility = BTreeMap::new();
         compatibility.insert("EXAMPLE.test.".to_owned(), h(&[("priority", "16")]));
@@ -1073,7 +1063,9 @@ mod tests {
         compatibility
             .insert("192.0.2.10".to_owned(), h(&[("priority", "16"), ("tcp_port", "449")]));
         let mut tls = BTreeMap::new();
-        tls.insert("::ffff:192.0.2.10".to_owned(), tls_fields("48"));
+        let mut matching_tls = tls_fields("48");
+        matching_tls.insert("tcp_port".to_owned(), "449".to_owned());
+        tls.insert("::ffff:192.0.2.10".to_owned(), matching_tls);
         let error = ParsedSonicTables::from_tables(&SonicTacacsTables::with_extended_tables(
             SonicHash::new(),
             compatibility,
@@ -1126,6 +1118,18 @@ mod tests {
         assert_eq!(settings.listen_address(), "::1".parse::<IpAddr>().expect("IPv6"));
         assert_eq!(settings.listen_port(), 49);
         assert_eq!(settings.socket_address(), "[::1]:49".parse().expect("socket"));
+        let local = settings.local_services();
+        let prepared = tacacsrs_config::local_services::prepare_local_services(&local).unwrap();
+        assert!(prepared.client_api().is_some());
+        assert!(prepared.tacacs_proxy().is_some());
+    }
+
+    #[test]
+    fn host_normalization_preserves_distinct_loopback_destinations() {
+        assert_ne!(normalize_host("127.0.0.1"), normalize_host("127.0.0.2"));
+        assert_ne!(normalize_host("127.0.0.1"), normalize_host("::1"));
+        assert_ne!(normalize_host("localhost"), normalize_host("::1"));
+        assert_eq!(normalize_host("127.0.0.1"), normalize_host("::ffff:127.0.0.1"));
     }
 
     #[test]
@@ -1248,6 +1252,25 @@ mod tests {
                 PskDheKeSupportedGroup::Secp384r1
             ]
         );
+    }
+
+    #[test]
+    fn tls_port_defaults_to_rfc9887_and_preserves_explicit_ports() {
+        for (configured, expected) in [(None, 300), (Some("449"), 449), (Some("9449"), 9449)] {
+            let mut fields = tls_fields("48");
+            if let Some(port) = configured {
+                fields.insert("tcp_port".to_owned(), port.to_owned());
+            }
+            let tables = SonicTacacsTables::with_extended_tables(
+                SonicHash::new(),
+                BTreeMap::from([("192.0.2.10".to_owned(), h(&[("priority", "16")]))]),
+                BTreeMap::from([("192.0.2.20".to_owned(), fields)]),
+                SonicHash::new(),
+            );
+            let canonical = map_sonic_tables_to_tacacs_plus(&tables).unwrap();
+            assert_eq!(canonical.server[0].port, expected);
+            assert_eq!(canonical.server[1].port, 49);
+        }
     }
 
     #[test]

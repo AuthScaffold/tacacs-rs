@@ -11,6 +11,42 @@ const _: () =
     assert!(tacacsrs_config::ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY);
 
 #[test]
+fn canonical_root_rejects_trailing_json() {
+    let document = r#"{"ietf-system-tacacs-plus:tacacs-plus":{"server":[{
+        "name":"test","server-type":"authentication authorization accounting",
+        "address":"192.0.2.1","port":49,"shared-secret":"test-shared-secret"
+    }]}}"#;
+    parse_yang_json(document).unwrap();
+    assert!(parse_yang_json(&format!("{document} {{}}")).is_err());
+}
+
+#[test]
+fn epsk_presence_uses_rfc7951_empty_encoding() {
+    let value = serde_json::json!({"tls13-epsks": [null]});
+    let direct: tacacsrs_config::TlsClientServerAuthentication =
+        serde_json::from_value(value.clone()).unwrap();
+    assert!(direct.tls13_epsks.is_some());
+    assert_eq!(serde_json::to_value(direct).unwrap(), value);
+    let bundled = serde_json::json!({"id": "trust", "tls13-epsks": [null]});
+    let bundle: tacacsrs_config::ServerCredentials =
+        serde_json::from_value(bundled.clone()).unwrap();
+    assert_eq!(serde_json::to_value(bundle).unwrap(), bundled);
+    for invalid in [
+        serde_json::json!(true),
+        serde_json::json!(false),
+        serde_json::json!(null),
+        serde_json::json!([]),
+        serde_json::json!([null, null]),
+        serde_json::json!([false]),
+    ] {
+        assert!(serde_json::from_value::<tacacsrs_config::TlsClientServerAuthentication>(
+            serde_json::json!({"tls13-epsks": invalid})
+        )
+        .is_err());
+    }
+}
+
+#[test]
 fn generated_central_certificate_shape_and_choice_metadata() {
     let certificate = tacacsrs_config::ClientIdentityCertificate {
         inline_definition: None,

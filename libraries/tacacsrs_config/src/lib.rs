@@ -1,8 +1,14 @@
 pub mod generated;
+pub mod source;
+pub mod input;
 mod central_references;
 pub mod extensions;
 pub mod builders;
 pub mod validation;
+pub mod prepare;
+pub mod policy;
+pub mod local_services;
+pub mod proxy_policy;
 mod enumeration;
 mod mapping;
 pub(crate) mod serde_helpers;
@@ -29,6 +35,7 @@ pub use generated::tacacsrs::PskDheKeSupportedGroup;
 pub use generated::{crypto_types, keystore, YangConfigRoot};
 
 pub use statistics::ServerStatistics;
+pub use serde_helpers::YangEmpty;
 
 /// Provides YANG-generated types and related namespaces.
 pub mod model {
@@ -68,6 +75,10 @@ pub mod pipeline {
             ignored_paths.insert(path.to_string());
         })
         .map_err(|e| anyhow::anyhow!("failed to parse configuration: {e}"))?;
+
+        deserializer
+            .end()
+            .map_err(|error| anyhow::anyhow!("unexpected data after configuration: {error}"))?;
 
         if !ignored_paths.is_empty() {
             let paths = ignored_paths.into_iter().collect::<Vec<_>>().join(", ");

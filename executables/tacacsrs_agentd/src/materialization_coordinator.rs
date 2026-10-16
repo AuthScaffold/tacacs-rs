@@ -3,14 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use tacacsrs_agent::{ProxyDownstreamObfuscation, TacacsClientService};
-use tacacsrs_config::{
-    TacacsPlus, TacacsPlusServer, ValidationOptions, enumerate_server, inspect_central_references,
-    validation,
-};
+use tacacsrs_agent::{PreparedProxyPolicy, TacacsClientService};
+use tacacsrs_config::{TacacsPlus, TacacsPlusServer, ValidationOptions, enumerate_server};
+use tacacsrs_config::prepare::{MaterializationError, materialize_servers, resolution_plan};
 use tacacsrs_credential_resolution::{
     CredentialChangeScope, CredentialKind, CredentialReference, CredentialResolver,
-    MaterializationError, ResolutionPlan, materialize_servers,
 };
 use tokio::sync::Mutex;
 
@@ -23,7 +20,7 @@ struct DependencyKey {
 struct CoordinatorState {
     desired_source: Option<Arc<TacacsPlus>>,
     desired_runtime_source: Option<Arc<TacacsPlus>>,
-    desired_proxy_policy: Option<ProxyDownstreamObfuscation>,
+    desired_proxy_policy: Option<PreparedProxyPolicy>,
     desired_dependencies: Option<BTreeMap<DependencyKey, BTreeSet<String>>>,
     active_servers: Vec<Arc<TacacsPlusServer>>,
     source_generation: u64,
@@ -57,7 +54,7 @@ pub(crate) struct MaterializationAttempt {
     attempt_id: u64,
     source_generation: u64,
     runtime_source: Arc<TacacsPlus>,
-    proxy_policy: ProxyDownstreamObfuscation,
+    proxy_policy: PreparedProxyPolicy,
     selected_servers: BTreeSet<String>,
 }
 
@@ -88,7 +85,7 @@ impl MaterializationCoordinator {
         &self,
         desired_source: TacacsPlus,
         runtime_source: TacacsPlus,
-        proxy_policy: ProxyDownstreamObfuscation,
+        proxy_policy: PreparedProxyPolicy,
     ) -> MaterializationAttempt {
         let dependencies = dependency_index(&runtime_source);
         let runtime_source = Arc::new(runtime_source);
@@ -212,15 +209,6 @@ impl MaterializationCoordinator {
             next_active.push(server);
         }
 
-        let published = TacacsPlus {
-            client_credentials: Vec::new(),
-            server_credentials: Vec::new(),
-            server: next_active
-                .iter()
-                .map(|server| server.as_ref().clone())
-                .collect(),
-        };
-        ensure_publishable(&published, &self.validation_options)?;
         service
             .reload_materialized_servers_with_proxy_downstream_obfuscation(
                 next_active.clone(),
@@ -250,7 +238,7 @@ fn dependency_index(source: &TacacsPlus) -> Option<BTreeMap<DependencyKey, BTree
     let mut dependencies = BTreeMap::<DependencyKey, BTreeSet<String>>::new();
     for source_server in &source.server {
         let server = enumerate_server(source, &source_server.name).ok()?;
-        let plan = ResolutionPlan::from_server(&server).ok()?;
+        let plan = resolution_plan(&server).ok()?;
         for request in plan.requests() {
             dependencies
                 .entry(DependencyKey {
@@ -262,19 +250,6 @@ fn dependency_index(source: &TacacsPlus) -> Option<BTreeMap<DependencyKey, BTree
         }
     }
     Some(dependencies)
-}
-
-fn ensure_publishable(
-    config: &TacacsPlus,
-    validation_options: &ValidationOptions,
-) -> anyhow::Result<()> {
-    for server in &config.server {
-        if !inspect_central_references(server)?.is_empty() {
-            anyhow::bail!("active server transaction contains unresolved credentials");
-        }
-    }
-    validation::validate_config_with_options(config, validation_options)
-        .map_err(|_| anyhow::anyhow!("active server transaction failed validation"))
 }
 
 #[cfg(test)]
@@ -292,11 +267,10 @@ mod tests {
 
     use async_trait::async_trait;
     use tacacsrs_agent::{
-        EnabledServices, ProxyDownstreamObfuscation, RuntimeHealthPublisher, ServiceConfig,
+        EnabledServices, PreparedProxyPolicy, RuntimeHealthPublisher, ServiceConfig,
         TacacsClientService,
     };
-    use tacacsrs_agent_client::IpcEndpoint;
-    use tacacsrs_config::crypto_types::SymmetricKeyFormat;
+    use tacacsrs_credential_resolution::SymmetricKeyFormat;
     use tacacsrs_config::{TacacsPlus, ValidationOptions, parse_yang_json};
     use tacacsrs_credential_resolution::{
         CredentialChangeScope, CredentialReference, CredentialRequest, CredentialResolver,
@@ -403,11 +377,9 @@ mod tests {
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         TacacsClientService::waiting_for_configuration(
             ServiceConfig {
-                enabled_services: EnabledServices::CLIENT_API,
-                endpoint: IpcEndpoint::default_local(),
-                proxy_endpoint: None,
-                proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
+                local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
                 tacacs_plus: TacacsPlus::empty(),
+                validation_options: ValidationOptions::default(),
                 runtime_policy: tacacsrs_agent::RuntimePolicy::new(
                     tacacsrs_agent::FailoverStrategy::default(),
                     tacacsrs_agent::FailoverStrategy::default(),
@@ -415,7 +387,6 @@ mod tests {
                     Duration::from_secs(1),
                 )
                 .expect("test runtime policy"),
-                socket_mode: 0o660,
                 disable_certificate_verification: false,
             },
             health,
@@ -428,6 +399,47 @@ mod tests {
             kind: CredentialKind::SymmetricKey,
             reference: CredentialReference::SymmetricKey(reference.to_owned()),
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_native_credentials_cannot_replace_active_generation() {
+        let coordinator = MaterializationCoordinator::new(
+            resolver(&[("object-a", b"valid-baseline-psk-material")]),
+            ValidationOptions::default(),
+        );
+        let service = service();
+        let baseline = source("object-a", "192.0.2.20");
+        let attempt = coordinator
+            .accept_source(baseline.clone(), baseline, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        let active = coordinator.active_servers().await;
+
+        let invalid = TacacsPlus {
+            client_credentials: Vec::new(),
+            server_credentials: Vec::new(),
+            server: vec![tacacsrs_config::TacacsPlusServerBuilder::new(
+                "primary",
+                tacacsrs_config::TacacsPlusServerType::all(),
+                "192.0.2.21",
+                449,
+            )
+            .with_tls_client_certificate(
+                Some(b"not-a-der-certificate".to_vec()),
+                Some(b"private-test-material".to_vec()),
+            )
+            .build()],
+        };
+        let attempt = coordinator
+            .accept_source(invalid.clone(), invalid, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let result = match coordinator.materialize(attempt).await {
+            Ok(prepared) => coordinator.publish(prepared, &service).await,
+            Err(error) => Err(error.into()),
+        };
+        assert!(result.is_err(), "invalid native material must fail before publication");
+        assert!(Arc::ptr_eq(&active[0], &coordinator.active_servers().await[0]));
     }
 
     #[tokio::test]
@@ -469,14 +481,14 @@ mod tests {
         .expect("dependency source");
         let coordinator = MaterializationCoordinator::new(
             resolver(&[
-                ("bundle-reference", b"bundle-material"),
-                ("direct-reference", b"direct-material"),
+                ("bundle-reference", b"bundle-material-long-enough"),
+                ("direct-reference", b"direct-material-long-enough"),
             ]),
             ValidationOptions::default(),
         );
         let service = service();
         let baseline = coordinator
-            .accept_source(source.clone(), source, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(source.clone(), source, PreparedProxyPolicy::unobfuscated())
             .await;
         let prepared = coordinator.materialize(baseline).await.expect("baseline");
         coordinator
@@ -506,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn equal_rematerialization_retains_active_server_arc() {
-        let resolver = resolver(&[("object-a", b"same-material")]);
+        let resolver = resolver(&[("object-a", b"same-material-long-enough")]);
         let coordinator = MaterializationCoordinator::new(
             Arc::clone(&resolver) as Arc<dyn CredentialResolver>,
             ValidationOptions::default(),
@@ -514,7 +526,7 @@ mod tests {
         let service = service();
         let desired = source("object-a", "192.0.2.20");
         let attempt = coordinator
-            .accept_source(desired.clone(), desired, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(desired.clone(), desired, PreparedProxyPolicy::unobfuscated())
             .await;
         let prepared = coordinator.materialize(attempt).await.expect("materialize");
         coordinator
@@ -543,8 +555,8 @@ mod tests {
     #[tokio::test]
     async fn changed_reference_with_equal_material_switches_dependency_and_retains_arc() {
         let resolver = resolver(&[
-            ("object-a", b"same-material"),
-            ("object-b", b"same-material"),
+            ("object-a", b"same-material-long-enough"),
+            ("object-b", b"same-material-long-enough"),
         ]);
         let coordinator = MaterializationCoordinator::new(
             Arc::clone(&resolver) as Arc<dyn CredentialResolver>,
@@ -553,11 +565,7 @@ mod tests {
         let service = service();
         let first_source = source("object-a", "192.0.2.25");
         let first_attempt = coordinator
-            .accept_source(
-                first_source.clone(),
-                first_source,
-                ProxyDownstreamObfuscation::Unobfuscated,
-            )
+            .accept_source(first_source.clone(), first_source, PreparedProxyPolicy::unobfuscated())
             .await;
         let first_prepared = coordinator.materialize(first_attempt).await.expect("first");
         coordinator
@@ -571,7 +579,7 @@ mod tests {
             .accept_source(
                 second_source.clone(),
                 second_source,
-                ProxyDownstreamObfuscation::Unobfuscated,
+                PreparedProxyPolicy::unobfuscated(),
             )
             .await;
         let second_prepared = coordinator
@@ -603,8 +611,8 @@ mod tests {
     async fn blocked_old_resolution_cannot_replace_new_yang_snapshot() {
         let resolver = Arc::new(BlockingResolver {
             inner: resolver(&[
-                ("object-a", b"first-material"),
-                ("object-b", b"second-material"),
+                ("object-a", b"first-material-long-enough"),
+                ("object-b", b"second-material-long-enough"),
             ]),
             started: tokio::sync::Notify::new(),
             release: tokio::sync::Notify::new(),
@@ -616,7 +624,7 @@ mod tests {
         let service = service();
         let first = source("object-a", "192.0.2.30");
         let first_attempt = coordinator
-            .accept_source(first.clone(), first, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(first.clone(), first, PreparedProxyPolicy::unobfuscated())
             .await;
         let preparing = Arc::clone(&coordinator);
         let old_task = tokio::spawn(async move { preparing.materialize(first_attempt).await });
@@ -629,7 +637,7 @@ mod tests {
             .accept_source(
                 current_source.clone(),
                 current_source.clone(),
-                ProxyDownstreamObfuscation::Unobfuscated,
+                PreparedProxyPolicy::unobfuscated(),
             )
             .await;
         let prepared = coordinator.materialize(current_attempt).await.unwrap();
@@ -655,7 +663,7 @@ mod tests {
 
     #[tokio::test]
     async fn credential_rotation_preserves_authoritative_yang_references() {
-        let resolver = resolver(&[("object-a", b"first-material")]);
+        let resolver = resolver(&[("object-a", b"first-material-long-enough")]);
         let coordinator = MaterializationCoordinator::new(
             Arc::clone(&resolver) as Arc<dyn CredentialResolver>,
             ValidationOptions::default(),
@@ -663,11 +671,7 @@ mod tests {
         let service = service();
         let desired = source("object-a", "192.0.2.20");
         let attempt = coordinator
-            .accept_source(
-                desired.clone(),
-                desired.clone(),
-                ProxyDownstreamObfuscation::Unobfuscated,
-            )
+            .accept_source(desired.clone(), desired.clone(), PreparedProxyPolicy::unobfuscated())
             .await;
         let prepared = coordinator.materialize(attempt).await.unwrap();
         coordinator.publish(prepared, &service).await.unwrap();
@@ -690,7 +694,7 @@ mod tests {
             .material
             .lock()
             .unwrap()
-            .insert("object-a".to_owned(), b"second-material".to_vec());
+            .insert("object-a".to_owned(), b"second-material-long-enough".to_vec());
         resolver.unavailable.lock().unwrap().remove("object-a");
         let rotated = coordinator
             .credential_change(&known("object-a"))
@@ -708,20 +712,20 @@ mod tests {
     async fn stale_materialization_completion_cannot_publish() {
         let coordinator = MaterializationCoordinator::new(
             resolver(&[
-                ("object-a", b"first-material"),
-                ("object-b", b"second-material"),
+                ("object-a", b"first-material-long-enough"),
+                ("object-b", b"second-material-long-enough"),
             ]),
             ValidationOptions::default(),
         );
         let service = service();
         let first = source("object-a", "192.0.2.30");
         let first_attempt = coordinator
-            .accept_source(first.clone(), first, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(first.clone(), first, PreparedProxyPolicy::unobfuscated())
             .await;
         let first_prepared = coordinator.materialize(first_attempt).await.expect("first");
         let second = source("object-b", "192.0.2.31");
         let second_attempt = coordinator
-            .accept_source(second.clone(), second, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(second.clone(), second, PreparedProxyPolicy::unobfuscated())
             .await;
 
         assert_eq!(
@@ -748,22 +752,21 @@ mod tests {
 
     #[tokio::test]
     async fn failed_attempt_identity_becomes_superseded_after_new_source() {
-        let resolver = resolver(&[("first", b"first-material"), ("second", b"second-material")]);
+        let resolver = resolver(&[
+            ("first", b"first-material-long-enough"),
+            ("second", b"second-material-long-enough"),
+        ]);
         let coordinator = MaterializationCoordinator::new(resolver, ValidationOptions::default());
         let first_source = source("first", "192.0.2.10");
         let first = coordinator
-            .accept_source(
-                first_source.clone(),
-                first_source,
-                ProxyDownstreamObfuscation::default(),
-            )
+            .accept_source(first_source.clone(), first_source, PreparedProxyPolicy::unobfuscated())
             .await;
         let second_source = source("second", "192.0.2.11");
         let second = coordinator
             .accept_source(
                 second_source.clone(),
                 second_source,
-                ProxyDownstreamObfuscation::default(),
+                PreparedProxyPolicy::unobfuscated(),
             )
             .await;
 
@@ -774,8 +777,8 @@ mod tests {
     #[tokio::test]
     async fn failed_new_reference_recovers_from_matching_credential_event() {
         let resolver = resolver(&[
-            ("object-a", b"first-material"),
-            ("object-b", b"second-material"),
+            ("object-a", b"first-material-long-enough"),
+            ("object-b", b"second-material-long-enough"),
         ]);
         let coordinator = MaterializationCoordinator::new(
             Arc::clone(&resolver) as Arc<dyn CredentialResolver>,
@@ -784,7 +787,7 @@ mod tests {
         let service = service();
         let first = source("object-a", "192.0.2.40");
         let first_attempt = coordinator
-            .accept_source(first.clone(), first, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(first.clone(), first, PreparedProxyPolicy::unobfuscated())
             .await;
         let first_prepared = coordinator.materialize(first_attempt).await.expect("first");
         coordinator
@@ -800,7 +803,7 @@ mod tests {
             .insert("object-b".to_owned());
         let second = source("object-b", "192.0.2.41");
         let second_attempt = coordinator
-            .accept_source(second.clone(), second, ProxyDownstreamObfuscation::Unobfuscated)
+            .accept_source(second.clone(), second, PreparedProxyPolicy::unobfuscated())
             .await;
         assert!(coordinator.materialize(second_attempt).await.is_err());
         assert!(Arc::ptr_eq(&known_good, &coordinator.active_servers().await[0],));

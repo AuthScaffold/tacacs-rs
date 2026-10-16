@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::Parser;
 use tacacsrs_config::TacacsPlus;
-use tacacsrs_datastore::ConfigDatastore;
+use tacacsrs_config::source::ConfigDatastore;
 use tacacsrs_sonic::{SonicConfigDb, SonicConnection};
 use tokio_stream::StreamExt;
 
@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
         observed += 1;
         println!("change_event: {observed}");
         match event {
-            tacacsrs_datastore::ConfigChangeEvent::Changed(change) => {
+            tacacsrs_config::source::ConfigChangeEvent::Changed(change) => {
                 println!("  result: changed");
                 println!("  added_servers: {:?}", change.delta.added_servers);
                 println!("  removed_servers: {:?}", change.delta.removed_servers);
@@ -77,10 +77,10 @@ async fn main() -> anyhow::Result<()> {
                 println!("  root_metadata_changed: {}", change.delta.root_metadata_changed);
                 print_snapshot("current", &change.config);
             }
-            tacacsrs_datastore::ConfigChangeEvent::CandidateRejected => {
+            tacacsrs_config::source::ConfigChangeEvent::CandidateRejected => {
                 println!("  result: candidate_rejected");
             }
-            tacacsrs_datastore::ConfigChangeEvent::RestartRequired { required } => {
+            tacacsrs_config::source::ConfigChangeEvent::RestartRequired { required } => {
                 println!("  restart_required: {required}");
             }
         }

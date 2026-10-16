@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_config::{TacacsPlus, ValidationOptions, ValidationRelaxation};
-use tacacsrs_datastore::{
+use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigChangeStream, ConfigDatastore,
     ConfigDelta, DatastoreRuntimePolicy, InitialLoadPolicy,
 };
@@ -38,7 +38,7 @@ pub use store::{
 /// SONiC ConfigDB-backed [`ConfigDatastore`] implementation.
 ///
 /// This datastore reads TACACS+ compatibility, TLS server, and forwarder tables
-/// from CONFIG_DB. It emits a [`tacacsrs_datastore::ConfigChange`] after a
+/// from CONFIG_DB. It emits a [`tacacsrs_config::source::ConfigChange`] after a
 /// debounced change to a `TACPLUS` key.
 ///
 /// The datastore stores connection configuration instead of a live client.

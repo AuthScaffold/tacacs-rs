@@ -20,6 +20,7 @@ pub(super) async fn serve(
     let local_address = listener
         .local_addr()
         .with_context(|| format!("Failed to inspect TCP TACACS+ proxy endpoint {address}"))?;
+    let _binding = service.bind_proxy_listener(local_address)?;
     registration.mark_bound();
 
     log::info!("The TACACS+ proxy listener accepts clients on TCP {local_address}");

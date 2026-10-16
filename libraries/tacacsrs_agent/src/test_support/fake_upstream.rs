@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_protocol::accounting::reply::AccountingReply;
 use tacacsrs_protocol::authentication::reply::AuthenticationReply;
 use tacacsrs_protocol::accounting::request::AccountingRequest;
@@ -148,10 +147,10 @@ impl FakeConnector {
 impl UpstreamConnector for FakeConnector {
     async fn connect(
         &self,
-        server: Arc<TacacsPlusServer>,
+        endpoint: tacacsrs_networking::PreparedEndpoint,
         _operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        let address = server.socket_address();
+        let address = endpoint.address().to_owned();
         {
             let mut attempts = self.connect_attempts.lock().await;
             *attempts.entry(address.clone()).or_default() += 1;

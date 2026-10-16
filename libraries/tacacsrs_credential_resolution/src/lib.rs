@@ -4,7 +4,6 @@ mod error;
 mod change;
 mod fake;
 mod material;
-mod materialization;
 mod request;
 mod resolver;
 mod result_set;
@@ -17,11 +16,8 @@ pub use change::{
 pub use fake::FakeCredentialResolver;
 pub use material::{
     CertificateBagMaterial, CertificateWithKeyMaterial, NamedCertificateMaterial, PublicBytes,
-    ResolvedCredential, SymmetricKeyMaterial,
-};
-pub use materialization::{
-    MaterializationError, MaterializationErrorKind, enumerate_materialized_servers,
-    materialize_server, materialize_servers,
+    ResolvedCredential, SymmetricKeyMaterial, PrivateKeyFormat, PublicKeyFormat,
+    SymmetricKeyFormat,
 };
 pub use tacacsrs_secrets::SecretBytes;
 pub use request::{

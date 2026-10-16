@@ -1,11 +1,6 @@
-//! Closed resolution plans from provider-neutral configuration inspection slots.
+//! Closed resolution plans from typed provider requests.
 
 use std::fmt;
-
-use tacacsrs_config::{
-    CentralCredentialReference, CentralCredentialSlot, CentralCredentialUsage, TacacsPlusServer,
-    inspect_central_references,
-};
 
 use crate::ResolutionError;
 
@@ -48,7 +43,9 @@ pub struct RequestContext {
 }
 
 impl RequestContext {
-    pub(crate) fn new(server_name: impl Into<String>, field_path: &'static str) -> Self {
+    /// Creates diagnostic context without storing a credential reference.
+    #[must_use]
+    pub fn new(server_name: impl Into<String>, field_path: &'static str) -> Self {
         Self {
             server_name: server_name.into(),
             field_path,
@@ -61,7 +58,7 @@ impl RequestContext {
         &self.server_name
     }
 
-    /// Returns the stable RFC model field path.
+    /// Returns the caller's stable diagnostic field path.
     #[must_use]
     pub const fn field_path(&self) -> &'static str {
         self.field_path
@@ -181,32 +178,55 @@ impl fmt::Debug for CredentialRequest {
     }
 }
 
-/// Ordered closed request plan for one direct or enumerated server.
+/// Ordered closed request plan with deterministic response slots.
 pub struct ResolutionPlan {
     requests: Vec<CredentialRequest>,
 }
 
 impl ResolutionPlan {
-    /// Builds a deterministic provider-neutral plan from one server.
+    /// Builds a closed plan in input order and assigns deterministic slots.
     ///
     /// # Errors
     ///
-    /// Returns
-    /// [`ResolutionErrorKind::EnumerationRequired`](crate::ResolutionErrorKind::EnumerationRequired)
-    /// if configuration-local bundle references remain. Returns
-    /// [`ResolutionErrorKind::IncompleteRequest`](crate::ResolutionErrorKind::IncompleteRequest)
-    /// if a central container lacks fields that the provider request requires.
-    pub fn from_server(server: &TacacsPlusServer) -> Result<Self, ResolutionError> {
-        let slots = inspect_central_references(server).map_err(ResolutionError::from)?;
-        let requests = slots
+    /// Returns an error if a reference does not match its expected kind or a
+    /// certificate reference contains neither component.
+    pub fn new(
+        requests: impl IntoIterator<Item = (RequestContext, CredentialKind, CredentialReference)>,
+    ) -> Result<Self, ResolutionError> {
+        let requests = requests
             .into_iter()
             .enumerate()
-            .map(|(index, slot)| request_from_slot(RequestSlot(index), slot))
+            .map(|(index, (context, kind, reference))| {
+                let valid = match (&reference, kind) {
+                    (
+                        CredentialReference::CertificateWithKey {
+                            asymmetric_key,
+                            certificate,
+                        },
+                        CredentialKind::CertificateWithKey,
+                    ) => asymmetric_key.is_some() || certificate.is_some(),
+                    (CredentialReference::SymmetricKey(_), CredentialKind::SymmetricKey)
+                    | (
+                        CredentialReference::CertificateBag(_),
+                        CredentialKind::CaCertificateBag | CredentialKind::EeCertificateBag,
+                    ) => true,
+                    _ => false,
+                };
+                if !valid {
+                    return Err(ResolutionError::incomplete_request(context, kind));
+                }
+                Ok(CredentialRequest {
+                    slot: RequestSlot(index),
+                    context,
+                    kind,
+                    reference,
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { requests })
     }
 
-    /// Returns all requests in deterministic field order.
+    /// Returns all requests in their original input order.
     #[must_use]
     pub fn requests(&self) -> &[CredentialRequest] {
         &self.requests
@@ -239,65 +259,50 @@ impl fmt::Debug for ResolutionPlan {
     }
 }
 
-fn request_from_slot(
-    slot: RequestSlot,
-    inspected: CentralCredentialSlot<'_>,
-) -> Result<CredentialRequest, ResolutionError> {
-    let usage = inspected.usage();
-    let context = RequestContext {
-        server_name: inspected.server_name().to_owned(),
-        field_path: usage.field_path(),
-    };
-    let (kind, reference) = match (usage, inspected.reference()) {
-        (
-            CentralCredentialUsage::ClientCertificateWithKey,
-            CentralCredentialReference::CertificateWithKey {
-                asymmetric_key,
-                certificate,
-            },
-        ) if asymmetric_key.is_some() || certificate.is_some() => (
-            CredentialKind::CertificateWithKey,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn neutral_plan_preserves_order_and_redacts_references() {
+        let plan = ResolutionPlan::new([
+            (
+                RequestContext::new("first", "psk"),
+                CredentialKind::SymmetricKey,
+                CredentialReference::SymmetricKey("private-reference".to_owned()),
+            ),
+            (
+                RequestContext::new("second", "ca"),
+                CredentialKind::CaCertificateBag,
+                CredentialReference::CertificateBag("private-bag".to_owned()),
+            ),
+        ])
+        .unwrap();
+        assert_eq!(plan.requests()[0].slot().index(), 0);
+        assert_eq!(plan.requests()[1].slot().index(), 1);
+        assert_eq!(plan.requests()[0].context().server_name(), "first");
+        assert_eq!(plan.requests()[1].context().server_name(), "second");
+        assert!(!format!("{plan:?}").contains("private-reference"));
+        assert!(!format!("{plan:?}").contains("private-bag"));
+    }
+
+    #[test]
+    fn neutral_plan_rejects_mismatched_and_incomplete_references() {
+        for reference in [
+            CredentialReference::SymmetricKey("private-reference".to_owned()),
             CredentialReference::CertificateWithKey {
-                asymmetric_key: asymmetric_key.map(str::to_owned),
-                certificate: certificate.map(str::to_owned),
+                asymmetric_key: None,
+                certificate: None,
             },
-        ),
-        (
-            CentralCredentialUsage::ClientTls13Epsk,
-            CentralCredentialReference::SymmetricKey(reference),
-        ) => {
-            (CredentialKind::SymmetricKey, CredentialReference::SymmetricKey(reference.to_owned()))
+        ] {
+            let error = ResolutionPlan::new([(
+                RequestContext::new("server", "certificate"),
+                CredentialKind::CertificateWithKey,
+                reference,
+            )])
+            .unwrap_err();
+            assert_eq!(error.kind(), crate::ResolutionErrorKind::IncompleteRequest);
+            assert!(!format!("{error:?}").contains("private-reference"));
         }
-        (
-            CentralCredentialUsage::ServerCaCertificateBag,
-            CentralCredentialReference::CertificateBag(reference),
-        ) => (
-            CredentialKind::CaCertificateBag,
-            CredentialReference::CertificateBag(reference.to_owned()),
-        ),
-        (
-            CentralCredentialUsage::ServerEeCertificateBag,
-            CentralCredentialReference::CertificateBag(reference),
-        ) => (
-            CredentialKind::EeCertificateBag,
-            CredentialReference::CertificateBag(reference.to_owned()),
-        ),
-        _ => return Err(ResolutionError::incomplete_request(context, kind_for_usage(usage))),
-    };
-
-    Ok(CredentialRequest {
-        slot,
-        context,
-        kind,
-        reference,
-    })
-}
-
-const fn kind_for_usage(usage: CentralCredentialUsage) -> CredentialKind {
-    match usage {
-        CentralCredentialUsage::ClientCertificateWithKey => CredentialKind::CertificateWithKey,
-        CentralCredentialUsage::ClientTls13Epsk => CredentialKind::SymmetricKey,
-        CentralCredentialUsage::ServerCaCertificateBag => CredentialKind::CaCertificateBag,
-        CentralCredentialUsage::ServerEeCertificateBag => CredentialKind::EeCertificateBag,
     }
 }

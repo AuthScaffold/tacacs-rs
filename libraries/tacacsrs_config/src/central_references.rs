@@ -117,7 +117,7 @@ pub enum UnexpandedCredentialField {
 }
 
 impl UnexpandedCredentialField {
-    const fn field_path(self) -> &'static str {
+    pub(crate) const fn field_path(self) -> &'static str {
         match self {
             Self::ClientIdentity => "client-identity/credentials-reference",
             Self::ServerAuthentication => "server-authentication/credentials-reference",
