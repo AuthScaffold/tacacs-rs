@@ -877,7 +877,7 @@ mod tests {
     fn empty_servers_table_maps_to_empty_config() {
         let tables = SonicTacacsTables::default();
         let cfg = map_sonic_tables_to_tacacs_plus(&tables).expect("empty ConfigDB must map");
-        assert_eq!(cfg.server, [] as [tacacsrs_config::TacacsPlusServer; 0]);
+        assert!(cfg.server.is_empty());
     }
 
     #[test]
@@ -1307,7 +1307,7 @@ mod tests {
             .as_ref()
             .and_then(|identity| identity.tls13_epsk.as_ref())
             .expect("PSK-only EPSK");
-        assert_eq!(psk_only.psk_dhe_ke_groups, [] as [tacacsrs_config::PskDheKeSupportedGroup; 0]);
+        assert!(psk_only.psk_dhe_ke_groups.is_empty());
     }
 
     #[test]
@@ -1393,8 +1393,8 @@ mod tests {
 
         let delta = ConfigDelta::diff(Some(&previous), &new);
         assert_eq!(delta.added_servers, vec!["sonic-server-192.0.2.10"]);
-        assert_eq!(delta.removed_servers, [] as [std::string::String; 0]);
-        assert_eq!(delta.modified_servers, [] as [std::string::String; 0]);
+        assert!(delta.removed_servers.is_empty());
+        assert!(delta.modified_servers.is_empty());
         assert_eq!(new.server[1].name, "sonic-server-192.0.2.20");
     }
 }

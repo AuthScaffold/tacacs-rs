@@ -345,14 +345,11 @@ async fn controller_can_reset_and_replace_policy() {
     );
 
     controller.reset_state().await.expect("reset must succeed");
-    assert_eq!(
-        controller
-            .captured_requests()
-            .await
-            .expect("captured requests must load")
-            .len(),
-        0
-    );
+    assert!(controller
+        .captured_requests()
+        .await
+        .expect("captured requests must load")
+        .is_empty());
 
     controller
         .load_policy(&EmulatorPolicy::new(

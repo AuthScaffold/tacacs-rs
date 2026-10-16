@@ -385,7 +385,7 @@ mod tests {
             .expect("tls13 epsk")
             .psk_dhe_ke_groups;
 
-        assert_eq!(groups.as_slice(), []);
+        assert!(groups.is_empty());
     }
 
     #[test]

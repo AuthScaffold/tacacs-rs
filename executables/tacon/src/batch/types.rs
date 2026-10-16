@@ -314,7 +314,7 @@ mod tests {
             BatchRequest::Authorization(req) => {
                 assert_eq!(req.privilege_level, 15);
                 assert!(req.cmd.is_none());
-                assert_eq!(req.cmd_args, [] as [std::string::String; 0]);
+                assert!(req.cmd_args.is_empty());
             }
             _ => panic!("Expected authorization request"),
         }
