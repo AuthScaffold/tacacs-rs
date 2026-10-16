@@ -106,6 +106,7 @@ struct SonicObservation {
     signals: watch::Receiver<()>,
     pump: JoinHandle<()>,
     previous: Option<Arc<TacacsPlus>>,
+    candidate_rejected: bool,
     restart: Option<bool>,
     pending: bool,
     debounce_until: Option<Instant>,
@@ -147,6 +148,7 @@ impl SonicObservation {
             signals,
             pump,
             previous: None,
+            candidate_rejected: false,
             restart: None,
             pending: true,
             debounce_until: None,
@@ -209,6 +211,7 @@ impl ConfigObservation for SonicObservation {
             .has_changed()
             .context("ConfigDB observation disconnected")?;
         let Ok(candidate) = candidate else {
+            self.candidate_rejected = true;
             log::warn!("Rejected ConfigDB candidate. Keeping the previous configuration");
             return Ok(Some(ConfigChangeEvent::CandidateRejected));
         };
@@ -216,7 +219,11 @@ impl ConfigObservation for SonicObservation {
             .bound_forwarder
             .is_some_and(|bound| candidate.forwarder != Some(bound));
         let snapshot = Arc::new(candidate.config);
-        let change = config_change(self.previous.as_deref(), snapshot.clone());
+        let change = config_change(
+            self.previous.as_deref(),
+            snapshot.clone(),
+            std::mem::take(&mut self.candidate_rejected),
+        );
         self.previous = Some(snapshot);
         if let Some(change) = change {
             self.restart = Some(required);
@@ -227,10 +234,14 @@ impl ConfigObservation for SonicObservation {
     }
 }
 
-fn config_change(previous: Option<&TacacsPlus>, snapshot: Arc<TacacsPlus>) -> Option<ConfigChange> {
+fn config_change(
+    previous: Option<&TacacsPlus>,
+    snapshot: Arc<TacacsPlus>,
+    recovered_rejection: bool,
+) -> Option<ConfigChange> {
     let is_baseline = previous.is_none();
     let delta = ConfigDelta::diff(previous, &snapshot);
-    (is_baseline || !delta.is_empty()).then_some(ConfigChange {
+    (is_baseline || recovered_rejection || !delta.is_empty()).then_some(ConfigChange {
         config: snapshot,
         delta,
     })
@@ -280,11 +291,14 @@ mod tests {
     use crate::sonic_server_name;
 
     #[test]
-    fn config_change_emits_baseline_and_suppresses_unchanged_snapshot() {
+    fn config_change_emits_baseline_and_recovery_but_suppresses_ordinary_unchanged_snapshot() {
         let snapshot = Arc::new(TacacsPlus::empty());
 
-        assert!(config_change(None, Arc::clone(&snapshot)).is_some());
-        assert!(config_change(Some(&snapshot), Arc::clone(&snapshot)).is_none());
+        assert!(config_change(None, Arc::clone(&snapshot), false).is_some());
+        assert!(config_change(Some(&snapshot), Arc::clone(&snapshot), false).is_none());
+        let recovery =
+            config_change(Some(&snapshot), Arc::clone(&snapshot), true).expect("recovery change");
+        assert!(recovery.delta.is_empty());
     }
 
     async fn next_event(
@@ -350,6 +364,29 @@ mod tests {
             .hset::<_, _, _, ()>(key, field, value)
             .await
             .expect("set Redis field");
+    }
+
+    async fn assert_rejected_forwarder_recovery(
+        connection: &mut redis::aio::MultiplexedConnection,
+        events: &mut Box<dyn ConfigObservation>,
+    ) {
+        set_field(connection, "TACPLUS_FORWARDER|global", "local_listen_port", "0").await;
+        assert!(matches!(
+            next_event(events, "rejected candidate").await,
+            ConfigChangeEvent::CandidateRejected
+        ));
+        set_field(connection, "TACPLUS_FORWARDER|global", "local_listen_port", "49").await;
+        let ConfigChangeEvent::Changed(recovered) =
+            next_event(events, "rejected candidate recovery").await
+        else {
+            panic!("recovery change expected");
+        };
+        assert!(recovered.delta.is_empty());
+        assert_eq!(recovered.config.server.len(), 2);
+        assert!(matches!(
+            next_event(events, "recovery restart").await,
+            ConfigChangeEvent::RestartRequired { required: false }
+        ));
     }
 
     #[test]
@@ -676,12 +713,8 @@ mod tests {
             ConfigChangeEvent::RestartRequired { required: false }
         ));
 
-        set_field(&mut connection, "TACPLUS_FORWARDER|global", "local_listen_port", "0").await;
-        assert!(matches!(
-            next_event(&mut events, "rejected candidate").await,
-            ConfigChangeEvent::CandidateRejected
-        ));
-        set_field(&mut connection, "TACPLUS_FORWARDER|global", "local_listen_port", "49").await;
+        assert_rejected_forwarder_recovery(&mut connection, &mut events).await;
+
         connection
             .del::<_, ()>(&["TACPLUS_SERVER|192.0.2.10", "TACPLUS_SERVER_TLS|192.0.2.20"])
             .await
