@@ -1,6 +1,5 @@
-//! TACACS+ operation identity used by routing and connection ownership.
+//! TACACS+ operation identity for routing and connection isolation.
 
-use tacacsrs_config::TacacsPlusServerType;
 use tacacsrs_protocol::enumerations::TacacsType;
 
 /// A TACACS+ service operation.
@@ -15,10 +14,12 @@ pub enum OperationKind {
 }
 
 impl OperationKind {
-    /// All supported operation kinds in stable order.
+    /// All operations in stable order.
     pub const ALL: [Self; 3] = [Self::Authentication, Self::Authorization, Self::Accounting];
 
-    pub(crate) const fn index(self) -> usize {
+    /// Returns the operation's stable position in an operation-indexed array.
+    #[must_use]
+    pub const fn index(self) -> usize {
         match self {
             Self::Authentication => 0,
             Self::Authorization => 1,
@@ -26,17 +27,7 @@ impl OperationKind {
         }
     }
 
-    /// Returns the server capability required for this operation.
-    #[must_use]
-    pub const fn server_type(self) -> TacacsPlusServerType {
-        match self {
-            Self::Authentication => TacacsPlusServerType::AUTHENTICATION,
-            Self::Authorization => TacacsPlusServerType::AUTHORIZATION,
-            Self::Accounting => TacacsPlusServerType::ACCOUNTING,
-        }
-    }
-
-    /// Returns the stable operation name used in logs and configuration errors.
+    /// Returns the stable operation name for diagnostics.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -51,10 +42,10 @@ impl TryFrom<TacacsType> for OperationKind {
     type Error = anyhow::Error;
 
     fn try_from(value: TacacsType) -> Result<Self, Self::Error> {
-        match value {
-            TacacsType::TacPlusAuthentication => Ok(Self::Authentication),
-            TacacsType::TacPlusAuthorisation => Ok(Self::Authorization),
-            TacacsType::TacPlusAccounting => Ok(Self::Accounting),
-        }
+        Ok(match value {
+            TacacsType::TacPlusAuthentication => Self::Authentication,
+            TacacsType::TacPlusAuthorisation => Self::Authorization,
+            TacacsType::TacPlusAccounting => Self::Accounting,
+        })
     }
 }

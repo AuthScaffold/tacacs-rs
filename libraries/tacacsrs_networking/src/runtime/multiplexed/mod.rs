@@ -15,11 +15,11 @@
 //! [`TacacsClient`](crate::TacacsClient) and run higher-level
 //! flows over the returned session object.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
-use tokio::task;
+use crate::runtime::task::DriverTask;
 
 use crate::codec::{PacketReadResult, PacketReader, PacketWriter};
 
@@ -45,20 +45,30 @@ use self::write_loop::run_write_loop;
 /// Wrap the connection in an `Arc` to share it across tasks.
 pub(crate) struct MultiplexedConnection {
     session_manager: Arc<SessionManager>,
+    runtime: Arc<ConnectionRuntime>,
+    driver: OnceLock<DriverTask>,
+}
+
+struct ConnectionRuntime {
+    session_manager: Arc<SessionManager>,
     packet_reader: PacketReader,
     packet_writer: PacketWriter,
+}
+
+struct SessionCleanup(Arc<SessionManager>);
+
+impl Drop for SessionCleanup {
+    fn drop(&mut self) {
+        self.0.disable_new_sessions();
+        self.0.close_all_sessions();
+    }
 }
 
 impl MultiplexedConnection {
     #[cfg(test)]
     #[must_use]
     pub(crate) fn new(obfuscation_key: Option<&[u8]>) -> Self {
-        let key = obfuscation_key.map(<[u8]>::to_vec);
-        Self {
-            session_manager: Arc::new(SessionManager::new()),
-            packet_reader: PacketReader::new(key.clone()),
-            packet_writer: PacketWriter::new(key),
-        }
+        Self::with_manager(Arc::new(SessionManager::new()), obfuscation_key)
     }
 
     /// Creates a connection whose single-connect support has already been confirmed.
@@ -67,11 +77,22 @@ impl MultiplexedConnection {
     /// received `TAC_PLUS_SINGLE_CONNECT_FLAG` from the server.
     #[must_use]
     pub(crate) fn new_single_connect_confirmed(obfuscation_key: Option<&[u8]>) -> Self {
+        Self::with_manager(
+            Arc::new(SessionManager::with_state(SingleConnectionState::Supported)),
+            obfuscation_key,
+        )
+    }
+
+    fn with_manager(session_manager: Arc<SessionManager>, obfuscation_key: Option<&[u8]>) -> Self {
         let key = obfuscation_key.map(<[u8]>::to_vec);
         Self {
-            session_manager: Arc::new(SessionManager::with_state(SingleConnectionState::Supported)),
-            packet_reader: PacketReader::new(key.clone()),
-            packet_writer: PacketWriter::new(key),
+            runtime: Arc::new(ConnectionRuntime {
+                session_manager: Arc::clone(&session_manager),
+                packet_reader: PacketReader::new(key.clone()),
+                packet_writer: PacketWriter::new(key),
+            }),
+            session_manager,
+            driver: OnceLock::new(),
         }
     }
 
@@ -80,15 +101,46 @@ impl MultiplexedConnection {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let self_clone = Arc::clone(self);
-        task::spawn(async move {
-            // Buffering lets one syscall deliver a whole small TACACS+ packet.
-            self_clone
-                .handle_connection_with_halves(BufReader::new(reader), writer)
-                .await
+        let runtime = Arc::clone(&self.runtime);
+        self.driver.get_or_init(|| {
+            let cleanup = SessionCleanup(Arc::clone(&self.session_manager));
+            DriverTask::spawn(async move {
+                let _cleanup = cleanup;
+                runtime
+                    .handle_connection_with_halves(BufReader::new(reader), writer)
+                    .await
+            })
         });
     }
 
+    pub(crate) async fn close_and_join(
+        &self,
+        deadline: crate::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        self.session_manager.disable_new_sessions();
+        if let Some(driver) = self.driver.get() {
+            driver.join_until(deadline).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn driver_finished(&self) -> bool {
+        self.driver.get().is_none_or(DriverTask::is_finished)
+    }
+
+    #[cfg(test)]
+    async fn handle_connection_with_halves<R, W>(&self, reader: R, writer: W) -> anyhow::Result<()>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        self.runtime
+            .handle_connection_with_halves(reader, writer)
+            .await
+    }
+}
+
+impl ConnectionRuntime {
     async fn handle_connection_with_halves<R, W>(
         &self,
         mut reader: R,
@@ -194,7 +246,7 @@ impl MultiplexedConnection {
                 () = self.session_manager.wait_for_close() => {
                     log::info!(
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
-                        "Received close signal. The server does not support single-connection mode, and all sessions are complete."
+                        "The connection is retired and all sessions are complete."
                     );
                     return Ok(());
                 }
@@ -266,7 +318,9 @@ impl MultiplexedConnection {
             }
         }
     }
+}
 
+impl MultiplexedConnection {
     pub(crate) fn can_create_sessions(self: &Arc<Self>) -> bool {
         self.session_manager.can_create_sessions()
     }
@@ -276,14 +330,18 @@ impl MultiplexedConnection {
     }
 
     pub(crate) fn create_session(self: &Arc<Self>) -> anyhow::Result<SharedSession> {
-        self.session_manager.create_session()
+        let mut session = self.session_manager.create_session()?;
+        session.connection_owner = Some(Arc::clone(self));
+        Ok(session)
     }
 
     pub(crate) fn create_fixed_session(
         self: &Arc<Self>,
         expected: ExpectedResponseHeader,
     ) -> anyhow::Result<SharedFixedSession> {
-        self.session_manager.create_fixed_session(expected)
+        let mut session = self.session_manager.create_fixed_session(expected)?;
+        session.connection_owner = Some(Arc::clone(self));
+        Ok(session)
     }
 
     pub(crate) fn single_connection_state(self: &Arc<Self>) -> SingleConnectionState {

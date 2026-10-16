@@ -37,15 +37,6 @@ impl ShutdownCoordinator {
         }
     }
 
-    /// Starts the operating-system signal monitor.
-    pub(crate) fn spawn_process_signal_monitor(&self) -> tokio::task::JoinHandle<()> {
-        let coordinator = self.clone();
-        tokio::spawn(async move {
-            process_shutdown_signal().await;
-            coordinator.initiate_shutdown();
-        })
-    }
-
     /// Withdraws health and then broadcasts graceful shutdown.
     pub(crate) fn initiate_shutdown(&self) {
         self.health.set_lifecycle(RuntimeLifecycle::Draining);
@@ -118,7 +109,7 @@ impl Drop for ListenerRegistration {
 }
 
 /// Waits for a termination signal that stops the service from accepting clients.
-async fn process_shutdown_signal() {
+pub(super) async fn process_shutdown_signal() {
     use tokio::signal::unix::{SignalKind, signal};
 
     if let Ok(mut terminate_signal) = signal(SignalKind::terminate()) {

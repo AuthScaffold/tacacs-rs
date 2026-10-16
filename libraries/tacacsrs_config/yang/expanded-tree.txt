@@ -158,23 +158,29 @@ module: tacacsrs
 
   augment /sys:system:
     +--rw local-services
-    |  +--rw client-api-enabled?        boolean
-    |  +--rw client-api-endpoint?       string
-    |  +--rw tacacs-proxy-enabled?      boolean
-    |  +--rw tacacs-proxy-endpoint?     string
-    |  +--rw unix-socket-mode?          uint16
-    |  +--rw proxy-credential-source?   proxy-credential-source
-    |  +--rw proxy-shared-secret?       string
+    |  +--rw max-connections?               uint16
+    |  +--rw max-client-api-streams?        uint16
+    |  +--rw connection-lifetime-seconds?   uint32
+    |  +--rw client-api-enabled?            boolean
+    |  +--rw client-api-endpoint?           string
+    |  +--rw tacacs-proxy-enabled?          boolean
+    |  +--rw tacacs-proxy-endpoint?         string
+    |  +--rw unix-socket-mode?              uint16
+    |  +--rw proxy-credential-source?       proxy-credential-source
+    |  +--rw proxy-shared-secret?           string
     +--rw runtime-policy
        +--rw failover-recovery-interval-seconds?   uint32
        +--rw client-api-failover-strategy?         failover-strategy
        +--rw tacacs-proxy-failover-strategy?       failover-strategy
        +--rw authentication
+       |  +--rw request-timeout-seconds?   uint32
        |  +--rw max-body-length?           uint32
        |  +--rw max-concurrent-requests?   uint32
        +--rw authorization
+       |  +--rw request-timeout-seconds?   uint32
        |  +--rw max-body-length?           uint32
        |  +--rw max-concurrent-requests?   uint32
        +--rw accounting
+          +--rw request-timeout-seconds?   uint32
           +--rw max-body-length?           uint32
           +--rw max-concurrent-requests?   uint32

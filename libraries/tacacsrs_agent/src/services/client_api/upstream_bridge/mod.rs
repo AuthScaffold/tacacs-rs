@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::config::PolicyService;
 use crate::upstream::OperationRouter;
 use crate::upstream::manager::UpstreamManager;
+use tacacsrs_networking::routed::EndpointConnector;
 
 mod accounting;
 mod authentication;
@@ -24,14 +25,23 @@ mod routing_tests;
 /// The bridge holds an [`OperationRouter`], not the whole upstream manager. It
 /// can select servers and record outcomes. It cannot read proxy settings or
 /// change the runtime configuration.
-#[derive(Clone)]
-pub(super) struct UpstreamBridge {
-    router: OperationRouter,
+pub(super) struct UpstreamBridge<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    router: OperationRouter<Connector>,
 }
 
-impl UpstreamBridge {
+impl<Connector: EndpointConnector> Clone for UpstreamBridge<Connector> {
+    fn clone(&self) -> Self {
+        Self {
+            router: self.router.clone(),
+        }
+    }
+}
+
+impl<Connector: EndpointConnector> UpstreamBridge<Connector> {
     /// Creates a client API bridge for the shared upstream manager.
-    pub(super) fn new(upstream_manager: Arc<UpstreamManager>) -> Self {
+    pub(super) fn new(upstream_manager: Arc<UpstreamManager<Connector>>) -> Self {
         Self {
             router: OperationRouter::new(upstream_manager, PolicyService::ClientApi),
         }
@@ -95,7 +105,7 @@ mod tests {
 
         let state = Arc::new(UpstreamManager::new(
             vec![test_server("server:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
             Duration::from_millis(200),
             RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
@@ -123,7 +133,7 @@ mod tests {
         )])));
         let state = Arc::new(UpstreamManager::new(
             vec![test_server("server:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
             Duration::from_millis(200),
             RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
@@ -164,7 +174,7 @@ mod tests {
 
         let state = Arc::new(UpstreamManager::new(
             vec![test_server("primary:49"), test_server("secondary:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
             Duration::from_millis(200),
             RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
@@ -188,7 +198,7 @@ mod tests {
     async fn test_request_without_configured_servers_returns_waiting_error() {
         let state = Arc::new(UpstreamManager::new(
             Vec::new(),
-            Arc::new(FakeConnector::new(HashMap::new())) as Arc<dyn UpstreamConnector>,
+            Arc::new(FakeConnector::new(HashMap::new())) as Arc<UpstreamConnector>,
             Duration::from_millis(200),
             RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));

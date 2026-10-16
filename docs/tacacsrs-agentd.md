@@ -81,7 +81,7 @@ If `--service-mode` is omitted, the daemon preserves the old behavior: it runs `
 
 ### Canonical Listener Resource
 
-Service selection, listener endpoints, and Unix socket permissions belong to `tacacsrs:local-services` under `ietf-system:system`.
+Service selection, listener endpoints, ingress limits, and Unix socket permissions belong to `tacacsrs:local-services` under `ietf-system:system`.
 The daemon normalizes listener flags into this generated YANG resource. It derives omitted values from the YANG defaults.
 The service validates the same source for library callers before binding sockets.
 Worker threads, verbosity, and host integration remain process bootstrap inputs, not listener configuration.
@@ -95,7 +95,10 @@ Example resource for `--local-services`:
         "client-api-endpoint": "/run/tacacs/tacacs.sock",
         "tacacs-proxy-enabled": true,
         "tacacs-proxy-endpoint": "127.0.0.1:49",
-        "unix-socket-mode": 432
+        "unix-socket-mode": 432,
+        "max-connections": 64,
+        "max-client-api-streams": 64,
+        "connection-lifetime-seconds": 300
     }
 }
 ```
@@ -105,6 +108,15 @@ YANG JSON encodes permission bits as a decimal number from 0 through 511. The CL
 The resource file loads once at startup. Listener changes require a restart.
 It cannot be combined with listener flags, `--proxy-credential-source`, or `--sonic`.
 SONiC mode still loads its forwarder row and normalizes the result into the canonical resource.
+
+Each listener serves at most `max-connections` connections. Further connections wait in the operating system's bounded listen backlog.
+The client API permits at most `max-client-api-streams` concurrent HTTP/2 streams on each connection.
+Both limits are integers from 1 through 65535, with a generated default of 64.
+Client API protobuf request and response envelopes are limited to 128 KiB, including framing overhead relative to the TACACS+ body limit.
+
+Each served connection expires after `connection-lifetime-seconds`, including setup, idle time, requests, and reply delivery.
+The generated default is 300 seconds; zero is invalid. Clients must reconnect after expiry.
+The lifetime applies even to active requests. Increase it when the deployment requires longer local connections.
 
 All endpoint paths must be absolute. Unix paths cannot contain NUL, parent traversal, or more than 107 bytes.
 These rules apply even to a disabled client API endpoint. Relative paths previously accepted by the IPC parser are no longer valid listener inputs.
@@ -294,9 +306,13 @@ current request. These replay rules always apply:
 
 - A denial is a valid response and does not cause failover.
 - A server `ERROR` reply can use the next server.
-- Authentication and authorization can use the next server after an uncertain transport failure.
-- Accounting does not retry after an uncertain transport failure.
+- Unknown authentication, authorization, and accounting outcomes stop the current request without another attempt.
+- Proven-unsent failures can use the next server within the configured attempt budget.
 - A continuing authentication session stays on the server that sent its first valid reply.
+
+This changes earlier `ordered-safe-retry` behavior, which could replay uncertain authentication and authorization requests.
+Those operations can affect audit or lockout state, so their unknown outcomes now remain failures with no automatic replay.
+The default deferred strategy is unchanged. No uncertain-outcome replay opt-in is currently exposed.
 
 ### Preferred Server Recovery
 
@@ -331,15 +347,18 @@ failover for both local services:
         "tacacs-proxy-failover-strategy": "ordered-safe-retry",
         "authentication": {
             "max-body-length": 4096,
-            "max-concurrent-requests": 64
+            "max-concurrent-requests": 64,
+            "request-timeout-seconds": 30
         },
         "authorization": {
             "max-body-length": 16384,
-            "max-concurrent-requests": 64
+            "max-concurrent-requests": 64,
+            "request-timeout-seconds": 30
         },
         "accounting": {
             "max-body-length": 16384,
-            "max-concurrent-requests": 64
+            "max-concurrent-requests": 64,
+            "request-timeout-seconds": 30
         }
   }
 }
@@ -355,9 +374,23 @@ The resource is defined by the [project YANG augmentation](../libraries/tacacsrs
 It is a sibling of the upstream `tacacs-plus` resource, not a field inside the server list.
 The policy file remains an independently watched resource. This change does not combine its publication with server-generation publication.
 
-Each operation has one packet-size limit and one concurrency limit. IPC and
-proxy clients share that capacity. A request waits for capacity for no longer
-than the active server timeout.
+IPC and proxy clients share each operation's active capacity and bounded FIFO admission queue.
+The pending limit equals `max-concurrent-requests`. A full queue returns an immediate overload error without upstream I/O.
+Reducing the limit retains existing work and waiters but does not admit work above the new active limit.
+
+Each operation also has a total `request-timeout-seconds` budget, with a generated default of 30 seconds and a minimum of one second.
+The request captures its deadline before admission. Admission, connection setup, retries, and proxy continuations consume that same budget.
+The active server timeout can shorten the admission wait. The selected server timeout can shorten an exchange attempt.
+Neither a retry nor a policy reload extends an existing request's deadline.
+Set a longer authentication budget when an interactive conversation needs more than 30 seconds.
+
+Expiry before transmission is classified as not sent. An expired exchange with an unknown outcome does not retry automatically.
+Proxy expiry terminates the conversation and releases admission capacity.
+The proxy reserves active or pending capacity before creating each session task. Overload replies use a bounded connection-level queue and create no session task.
+The request deadline covers upstream execution, reply queueing, and physical proxy socket writes.
+A final reply retains admission capacity until the writer acknowledges delivery. A partial write that expires closes the connection; it is not resumed or replayed.
+Full continuation queues also close the connection so one session cannot block dispatch to all other sessions.
+Client API physical delivery is bounded by the connection lifetime; its operation deadline still bounds upstream execution.
 
 SONiC ConfigDB is supervised differently from local CLI or file input. Before constructing the service, the daemon waits for a valid `TACPLUS_FORWARDER|global` row and uses its loopback address and port for the raw TACACS+ proxy listener. SONiC mode always hosts both the Client API and proxy. A conflicting `--proxy-endpoint` or non-`both` service mode is rejected. Ctrl-C or SIGTERM cancels this pre-bind retry.
 
@@ -372,6 +405,20 @@ Changes to the forwarder configuration do not change active endpoints. Instead, 
 The daemon clears this degradation after the bound values return. It rejects malformed rows without reporting a listener change.
 
 ## Health and Probes
+
+### Retirement and Shutdown
+
+When a reload removes an endpoint, existing requests retain it only until a fixed retirement cutoff.
+The cutoff uses the maximum current `request-timeout-seconds` value when preparation starts; its default is 30 seconds.
+All endpoints removed by that update share the same cutoff. Later reloads do not extend it.
+At expiry, retained endpoints reject new bindings, cancel setup, close active sockets, and join their owned tasks.
+Unchanged endpoints retain their connections.
+
+Shutdown closes admission and stops new upstream work before draining listeners.
+One deadline, derived from the maximum current operation budget, covers listener drain and cleanup of current and historical endpoints.
+At expiry, outstanding work is cancelled and remaining transports close. Unknown outcomes are not replayed automatically.
+The service removes its owned socket paths and reports stopped only after explicit cleanup completes.
+An embedded host can use `TacacsClientService::serve_until` to request this sequence without process signals or process exit.
 
 The Client API endpoint also serves the standard `grpc.health.v1.Health` protocol. No custom health protobuf or additional network listener is used.
 

@@ -11,11 +11,11 @@
 
 use async_trait::async_trait;
 
-use super::failover::{AttemptDisposition, FailoverPlan};
+use super::plan::{AttemptDisposition, FailoverPlan};
 
 /// Result of one attempt against one selected server.
 #[derive(Debug)]
-pub(crate) enum Attempt<Value, Error> {
+pub enum Attempt<Value, Error> {
     /// The server returned a final result. No other server is tried.
     Accepted(Value),
     /// The server returned a valid reply that reports a server error.
@@ -36,7 +36,7 @@ pub(crate) enum Attempt<Value, Error> {
 
 /// Final result of one local request across all permitted attempts.
 #[derive(Debug)]
-pub(crate) enum FailoverOutcome<Value, Error> {
+pub enum FailoverOutcome<Value, Error> {
     /// One attempt returned a final result.
     Accepted(Value),
     /// The last permitted attempt returned a server error reply.
@@ -45,13 +45,13 @@ pub(crate) enum FailoverOutcome<Value, Error> {
     Failed(Error),
     /// One attempt stopped the request before the plan was exhausted.
     Aborted(Error),
-    /// The plan permitted no attempt. This indicates a plan construction bug.
+    /// The plan had a zero attempt budget.
     NoAttempt,
 }
 
 /// One local request that the failover executor can retry on other servers.
 #[async_trait]
-pub(crate) trait FailoverAttempt: Send {
+pub trait FailoverAttempt: Send {
     /// Value that a successful or rejected attempt produces.
     type Value: Send;
     /// Error that a failed attempt produces.
@@ -70,7 +70,7 @@ pub(crate) trait FailoverAttempt: Send {
 }
 
 /// Runs `attempt` until the plan stops permitting another server.
-pub(crate) async fn run_with_failover<Runner>(
+pub async fn run_with_failover<Runner>(
     plan: FailoverPlan,
     runner: &mut Runner,
 ) -> FailoverOutcome<Runner::Value, Runner::Error>
@@ -103,11 +103,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use crate::config::{FailoverStrategy, OperationPolicies, PolicyService, RuntimePolicy};
-    use crate::upstream::OperationKind;
-
     use super::*;
 
     struct ScriptedRunner {
@@ -142,23 +137,11 @@ mod tests {
         }
     }
 
-    fn plan(strategy: FailoverStrategy, servers: usize) -> FailoverPlan {
-        let policy = RuntimePolicy::new(
-            strategy,
-            strategy,
-            OperationPolicies::default(),
-            Duration::from_secs(30),
-        )
-        .expect("test policy");
-        FailoverPlan::new(&policy, PolicyService::ClientApi, OperationKind::Authorization, servers)
-    }
-
     #[tokio::test]
     async fn accepted_attempt_stops_immediately() {
         let mut runner = ScriptedRunner::new(vec![Attempt::Accepted("first")]);
 
-        let outcome =
-            run_with_failover(plan(FailoverStrategy::OrderedSafeRetry, 3), &mut runner).await;
+        let outcome = run_with_failover(FailoverPlan::new(3), &mut runner).await;
 
         assert!(matches!(outcome, FailoverOutcome::Accepted("first")));
         assert_eq!(runner.attempts, 1);
@@ -169,8 +152,7 @@ mod tests {
         let mut runner =
             ScriptedRunner::new(vec![Attempt::Rejected("first"), Attempt::Accepted("second")]);
 
-        let outcome =
-            run_with_failover(plan(FailoverStrategy::OrderedSafeRetry, 2), &mut runner).await;
+        let outcome = run_with_failover(FailoverPlan::new(2), &mut runner).await;
 
         assert!(matches!(outcome, FailoverOutcome::Accepted("second")));
         assert_eq!(runner.discarded, vec!["first"]);
@@ -180,8 +162,7 @@ mod tests {
     async fn the_last_rejected_value_is_returned_to_the_caller() {
         let mut runner = ScriptedRunner::new(vec![Attempt::Rejected("only")]);
 
-        let outcome =
-            run_with_failover(plan(FailoverStrategy::DeferredFailover, 3), &mut runner).await;
+        let outcome = run_with_failover(FailoverPlan::new(1), &mut runner).await;
 
         assert!(matches!(outcome, FailoverOutcome::Rejected("only")));
         assert!(runner.discarded.is_empty());
@@ -191,8 +172,7 @@ mod tests {
     async fn aborted_attempt_stops_without_another_server() {
         let mut runner = ScriptedRunner::new(vec![Attempt::Aborted("invalid")]);
 
-        let outcome =
-            run_with_failover(plan(FailoverStrategy::OrderedSafeRetry, 3), &mut runner).await;
+        let outcome = run_with_failover(FailoverPlan::new(3), &mut runner).await;
 
         assert!(matches!(outcome, FailoverOutcome::Aborted("invalid")));
         assert_eq!(runner.attempts, 1);
@@ -211,10 +191,80 @@ mod tests {
             },
         ]);
 
-        let outcome =
-            run_with_failover(plan(FailoverStrategy::OrderedSafeRetry, 2), &mut runner).await;
+        let outcome = run_with_failover(FailoverPlan::new(2), &mut runner).await;
 
         assert!(matches!(outcome, FailoverOutcome::Failed("second")));
         assert_eq!(runner.attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn uncertain_attempt_stops_without_replay() {
+        let mut runner = ScriptedRunner::new(vec![
+            Attempt::Failed {
+                error: "uncertain",
+                disposition: AttemptDisposition::OutcomeUnknown,
+            },
+            Attempt::Accepted("must not execute"),
+        ]);
+        let outcome = run_with_failover(FailoverPlan::new(2), &mut runner).await;
+        assert!(matches!(outcome, FailoverOutcome::Failed("uncertain")));
+        assert_eq!(runner.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn zero_budget_does_not_call_the_runner() {
+        let mut runner = ScriptedRunner::new(Vec::new());
+        let outcome = run_with_failover(FailoverPlan::new(0), &mut runner).await;
+        assert!(matches!(outcome, FailoverOutcome::NoAttempt));
+        assert_eq!(runner.attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_drops_attempt_state_and_prevents_another_attempt() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, AtomicBool, Ordering},
+        };
+        use tokio::sync::Notify;
+
+        struct AttemptGuard(Arc<AtomicBool>);
+        impl Drop for AttemptGuard {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        struct BlockedRunner {
+            entered: Arc<Notify>,
+            attempts: Arc<AtomicUsize>,
+            dropped: Arc<AtomicBool>,
+        }
+        #[async_trait]
+        impl FailoverAttempt for BlockedRunner {
+            type Value = ();
+            type Error = ();
+            async fn attempt(&mut self, _: usize) -> Attempt<(), ()> {
+                self.attempts.fetch_add(1, Ordering::SeqCst);
+                let _guard = AttemptGuard(Arc::clone(&self.dropped));
+                self.entered.notify_one();
+                std::future::pending().await
+            }
+        }
+        let entered = Arc::new(Notify::new());
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut runner = BlockedRunner {
+            entered: Arc::clone(&entered),
+            attempts: Arc::clone(&attempts),
+            dropped: Arc::clone(&dropped),
+        };
+        let task =
+            tokio::spawn(async move { run_with_failover(FailoverPlan::new(3), &mut runner).await });
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(dropped.load(Ordering::SeqCst));
     }
 }

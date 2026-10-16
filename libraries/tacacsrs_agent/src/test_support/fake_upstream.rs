@@ -22,7 +22,7 @@ use tacacsrs_protocol::enumerations::{
 use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 use tokio::sync::Mutex;
 
-use crate::upstream::{OperationKind, UpstreamConnection, UpstreamConnector, UpstreamRequestError};
+use crate::upstream::{OperationKind, UpstreamConnection, UpstreamRequestError};
 
 #[derive(Debug)]
 pub(crate) struct FakeConnection {
@@ -41,6 +41,18 @@ impl UpstreamConnection for FakeConnection {
         self.usable.store(false, Ordering::Relaxed);
     }
 
+    fn close(&self) {
+        self.usable.store(false, Ordering::Relaxed);
+    }
+
+    async fn close_and_join(
+        &self,
+        _deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        self.close();
+        Ok(())
+    }
+
     async fn open_conversation(&self) -> anyhow::Result<tacacsrs_networking::ClientConversation> {
         anyhow::bail!("Fake server {} does not implement raw proxy sessions", self.address)
     }
@@ -48,6 +60,7 @@ impl UpstreamConnection for FakeConnection {
     async fn send_accounting(
         &self,
         _request: AccountingRequest,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
@@ -67,6 +80,7 @@ impl UpstreamConnection for FakeConnection {
     async fn authenticate_pap(
         &self,
         _exchange: PapAuthenticationExchange,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
@@ -86,6 +100,7 @@ impl UpstreamConnection for FakeConnection {
     async fn send_authorization(
         &self,
         _request: AuthorizationRequest,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
@@ -144,7 +159,23 @@ impl FakeConnector {
 }
 
 #[async_trait]
-impl UpstreamConnector for FakeConnector {
+impl tacacsrs_networking::routed::EndpointConnector for FakeConnector {
+    type Connection = dyn UpstreamConnection;
+
+    async fn retire(&self, connection: &Self::Connection) {
+        connection.stop_accepting_new_sessions().await;
+    }
+    fn close(&self, connection: &Self::Connection) {
+        connection.close();
+    }
+    async fn close_and_join(
+        &self,
+        connection: &Self::Connection,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        connection.close_and_join(deadline).await
+    }
+
     async fn connect(
         &self,
         endpoint: tacacsrs_networking::PreparedEndpoint,

@@ -1,0 +1,330 @@
+//! Endpoint setup ownership and deadline-bound retirement across catalogs.
+
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Context, ensure};
+use tokio::sync::oneshot;
+
+use crate::{PreparedEndpoint, RequestDeadline};
+use crate::runtime::task::DriverTask;
+
+use super::{EndpointConnector, OperationKind};
+
+struct State<Connection: ?Sized> {
+    closed: bool,
+    cutoff: Option<RequestDeadline>,
+    connections: Vec<Arc<Connection>>,
+    setups: Vec<Arc<DriverTask>>,
+    retirement: Option<Arc<DriverTask>>,
+}
+
+pub(super) struct EndpointLifecycle<Connector: EndpointConnector> {
+    connector: Arc<Connector>,
+    state: Mutex<State<Connector::Connection>>,
+}
+
+struct SetupGuard(Arc<DriverTask>);
+
+impl Drop for SetupGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
+    pub(super) fn new(connector: Arc<Connector>) -> Self {
+        Self {
+            connector,
+            state: Mutex::new(State {
+                closed: false,
+                cutoff: None,
+                connections: Vec::new(),
+                setups: Vec::new(),
+                retirement: None,
+            }),
+        }
+    }
+
+    pub(super) fn ensure_open(&self) -> anyhow::Result<()> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ensure!(
+            !state.closed && state.cutoff.is_none_or(|deadline| deadline.check().is_ok()),
+            "The TACACS+ endpoint is retired"
+        );
+        Ok(())
+    }
+
+    pub(super) async fn connect(
+        self: &Arc<Self>,
+        endpoint: PreparedEndpoint,
+        operation: OperationKind,
+    ) -> anyhow::Result<Arc<Connector::Connection>> {
+        self.reap_unused_connections().await;
+        let (sender, receiver) = oneshot::channel();
+        let task = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ensure!(
+                !state.closed && state.cutoff.is_none_or(|deadline| deadline.check().is_ok()),
+                "The TACACS+ endpoint is retired"
+            );
+            state.setups.retain(|task| !task.is_finished());
+            let owner = Arc::downgrade(self);
+            let connector = Arc::clone(&self.connector);
+            let task = Arc::new(DriverTask::spawn(async move {
+                let result = connector
+                    .connect(endpoint, operation)
+                    .await
+                    .and_then(|connection| {
+                        let Some(owner) = owner.upgrade() else {
+                            connector.close(&connection);
+                            anyhow::bail!("The TACACS+ endpoint owner was dropped");
+                        };
+                        let mut state = owner
+                            .state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if state.closed
+                            || state
+                                .cutoff
+                                .is_some_and(|deadline| deadline.check().is_err())
+                        {
+                            connector.close(&connection);
+                            anyhow::bail!("The TACACS+ endpoint retired during setup");
+                        }
+                        state.connections.push(connection.clone());
+                        Ok(connection)
+                    });
+                let _delivered = sender.send(result);
+                Ok(())
+            }));
+            state.setups.push(task.clone());
+            task
+        };
+        let _setup = SetupGuard(task);
+        let connection = receiver
+            .await
+            .context("TACACS+ endpoint setup was cancelled")??;
+        self.ensure_open()?;
+        Ok(connection)
+    }
+
+    async fn reap_unused_connections(&self) {
+        let unused = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .connections
+            .iter()
+            .filter(|connection| Arc::strong_count(connection) == 1)
+            .cloned()
+            .collect::<Vec<_>>();
+        for connection in unused {
+            self.connector.close(&connection);
+            if let Err(error) = self
+                .connector
+                .close_and_join(&connection, RequestDeadline::at(tokio::time::Instant::now()))
+                .await
+            {
+                log::debug!("Retired connection cleanup reported: {error:#}");
+            }
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .connections
+                .retain(|current| !Arc::ptr_eq(current, &connection));
+        }
+    }
+
+    pub(super) fn close(&self) {
+        let connections = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.closed = true;
+            for setup in &state.setups {
+                setup.abort();
+            }
+            state.connections.clone()
+        };
+        for connection in connections {
+            self.connector.close(&connection);
+        }
+    }
+
+    async fn join_connections(&self, deadline: RequestDeadline) -> anyhow::Result<()> {
+        self.close();
+        let (setups, connections) = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (state.setups.clone(), state.connections.clone())
+        };
+        let mut failure = None;
+        for task in setups {
+            if let Err(error) = task.join_until(deadline).await {
+                failure.get_or_insert(error);
+            }
+        }
+        for connection in connections {
+            if let Err(error) = self.connector.close_and_join(&connection, deadline).await {
+                failure.get_or_insert(error);
+            }
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.connections.clear();
+        state.setups.retain(|task| !task.is_finished());
+        failure.map_or(Ok(()), Err)
+    }
+
+    pub(super) fn retire(self: &Arc<Self>, deadline: RequestDeadline) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .cutoff
+            .is_some_and(|current| current.expires_at() <= deadline.expires_at())
+        {
+            return;
+        }
+        if let Some(previous) = state.retirement.take() {
+            previous.abort();
+        }
+        state.cutoff = Some(deadline);
+        let owner = Arc::downgrade(self);
+        state.retirement = Some(Arc::new(DriverTask::spawn(async move {
+            tokio::time::sleep_until(deadline.expires_at()).await;
+            if let Some(owner) = owner.upgrade() {
+                owner.join_connections(deadline).await?;
+            }
+            Ok(())
+        })));
+    }
+
+    pub(super) async fn close_and_join(&self, deadline: RequestDeadline) -> anyhow::Result<()> {
+        let result = self.join_connections(deadline).await;
+        let retirement = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retirement
+            .clone();
+        if let Some(task) = retirement {
+            task.abort();
+            let joined = task.join_until(deadline).await;
+            return result.and(joined);
+        }
+        result
+    }
+
+    fn finished(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closed
+            && state
+                .retirement
+                .as_ref()
+                .is_some_and(|task| task.is_finished())
+    }
+}
+
+impl<Connector: EndpointConnector> Drop for EndpointLifecycle<Connector> {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+pub(super) struct RoutingRuntime<Connector: EndpointConnector> {
+    state: Mutex<(bool, Vec<Arc<EndpointLifecycle<Connector>>>)>,
+}
+
+impl<Connector: EndpointConnector> Default for RoutingRuntime<Connector> {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new((false, Vec::new())),
+        }
+    }
+}
+
+impl<Connector: EndpointConnector> RoutingRuntime<Connector> {
+    pub(super) fn register(&self, endpoint: Arc<EndpointLifecycle<Connector>>) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1.retain(|endpoint| !endpoint.finished());
+        if state.0 {
+            endpoint.close();
+        }
+        state.1.push(endpoint);
+    }
+
+    pub(super) fn ensure_open(&self) -> anyhow::Result<()> {
+        ensure!(
+            !self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0,
+            "The routed TACACS+ client is closed"
+        );
+        Ok(())
+    }
+
+    pub(super) fn close(&self) {
+        let endpoints = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.0 = true;
+            state.1.clone()
+        };
+        for endpoint in endpoints {
+            endpoint.close();
+        }
+    }
+
+    pub(super) fn cancel(&self) {
+        self.close();
+        let endpoints = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1
+            .clone();
+        for endpoint in endpoints {
+            endpoint.retire(RequestDeadline::at(tokio::time::Instant::now()));
+        }
+    }
+
+    pub(super) async fn close_and_join(&self, deadline: RequestDeadline) -> anyhow::Result<()> {
+        self.close();
+        let endpoints = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1
+            .clone();
+        let mut failure = None;
+        for endpoint in endpoints {
+            if let Err(error) = endpoint.close_and_join(deadline).await {
+                failure.get_or_insert(error);
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+}

@@ -54,9 +54,30 @@ pub struct PreparedLocalServices {
     client_api: Option<PathBuf>,
     tacacs_proxy: Option<ListenerEndpoint>,
     unix_socket_mode: u32,
+    max_connections: usize,
+    max_client_api_streams: u32,
+    connection_lifetime: std::time::Duration,
 }
 
 impl PreparedLocalServices {
+    /// Returns the maximum number of served connections per listener.
+    #[must_use]
+    pub const fn max_connections(&self) -> usize {
+        self.max_connections
+    }
+
+    /// Returns the HTTP/2 stream limit for each client API connection.
+    #[must_use]
+    pub const fn max_client_api_streams(&self) -> u32 {
+        self.max_client_api_streams
+    }
+
+    /// Returns the maximum local connection lifetime.
+    #[must_use]
+    pub const fn connection_lifetime(&self) -> std::time::Duration {
+        self.connection_lifetime
+    }
+
     /// Returns the client API socket path when that service is enabled.
     #[must_use]
     pub fn client_api(&self) -> Option<&Path> {
@@ -114,6 +135,15 @@ pub fn parse_local_services(bytes: &[u8]) -> anyhow::Result<LocalServices> {
 /// conflicting Unix paths, or a proxy endpoint inconsistent with service selection.
 pub fn prepare_local_services(source: &LocalServices) -> anyhow::Result<PreparedLocalServices> {
     crate::proxy_policy::validate_proxy_source(source)?;
+    ensure!(source.max_connections > 0, "local-services/max-connections must be greater than zero");
+    ensure!(
+        source.max_client_api_streams > 0,
+        "local-services/max-client-api-streams must be greater than zero"
+    );
+    ensure!(
+        source.connection_lifetime_seconds > 0,
+        "local-services/connection-lifetime-seconds must be greater than zero"
+    );
     ensure!(
         source.client_api_enabled || source.tacacs_proxy_enabled,
         "Enable at least one runtime service"
@@ -151,6 +181,11 @@ pub fn prepare_local_services(source: &LocalServices) -> anyhow::Result<Prepared
         client_api: source.client_api_enabled.then_some(client_path),
         tacacs_proxy: proxy,
         unix_socket_mode: u32::from(source.unix_socket_mode),
+        max_connections: usize::from(source.max_connections),
+        max_client_api_streams: u32::from(source.max_client_api_streams),
+        connection_lifetime: std::time::Duration::from_secs(u64::from(
+            source.connection_lifetime_seconds,
+        )),
     })
 }
 
@@ -218,6 +253,28 @@ mod tests {
         assert_eq!(prepared.client_api(), Some(Path::new("/run/tacacs/tacacs.sock")));
         assert_eq!(prepared.tacacs_proxy(), None);
         assert_eq!(prepared.unix_socket_mode(), 0o660);
+        assert_eq!(prepared.max_connections(), 64);
+        assert_eq!(prepared.max_client_api_streams(), 64);
+        assert_eq!(prepared.connection_lifetime(), std::time::Duration::from_secs(300));
+        assert_eq!(source, original);
+    }
+
+    #[test]
+    fn ingress_limits_reject_zero_and_preserve_explicit_values() {
+        for field in [
+            "max-connections",
+            "max-client-api-streams",
+            "connection-lifetime-seconds",
+        ] {
+            let input = serde_json::json!({"tacacsrs:local-services": {field: 0}});
+            assert!(parse_local_services(&serde_json::to_vec(&input).unwrap()).is_err());
+        }
+        let source = parse_local_services(br#"{"tacacsrs:local-services":{"max-connections":2,"max-client-api-streams":3,"connection-lifetime-seconds":4}}"#).unwrap();
+        let original = source.clone();
+        let prepared = prepare_local_services(&source).unwrap();
+        assert_eq!(prepared.max_connections(), 2);
+        assert_eq!(prepared.max_client_api_streams(), 3);
+        assert_eq!(prepared.connection_lifetime(), std::time::Duration::from_secs(4));
         assert_eq!(source, original);
     }
 
