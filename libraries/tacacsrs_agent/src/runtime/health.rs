@@ -92,6 +92,12 @@ pub enum DegradationReason {
     DatastoreUnavailable,
     /// The runtime retained an older known-good datastore snapshot.
     DatastoreStale,
+    /// The source exceeded its stale budget and its upstreams were withdrawn.
+    SourceExpired,
+    /// Applied credentials await successful refresh after invalidation or failure.
+    CredentialsStale,
+    /// Credential freshness exceeded its grace budget and upstreams were withdrawn.
+    CredentialsExpired,
     /// Continuous datastore notifications are not connected.
     ChangeNotificationsUnavailable,
     /// Continuous credential-provider notifications are not connected.
@@ -113,6 +119,10 @@ pub enum DegradationReason {
 /// Immutable, secret-free view of agent runtime health.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RuntimeHealthSnapshot {
+    runtime_generation: Option<RuntimeGeneration>,
+    applied_policy_revision: Option<super::PolicyRevision>,
+    credential_lifetime: Option<super::CredentialLifetime>,
+    materialization_revision: Option<super::MaterializationRevision>,
     lifecycle: RuntimeLifecycle,
     applied_configuration: bool,
     datastore: DatastoreState,
@@ -126,6 +136,38 @@ pub struct RuntimeHealthSnapshot {
 }
 
 impl RuntimeHealthSnapshot {
+    /// Returns combined provider and client-certificate validity, independent of stale grace periods.
+    #[must_use]
+    pub fn credential_validity(
+        &self,
+    ) -> Option<tacacsrs_credential_resolution::CredentialValidity> {
+        self.credential_lifetime.map(|lifetime| lifetime.validity)
+    }
+
+    pub(crate) const fn credential_lifetime(&self) -> Option<super::CredentialLifetime> {
+        self.credential_lifetime
+    }
+
+    /// Returns the last committed policy revision, or `None` before the first update.
+    /// Rejection, cancellation, and server updates preserve this applied identity.
+    #[must_use]
+    pub const fn applied_policy_revision(&self) -> Option<super::PolicyRevision> {
+        self.applied_policy_revision
+    }
+
+    /// Returns the revisions used for the current coordinated materialization.
+    /// Direct server reloads clear this metadata. Policy updates preserve it.
+    #[must_use]
+    pub const fn materialization_revision(&self) -> Option<super::MaterializationRevision> {
+        self.materialization_revision
+    }
+
+    /// Returns the runtime generation associated with this health snapshot.
+    #[must_use]
+    pub const fn runtime_generation(&self) -> Option<RuntimeGeneration> {
+        self.runtime_generation
+    }
+
     /// Returns the process lifecycle state.
     #[must_use]
     pub const fn lifecycle(&self) -> RuntimeLifecycle {
@@ -215,6 +257,22 @@ impl RuntimeHealthSnapshot {
         matches!(self.lifecycle, RuntimeLifecycle::Starting | RuntimeLifecycle::Serving)
     }
 
+    fn mark_source_problem(&mut self) {
+        if self.applied_configuration {
+            self.datastore = DatastoreState::Stale;
+            self.degradation_reasons
+                .insert(DegradationReason::DatastoreStale);
+            self.degradation_reasons
+                .remove(&DegradationReason::DatastoreUnavailable);
+        } else {
+            self.datastore = DatastoreState::Unavailable;
+            self.degradation_reasons
+                .insert(DegradationReason::DatastoreUnavailable);
+            self.degradation_reasons
+                .remove(&DegradationReason::DatastoreStale);
+        }
+    }
+
     fn all_enabled_listeners_bound(&self) -> bool {
         (!self.enabled_services.client_api() || self.client_api_listener == ListenerState::Bound)
             && (!self.enabled_services.tacacs_proxy()
@@ -238,6 +296,10 @@ impl RuntimeHealthPublisher {
         let client_api_listener = initial_listener_state(enabled_services.client_api());
         let tacacs_proxy_listener = initial_listener_state(enabled_services.tacacs_proxy());
         let initial = RuntimeHealthSnapshot {
+            runtime_generation: None,
+            applied_policy_revision: None,
+            credential_lifetime: None,
+            materialization_revision: None,
             lifecycle: RuntimeLifecycle::Starting,
             applied_configuration: false,
             datastore: DatastoreState::Loading,
@@ -311,7 +373,170 @@ impl RuntimeHealthPublisher {
 
     /// Publishes aggregate observed server availability.
     pub fn set_upstream_availability(&self, availability: UpstreamAvailability) {
-        self.update(|snapshot| snapshot.upstream_availability = availability);
+        self.update(|snapshot| {
+            snapshot.upstream_availability = availability;
+            if availability == UpstreamAvailability::Unavailable {
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::UpstreamsUnavailable);
+            } else {
+                snapshot
+                    .degradation_reasons
+                    .remove(&DegradationReason::UpstreamsUnavailable);
+            }
+        });
+    }
+
+    /// Commits runtime replacement and its health metadata in one watch transition.
+    pub(crate) fn publish_policy(
+        &self,
+        generation: RuntimeGeneration,
+        revision: super::PolicyRevision,
+        publish: impl FnOnce(),
+    ) {
+        self.update(|snapshot| {
+            publish();
+            snapshot.runtime_generation = Some(generation);
+            snapshot.applied_policy_revision = Some(revision);
+            snapshot
+                .degradation_reasons
+                .remove(&DegradationReason::CandidatePolicyRejected);
+        });
+    }
+
+    /// Commits runtime replacement and its health metadata in one watch transition.
+    /// The caller holds the runtime and availability locks before entering this method.
+    pub(crate) fn publish_runtime(
+        &self,
+        generation: RuntimeGeneration,
+        server_count: usize,
+        configuration_applied: Option<bool>,
+        reset_availability: bool,
+        publish: impl FnOnce() -> Option<super::MaterializationCommit>,
+    ) {
+        self.update(|snapshot| {
+            let commit = publish();
+            snapshot.runtime_generation = Some(generation);
+            snapshot.eligible_server_count = server_count;
+            if let Some(applied) = configuration_applied {
+                snapshot.applied_configuration = applied;
+                snapshot.materialization_revision = commit.as_ref().map(|commit| commit.revision);
+                snapshot.credential_lifetime = commit.as_ref().map(|commit| commit.validity);
+                if let Some(commit) = commit {
+                    if commit.expired == super::ExpiredMaterial::None {
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::SourceExpired);
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::CredentialResolutionFailed);
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::CredentialsStale);
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::CredentialsExpired);
+                        if commit.credential_references
+                            && snapshot
+                                .degradation_reasons
+                                .contains(&DegradationReason::CredentialNotificationsUnavailable)
+                        {
+                            snapshot
+                                .degradation_reasons
+                                .insert(DegradationReason::CredentialsStale);
+                        }
+                    } else {
+                        snapshot.materialization_revision = None;
+                        if commit.expired.contains(super::MaterialExpiry::Source) {
+                            snapshot
+                                .degradation_reasons
+                                .insert(DegradationReason::SourceExpired);
+                            snapshot.mark_source_problem();
+                        }
+                        if commit.expired.contains(super::MaterialExpiry::Credentials) {
+                            snapshot
+                                .degradation_reasons
+                                .insert(DegradationReason::CredentialsExpired);
+                            snapshot
+                                .degradation_reasons
+                                .insert(DegradationReason::CredentialsStale);
+                        }
+                    }
+                    if commit.source_current && commit.expired == super::ExpiredMaterial::None {
+                        snapshot.datastore = DatastoreState::Current;
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::DatastoreUnavailable);
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::DatastoreStale);
+                        snapshot
+                            .degradation_reasons
+                            .remove(&DegradationReason::CandidateConfigurationRejected);
+                    }
+                }
+            }
+            if reset_availability {
+                snapshot.upstream_availability = UpstreamAvailability::Unknown;
+                snapshot
+                    .degradation_reasons
+                    .remove(&DegradationReason::UpstreamsUnavailable);
+            }
+        });
+    }
+
+    /// Records rejection without exposing a partially updated source-health snapshot.
+    pub(crate) fn reject_source_candidate(&self) {
+        self.update(|snapshot| {
+            snapshot
+                .degradation_reasons
+                .insert(DegradationReason::CandidateConfigurationRejected);
+            snapshot.mark_source_problem();
+        });
+    }
+
+    pub(crate) fn reject_materialization(&self, source_update: bool, credentials_stale: bool) {
+        self.update(|snapshot| {
+            snapshot
+                .degradation_reasons
+                .insert(DegradationReason::CredentialResolutionFailed);
+            if credentials_stale {
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::CredentialsStale);
+            }
+            if source_update {
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::CandidateConfigurationRejected);
+                snapshot.mark_source_problem();
+            }
+        });
+    }
+
+    pub(crate) fn credential_notifications_unavailable(&self, credentials_stale: bool) {
+        self.update(|snapshot| {
+            snapshot
+                .degradation_reasons
+                .insert(DegradationReason::CredentialNotificationsUnavailable);
+            if credentials_stale {
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::CredentialsStale);
+            }
+        });
+    }
+
+    pub(crate) fn source_unavailable(&self, disconnected: bool) {
+        self.update(|snapshot| {
+            if disconnected {
+                snapshot.continuous_notifications_connected = false;
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::ChangeNotificationsUnavailable);
+            }
+            snapshot.mark_source_problem();
+        });
     }
 
     /// Adds or removes a typed degradation reason.
@@ -354,6 +579,22 @@ fn initial_listener_state(enabled: bool) -> ListenerState {
         ListenerState::Pending
     } else {
         ListenerState::Disabled
+    }
+}
+
+/// Identity of one published routing and policy snapshot within a runtime.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct RuntimeGeneration(u64);
+
+impl RuntimeGeneration {
+    pub(crate) const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the diagnostic identifier. Values are scoped to one runtime instance.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
     }
 }
 

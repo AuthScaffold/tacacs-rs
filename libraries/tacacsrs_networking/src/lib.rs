@@ -11,6 +11,10 @@
 //! Establishment checks each resolved destination before TCP connect and checks the
 //! connected socket before TLS or TACACS+ I/O. Endpoint clones share the guard.
 //! The host owns listener state and interface discovery. Networking does not interpret YANG.
+//!
+//! Certificate TLS connections retain the validity of the accepted peer path and
+//! configured client identity. Owned expiry tasks close both transport halves,
+//! including idle connections. New connections can verify replacement peer credentials.
 
 mod client;
 pub mod admission;
@@ -31,7 +35,9 @@ pub use client::TacacsClient;
 pub use deadline::{DeadlineElapsed, RequestDeadline};
 pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use endpoint::{ConnectionGuard, PreparedEndpoint};
-pub use transport::tls::{CertificateIdentity, CertificateTrust, PrivateKeyEncoding};
+pub use transport::tls::{
+    CertificateIdentity, CertificateTrust, CertificateValidity, PrivateKeyEncoding,
+};
 pub use transport::tls_psk::{PskHash, PskDheGroup};
 pub use establish::{ConnectOptions, ConnectPreflight};
 pub use exchange_error::{FixedExchangeError, TransmissionState};

@@ -15,6 +15,8 @@ use tokio_stream::StreamExt;
 
 use crate::{TacacsPlus, ValidationOptions};
 
+pub mod policy;
+
 /// Description of how the configuration changed between two snapshots.
 ///
 /// Each [`ConfigChange`] contains the complete new [`TacacsPlus`] snapshot.
@@ -125,8 +127,35 @@ pub enum ConfigChangeEvent {
     },
 }
 
-/// Stream of [`ConfigChangeEvent`] values returned by [`ConfigDatastore::subscribe`].
+/// Stream of canonical configuration change events for stream-based adapters.
 pub type ConfigChangeStream = Pin<Box<dyn Stream<Item = ConfigChangeEvent> + Send + 'static>>;
+
+/// Owns a canonical configuration baseline and subsequent source changes.
+///
+/// Observation is active before the baseline read. Implementations retain pending
+/// work when `next()` is cancelled. Consumers must not mutate source snapshots.
+#[async_trait]
+pub trait ConfigObservation: Send {
+    /// Returns a candidate, rejection, restart requirement, or end of observation.
+    ///
+    /// # Errors
+    /// Returns an error when observation fails and must be established again.
+    async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>>;
+}
+
+struct StaticObservation(Option<Arc<TacacsPlus>>);
+
+#[async_trait]
+impl ConfigObservation for StaticObservation {
+    async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
+        Ok(self.0.take().map(|config| {
+            ConfigChangeEvent::Changed(ConfigChange {
+                delta: ConfigDelta::diff(None, &config),
+                config,
+            })
+        }))
+    }
+}
 
 /// Behavior the runtime applies when the initial datastore load fails.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -172,15 +201,20 @@ impl DatastoreRuntimePolicy {
 
 /// Source of TACACS+ configuration for the agent runtime.
 ///
-/// Implementations supply initial configuration through [`load`] and later
-/// events through [`subscribe`]. Backends translate vendor formats into the
-/// YANG-aligned [`TacacsPlus`] structure. They return an error when validation
-/// rejects input.
-///
-/// [`load`]: ConfigDatastore::load
-/// [`subscribe`]: ConfigDatastore::subscribe
+/// The runtime uses [`ConfigDatastore::observe`] for both the baseline and later
+/// changes. Backends translate vendor formats into canonical [`TacacsPlus`]
+/// snapshots. One-shot loading is available independently of runtime observation.
 #[async_trait]
 pub trait ConfigDatastore: Send + Sync + 'static {
+    /// Opens observation before supplying its canonical baseline.
+    ///
+    /// Implementations must own their observation resources and supply a
+    /// post-subscription baseline. Dropping the returned session stops observation.
+    ///
+    /// # Errors
+    /// Returns an error if observation cannot start or an immutable source cannot load.
+    async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>>;
+
     /// Declares how the runtime must supervise this datastore.
     ///
     /// A file-backed datastore can be immutable when it has no referenced
@@ -198,30 +232,14 @@ pub trait ConfigDatastore: Send + Sync + 'static {
 
     /// Load the current configuration snapshot.
     ///
-    /// The runtime calls this method at startup. Callers can use it again to
-    /// read the configuration without a subscription.
+    /// One-shot callers can read configuration without observation. Runtime
+    /// supervision uses [`Self::observe`] instead.
     ///
     /// # Errors
     ///
     /// Returns an error if the backing store cannot be reached or if the
     /// retrieved configuration fails validation.
     async fn load(&self) -> anyhow::Result<TacacsPlus>;
-
-    /// Subscribe to configuration change events.
-    ///
-    /// The stream emits a [`ConfigChangeEvent`] after each relevant datastore
-    /// change. Each [`ConfigChangeEvent::Changed`] event contains the latest
-    /// complete snapshot. Callers can use its delta for an incremental update.
-    /// If the delta is not sufficient, callers must rebuild from the snapshot.
-    /// Backends without notifications return an empty stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the subscription cannot be established (for
-    /// example, the backing store is unreachable). Implementations that do
-    /// not support change notifications return an empty stream rather than
-    /// failing.
-    async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream>;
 
     /// Returns a human-readable label for the datastore implementation.
     ///
@@ -233,7 +251,7 @@ pub trait ConfigDatastore: Send + Sync + 'static {
 /// In-memory [`ConfigDatastore`] for CLI/file/test workflows.
 ///
 /// `StaticDatastore` holds one `TacacsPlus` snapshot for the process lifetime.
-/// [`subscribe`](ConfigDatastore::subscribe) returns an empty stream.
+/// Observation yields that snapshot once, then ends without a worker task.
 #[derive(Debug, Clone)]
 pub struct StaticDatastore {
     config: Arc<TacacsPlus>,
@@ -261,16 +279,16 @@ impl StaticDatastore {
 
 #[async_trait]
 impl ConfigDatastore for StaticDatastore {
+    async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
+        Ok(Box::new(StaticObservation(Some(self.config.clone()))))
+    }
+
     fn runtime_policy(&self) -> DatastoreRuntimePolicy {
         DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None)
     }
 
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         Ok((*self.config).clone())
-    }
-
-    async fn subscribe(&self) -> anyhow::Result<ConfigChangeStream> {
-        Ok(Box::pin(tokio_stream::empty()))
     }
 
     fn label(&self) -> &'static str {
@@ -330,8 +348,13 @@ mod tests {
             DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None,)
         );
 
-        let mut stream = store.subscribe().await.expect("subscription must succeed");
-        assert!(stream.next().await.is_none(), "static stream must be empty");
+        let mut observation = store.observe().await.unwrap();
+        let Some(ConfigChangeEvent::Changed(baseline)) = observation.next().await.unwrap() else {
+            panic!("static observation must yield its canonical baseline");
+        };
+        assert_eq!(*baseline.config, config);
+        assert_eq!(baseline.delta.added_servers, ["primary"]);
+        assert!(observation.next().await.unwrap().is_none());
     }
 
     #[test]

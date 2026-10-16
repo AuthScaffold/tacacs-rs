@@ -8,7 +8,7 @@ use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
 use tacacsrs_config::prepare::PrepareOptions;
 use tacacsrs_networking::routed::EndpointConnector;
 
-use self::availability::AvailabilityTracker;
+use self::availability::PublicationController;
 use self::server_set::{RuntimeRoutingSnapshot, ServerSet};
 use self::prepared_server::PreparedServer;
 use crate::config::{PreparedProxyPolicy, RuntimePolicy};
@@ -41,8 +41,10 @@ pub(crate) struct UpstreamManager<
     /// Current immutable routing generation for new requests.
     runtime: StdRwLock<Arc<RuntimeRoutingSnapshot<Connector>>>,
     connect_options: PrepareOptions,
-    /// Race-safe aggregate server-availability publisher.
-    availability: AvailabilityTracker,
+    /// Serializes generation publication and server-availability observations.
+    publication: PublicationController,
+    #[cfg(test)]
+    publication_pause: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 
 #[cfg(test)]
@@ -133,6 +135,11 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             .into_iter()
             .map(|server| PreparedServer::new(server, connect_options).map(Arc::new))
             .collect::<anyhow::Result<Vec<_>>>()?;
+        let credential_lifetime = servers
+            .iter()
+            .try_fold(crate::runtime::CredentialLifetime::unbounded(), |lifetime, server| {
+                lifetime.intersect(server.certificate_lifetime)
+            })?;
         let server_set = Arc::new(ServerSet::new(servers, connector));
         Ok(Self {
             closed: std::sync::atomic::AtomicBool::new(false),
@@ -144,9 +151,12 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 proxy_downstream_obfuscation,
                 admission: Arc::new(AdmissionRegistry::new(&runtime_policy)),
                 runtime_policy: Arc::new(runtime_policy),
+                credential_lifetime,
             })),
             connect_options,
-            availability: AvailabilityTracker::new(health),
+            publication: PublicationController::new(health),
+            #[cfg(test)]
+            publication_pause: std::sync::Mutex::new(None),
         })
     }
 
@@ -177,6 +187,32 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             "The TACACS+ service is closed"
         );
         Ok(())
+    }
+
+    pub(crate) fn shutdown_timeout(&self) -> std::time::Duration {
+        self.current_runtime().runtime_policy.shutdown_timeout()
+    }
+
+    pub(crate) fn source_stale_timeout(&self) -> std::time::Duration {
+        self.current_runtime().runtime_policy.source_stale_timeout()
+    }
+
+    pub(crate) fn credential_stale_timeout(&self) -> std::time::Duration {
+        self.current_runtime()
+            .runtime_policy
+            .credential_stale_timeout()
+    }
+
+    pub(crate) fn shutdown_deadline(&self) -> anyhow::Result<tacacsrs_networking::RequestDeadline> {
+        let runtime = self.current_runtime();
+        let requests = OperationKind::ALL
+            .into_iter()
+            .map(|operation| runtime.runtime_policy.limits(operation).request_timeout())
+            .max()
+            .unwrap_or_default();
+        tacacsrs_networking::RequestDeadline::after(
+            requests.min(runtime.runtime_policy.shutdown_timeout()),
+        )
     }
 
     pub(crate) fn close(&self) {
@@ -237,23 +273,71 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     }
 
     /// Atomically replaces the runtime policy for new requests.
-    pub(crate) fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) {
+    #[cfg(test)]
+    pub(crate) fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) -> bool {
+        self.admit_policy()
+            .and_then(|revision| self.publish_policy(revision, runtime_policy))
+            .is_ok_and(|outcome| matches!(outcome, crate::PolicyUpdate::Applied(_)))
+    }
+
+    pub(crate) fn admit_policy(&self) -> anyhow::Result<crate::PolicyRevision> {
+        let _runtime = self
+            .runtime
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_open()?;
+        Ok(self.publication.admit_policy())
+    }
+
+    pub(crate) fn reject_policy(
+        &self,
+        revision: crate::PolicyRevision,
+    ) -> anyhow::Result<crate::PolicyUpdate> {
+        let _runtime = self
+            .runtime
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_open()?;
+        Ok(self.publication.reject_policy(revision))
+    }
+
+    pub(crate) fn publish_policy(
+        &self,
+        revision: crate::PolicyRevision,
+        runtime_policy: RuntimePolicy,
+    ) -> anyhow::Result<crate::PolicyUpdate> {
         let mut current = self
             .runtime
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
-            return;
-        }
-        current.admission.update(&runtime_policy);
-        *current = Arc::new(RuntimeRoutingSnapshot {
-            generation: current.generation.wrapping_add(1),
-            availability_generation: current.availability_generation,
-            server_set: Arc::clone(&current.server_set),
-            proxy_downstream_obfuscation: current.proxy_downstream_obfuscation.clone(),
-            admission: Arc::clone(&current.admission),
-            runtime_policy: Arc::new(runtime_policy),
-        });
+        self.ensure_open()?;
+        let generation = current.generation.wrapping_add(1);
+        Ok(self.publication.publish_policy(revision, generation, || {
+            current.admission.update(&runtime_policy);
+            *current = Arc::new(RuntimeRoutingSnapshot {
+                generation,
+                availability_generation: current.availability_generation,
+                server_set: Arc::clone(&current.server_set),
+                proxy_downstream_obfuscation: current.proxy_downstream_obfuscation.clone(),
+                admission: Arc::clone(&current.admission),
+                runtime_policy: Arc::new(runtime_policy),
+                credential_lifetime: current.credential_lifetime,
+            });
+        }))
+    }
+
+    pub(crate) fn publish_initial_health(&self, applied: bool) {
+        let current = self
+            .runtime
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.publication.publish_runtime(
+            current.generation,
+            current.server_set.server_count(),
+            Some(applied),
+            false,
+            |_| None,
+        );
     }
 
     /// Records startup state without opening cross-operation probe sessions.
@@ -364,12 +448,42 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         servers: Vec<Arc<TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
+        self.reload_shared_servers_with_commit(servers, proxy_downstream_obfuscation, || None)
+            .await
+    }
+
+    /// Commits caller bookkeeping with the catalog, before health readers see it.
+    /// The callback must not block, fail, or acquire runtime or health locks.
+    pub(crate) async fn reload_shared_servers_with_commit(
+        &self,
+        servers: Vec<Arc<TacacsPlusServer>>,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
+        commit: impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
+    ) -> anyhow::Result<()> {
+        self.reload_shared_servers_with_retirement(
+            servers,
+            proxy_downstream_obfuscation,
+            None,
+            None,
+            commit,
+        )
+        .await
+    }
+
+    pub(crate) async fn reload_shared_servers_with_retirement(
+        &self,
+        servers: Vec<Arc<TacacsPlusServer>>,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
+        retirement: Option<tacacsrs_networking::RequestDeadline>,
+        validity: Option<crate::runtime::CredentialLifetime>,
+        commit: impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
+    ) -> anyhow::Result<()> {
         let _reload = self.reload_lock.lock().await;
         anyhow::ensure!(
             !self.closed.load(std::sync::atomic::Ordering::Acquire),
             "The TACACS+ service is closed"
         );
-        let retirement_deadline = self.retirement_deadline()?;
+        let retirement_deadline = retirement.unwrap_or(self.retirement_deadline()?);
         let previous = self.current_server_set();
         let materially_changed = previous.server_count() != servers.len()
             || previous
@@ -390,6 +504,11 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             };
             new_server_slots.push(slot);
         }
+
+        let validity = new_server_slots.iter().try_fold(
+            validity.unwrap_or(crate::runtime::CredentialLifetime::unbounded()),
+            |lifetime, server| lifetime.intersect(server.certificate_lifetime),
+        )?;
 
         let client = previous
             .client
@@ -414,22 +533,35 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 !self.closed.load(std::sync::atomic::Ordering::Acquire),
                 "The TACACS+ service closed during preparation"
             );
-            let availability_generation = if materially_changed {
-                self.availability.reset()
-            } else {
-                current.availability_generation
-            };
-            *current = Arc::new(RuntimeRoutingSnapshot {
-                generation: current.generation.wrapping_add(1),
-                availability_generation,
-                server_set: Arc::clone(&new_set),
-                proxy_downstream_obfuscation,
-                admission: Arc::clone(&current.admission),
-                runtime_policy: Arc::clone(&current.runtime_policy),
-            });
+            anyhow::ensure!(validity.is_valid(), "Credential validity expired before publication");
+            let generation = current.generation.wrapping_add(1);
             previous
                 .client
                 .retire_replaced_until(&new_set.client, retirement_deadline);
+            self.publication.publish_runtime(
+                generation,
+                new_set.server_count(),
+                Some(true),
+                materially_changed,
+                |availability_generation| {
+                    *current = Arc::new(RuntimeRoutingSnapshot {
+                        generation,
+                        availability_generation,
+                        server_set: Arc::clone(&new_set),
+                        proxy_downstream_obfuscation,
+                        admission: Arc::clone(&current.admission),
+                        runtime_policy: Arc::clone(&current.runtime_policy),
+                        credential_lifetime: validity,
+                    });
+                    let mut materialization = commit();
+                    if let Some(commit) = &mut materialization {
+                        if commit.expired == crate::runtime::ExpiredMaterial::None {
+                            commit.validity = validity;
+                        }
+                    }
+                    materialization
+                },
+            );
         }
 
         if new_set.server_count() == 0 {
@@ -438,9 +570,23 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             log::info!("Reloaded the TACACS+ server set: {} server(s)", new_set.server_count());
         }
 
+        #[cfg(test)]
+        {
+            let pause = self.publication_pause.lock().unwrap().take();
+            if let Some(pause) = pause {
+                pause.notified().await;
+            }
+        }
         previous.client.retire_replaced(&new_set.client).await;
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_next_publication(&self) -> Arc<tokio::sync::Notify> {
+        let pause = Arc::new(tokio::sync::Notify::new());
+        *self.publication_pause.lock().unwrap() = Some(pause.clone());
+        pause
     }
 }
 
@@ -893,6 +1039,66 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn credential_validity_bounds_leases_and_rechecks_waiting_publication() {
+        use crate::config::PolicyService;
+        use crate::runtime::CredentialLifetime;
+        use tacacsrs_credential_resolution::CredentialValidity;
+        let connection = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let state = UpstreamManager::new(
+            vec![test_server("server-a:49")],
+            Arc::new(FakeConnector::new(HashMap::from([(
+                connection.address.clone(),
+                connection.clone(),
+            )]))),
+            Duration::from_secs(30),
+            test_health(),
+        );
+        let lifetime = CredentialLifetime::new(
+            CredentialValidity::new(
+                None,
+                Some(std::time::SystemTime::now() + Duration::from_secs(2)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        state
+            .reload_shared_servers_with_retirement(
+                vec![Arc::new(test_server("server-a:49"))],
+                PreparedProxyPolicy::unobfuscated(),
+                None,
+                Some(lifetime),
+                || None,
+            )
+            .await
+            .unwrap();
+        let captured = state.capture_request(PolicyService::ClientApi, OperationKind::Accounting);
+        assert_eq!(captured.deadline().expires_at(), lifetime.deadline.unwrap());
+        state.bind_request(&captured).await.unwrap();
+        let generation = state.current_runtime().generation;
+        let guard = state.reload_lock.lock().await;
+        let pending = state.reload_shared_servers_with_retirement(
+            vec![Arc::new(test_server("server-a:49"))],
+            PreparedProxyPolicy::unobfuscated(),
+            None,
+            Some(lifetime),
+            || None,
+        );
+        tokio::pin!(pending);
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(state.bind_request(&captured).await.is_err());
+        let current = state.capture_request(PolicyService::ClientApi, OperationKind::Accounting);
+        assert!(state.bind_request(&current).await.is_err());
+        drop(guard);
+        assert!(pending.await.is_err());
+        assert_eq!(state.current_runtime().generation, generation);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn shutdown_wakes_admission_and_rejects_reload_and_captured_routes() {
         use crate::config::{PolicyService, RequestLimits};
         use crate::upstream::AdmissionError;
@@ -991,6 +1197,55 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn immediate_retirement_blocks_old_bindings_without_replacing_admission() {
+        let old = Arc::new(FakeConnection {
+            address: "server-a:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let fresh = Arc::new(FakeConnection {
+            address: "server-b:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([
+            (old.address.clone(), old.clone()),
+            (fresh.address.clone(), fresh.clone()),
+        ])));
+        let state = UpstreamManager::new(
+            vec![test_server("server-a:49")],
+            connector,
+            Duration::from_secs(30),
+            test_health(),
+        );
+        let retained =
+            state.capture_request(crate::PolicyService::ClientApi, OperationKind::Accounting);
+        state.bind_request(&retained).await.unwrap();
+        state
+            .reload_shared_servers_with_retirement(
+                Vec::new(),
+                PreparedProxyPolicy::unobfuscated(),
+                Some(tacacsrs_networking::RequestDeadline::at(tokio::time::Instant::now())),
+                None,
+                || None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.server_count(), 0);
+        assert!(!old.usable.load(Ordering::Acquire));
+        assert!(state.bind_request(&retained).await.is_err());
+        state
+            .reload_servers(vec![test_server("server-b:49")])
+            .await
+            .unwrap();
+        let restored =
+            state.capture_request(crate::PolicyService::ClientApi, OperationKind::Accounting);
+        assert!(Arc::ptr_eq(&retained.runtime.admission, &restored.runtime.admission));
+        state.bind_request(&restored).await.unwrap();
+        assert!(fresh.usable.load(Ordering::Acquire));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn captured_request_keeps_policy_while_admission_waits() {
         use crate::config::{PolicyService, RequestLimits};
         use crate::upstream::AdmissionError;
@@ -1046,6 +1301,8 @@ mod tests {
             state.reload_runtime_policy(policy(512, 1));
             let current = state.capture_request(service, OperationKind::Authentication);
             assert_ne!(captured.generation(), current.generation());
+            assert!(Arc::ptr_eq(&captured.runtime.admission, &current.runtime.admission));
+            assert_ne!(captured.runtime.runtime_policy, current.runtime.runtime_policy);
             assert!(matches!(
                 current.validate_body_length(768),
                 Err(AdmissionError::BodyTooLarge { maximum: 512, .. })

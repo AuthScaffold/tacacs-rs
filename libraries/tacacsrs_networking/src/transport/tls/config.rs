@@ -7,10 +7,10 @@ use openssl::rsa::Rsa;
 use openssl::ssl::SslContext;
 use openssl::x509::X509;
 use tokio::net::TcpStream;
-use tokio_openssl::SslStream;
 
-use super::{connect_tls, TlsConfigurationBuilder};
+use super::{connect_tls, TlsConfigurationBuilder, CertificateLifetime};
 use crate::helpers::data_contains_pem_header;
+use crate::transport::BoxedTransport;
 
 /// DER encoding of a client private key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +55,8 @@ pub(crate) struct TlsClientConfig {
     context: SslContext,
     peer_identity: String,
     sni_name: Option<String>,
+    pub(crate) lifetime: Option<CertificateLifetime>,
+    peer_validity_index: super::config_builder::PeerValidityIndex,
 }
 
 impl TlsClientConfig {
@@ -120,19 +122,68 @@ impl TlsClientConfig {
                 .context("Failed to parse TLS private key")?;
             builder = builder.with_client_auth_der(vec![certificate], key);
         }
+        let prepared = builder
+            .build()
+            .context("Failed to build TLS configuration")?;
         Ok(Self {
-            context: builder
-                .build()
-                .context("Failed to build TLS configuration")?,
+            context: prepared.context,
+            peer_validity_index: prepared.peer_validity_index,
+            lifetime: prepared
+                .validity
+                .map(CertificateLifetime::new)
+                .transpose()?,
             peer_identity: peer_identity.to_owned(),
             sni_name: sni_name.map(str::to_owned),
         })
     }
 
-    pub(crate) async fn connect(&self, tcp_stream: TcpStream) -> Result<SslStream<TcpStream>> {
-        connect_tls(&self.context, tcp_stream, &self.peer_identity, self.sni_name.as_deref())
-            .await
-            .context("Failed to establish TLS connection")
+    pub(crate) async fn connect(&self, tcp_stream: TcpStream) -> Result<BoxedTransport> {
+        let handshake = connect_tls(
+            &self.context,
+            tcp_stream,
+            &self.peer_identity,
+            self.sni_name.as_deref(),
+            self.peer_validity_index,
+        );
+        let stream = match self.lifetime {
+            Some(lifetime) => lifetime.run(handshake).await,
+            None => handshake.await,
+        }
+        .context("Failed to establish TLS connection")?;
+        let peer = stream
+            .ssl()
+            .peer_certificate()
+            .context("TLS peer certificate is missing")?;
+        let validity = if stream
+            .ssl()
+            .verify_mode()
+            .contains(openssl::ssl::SslVerifyMode::PEER)
+        {
+            let selected = stream
+                .ssl()
+                .ex_data(self.peer_validity_index)
+                .and_then(|slot| {
+                    *slot
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                });
+            match selected {
+                Some(selected) => selected,
+                None => super::CertificateValidity::from_chain(
+                    stream
+                        .ssl()
+                        .verified_chain()
+                        .context("Verified TLS peer chain is missing")?,
+                )?,
+            }
+        } else {
+            super::CertificateValidity::from_certificate(&peer)?
+        };
+        let peer_lifetime = CertificateLifetime::new(validity)?;
+        let lifetime = self
+            .lifetime
+            .map_or(Ok(peer_lifetime), |local| local.intersect(peer_lifetime))?;
+        Ok(BoxedTransport::new(stream).with_certificate_lifetime(lifetime))
     }
 }
 

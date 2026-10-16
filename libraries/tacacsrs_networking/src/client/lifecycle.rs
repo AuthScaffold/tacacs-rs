@@ -15,6 +15,7 @@ struct State {
     closed: bool,
     setups: Vec<Arc<DriverTask>>,
     transports: Vec<Weak<TransportControl>>,
+    expiries: Vec<Arc<DriverTask>>,
 }
 
 #[derive(Default)]
@@ -62,6 +63,10 @@ impl ClientLifecycle {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         ensure!(!state.closed, "The TACACS+ client closed during connection setup");
         let (transport, control) = TransportControl::wrap(transport, self.activity.clone());
+        state.expiries.retain(|task| !task.is_finished());
+        if let Some(task) = control.expiry_task() {
+            state.expiries.push(task);
+        }
         state
             .transports
             .retain(|transport| transport.strong_count() > 0);
@@ -131,6 +136,27 @@ impl ClientLifecycle {
 
     pub(super) async fn wait_for_transports(&self) {
         self.activity.wait_for_close().await;
+    }
+
+    pub(super) async fn join_expiries(&self, deadline: RequestDeadline) -> anyhow::Result<()> {
+        let tasks = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .expiries
+            .clone();
+        let mut failure = None;
+        for task in tasks {
+            if let Err(error) = task.join_until(deadline).await {
+                failure.get_or_insert(error);
+            }
+        }
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .expiries
+            .retain(|task| !task.is_finished());
+        failure.map_or(Ok(()), Err)
     }
 
     pub(super) fn force_close_transports(&self) {

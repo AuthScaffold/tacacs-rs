@@ -3,13 +3,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use tacacsrs_agent::{PreparedProxyPolicy, TacacsClientService};
+use tokio::sync::Mutex;
+
 use tacacsrs_config::{TacacsPlus, TacacsPlusServer, ValidationOptions, enumerate_server};
-use tacacsrs_config::prepare::{MaterializationError, materialize_servers, resolution_plan};
+use tacacsrs_config::prepare::{
+    MaterializationError, MaterializedServer, materialize_servers, resolution_plan,
+};
 use tacacsrs_credential_resolution::{
     CredentialChangeScope, CredentialKind, CredentialReference, CredentialResolver,
 };
-use tokio::sync::Mutex;
+
+use crate::{PreparedProxyPolicy, TacacsClientService};
+use super::{
+    ExpiredMaterial, MaterialExpiry, MaterializationCommit, MaterializationRevision, SourceRevision,
+};
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 struct DependencyKey {
@@ -23,9 +30,13 @@ struct CoordinatorState {
     desired_proxy_policy: Option<PreparedProxyPolicy>,
     desired_dependencies: Option<BTreeMap<DependencyKey, BTreeSet<String>>>,
     active_servers: Vec<Arc<TacacsPlusServer>>,
-    source_generation: u64,
-    active_source_generation: Option<u64>,
-    attempt_id: u64,
+    active_lifetimes: BTreeMap<String, super::CredentialLifetime>,
+    revision: MaterializationRevision,
+    active_revision: Option<MaterializationRevision>,
+    withdrawn_revision: Option<MaterializationRevision>,
+    source_current: bool,
+    expired: ExpiredMaterial,
+    active_credential_references: bool,
 }
 
 impl Default for CoordinatorState {
@@ -36,23 +47,27 @@ impl Default for CoordinatorState {
             desired_proxy_policy: None,
             desired_dependencies: Some(BTreeMap::new()),
             active_servers: Vec::new(),
-            source_generation: 0,
-            active_source_generation: None,
-            attempt_id: 0,
+            active_lifetimes: BTreeMap::new(),
+            revision: MaterializationRevision::default(),
+            active_revision: None,
+            withdrawn_revision: None,
+            source_current: false,
+            expired: ExpiredMaterial::None,
+            active_credential_references: false,
         }
     }
 }
 
 pub(crate) struct MaterializationCoordinator {
     state: Mutex<CoordinatorState>,
-    resolver: Arc<dyn CredentialResolver>,
+    resolver: Option<Arc<dyn CredentialResolver>>,
     validation_options: ValidationOptions,
 }
 
 #[derive(Clone)]
 pub(crate) struct MaterializationAttempt {
-    attempt_id: u64,
-    source_generation: u64,
+    revision: MaterializationRevision,
+    source_update: bool,
     runtime_source: Arc<TacacsPlus>,
     proxy_policy: PreparedProxyPolicy,
     selected_servers: BTreeSet<String>,
@@ -60,7 +75,7 @@ pub(crate) struct MaterializationAttempt {
 
 pub(crate) struct PreparedMaterialization {
     attempt: MaterializationAttempt,
-    candidates: Vec<TacacsPlusServer>,
+    candidates: Vec<(MaterializedServer, super::CredentialLifetime)>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -76,17 +91,90 @@ impl MaterializationCoordinator {
     ) -> Self {
         Self {
             state: Mutex::new(CoordinatorState::default()),
-            resolver,
+            resolver: Some(resolver),
             validation_options,
         }
     }
 
+    pub(crate) fn without_resolver(validation_options: ValidationOptions) -> Self {
+        Self {
+            state: Mutex::new(CoordinatorState::default()),
+            resolver: None,
+            validation_options,
+        }
+    }
+
+    pub(crate) fn has_resolver(&self) -> bool {
+        self.resolver.is_some()
+    }
+
+    pub(crate) async fn admit_source(&self, source: TacacsPlus) -> SourceRevision {
+        let mut state = self.state.lock().await;
+        state.revision.source.advance();
+        state.desired_source = Some(Arc::new(source));
+        state.desired_runtime_source = None;
+        state.desired_proxy_policy = None;
+        state.desired_dependencies = None;
+        state.source_current = true;
+        state.revision.source
+    }
+
+    pub(crate) async fn reject_source(
+        &self,
+        revision: SourceRevision,
+        health: &crate::RuntimeHealthPublisher,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        if state.revision.source != revision {
+            return false;
+        }
+        state.desired_runtime_source = None;
+        state.desired_proxy_policy = None;
+        state.desired_dependencies = None;
+        state.source_current = false;
+        health.reject_source_candidate();
+        true
+    }
+
+    pub(crate) async fn reject_observation(&self, health: &crate::RuntimeHealthPublisher) {
+        let mut state = self.state.lock().await;
+        state.revision.source.advance();
+        state.source_current = false;
+        state.desired_runtime_source = None;
+        state.desired_proxy_policy = None;
+        state.desired_dependencies = None;
+        health.reject_source_candidate();
+    }
+
+    pub(crate) async fn source_unavailable(
+        &self,
+        health: &crate::RuntimeHealthPublisher,
+        disconnected: bool,
+    ) {
+        let mut state = self.state.lock().await;
+        state.source_current = false;
+        health.source_unavailable(disconnected);
+    }
+
+    #[cfg(test)]
     pub(crate) async fn accept_source(
         &self,
         desired_source: TacacsPlus,
         runtime_source: TacacsPlus,
         proxy_policy: PreparedProxyPolicy,
     ) -> MaterializationAttempt {
+        let revision = self.admit_source(desired_source).await;
+        self.accept_filtered_source(revision, runtime_source, proxy_policy)
+            .await
+            .expect("test source must remain current")
+    }
+
+    pub(crate) async fn accept_filtered_source(
+        &self,
+        revision: SourceRevision,
+        runtime_source: TacacsPlus,
+        proxy_policy: PreparedProxyPolicy,
+    ) -> Option<MaterializationAttempt> {
         let dependencies = dependency_index(&runtime_source);
         let runtime_source = Arc::new(runtime_source);
         let selected_servers = runtime_source
@@ -95,29 +183,48 @@ impl MaterializationCoordinator {
             .map(|server| server.name.clone())
             .collect();
         let mut state = self.state.lock().await;
-        state.source_generation = state.source_generation.wrapping_add(1);
-        state.attempt_id = state.attempt_id.wrapping_add(1);
-        state.desired_source = Some(Arc::new(desired_source));
+        if state.revision.source != revision {
+            return None;
+        }
         state.desired_runtime_source = Some(Arc::clone(&runtime_source));
         state.desired_proxy_policy = Some(proxy_policy.clone());
         state.desired_dependencies = dependencies;
-        MaterializationAttempt {
-            attempt_id: state.attempt_id,
-            source_generation: state.source_generation,
+        Some(MaterializationAttempt {
+            revision: state.revision,
+            source_update: true,
             runtime_source,
             proxy_policy,
             selected_servers,
-        }
+        })
     }
 
+    #[cfg(test)]
     pub(crate) async fn credential_change(
         &self,
         scope: &CredentialChangeScope,
     ) -> Option<MaterializationAttempt> {
+        self.observe_credentials(scope, None).await
+    }
+
+    pub(crate) async fn observe_credentials(
+        &self,
+        scope: &CredentialChangeScope,
+        health: Option<&crate::RuntimeHealthPublisher>,
+    ) -> Option<MaterializationAttempt> {
         let mut state = self.state.lock().await;
-        let runtime_source = Arc::clone(state.desired_runtime_source.as_ref()?);
+        let Some(runtime_source) = state.desired_runtime_source.clone() else {
+            if state.desired_source.is_some() {
+                state.revision.credentials.advance();
+                if state.active_credential_references {
+                    if let Some(health) = health {
+                        health.set_degraded(crate::DegradationReason::CredentialsStale, true);
+                    }
+                }
+            }
+            return None;
+        };
         let proxy_policy = state.desired_proxy_policy.clone()?;
-        let selected_servers = if state.active_source_generation == Some(state.source_generation) {
+        let selected_servers = if state.active_revision == Some(state.revision) {
             match (scope, state.desired_dependencies.as_ref()) {
                 (CredentialChangeScope::Known { kind, reference }, Some(dependencies)) => {
                     dependencies
@@ -136,10 +243,15 @@ impl MaterializationCoordinator {
         if selected_servers.is_empty() {
             return None;
         }
-        state.attempt_id = state.attempt_id.wrapping_add(1);
+        state.revision.credentials.advance();
+        if state.active_credential_references {
+            if let Some(health) = health {
+                health.set_degraded(crate::DegradationReason::CredentialsStale, true);
+            }
+        }
         Some(MaterializationAttempt {
-            attempt_id: state.attempt_id,
-            source_generation: state.source_generation,
+            revision: state.revision,
+            source_update: false,
             runtime_source,
             proxy_policy,
             selected_servers,
@@ -149,25 +261,61 @@ impl MaterializationCoordinator {
     pub(crate) async fn materialize(
         &self,
         attempt: MaterializationAttempt,
-    ) -> Result<PreparedMaterialization, MaterializationError> {
+    ) -> anyhow::Result<PreparedMaterialization> {
         let servers = attempt
             .selected_servers
             .iter()
             .map(|server_name| enumerate_server(&attempt.runtime_source, server_name))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| MaterializationError::enumeration())?;
-        let candidates =
-            materialize_servers(servers, self.resolver.as_ref(), &self.validation_options).await?;
+        let candidates = match self.resolver.as_deref() {
+            Some(resolver) => {
+                materialize_servers(servers, resolver, &self.validation_options).await?
+            }
+            None => servers
+                .into_iter()
+                .map(MaterializedServer::unbounded)
+                .collect(),
+        };
+        let candidates = candidates
+            .into_iter()
+            .map(|server| {
+                let lifetime = super::CredentialLifetime::new(server.validity())?;
+                Ok((server, lifetime))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(PreparedMaterialization {
             attempt,
             candidates,
         })
     }
 
+    #[cfg(test)]
     pub(crate) async fn is_current_attempt(&self, attempt: &MaterializationAttempt) -> bool {
         let state = self.state.lock().await;
-        attempt.attempt_id == state.attempt_id
-            && attempt.source_generation == state.source_generation
+        attempt.revision == state.revision
+    }
+
+    pub(crate) async fn report_credential_result(
+        &self,
+        attempt: &MaterializationAttempt,
+        health: &crate::RuntimeHealthPublisher,
+        failed: bool,
+    ) -> bool {
+        let state = self.state.lock().await;
+        if attempt.revision != state.revision {
+            return false;
+        }
+        if failed {
+            health
+                .reject_materialization(attempt.source_update, state.active_credential_references);
+        }
+        true
+    }
+
+    pub(crate) async fn credentials_unavailable(&self, health: &crate::RuntimeHealthPublisher) {
+        let state = self.state.lock().await;
+        health.credential_notifications_unavailable(state.active_credential_references);
     }
 
     pub(crate) async fn publish(
@@ -176,16 +324,17 @@ impl MaterializationCoordinator {
         service: &TacacsClientService,
     ) -> anyhow::Result<PublicationOutcome> {
         let mut state = self.state.lock().await;
-        if prepared.attempt.attempt_id != state.attempt_id
-            || prepared.attempt.source_generation != state.source_generation
-        {
+        if prepared.attempt.revision != state.revision {
+            return Ok(PublicationOutcome::Superseded);
+        }
+        if state.expired.contains(MaterialExpiry::Source) && !state.source_current {
             return Ok(PublicationOutcome::Superseded);
         }
 
         let candidate_by_name = prepared
             .candidates
             .into_iter()
-            .map(|server| (server.name.clone(), server))
+            .map(|(server, lifetime)| (server.name.clone(), (server, lifetime)))
             .collect::<BTreeMap<_, _>>();
         let active_by_name = state
             .active_servers
@@ -193,13 +342,22 @@ impl MaterializationCoordinator {
             .map(|server| (server.name.as_str(), Arc::clone(server)))
             .collect::<BTreeMap<_, _>>();
         let mut next_active = Vec::with_capacity(prepared.attempt.runtime_source.server.len());
+        let mut next_lifetimes = BTreeMap::new();
+        let mut validity = super::CredentialLifetime::unbounded();
         for desired in &prepared.attempt.runtime_source.server {
-            let server = if let Some(candidate) = candidate_by_name.get(&desired.name) {
+            let lifetime = candidate_by_name
+                .get(&desired.name)
+                .map(|(_, lifetime)| *lifetime)
+                .or_else(|| state.active_lifetimes.get(&desired.name).copied())
+                .ok_or_else(|| anyhow::anyhow!("active credential validity is missing"))?;
+            validity = validity.intersect(lifetime)?;
+            next_lifetimes.insert(desired.name.clone(), lifetime);
+            let server = if let Some((candidate, _)) = candidate_by_name.get(&desired.name) {
                 active_by_name
                     .get(desired.name.as_str())
-                    .filter(|active| active.as_ref() == candidate)
+                    .filter(|active| active.as_ref() == candidate.server())
                     .cloned()
-                    .unwrap_or_else(|| Arc::new(candidate.clone()))
+                    .unwrap_or_else(|| Arc::new(candidate.server().clone()))
             } else {
                 active_by_name
                     .get(desired.name.as_str())
@@ -210,14 +368,91 @@ impl MaterializationCoordinator {
         }
 
         service
-            .reload_materialized_servers_with_proxy_downstream_obfuscation(
+            .publish_materialized_servers(
                 next_active.clone(),
                 prepared.attempt.proxy_policy,
+                validity,
+                move || {
+                    state.active_servers = next_active;
+                    state.active_lifetimes = next_lifetimes;
+                    state.active_revision = Some(state.revision);
+                    state.withdrawn_revision = None;
+                    state.expired = ExpiredMaterial::None;
+                    state.active_credential_references = state
+                        .desired_dependencies
+                        .as_ref()
+                        .is_none_or(|dependencies| !dependencies.is_empty());
+                    Some(MaterializationCommit {
+                        revision: state.revision,
+                        source_current: state.source_current,
+                        expired: ExpiredMaterial::None,
+                        credential_references: state.active_credential_references,
+                        validity,
+                    })
+                },
             )
             .await?;
-        state.active_servers = next_active;
-        state.active_source_generation = Some(state.source_generation);
         Ok(PublicationOutcome::Published)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn expire_source(
+        &self,
+        expected: MaterializationRevision,
+        service: &TacacsClientService,
+        health: &crate::RuntimeHealthPublisher,
+    ) -> anyhow::Result<()> {
+        self.expire_material(MaterialExpiry::Source, expected, service, health)
+            .await
+    }
+
+    pub(crate) async fn expire_material(
+        &self,
+        kind: MaterialExpiry,
+        expected: MaterializationRevision,
+        service: &TacacsClientService,
+        health: &crate::RuntimeHealthPublisher,
+    ) -> anyhow::Result<()> {
+        let mut state = self.state.lock().await;
+        let snapshot = health.snapshot();
+        let validity = snapshot
+            .credential_lifetime()
+            .unwrap_or(super::CredentialLifetime::unbounded());
+        let should_expire = match kind {
+            MaterialExpiry::Source => {
+                snapshot.datastore() != crate::DatastoreState::Current
+                    && !state.expired.contains(MaterialExpiry::Source)
+            }
+            MaterialExpiry::Credentials => {
+                !state.expired.contains(MaterialExpiry::Credentials)
+                    && (!validity.is_valid()
+                        || snapshot
+                            .degradation_reasons()
+                            .contains(&crate::DegradationReason::CredentialsStale))
+            }
+        };
+        if state.active_revision.or(state.withdrawn_revision) != Some(expected) || !should_expire {
+            return Ok(());
+        }
+        service
+            .withdraw_expired_material(move || {
+                state.active_servers.clear();
+                state.active_lifetimes.clear();
+                state.active_revision = None;
+                state.withdrawn_revision = Some(expected);
+                state.expired = state.expired.with(kind);
+                if matches!(kind, MaterialExpiry::Credentials) {
+                    state.revision.credentials.advance();
+                }
+                Some(MaterializationCommit {
+                    revision: expected,
+                    source_current: state.source_current,
+                    expired: state.expired,
+                    credential_references: state.active_credential_references,
+                    validity,
+                })
+            })
+            .await
     }
 
     #[cfg(test)]
@@ -266,7 +501,7 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use tacacsrs_agent::{
+    use crate::{
         EnabledServices, PreparedProxyPolicy, RuntimeHealthPublisher, ServiceConfig,
         TacacsClientService,
     };
@@ -282,6 +517,7 @@ mod tests {
     struct MutableResolver {
         unavailable: Mutex<BTreeSet<String>>,
         material: Mutex<BTreeMap<String, Vec<u8>>>,
+        validity: Mutex<BTreeMap<String, tacacsrs_credential_resolution::CredentialValidity>>,
     }
 
     struct BlockingResolver {
@@ -333,6 +569,13 @@ mod tests {
                 .cloned()
                 .expect("test material");
             Ok(ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+                validity: self
+                    .validity
+                    .lock()
+                    .unwrap()
+                    .get(reference)
+                    .copied()
+                    .unwrap_or_default(),
                 key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
                 key: SecretBytes::new(key),
             }))
@@ -342,6 +585,7 @@ mod tests {
     fn resolver(entries: &[(&str, &[u8])]) -> Arc<MutableResolver> {
         Arc::new(MutableResolver {
             unavailable: Mutex::new(BTreeSet::new()),
+            validity: Mutex::new(BTreeMap::new()),
             material: Mutex::new(
                 entries
                     .iter()
@@ -375,15 +619,19 @@ mod tests {
 
     fn service() -> TacacsClientService {
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        service_with_health(health)
+    }
+
+    fn service_with_health(health: RuntimeHealthPublisher) -> TacacsClientService {
         TacacsClientService::waiting_for_configuration(
             ServiceConfig {
                 local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
                 tacacs_plus: TacacsPlus::empty(),
                 validation_options: ValidationOptions::default(),
-                runtime_policy: tacacsrs_agent::RuntimePolicy::new(
-                    tacacsrs_agent::FailoverStrategy::default(),
-                    tacacsrs_agent::FailoverStrategy::default(),
-                    tacacsrs_agent::OperationPolicies::default(),
+                runtime_policy: crate::RuntimePolicy::new(
+                    crate::FailoverStrategy::default(),
+                    crate::FailoverStrategy::default(),
+                    crate::OperationPolicies::default(),
                     Duration::from_secs(1),
                 )
                 .expect("test runtime policy"),
@@ -399,6 +647,308 @@ mod tests {
             kind: CredentialKind::SymmetricKey,
             reference: CredentialReference::SymmetricKey(reference.to_owned()),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn validity_survives_partial_refresh_and_expiry_blocks_publication() {
+        use std::time::SystemTime;
+        use tacacsrs_credential_resolution::CredentialValidity;
+        let resolver = resolver(&[
+            ("object-a", b"valid-material-long-enough"),
+            ("object-b", b"other-valid-material-long-enough"),
+        ]);
+        resolver.validity.lock().unwrap().insert(
+            "object-a".to_owned(),
+            CredentialValidity::new(None, Some(SystemTime::now() + Duration::from_secs(10)))
+                .unwrap(),
+        );
+        let coordinator =
+            MaterializationCoordinator::new(resolver.clone(), ValidationOptions::default());
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service_with_health(health.clone());
+        let mut canonical = source("object-a", "192.0.2.20");
+        let mut secondary = source("object-b", "192.0.2.21").server.remove(0);
+        secondary.name = "secondary".to_owned();
+        canonical.server.push(secondary);
+        let attempt = coordinator
+            .accept_source(
+                canonical.clone(),
+                canonical.clone(),
+                PreparedProxyPolicy::unobfuscated(),
+            )
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        let lifetime = health.snapshot().credential_lifetime().unwrap();
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let refresh = coordinator
+            .credential_change(&known("object-b"))
+            .await
+            .unwrap();
+        let prepared = coordinator.materialize(refresh).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        assert_eq!(health.snapshot().credential_lifetime(), Some(lifetime));
+        service
+            .reload_runtime_policy(crate::RuntimePolicy::default())
+            .await
+            .unwrap();
+        assert_eq!(health.snapshot().credential_lifetime(), Some(lifetime));
+        let revision = health.snapshot().materialization_revision().unwrap();
+        let refresh = coordinator
+            .credential_change(&known("object-b"))
+            .await
+            .unwrap();
+        let prepared = coordinator.materialize(refresh).await.unwrap();
+        tokio::time::advance(Duration::from_secs(6)).await;
+        assert!(coordinator.publish(prepared, &service).await.is_err());
+        assert_eq!(health.snapshot().materialization_revision(), Some(revision));
+        coordinator
+            .expire_material(MaterialExpiry::Credentials, revision, &service, &health)
+            .await
+            .unwrap();
+        assert_eq!(service.server_count(), 0);
+        resolver.validity.lock().unwrap().clear();
+        let refresh = coordinator
+            .credential_change(&known("object-b"))
+            .await
+            .unwrap();
+        let prepared = coordinator.materialize(refresh).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        assert_eq!(service.server_count(), 2);
+        assert_eq!(coordinator.state.lock().await.desired_source.as_deref(), Some(&canonical));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn validity_expiring_after_preparation_cannot_publish() {
+        use std::time::SystemTime;
+        use tacacsrs_credential_resolution::CredentialValidity;
+        let resolver = resolver(&[("object-a", b"valid-material-long-enough")]);
+        resolver.validity.lock().unwrap().insert(
+            "object-a".to_owned(),
+            CredentialValidity::new(None, Some(SystemTime::now() + Duration::from_secs(1)))
+                .unwrap(),
+        );
+        let coordinator = MaterializationCoordinator::new(resolver, ValidationOptions::default());
+        let canonical = source("object-a", "192.0.2.20");
+        let attempt = coordinator
+            .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let service = service();
+        assert!(coordinator.publish(prepared, &service).await.is_err());
+        assert!(coordinator.active_servers().await.is_empty());
+        assert_eq!(service.server_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn pending_filter_blocks_old_source_refresh_and_keeps_credential_revision() {
+        let coordinator = MaterializationCoordinator::new(
+            resolver(&[("object-a", b"valid-material-long-enough")]),
+            ValidationOptions::default(),
+        );
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service_with_health(health.clone());
+        let original = source("object-a", "192.0.2.20");
+        let baseline = coordinator
+            .accept_source(original.clone(), original, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(baseline).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        let candidate = source("object-a", "192.0.2.21");
+        let revision = coordinator.admit_source(candidate.clone()).await;
+        assert!(coordinator
+            .credential_change(&known("object-a"))
+            .await
+            .is_none());
+        let filtered = coordinator
+            .accept_filtered_source(
+                revision,
+                candidate.clone(),
+                PreparedProxyPolicy::unobfuscated(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(filtered.revision.source(), revision);
+        assert_eq!(filtered.revision.credentials().value(), 1);
+        let prepared = coordinator.materialize(filtered).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        assert_eq!(coordinator.active_servers().await[0].address, "192.0.2.21");
+        assert_eq!(coordinator.state.lock().await.desired_source.as_deref(), Some(&candidate));
+        assert_eq!(
+            health
+                .snapshot()
+                .materialization_revision()
+                .unwrap()
+                .source(),
+            revision
+        );
+    }
+
+    #[tokio::test]
+    async fn source_and_credential_revisions_are_independent_and_commit_with_health() {
+        let coordinator = MaterializationCoordinator::new(
+            resolver(&[("object-a", b"valid-material-long-enough")]),
+            ValidationOptions::default(),
+        );
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service_with_health(health.clone());
+        let canonical = source("object-a", "192.0.2.20");
+        let attempt = coordinator
+            .accept_source(
+                canonical.clone(),
+                canonical.clone(),
+                PreparedProxyPolicy::unobfuscated(),
+            )
+            .await;
+        assert_eq!(attempt.revision.source().value(), 1);
+        assert_eq!(attempt.revision.credentials().value(), 0);
+        let prepared = coordinator.materialize(attempt.clone()).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        assert_eq!(health.snapshot().materialization_revision(), Some(attempt.revision));
+        assert!(coordinator
+            .credential_change(&known("unreferenced"))
+            .await
+            .is_none());
+        let rotation = coordinator
+            .credential_change(&known("object-a"))
+            .await
+            .unwrap();
+        assert_eq!(rotation.revision.source(), attempt.revision.source());
+        assert_eq!(rotation.revision.credentials().value(), 1);
+        assert_eq!(health.snapshot().materialization_revision(), Some(attempt.revision));
+        let prepared = coordinator.materialize(rotation.clone()).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        assert_eq!(health.snapshot().materialization_revision(), Some(rotation.revision));
+        service
+            .reload_runtime_policy(crate::RuntimePolicy::default())
+            .await
+            .unwrap();
+        assert_eq!(health.snapshot().materialization_revision(), Some(rotation.revision));
+        let applied_policy = health.snapshot().applied_policy_revision().unwrap();
+        assert!(
+            !coordinator
+                .report_credential_result(&attempt, &health, true)
+                .await
+        );
+        assert!(!health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&crate::DegradationReason::CredentialResolutionFailed));
+        let refresh = coordinator
+            .accept_source(
+                canonical.clone(),
+                canonical.clone(),
+                PreparedProxyPolicy::unobfuscated(),
+            )
+            .await;
+        assert_eq!(refresh.revision.source().value(), 2);
+        assert_eq!(refresh.revision.credentials(), rotation.revision.credentials());
+        assert_eq!(coordinator.state.lock().await.desired_source.as_deref(), Some(&canonical));
+        let prepared = coordinator.materialize(refresh.clone()).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        assert_eq!(health.snapshot().materialization_revision(), Some(refresh.revision));
+        assert_eq!(health.snapshot().applied_policy_revision(), Some(applied_policy));
+        service
+            .reload_materialized_servers_with_proxy_downstream_obfuscation(
+                coordinator.active_servers().await,
+                PreparedProxyPolicy::unobfuscated(),
+            )
+            .await
+            .unwrap();
+        assert!(health.snapshot().materialization_revision().is_none());
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_runtime_publication_retains_matching_active_material() {
+        let coordinator = MaterializationCoordinator::new(
+            resolver(&[
+                ("object-a", b"valid-baseline-psk-material"),
+                ("object-b", b"second-baseline-psk-material"),
+            ]),
+            ValidationOptions::default(),
+        );
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service_with_health(health.clone());
+        let mut candidate = source("object-a", "192.0.2.20");
+        let mut secondary = source("object-b", "192.0.2.21").server.remove(0);
+        secondary.name = "secondary".to_owned();
+        candidate.server.push(secondary);
+        let original = candidate.clone();
+        let attempt = coordinator
+            .accept_source(candidate.clone(), candidate, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        health.set_degraded(crate::DegradationReason::CredentialResolutionFailed, true);
+        service.pause_next_publication();
+        {
+            let publishing = coordinator.publish(prepared, &service);
+            tokio::pin!(publishing);
+            tokio::select! {
+                result = &mut publishing => panic!("publication must pause: {result:?}"),
+                result = tokio::time::timeout(Duration::from_secs(1), async {
+                    while service.server_count() != 2 { tokio::task::yield_now().await; }
+                }) => result.expect("runtime publication must complete"),
+            }
+            let active = tokio::time::timeout(Duration::from_secs(1), coordinator.active_servers())
+                .await
+                .expect("retirement must not retain the coordinator lock");
+            assert_eq!(active.len(), 2);
+        }
+        assert_eq!(service.server_count(), 2);
+        let active = coordinator.active_servers().await;
+        assert_eq!(active.len(), 2, "coordinator must commit before post-publication cancellation");
+        assert_eq!(active[0].address, "192.0.2.20");
+        assert_eq!(health.snapshot().runtime_generation().unwrap().value(), 1);
+        assert_eq!(
+            health
+                .snapshot()
+                .materialization_revision()
+                .unwrap()
+                .source()
+                .value(),
+            1
+        );
+        assert!(!health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&crate::DegradationReason::CredentialResolutionFailed));
+        assert_eq!(coordinator.state.lock().await.desired_source.as_deref(), Some(&original));
+        let refresh = coordinator
+            .credential_change(&known("object-a"))
+            .await
+            .unwrap();
+        assert_eq!(refresh.selected_server_names(), &BTreeSet::from(["primary".to_owned()]));
+        let refreshed = coordinator.materialize(refresh).await.unwrap();
+        coordinator.publish(refreshed, &service).await.unwrap();
+        assert!(Arc::ptr_eq(&active[1], &coordinator.active_servers().await[1]));
+        assert_eq!(health.snapshot().runtime_generation().unwrap().value(), 2);
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_runtime_publication_leaves_active_material_unchanged() {
+        let coordinator = MaterializationCoordinator::new(
+            resolver(&[("object-a", b"valid-baseline-psk-material")]),
+            ValidationOptions::default(),
+        );
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service_with_health(health.clone());
+        let candidate = source("object-a", "192.0.2.20");
+        let attempt = coordinator
+            .accept_source(candidate.clone(), candidate, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        let previous_health = health.snapshot();
+        let held = service.hold_publication().await;
+        {
+            let publishing = coordinator.publish(prepared, &service);
+            tokio::pin!(publishing);
+            assert!(futures_util::poll!(&mut publishing).is_pending());
+        }
+        drop(held);
+        assert_eq!(service.server_count(), 0);
+        assert!(coordinator.active_servers().await.is_empty());
+        assert_eq!(health.snapshot(), previous_health);
     }
 
     #[tokio::test]
@@ -436,7 +986,7 @@ mod tests {
             .await;
         let result = match coordinator.materialize(attempt).await {
             Ok(prepared) => coordinator.publish(prepared, &service).await,
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         };
         assert!(result.is_err(), "invalid native material must fail before publication");
         assert!(Arc::ptr_eq(&active[0], &coordinator.active_servers().await[0]));
@@ -501,11 +1051,26 @@ mod tests {
             .await
             .expect("bundle dependency");
         assert_eq!(bundle.selected_server_names(), &BTreeSet::from(["bundle-server".to_owned()]),);
+        let old = coordinator.materialize(bundle).await.unwrap();
         let direct = coordinator
             .credential_change(&known("direct-reference"))
             .await
             .expect("direct dependency");
-        assert_eq!(direct.selected_server_names(), &BTreeSet::from(["direct-server".to_owned()]),);
+        assert_eq!(
+            direct.selected_server_names(),
+            &BTreeSet::from(["bundle-server".to_owned(), "direct-server".to_owned()])
+        );
+        assert_eq!(
+            coordinator.publish(old, &service).await.unwrap(),
+            PublicationOutcome::Superseded
+        );
+        let current = coordinator.materialize(direct).await.unwrap();
+        coordinator.publish(current, &service).await.unwrap();
+        let direct = coordinator
+            .credential_change(&known("direct-reference"))
+            .await
+            .unwrap();
+        assert_eq!(direct.selected_server_names(), &BTreeSet::from(["direct-server".to_owned()]));
         let unknown = coordinator
             .credential_change(&CredentialChangeScope::Unknown)
             .await

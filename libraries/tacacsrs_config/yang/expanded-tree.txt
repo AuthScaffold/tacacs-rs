@@ -169,6 +169,9 @@ module: tacacsrs
     |  +--rw proxy-credential-source?       proxy-credential-source
     |  +--rw proxy-shared-secret?           string
     +--rw runtime-policy
+       +--rw shutdown-timeout-seconds?             uint32
+       +--rw credential-stale-timeout-seconds?     uint32
+       +--rw source-stale-timeout-seconds?         uint32
        +--rw failover-recovery-interval-seconds?   uint32
        +--rw client-api-failover-strategy?         failover-strategy
        +--rw tacacs-proxy-failover-strategy?       failover-strategy

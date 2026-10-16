@@ -16,6 +16,84 @@ struct CompleteResolver {
 
 struct DuplicateBagNameResolver;
 
+struct ValidityResolver {
+    identity: tacacsrs_credential_resolution::CredentialValidity,
+    trust: tacacsrs_credential_resolution::CredentialValidity,
+}
+
+#[async_trait]
+impl CredentialResolver for ValidityResolver {
+    async fn resolve(
+        &self,
+        request: &CredentialRequest,
+    ) -> Result<ResolvedCredential, ResolutionError> {
+        let mut credential = CompleteResolver {
+            failing_server: None,
+        }
+        .resolve(request)
+        .await?;
+        match &mut credential {
+            ResolvedCredential::CertificateWithKey(material) => material.validity = self.identity,
+            ResolvedCredential::SymmetricKey(material) => material.validity = self.identity,
+            ResolvedCredential::CaCertificateBag(material)
+            | ResolvedCredential::EeCertificateBag(material) => material.validity = self.trust,
+        }
+        Ok(credential)
+    }
+}
+
+#[tokio::test]
+async fn validity_intersects_provider_inputs_without_changing_source() {
+    use std::time::{Duration, SystemTime};
+    use tacacsrs_credential_resolution::CredentialValidity;
+    let source = parse_yang_json(
+        r#"{
+        "ietf-system-tacacs-plus:tacacs-plus": {"server": [{
+            "name": "validity", "server-type": "accounting", "address": "192.0.2.20", "port": 300,
+            "client-identity": {"certificate": {"central-keystore-reference": {
+                "asymmetric-key": "opaque-key", "certificate": "opaque-cert"
+            }}},
+            "server-authentication": {"ca-certs": {"central-truststore-reference": "opaque-ca"}}
+        }]}
+    }"#,
+    )
+    .unwrap();
+    let original = source.clone();
+    let now = SystemTime::now();
+    let start = now - Duration::from_secs(60);
+    let end = now + Duration::from_secs(60);
+    let identity = CredentialValidity::new(Some(start), None).unwrap();
+    let trust = CredentialValidity::new(None, Some(end)).unwrap();
+    let materialized = enumerate_materialized_servers(
+        &source,
+        &ValidityResolver { identity, trust },
+        &ValidationOptions::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        materialized[0].validity(),
+        CredentialValidity::new(Some(start), Some(end)).unwrap()
+    );
+    assert_eq!(source, original);
+    for (identity, trust) in [
+        (CredentialValidity::new(Some(end), None).unwrap(), CredentialValidity::unbounded()),
+        (CredentialValidity::new(None, Some(start)).unwrap(), CredentialValidity::unbounded()),
+        (CredentialValidity::new(Some(end), None).unwrap(), trust),
+    ] {
+        let error = enumerate_materialized_servers(
+            &source,
+            &ValidityResolver { identity, trust },
+            &ValidationOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), MaterializationErrorKind::Validity);
+        assert!(!error.to_string().contains("opaque-key"));
+        assert_eq!(source, original);
+    }
+}
+
 #[async_trait]
 impl CredentialResolver for CompleteResolver {
     async fn resolve(
@@ -32,6 +110,7 @@ impl CredentialResolver for CompleteResolver {
         Ok(match request.kind() {
             CredentialKind::CertificateWithKey => {
                 ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+                    validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
                     public_key_format: Some(
                         tacacsrs_credential_resolution::PublicKeyFormat::SubjectPublicKeyInfoFormat,
                     ),
@@ -44,6 +123,7 @@ impl CredentialResolver for CompleteResolver {
             }
             CredentialKind::SymmetricKey => {
                 ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+                    validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
                     key_format: Some(
                         tacacsrs_credential_resolution::SymmetricKeyFormat::OctetStringKeyFormat,
                     ),
@@ -52,6 +132,7 @@ impl CredentialResolver for CompleteResolver {
             }
             CredentialKind::CaCertificateBag => {
                 ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
+                    validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
                     certificates: vec![
                         NamedCertificateMaterial {
                             name: "ca-primary".to_owned(),
@@ -66,6 +147,7 @@ impl CredentialResolver for CompleteResolver {
             }
             CredentialKind::EeCertificateBag => {
                 ResolvedCredential::EeCertificateBag(CertificateBagMaterial {
+                    validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
                     certificates: vec![NamedCertificateMaterial {
                         name: "ee-primary".to_owned(),
                         certificate: PublicBytes::new(b"resolved-ee-primary".to_vec()),
@@ -350,6 +432,7 @@ impl CredentialResolver for DuplicateBagNameResolver {
         _request: &CredentialRequest,
     ) -> Result<ResolvedCredential, ResolutionError> {
         Ok(ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
+            validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
             certificates: vec![
                 NamedCertificateMaterial {
                     name: "provider-name-sentinel".to_owned(),
