@@ -322,18 +322,27 @@ mod linux {
         let after = file
             .metadata()
             .map_err(|_| ProviderErrorKind::Unavailable)?;
+        validate_unchanged_metadata(&before, &after)?;
+
+        Ok(bytes)
+    }
+
+    fn validate_unchanged_metadata(
+        before: &rustix::fs::Stat,
+        after: &std::fs::Metadata,
+    ) -> Result<(), ProviderErrorKind> {
         if before.st_dev != after.dev()
             || before.st_ino != after.ino()
             || u64::try_from(before.st_size) != Ok(after.size())
             || before.st_mtime != after.mtime()
-            || u64::try_from(after.mtime_nsec()) != Ok(before.st_mtime_nsec)
+            || i128::from(before.st_mtime_nsec) != i128::from(after.mtime_nsec())
             || before.st_ctime != after.ctime()
-            || u64::try_from(after.ctime_nsec()) != Ok(before.st_ctime_nsec)
+            || i128::from(before.st_ctime_nsec) != i128::from(after.ctime_nsec())
         {
             return Err(ProviderErrorKind::Unavailable);
         }
 
-        Ok(bytes)
+        Ok(())
     }
 
     fn validate_object_id(reference: &str) -> Result<(), ProviderErrorKind> {
@@ -388,6 +397,27 @@ mod linux {
         use super::*;
 
         #[test]
+        fn nanosecond_only_metadata_changes_are_rejected() {
+            let file = tempfile::tempfile().expect("temporary file");
+            let after = file.metadata().expect("file metadata");
+            let mut before = fstat(&file).expect("file stat");
+            assert_eq!(validate_unchanged_metadata(&before, &after), Ok(()));
+
+            before.st_mtime_nsec = (before.st_mtime_nsec + 1) % 1_000_000_000;
+            assert_eq!(
+                validate_unchanged_metadata(&before, &after),
+                Err(ProviderErrorKind::Unavailable)
+            );
+
+            let mut before = fstat(&file).expect("file stat");
+            before.st_ctime_nsec = (before.st_ctime_nsec + 1) % 1_000_000_000;
+            assert_eq!(
+                validate_unchanged_metadata(&before, &after),
+                Err(ProviderErrorKind::Unavailable)
+            );
+        }
+
+        #[test]
         fn metadata_change_during_read_is_rejected_without_returning_bytes() {
             let temp = tempfile::tempdir().expect("temporary root");
             let root_path = temp.path().join("epsk");
@@ -398,12 +428,16 @@ mod linux {
             fs::write(&object_path, [0x41; 32]).expect("write object");
             fs::set_permissions(&object_path, fs::Permissions::from_mode(0o640))
                 .expect("set object mode");
+            File::open(&object_path)
+                .expect("open object")
+                .set_modified(std::time::UNIX_EPOCH)
+                .expect("set initial modification time");
             let metadata = fs::metadata(&root_path).expect("root metadata");
             let policy = SonicCredentialPolicy::new(metadata.uid(), metadata.gid());
             let (root, _) = open_root(&root_path, policy).expect("open root");
 
             let outcome = read_epsk_with_hook(&root, "race-object", policy, || {
-                fs::write(&object_path, [0x42; 48]).expect("replace open inode contents");
+                fs::write(&object_path, [0x42; 32]).expect("replace same-length contents");
             });
 
             // Remove the secret owner before the assertion. This prevents a

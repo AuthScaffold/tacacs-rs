@@ -34,6 +34,49 @@ def test_delivery_gates_and_profiles_are_required():
     assert uses.index("./.github/steps/release-manifest") < uses.index("./.github/steps/generate-checksums")
 
 
+def test_armhf_execution_is_a_required_unconditional_gate():
+    jobs = workflow("reusable-pipeline.yml")["jobs"]
+    armhf = jobs["armhf"]
+    assert "if" not in armhf
+    assert armhf.get("continue-on-error", "false") == "false"
+    assert 60 <= int(armhf["timeout-minutes"]) <= 120
+    assert "armhf" in jobs["ci-success"]["needs"]
+    required = next(step for step in jobs["ci-success"]["steps"]
+                    if step.get("name") == "Require executed ARMhf coverage")
+    assert required["if"] == "needs.armhf.result != 'success'"
+    assert required["run"] == "exit 1"
+    build = next(step for step in armhf["steps"]
+                 if step.get("name") == "Build and execute ARMhf coverage")
+    assert "--no-cache-filter verify" in build["run"]
+    assert ".github/steps/armhf/Dockerfile" in build["run"]
+    for step in armhf["steps"]:
+        assert step.get("continue-on-error", "false") == "false"
+
+
+def test_armhf_helper_builds_and_executes_the_affected_packages():
+    helper = (ROOT / ".github/steps/armhf/verify.sh").read_text()
+    assert "cargo build --locked --release --bins" in helper
+    assert "cargo test --locked" in helper
+    assert "--no-run" not in helper
+    for package in ("tacacsrs-agentd", "tacacsrs-agent-health", "tacon",
+                    "tacacsrs-sonic", "tacacsrs-ipc", "tacacsrs-agent-ipc-emulator"):
+        assert f"-p {package}" in helper
+    for check in ("ELF32", "Machine: +ARM", "hard-float ABI", '"${binary}" --help'):
+        assert check in helper
+    dockerfile = (ROOT / ".github/steps/armhf/Dockerfile").read_text()
+    assert "CARGO_BUILD_TARGET=armv7-unknown-linux-gnueabihf" in dockerfile
+    assert "PROTOC=/usr/bin/protoc" in dockerfile
+    assert "libssl-dev:armhf" in dockerfile
+    assert 'RUNNER="qemu-arm -L /"' in dockerfile
+    assert "test_protoc.py" in helper
+    context = (ROOT / ".dockerignore").read_text()
+    for included in ("libraries/*/tests/**", "executables/*/tests/**",
+                     "lde/containers/config/certificates/**",
+                     "libraries/tacacsrs_agent_ipc_emulator/examples/policy.rego",
+                     "libraries/tacacsrs_agent_ipc_emulator/examples/policy_data.json"):
+        assert f"!{included}" in context
+
+
 def test_rehearsal_container_does_not_publish_by_default():
     action = yaml.load((ROOT / ".github/steps/container-image/action.yml").read_text(), Loader=yaml.BaseLoader)
     assert action["inputs"]["publish"]["default"] == "false"
