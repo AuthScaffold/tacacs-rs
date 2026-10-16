@@ -23,7 +23,7 @@ pub(crate) struct DedicatedSession {
     session_id: u32,
     expected_response_sequence: Mutex<Option<u8>>,
     complete: AtomicBool,
-    single_connect_promotion: Option<SingleConnectPromotion>,
+    single_connect_promotion: std::sync::Mutex<Option<SingleConnectPromotion>>,
 }
 
 impl DedicatedSession {
@@ -37,7 +37,7 @@ impl DedicatedSession {
             session_id: random_nonzero_session_id(),
             expected_response_sequence: Mutex::new(None),
             complete: AtomicBool::new(false),
-            single_connect_promotion,
+            single_connect_promotion: std::sync::Mutex::new(single_connect_promotion),
         }
     }
 
@@ -55,7 +55,12 @@ impl DedicatedSession {
         }
 
         let response_sequence = packet.header().seq_no.wrapping_add(1);
-        let packet = match &self.single_connect_promotion {
+        let packet = match self
+            .single_connect_promotion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             Some(_) => with_single_connect_flag(&packet)?,
             None => packet,
         };
@@ -99,7 +104,12 @@ impl DedicatedSession {
             connection.take();
             return Err(error);
         }
-        if let Some(promotion) = &self.single_connect_promotion {
+        if let Some(promotion) = self
+            .single_connect_promotion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             promotion.observe_server_response(&packet);
         }
         Ok(packet)
@@ -132,11 +142,16 @@ impl DedicatedSession {
             return;
         }
 
+        let promotion = self
+            .single_connect_promotion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         let Some(mut connection) = self.connection.lock().await.take() else {
             return;
         };
 
-        if let Some(promotion) = &self.single_connect_promotion {
+        if let Some(promotion) = promotion {
             promotion.promote_if_confirmed(connection).await;
         } else {
             connection.shutdown().await;
@@ -154,8 +169,6 @@ fn with_single_connect_flag(packet: &Packet) -> anyhow::Result<Packet> {
 mod tests {
     use std::sync::Arc;
 
-    use tokio::sync::RwLock;
-
     use tacacsrs_protocol::enumerations::{
         TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
     };
@@ -163,11 +176,182 @@ mod tests {
     use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
     use super::{DedicatedSession, SingleConnectPromotion, with_single_connect_flag};
-    use crate::single_connect::SingleConnectionState;
+    use crate::single_connect::{NegotiationState, SingleConnectionState};
     use crate::transport::BoxedTransport;
     use crate::transport::mock::MockTransport;
 
     const TEST_SESSION_ID: u32 = 0xCAFE_BABE;
+
+    #[tokio::test]
+    async fn completion_without_a_reply_releases_negotiation() {
+        let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
+        let session = DedicatedSession::new(
+            BoxedTransport::new(MockTransport::new()),
+            None,
+            SingleConnectPromotion::begin(Arc::default(), state.clone()),
+        );
+        session.complete().await;
+        assert_eq!(state.snapshot(), SingleConnectionState::Initial);
+        assert!(session.connection.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_completion_releases_probe_while_session_is_retained() {
+        let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
+        let cache = Arc::new(crate::single_connect::SharedConnectionCache::default());
+        let promotion = SingleConnectPromotion::begin(cache.clone(), state.clone()).unwrap();
+        promotion.observe_server_response(&test_packet(
+            TEST_SESSION_ID,
+            2,
+            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+            b"reply",
+        ));
+        let session =
+            DedicatedSession::new(BoxedTransport::new(MockTransport::new()), None, Some(promotion));
+        let locked_cache = cache.lock_for_test().await;
+        {
+            let mut completion = Box::pin(session.complete());
+            std::future::poll_fn(|context| {
+                assert!(std::future::Future::poll(completion.as_mut(), context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+        }
+        assert_eq!(state.snapshot(), SingleConnectionState::Initial);
+        assert!(session.connection.lock().await.is_none());
+        drop(locked_cache);
+        assert!(cache.current().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_shutdown_releases_pending_probe_and_preserves_unsupported_result() {
+        use std::io;
+        use std::pin::Pin;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::{Context, Poll};
+
+        use tokio::io::AsyncWrite;
+
+        use crate::transport::Transport;
+
+        struct PendingShutdown {
+            entered: Arc<AtomicBool>,
+            dropped: Arc<AtomicBool>,
+        }
+
+        impl Transport for PendingShutdown {
+            type ReadHalf = tokio::io::Empty;
+            type WriteHalf = Self;
+
+            fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
+                (tokio::io::empty(), self)
+            }
+        }
+
+        impl AsyncWrite for PendingShutdown {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                bytes: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                Poll::Ready(Ok(bytes.len()))
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+                self.entered.store(true, Ordering::Release);
+                Poll::Pending
+            }
+        }
+
+        impl Drop for PendingShutdown {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::Release);
+            }
+        }
+
+        for unsupported in [false, true] {
+            let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
+            let cache = Arc::default();
+            let promotion =
+                SingleConnectPromotion::begin(Arc::clone(&cache), state.clone()).unwrap();
+            if unsupported {
+                promotion.observe_server_response(&test_packet(
+                    TEST_SESSION_ID,
+                    2,
+                    TacacsFlags::empty(),
+                    b"reply",
+                ));
+            }
+            let entered = Arc::new(AtomicBool::new(false));
+            let dropped = Arc::new(AtomicBool::new(false));
+            let session = DedicatedSession::new(
+                BoxedTransport::new(PendingShutdown {
+                    entered: entered.clone(),
+                    dropped: dropped.clone(),
+                }),
+                None,
+                Some(promotion),
+            );
+            let mut completion = Box::pin(session.complete());
+            assert!(futures::poll!(&mut completion).is_pending());
+            assert!(entered.load(Ordering::Acquire));
+            assert!(!dropped.load(Ordering::Acquire));
+            let mut current = Box::pin(cache.current());
+            assert!(matches!(futures::poll!(&mut current), Poll::Ready(None)));
+            drop(completion);
+            assert!(dropped.load(Ordering::Acquire));
+            assert!(session.connection.lock().await.is_none());
+            assert!(session.single_connect_promotion.lock().unwrap().is_none());
+            assert_eq!(
+                state.snapshot(),
+                if unsupported {
+                    SingleConnectionState::NotSupported
+                } else {
+                    SingleConnectionState::Initial
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_first_reply_decides_probe_support() {
+        for first in [
+            TacacsFlags::empty(),
+            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+        ] {
+            let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
+            let cache = Arc::default();
+            let promotion =
+                SingleConnectPromotion::begin(Arc::clone(&cache), state.clone()).unwrap();
+            promotion.observe_server_response(&test_packet(TEST_SESSION_ID, 2, first, b"reply"));
+            promotion.observe_server_response(&test_packet(
+                TEST_SESSION_ID,
+                4,
+                first ^ TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+                b"reply",
+            ));
+            promotion
+                .promote_if_confirmed(crate::connection::DedicatedConnection::new(
+                    BoxedTransport::new(MockTransport::new()),
+                    None,
+                ))
+                .await;
+            let supported = first.contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
+            assert_eq!(cache.current().await.is_some(), supported);
+            assert_eq!(
+                state.snapshot(),
+                if supported {
+                    SingleConnectionState::Supported
+                } else {
+                    SingleConnectionState::NotSupported
+                }
+            );
+        }
+    }
 
     fn test_packet(session_id: u32, seq_no: u8, flags: TacacsFlags, body: &[u8]) -> Packet {
         Packet::new(
@@ -247,14 +431,15 @@ mod tests {
         let mock = MockTransport::new();
         let coordinator = mock.coordinator();
         let shared_connection = Arc::default();
-        let single_connection_state = Arc::new(RwLock::new(SingleConnectionState::Initial));
+        let single_connection_state =
+            Arc::new(NegotiationState::new(SingleConnectionState::Initial));
         let session = DedicatedSession::new(
             BoxedTransport::new(mock),
             None,
-            Some(SingleConnectPromotion::new(
+            SingleConnectPromotion::begin(
                 Arc::clone(&shared_connection),
                 Arc::clone(&single_connection_state),
-            )),
+            ),
         );
         let session_id = session.session_id();
         coordinator
@@ -283,7 +468,7 @@ mod tests {
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
         assert!(shared_connection.current().await.is_none());
-        assert_eq!(*single_connection_state.read().await, SingleConnectionState::NotSupported);
+        assert_eq!(single_connection_state.snapshot(), SingleConnectionState::NotSupported);
     }
 
     #[tokio::test]
@@ -292,14 +477,11 @@ mod tests {
             let mock = MockTransport::new();
             let coordinator = mock.coordinator();
             let shared_connection = Arc::default();
-            let state = Arc::new(RwLock::new(SingleConnectionState::Initial));
+            let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
             let session = DedicatedSession::new(
                 BoxedTransport::new(mock),
                 None,
-                Some(SingleConnectPromotion::new(
-                    Arc::clone(&shared_connection),
-                    Arc::clone(&state),
-                )),
+                SingleConnectPromotion::begin(Arc::clone(&shared_connection), Arc::clone(&state)),
             );
             for (request_sequence, supports_sharing) in
                 [(1, first_supports_sharing), (3, !first_supports_sharing)]
@@ -331,7 +513,7 @@ mod tests {
             session.complete().await;
             assert_eq!(shared_connection.current().await.is_some(), first_supports_sharing);
             assert_eq!(
-                *state.read().await,
+                state.snapshot(),
                 if first_supports_sharing {
                     SingleConnectionState::Supported
                 } else {
@@ -428,10 +610,10 @@ mod tests {
         let session = DedicatedSession::new(
             BoxedTransport::new(transport.unwrap()),
             None,
-            Some(SingleConnectPromotion::new(
+            SingleConnectPromotion::begin(
                 Arc::clone(&shared_connection),
-                Arc::new(RwLock::new(SingleConnectionState::Initial)),
-            )),
+                Arc::new(NegotiationState::new(SingleConnectionState::Initial)),
+            ),
         );
         drop(shared_connection);
         let session_id = session.session_id();
@@ -472,14 +654,15 @@ mod tests {
         let mock = MockTransport::new();
         let coordinator = mock.coordinator();
         let shared_connection = Arc::default();
-        let single_connection_state = Arc::new(RwLock::new(SingleConnectionState::Initial));
+        let single_connection_state =
+            Arc::new(NegotiationState::new(SingleConnectionState::Initial));
         let session = DedicatedSession::new(
             BoxedTransport::new(mock),
             None,
-            Some(SingleConnectPromotion::new(
+            SingleConnectPromotion::begin(
                 Arc::clone(&shared_connection),
                 Arc::clone(&single_connection_state),
-            )),
+            ),
         );
         let session_id = session.session_id();
         coordinator
@@ -508,7 +691,7 @@ mod tests {
             .current()
             .await
             .expect("single-connect response must cache the upgraded connection");
-        assert_eq!(*single_connection_state.read().await, SingleConnectionState::Supported);
+        assert_eq!(single_connection_state.snapshot(), SingleConnectionState::Supported);
         assert_eq!(connection.single_connection_state(), SingleConnectionState::Supported);
     }
 }

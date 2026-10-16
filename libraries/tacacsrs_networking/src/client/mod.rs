@@ -35,10 +35,10 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 use crate::endpoint::PreparedEndpoint;
-use crate::single_connect::{SharedConnectionCache, SingleConnectionState};
+use crate::single_connect::{NegotiationState, SharedConnectionCache, SingleConnectionState};
 
 mod exchange;
 mod lifecycle;
@@ -68,7 +68,7 @@ pub struct TacacsClient {
     endpoint: PreparedEndpoint,
     lifecycle: Arc<ClientLifecycle>,
     shared_connection: Arc<SharedConnectionCache>,
-    single_connection_state: Arc<RwLock<SingleConnectionState>>,
+    single_connection_state: Arc<NegotiationState>,
     /// Serializes recovery when the cached shared connection is not available.
     ///
     /// The normal shared-session path does not take this lock. It only protects
@@ -92,11 +92,13 @@ impl TacacsClient {
             endpoint,
             lifecycle: Arc::default(),
             shared_connection: Arc::default(),
-            single_connection_state: Arc::new(RwLock::new(if single_connection_enabled {
-                SingleConnectionState::Initial
-            } else {
-                SingleConnectionState::NotSupported
-            })),
+            single_connection_state: Arc::new(NegotiationState::new(
+                if single_connection_enabled {
+                    SingleConnectionState::Initial
+                } else {
+                    SingleConnectionState::NotSupported
+                },
+            )),
             shared_recovery_lock: Mutex::new(()),
         }
     }

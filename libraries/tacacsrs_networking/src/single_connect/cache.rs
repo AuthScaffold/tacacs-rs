@@ -90,12 +90,18 @@ impl SharedConnectionCache {
     ///
     /// A different connection can already occupy the slot after a reconnect, so
     /// the pointer identity check avoids retiring a healthy replacement.
-    pub(crate) async fn clear_if_same(&self, connection: &Arc<MultiplexedConnection>) {
+    /// The callback updates capability state under the same cache lock.
+    pub(crate) async fn clear_if_same(
+        &self,
+        connection: &Arc<MultiplexedConnection>,
+        rejected: impl FnOnce() + Send,
+    ) {
         let mut slot = self.slot.write().await;
         if slot
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, connection))
         {
+            rejected();
             if let Some(connection) = slot.take() {
                 self.retain_retiring(connection);
             }
@@ -108,12 +114,13 @@ impl SharedConnectionCache {
     /// lock is held and before `upgrade` runs. When the fence rejects the
     /// publication, `upgrade` is never called and the candidate connection is
     /// dropped, so a late promotion cannot overwrite a close or a newer epoch.
+    /// The callback can reject a stale negotiation epoch by returning `None`.
     pub(crate) async fn publish_if_current<Upgrade>(
         &self,
         expected_generation: u64,
         upgrade: Upgrade,
     ) where
-        Upgrade: FnOnce() -> Arc<MultiplexedConnection> + Send,
+        Upgrade: FnOnce() -> Option<Arc<MultiplexedConnection>> + Send,
     {
         let mut slot = self.slot.write().await;
         if self.closed.load(Ordering::Acquire)
@@ -121,7 +128,9 @@ impl SharedConnectionCache {
         {
             return;
         }
-        *slot = Some(upgrade());
+        if let Some(connection) = upgrade() {
+            *slot = Some(connection);
+        }
     }
 
     /// Joins every retiring connection until `deadline`, keeping only the live ones.
@@ -164,6 +173,11 @@ impl SharedConnectionCache {
     }
 
     #[cfg(test)]
+    pub(crate) async fn lock_for_test(&self) -> impl Drop + '_ {
+        self.slot.write().await
+    }
+
+    #[cfg(test)]
     pub(crate) async fn store_for_test(&self, connection: Arc<MultiplexedConnection>) {
         *self.slot.write().await = Some(connection);
     }
@@ -189,7 +203,7 @@ impl Drop for SharedConnectionCache {
 mod tests {
     use super::SharedConnectionCache;
 
-    // The upgrade closure returns `Arc<MultiplexedConnection>`; a `panic!` body
+    // The upgrade closure returns `Option<Arc<MultiplexedConnection>>`; a `panic!` body
     // coerces to that type and fails the test if the fence ever calls it.
 
     #[tokio::test]
@@ -215,6 +229,31 @@ mod tests {
                 panic!("the upgrade closure must not run for a stale generation")
             })
             .await;
+        assert!(cache.current().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn rejection_callback_runs_only_for_current_connection_under_cache_lock() {
+        use std::sync::Arc;
+
+        use crate::connection::MultiplexedConnection;
+
+        let cache = SharedConnectionCache::default();
+        let stale = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+        let current = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+        cache.store_for_test(current.clone()).await;
+        cache
+            .clear_if_same(&stale, || panic!("stale rejection must not update capability"))
+            .await;
+        assert!(Arc::ptr_eq(&cache.current().await.unwrap(), &current));
+        let mut called = false;
+        cache
+            .clear_if_same(&current, || {
+                assert!(cache.slot.try_write().is_err());
+                called = true;
+            })
+            .await;
+        assert!(called);
         assert!(cache.current().await.is_none());
     }
 }
