@@ -7,7 +7,7 @@
 //! # Startup sequence
 //!
 //! 1. [`TacacsClientService::new`] resolves the current upstream server set.
-//! 2. [`TacacsClientService::serve`] publishes lazy connection state and binds
+//! 2. [`TacacsClientService::serve_until`] publishes lazy connection state and binds
 //!    each listener.
 //! 3. The service accepts clients until it receives a shutdown signal.
 //!
