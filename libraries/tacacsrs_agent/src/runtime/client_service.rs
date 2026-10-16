@@ -1111,8 +1111,8 @@ mod tests {
         assert_eq!(response.server, "primary:49");
         assert_eq!(response.status, AuthorizationResponseStatus::PassAdd);
         assert!(response.server_message.contains("authorized by primary:49"));
-        assert!(response.args.is_empty());
-        assert!(response.data.is_empty());
+        assert_eq!(response.args, [] as [tacacsrs_protocol::operations::AuthorizationArg; 0]);
+        assert_eq!(response.data, "");
 
         service_task.abort();
         let _ = service_task.await;
@@ -1390,9 +1390,8 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(2), bound.connection.open_conversation())
                 .await
                 .unwrap();
-        let error = match result {
-            Ok(_) => panic!("production client connected to its proxy"),
-            Err(error) => error,
+        let Err(error) = result else {
+            panic!("production client connected to its proxy");
         };
         assert!(format!("{error:#}").contains("targets the local TACACS+ proxy"));
         assert_eq!(service.config.local_services, canonical);
