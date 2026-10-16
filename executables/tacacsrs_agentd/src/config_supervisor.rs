@@ -716,11 +716,15 @@ mod tests {
             &self,
             request: &CredentialRequest,
         ) -> Result<ResolvedCredential, ResolutionError> {
-            if self
+            #[allow(
+                deprecated,
+                reason = "AtomicUsize::try_update is newer than the Rust 1.88 MSRV."
+            )]
+            let should_fail = self
                 .failures_remaining
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| count.checked_sub(1))
-                .is_ok()
-            {
+                .is_ok();
+            if should_fail {
                 return Err(ResolutionError::provider(
                     ProviderErrorKind::Unavailable,
                     request.context(),

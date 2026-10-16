@@ -263,6 +263,6 @@ mod tests {
             .read_to_end(&mut bpf)
             .expect("failed to read the filter file");
 
-        assert!(!bpf.is_empty());
+        assert_ne!(bpf, Vec::<u8>::new());
     }
 }

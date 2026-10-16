@@ -1015,7 +1015,7 @@ mod tests {
             "psk-only",
         ]);
 
-        assert!(tls13_epsk_groups(&cli).is_empty());
+        assert_eq!(tls13_epsk_groups(&cli), Vec::<PskDheKeSupportedGroup>::new());
     }
 
     #[test]

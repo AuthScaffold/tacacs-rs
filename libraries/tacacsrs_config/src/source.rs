@@ -283,7 +283,7 @@ impl ConfigDatastore for StaticDatastore {
 /// The first channel value is the initial snapshot. The stream does not publish
 /// it as a change. Later updates contain a [`ConfigChange`] with a delta from
 /// the previous snapshot.
-#[must_use]
+#[must_use = "Poll the stream to receive configuration changes."]
 pub fn watch_to_change_stream(
     receiver: watch::Receiver<Option<Arc<TacacsPlus>>>,
 ) -> ConfigChangeStream {
@@ -367,8 +367,8 @@ mod tests {
         let new = sample_config("192.0.2.1");
         let delta = ConfigDelta::diff(None, &new);
         assert_eq!(delta.added_servers, vec!["primary"]);
-        assert!(delta.removed_servers.is_empty());
-        assert!(delta.modified_servers.is_empty());
+        assert_eq!(delta.removed_servers, [] as [std::string::String; 0]);
+        assert_eq!(delta.modified_servers, [] as [std::string::String; 0]);
         assert!(!delta.root_metadata_changed);
     }
 

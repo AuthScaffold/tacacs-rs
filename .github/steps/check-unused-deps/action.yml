@@ -25,6 +25,7 @@ runs:
     - name: Run cargo-udeps
       shell: bash
       run: |
+        export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--cfg tokio_unstable"
         cargo +nightly udeps \
           ${{ inputs.package-args }} \
           --all-targets \
