@@ -10,11 +10,16 @@ use crate::runtime::task::DriverTask;
 
 use super::{EndpointConnector, OperationKind};
 
+/// Maximum graceful retirement wait before forcing connector cleanup.
+const FAILURE_RETIREMENT_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+
 struct State<Connection: ?Sized> {
     closed: bool,
     cutoff: Option<RequestDeadline>,
     connections: Vec<Arc<Connection>>,
     setups: Vec<Arc<DriverTask>>,
+    cleanups: Vec<Arc<DriverTask>>,
+    runtime: Option<tokio::runtime::Handle>,
     retirement: Option<Arc<DriverTask>>,
 }
 
@@ -24,6 +29,27 @@ pub(super) struct EndpointLifecycle<Connector: EndpointConnector> {
 }
 
 struct SetupGuard(Arc<DriverTask>);
+
+pub(super) struct PendingConnection<Connector: EndpointConnector> {
+    owner: Arc<EndpointLifecycle<Connector>>,
+    connection: Arc<Connector::Connection>,
+    adopted: bool,
+}
+
+impl<Connector: EndpointConnector> PendingConnection<Connector> {
+    pub(super) fn adopt(mut self) -> Arc<Connector::Connection> {
+        self.adopted = true;
+        self.connection.clone()
+    }
+}
+
+impl<Connector: EndpointConnector> Drop for PendingConnection<Connector> {
+    fn drop(&mut self) {
+        if !self.adopted {
+            self.owner.abandon(self.connection.clone());
+        }
+    }
+}
 
 impl Drop for SetupGuard {
     fn drop(&mut self) {
@@ -40,6 +66,8 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
                 cutoff: None,
                 connections: Vec::new(),
                 setups: Vec::new(),
+                cleanups: Vec::new(),
+                runtime: None,
                 retirement: None,
             }),
         }
@@ -61,7 +89,7 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
         self: &Arc<Self>,
         endpoint: PreparedEndpoint,
         operation: OperationKind,
-    ) -> anyhow::Result<Arc<Connector::Connection>> {
+    ) -> anyhow::Result<PendingConnection<Connector>> {
         self.reap_unused_connections().await;
         let (sender, receiver) = oneshot::channel();
         let task = {
@@ -74,6 +102,7 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
                 "The TACACS+ endpoint is retired"
             );
             state.setups.retain(|task| !task.is_finished());
+            state.runtime = Some(tokio::runtime::Handle::current());
             let owner = Arc::downgrade(self);
             let connector = Arc::clone(&self.connector);
             let task = Arc::new(DriverTask::spawn(async move {
@@ -89,16 +118,15 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
                             .state
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if state.closed
-                            || state
-                                .cutoff
-                                .is_some_and(|deadline| deadline.check().is_err())
-                        {
-                            connector.close(&connection);
-                            anyhow::bail!("The TACACS+ endpoint retired during setup");
-                        }
                         state.connections.push(connection.clone());
-                        Ok(connection)
+                        drop(state);
+                        let pending = PendingConnection {
+                            owner,
+                            connection,
+                            adopted: false,
+                        };
+                        pending.owner.ensure_open()?;
+                        Ok(pending)
                     });
                 let _delivered = sender.send(result);
                 Ok(())
@@ -112,6 +140,75 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
             .context("TACACS+ endpoint setup was cancelled")??;
         self.ensure_open()?;
         Ok(connection)
+    }
+
+    fn abandon(self: &Arc<Self>, connection: Arc<Connector::Connection>) {
+        self.connector.close(&connection);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.closed
+            || !state
+                .connections
+                .iter()
+                .any(|current| Arc::ptr_eq(current, &connection))
+        {
+            return;
+        }
+        state.cleanups.retain(|task| !task.is_finished());
+        let Some(runtime) = state.runtime.clone() else {
+            return;
+        };
+        let owner = Arc::downgrade(self);
+        let connector = self.connector.clone();
+        state
+            .cleanups
+            .push(Arc::new(DriverTask::spawn_on(&runtime, async move {
+                let result = connector
+                    .close_and_join(&connection, RequestDeadline::at(tokio::time::Instant::now()))
+                    .await;
+                if let Some(owner) = owner.upgrade() {
+                    owner
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .connections
+                        .retain(|current| !Arc::ptr_eq(current, &connection));
+                }
+                result
+            })));
+    }
+
+    pub(super) fn retire_failed(&self, connection: Arc<Connector::Connection>) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.closed {
+            return;
+        }
+        state.cleanups.retain(|task| !task.is_finished());
+        let Some(runtime) = state.runtime.clone() else {
+            return;
+        };
+        let connector = self.connector.clone();
+        state
+            .cleanups
+            .push(Arc::new(DriverTask::spawn_on(&runtime, async move {
+                if tokio::time::timeout(FAILURE_RETIREMENT_BUDGET, connector.retire(&connection))
+                    .await
+                    .is_err()
+                {
+                    connector
+                        .close_and_join(
+                            &connection,
+                            RequestDeadline::at(tokio::time::Instant::now()),
+                        )
+                        .await?;
+                }
+                Ok(())
+            })));
     }
 
     async fn reap_unused_connections(&self) {
@@ -160,15 +257,27 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
 
     async fn join_connections(&self, deadline: RequestDeadline) -> anyhow::Result<()> {
         self.close();
-        let (setups, connections) = {
+        let setups = {
             let state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (state.setups.clone(), state.connections.clone())
+            state.setups.clone()
         };
         let mut failure = None;
         for task in setups {
+            if let Err(error) = task.join_until(deadline).await {
+                failure.get_or_insert(error);
+            }
+        }
+        let (cleanups, connections) = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (state.cleanups.clone(), state.connections.clone())
+        };
+        for task in cleanups {
             if let Err(error) = task.join_until(deadline).await {
                 failure.get_or_insert(error);
             }
@@ -184,6 +293,7 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.connections.clear();
         state.setups.retain(|task| !task.is_finished());
+        state.cleanups.retain(|task| !task.is_finished());
         failure.map_or(Ok(()), Err)
     }
 
@@ -326,5 +436,159 @@ impl<Connector: EndpointConnector> RoutingRuntime<Connector> {
             }
         }
         failure.map_or(Ok(()), Err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+
+    use super::*;
+    use crate::ConnectOptions;
+
+    #[derive(Default)]
+    struct CleanupConnector {
+        joined: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl EndpointConnector for CleanupConnector {
+        type Connection = ();
+
+        async fn connect(&self, _: PreparedEndpoint, _: OperationKind) -> anyhow::Result<Arc<()>> {
+            Ok(Arc::new(()))
+        }
+
+        async fn retire(&self, (): &()) {}
+
+        fn close(&self, (): &()) {}
+
+        async fn close_and_join(&self, (): &(), _: RequestDeadline) -> anyhow::Result<()> {
+            self.joined.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn unclaimed_successful_setup_is_cleaned_without_another_bind() {
+        let connector = Arc::new(CleanupConnector::default());
+        let lifecycle = Arc::new(EndpointLifecycle::new(connector.clone()));
+        let endpoint =
+            PreparedEndpoint::tcp("127.0.0.1:49", false, None, ConnectOptions::default());
+        let mut pending = Box::pin(lifecycle.connect(endpoint, OperationKind::Accounting));
+        std::future::poll_fn(|context| {
+            assert!(pending.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let task = lifecycle.state.lock().unwrap().setups[0].clone();
+        task.join_until(RequestDeadline::after(Duration::from_secs(1)).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(lifecycle.state.lock().unwrap().connections.len(), 1);
+        drop(pending);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while connector.joined.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("unclaimed connection cleanup must finish independently");
+        assert!(lifecycle.state.lock().unwrap().connections.is_empty());
+    }
+
+    #[test]
+    fn pending_connection_can_be_dropped_outside_runtime_context() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let connector = Arc::new(CleanupConnector::default());
+        let lifecycle = Arc::new(EndpointLifecycle::new(connector.clone()));
+        let pending = runtime
+            .block_on(lifecycle.connect(
+                PreparedEndpoint::tcp("127.0.0.1:49", false, None, ConnectOptions::default()),
+                OperationKind::Accounting,
+            ))
+            .unwrap();
+        drop(pending);
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while connector.joined.load(Ordering::SeqCst) == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        });
+        assert!(lifecycle.state.lock().unwrap().connections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unclaimed_watchdog_connection_closes_its_socket_and_owner() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tacacsrs_protocol::accounting::reply::AccountingReply;
+        use tacacsrs_protocol::enumerations::{TacacsAccountingStatus, TacacsFlags};
+        use tacacsrs_protocol::packet::{Packet, PacketTrait};
+        use tacacsrs_protocol::traits::TacacsBodyTrait;
+        use crate::{ConnectPreflight, PacketReader, PacketReadResult};
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let lifecycle =
+                Arc::new(EndpointLifecycle::new(Arc::new(super::super::NativeConnector)));
+            let endpoint = PreparedEndpoint::tcp(
+                listener.local_addr().unwrap().to_string(),
+                true,
+                None,
+                ConnectOptions::default().with_preflight(ConnectPreflight::AccountingWatchdog),
+            );
+            let mut pending = Box::pin(lifecycle.connect(endpoint, OperationKind::Accounting));
+            std::future::poll_fn(|context| {
+                assert!(pending.as_mut().poll(context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let (mut peer, _) = listener.accept().await.unwrap();
+            let PacketReadResult::Success(request) =
+                PacketReader::new(None).read_packet(&mut peer).await
+            else {
+                panic!("watchdog request expected");
+            };
+            assert!(request
+                .header()
+                .flags
+                .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+            let body = AccountingReply {
+                status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+                server_msg: String::new(),
+                data: String::new(),
+            }
+            .to_bytes()
+            .unwrap();
+            let mut header = request.header().clone();
+            header.seq_no += 1;
+            header.length = u32::try_from(body.len()).unwrap();
+            peer.write_all(&Packet::new(header, body).unwrap().to_bytes())
+                .await
+                .unwrap();
+            let task = lifecycle.state.lock().unwrap().setups[0].clone();
+            task.join_until(RequestDeadline::after(Duration::from_secs(1)).unwrap())
+                .await
+                .unwrap();
+            let connection = Arc::downgrade(&lifecycle.state.lock().unwrap().connections[0]);
+            drop(pending);
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+            while connection.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+            assert!(lifecycle.state.lock().unwrap().connections.is_empty());
+        })
+        .await
+        .expect("unclaimed promoted connection must be cleaned independently");
     }
 }
