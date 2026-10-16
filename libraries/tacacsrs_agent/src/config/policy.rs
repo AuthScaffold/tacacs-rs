@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use tacacsrs_messages::constants::TACACS_MAX_BODY_LENGTH;
+use tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH;
 
 use crate::upstream::OperationKind;
 

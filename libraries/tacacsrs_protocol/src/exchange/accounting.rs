@@ -1,9 +1,9 @@
 //! Fixed accounting exchanges.
 
-use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
-use tacacsrs_messages::enumerations::{TacacsMinorVersion, TacacsType};
-use tacacsrs_messages::traits::TacacsBodyTrait;
-use tacacsrs_networking::FixedExchange;
+use crate::accounting::{reply::AccountingReply, request::AccountingRequest};
+use crate::enumerations::{TacacsMinorVersion, TacacsType};
+use crate::traits::TacacsBodyTrait;
+use crate::exchange::FixedExchange;
 
 /// One TACACS+ accounting request followed by one accounting reply.
 #[derive(Debug)]
@@ -42,7 +42,7 @@ impl FixedExchange for AccountingExchange {
 
 #[cfg(test)]
 mod tests {
-    use tacacsrs_messages::enumerations::{
+    use crate::enumerations::{
         TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
         TacacsAuthenticationService, TacacsAuthenticationType,
     };

@@ -4,11 +4,11 @@ use std::io::{IsTerminal, Read};
 
 use anyhow::Context;
 #[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{
-    PapAuthenticationOperation, PapAuthenticationOperationResponse, ServiceClient,
-};
-use tacacsrs_flows::authentication::PapAuthenticationExchange;
-use tacacsrs_messages::authentication::reply::AuthenticationReply;
+use tacacsrs_agent_client::{ServiceClient};
+use tacacsrs_protocol::operations::PapAuthenticationOperation;
+#[cfg(target_os = "linux")]
+use tacacsrs_protocol::operations::PapAuthenticationOperationResponse;
+use tacacsrs_protocol::authentication::reply::AuthenticationReply;
 use tacacsrs_secrets::SecretBytes;
 
 use crate::cli::RequestArgs;
@@ -42,13 +42,7 @@ pub async fn authenticate_direct(
     password: SecretBytes,
 ) -> anyhow::Result<AuthenticationReply> {
     connection
-        .execute(PapAuthenticationExchange::new(
-            args.user.clone(),
-            password,
-            args.port.clone(),
-            args.rem_addr.clone(),
-            privilege_level,
-        ))
+        .execute(pap_operation(args, privilege_level, password)?.exchange()?)
         .await
 }
 
@@ -60,12 +54,22 @@ pub async fn authenticate_service(
     password: SecretBytes,
 ) -> anyhow::Result<PapAuthenticationOperationResponse> {
     client
-        .authenticate_pap(PapAuthenticationOperation {
-            user: args.user.clone(),
-            password,
-            port: args.port.clone(),
-            remote_address: args.rem_addr.clone(),
-            privilege_level: u32::from(privilege_level),
-        })
+        .authenticate_pap(pap_operation(args, privilege_level, password)?)
         .await
+}
+
+fn pap_operation(
+    args: &RequestArgs,
+    privilege_level: u8,
+    password: SecretBytes,
+) -> anyhow::Result<PapAuthenticationOperation> {
+    let operation = PapAuthenticationOperation {
+        user: args.user.clone(),
+        password,
+        port: args.port.clone(),
+        remote_address: args.rem_addr.clone(),
+        privilege_level: tacacsrs_protocol::privilege::PrivilegeLevel::try_from(privilege_level)?,
+    };
+    operation.validate()?;
+    Ok(operation)
 }

@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::vec;
 
 use tacacsrs_config::{TacacsPlusServerBuilder, TacacsPlusServerType};
-use tacacsrs_flows::accounting::AccountingExchange;
-use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::enumerations::{
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
+use tacacsrs_protocol::accounting::request::AccountingRequest;
+use tacacsrs_protocol::enumerations::{
     TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
     TacacsAuthenticationType,
 };

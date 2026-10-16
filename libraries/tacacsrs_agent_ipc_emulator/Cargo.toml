@@ -18,6 +18,7 @@ regorus = { version = "0.12.0", default-features = false, features = ["arc", "re
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
+tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 tokio = { version = "1.52.2", features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }
 tonic = "0.14.6"

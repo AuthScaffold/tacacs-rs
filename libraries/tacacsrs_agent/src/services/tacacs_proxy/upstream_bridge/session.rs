@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_networking::ClientConversation;
 use tokio::sync::mpsc;
 
@@ -480,7 +480,7 @@ async fn send_proxy_reply(
 ) -> Result<(), ProxyConnectionError> {
     let mut flags = reply.header().flags;
     flags.set(
-        tacacsrs_messages::enumerations::TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+        tacacsrs_protocol::enumerations::TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
         advertise_single_connect,
     );
     let reply = reply.with_flags(flags);

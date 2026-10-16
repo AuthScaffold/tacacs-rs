@@ -14,8 +14,7 @@ log = "0.4.30"
 rustix = { version = "1.1.4", features = ["fs"] }
 tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
 tacacsrs-config = { path = "../tacacsrs_config" }
-tacacsrs-flows = { path = "../tacacsrs_flows" }
-tacacsrs-messages = { path = "../tacacsrs_messages" }
+tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 tacacsrs-networking = { path = "../tacacsrs_networking" }
 tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "signal", "sync", "time"] }

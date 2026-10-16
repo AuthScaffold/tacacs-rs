@@ -323,8 +323,7 @@ function Get-MatrixConfigs {
                 '--package', 'tacacsrs-cli-datastore',
                 '--package', 'tacacsrs-config',
                 '--package', 'tacacsrs-datastore',
-                '--package', 'tacacsrs-flows',
-                '--package', 'tacacsrs-messages',
+                '--package', 'tacacsrs-protocol',
                 '--package', 'tacacsrs-networking',
                 '--package', 'tacacsrs-secrets'
             )

@@ -1,6 +1,6 @@
 //! Internal client session transport facade.
 
-use tacacsrs_messages::packet::Packet;
+use tacacsrs_protocol::packet::Packet;
 
 use super::{DedicatedSession, SharedFixedSession, SharedSession};
 

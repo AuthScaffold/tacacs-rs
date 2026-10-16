@@ -1,6 +1,6 @@
-use tacacsrs_messages::enumerations::TacacsFlags;
-use tacacsrs_messages::packet::Packet;
-use tacacsrs_messages::packet::PacketTrait;
+use tacacsrs_protocol::enumerations::TacacsFlags;
+use tacacsrs_protocol::packet::Packet;
+use tacacsrs_protocol::packet::PacketTrait;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Result of writing a packet to a connection.
@@ -80,10 +80,10 @@ mod tests {
     use super::*;
     use std::pin::Pin;
     use std::task::{Context, Poll};
-    use tacacsrs_messages::enumerations::{
+    use tacacsrs_protocol::enumerations::{
         TacacsFlags, TacacsType, TacacsMajorVersion, TacacsMinorVersion,
     };
-    use tacacsrs_messages::header::Header;
+    use tacacsrs_protocol::header::Header;
     use tokio::io::AsyncWrite;
 
     #[derive(Default)]

@@ -49,7 +49,7 @@ For binary-targeted runs, this action includes files such as:
 
 When `manifest-path` and `describe: binaries` are not set, cargo-cyclonedx uses its default crate/workspace behavior. It can emit files such as:
 - `executables/tacon/tacon.cdx.<format>`
-- `libraries/tacacsrs_messages/tacacsrs-messages.cdx.<format>`
+- `libraries/tacacsrs_protocol/tacacsrs-protocol.cdx.<format>`
 - `libraries/tacacsrs_networking/tacacsrs-networking.cdx.<format>`
 
 ## Tool

@@ -4,18 +4,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tacacsrs_agent_client::{
+use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingResponseStatus, AuthenticationResponseStatus,
     PapAuthenticationOperation,
 };
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_flows::authentication::PapAuthenticationExchange;
-use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::authentication::reply::AuthenticationReply;
-use tacacsrs_messages::authorization::reply::AuthorizationReply;
-use tacacsrs_messages::authorization::request::AuthorizationRequest;
-use tacacsrs_messages::enumerations::{
+use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
+use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::accounting::request::AccountingRequest;
+use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::authorization::request::AuthorizationRequest;
+use tacacsrs_protocol::enumerations::{
     TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
     TacacsAuthorizationStatus,
 };
@@ -198,7 +198,7 @@ fn authentication() -> PapAuthenticationOperation {
         password: SecretBytes::new(b"secret".to_vec()),
         port: "tty0".to_owned(),
         remote_address: "192.0.2.1".to_owned(),
-        privilege_level: 15,
+        privilege_level: tacacsrs_protocol::privilege::PrivilegeLevel::MAX,
     }
 }
 
@@ -292,10 +292,14 @@ async fn uncertain_accounting_failure_does_not_retry() {
     )));
     let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
 
-    bridge
+    let error = bridge
         .execute_accounting_request(accounting())
         .await
         .expect_err("an uncertain accounting result must not be replayed");
+    let decoded = tacacsrs_protocol::operations::ServiceError::from(
+        tacacsrs_agent_client::ipc::ServiceError::from(error),
+    );
+    assert!(!decoded.retriable, "IPC must not recommend replay of an unknown outcome");
 
     assert_eq!(
         connector
@@ -303,6 +307,38 @@ async fn uncertain_accounting_failure_does_not_retry() {
             .await,
         0
     );
+}
+
+#[tokio::test]
+async fn later_bind_failure_preserves_unknown_delivery_advice() {
+    let primary = Arc::new(ScriptedConnection {
+        fail_authentication: AtomicBool::new(true),
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let connector = Arc::new(OperationConnector::new(HashMap::from([(
+        ("primary:49".to_owned(), OperationKind::Authentication),
+        primary,
+    )])));
+    let bridge = bridge(connector, FailoverStrategy::OrderedSafeRetry);
+    let error = bridge
+        .execute_pap_authentication_request(authentication())
+        .await
+        .unwrap_err();
+    assert!(!error.retriable, "a later bind error must not erase an uncertain attempt");
+}
+
+#[tokio::test]
+async fn unsent_accounting_bind_failure_remains_retriable() {
+    let connector = Arc::new(OperationConnector::new(HashMap::new()));
+    let bridge = bridge(connector, FailoverStrategy::OrderedSafeRetry);
+    let error = bridge
+        .execute_accounting_request(accounting())
+        .await
+        .unwrap_err();
+    let decoded = tacacsrs_protocol::operations::ServiceError::from(
+        tacacsrs_agent_client::ipc::ServiceError::from(error),
+    );
+    assert!(decoded.retriable);
 }
 
 #[tokio::test]

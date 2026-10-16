@@ -19,9 +19,9 @@ pub struct Packet {
 
 impl Packet {
     /// # Errors
-    /// Returns an error if the body is shorter than the length declared in the header.
+    /// Returns an error if the body length differs from the declared length.
     pub fn new(header: Header, body: Vec<u8>) -> anyhow::Result<Self> {
-        if body.len() < (header.length as usize) {
+        if body.len() != (header.length as usize) {
             let expected_length = header.length as usize;
             let actual_length = body.len();
             let error_message = format!(
@@ -42,11 +42,11 @@ impl Packet {
     }
 
     /// # Errors
-    /// Returns an error if the header cannot be parsed.
+    /// Returns an error if the header is invalid or the body length differs from its declared length.
     pub fn from_bytes(data: &[u8]) -> anyhow::Result<Self> {
         let header = Header::from_bytes(data)?;
         let body = data[TACACS_HEADER_LENGTH..].to_vec();
-        Ok(Self { header, body })
+        Self::new(header, body)
     }
 
     /// Replaces the packet session identifier without copying its body.
@@ -168,6 +168,54 @@ mod tests {
     use crate::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
 
     use super::*;
+
+    fn test_header(length: u32) -> Header {
+        Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+            tacacs_type: TacacsType::TacPlusAccounting,
+            seq_no: 1,
+            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            session_id: 1,
+            length,
+        }
+    }
+
+    #[test]
+    fn packet_construction_requires_exact_body_length() {
+        for actual in [0, 3, 5] {
+            assert!(
+                Packet::new(test_header(4), vec![0; actual]).is_err(),
+                "accepted {actual} body bytes with declared length 4",
+            );
+        }
+        assert!(Packet::new(test_header(4), vec![0; 4]).is_ok());
+        assert!(Packet::new(test_header(0), Vec::new()).is_ok());
+    }
+
+    #[test]
+    fn complete_packet_parser_requires_exact_body_length() {
+        for actual in [0, 3, 5] {
+            let mut bytes = test_header(4).to_bytes().to_vec();
+            bytes.extend(vec![0; actual]);
+            assert!(
+                Packet::from_bytes(&bytes).is_err(),
+                "accepted {actual} body bytes with declared length 4",
+            );
+        }
+    }
+
+    #[test]
+    fn complete_packet_parser_round_trips_exact_frames() -> anyhow::Result<()> {
+        for body in [Vec::new(), b"body".to_vec()] {
+            let packet = Packet::new(test_header(u32::try_from(body.len())?), body.clone())?;
+            let bytes = packet.to_bytes();
+            let decoded = Packet::from_bytes(&bytes)?;
+            assert_eq!(decoded.body(), body);
+            assert_eq!(decoded.to_bytes(), bytes);
+        }
+        Ok(())
+    }
 
     #[test]
     fn packet_debug_redacts_body() {

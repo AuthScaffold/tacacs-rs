@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use tacacsrs_messages::enumerations::TacacsFlags;
-use tacacsrs_messages::packet::PacketTrait;
+use tacacsrs_protocol::enumerations::TacacsFlags;
+use tacacsrs_protocol::packet::PacketTrait;
 
 use crate::session::SessionManager;
 

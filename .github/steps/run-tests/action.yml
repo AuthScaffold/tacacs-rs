@@ -21,6 +21,16 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Check pure protocol dependencies
+      shell: bash
+      run: |
+        cargo tree --package tacacsrs-protocol --edges normal --prefix none |
+          awk '/^(tokio|openssl|tonic|prost|redis|tacacsrs-config|tacacsrs-networking|tacacsrs-agent)[ -]/ {
+            print "Forbidden protocol dependency: " $0
+            failed = 1
+          }
+          END { exit failed }'
+
     - name: Run unit tests
       shell: bash
       run: |

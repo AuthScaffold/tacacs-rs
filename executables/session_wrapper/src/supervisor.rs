@@ -92,10 +92,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use libseccomp::{ScmpFd, ScmpNotifReq, ScmpNotifResp, ScmpNotifRespFlags, notify_id_valid};
-use tacacsrs_agent_client::{
-    AuthorizationArg, AuthorizationOperation, AuthorizationOperationResponse,
-    AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
-};
+use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_protocol::operations::{AuthorizationOperation, AuthorizationOperationResponse};
+#[cfg(test)]
+use tacacsrs_protocol::operations::{AuthorizationArg, AuthorizationResponseStatus};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::{JoinSet, spawn_blocking};
@@ -299,7 +299,7 @@ async fn ipc_authorize(
     let builder = AuthorizationOperation::builder(
         config.user.clone(),
         config.privilege_level,
-        tacacsrs_agent_client::AuthorizationAuthenticationContext::TacacsAscii,
+        tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsAscii,
     )
     .port(config.port.clone().unwrap_or_default())
     .remote_address(config.rem_addr.clone().unwrap_or_default())
@@ -347,28 +347,19 @@ fn map_authorization_response(
     let server = non_empty(Some(response.server.as_str())).map(str::to_owned);
     let server_message = non_empty(Some(response.server_message.as_str())).map(str::to_owned);
 
-    match response.status {
-        AuthorizationResponseStatus::PassAdd => map_pass_with_args(
-            "PASS_ADD",
-            "response",
-            response.args.as_slice(),
-            exec_path,
-            server,
-            server_message,
-        ),
-        AuthorizationResponseStatus::PassRepl => map_pass_with_args(
-            "PASS_REPL",
-            "replacement",
-            response.args.as_slice(),
-            exec_path,
-            server,
-            server_message,
-        ),
-        AuthorizationResponseStatus::Fail
-        | AuthorizationResponseStatus::Error
-        | AuthorizationResponseStatus::Follow => {
-            let mut reason =
-                format!("TACACS+ agent denied {exec_path:?}: status={:?}", response.status);
+    match response.status.unchanged_execution(&response.args) {
+        tacacsrs_protocol::operations::UnchangedExecutionDecision::Allow => AuthDecision::Allow,
+        decision => {
+            let mandatory_names: Vec<_> = response
+                .args
+                .iter()
+                .filter(|argument| argument.mandatory)
+                .map(|argument| argument.name.as_str())
+                .collect();
+            let mut reason = format!(
+                "TACACS+ agent denied {exec_path:?}: status={:?}, decision={decision:?}, mandatory arguments={mandatory_names:?}",
+                response.status,
+            );
             if let Some(message) = server_message.as_deref() {
                 let _ = write!(reason, ", server_message={message:?}");
             }
@@ -381,50 +372,6 @@ fn map_authorization_response(
                 fail_policy: None,
             })
         }
-    }
-}
-
-fn map_pass_with_args(
-    status_name: &str,
-    arg_kind: &str,
-    args: &[AuthorizationArg],
-    exec_path: &str,
-    server: Option<String>,
-    server_message: Option<String>,
-) -> AuthDecision {
-    if args.is_empty() {
-        return AuthDecision::Allow;
-    }
-
-    let arg_names: Vec<&str> = args.iter().map(|a| a.name.as_str()).collect();
-    let mandatory_names: Vec<&str> = args
-        .iter()
-        .filter(|a| a.mandatory)
-        .map(|a| a.name.as_str())
-        .collect();
-
-    if mandatory_names.is_empty() {
-        log::warn!(
-            "IPC authorization {status_name} for {exec_path:?} returned optional {arg_kind} \
-             args {arg_names:?} that cannot be applied in seccomp notify mode; ignoring them"
-        );
-        AuthDecision::Allow
-    } else {
-        log::warn!(
-            "IPC authorization {status_name} for {exec_path:?} returned mandatory {arg_kind} \
-             args {mandatory_names:?} (all args: {arg_names:?}) that cannot be applied in seccomp \
-             notify mode; treating as failed per RFC 8907 §6.2"
-        );
-        AuthDecision::Deny(DenyDecision {
-            source: DenySource::AuthorizationDenied,
-            reason: format!(
-                "TACACS+ agent returned {status_name} for {exec_path:?} with mandatory {arg_kind} \
-                 arg(s) that cannot be applied: {mandatory_names:?}"
-            ),
-            server,
-            server_message,
-            fail_policy: None,
-        })
     }
 }
 

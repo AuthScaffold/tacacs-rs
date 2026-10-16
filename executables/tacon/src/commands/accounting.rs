@@ -1,12 +1,9 @@
 //! TACACS+ Accounting command implementation
 
 use anyhow::Context;
-use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
-use tacacsrs_messages::enumerations::{
-    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
-    TacacsAuthenticationType,
-};
-use tacacsrs_flows::accounting::AccountingExchange;
+use tacacsrs_protocol::accounting::{reply::AccountingReply, request::AccountingRequest};
+use tacacsrs_protocol::operations::AccountingOperation;
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 
 use crate::connection::Connection;
 
@@ -52,29 +49,30 @@ pub fn build_accounting_request(
     cmd: &str,
     cmd_args: Option<&Vec<String>>,
 ) -> AccountingRequest {
-    AccountingRequest {
-        flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
-        authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
-        priv_lvl: 0,
-        authen_type: TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
-        authen_service: TacacsAuthenticationService::TacPlusAuthenSvcNone,
+    accounting_operation(user, port, rem_address, cmd, cmd_args).to_request()
+}
+
+pub fn accounting_operation(
+    user: &str,
+    port: &str,
+    rem_address: &str,
+    cmd: &str,
+    cmd_args: Option<&Vec<String>>,
+) -> AccountingOperation {
+    AccountingOperation {
         user: user.to_owned(),
         port: port.to_owned(),
-        rem_address: rem_address.to_owned(),
-        args: build_accounting_args(cmd, cmd_args),
+        remote_address: rem_address.to_owned(),
+        command: cmd.to_owned(),
+        command_arguments: cmd_args.cloned().unwrap_or_default(),
     }
 }
 
-/// Builds the argument list for an accounting request.
+#[cfg(test)]
 fn build_accounting_args(cmd: &str, cmd_args: Option<&Vec<String>>) -> Vec<String> {
-    let base_args = ["service=shell".to_owned(), format!("cmd={cmd}")];
-
-    let extra_args = cmd_args
-        .into_iter()
-        .flatten()
-        .map(|arg| format!("cmd-arg={arg}"));
-
-    base_args.into_iter().chain(extra_args).collect()
+    accounting_operation("admin", "tty0", "192.0.2.1", cmd, cmd_args)
+        .to_request()
+        .args
 }
 
 #[cfg(test)]

@@ -6,10 +6,10 @@ use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use tacacsrs_messages::constants::{TACACS_HEADER_LENGTH, TACACS_MAX_BODY_LENGTH};
-use tacacsrs_messages::enumerations::TacacsFlags;
-use tacacsrs_messages::header::Header;
-use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_protocol::constants::{TACACS_HEADER_LENGTH, TACACS_MAX_BODY_LENGTH};
+use tacacsrs_protocol::enumerations::TacacsFlags;
+use tacacsrs_protocol::header::Header;
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_networking::{PacketWriteResult, PacketWriter};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::time::Instant;

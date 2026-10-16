@@ -2,9 +2,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use tacacsrs_messages::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
-use tacacsrs_messages::header::Header;
-use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tokio::io::AsyncReadExt;
+
+use tacacsrs_protocol::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
+use tacacsrs_protocol::header::Header;
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
 use super::MultiplexedConnection;
 use crate::session::{ClientConversation, ExpectedResponseHeader, PacketDispatchError};
@@ -54,6 +56,73 @@ fn test_connection_creation() {
 #[test]
 fn test_connection_without_obfuscation() {
     let _conn = MultiplexedConnection::new(None);
+}
+
+#[tokio::test]
+async fn retirement_closes_idle_transport_without_peer_cooperation() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.disable_new_sessions();
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        connection.handle_connection_with_halves(reader, writer),
+    )
+    .await
+    .expect("retired idle driver must finish")
+    .expect("retirement must close cleanly");
+    assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn retirement_waits_for_active_session_then_closes_transport() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let session = connection.create_session().unwrap();
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.disable_new_sessions();
+    assert!(connection.create_session().is_err());
+
+    let driver = connection.handle_connection_with_halves(reader, writer);
+    tokio::pin!(driver);
+    assert!(futures::poll!(&mut driver).is_pending());
+    drop(session);
+    tokio::time::timeout(Duration::from_secs(1), &mut driver)
+        .await
+        .expect("driver must finish after the last session drops")
+        .expect("retirement must close cleanly");
+    assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn cancelled_fixed_exchange_releases_route_and_allows_retirement() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let session = connection
+        .create_fixed_session(ExpectedResponseHeader::fixed(
+            TacacsType::TacPlusAuthorisation,
+            TacacsMinorVersion::TacacsPlusMinorVerDefault,
+        ))
+        .unwrap();
+    let session_id = session.session_id();
+    let mut outbound = connection.session_manager.take_receiver().unwrap();
+    {
+        let exchange = async move { session.round_trip(request(session_id)).await };
+        tokio::pin!(exchange);
+        assert!(futures::poll!(&mut exchange).is_pending());
+        assert_eq!(outbound.try_recv().unwrap().header().session_id, session_id);
+    }
+    assert!(matches!(
+        connection
+            .session_manager
+            .send_message_to_session(reply(session_id))
+            .await,
+        Err(PacketDispatchError::UnknownSession(_)),
+    ));
+    connection.disable_new_sessions();
+    tokio::time::timeout(Duration::from_secs(1), connection.session_manager.wait_for_close())
+        .await
+        .expect("a canceled exchange must not prevent retirement");
 }
 
 #[tokio::test]

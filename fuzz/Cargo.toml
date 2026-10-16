@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-tacacsrs-messages = { path = "../libraries/tacacsrs_messages" }
+tacacsrs-protocol = { path = "../libraries/tacacsrs_protocol" }
 
 [[bin]]
 name = "fuzz_header_parse"
@@ -29,4 +29,9 @@ doc = false
 [[bin]]
 name = "fuzz_accounting_request_packet_parse"
 path = "fuzz_targets/fuzz_accounting_request_packet_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_protocol_parse"
+path = "fuzz_targets/fuzz_protocol_parse.rs"
 doc = false

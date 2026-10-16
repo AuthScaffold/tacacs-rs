@@ -279,7 +279,7 @@ impl ConfigDatastore for StaticDatastore {
 /// The first channel value is the initial snapshot. The stream does not publish
 /// it as a change. Later updates contain a [`ConfigChange`] with a delta from
 /// the previous snapshot.
-#[must_use]
+#[must_use = "Poll the stream to receive configuration changes."]
 pub fn watch_to_change_stream(
     receiver: watch::Receiver<Option<Arc<TacacsPlus>>>,
 ) -> ConfigChangeStream {

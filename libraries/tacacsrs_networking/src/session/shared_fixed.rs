@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
-use tacacsrs_messages::packet::Packet;
+use tacacsrs_protocol::packet::Packet;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::SessionManager;
