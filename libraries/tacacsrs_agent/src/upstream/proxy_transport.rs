@@ -8,19 +8,19 @@
 
 use std::time::Duration;
 
-use crate::config::ProxyDownstreamObfuscation;
+use crate::config::PreparedProxyPolicy;
 
 /// Settings that the raw TACACS+ proxy applies to a downstream connection.
 #[derive(Clone, Debug)]
 pub(crate) struct ProxyTransportSettings {
     read_timeout: Duration,
-    downstream_obfuscation: ProxyDownstreamObfuscation,
+    downstream_obfuscation: PreparedProxyPolicy,
 }
 
 impl ProxyTransportSettings {
     pub(super) const fn new(
         read_timeout: Duration,
-        downstream_obfuscation: ProxyDownstreamObfuscation,
+        downstream_obfuscation: PreparedProxyPolicy,
     ) -> Self {
         Self {
             read_timeout,
@@ -34,7 +34,7 @@ impl ProxyTransportSettings {
     }
 
     /// Returns the obfuscation applied to downstream proxy packets.
-    pub(crate) const fn downstream_obfuscation(&self) -> &ProxyDownstreamObfuscation {
+    pub(crate) const fn downstream_obfuscation(&self) -> &PreparedProxyPolicy {
         &self.downstream_obfuscation
     }
 }

@@ -58,6 +58,14 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | --- | --- |
 | `--dedicated` | Use a one-shot connection per request (no session multiplexing) |
 
+For direct and batch execution, the selected YANG server's `timeout` bounds TCP connection establishment.
+This timeout does not bound TLS handshakes or complete request execution.
+
+An omitted server port now selects 49 for legacy TCP or 300 with `--use-tls`, including PSK mode.
+The earlier CLI default was 49 for both modes. Explicit ports remain unchanged, and malformed explicit ports fail.
+Certificate TLS now requires a matching DNS or IP SAN. Disabling SNI does not disable peer identity verification.
+See [certificate peer identity](yang-config-guide.md#certificate-peer-identity) for YANG identity selection and migration details.
+
 ### Debugging
 
 | Flag | Description |

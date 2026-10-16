@@ -5,6 +5,13 @@ use crate::{
 };
 use crate::validation::{self, ValidationOptions};
 
+/// Legacy TCP port from RFC 8907, used when an input adapter omits a port.
+pub const DEFAULT_TACACS_TCP_PORT: u16 = 49;
+
+/// TLS port from RFC 9887, used when an input adapter omits a port.
+/// Canonical YANG servers always contain an explicit port.
+pub const DEFAULT_TACACS_TLS_PORT: u16 = 300;
+
 /// Default TLS 1.3 PSK-DHE groups in preferred `ClientHello` key-share order.
 pub const DEFAULT_PSK_DHE_KE_GROUPS: &[PskDheKeSupportedGroup] = &[
     PskDheKeSupportedGroup::Secp384r1,

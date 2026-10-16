@@ -1,19 +1,12 @@
 //! TLS 1.3 pre-shared key (PSK) transport for TACACS+ connections.
 //!
-//! Connections are constructed exclusively through
-//! [`establish_from_server`], which interprets a [`TacacsPlusServer`]
-//! configuration (specifically, the `client-identity.tls13-epsk` container)
-//! and performs the TLS-PSK handshake. The helper functions are internal.
-//! Callers must use the dispatcher in [`crate::establish`].
-//!
-//! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
+//! Context preparation uses an explicit identity, protected key, hash, and
+//! ordered key-exchange groups. Callers use prepared endpoints for execution.
 
 mod config;
 mod context;
 mod ffi;
-mod from_server;
-mod tls13_epsk;
 
 pub(crate) use config::PskClientConfig;
-pub(crate) use context::{EpskSupportedHashExt, PskDheKeGroups};
-pub(crate) use from_server::{establish_from_server, server_has_psk};
+pub(crate) use context::PskDheKeGroups;
+pub use context::{PskHash, PskDheGroup};

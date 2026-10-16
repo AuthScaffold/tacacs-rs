@@ -121,8 +121,7 @@ mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use tacacsrs_agent::{EnabledServices, ProxyDownstreamObfuscation, RuntimePolicy, ServiceConfig};
-    use tacacsrs_agent_client::IpcEndpoint;
+    use tacacsrs_agent::{EnabledServices, RuntimePolicy, ServiceConfig};
     use tacacsrs_config::TacacsPlus;
 
     use super::*;
@@ -141,13 +140,10 @@ mod tests {
         Arc::new(
             TacacsClientService::waiting_for_configuration(
                 ServiceConfig {
-                    enabled_services: EnabledServices::CLIENT_API,
-                    endpoint: IpcEndpoint::default_local(),
-                    proxy_endpoint: None,
-                    proxy_downstream_obfuscation: ProxyDownstreamObfuscation::default(),
+                    local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
                     tacacs_plus: TacacsPlus::empty(),
+                    validation_options: tacacsrs_config::ValidationOptions::default(),
                     runtime_policy: RuntimePolicy::default(),
-                    socket_mode: 0o660,
                     disable_certificate_verification: false,
                 },
                 health,
@@ -175,7 +171,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_update_keeps_policy_and_valid_update_clears_degradation() {
-        let path = temp_policy("{}");
+        let path = temp_policy(r#"{"tacacsrs:runtime-policy":{}}"#);
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         let cancellation = CancellationToken::new();
         let supervisor = PolicySupervisor::new(
@@ -191,7 +187,7 @@ mod tests {
 
         fs::write(&path, r#"{"unknown":true}"#).expect("write invalid policy");
         wait_for_rejection(&health, true).await;
-        fs::write(&path, "{}").expect("write valid policy");
+        fs::write(&path, r#"{"tacacsrs:runtime-policy":{}}"#).expect("write valid policy");
         wait_for_rejection(&health, false).await;
 
         cancellation.cancel();

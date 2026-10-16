@@ -87,7 +87,23 @@ router binds one `PolicyService` identity at construction. A service therefore
 cannot read another service's state, cannot change the runtime configuration,
 and does not pass a service identity on each call.
 
-## Tower boundary
+## Generation Readiness
+
+`ServiceConfig::validation_options` carries the schema policy selected by the configuration source.
+Construction and both reload APIs apply the shared configuration checks with that policy.
+The daemon obtains the policy from `ConfigDatastore::validation_options`, including explicit migration relaxations.
+
+The service prepares native transport contexts before publishing changed server slots.
+Invalid DER material or a short PSK rejects the candidate before it can replace the active routing snapshot.
+Failure preserves the old routes, proxy policy, cached connections, and applied health state.
+An empty replacement remains valid for a runtime that waits for new configuration.
+
+Each server slot retains one prepared endpoint for its lifetime.
+Connectors receive clones of that endpoint for operation-specific clients and reconnects. They do not interpret YANG or parse credentials.
+An unchanged server reuses its existing slot and native contexts.
+Changed credential material creates a new slot while bound requests retain the previous generation.
+
+## Tower Boundary
 
 The upstream failover plan is domain code. It interprets TACACS+ `ERROR`
 responses, uncertain accounting outcomes, and authentication session pinning.

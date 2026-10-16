@@ -35,7 +35,7 @@ _BINARY_SENTINEL = "__BINARY__"
 _YANG_TO_RUST = {
     "string": "String",
     "boolean": "bool",
-    "empty": "bool",
+    "empty": "crate::YangEmpty",
     "uint8": "u8",
     "uint16": "u16",
     "uint32": "u32",
@@ -781,7 +781,7 @@ class Collector:
         """Create a structural fingerprint of a container or list node.
         
         Two nodes with the same fingerprint have the same child structure.
-        Their leaf names, types, and nested container shapes are equal.
+        Their leaf names, types, defaults, and nested container shapes are equal.
         """
         parts = []
         children = _get_children(stmt)
@@ -789,7 +789,9 @@ class Collector:
             if ch.keyword == "leaf":
                 t = ch.search_one("type")
                 type_name = t.arg if t else "?"
-                parts.append(f"L:{ch.arg}:{type_name}")
+                default = ch.search_one("default")
+                mandatory = ch.search_one("mandatory")
+                parts.append(f"L:{ch.arg}:{type_name}:D:{default.arg if default else None}:M:{mandatory.arg if mandatory else 'false'}")
             elif ch.keyword == "leaf-list":
                 t = ch.search_one("type")
                 type_name = t.arg if t else "?"
@@ -1166,7 +1168,7 @@ class RustEmitter:
             for f in st.fields:
                 if "::" in f.rust_type:
                     foreign_mod = f.rust_type.split("::")[0]
-                    if foreign_mod != mod.rust_name and foreign_mod != "tacacsrs_secrets":
+                    if foreign_mod != mod.rust_name and foreign_mod not in ("tacacsrs_secrets", "crate"):
                         imports.add(foreign_mod)
         for imp in sorted(imports):
             w(f"    use super::{imp};\n")
@@ -1435,12 +1437,33 @@ class RustEmitter:
             w("\n")
 
         self._doc(st.doc, "    ")
-        w("    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n")
+        has_default = all(f.optional or f.is_vec or f.default_value is not None for f in st.fields)
+        derive_default = has_default and all(
+            f.optional or f.is_vec or f.yang_name in bare_defaults for f in st.fields
+        )
+        extra_derive = ", Default" if derive_default else ""
+        w(f"    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize{extra_derive})]\n")
         w('    #[serde(rename_all = "kebab-case")]\n')
         w(f"    pub struct {st.name} {{\n")
         for f in st.fields:
             self._emit_field(f, current_mod, default_fns, bare_defaults)
         w("    }\n\n")
+
+        if has_default and not derive_default:
+            w(f"    impl Default for {st.name} {{\n")
+            w("        fn default() -> Self {\n")
+            w("            Self {\n")
+            for field in st.fields:
+                if field.optional:
+                    expression = "None"
+                elif field.is_vec:
+                    expression = "Vec::new()"
+                elif field.yang_name in default_fns:
+                    expression = f"{default_fns[field.yang_name][0]}()"
+                else:
+                    expression = "Default::default()"
+                w(f"                {field.rust_name}: {expression},\n")
+            w("            }\n        }\n    }\n\n")
 
         # Write choice-group constants for flattened choices.
         if st.choices:
@@ -1452,6 +1475,9 @@ class RustEmitter:
 
         if f.serde_name != f.rust_name or _needs_rename(f.serde_name):
             w(f'        #[serde(rename = "{f.serde_name}")]\n')
+
+        if f.rust_type == "crate::YangEmpty" and f.optional:
+            w('        #[serde(deserialize_with = "crate::serde_helpers::deserialize_present_empty")]\n')
 
         if f.rust_type == "Vec<u8>" and f.secret_kind is None:
             if f.is_vec:

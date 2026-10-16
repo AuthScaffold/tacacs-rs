@@ -21,7 +21,7 @@ use clap::Parser;
 #[cfg(target_os = "linux")]
 use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
-use tacacsrs_networking::ConnectOptions;
+use tacacsrs_config::prepare::PrepareOptions;
 
 use cli::{Cli, Command};
 use commands::accounting::send_accounting_request;
@@ -189,10 +189,9 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
         .required_server_type()
         .unwrap_or(TacacsPlusServerType::ACCOUNTING);
     let server_config = config::resolve_server_for_type(cli, required_type)?;
-    let options = ConnectOptions::default()
+    let options = PrepareOptions::default()
         .with_certificate_verification_disabled(cli.insecure_disable_certificate_verification);
-    let results =
-        batch::execute_batch(&server_config, cli.dedicated, &batch_file, &options).await?;
+    let results = batch::execute_batch(&server_config, cli.dedicated, &batch_file, options).await?;
 
     finish_batch(&results)
 }
@@ -240,16 +239,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let server_config = config::resolve_server_for_command(&cli, &cli.command)?;
-    let connect_options = ConnectOptions::default()
+    let connect_options = PrepareOptions::default()
         .with_certificate_verification_disabled(cli.insecure_disable_certificate_verification);
 
     // Dedicated connection mode uses a minimal TCP or TLS connection for each
     // request. It has no background tasks or session multiplexing.
     if cli.dedicated {
-        return execute_command_dedicated(&server_config, &connect_options, &cli.command).await;
+        return execute_command_dedicated(&server_config, connect_options, &cli.command).await;
     }
 
-    let connection = establish_connection(&server_config, &connect_options).await?;
+    let connection = establish_connection(&server_config, connect_options).await?;
     execute_command(&cli.command, &connection).await
 }
 
@@ -257,7 +256,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 /// TCP connection with no background tasks or session multiplexing.
 async fn execute_command_dedicated(
     server: &TacacsPlusServer,
-    options: &ConnectOptions,
+    options: PrepareOptions,
     command: &Command,
 ) -> anyhow::Result<()> {
     log::info!("Running in dedicated connection mode");

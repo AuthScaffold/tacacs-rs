@@ -45,10 +45,6 @@ impl ClientApiService {
             .await
     }
 
-    pub(crate) fn validate_endpoint(endpoint: &IpcEndpoint) -> anyhow::Result<()> {
-        listener::validate_endpoint(endpoint)
-    }
-
     pub(super) fn grpc_service(&self) -> GrpcService {
         self.grpc_service.clone()
     }

@@ -1,35 +1,28 @@
 //! TLS transport for TACACS+ connections.
 //!
-//! Connections are constructed exclusively through
-//! [`establish_from_server`], which interprets a [`TacacsPlusServer`]
-//! configuration and performs the TLS handshake. The internal
-//! `TlsConfigurationBuilder` and `connect_tls` helpers are internal. Callers
-//! must use the dispatcher in [`crate::establish`].
-//!
-//! [`TacacsPlusServer`]: tacacsrs_config::TacacsPlusServer
+//! Native contexts use borrowed DER material and explicit verification settings.
+//! Each context supports repeated handshakes without reparsing credentials.
 
 mod config_builder;
-mod from_server;
+mod config;
 #[allow(clippy::module_inception)]
 mod tls;
 
 pub(crate) use config_builder::TlsConfigurationBuilder;
-pub(crate) use from_server::establish_from_server;
+pub(crate) use config::TlsClientConfig;
+pub use config::{CertificateIdentity, CertificateTrust, PrivateKeyEncoding};
 
 use anyhow::Context;
 use openssl::ssl::Ssl;
 use openssl::ssl::SslContext;
+use openssl::x509::verify::X509CheckFlags;
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
 /// Establishes a TLS connection over an existing TCP connection.
 ///
-/// # Arguments
-///
-/// * `config` - The TLS client configuration.
-/// * `stream` - The underlying TCP connection.
-/// * `server_name` - The domain name or IP address for SNI, such as
-///   `server.example.com` or `192.168.1.1`.
+/// `peer_identity` is the expected DNS or IP subject alternative name.
+/// `sni_name` independently selects a DNS name for the `ClientHello`.
 ///
 /// # Errors
 ///
@@ -39,11 +32,26 @@ use tokio_openssl::SslStream;
 pub(crate) async fn connect_tls(
     context: &SslContext,
     stream: TcpStream,
-    server_name: &str,
+    peer_identity: &str,
+    sni_name: Option<&str>,
 ) -> anyhow::Result<SslStream<TcpStream>> {
     let mut ssl = Ssl::new(context).context("OpenSSL failed to allocate TLS SSL object")?;
-    ssl.set_hostname(server_name)
-        .with_context(|| format!("OpenSSL failed to set TLS SNI for {server_name}"))?;
+    ssl.param_mut()
+        .set_hostflags(X509CheckFlags::NO_PARTIAL_WILDCARDS | X509CheckFlags::NEVER_CHECK_SUBJECT);
+    match peer_identity.parse::<std::net::IpAddr>() {
+        Ok(address) => ssl
+            .param_mut()
+            .set_ip(address)
+            .context("OpenSSL failed to set TLS peer IP verification")?,
+        Err(_) => ssl
+            .param_mut()
+            .set_host(peer_identity)
+            .context("OpenSSL failed to set TLS peer DNS verification")?,
+    }
+    if let Some(name) = sni_name {
+        ssl.set_hostname(name)
+            .context("OpenSSL failed to set TLS SNI")?;
+    }
 
     let mut stream = SslStream::new(ssl, stream)
         .context("OpenSSL failed to attach the TLS SSL object to the TCP connection")?;

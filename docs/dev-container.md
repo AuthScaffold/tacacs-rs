@@ -111,6 +111,9 @@ It does not run the full Rust suite or fix existing warnings automatically.
 
 ## Validation and Limitations
 
+For independent TACACS+ peer testing without a container engine, use the [native server runbook](tacplus-interop.md).
+It also explains host-engine access options and named-volume path constraints.
+
 Local validation without a container engine:
 
 ```bash

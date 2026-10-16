@@ -3,7 +3,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 
-use tacacsrs_config::crypto_types::SymmetricKeyFormat;
+use tacacsrs_credential_resolution::SymmetricKeyFormat;
 use tacacsrs_config::parse_yang_json;
 use tacacsrs_credential_resolution::{
     CredentialResolver, ResolutionErrorKind, ResolutionPlan, ResolvedCredential,
@@ -65,7 +65,7 @@ fn epsk_plan(reference: &str) -> ResolutionPlan {
         }}"#
     );
     let config = parse_yang_json(&json).expect("central EPSK configuration");
-    ResolutionPlan::from_server(&config.server[0]).expect("resolution plan")
+    tacacsrs_config::prepare::resolution_plan(&config.server[0]).expect("resolution plan")
 }
 
 fn certificate_plan() -> ResolutionPlan {
@@ -90,7 +90,7 @@ fn certificate_plan() -> ResolutionPlan {
         }"#,
     )
     .expect("central certificate configuration");
-    ResolutionPlan::from_server(&config.server[0]).expect("resolution plan")
+    tacacsrs_config::prepare::resolution_plan(&config.server[0]).expect("resolution plan")
 }
 
 #[tokio::test]

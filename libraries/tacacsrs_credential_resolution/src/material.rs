@@ -2,10 +2,38 @@
 
 use std::fmt;
 
-use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
 use tacacsrs_secrets::SecretBytes;
 
 use crate::CredentialKind;
+
+/// Encoding of a provider's private key bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivateKeyFormat {
+    /// DER RSA private key defined by RFC 8017.
+    RsaPrivateKeyFormat,
+    /// DER EC private key defined by RFC 5915.
+    EcPrivateKeyFormat,
+    /// DER asymmetric key defined by RFC 5958.
+    OneAsymmetricKeyFormat,
+}
+
+/// Encoding of a provider's separate public key bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicKeyFormat {
+    /// SSH public key defined by RFC 4253.
+    SshPublicKeyFormat,
+    /// DER public key information defined by RFC 5280.
+    SubjectPublicKeyInfoFormat,
+}
+
+/// Encoding of a provider's symmetric key bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymmetricKeyFormat {
+    /// Raw key bytes.
+    OctetStringKeyFormat,
+    /// DER symmetric key defined by RFC 6031.
+    OneSymmetricKeyFormat,
+}
 
 /// Public certificate bytes with debug output that shows only the length.
 pub struct PublicBytes(Vec<u8>);
@@ -70,7 +98,7 @@ pub struct CertificateBagMaterial {
     pub certificates: Vec<NamedCertificateMaterial>,
 }
 
-/// Resolved symmetric key and its YANG key format metadata.
+/// Resolved symmetric key and its encoding metadata.
 #[derive(Debug)]
 pub struct SymmetricKeyMaterial {
     /// Symmetric key format, if the provider supplies it.
@@ -107,12 +135,10 @@ impl ResolvedCredential {
 
 #[cfg(test)]
 mod tests {
-    use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
-
     use super::*;
 
     #[test]
-    fn provider_material_preserves_generated_inline_metadata() {
+    fn provider_material_preserves_encoding_metadata() {
         let certificate = CertificateWithKeyMaterial {
             public_key_format: Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),
             public_key: Some(PublicBytes::new(b"public-key".to_vec())),

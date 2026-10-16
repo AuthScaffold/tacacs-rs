@@ -22,7 +22,7 @@ use self::reply_action::{ReplyAction, reply_action};
 use self::session::ProxyConversation;
 #[cfg(test)]
 use self::session_mapping::rewrite_session_id;
-use crate::config::{PolicyService, ProxyDownstreamObfuscation};
+use crate::config::{PolicyService, PreparedProxyPolicy};
 use crate::runtime::RequestGuard;
 use crate::upstream::OperationRouter;
 use crate::upstream::manager::UpstreamManager;
@@ -35,11 +35,6 @@ mod session;
 mod session_mapping;
 
 const SESSION_QUEUE_CAPACITY: usize = 8;
-/// Downstream reply queue depth for one proxy connection.
-///
-/// This matches the default concurrent request limit, so a full queue reflects
-/// real admission pressure instead of an unrelated bound.
-const REPLY_QUEUE_CAPACITY: usize = crate::config::DEFAULT_CONCURRENT_REQUEST_LIMIT;
 
 /// Maps raw TACACS+ proxy streams to managed server sessions.
 #[derive(Clone)]
@@ -69,7 +64,7 @@ impl UpstreamBridge {
         proxy_multiplexed_connection(
             stream,
             transport.read_timeout(),
-            downstream_obfuscation_key(transport.downstream_obfuscation()),
+            downstream_obfuscation_key(transport.downstream_obfuscation())?,
             Arc::new(UpstreamConversationProvider::new(router)),
         )
         .await
@@ -82,15 +77,11 @@ impl UpstreamBridge {
 }
 
 fn downstream_obfuscation_key(
-    downstream_obfuscation: &ProxyDownstreamObfuscation,
-) -> Option<Vec<u8>> {
-    match downstream_obfuscation {
-        ProxyDownstreamObfuscation::Unobfuscated => None,
-        ProxyDownstreamObfuscation::SharedSecret(shared_secret) => {
-            Some(shared_secret.expose_secret())
-        }
-    }
-    .map(|secret| secret.as_bytes().to_vec())
+    downstream_obfuscation: &PreparedProxyPolicy,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    Ok(downstream_obfuscation
+        .shared_secret()?
+        .map(|secret| secret.expose_secret().as_bytes().to_vec()))
 }
 
 async fn proxy_multiplexed_connection<Stream, Provider>(
@@ -105,7 +96,8 @@ where
 {
     let (reader, writer) = tokio::io::split(stream);
     let mut downstream = DownstreamReader::new(reader, timeout, obfuscation_key.clone());
-    let (reply_sender, reply_receiver) = mpsc::channel(REPLY_QUEUE_CAPACITY);
+    let (reply_sender, reply_receiver) =
+        mpsc::channel(crate::config::default_concurrent_request_limit());
     let mut writer_task =
         tokio::spawn(run_downstream_writer(writer, obfuscation_key.clone(), reply_receiver));
     let mut session_senders = HashMap::<u32, mpsc::Sender<SessionPacket>>::new();
@@ -541,16 +533,26 @@ mod tests {
 
     #[test]
     fn downstream_obfuscation_uses_no_key_for_unobfuscated_clients() {
-        assert_eq!(downstream_obfuscation_key(&ProxyDownstreamObfuscation::Unobfuscated), None);
+        assert_eq!(downstream_obfuscation_key(&PreparedProxyPolicy::unobfuscated()).unwrap(), None);
+        assert!(downstream_obfuscation_key(&PreparedProxyPolicy::unavailable()).is_err());
     }
 
     #[test]
     fn downstream_obfuscation_uses_configured_proxy_secret() {
+        let policy = tacacsrs_config::proxy_policy::prepare_proxy_policy(
+            &tacacsrs_config::tacacsrs::LocalServices {
+                tacacs_proxy_enabled: true,
+                proxy_credential_source: tacacsrs_config::tacacsrs::ProxyCredentialSource::Inline,
+                proxy_shared_secret: Some(tacacsrs_secrets::SecretString::new(
+                    "local-proxy-secret".to_owned(),
+                )),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
         assert_eq!(
-            downstream_obfuscation_key(&ProxyDownstreamObfuscation::SharedSecret(
-                tacacsrs_secrets::SecretString::new("local-proxy-secret".to_owned()),
-            ),)
-            .as_deref(),
+            downstream_obfuscation_key(&policy).unwrap().as_deref(),
             Some(b"local-proxy-secret".as_slice())
         );
     }

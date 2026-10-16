@@ -152,7 +152,7 @@ pub mod tacacs_plus {
     }
 
     /// Specifies the client identity using a certificate.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct ClientIdentityCertificate {
         /// A container to hold the local key definition.
@@ -280,7 +280,7 @@ pub mod tacacs_plus {
     /// authenticate TLS server certificates.
     /// A server certificate is authenticated if it has a valid
     /// chain of trust to a configured CA certificate.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct ServerAuthenticationCaCerts {
         /// A container for locally configured trust anchor
@@ -337,14 +337,15 @@ pub mod tacacs_plus {
         /// Indicates that a TLS client can authenticate TLS servers
         /// using configured EPSKs.
         #[serde(rename = "tls13-epsks")]
+        #[serde(deserialize_with = "crate::serde_helpers::deserialize_present_empty")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub tls13_epsks: Option<bool>,
+        pub tls13_epsks: Option<crate::YangEmpty>,
     }
 
     /// Identity credentials that a TLS client may present when
     /// establishing a connection to a TLS server.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct TlsClientClientIdentity {
         /// Specifies the client credentials reference.
@@ -376,7 +377,7 @@ pub mod tacacs_plus {
     }
 
     /// Specifies how a TLS client can authenticate TLS servers.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct TlsClientServerAuthentication {
         /// Specifies the server credentials reference.
@@ -404,9 +405,10 @@ pub mod tacacs_plus {
         /// Indicates that a TLS client can authenticate TLS servers
         /// using configured EPSKs.
         #[serde(rename = "tls13-epsks")]
+        #[serde(deserialize_with = "crate::serde_helpers::deserialize_present_empty")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub tls13_epsks: Option<bool>,
+        pub tls13_epsks: Option<crate::YangEmpty>,
     }
 
     /// Choice constraints for [`TlsClientServerAuthentication`].
@@ -541,7 +543,7 @@ pub mod tacacs_plus {
     }
 
     /// Container for TACACS+ configurations and operations.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct TacacsPlus {
         /// Identity credentials that a TLS client may present
@@ -572,7 +574,7 @@ pub mod keystore {
     use super::crypto_types;
 
     /// A container to hold the local key definition.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct EndEntityCertWithKeyInlineDefinition {
         /// Identifies the public key's format.  Implementations SHOULD
@@ -627,7 +629,7 @@ pub mod keystore {
 
     /// A reference to a specific certificate associated with
     /// an asymmetric key stored in the central keystore.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct EndEntityCertWithKeyCentralKeystoreReference {
         /// A reference to an asymmetric key in the keystore.
@@ -643,7 +645,7 @@ pub mod keystore {
     }
 
     /// A container to hold the local key definition.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct SymmetricKeyInlineDefinition {
         /// Identifies the symmetric key's format.  Implementations
@@ -932,6 +934,8 @@ pub mod crypto_types {
 
 /// Types from `tacacsrs`.
 pub mod tacacsrs {
+    use serde::{Deserialize, Serialize};
+
     /// TLS 1.3 supported groups that tacacs-rs may use for
     /// psk_dhe_ke ClientHello key share generation.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1043,6 +1047,304 @@ pub mod tacacsrs {
         }
     }
 
+    /// Failover behavior for a local TACACS+ service.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FailoverStrategy {
+        /// Record a failed attempt and let the next request select the next server.
+        DeferredFailover,
+        /// Try the next eligible server during the current request when replay is safe.
+        OrderedSafeRetry,
+    }
+
+    impl FailoverStrategy {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::DeferredFailover,
+            Self::OrderedSafeRetry,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "deferred-failover",
+            "ordered-safe-retry",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::DeferredFailover => "deferred-failover",
+                Self::OrderedSafeRetry => "ordered-safe-retry",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "deferred-failover" => Some(Self::DeferredFailover),
+                "ordered-safe-retry" => Some(Self::OrderedSafeRetry),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for FailoverStrategy {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for FailoverStrategy {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
+    /// Authoritative source of downstream proxy obfuscation credentials.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ProxyCredentialSource {
+        /// Require unobfuscated downstream packets.
+        Unobfuscated,
+        /// Use the configured proxy shared secret.
+        Inline,
+        /// Use the highest-priority upstream row matching the local proxy endpoint.
+        /// A missing row or missing secret rejects the candidate configuration.
+        LocalProxyRow,
+    }
+
+    impl ProxyCredentialSource {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::Unobfuscated,
+            Self::Inline,
+            Self::LocalProxyRow,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "unobfuscated",
+            "inline",
+            "local-proxy-row",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::Unobfuscated => "unobfuscated",
+                Self::Inline => "inline",
+                Self::LocalProxyRow => "local-proxy-row",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "unobfuscated" => Some(Self::Unobfuscated),
+                "inline" => Some(Self::Inline),
+                "local-proxy-row" => Some(Self::LocalProxyRow),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for ProxyCredentialSource {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for ProxyCredentialSource {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
+    fn default_local_services_client_api_enabled() -> bool { true }
+    fn default_local_services_client_api_endpoint() -> String { "/run/tacacs/tacacs.sock".to_owned() }
+    fn default_local_services_unix_socket_mode() -> u16 { 432 }
+    fn default_local_services_proxy_credential_source() -> ProxyCredentialSource { ProxyCredentialSource::Unobfuscated }
+
+    /// Startup listener configuration. Changes require a service restart.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct LocalServices {
+        /// Enables the local client API.
+        #[serde(rename = "client-api-enabled")]
+        #[serde(default = "default_local_services_client_api_enabled")]
+        pub client_api_enabled: bool,
+        /// Absolute Unix socket path for the client API.
+        #[serde(rename = "client-api-endpoint")]
+        #[serde(default = "default_local_services_client_api_endpoint")]
+        pub client_api_endpoint: String,
+        /// Enables the raw TACACS+ proxy.
+        #[serde(rename = "tacacs-proxy-enabled")]
+        #[serde(default)]
+        pub tacacs_proxy_enabled: bool,
+        /// Absolute Unix socket path or numeric IP socket address for the proxy.
+        /// IPv6 addresses use brackets. TCP port zero requests an ephemeral port.
+        #[serde(rename = "tacacs-proxy-endpoint")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub tacacs_proxy_endpoint: Option<String>,
+        /// Unix socket permission bits as a decimal integer. The default is octal 660.
+        #[serde(rename = "unix-socket-mode")]
+        #[serde(default = "default_local_services_unix_socket_mode")]
+        pub unix_socket_mode: u16,
+        /// Selects downstream credentials independently of loop prevention.
+        #[serde(rename = "proxy-credential-source")]
+        #[serde(default = "default_local_services_proxy_credential_source")]
+        pub proxy_credential_source: ProxyCredentialSource,
+        /// Downstream shared secret for the inline credential source.
+        #[serde(rename = "proxy-shared-secret")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub proxy_shared_secret: Option<tacacsrs_secrets::SecretString>,
+    }
+
+    impl Default for LocalServices {
+        fn default() -> Self {
+            Self {
+                client_api_enabled: default_local_services_client_api_enabled(),
+                client_api_endpoint: default_local_services_client_api_endpoint(),
+                tacacs_proxy_enabled: Default::default(),
+                tacacs_proxy_endpoint: None,
+                unix_socket_mode: default_local_services_unix_socket_mode(),
+                proxy_credential_source: default_local_services_proxy_credential_source(),
+                proxy_shared_secret: None,
+            }
+        }
+    }
+
+    fn default_authentication_max_body_length() -> u32 { 4096 }
+    fn default_authentication_max_concurrent_requests() -> u32 { 64 }
+
+    /// Shared authentication admission limits.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct Authentication {
+        /// Maximum encoded TACACS+ request body length.
+        #[serde(rename = "max-body-length")]
+        #[serde(default = "default_authentication_max_body_length")]
+        pub max_body_length: u32,
+        /// Maximum concurrent requests for one operation.
+        #[serde(rename = "max-concurrent-requests")]
+        #[serde(default = "default_authentication_max_concurrent_requests")]
+        pub max_concurrent_requests: u32,
+    }
+
+    impl Default for Authentication {
+        fn default() -> Self {
+            Self {
+                max_body_length: default_authentication_max_body_length(),
+                max_concurrent_requests: default_authentication_max_concurrent_requests(),
+            }
+        }
+    }
+
+    fn default_authorization_max_body_length() -> u32 { 16384 }
+    fn default_authorization_max_concurrent_requests() -> u32 { 64 }
+
+    /// Shared authorization admission limits.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct Authorization {
+        /// Maximum encoded TACACS+ request body length.
+        #[serde(rename = "max-body-length")]
+        #[serde(default = "default_authorization_max_body_length")]
+        pub max_body_length: u32,
+        /// Maximum concurrent requests for one operation.
+        #[serde(rename = "max-concurrent-requests")]
+        #[serde(default = "default_authorization_max_concurrent_requests")]
+        pub max_concurrent_requests: u32,
+    }
+
+    impl Default for Authorization {
+        fn default() -> Self {
+            Self {
+                max_body_length: default_authorization_max_body_length(),
+                max_concurrent_requests: default_authorization_max_concurrent_requests(),
+            }
+        }
+    }
+
+    fn default_runtime_policy_failover_recovery_interval_seconds() -> u32 { 30 }
+    fn default_runtime_policy_client_api_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
+    fn default_runtime_policy_tacacs_proxy_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
+
+    /// Failover and admission controls for local client API and proxy services.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct RuntimePolicy {
+        /// Interval before a failed route receives one recovery trial.
+        #[serde(rename = "failover-recovery-interval-seconds")]
+        #[serde(default = "default_runtime_policy_failover_recovery_interval_seconds")]
+        pub failover_recovery_interval_seconds: u32,
+        /// Failover policy for requests received through the local client API.
+        #[serde(rename = "client-api-failover-strategy")]
+        #[serde(default = "default_runtime_policy_client_api_failover_strategy")]
+        pub client_api_failover_strategy: FailoverStrategy,
+        /// Failover policy for initial requests received through the TACACS+ proxy.
+        #[serde(rename = "tacacs-proxy-failover-strategy")]
+        #[serde(default = "default_runtime_policy_tacacs_proxy_failover_strategy")]
+        pub tacacs_proxy_failover_strategy: FailoverStrategy,
+        /// Shared authentication admission limits.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub authentication: Option<Authentication>,
+        /// Shared authorization admission limits.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub authorization: Option<Authorization>,
+        /// Shared accounting admission limits.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub accounting: Option<Authorization>,
+    }
+
+    impl Default for RuntimePolicy {
+        fn default() -> Self {
+            Self {
+                failover_recovery_interval_seconds: default_runtime_policy_failover_recovery_interval_seconds(),
+                client_api_failover_strategy: default_runtime_policy_client_api_failover_strategy(),
+                tacacs_proxy_failover_strategy: default_runtime_policy_tacacs_proxy_failover_strategy(),
+                authentication: None,
+                authorization: None,
+                accounting: None,
+            }
+        }
+    }
+
 }
 
 /// Types from `ietf-truststore`.
@@ -1063,7 +1365,7 @@ pub mod truststore {
 
     /// A container for locally configured trust anchor
     /// certificates.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct CertsInlineDefinition {
         /// A trust anchor certificate or chain of certificates.

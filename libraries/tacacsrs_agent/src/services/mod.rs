@@ -4,8 +4,6 @@
 //! [`crate::runtime::TacacsClientService`]. The boundaries are the local client
 //! API and the raw TACACS+ proxy.
 
-use crate::config::ServiceConfig;
-
 pub(crate) mod client_api;
 pub(crate) mod tacacs_proxy;
 
@@ -16,10 +14,8 @@ pub(crate) struct ListenerOptions {
 }
 
 impl ListenerOptions {
-    pub(crate) fn from_config(config: &ServiceConfig) -> Self {
-        Self {
-            socket_mode: config.socket_mode,
-        }
+    pub(crate) const fn new(socket_mode: u32) -> Self {
+        Self { socket_mode }
     }
 
     pub(crate) fn socket_mode(self) -> u32 {
