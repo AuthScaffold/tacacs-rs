@@ -39,7 +39,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
-use tacacsrs_agent_client::IpcEndpoint;
+use tacacsrs_ipc::IpcEndpoint;
 
 use allowlist::Allowlist;
 use cli::Cli;

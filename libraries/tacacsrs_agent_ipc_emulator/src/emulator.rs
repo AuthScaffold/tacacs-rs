@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
-use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgentServer;
-use tacacsrs_agent_client::IpcEndpoint;
+use tacacsrs_ipc::ipc::tacacs_agent_server::TacacsAgentServer;
+use tacacsrs_ipc::IpcEndpoint;
 use tokio::sync::{oneshot, Mutex};
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_stream::wrappers::TcpListenerStream;

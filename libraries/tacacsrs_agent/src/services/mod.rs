@@ -6,13 +6,13 @@
 
 pub(crate) mod client_api;
 pub(crate) mod tacacs_proxy;
+pub(crate) mod unix_socket;
 
-/// Platform-specific listener settings shared by runtime services.
+/// Platform-specific listener settings for the raw TACACS+ proxy.
 #[derive(Clone, Copy)]
 pub(crate) struct ListenerOptions {
     socket_mode: u32,
     pub(crate) max_connections: usize,
-    pub(crate) max_client_api_streams: u32,
     pub(crate) connection_lifetime: std::time::Duration,
 }
 
@@ -21,7 +21,6 @@ impl ListenerOptions {
         Self {
             socket_mode: prepared.unix_socket_mode(),
             max_connections: prepared.max_connections(),
-            max_client_api_streams: prepared.max_client_api_streams(),
             connection_lifetime: prepared.connection_lifetime(),
         }
     }

@@ -19,7 +19,7 @@ use anyhow::bail;
 use anyhow::Context;
 use clap::Parser;
 #[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
 use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
 use tacacsrs_config::prepare::PrepareOptions;
 
@@ -61,7 +61,7 @@ async fn execute_command(command: &Command, connection: &Connection) -> anyhow::
             cmd,
             cmd_args,
         } => {
-            send_accounting_request(
+            let response = send_accounting_request(
                 connection,
                 &args.user,
                 &args.port,
@@ -70,6 +70,7 @@ async fn execute_command(command: &Command, connection: &Connection) -> anyhow::
                 cmd_args.as_ref(),
             )
             .await?;
+            println!("Received accounting response: {response:#?}");
         }
 
         Command::Authentication {

@@ -20,7 +20,9 @@
 // 4. Read the AccountingReply oneof:
 //      - "response" when the server returns a protocol reply.
 //      - "error" when a service error occurs. The error contains a readable
-//        message and a retriable flag. This flag tells the caller whether it can retry.
+//        message and failure facts. The facts describe the cause, the phase,
+//        and whether the operation can have reached a server. The service
+//        derives retry advice from the facts.
 //
 // ## Versioning
 //
@@ -57,7 +59,8 @@ service TacacsAgent {
   // flags. The service returns the reply in an AccountingReply envelope.
   //
   // If a server error occurs, the service advances failover for later requests.
-  // It returns a ServiceError with retriable=true for the current request.
+  // It returns a ServiceError whose facts describe the failure. An unsent
+  // operation can recommend a later retry. An unknown delivery outcome does not.
   rpc Accounting(AccountingRequest) returns (AccountingReply);
 
   // Authorizes a shell command that a local session wrapper observed.
@@ -170,11 +173,89 @@ message AccountingResponse {
   string data = 4;
 }
 
+// The known cause of a service failure.
+//
+// UNSPECIFIED is the protobuf zero-value sentinel. The service does not set it.
+// A client rejects a message that leaves this field unset.
+enum FailureCategory {
+  FAILURE_CATEGORY_UNSPECIFIED = 0;
+  // The available error does not establish a more specific cause.
+  FAILURE_CATEGORY_UNCLASSIFIED = 1;
+  // The local request is invalid.
+  FAILURE_CATEGORY_INVALID_REQUEST = 2;
+  // No usable configured endpoint or service is available.
+  FAILURE_CATEGORY_UNAVAILABLE = 3;
+  // The operation exceeds the current capacity limit.
+  FAILURE_CATEGORY_OVERLOADED = 4;
+  // The operation exhausted its deadline.
+  FAILURE_CATEGORY_DEADLINE = 5;
+  // Upstream transport or exchange execution failed.
+  FAILURE_CATEGORY_TRANSPORT = 6;
+  // A received message violates the protocol contract.
+  FAILURE_CATEGORY_PROTOCOL = 7;
+  // The caller or host cancelled the operation.
+  FAILURE_CATEGORY_CANCELLED = 8;
+  // An internal service failure prevents completion.
+  FAILURE_CATEGORY_INTERNAL = 9;
+}
+
+// The boundary at which a failure became known.
+//
+// UNSPECIFIED is the protobuf zero-value sentinel. The service does not set it.
+// A client rejects a message that leaves this field unset. UNKNOWN is a real
+// value for a failure with no known phase.
+enum FailurePhase {
+  FAILURE_PHASE_UNSPECIFIED = 0;
+  // The available error does not establish a phase.
+  FAILURE_PHASE_UNKNOWN = 1;
+  // Local request validation or encoding.
+  FAILURE_PHASE_VALIDATION = 2;
+  // Admission to the bounded operation queue.
+  FAILURE_PHASE_ADMISSION = 3;
+  // Endpoint selection or binding before operation transmission.
+  FAILURE_PHASE_ROUTING = 4;
+  // Upstream setup, transmission, or reply processing.
+  FAILURE_PHASE_UPSTREAM = 5;
+  // Local IPC connection or RPC execution.
+  FAILURE_PHASE_IPC = 6;
+}
+
+// Whether the failed operation can have executed remotely.
+//
+// UNSPECIFIED is the protobuf zero-value sentinel. The service does not set it.
+// A client rejects a message that leaves this field unset.
+enum DeliveryState {
+  DELIVERY_STATE_UNSPECIFIED = 0;
+  // The operation did not reach its upstream transport.
+  DELIVERY_STATE_NOT_SENT = 1;
+  // Remote execution is possible and no valid reply establishes the outcome.
+  DELIVERY_STATE_OUTCOME_UNKNOWN = 2;
+}
+
+// Advice for a later independent request, not an instruction to replay now.
+//
+// The service derives this value from the failure facts. A client recomputes the
+// advice and rejects a message whose advice is inconsistent with its facts.
+// UNSPECIFIED is the protobuf zero-value sentinel. A client rejects it.
+enum RetryAdvice {
+  RETRY_ADVICE_UNSPECIFIED = 0;
+  // Do not replay this operation automatically.
+  RETRY_ADVICE_NEVER = 1;
+  // The operation was not sent and a later request can succeed after recovery.
+  RETRY_ADVICE_AFTER_RECOVERY = 2;
+}
+
 // A structured error that the service returns when it cannot complete a request.
 //
-// AccountingReply.error contains this message. The retriable flag tells a
-// client whether it can retry the same request.
+// A reply oneof sets this message instead of a response. The error carries
+// failure facts: the cause category, the phase where the failure became known,
+// and the delivery state of the operation. The service derives retry advice from
+// these facts. An unknown delivery outcome never permits automatic replay.
 message ServiceError {
+  // Tag 3 was a boolean retriable flag. Facts and derived advice replace it.
+  reserved 3;
+  reserved "retriable";
+
   // A readable error description for logs and diagnostics.
   // Examples: "No responsive TACACS+ servers are currently available",
   //           "connection reset by peer".
@@ -184,10 +265,25 @@ message ServiceError {
   // An empty string means that the service did not select a server.
   string server = 2;
 
-  // This flag tells the caller whether it can retry the request.
-  // true  — A retry can succeed after failover or recovery.
-  // false — The error is permanent for this request, for example, bad input.
-  bool retriable = 3;
+  // The known cause of the failure. The service sets a specific category.
+  FailureCategory category = 4;
+
+  // The boundary at which the failure became known.
+  FailurePhase phase = 5;
+
+  // Whether the operation can have executed remotely.
+  DeliveryState delivery = 6;
+
+  // Retry advice derived from the facts. A client validates this value.
+  RetryAdvice retry_advice = 7;
+
+  // The routing generation captured before admission, scoped to the running
+  // service instance. Absent when the service did not capture one.
+  optional uint64 runtime_generation = 8;
+
+  // The one-based upstream attempt number within the captured request. Absent
+  // when no upstream attempt occurred. A present zero value is invalid.
+  optional uint32 attempt = 9;
 }
 
 // Reply envelope for the Accounting RPC.
@@ -199,7 +295,8 @@ message AccountingReply {
     // The service sets this field for a protocol reply from the server.
     AccountingResponse response = 1;
 
-    // The service sets this field when an error occurs. It contains retry information.
+    // The service sets this field when an error occurs. It carries failure facts
+    // and derived retry advice.
     ServiceError error = 2;
   }
 }

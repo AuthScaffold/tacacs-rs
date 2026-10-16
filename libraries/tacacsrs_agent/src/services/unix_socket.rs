@@ -1,73 +1,17 @@
-//! Unix domain socket IPC listener.
+//! Unix domain socket preparation for agent-owned listeners.
+//!
+//! This module binds a Unix domain socket, removes only a stale unowned socket,
+//! holds an exclusive advisory lock, and cleans up an owned socket path. The raw
+//! TACACS+ proxy uses it. The local client API listener owns an equivalent
+//! implementation in the IPC crate; the agent does not depend on that crate.
 
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use rustix::fs::{FlockOperation, flock};
-use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgentServer;
-use tokio::sync::watch;
-use super::incoming::LimitedIncoming;
-use crate::services::ListenerOptions;
 
-use crate::runtime::{ListenerRegistration, RuntimeHealthSnapshot, ShutdownReceiver};
-use crate::services::client_api::health::StandardHealth;
-use crate::services::client_api::ClientApiService;
-
-/// Allows protobuf framing overhead while rejecting multi-megabyte envelopes.
-const MAX_IPC_MESSAGE_BYTES: usize =
-    2 * tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH as usize;
-
-/// Runs the Unix domain socket IPC listener until shutdown starts.
-///
-/// After a shutdown signal, the gRPC server stops accepting requests. It waits
-/// for active RPC handlers to finish and then removes the socket path.
-pub(crate) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
-    path: &Path,
-    service: ClientApiService<Connector>,
-    options: ListenerOptions,
-    shutdown: ShutdownReceiver,
-    registration: ListenerRegistration,
-    health: watch::Receiver<RuntimeHealthSnapshot>,
-) -> anyhow::Result<()>
-where
-    Connector::Connection: crate::upstream::UpstreamConnection,
-{
-    let (listener, socket_guard) = prepare_unix_listener(path, options.socket_mode()).await?;
-    let incoming =
-        LimitedIncoming::new(listener, options.max_connections, options.connection_lifetime);
-    let _transports = incoming.close_guard();
-    let (standard_health, health_service) = StandardHealth::new(health).await;
-    let health_task = standard_health.run(shutdown.clone());
-    tokio::pin!(health_task);
-    registration.mark_bound();
-
-    log::info!("The IPC listener accepts clients on Unix domain socket {}", path.display());
-
-    let server = tonic::transport::Server::builder();
-    let serving = server
-        .max_concurrent_streams(Some(options.max_client_api_streams))
-        .concurrency_limit_per_connection(options.max_client_api_streams as usize)
-        .timeout(options.connection_lifetime)
-        .add_service(
-            TacacsAgentServer::new(service.grpc_service())
-                .max_decoding_message_size(MAX_IPC_MESSAGE_BYTES)
-                .max_encoding_message_size(MAX_IPC_MESSAGE_BYTES),
-        )
-        .add_service(health_service)
-        .serve_with_incoming_shutdown(incoming, shutdown.wait());
-    tokio::pin!(serving);
-    tokio::select! {
-        result = &mut serving => { result.with_context(|| format!("Unix IPC server {} failed", path.display()))?; }
-        () = &mut health_task => { serving.await.with_context(|| format!("Unix IPC server {} failed", path.display()))?; }
-    }
-
-    log::info!("Received a shutdown signal; draining active IPC requests");
-    service.wait_for_active_requests().await;
-    socket_guard.cleanup("Unix domain socket").await?;
-    Ok(())
-}
-
+/// Guards an owned Unix domain socket path and removes it on cleanup or drop.
 #[derive(Debug)]
 pub(crate) struct UnixSocketCleanupGuard {
     path: PathBuf,
@@ -161,6 +105,9 @@ impl Drop for UnixSocketCleanupGuard {
 /// lock prevents cooperating service instances from using the same path at the
 /// same time. This function removes only a stale Unix domain socket. It does not
 /// remove regular files, directories, symbolic links, or devices.
+///
+/// # Errors
+/// Returns an error if the directory, lock, socket path, or bind fails.
 pub(crate) async fn prepare_unix_listener(
     path: &Path,
     socket_mode: u32,
@@ -197,9 +144,6 @@ fn instance_lock_path(path: &Path) -> PathBuf {
 }
 
 /// Takes the exclusive advisory lock for `path`.
-///
-/// The caller holds the returned file for the listener lifetime. Dropping the
-/// file or stopping the process releases the lock.
 fn acquire_instance_lock(path: &Path) -> anyhow::Result<std::fs::File> {
     let lock_path = instance_lock_path(path);
     let lock = std::fs::OpenOptions::new()
@@ -223,9 +167,6 @@ fn acquire_instance_lock(path: &Path) -> anyhow::Result<std::fs::File> {
 }
 
 /// Removes a stale, unowned Unix domain socket at `path`.
-///
-/// The caller must hold the instance lock. This function does not remove other
-/// file types.
 async fn reconcile_existing_socket_path(path: &Path) -> anyhow::Result<()> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -252,15 +193,10 @@ async fn reconcile_existing_socket_path(path: &Path) -> anyhow::Result<()> {
                 std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
             ) =>
         {
-            log::info!(
-                "Removing stale Unix domain socket {}",
-                path.display()
-            );
-            tokio::fs::remove_file(path)
-                .await
-                .with_context(|| {
-                    format!("Failed to remove stale Unix domain socket {}", path.display())
-                })
+            log::info!("Removing stale Unix domain socket {}", path.display());
+            tokio::fs::remove_file(path).await.with_context(|| {
+                format!("Failed to remove stale Unix domain socket {}", path.display())
+            })
         }
         Err(error) => Err(error).with_context(|| {
             format!(
@@ -316,7 +252,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or file-system I/O.
     async fn rejects_active_socket_path() {
-        let path = test_socket_path("tacacs-active-socket");
+        let path = test_socket_path("proxy-active-socket");
         let existing = tokio::net::UnixListener::bind(&path).unwrap();
 
         let error = prepare_unix_listener(&path, 0o660).await.unwrap_err();
@@ -327,64 +263,10 @@ mod tests {
         cleanup_paths(&path).await;
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn listener_guard_closes_retained_ipc_transports_on_cancellation() {
-        use std::time::Duration;
-        use tokio::io::AsyncReadExt;
-        use tokio_stream::StreamExt;
-        use super::LimitedIncoming;
-
-        let path = test_socket_path("cancelled-ipc");
-        let listener = tokio::net::UnixListener::bind(&path).unwrap();
-        let mut incoming = LimitedIncoming::new(listener, 1, Duration::from_secs(300));
-        let guard = incoming.close_guard();
-        let mut peer = tokio::net::UnixStream::connect(&path).await.unwrap();
-        let mut transport = incoming.next().await.unwrap().unwrap();
-        drop(guard);
-        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
-        assert_eq!(
-            transport.read(&mut [0; 1]).await.unwrap_err().kind(),
-            std::io::ErrorKind::ConnectionAborted
-        );
-        cleanup_paths(&path).await;
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn incoming_bounds_connections_and_expires_read_and_write() {
-        use std::future::Future;
-        use std::time::Duration;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio_stream::StreamExt;
-        use super::LimitedIncoming;
-
-        let path = test_socket_path("limited-ipc");
-        let listener = tokio::net::UnixListener::bind(&path).unwrap();
-        let mut incoming = LimitedIncoming::new(listener, 1, Duration::from_secs(1));
-        let _first_peer = tokio::net::UnixStream::connect(&path).await.unwrap();
-        let mut first = incoming.next().await.unwrap().unwrap();
-        let _second_peer = tokio::net::UnixStream::connect(&path).await.unwrap();
-        let next = incoming.next();
-        tokio::pin!(next);
-        std::future::poll_fn(|context| {
-            assert!(next.as_mut().poll(context).is_pending());
-            std::task::Poll::Ready(())
-        })
-        .await;
-        tokio::time::advance(Duration::from_secs(1)).await;
-        assert_eq!(first.read(&mut [0; 1]).await.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
-        assert_eq!(
-            first.write_all(b"reply").await.unwrap_err().kind(),
-            std::io::ErrorKind::TimedOut
-        );
-        drop(first);
-        next.await.unwrap().unwrap();
-        cleanup_paths(&path).await;
-    }
-
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or file-system I/O.
     async fn replaces_stale_socket_and_cleanup_removes_it() {
-        let path = test_socket_path("tacacs-stale-socket");
+        let path = test_socket_path("proxy-stale-socket");
         let stale = tokio::net::UnixListener::bind(&path).unwrap();
         drop(stale);
 
@@ -400,7 +282,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Miri does not support file-system I/O.
     async fn refuses_to_remove_regular_file() {
-        let path = test_socket_path("tacacs-regular-file");
+        let path = test_socket_path("proxy-regular-file");
         tokio::fs::write(&path, b"not a socket").await.unwrap();
 
         let error = prepare_unix_listener(&path, 0o660).await.unwrap_err();
@@ -411,29 +293,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // Miri does not support file-system I/O.
-    async fn refuses_to_remove_symlink() {
-        let path = test_socket_path("tacacs-symlink");
-        let target = test_socket_path("tacacs-symlink-target");
-        tokio::fs::write(&target, b"target").await.unwrap();
-        std::os::unix::fs::symlink(&target, &path).unwrap();
-
-        let error = prepare_unix_listener(&path, 0o660).await.unwrap_err();
-
-        assert!(error.to_string().contains("not a Unix domain socket"));
-        assert!(std::fs::symlink_metadata(&path)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert!(tokio::fs::try_exists(&target).await.unwrap());
-        cleanup_paths(&path).await;
-        cleanup_paths(&target).await;
-    }
-
-    #[tokio::test]
     #[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or file-system I/O.
     async fn two_concurrent_starters_only_one_binds() {
-        let path = test_socket_path("tacacs-concurrent");
+        let path = test_socket_path("proxy-concurrent");
 
         let (listener, guard) = prepare_unix_listener(&path, 0o660).await.unwrap();
 
@@ -446,27 +308,5 @@ mod tests {
         drop(listener);
         drop(guard);
         cleanup_paths(&path).await;
-    }
-
-    #[tokio::test]
-    #[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or file-system I/O.
-    async fn cleanup_leaves_successor_socket_untouched() {
-        let path = test_socket_path("tacacs-successor");
-        let moved = test_socket_path("tacacs-successor-moved");
-
-        let (listener, guard) = prepare_unix_listener(&path, 0o660).await.unwrap();
-        // Move this socket to keep its inode allocated. The replacement at the
-        // original path then has a different inode.
-        tokio::fs::rename(&path, &moved).await.unwrap();
-        let successor = tokio::net::UnixListener::bind(&path).unwrap();
-
-        // The old guard must not remove the replacement, which has a different inode.
-        guard.cleanup("Unix domain socket").await.unwrap();
-        assert!(is_socket(&path));
-
-        drop(listener);
-        drop(successor);
-        cleanup_paths(&path).await;
-        cleanup_paths(&moved).await;
     }
 }

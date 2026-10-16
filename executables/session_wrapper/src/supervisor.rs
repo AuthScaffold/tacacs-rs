@@ -92,7 +92,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use libseccomp::{ScmpFd, ScmpNotifReq, ScmpNotifResp, ScmpNotifRespFlags, notify_id_valid};
-use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
 use tacacsrs_protocol::operations::{AuthorizationOperation, AuthorizationOperationResponse};
 #[cfg(test)]
 use tacacsrs_protocol::operations::{AuthorizationArg, AuthorizationResponseStatus};
@@ -914,6 +914,13 @@ async fn dispatch_loop(
 mod tests {
     use super::*;
 
+    mod conformance {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../libraries/tacacsrs_protocol/test_support/authorization.rs"
+        ));
+    }
+
     fn authorization_response(
         status: AuthorizationResponseStatus,
         args: Vec<AuthorizationArg>,
@@ -928,27 +935,15 @@ mod tests {
     }
 
     #[test]
-    fn pass_add_with_only_optional_response_args_is_allowed() {
-        let response = authorization_response(
-            AuthorizationResponseStatus::PassAdd,
-            vec![AuthorizationArg::optional("priv-lvl", "15")],
-        );
-
-        let decision = map_authorization_response(&response, "/bin/echo");
-
-        assert!(matches!(decision, AuthDecision::Allow));
-    }
-
-    #[test]
-    fn pass_repl_with_only_optional_replacement_args_is_allowed() {
-        let response = authorization_response(
-            AuthorizationResponseStatus::PassRepl,
-            vec![AuthorizationArg::optional("cmd-arg", "ignored")],
-        );
-
-        let decision = map_authorization_response(&response, "/bin/echo");
-
-        assert!(matches!(decision, AuthDecision::Allow));
+    fn shared_unchanged_execution_conformance() {
+        for (name, response, allowed) in conformance::unchanged_execution_cases() {
+            let decision = map_authorization_response(&response, "/bin/echo");
+            assert_eq!(matches!(decision, AuthDecision::Allow), allowed, "{name}");
+            if let AuthDecision::Deny(deny) = decision {
+                assert_eq!(deny.source, DenySource::AuthorizationDenied, "{name}");
+                assert_eq!(deny.fail_policy, None, "{name}");
+            }
+        }
     }
 
     #[test]

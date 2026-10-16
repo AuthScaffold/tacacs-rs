@@ -21,21 +21,21 @@
 //! 4. Current and historical upstream resources close and join using that deadline.
 //! 5. Owned Unix socket paths are removed before stopped state is published.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures_util::FutureExt;
-use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
 use tacacsrs_config::local_services::{prepare_local_services, PreparedLocalServices, ListenerEndpoint};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 use super::{
-    RequestTracker, RuntimeHealthPublisher, ShutdownCoordinator, enumerate_supported_servers,
-    ProxyLoopGuard,
+    RequestTracker, RuntimeHealthPublisher, RuntimeListenerService, ShutdownCoordinator,
+    enumerate_supported_servers, ProxyLoopGuard,
 };
 use crate::config::{PreparedProxyPolicy, RuntimePolicy, ServiceConfig};
-use crate::services::client_api::ClientApiService;
+use crate::services::client_api::{ClientApiHandle, UpstreamBridge};
 use crate::services::tacacs_proxy::TacacsProxyService;
 use crate::services::ListenerOptions;
 use crate::upstream::NetworkUpstreamConnector;
@@ -46,6 +46,23 @@ use crate::upstream::manager::UpstreamManager;
 #[cfg(test)]
 use crate::upstream::manager::ServiceConnector;
 use tacacsrs_networking::routed::EndpointConnector;
+
+/// Prepared settings for a host-composed runtime listener.
+///
+/// A host maps these transport-neutral values into its own listener options,
+/// for example the IPC listener options. The agent runtime does not own the IPC
+/// transport or protobuf schema.
+#[derive(Debug, Clone, Copy)]
+pub struct ListenerSettings {
+    /// Unix socket file permission bits.
+    pub socket_mode: u32,
+    /// Maximum number of simultaneously accepted connections.
+    pub max_connections: usize,
+    /// Maximum number of concurrent client API streams per connection.
+    pub max_client_api_streams: u32,
+    /// Maximum lifetime of one accepted connection.
+    pub connection_lifetime: std::time::Duration,
+}
 
 /// Long-lived local TACACS+ client service.
 ///
@@ -254,15 +271,50 @@ impl TacacsClientService {
         self.runtime.server_count()
     }
 
+    /// Returns a cloneable handle for local client API operations.
+    ///
+    /// A host adapts this handle to an IPC server. The handle shares the runtime
+    /// upstream manager and routes each operation through the active generation.
+    #[must_use]
+    pub fn client_api_handle(&self) -> ClientApiHandle {
+        ClientApiHandle::new(UpstreamBridge::new(Arc::clone(&self.runtime.state)))
+    }
+
+    /// Returns the prepared client API Unix socket path, if client API is enabled.
+    ///
+    /// A host composes its client API listener on this path. The agent runtime
+    /// does not own the IPC transport.
+    #[must_use]
+    pub fn client_api_socket_path(&self) -> Option<PathBuf> {
+        self.runtime.listeners.client_api().map(Path::to_path_buf)
+    }
+
+    /// Returns the prepared listener settings for a host-composed client API listener.
+    #[must_use]
+    pub fn client_api_listener_settings(&self) -> ListenerSettings {
+        let prepared = &self.runtime.listeners;
+        ListenerSettings {
+            socket_mode: prepared.unix_socket_mode(),
+            max_connections: prepared.max_connections(),
+            max_client_api_streams: prepared.max_client_api_streams(),
+            connection_lifetime: prepared.connection_lifetime(),
+        }
+    }
+
     /// Serves until an embedding host requests shutdown, without installing signals.
+    ///
+    /// The host injects composed listener services, for example the local client
+    /// API over IPC. The agent runtime drives each injected listener, the raw
+    /// TACACS+ proxy, graceful drain, and upstream retirement under one deadline.
     ///
     /// # Errors
     /// Returns a listener or shutdown error after cleanup.
     pub async fn serve_until(
         &self,
         stop: impl std::future::Future<Output = ()> + Send,
+        listeners: Vec<Box<dyn RuntimeListenerService>>,
     ) -> anyhow::Result<()> {
-        self.runtime.serve_until(stop).await
+        self.runtime.serve_until(stop, listeners).await
     }
 
     /// Closes upstream resources without starting listeners.
@@ -545,11 +597,13 @@ where
     pub async fn serve_until(
         &self,
         stop: impl std::future::Future<Output = ()> + Send,
+        listeners: Vec<Box<dyn RuntimeListenerService>>,
     ) -> anyhow::Result<()> {
         self.state.ensure_open()?;
         let shutdown = ShutdownCoordinator::new(self.health.clone());
         tokio::pin!(stop);
         if stop.as_mut().now_or_never().is_some() {
+            drop(listeners);
             shutdown.initiate_shutdown();
             let result = self
                 .state
@@ -562,7 +616,7 @@ where
             }
             return result;
         }
-        let serving = self.serve_with_shutdown(&shutdown);
+        let serving = self.serve_with_shutdown(&shutdown, listeners);
         tokio::pin!(serving);
         tokio::select! {
             biased;
@@ -582,12 +636,16 @@ where
         self.state.close_and_join(deadline).await
     }
 
-    async fn serve_with_shutdown(&self, shutdown: &ShutdownCoordinator) -> anyhow::Result<()> {
+    async fn serve_with_shutdown(
+        &self,
+        shutdown: &ShutdownCoordinator,
+        listeners: Vec<Box<dyn RuntimeListenerService>>,
+    ) -> anyhow::Result<()> {
         self.state.ensure_open()?;
         let mut run = ServiceRunGuard(Some(&self.state));
         log::info!("Warming TACACS+ server connections");
         self.state.warm_connections();
-        let result = self.serve_enabled_services(shutdown).await;
+        let result = self.serve_enabled_services(shutdown, listeners).await;
         run.0 = None;
         if result.is_ok() {
             shutdown.mark_stopped();
@@ -599,22 +657,19 @@ where
         result
     }
 
-    async fn serve_enabled_services(&self, shutdown: &ShutdownCoordinator) -> anyhow::Result<()> {
+    async fn serve_enabled_services(
+        &self,
+        shutdown: &ShutdownCoordinator,
+        listeners: Vec<Box<dyn RuntimeListenerService>>,
+    ) -> anyhow::Result<()> {
         let listener_options = ListenerOptions::new(&self.listeners);
         let mut tasks = JoinSet::new();
         let mut service_count = 0;
 
-        if let Some(path) = self.listeners.client_api() {
-            let service =
-                ClientApiService::new(Arc::clone(&self.state), Arc::clone(&self.request_tracker));
-            let endpoint = IpcEndpoint::Unix(path.to_owned());
+        for listener in listeners {
             let shutdown = shutdown.subscribe();
             let health = self.health.clone();
-            tasks.spawn(async move {
-                service
-                    .serve(&endpoint, listener_options, shutdown, health)
-                    .await
-            });
+            tasks.spawn(async move { listener.serve(shutdown, health).await });
             service_count += 1;
         }
 
@@ -625,8 +680,8 @@ where
                 self.proxy_loop_guard.clone(),
             );
             let endpoint = match target {
-                ListenerEndpoint::Unix(path) => IpcEndpoint::Unix(path.clone()),
-                ListenerEndpoint::Tcp(address) => IpcEndpoint::Tcp(*address),
+                ListenerEndpoint::Unix(path) => ListenerEndpoint::Unix(path.clone()),
+                ListenerEndpoint::Tcp(address) => ListenerEndpoint::Tcp(*address),
             };
             let shutdown = shutdown.subscribe();
             let health = self.health.clone();
@@ -678,29 +733,80 @@ where
 }
 
 #[cfg(all(test, unix))]
+impl<Connector: EndpointConnector + 'static> ServiceRuntime<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
+    /// Builds the injected client API listener(s) for a test service runtime.
+    ///
+    /// This mirrors how the daemon composes the IPC listener with the agent
+    /// runtime. It returns one listener when the client API is enabled.
+    fn test_client_api_listeners(&self) -> Vec<Box<dyn RuntimeListenerService>> {
+        match self.listeners.client_api() {
+            Some(path) => vec![crate::test_support::TestClientApiListener::boxed(
+                Arc::clone(&self.state),
+                path.to_path_buf(),
+                tacacsrs_ipc::server::ListenerOptions {
+                    socket_mode: self.listeners.unix_socket_mode(),
+                    max_connections: self.listeners.max_connections(),
+                    max_client_api_streams: self.listeners.max_client_api_streams(),
+                    connection_lifetime: self.listeners.connection_lifetime(),
+                },
+            )],
+            None => Vec::new(),
+        }
+    }
+
+    /// Serves with the composed client API listener until `stop` fires.
+    async fn serve_until_for_test(
+        &self,
+        stop: impl std::future::Future<Output = ()> + Send,
+    ) -> anyhow::Result<()> {
+        let listeners = self.test_client_api_listeners();
+        self.serve_until(stop, listeners).await
+    }
+
+    /// Serves with the composed client API listener under one shutdown coordinator.
+    async fn serve_with_shutdown_for_test(
+        &self,
+        shutdown: &ShutdownCoordinator,
+    ) -> anyhow::Result<()> {
+        let listeners = self.test_client_api_listeners();
+        self.serve_with_shutdown(shutdown, listeners).await
+    }
+}
+
+#[cfg(all(test, unix))]
+impl TacacsClientService {
+    /// Serves with the composed client API listener until `stop` fires.
+    async fn serve_until_for_test(
+        &self,
+        stop: impl std::future::Future<Output = ()> + Send,
+    ) -> anyhow::Result<()> {
+        self.runtime.serve_until_for_test(stop).await
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    use tacacsrs_agent_client::ipc;
-    use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
-    use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+    use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
     use tacacsrs_protocol::operations::{AuthorizationOperation, AuthorizationResponseStatus};
-    use tonic::Request;
 
     use crate::config::{
         EnabledServices, FailoverStrategy, OperationPolicies, PreparedProxyPolicy, RuntimePolicy,
     };
     type TacacsClientService = super::ServiceRuntime<crate::upstream::manager::ServiceConnector>;
     use crate::runtime::{
-        ListenerState, REQUIRED_SERVER_TYPES, RequestTracker, RuntimeHealthPublisher,
-        RuntimeLifecycle, RuntimeService, ShutdownCoordinator,
+        ListenerState, REQUIRED_SERVER_TYPES, RuntimeHealthPublisher, RuntimeLifecycle,
+        RuntimeService, ShutdownCoordinator,
     };
     use crate::config::ServiceConfig;
-    use crate::services::client_api::GrpcService;
-    use crate::test_support::{FakeConnection, FakeConnector, build_request};
+    use crate::test_support::{BlockingClientApiListener, FakeConnection, FakeConnector, build_request};
     use crate::upstream::manager::UpstreamManager;
 
     fn test_server(address: &str) -> tacacsrs_config::TacacsPlusServer {
@@ -844,7 +950,7 @@ mod tests {
             .unwrap();
         let config = service_config(endpoint.clone(), vec![test_server("primary:49")]);
         let service = test_service(config).unwrap();
-        let result = service.serve_until(std::future::ready(())).await;
+        let result = service.serve_until_for_test(std::future::ready(())).await;
         assert_eq!(tokio::fs::read(path).await.unwrap(), b"unrelated existing file");
         tokio::fs::remove_file(path).await.unwrap();
         assert!(result.is_ok(), "a stopped host must not attempt to bind: {result:?}");
@@ -936,7 +1042,7 @@ mod tests {
             let running = service.clone();
             let task = tokio::spawn(async move {
                 running
-                    .serve_until(async {
+                    .serve_until_for_test(async {
                         let _signal = stopping.await;
                     })
                     .await
@@ -1259,7 +1365,7 @@ mod tests {
 
         let service = test_service_with_connector(config, connector).unwrap();
         let service_task =
-            tokio::spawn(async move { service.serve_until(std::future::pending()).await });
+            tokio::spawn(async move { service.serve_until_for_test(std::future::pending()).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let client = ServiceClient::connect(endpoint.clone()).await.unwrap();
@@ -1312,7 +1418,7 @@ mod tests {
 
         let service = test_service_with_connector(config, connector).unwrap();
         let service_task =
-            tokio::spawn(async move { service.serve_until(std::future::pending()).await });
+            tokio::spawn(async move { service.serve_until_for_test(std::future::pending()).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let client = ServiceClient::connect(endpoint.clone()).await.unwrap();
@@ -1342,53 +1448,6 @@ mod tests {
         if let IpcEndpoint::Unix(path) = endpoint {
             let _ = tokio::fs::remove_file(path).await;
         }
-    }
-
-    #[tokio::test]
-    #[cfg_attr(miri, ignore)] // Miri does not support Tokio synchronization or time.
-    async fn test_authorization_rpc_failure_returns_service_error_oneof() {
-        let primary = Arc::new(FakeConnection {
-            address: "primary:49".to_owned(),
-            usable: AtomicBool::new(true),
-            fail_next_request: AtomicBool::new(true),
-        });
-
-        let connector = Arc::new(FakeConnector::new(HashMap::from([(
-            primary.address.clone(),
-            Arc::clone(&primary),
-        )])));
-        let state = Arc::new(UpstreamManager::new(
-            vec![test_server("primary:49")],
-            connector,
-            Duration::from_millis(50),
-            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
-        ));
-        let service = GrpcService::new(state, Arc::new(RequestTracker::default()));
-        let request = AuthorizationOperation::builder(
-            "admin",
-            0,
-            tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsAscii,
-        )
-        .port("pts/1")
-        .remote_address("127.0.0.1")
-        .service("shell")
-        .command("/bin/echo")
-        .command_arg("hello")
-        .build()
-        .unwrap();
-
-        let reply = service
-            .authorization(Request::new((&request).into()))
-            .await
-            .unwrap()
-            .into_inner();
-
-        let Some(ipc::authorization_reply::Result::Error(error)) = reply.result else {
-            panic!("the ServiceError oneof must contain the authorization error");
-        };
-        assert_eq!(error.server, "primary:49");
-        assert!(!error.retriable);
-        assert!(error.message.contains("Simulated failure"));
     }
 
     #[tokio::test]
@@ -1425,7 +1484,7 @@ mod tests {
         let task = {
             let service = Arc::clone(&service);
             let shutdown = shutdown.clone();
-            tokio::spawn(async move { service.serve_with_shutdown(&shutdown).await })
+            tokio::spawn(async move { service.serve_with_shutdown_for_test(&shutdown).await })
         };
 
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -1478,7 +1537,9 @@ mod tests {
             let (mut peer, _) = listener.accept().await.unwrap();
             let running = service.clone();
             let task =
-                tokio::spawn(async move { running.serve_until(std::future::pending()).await });
+                tokio::spawn(
+                    async move { running.serve_until_for_test(std::future::pending()).await },
+                );
             while health.snapshot().lifecycle() != RuntimeLifecycle::Serving {
                 tokio::task::yield_now().await;
             }
@@ -1533,7 +1594,7 @@ mod tests {
             let running = service.clone();
             let task = tokio::spawn(async move {
                 running
-                    .serve_until(async {
+                    .serve_until_for_test(async {
                         let _stop = stopped.await;
                     })
                     .await
@@ -1563,7 +1624,10 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert!(service.serve_until(std::future::pending()).await.is_err());
+            assert!(service
+                .serve_until_for_test(std::future::pending())
+                .await
+                .is_err());
         })
         .await
         .expect("embedded shutdown must finish without process exit");
@@ -1584,7 +1648,7 @@ mod tests {
         let task = {
             let service = Arc::clone(&service);
             let shutdown = shutdown.clone();
-            tokio::spawn(async move { service.serve_with_shutdown(&shutdown).await })
+            tokio::spawn(async move { service.serve_with_shutdown_for_test(&shutdown).await })
         };
         tokio::time::timeout(Duration::from_secs(2), async {
             while service
@@ -1663,7 +1727,7 @@ mod tests {
             .expect("the service must build");
         let shutdown = ShutdownCoordinator::new(health.clone());
 
-        let result = service.serve_with_shutdown(&shutdown).await;
+        let result = service.serve_with_shutdown_for_test(&shutdown).await;
 
         assert!(result.is_err());
         assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
@@ -1692,12 +1756,14 @@ mod tests {
             TacacsClientService::new_with_connector(config, connector, health.clone())
                 .expect("the service must build"),
         );
-        let active_request = service.request_tracker.start_request();
+        let (listener, release) = BlockingClientApiListener::pair();
         let shutdown = ShutdownCoordinator::new(health.clone());
         let mut task = {
             let service = Arc::clone(&service);
             let shutdown = shutdown.clone();
-            tokio::spawn(async move { service.serve_with_shutdown(&shutdown).await })
+            tokio::spawn(
+                async move { service.serve_with_shutdown(&shutdown, vec![listener]).await },
+            )
         };
         tokio::time::timeout(Duration::from_secs(2), async {
             while health.snapshot().lifecycle() != RuntimeLifecycle::Serving {
@@ -1716,7 +1782,7 @@ mod tests {
             .await
             .is_err());
 
-        drop(active_request);
+        release.notify_one();
         task.await
             .expect("the service task must stop")
             .expect("the drain must finish");

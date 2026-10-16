@@ -2,7 +2,7 @@
 //!
 //! The checked-in `.proto` file defines the wire IPC contract:
 //!
-//! [`proto/tacacsrs_agent.proto`](https://github.com/AuthScaffold/tacacs-rs/blob/main/libraries/tacacsrs_agent_client/proto/tacacsrs_agent.proto)
+//! [`proto/tacacsrs_agent.proto`](https://github.com/AuthScaffold/tacacs-rs/blob/main/libraries/tacacsrs_ipc/proto/tacacsrs_agent.proto)
 //!
 //! [`tonic::include_proto!`] includes the generated Rust bindings at build
 //! time. The crate uses these bindings to convert between domain types and the

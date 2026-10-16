@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use tacacsrs_networking::admission::{AdmissionPool, AdmissionReservation, AdmissionError as PoolError};
 use tacacsrs_networking::RequestDeadline;
+use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
+use tacacsrs_protocol::operations::ServiceError;
 pub(crate) use tacacsrs_networking::admission::AdmissionPermit;
 
 use crate::config::RuntimePolicy;
@@ -117,8 +119,18 @@ impl std::error::Error for AdmissionError {}
 
 impl AdmissionError {
     #[must_use]
-    pub(crate) const fn is_retriable(&self) -> bool {
-        !matches!(self, Self::BodyTooLarge { .. } | Self::Closed)
+    pub(crate) fn into_service_error(self) -> ServiceError {
+        let category = match self {
+            Self::Closed => FailureCategory::Cancelled,
+            Self::BodyTooLarge { .. } => FailureCategory::InvalidRequest,
+            Self::CapacityTimeout { .. } => FailureCategory::Deadline,
+            Self::Full => FailureCategory::Overloaded,
+            Self::NoEligibleServer { .. } => FailureCategory::Unavailable,
+        };
+        ServiceError::new(
+            self.to_string(),
+            FailureFacts::new(category, FailurePhase::Admission, DeliveryState::NotSent),
+        )
     }
 }
 

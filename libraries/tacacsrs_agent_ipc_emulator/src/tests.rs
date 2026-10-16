@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tacacsrs_agent_client::{ServiceClient};
+use tacacsrs_ipc::{ServiceClient};
+use tacacsrs_protocol::failure::{DeliveryState, FailurePhase, RetryAdvice};
 use tacacsrs_protocol::operations::{
     AccountingOperation, AuthorizationKey, AuthorizationOperation, AuthorizationResponseStatus,
 };
-use tonic::Code;
 
 use crate::policy::EmulatorResponse;
 use crate::state::EmulatorState;
@@ -186,7 +186,7 @@ async fn captures_requests() {
 }
 
 #[tokio::test]
-async fn undefined_accounting_decision_returns_grpc_error() {
+async fn undefined_accounting_decision_returns_conservative_error() {
     let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(ACCOUNTING_POLICY))
         .await
         .expect("emulator must start");
@@ -199,13 +199,14 @@ async fn undefined_accounting_decision_returns_grpc_error() {
         .await
         .expect_err("undefined accounting decision must fail");
 
-    let grpc_status = error
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<tonic::Status>())
-        .expect("error must include tonic status");
-    assert_eq!(grpc_status.code(), Code::NotFound);
-    assert!(grpc_status
-        .message()
+    // The emulator returns a gRPC NotFound status. The client maps an in-flight
+    // RPC status failure to an unknown delivery outcome at the IPC phase, so it
+    // never recommends an automatic replay.
+    assert_eq!(error.facts.phase(), FailurePhase::Ipc);
+    assert_eq!(error.facts.delivery(), DeliveryState::OutcomeUnknown);
+    assert_eq!(error.facts.retry_advice(), RetryAdvice::Never);
+    assert!(error
+        .message
         .contains("policy returned no Accounting decision"));
     assert_eq!(emulator.captured_requests().await.len(), 1);
     emulator.shutdown().await;

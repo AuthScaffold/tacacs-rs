@@ -7,12 +7,13 @@ use std::time::Instant;
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 #[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
 #[cfg(target_os = "linux")]
 use tacacsrs_protocol::operations::{AccountingOperation};
 use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
 use tacacsrs_protocol::operations::{
     AuthorizationAuthenticationContext as ProtocolAuthenticationContext, AuthorizationOperation,
+    AuthorizationOperationResponse,
 };
 
 use crate::commands::accounting::send_accounting_request;
@@ -84,38 +85,43 @@ pub(super) async fn execute_single_request(
 ) -> Result<String, String> {
     match request {
         BatchRequest::Accounting(req) => {
-            let cmd_args = if req.cmd_args.is_empty() {
-                None
-            } else {
-                Some(&req.cmd_args)
-            };
-
-            match send_accounting_request(
+            let result = send_accounting_request(
                 connection,
                 &req.user,
                 &req.port,
                 &req.rem_addr,
                 &req.cmd,
-                cmd_args,
+                Some(&req.cmd_args),
             )
-            .await
-            {
-                Ok(response) => Ok(format!("Accounting success: {response:?}")),
-                Err(error) => Err(format!("Accounting failed: {error}")),
-            }
+            .await;
+            format_request_outcome("Accounting", result)
         }
-        BatchRequest::Authentication(req) => {
-            Err(format!(
-                "PAP authentication is not supported in batch files. Use the authentication command with a prompt or --password-stdin (user: {})",
-                req.user
-            ))
+        BatchRequest::Authentication(req) => Err(pap_batch_unsupported(&req.user)),
+        BatchRequest::Authorization(req) => {
+            let result = connection
+                .execute(direct_authorization_exchange(req).map_err(|error| error.to_string())?)
+                .await
+                .and_then(|reply| {
+                    AuthorizationOperationResponse::from_reply(connection.server_name(), reply)
+                });
+            format_request_outcome("Authorization", result)
         }
-        BatchRequest::Authorization(req) => connection
-            .execute(direct_authorization_exchange(req).map_err(|error| error.to_string())?)
-            .await
-            .map(|response| format!("Authorization success: {response:?}"))
-            .map_err(|error| format!("Authorization failed: {error}")),
     }
+}
+
+pub(super) fn pap_batch_unsupported(user: &str) -> String {
+    format!(
+        "PAP authentication is not supported in batch files. Use the authentication command with a prompt or --password-stdin (user: {user})"
+    )
+}
+
+pub(super) fn format_request_outcome<Response: std::fmt::Debug, Error: std::fmt::Display>(
+    operation: &str,
+    result: Result<Response, Error>,
+) -> Result<String, String> {
+    result
+        .map(|response| format!("{operation} response: {response:?}"))
+        .map_err(|error| format!("{operation} failed: {error}"))
 }
 
 pub(super) fn load_test_iterations(
@@ -207,5 +213,131 @@ fn build_load_test_result(
         duration,
         first_failure: failure_msg,
         requests_per_second,
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use tacacsrs_ipc::ipc;
+    use tacacsrs_protocol::accounting::reply::AccountingReply;
+    use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+    use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+    use tacacsrs_protocol::enumerations::{
+        TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
+        TacacsAuthorizationStatus,
+    };
+    use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
+    use tacacsrs_protocol::operations::{
+        AccountingOperationResponse, PapAuthenticationOperationResponse, ServiceError,
+    };
+
+    use super::*;
+
+    #[test]
+    fn direct_and_ipc_accounting_results_conform() -> anyhow::Result<()> {
+        for status in [
+            TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            TacacsAccountingStatus::TacPlusAcctStatusError,
+            TacacsAccountingStatus::TacPlusAcctStatusFollow,
+        ] {
+            let direct = AccountingOperationResponse::from_reply(
+                "primary",
+                AccountingReply {
+                    status,
+                    server_msg: "status message".to_owned(),
+                    data: "data".to_owned(),
+                },
+            );
+            let remote = AccountingOperationResponse::try_from(ipc::AccountingResponse::from(
+                direct.clone(),
+            ))?;
+            assert_eq!(direct, remote);
+            assert_eq!(
+                format_request_outcome("Accounting", Ok::<_, ServiceError>(direct)),
+                format_request_outcome("Accounting", Ok::<_, ServiceError>(remote)),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn direct_and_ipc_authorization_results_conform() -> anyhow::Result<()> {
+        for status in [
+            TacacsAuthorizationStatus::TacPlusPassAdd,
+            TacacsAuthorizationStatus::TacPlusPassRepl,
+            TacacsAuthorizationStatus::TacPlusFail,
+            TacacsAuthorizationStatus::TacPlusError,
+            TacacsAuthorizationStatus::TacPlusFollow,
+        ] {
+            let direct = AuthorizationOperationResponse::from_reply(
+                "primary",
+                AuthorizationReply {
+                    status,
+                    server_msg: "status message".to_owned(),
+                    data: "data".to_owned(),
+                    args: vec!["cmd=show".to_owned(), "protocol*ssh".to_owned()],
+                },
+            )?;
+            let remote = AuthorizationOperationResponse::try_from(
+                ipc::AuthorizationResponse::from(direct.clone()),
+            )?;
+            assert_eq!(direct, remote);
+            assert_eq!(
+                format_request_outcome("Authorization", Ok::<_, ServiceError>(direct)),
+                format_request_outcome("Authorization", Ok::<_, ServiceError>(remote)),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn structured_failures_survive_ipc_until_batch_rendering() -> anyhow::Result<()> {
+        for (category, phase, delivery) in [
+            (FailureCategory::InvalidRequest, FailurePhase::Validation, DeliveryState::NotSent),
+            (FailureCategory::Unavailable, FailurePhase::Routing, DeliveryState::NotSent),
+            (FailureCategory::Transport, FailurePhase::Upstream, DeliveryState::OutcomeUnknown),
+        ] {
+            let direct =
+                ServiceError::new("operation failed", FailureFacts::new(category, phase, delivery))
+                    .with_server("primary")
+                    .with_runtime_generation(7);
+            let remote = ServiceError::try_from(ipc::ServiceError::from(direct.clone()))?;
+            assert_eq!(direct, remote);
+            assert_eq!(
+                format_request_outcome("Accounting", Err::<(), _>(direct)),
+                format_request_outcome("Accounting", Err::<(), _>(remote)),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn direct_and_ipc_pap_results_conform() -> anyhow::Result<()> {
+        for status in [
+            TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
+            TacacsAuthenticationStatus::TacPlusAuthenStatusFail,
+            TacacsAuthenticationStatus::TacPlusAuthenStatusError,
+        ] {
+            let direct = PapAuthenticationOperationResponse::from_reply(
+                "primary",
+                AuthenticationReply {
+                    status,
+                    flags: TacacsAuthenticationReplyFlags::empty(),
+                    server_msg: "status message".to_owned(),
+                    data: vec![0, 255],
+                },
+            )?;
+            let remote = PapAuthenticationOperationResponse::try_from(
+                ipc::PapAuthenticationResponse::from(direct.clone()),
+            )?;
+            assert_eq!(direct, remote);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn batch_pap_rejection_never_contains_a_password() {
+        assert_eq!(pap_batch_unsupported("alice"),
+            "PAP authentication is not supported in batch files. Use the authentication command with a prompt or --password-stdin (user: alice)");
     }
 }

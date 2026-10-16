@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 use std::process::Output;
 
-use tacacsrs_agent_client::health::{HealthClient, READINESS_HEALTH_SERVICE};
-use tacacsrs_agent_client::IpcEndpoint;
+use tacacsrs_ipc::health::{HealthClient, READINESS_HEALTH_SERVICE};
+use tacacsrs_ipc::IpcEndpoint;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio_stream::wrappers::TcpListenerStream;

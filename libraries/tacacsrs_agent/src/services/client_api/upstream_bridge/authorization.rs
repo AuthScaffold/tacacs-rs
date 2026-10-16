@@ -56,7 +56,7 @@ where
     ///
     /// Authorization and accounting use the same server selection and failover
     /// model. The networking layer controls connection reuse.
-    pub(in crate::services::client_api) async fn execute_authorization_request(
+    pub(crate) async fn execute_authorization_request(
         &self,
         request: AuthorizationOperation,
     ) -> Result<AuthorizationOperationResponse, ServiceError> {

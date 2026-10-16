@@ -9,11 +9,16 @@ use tacacsrs_protocol::exchange::FixedExchange;
 #[derive(Clone)]
 pub struct Connection {
     inner: Arc<TacacsClient>,
+    server_name: String,
 }
 
 impl Connection {
-    pub(crate) const fn from_inner(inner: Arc<TacacsClient>) -> Self {
-        Self { inner }
+    pub(crate) const fn from_inner(inner: Arc<TacacsClient>, server_name: String) -> Self {
+        Self { inner, server_name }
+    }
+
+    pub(crate) fn server_name(&self) -> &str {
+        &self.server_name
     }
 
     /// Executes one fixed TACACS+ request/reply exchange.
@@ -43,7 +48,7 @@ pub async fn establish_connection(
 ) -> anyhow::Result<Connection> {
     let endpoint = tacacsrs_config::prepare::prepare_endpoint(server, options)?;
     let connection = TacacsClient::connect_prepared(endpoint).await?;
-    Ok(Connection::from_inner(Arc::new(connection)))
+    Ok(Connection::from_inner(Arc::new(connection), server.name.clone()))
 }
 
 /// Establishes a connection with TACACS+ single-connection mode disabled in

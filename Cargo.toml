@@ -4,7 +4,7 @@ members = [
     "libraries/tacacsrs_protocol",
     "libraries/tacacsrs_secrets",
     "libraries/tacacsrs_networking",
-    "libraries/tacacsrs_agent_client",
+    "libraries/tacacsrs_ipc",
     "libraries/tacacsrs_agent_ipc_emulator",
     "libraries/tacacsrs_agent",
     "libraries/tacacsrs_config",
@@ -17,6 +17,21 @@ members = [
     "executables/tacacsrs_agentd",
     "executables/tacacsrs_agent_health",
     "executables/tacacsrs_agent_ipc_emulatord"
+]
+default-members = [
+    "libraries/tacacsrs_protocol",
+    "libraries/tacacsrs_secrets",
+    "libraries/tacacsrs_networking",
+    "libraries/tacacsrs_ipc",
+    "libraries/tacacsrs_agent",
+    "libraries/tacacsrs_config",
+    "libraries/tacacsrs_credential_resolution",
+    "libraries/tacacsrs_credential_http",
+    "libraries/tacacsrs_sonic",
+    "libraries/tacacsrs_bash_plugin",
+    "executables/tacon",
+    "executables/tacacsrs_agentd",
+    "executables/tacacsrs_agent_health",
 ]
 exclude = ["fuzz"]
 

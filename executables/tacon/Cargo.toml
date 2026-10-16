@@ -26,7 +26,7 @@ tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
+tacacsrs-ipc = { path = "../../libraries/tacacsrs_ipc" }
 
 [build-dependencies]
 clap = { version = "4.6.1", features = ["derive"] }

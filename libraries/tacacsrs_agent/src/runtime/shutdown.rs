@@ -57,13 +57,13 @@ impl ShutdownCoordinator {
 
 /// Cloneable shutdown subscription for one runtime task.
 #[derive(Debug, Clone)]
-pub(crate) struct ShutdownReceiver {
+pub struct ShutdownReceiver {
     receiver: watch::Receiver<bool>,
 }
 
 impl ShutdownReceiver {
     /// Waits until shutdown is broadcast or the coordinator is dropped.
-    pub(crate) async fn wait(mut self) {
+    pub async fn wait(mut self) {
         if *self.receiver.borrow() {
             return;
         }
@@ -74,11 +74,20 @@ impl ShutdownReceiver {
             }
         }
     }
+
+    /// Returns the raw shutdown flag receiver.
+    ///
+    /// The value becomes `true` when graceful shutdown is requested. A host
+    /// listener forwards this neutral signal to its own transport.
+    #[must_use]
+    pub fn flag(&self) -> watch::Receiver<bool> {
+        self.receiver.clone()
+    }
 }
 
 /// Publishes listener state and sets `Stopped` on each return path.
 #[derive(Debug)]
-pub(crate) struct ListenerRegistration {
+pub struct ListenerRegistration {
     health: RuntimeHealthPublisher,
     service: RuntimeService,
 }
@@ -86,14 +95,14 @@ pub(crate) struct ListenerRegistration {
 impl ListenerRegistration {
     /// Registers an enabled listener and publishes `Binding` before bind work.
     #[must_use]
-    pub(crate) fn new(health: RuntimeHealthPublisher, service: RuntimeService) -> Self {
+    pub fn new(health: RuntimeHealthPublisher, service: RuntimeService) -> Self {
         let accepted = health.set_listener(service, ListenerState::Binding);
         debug_assert!(accepted, "cannot register a disabled listener");
         Self { health, service }
     }
 
     /// Publishes that the IPC endpoint is bound and accepts work.
-    pub(crate) fn mark_bound(&self) {
+    pub fn mark_bound(&self) {
         let accepted = self.health.set_listener(self.service, ListenerState::Bound);
         debug_assert!(accepted, "cannot bind a disabled listener");
     }
